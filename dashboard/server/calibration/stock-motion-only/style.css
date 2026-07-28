@@ -1,0 +1,9 @@
+:root{--ink:#0f172a;--paper:#fff}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 Inter,system-ui,sans-serif}
+.hero{min-height:60vh;display:grid;place-content:center;text-align:center}
+main{max-width:64rem;margin:0 auto;padding:0 1.5rem 6rem}
+.project{border:1px solid #e2e8f0;border-radius:.5rem;padding:1.5rem;margin:1rem 0}
+/* Stock only: a hover transition and one fade. Nothing scroll-driven, nothing bespoke. */
+.project:hover{box-shadow:0 4px 12px rgba(0,0,0,.08);transition:box-shadow .3s ease}
+button{transition:opacity .2s ease}
+button:hover{opacity:.85}
