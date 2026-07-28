@@ -27,12 +27,16 @@ import type {
 import { REPORT_CONTRACT_REMINDER, boundsFor, shortlistFor } from "../agent-shortlist.js";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
 import type { RunEnvironment } from "../build-environment.js";
+import type { ResultUsageEnvelope } from "../claude-common.js";
+import { modelRows, zeroTokens } from "../tokens.js";
+import type { TokenTotals } from "../tokens.js";
 import {
   announceEnvironment,
   buildOptions,
   canonicaliseForDecision,
   decideToolPermission,
   noteCompaction,
+  recordResultTokens,
   sampleContextAt,
 } from "./claude-builder.js";
 import type { BuildRequest } from "./types.js";
@@ -1622,4 +1626,204 @@ test("a compaction is emitted on the sink and named in the log", () => {
   assert.equal(compactions.length, 1);
   assert.deepEqual(compactions[0], record);
   assert.match(logs.join("\n"), /compact/i);
+});
+
+/**
+ * THE RESULT BRANCH'S TOKEN ACCOUNTING — Phase 1.1 Task 5 follow-up.
+ *
+ * WHY THESE EXIST, and it is not a nicety. An audit of commit db015a9 reverted
+ * the whole per-model fix at its SOLE production call site — back to
+ * `addTokens(tokens, extractTokens(message.usage, message.num_turns))` with the
+ * two `usageDisagreement` lines deleted — and the suite stayed byte-identical at
+ * 200/198/0/2. Only tsc's unused-import check objected. Every assertion about
+ * `resultTokens` lived in claude-common.test.ts, where the function was called
+ * directly; NOTHING said the builder still called it. A guarantee whose call
+ * site can be deleted with a green suite is not protected, and this repo has now
+ * shipped that same defect six times.
+ *
+ * WHY A SEAM AND NOT AN END-TO-END TEST. The `for await` loop is reachable only
+ * by spawning a real CLI, which costs subscription quota. So the arithmetic was
+ * lifted out of the branch into {@link recordResultTokens} — the same move
+ * `buildOptions`, `announceEnvironment` and `noteCompaction` already made in this
+ * file, for the same reason — and that function is what these tests call.
+ *
+ * THE RESIDUAL, STATED RATHER THAN IMPLIED, exactly as it is for
+ * `announceEnvironment` and `noteCompaction`: what a unit test can prove is that
+ * this function accumulates per model, emits, and warns; what it cannot prove is
+ * that the loop CALLS it. Re-inlining the old code over that one call site would
+ * still pass. What has changed is the size of the hole: it was a whole
+ * accumulation whose every property was untested, and it is now a single line
+ * whose replacement no longer has anywhere quiet to hide.
+ *
+ * A SOURCE-TEXT TEST WOULD BE WORSE THAN NOTHING. `buildOptions` was "wired" by
+ * regexes over this file's own source; the whole boundary was disconnected and
+ * the regexes still matched. See that function's docstring.
+ */
+
+/** The SDK's own `ModelUsage` shape, cost field and all — see claude-common.test.ts. */
+const DELEGATED_USAGE = {
+  "claude-haiku-4-5-20251001": {
+    inputTokens: 2_400,
+    outputTokens: 960,
+    cacheReadInputTokens: 480,
+    cacheCreationInputTokens: 120,
+    webSearchRequests: 0,
+    costUSD: 0.42,
+  },
+  "claude-opus-5[1m]": {
+    inputTokens: 7_600,
+    outputTokens: 3_040,
+    cacheReadInputTokens: 1_520,
+    cacheCreationInputTokens: 380,
+    webSearchRequests: 0,
+    costUSD: 13.37,
+  },
+} as const;
+
+/**
+ * A result frame whose scalar `usage` DISAGREES with its own per-model rows.
+ *
+ * DELIBERATELY SKEWED, and that is the entire point of the fixture. The agreeing
+ * frame (rows summing to exactly the scalar, as the shipped CLI produces) cannot
+ * tell the two implementations apart: `extractTokens(usage)` and the sum over
+ * `modelUsage` return the SAME four numbers, so a test built on it passes under
+ * the mutation. 40,000 vs 10,000 input makes the row-sourced path and the
+ * scalar-sourced path give different answers, so the assertion pins which one
+ * production runs — and it is the only fixture under which the two
+ * `usageDisagreement` lines are observable at all.
+ */
+function skewedResult(): ResultUsageEnvelope {
+  return {
+    usage: {
+      input_tokens: 40_000,
+      output_tokens: 4_000,
+      cache_read_input_tokens: 2_000,
+      cache_creation_input_tokens: 500,
+    },
+    modelUsage: DELEGATED_USAGE,
+    num_turns: 12,
+  };
+}
+
+/** An agreeing frame, as the shipped CLI reports one: rows sum to the scalar. */
+function agreeingResult(): ResultUsageEnvelope {
+  return {
+    usage: {
+      input_tokens: 10_000,
+      output_tokens: 4_000,
+      cache_read_input_tokens: 2_000,
+      cache_creation_input_tokens: 500,
+    },
+    modelUsage: DELEGATED_USAGE,
+    num_turns: 12,
+  };
+}
+
+function tokenSink(): {
+  sink: BuildRequest["sink"];
+  emitted: TokenTotals[];
+  warnings: string[];
+} {
+  const emitted: TokenTotals[] = [];
+  const warnings: string[] = [];
+  return {
+    emitted,
+    warnings,
+    sink: {
+      ...req().sink,
+      tokens: (totals: TokenTotals) => emitted.push(totals),
+      log: (level: "info" | "warn" | "error", text: string) => {
+        if (level === "warn") warnings.push(text);
+      },
+    },
+  };
+}
+
+test("the result frame's spend is recorded PER MODEL, not collapsed onto one name", () => {
+  // The measured failure: 76% of a run's spend on OPUS subagents while the run's
+  // `modelId` said `haiku`. `extractTokens(result.usage)` returns four scalars
+  // and NO model, so under the reverted call site every row below is absent.
+  const { sink, emitted } = tokenSink();
+  const totals = recordResultTokens(zeroTokens("anthropic"), agreeingResult(), sink);
+
+  assert.deepEqual(modelRows(totals), [
+    {
+      model: "claude-haiku-4-5-20251001",
+      inputTokens: 2_400,
+      outputTokens: 960,
+      cacheReadTokens: 480,
+      cacheWriteTokens: 120,
+    },
+    {
+      model: "claude-opus-5[1m]",
+      inputTokens: 7_600,
+      outputTokens: 3_040,
+      cacheReadTokens: 1_520,
+      cacheWriteTokens: 380,
+    },
+  ]);
+  assert.equal(emitted.length, 1, "the sink is the only route to the run record");
+  assert.deepEqual(emitted[0], totals, "and what it is given is what the build returns");
+  assert.equal(totals.callCount, 12);
+  // The cost field is dropped at the boundary and must not ride along here.
+  assert.equal(/cost|usd|13\.37/i.test(JSON.stringify(totals)), false);
+});
+
+test("the totals the run reports come from the ROWS, not from the frame's scalar", () => {
+  // THE DISCRIMINATING ASSERTION. On the agreeing frame both paths say 10,000;
+  // on this one the scalar says 40,000 and the rows say 10,000, so this is the
+  // assertion that says WHICH path production takes.
+  const { sink, emitted } = tokenSink();
+  const totals = recordResultTokens(zeroTokens("anthropic"), skewedResult(), sink);
+
+  assert.equal(totals.inputTokens, 10_000, "the scalar 40,000 was reported instead of the rows");
+  assert.equal(emitted[0]?.inputTokens, 10_000);
+  assert.equal(
+    JSON.stringify(totals).includes("40000"),
+    false,
+    "no part of the scalar-sourced total may survive",
+  );
+});
+
+test("a CLI that contradicts its own breakdown is WARNED about, at the call site", () => {
+  // The two lines the audit deleted. They are unobservable on an agreeing frame,
+  // which is exactly why deleting them cost nothing: only a skewed frame can
+  // prove the check still runs in production.
+  const { sink, warnings } = tokenSink();
+  recordResultTokens(zeroTokens("anthropic"), skewedResult(), sink);
+
+  assert.equal(warnings.length, 1, "the disagreement was not reported at all");
+  assert.match(String(warnings[0]), /disagree/i);
+  assert.match(String(warnings[0]), /40000/, "the CLI's own scalar is quoted");
+  assert.match(String(warnings[0]), /10000/, "and so is what its rows actually sum to");
+});
+
+test("an agreeing CLI produces NO warning — the negative control", () => {
+  // Without this, `sink.log("warn", …)` on every result frame would satisfy the
+  // test above while making the warning meaningless.
+  const { sink, warnings } = tokenSink();
+  recordResultTokens(zeroTokens("anthropic"), agreeingResult(), sink);
+  assert.deepEqual(warnings, []);
+});
+
+test("a second result frame ACCUMULATES onto the first — resume adds, it does not replace", () => {
+  // A resumed build sees more than one result frame, and the running total is
+  // the thing the outcome carries. Replacing rather than adding would leave every
+  // assertion above green.
+  const { sink, emitted } = tokenSink();
+  const first = recordResultTokens(zeroTokens("anthropic"), agreeingResult(), sink);
+  const second = recordResultTokens(first, agreeingResult(), sink);
+
+  assert.equal(second.inputTokens, 20_000);
+  assert.equal(second.callCount, 24);
+  assert.deepEqual(
+    modelRows(second).map((r) => [r.model, r.outputTokens]),
+    [
+      ["claude-haiku-4-5-20251001", 1_920],
+      ["claude-opus-5[1m]", 6_080],
+    ],
+    "and the merge stays per model rather than folding the two into one row",
+  );
+  assert.equal(emitted.length, 2, "each frame is emitted as it arrives");
+  assert.deepEqual(emitted[1], second);
 });

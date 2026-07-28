@@ -89,6 +89,13 @@ export function zeroTokens(provider: Provider): TokenTotals {
  * actually use" reads the rows in the order the run acquired them. A model on
  * the right-hand side only is APPENDED — dropping it is exactly the defect this
  * file was changed to fix, one level down.
+ *
+ * SO ADDITION IS COMMUTATIVE IN THE SUMS AND NOT IN THE ROW ORDER, and both
+ * halves are asserted in tokens.test.ts ("addition is order-independent IN THE
+ * SUMS — row ORDER is not canonical"). The whole-object comparison a reader
+ * reaches for first — `deepEqual(addTokens(a, b), addTokens(b, a))` — goes RED
+ * the moment either side carries rows, which is a property of the design rather
+ * than a bug in it, and the test says so instead of leaving it to be rediscovered.
  */
 function mergeModelRows(
   a: readonly ModelTokens[],

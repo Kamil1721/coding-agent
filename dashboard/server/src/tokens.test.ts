@@ -69,11 +69,56 @@ test("zero is an identity on both sides, and adds no call", () => {
   assert.equal(zero.callCount, 0);
 });
 
-test("addition is order-independent", () => {
+test("addition is order-independent IN THE SUMS — row ORDER is not canonical", () => {
   const a = totals({ inputTokens: 11, outputTokens: 2, callCount: 1 });
   const b = totals({ inputTokens: 5, cacheReadTokens: 9, callCount: 3 });
   assert.deepEqual(addTokens(a, b), addTokens(b, a));
   assert.equal(addTokens(a, b).callCount, 4);
+
+  // WHAT THE THREE LINES ABOVE DO NOT PROVE. Both fixtures leave `byModel`
+  // EMPTY, so the whole-object comparison sees four scalars and a call count and
+  // nothing else — the test was titled for a guarantee it never reached. With
+  // rows present the two results are NOT deep-equal, and that is DELIBERATE:
+  // mergeModelRows orders FIRST-SEEN, because the orchestrator's own model is
+  // the first thing a run reports and a reader scanning the log reads the models
+  // in the order the run acquired them.
+  const withHaiku = totals({
+    inputTokens: 100,
+    outputTokens: 10,
+    callCount: 1,
+    byModel: [row("claude-haiku-4-5", { inputTokens: 100, outputTokens: 10 })],
+  });
+  const withOpus = totals({
+    inputTokens: 200,
+    outputTokens: 20,
+    callCount: 2,
+    byModel: [row("claude-opus-5[1m]", { inputTokens: 200, outputTokens: 20 })],
+  });
+  const forward = addTokens(withHaiku, withOpus);
+  const backward = addTokens(withOpus, withHaiku);
+
+  // THE SUMS ARE ORDER-INSENSITIVE: the four scalars, the call count, and each
+  // model's own row. This is the guarantee the title claims, asserted on a
+  // fixture that can actually break it.
+  assert.deepEqual(toApiTokens(forward), toApiTokens(backward));
+  assert.equal(forward.callCount, backward.callCount);
+  assert.equal(forward.callCount, 3);
+  const sorted = (t: TokenTotals): ModelTokens[] =>
+    [...modelRows(t)].sort((x, y) => x.model.localeCompare(y.model));
+  assert.deepEqual(sorted(forward), sorted(backward));
+
+  // THE ROW ORDER IS NOT, and it is pinned rather than left for the next reader
+  // to discover by writing `deepEqual(addTokens(a, b), addTokens(b, a))` and
+  // watching it fail. `deepEqual` on the whole object is exactly that assertion,
+  // and it goes red here — demonstrated before this line replaced it.
+  assert.deepEqual(
+    modelRows(forward).map((r) => r.model),
+    ["claude-haiku-4-5", "claude-opus-5[1m]"],
+  );
+  assert.deepEqual(
+    modelRows(backward).map((r) => r.model),
+    ["claude-opus-5[1m]", "claude-haiku-4-5"],
+  );
 });
 
 test("tokens are NEVER summed across vendors — it throws", () => {

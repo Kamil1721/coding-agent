@@ -140,6 +140,14 @@ function sumRows(rows: readonly ModelTokens[]): ApiTokens {
  * precisely the bug being fixed. When the CLI reports no rows at all the scalar
  * is used unchanged, so the arithmetic never gets worse than it was.
  *
+ * THAT SENTENCE IS NOW PINNED BY A TEST THAT CAN TELL THE TWO APART. It was not
+ * until 2026-07-28: because the shipped CLI's rows sum EXACTLY to its scalar,
+ * every fixture shaped like a real frame returns the same four numbers whichever
+ * source is used, so "taken from the rows" was asserted in this comment and by
+ * nothing else. claude-common.test.ts now feeds a SKEWED frame — 40,000 input
+ * against a 10,000 row sum — which is the only shape under which the two paths
+ * disagree, and it is the same frame `usageDisagreement` speaks up about.
+ *
  * WHAT IS NOT ADDED HERE, and this is the honest part of the fix. Two other
  * envelopes mention subagent tokens and NEITHER is a billed figure:
  * `task_notification.usage.total_tokens` is a progress estimate (latest input

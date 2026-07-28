@@ -87,6 +87,30 @@ function delegatedResult(overrides: Partial<ResultUsageEnvelope> = {}): ResultUs
   };
 }
 
+/**
+ * The same frame with its scalar `usage` SKEWED away from its own rows.
+ *
+ * IT IS THE ONLY FIXTURE THAT DISCRIMINATES, and that is why it is hoisted here
+ * rather than left inline in the one test that used it. `delegatedResult()`'s
+ * rows sum EXACTLY to its scalar — 2400+7600 = 10000, 960+3040 = 4000,
+ * 480+1520 = 2000, 120+380 = 500 — because that is what the shipped CLI
+ * produces. Every assertion built on it therefore passes whether `resultTokens`
+ * takes its totals from the rows or from the scalar, so the claim in this
+ * module's header ("the totals below are taken from the rows") was documented,
+ * commented, and pinned by NOTHING. 40,000 input against a row sum of 10,000 is
+ * what makes the two paths give different answers.
+ */
+function skewedResult(): ResultUsageEnvelope {
+  return delegatedResult({
+    usage: {
+      input_tokens: 40_000,
+      output_tokens: 4_000,
+      cache_read_input_tokens: 2_000,
+      cache_creation_input_tokens: 500,
+    },
+  });
+}
+
 test("the run's tokens are keyed PER MODEL, not collapsed onto the orchestrator", () => {
   const tokens = resultTokens(delegatedResult());
   assert.deepEqual(modelRows(tokens), [
@@ -180,13 +204,48 @@ test("the breakdown and the scalar agreeing is checked, not assumed", () => {
 });
 
 test("a CLI whose scalar and breakdown disagree is REPORTED, not silently trusted", () => {
-  const skewed = delegatedResult({
-    usage: { input_tokens: 40_000, output_tokens: 4_000, cache_read_input_tokens: 2_000, cache_creation_input_tokens: 500 },
-  });
-  const said = usageDisagreement(skewed);
+  const said = usageDisagreement(skewedResult());
   assert.ok(said !== null, "a 30,000-token disagreement was not reported");
   assert.match(said, /40000|40,000/);
   assert.match(said, /10000|10,000/);
+});
+
+test("THE TOTALS COME FROM THE ROWS, not from the frame's own scalar", () => {
+  // WHAT NO OTHER TEST HERE CAN SEE. On `delegatedResult()` the rows sum exactly
+  // to the scalar, so `sumRows(rows)` and `extractTokens(result.usage)` return
+  // the same four numbers and every assertion above holds under either
+  // implementation. On this frame they differ by 30,000 input, so this is the
+  // assertion that says WHICH one runs — the claim made in the header of
+  // claude-common.ts, in the header of tokens.ts and in a code comment, and
+  // until now checked by nothing.
+  const tokens = resultTokens(skewedResult());
+
+  assert.equal(tokens.inputTokens, 10_000, "the CLI's scalar was reported instead of its rows");
+  assert.equal(
+    JSON.stringify(tokens).includes("40000"),
+    false,
+    "no part of the scalar-sourced total may survive",
+  );
+  // The rows are untouched by the skew and still sum to what was reported: the
+  // breakdown cannot disagree with the total it breaks down.
+  assert.equal(
+    modelRows(tokens).reduce((n, r) => n + r.inputTokens, 0),
+    tokens.inputTokens,
+  );
+  // And the same frame is what `usageDisagreement` speaks up about, so the total
+  // and the warning are two views of one check rather than two opinions.
+  assert.ok(usageDisagreement(skewedResult()) !== null);
+});
+
+test("NO rows means the scalar STANDS — the fallback path, and it is the other answer", () => {
+  // The negative control on the test above. "Take the totals from the rows" must
+  // not become "report 0 when a vendor states no breakdown": the Codex-shaped
+  // case is a frame with no `modelUsage` at all, and there the scalar is the only
+  // statement anyone made.
+  const tokens = resultTokens({ usage: { input_tokens: 40_000, output_tokens: 4_000 }, num_turns: 3 });
+  assert.equal(tokens.inputTokens, 40_000);
+  assert.equal(tokens.callCount, 3);
+  assert.deepEqual(modelRows(tokens), []);
 });
 
 test("REGRESSION GUARD: extractTokens still reads one usage payload the old way", () => {

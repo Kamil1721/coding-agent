@@ -136,7 +136,7 @@ import {
   truncate,
   usageDisagreement,
 } from "../claude-common.js";
-import type { RateLimitState } from "../claude-common.js";
+import type { RateLimitState, ResultUsageEnvelope } from "../claude-common.js";
 import {
   LaneWatch,
   compactionFrom,
@@ -1042,6 +1042,57 @@ export function noteCompaction(
   return record;
 }
 
+/**
+ * Add a result frame's spend to the run's running total, emit it, and say so
+ * when the CLI contradicts itself.
+ *
+ * WHICH MODEL SPENT IT IS HALF THE ANSWER, AND `usage` CANNOT GIVE IT. It is
+ * four scalars with no model on them, and this build delegates most of its work:
+ * a measured Phase 1 run put 76% of its spend on OPUS subagents while the run's
+ * `modelId` said `haiku`, and every one of those tokens was reported under the
+ * wrong model because the record had nowhere else to put them. `resultTokens`
+ * reads the SAME frame's per-model breakdown — the one the CLI sums to produce
+ * that scalar — so the total and the attribution come from one place.
+ *
+ * ITS OWN FUNCTION SO IT CAN BE ASSERTED, and here that is a fix rather than a
+ * tidy-up. These five lines were inline in the `result` branch of the loop
+ * below, and an audit of commit db015a9 reverted them to
+ * `addTokens(tokens, extractTokens(message.usage, message.num_turns))` with the
+ * disagreement check deleted: the suite stayed BYTE-IDENTICAL at 200/198/0/2,
+ * and only tsc's unused-import check objected. Every assertion about
+ * `resultTokens` called it directly in claude-common.test.ts; nothing said the
+ * builder still did. The branch is reachable only by spawning a CLI, which costs
+ * subscription quota — the same argument as {@link announceEnvironment} and
+ * {@link noteCompaction} — so the accumulation moved to where a test can reach
+ * it. See "THE RESULT BRANCH'S TOKEN ACCOUNTING" in claude-builder.test.ts,
+ * which pins it with a SKEWED frame, the only fixture on which the row-sourced
+ * and scalar-sourced answers differ.
+ *
+ * THE RESIDUAL IS THE ONE CALL SITE, and it is the same residual those two
+ * functions carry: a test can prove this accumulates per model, emits and warns;
+ * it cannot prove the loop calls it. What changed is that the untested surface
+ * is now one line instead of a whole accumulation.
+ *
+ * IT ADDS, IT DOES NOT REPLACE. A resumed build sees more than one result frame,
+ * and `sink.tokens` is documented as CUMULATIVE.
+ *
+ * THE DISAGREEMENT IS A WARNING, NOT A SILENT CORRECTION: see
+ * `usageDisagreement`. It fires only when the CLI's own scalar stops matching
+ * its own rows, which on the shipped CLI is never — which is precisely why
+ * deleting it was free until now.
+ */
+export function recordResultTokens(
+  running: TokenTotals,
+  result: ResultUsageEnvelope,
+  sink: BuildEventSink,
+): TokenTotals {
+  const next = addTokens(running, resultTokens(result));
+  sink.tokens(next);
+  const disagreement = usageDisagreement(result);
+  if (disagreement !== null) sink.log("warn", disagreement);
+  return next;
+}
+
 export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
   readonly provider = "anthropic" as const;
 
@@ -1129,20 +1180,11 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
         }
 
         if (message.type === "result") {
-          // WHICH MODEL SPENT IT IS HALF THE ANSWER, AND `usage` CANNOT GIVE IT.
-          // It is four scalars with no model on them, and this build delegates
-          // most of its work: a measured Phase 1 run put 76% of its spend on OPUS
-          // subagents while the run's `modelId` said `haiku`, and every one of
-          // those tokens was reported under the wrong model because the record
-          // had nowhere else to put them. `resultTokens` reads the SAME frame's
-          // per-model breakdown — the one the CLI sums to produce that scalar —
-          // so the total and the attribution come from one place.
-          tokens = addTokens(tokens, resultTokens(message));
-          sink.tokens(tokens);
-          // The CLI contradicting itself is a warning, not a silent correction:
-          // see `usageDisagreement`.
-          const disagreement = usageDisagreement(message);
-          if (disagreement !== null) sink.log("warn", disagreement);
+          // ONE CALL, AND THE ARITHMETIC LIVES IN A FUNCTION A TEST CAN REACH.
+          // See {@link recordResultTokens}: everything this branch used to do
+          // inline was invisible to the suite, because the loop costs
+          // subscription quota to enter.
+          tokens = recordResultTokens(tokens, message, sink);
           if (message.subtype === "success") {
             completed = true;
             sink.raw(`\n[result] success after ${String(message.num_turns)} turn(s)\n`);
