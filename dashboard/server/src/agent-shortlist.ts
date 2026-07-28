@@ -3,9 +3,12 @@
  *
  * WHY THIS MODULE EXISTS. `settingSources: ["user"]` (Phase 1 Task 1) makes 144
  * agents and 162 skills visible to the orchestrator. Visibility is not permission.
- * The `canUseTool` Agent branch built in Phase 0 is the boundary — it allowlists
- * `subagent_type` and denies everything else — and this module compiles the list
- * that boundary is fed (Task 3).
+ * The `PreToolUse` hook is the boundary — it allowlists `subagent_type` and
+ * denies everything else — and this module compiles the list that boundary is
+ * fed (Task 3). It was the `canUseTool` Agent branch through Phase 0, and probe A
+ * measured that callback is asked about NO TOOL AT ALL when the model delegates;
+ * the branch was deleted in Phase 1.1 Task 2 rather than left reading like a
+ * guard. See `builders/delegation-hook.ts`.
  *
  * Two separate jobs, deliberately not merged:
  *   settingSources  decides what the orchestrator can SEE.

@@ -1520,14 +1520,45 @@ test("an ordinary tool carrying none of those fields is untouched — negative c
 });
 
 /**
- * THE PER-AGENT DEFINITIONS — Phase 1.1 Task 4.
+ * THE PER-AGENT DEFINITIONS — AND WHAT THEY ARE MEASURED **NOT** TO DO.
  *
- * `boundsFor()` shipped through Phase 1 with ZERO production call sites: the
- * report contract was prose in a plan document and the turn budgets bound
- * nothing. An unused function that reads like a boundary is worse than no
- * function. These tests are what make the call site real.
+ * REWRITTEN 2026-07-28, BECAUSE THE ORIGINAL VERSIONS OF THESE TWO TESTS MADE
+ * CLAIMS THE MECHANISM DOES NOT SUPPORT. They pinned `disallowedTools:
+ * ["mcp__*"]` and `maxTurns` as literals in the options object under titles like
+ * "a subagent gets no MCP tools and cannot detach" — the settings-plumbing.test.ts
+ * shape, this repo's signature defect: assert a value, describe it as a boundary,
+ * and the boundary is never tested at all.
+ *
+ * WHAT WAS MEASURED, TWICE:
+ *   probe G2   session-level narrowing removed, these per-agent `disallowedTools`
+ *              kept -> the child enumerated 620 tools, 589 of them `mcp__*`,
+ *              IDENTICAL to the unnarrowed control. The per-agent lock removed
+ *              nothing.
+ *   DoD run    `system/init` listed `code-reviewer` TWICE and `subagent_type`
+ *              resolved to the DISK definition — disk model, disk tools, disk
+ *              body, and our `reportContract` prompt ABSENT. `Options.agents`
+ *              did not restrict the reachable set either.
+ *
+ * So for the ~141 shortlisted names that have a file in ~/.claude/agents/,
+ * `disallowedTools`, `maxTurns` and `background: false` are INERT. What actually
+ * removes the MCP surface is the SESSION-level `managedSettings.allowedMcpServers:
+ * []`, asserted in "WIRING: no MCP server is available to a build" above and
+ * measured at zero servers against 13 unnarrowed.
+ *
+ * WHY THESE TESTS ARE KEPT AT ALL. The wiring is deliberately not deleted: a
+ * `subagent_type` with NO disk file has nothing to resolve to, and this
+ * definition may be what binds it. PROBE I IS MEASURING THAT NOW. These tests
+ * pin the INPUT that probe is measuring against — that this run really does send
+ * per-agent bounds derived from `boundsFor`, and does not send an empty object —
+ * so a silent change to the input cannot be mistaken for a probe result. They
+ * assert SHAPE, and they say so in their titles.
+ *
+ * UNMEASURED, RECORDED AS SUCH: whether `prompt` or
+ * `criticalSystemReminder_EXPERIMENTAL` reaches ANY child is unknown in BOTH
+ * directions — the reminder came back null from a child with no disk file too, so
+ * neither "it lands" nor "it never lands" is established.
  */
-test("every shortlisted agent is DEFINED with its bounds, not just named", () => {
+test("SHAPE: every shortlisted agent is SENT a definition built from boundsFor", () => {
   const options = buildOptions(
     req({ allowedAgents: ["code-reviewer", "nextjs-developer"] }),
     false,
@@ -1537,33 +1568,37 @@ test("every shortlisted agent is DEFINED with its bounds, not just named", () =>
 
   const reviewer = agents["code-reviewer"];
   assert.ok(reviewer, "a shortlisted agent must be defined, not just permitted");
-  // The report contract has to reach the subagent's own prompt, or it is prose
-  // in a plan document that nothing enforces.
+  // The contract is IN THE PAYLOAD. Whether it reaches the child is UNMEASURED —
+  // the DoD run found our prompt absent for an on-disk agent, and the reminder
+  // came back null from a child with no disk file either. This asserts what is
+  // sent, which is all this file can see.
   assert.match(reviewer.prompt, /report/i);
-  assert.match(reviewer.prompt, /code-reviewer/, "and the agent must know what it is");
+  assert.match(reviewer.prompt, /code-reviewer/, "and the agent is named in what is sent");
   assert.equal(reviewer.criticalSystemReminder_EXPERIMENTAL, REPORT_CONTRACT_REMINDER);
 
-  // `boundsFor()` finally binds to something the engine reads.
+  // PER AGENT, NOT ONE CONSTANT WEARING TWO HATS — `maxTurns: 15` everywhere
+  // would satisfy the two equalities while carrying no per-agent bound at all.
+  // Measured INERT for an on-disk name; kept because probe I is measuring
+  // whether it binds a name with no disk file.
   const builder = agents["nextjs-developer"];
   assert.ok(builder);
   assert.equal(reviewer.maxTurns, boundsFor("code-reviewer").maxTurns);
   assert.equal(builder.maxTurns, boundsFor("nextjs-developer").maxTurns);
-  // NOT ONE CONSTANT WEARING TWO HATS. Without this, `maxTurns: 15` everywhere
-  // would satisfy both assertions above while binding nothing per agent.
   assert.notEqual(reviewer.maxTurns, builder.maxTurns);
 });
 
-test("a subagent gets no MCP tools and cannot detach", () => {
+test("SHAPE: the definition CARRIES disallowedTools and background:false — inert on disk, pending probe I", () => {
   const def = (buildOptions(req({ allowedAgents: ["code-reviewer"] }), false).agents ?? {})[
     "code-reviewer"
   ];
   assert.ok(def);
-  // CRITICAL 5: a background child was measured at 625 tools against the
-  // parent's 42. `mcp__*` is documented to remove ALL MCP tools.
+  // WHAT THIS DOES AND DOES NOT SAY. It says the options object carries these two
+  // fields. It does NOT say a child loses its MCP tools or cannot detach: probe
+  // G2 measured a child with this exact `disallowedTools` enumerating 620 tools,
+  // 589 of them `mcp__*` — the same as the unnarrowed control. The layer that
+  // does remove them is the session-level `allowedMcpServers: []` asserted
+  // above; this one is the input probe I is currently measuring.
   assert.deepEqual(def.disallowedTools, ["mcp__*"]);
-  // CRITICAL 1, the half that does NOT depend on `canUseTool` being consulted:
-  // a detached child keeps writing the workspace after the phase returns, and
-  // the gate would then score a moving artefact.
   assert.equal(def.background, false);
 });
 

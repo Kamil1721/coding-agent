@@ -112,10 +112,15 @@ export interface BuildRequest {
    * Populated from `shortlistFor(surface)` (`src/agent-shortlist.ts`), which is
    * pure and synchronous precisely because it feeds a permission boundary.
    *
-   * ENFORCED BY THE ANTHROPIC DRIVER ONLY, in its `canUseTool` Agent branch. The
-   * Codex driver ignores it completely — it has no per-tool permission callback
-   * and is out of scope for orchestration (spec 14) — so this is a policy inside
-   * one CLI, exactly like {@link sealedRoots} above.
+   * ENFORCED BY THE ANTHROPIC DRIVER ONLY, in its `PreToolUse` hook — not in
+   * `canUseTool`, which probe A measured is consulted for no tool at all when the
+   * model delegates. The Codex driver ignores this field completely (it has no
+   * per-tool permission callback and is out of scope for orchestration, spec 14),
+   * so this is a policy inside one CLI, exactly like {@link sealedRoots} above.
+   *
+   * IT BOUNDS WHICH AGENTS MAY START, NOT HOW MUCH WORK THEY RECEIVE. Measured:
+   * `SendMessage` resumed a running agent with instructions no shortlist saw, so
+   * that tool is denied outright in the same hook.
    */
   readonly allowedAgents: readonly string[];
   /** Catalog model id, as chosen in the UI. */

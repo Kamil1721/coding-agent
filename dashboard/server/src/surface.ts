@@ -3,13 +3,16 @@
  *
  * WHY THIS MODULE EXISTS. `shortlistFor(surface)` fills `BuildRequest.allowedAgents`,
  * and that array IS the delegation boundary (`agent-shortlist.ts`, and the
- * `canUseTool` Agent branch in `builders/claude-builder.ts`). So this file does not
- * merely route: it decides which specialists a build is PERMITTED to reach.
+ * `PreToolUse` hook in `builders/delegation-hook.ts` — NOT `canUseTool`, which
+ * probe A measured is asked about no tool at all when the model delegates). So
+ * this file does not merely route: it decides which specialists a build is
+ * PERMITTED to START. It does not bound how much work each one receives; that is
+ * why `SendMessage` is denied outright in the same hook.
  *
  * THE FAILURE IS ASYMMETRIC, AND THAT SHAPES EVERY DECISION BELOW.
  *   Too WIDE  — the orchestrator sees a few specialists it has no use for. It
  *               ignores them. Cost: a slightly noisier search space.
- *   Too NARROW — the orchestrator asks for a specialist, `canUseTool` denies it,
+ *   Too NARROW — the orchestrator asks for a specialist, the hook denies it,
  *               and the lane produces nothing. Nothing reports this, because a
  *               lane that produced no output is indistinguishable from a lane
  *               that had nothing to do.

@@ -77,8 +77,10 @@
  * filesystem two directories above the workspace. A builder that reads the
  * held-out tests can satisfy them without satisfying the ticket, which makes
  * `heldOutPass` and `falseFinish` meaningless for that run, and there is no
- * detector for it. Two MECHANISMS now — which is not the same as two layers for
- * any given tool, because only the first of them has been exercised:
+ * detector for it. Three MECHANISMS now, and the count of LAYERS DIFFERS PER
+ * TOOL — measured on 2026-07-28 by emptying `permissions.deny` and re-running:
+ * sandboxed `cat` is covered TWICE (independently), the in-process `Read` tool
+ * ONCE. See mechanisms 2 and 3:
  *
  *   1. {@link decideToolPermission} denies ANY tool — built-in, `mcp__*`, or
  *      one that ships next year — carrying a path that resolves into the suite
@@ -94,23 +96,34 @@
  *      file under `/tmp`; see globPrefix below.
  *      EXECUTED: unit-tested directly, with a negative control.
  *   2. `sandbox.filesystem.denyRead` names the suite store to the CLI's own OS
- *      sandbox, which is the only layer that can cover Bash. NOT EXECUTED, in
- *      either half. `src/builders/settings-plumbing.test.ts` builds its OWN
- *      `Options` literal and asserts its OWN local root round-trips into the
- *      `--settings` payload; it never calls this builder, so it cannot detect
- *      this file sending the wrong roots or none. Enforcement by the OS sandbox
- *      is likewise unexercised — proving it needs a real build, which costs
- *      quota. Whether `denyRead` binds in-process tools at all (as opposed to
- *      sandboxed Bash only) is UNRESOLVED; see dashboard/STATUS.md §3.
+ *      sandbox. EXECUTED FOR BASH, AND INDEPENDENTLY SO — measured 2026-07-28
+ *      with `permissions.deny` EMPTIED: `cat <suite>/…` still came back
+ *      "Operation not permitted" (seatbelt). That is the isolating control, and
+ *      it is why this counts as a layer of its own rather than as plumbing for
+ *      mechanism 3. It does NOT cover the in-process Read tool: Phase 1 measured
+ *      `denyRead` alone leaving that tool free, which is the asymmetry this list
+ *      exists to state. The PLUMBING on this side — that the roots this file
+ *      sends are the canonicalised sealed roots — is asserted in
+ *      claude-builder.test.ts; `src/builders/settings-plumbing.test.ts` proves
+ *      nothing about it, because it builds its OWN `Options` literal and never
+ *      calls this builder.
  *   3. `managedSettings.permissions.deny` names the suite store as a POLICY-TIER
  *      rule, with `allowManagedPermissionRulesOnly` so no user, project or local
- *      setting can widen it back open. THIS IS THE STRONG ONE, and the only one
- *      of the three measured against a running CLI: probe B, three consecutive
- *      PASSes, denying the in-process Read tool AND sandboxed `cat` from a
- *      single rule with distinguishable error text for each. It needs no
- *      callback and no hook — which is the point, since mechanism 1 depends on
- *      `canUseTool` being consulted and for the Agent tool it is not. See
- *      `buildOptions`.
+ *      setting can widen it back open. THIS IS THE ONLY LAYER THE IN-PROCESS
+ *      READ TOOL HAS: probe B measured it denying Read with "File is in a
+ *      directory that is denied by your permission settings", three consecutive
+ *      PASSes, and mechanism 2 does not bind that tool. It needs no callback and
+ *      no hook — which is the point, since mechanism 1 depends on `canUseTool`
+ *      being consulted and for the Agent tool it is not. See `buildOptions`.
+ *
+ *      WHAT WAS WITHDRAWN HERE ON 2026-07-28: this used to claim BOTH the Read
+ *      denial and the sandboxed-`cat` denial came from this one rule, citing
+ *      sdk.d.ts:6194's statement that `Read(...)` deny rules merge into the
+ *      sandbox's `denyRead`. The isolating run above falsifies the attribution —
+ *      `cat` is denied with this rule EMPTY — and probe B, which had both set,
+ *      could never have distinguished "the rule merged" from "denyRead bound on
+ *      its own". Two independent layers is the better outcome; claiming one rule
+ *      did double duty was an untested inference dressed as a measurement.
  *
  * This is still weaker than the bake-off's boundary, which is a container the
  * held-out half is never mounted into. Said plainly in dashboard/STATUS.md.
@@ -744,25 +757,49 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     // envelope. See delegation-hook.ts for the rest of what was measured and
     // what was not.
     hooks: { PreToolUse: [makeDelegationHook(request.allowedAgents)] },
-    // THE REPORT CONTRACT, DELIVERED WHERE IT BINDS, AND THE PER-AGENT LOCKS.
+    // THE PER-AGENT DEFINITIONS — AND FOR AN ON-DISK AGENT THEY ARE INERT.
+    // MEASURED TWICE, 2026-07-28, AFTER THIS COMMENT CLAIMED "DEFENCE IN DEPTH":
     //
-    // `boundsFor()` existed through Phase 1 with NO production call site: the
-    // contract was prose in a plan and the turn budgets bound nothing, while the
-    // subagents' own system prompts said something different. Delegation is this
-    // system's context compression — a subagent that narrates its 50 tool calls
-    // back into the parent's window is a subagent that made context WORSE. §15
-    // measured 110-190k tokens if the contract holds and 260-500k+ if it does
-    // not, on the same ticket.
+    //   probe G2   the session-level narrowing removed, these per-agent
+    //              `disallowedTools` kept: the child still enumerated 620 tools,
+    //              589 of them `mcp__*` — IDENTICAL to the unnarrowed control.
+    //              The per-agent lock removed nothing at all.
+    //   the DoD    `system/init` listed `code-reviewer` TWICE, and
+    //   run        `subagent_type: "code-reviewer"` resolved to the DISK
+    //              definition: the disk frontmatter's model, the disk `tools`,
+    //              the disk body — and our `reportContract` prompt ABSENT.
+    //              `Options.agents` did not restrict the reachable set either.
     //
-    // TWO OF THESE FIELDS ARE BOUNDARY, NOT BUDGET, and they hold whether or not
-    // `canUseTool` is ever consulted — which is the whole lesson of Phase 1:
-    //   - `background: false` stops a detached child writing the workspace after
-    //     the phase returns, so the gate cannot score a moving artefact.
-    //   - `disallowedTools: ["mcp__*"]` removes every MCP tool from the child;
-    //     the spec is documented to strip all MCP tools, and a background child
-    //     was measured at 625 tools against the parent's 42. It is the per-agent
-    //     half of the session-level narrowing in `managedSettings` below —
-    //     defence in depth, because a subagent inherits nothing automatically.
+    // SO, FOR THE ~141 SHORTLISTED NAMES THAT EXIST IN ~/.claude/agents/,
+    // `disallowedTools`, `maxTurns` and `background: false` ARE ALL INERT. The
+    // name resolves to the file on disk and this object is not consulted. What
+    // actually removes the MCP surface is the SESSION-level
+    // `managedSettings.allowedMcpServers: []` below, measured at zero servers
+    // against 13 unnarrowed — one real layer, not two.
+    //
+    // THE WIRING STAYS, AND SO DOES THE CONTRACT, for a reason that is measured
+    // to be plausible and not yet measured to be true: a `subagent_type` with NO
+    // disk file has nothing to resolve to, and this definition may be what binds
+    // it. PROBE I IS MEASURING EXACTLY THAT RIGHT NOW. Deleting the wiring would
+    // remove the thing under measurement; leaving a "defence in depth" claim on
+    // it would be the dead-boundary defect this phase exists to remove. So the
+    // code stays and the CLAIM is corrected — see claude-builder.test.ts, where
+    // the tests assert this object's SHAPE and say plainly that shape is not
+    // enforcement.
+    //
+    // UNMEASURED, IN BOTH DIRECTIONS: whether `prompt` /
+    // `criticalSystemReminder_EXPERIMENTAL` reaches ANY child. The reminder came
+    // back null from a child that had no disk file either, so "on-disk agents
+    // ignore it" is NOT established — nothing is, and this line records that
+    // rather than guessing which way it falls.
+    //
+    // WHY THE CONTRACT IS WORTH CARRYING ANYWAY. Delegation is this system's
+    // context compression — a subagent that narrates its 50 tool calls back into
+    // the parent's window is a subagent that made context WORSE. §15 measured
+    // 110-190k tokens if the contract holds and 260-500k+ if it does not, on the
+    // same ticket. If probe I says it never lands, the contract has to move into
+    // the orchestrator's own prompt for the Agent call, which is the one channel
+    // measured to reach a child.
     //
     // `effort` IS SPREAD CONDITIONALLY AND IS DEAD TODAY. Every `boundsFor()`
     // entry returns `effort: null`, meaning "the run's own effort stands", so
@@ -831,14 +868,26 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     // this machine, so it applies as the sole policy source — which is why
     // nothing in the owner's settings can widen this.
     //
-    // MEASURED, NOT ASSUMED: probe B, three consecutive PASSes, with
-    // mechanism-distinct denial text proving BOTH layers bind from this one
-    // rule — the in-process Read tool says "File is in a directory that is
-    // denied by your permission settings", sandboxed `cat` says "Operation not
-    // permitted" (seatbelt). That second string is the evidence for the
-    // sdk.d.ts:6194 claim that Read(...) deny rules merge into the sandbox's own
-    // `denyRead`; Phase 1 found `denyRead` ALONE does not bind in-process Read,
-    // so the converse was measured rather than assumed symmetric.
+    // WHAT THIS RULE IS MEASURED TO DO, AND WHAT IT IS NOT. Probe B, three
+    // consecutive PASSes, denied the in-process Read tool with "File is in a
+    // directory that is denied by your permission settings", and sandboxed `cat`
+    // with "Operation not permitted" (seatbelt). This comment used to read that
+    // BOTH denials came from this ONE rule, citing sdk.d.ts:6194's claim that
+    // `Read(...)` deny rules merge into the sandbox's own `denyRead`.
+    //
+    // THAT ATTRIBUTION IS FALSE, and it was measured false on 2026-07-28 by the
+    // control probe B never ran: with `permissions.deny` EMPTIED, `cat` STILL
+    // returned "Operation not permitted". The Bash denial is `denyRead`'s,
+    // independently of this rule. Probe B set both together, so it could not have
+    // told the two apart — the merge claim was an inference from the SDK's own
+    // docs printed as a measurement.
+    //
+    // WHAT ACTUALLY HOLDS IS BETTER: TWO INDEPENDENT LAYERS over sandboxed Bash
+    // (this rule and `sandbox.filesystem.denyRead`), rather than one rule doing
+    // double duty. THE ASYMMETRY IS THE PART TO REMEMBER: the in-process Read
+    // tool has only THIS one — Phase 1 measured `denyRead` alone leaving that
+    // tool free — so deleting this line does not leave a second layer behind for
+    // the tool most likely to read the suite.
     //
     // THE PAIR IS WHAT WAS MEASURED. `permissions.deny` and
     // `allowManagedPermissionRulesOnly` were always set together in the probe and
@@ -896,13 +945,21 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
       failIfUnavailable: !allowUnsandboxed,
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: allowUnsandboxed,
-      // `denyRead` is the ONLY layer that covers Bash, because
-      // `autoAllowBashIfSandboxed` means a sandboxed command never reaches
-      // `canUseTool`. It is enforced by the CLI's own OS sandbox, and THAT
-      // ENFORCEMENT HAS NOT BEEN EXERCISED HERE — running a build to prove it
-      // costs subscription quota. What IS exercised now is the plumbing on this
-      // side of it: `claude-builder.test.ts` asserts these two arrays are the
-      // canonicalised workspace and the canonicalised sealed roots.
+      // `denyRead` is the only layer `canUseTool` cannot substitute for over
+      // Bash, because `autoAllowBashIfSandboxed` means a sandboxed command never
+      // reaches the callback at all.
+      //
+      // ENFORCEMENT IS MEASURED, AND MEASURED IN ISOLATION (2026-07-28): with
+      // `managedSettings.permissions.deny` EMPTIED, `cat <suite>/…` still came
+      // back "Operation not permitted" (seatbelt). So this binds Bash on its own
+      // — it is not plumbing for the policy rule, and the two are independent
+      // layers over that tool. It does NOT bind the in-process Read tool: Phase 1
+      // measured that directly, which is why the policy rule above is not
+      // redundant with this one.
+      //
+      // The plumbing on this side is asserted too: `claude-builder.test.ts` reads
+      // these two arrays off the object and requires the canonicalised workspace
+      // and the canonicalised sealed roots.
       // `src/builders/settings-plumbing.test.ts` still proves only that an
       // `Options` literal it builds itself round-trips into the `--settings`
       // payload; it never invokes this builder. See dashboard/STATUS.md, "The

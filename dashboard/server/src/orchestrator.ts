@@ -651,7 +651,8 @@ export class Orchestrator {
       ],
       // THE DELEGATION BOUNDARY. `settingSources: ["user"]` makes 144 agents
       // visible to the builder; this is the far smaller set it may actually
-      // reach, enforced in the Anthropic driver's `canUseTool` Agent branch.
+      // reach, enforced in the Anthropic driver's `PreToolUse` hook (NOT in
+      // `canUseTool`, which is asked about no tool at all when it delegates).
       // Visibility is not permission, and widening one never substitutes for
       // the other.
       //
