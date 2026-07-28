@@ -51,8 +51,9 @@
  *      KEY allowlist — the same fail-open shape on another axis, and it was
  *      defeated by `Glob`'s required `pattern` argument. Every value AND every
  *      object KEY is now scanned, at any depth up to NODE_BUDGET nodes, except
- *      a named free-text key's own string; see FREE_TEXT_KEYS, NODE_BUDGET and
- *      pathCandidates below. A string is
+ *      a free-text key's own string ON THE ONE TOOL that key belongs to — the
+ *      exemption is a (tool, key) pair, so an unknown tool inherits none of it;
+ *      see FREE_TEXT, NODE_BUDGET and pathCandidates below. A string is
  *      also judged by the TREE it would walk, not only by its raw spelling —
  *      `Glob{pattern:"/tmp/**\/*.mjs"}` names no sealed path and matches every
  *      file under `/tmp`; see globPrefix below.
@@ -130,17 +131,51 @@ const RECURSIVE_TOOLS = new Set(["Grep", "Glob"]);
 // The OS-level `denyRead` below is the layer that covers Bash.
 
 /**
- * Keys whose values are FREE TEXT, not paths.
+ * Which (TOOL, KEY) pairs carry FREE TEXT rather than a path.
  *
- * This is a denylist, and that polarity is the whole point. Phase 0 used an
- * allowlist of path-bearing keys and it failed exactly as the tool-name
- * allowlist before it did: `Glob`'s required argument is `pattern`, which was
- * not on the list, so `Glob{pattern:"<suite>/**\/*"}` returned ALLOW. An
- * allowlist is only as good as the enumerator's imagination; a denylist of
- * free text fails closed against every key nobody thought of.
+ * SCOPED PER TOOL, because the justification is per tool. `command` was exempt
+ * for every tool name on earth, and the argument for exempting it is about
+ * exactly one: with `autoAllowBashIfSandboxed: true` a sandboxed `Bash` never
+ * reaches this function, so scanning its command string buys nothing the OS
+ * sandbox does not already provide, while denying ordinary work. Nothing in
+ * that argument transfers to a tool that merely SPELLS its argument `command` —
+ * `Monitor{command:…}`, `REPL{code:…}`, or any `mcp__*` server, which runs in
+ * its own process OUTSIDE the CLI's sandbox and is therefore covered by no
+ * other layer at all. Probed against dist before this table existed:
+ * `Monitor{command:"<suite>/t.mjs"}` returned ALLOW.
  *
- * A build legitimately writes a file whose CONTENT mentions the suite path and
- * legitimately runs a shell command naming it, so these stay exempt.
+ * AN UNKNOWN TOOL GETS NOTHING. That is the same polarity as the rest of this
+ * file: a tool-name allowlist (READ_TOOLS) and a path-key allowlist both failed
+ * open, so what is enumerated here is the EXEMPTION, and everything unenumerated
+ * is judged. The cost is bounded, because a non-exempt string is judged as a
+ * whole path: ordinary prose (`TodoWrite{content:"ship the parser"}`) is not a
+ * path and stays allowed. Only prose that IS a path is denied.
+ *
+ * WHAT THIS DOES NOT CLOSE, measured rather than assumed: because a non-exempt
+ * string is judged WHOLE, a sealed path EMBEDDED in shell or code text under a
+ * non-exempt key is still allowed. `Monitor{cmd:"cat <suite>/t.mjs"}` and
+ * `REPL{src:"read('<suite>/t.mjs')"}` both returned ALLOW against dist, and
+ * still do. Closing that needs path-like TOKENS pulled out of free-form text,
+ * which is a text filter, not a boundary — `acc''eptance`, `$HOME/../dash/...`
+ * and `cd <suite>; cat t.mjs` all step around it while it reads in a mutation
+ * table as if it were a boundary. It is deliberately not done here; the layer
+ * that actually covers text-executing tools is the OS sandbox's `denyRead`, and
+ * for an out-of-process MCP server there is no such layer today. This comment is
+ * the record until dashboard/STATUS.md carries it — the Phase 0.2 plan header
+ * lists this bypass as closed by this change, and it is NOT.
+ *
+ * WHICH ENTRIES A TEST ACTUALLY PINS, since "it is in the table" is not the same
+ * as "removing it breaks something". Deleting the Write/Edit/MultiEdit/
+ * NotebookEdit entries each turns a negative control red, because those four are
+ * PATH_TOOLS: every candidate must be inside the workspace, so a payload
+ * beginning with `/` — a `/* … *\/` banner, a config value edited to an absolute
+ * path — is denied the moment its key stops being free text. Deleting the Bash or
+ * Agent/Task entries changes NOTHING any test can see: those tools are not
+ * PATH_TOOLS, so the only observable effect of their exemption is to allow a
+ * value that IS a sealed path (`Bash{command:"<suite>/run.sh"}`). Pinning them
+ * would mean asserting that fail-open is desirable, which it is not, so it is
+ * recorded here instead. Narrowing the table to drop them is a real improvement
+ * and belongs in its own change, not smuggled in beside this one.
  *
  * The exemption reaches a STRING ONLY — see pathCandidates. Naming a key here
  * does not seal off whatever sits beneath it.
@@ -150,12 +185,24 @@ const RECURSIVE_TOOLS = new Set(["Grep", "Glob"]);
  * in a string, not only at its start, so scanning this key denied a legitimate
  * cell edit with the workspace-write message; that was demonstrated red before
  * it was added here. Being a write payload it cannot enable a sealed READ.
+ *
+ * `MultiEdit`'s pair sits on the objects INSIDE `edits[]`, not on `edits`
+ * itself. It works only because the walker carries a parent key down through an
+ * array and re-dispatches on the inner key; there is a negative control on that
+ * propagation in claude-builder.test.ts.
  */
-const FREE_TEXT_KEYS = new Set([
-  "content", "new_string", "old_string", "command", "prompt",
-  "description", "instructions", "code", "script", "body", "message", "text",
-  "new_source",
+const FREE_TEXT: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["Bash", new Set(["command", "description"])],
+  ["Write", new Set(["content"])],
+  ["Edit", new Set(["old_string", "new_string"])],
+  ["MultiEdit", new Set(["old_string", "new_string"])],
+  ["NotebookEdit", new Set(["new_source"])],
+  ["Agent", new Set(["prompt", "description"])],
+  ["Task", new Set(["prompt", "description"])],
 ]);
+
+/** No tool name matched, so no key is exempt. Deny-by-default, allocated once. */
+const NO_FREE_TEXT: ReadonlySet<string> = new Set<string>();
 
 /**
  * The literal prefix of a glob pattern — the directory the tool will actually
@@ -229,6 +276,9 @@ const NODE_BUDGET = 512;
  * write tool — put the sealed path in a position nothing looked at. Probed
  * against dist: ALLOW.
  *
+ * The exemption is looked up by (TOOL, KEY), not by key alone — see FREE_TEXT.
+ * `toolName` is threaded in for that one lookup and nothing else.
+ *
  * A FREE-TEXT KEY EXEMPTS ITS OWN STRING, NOTHING ELSE. The exemption used to
  * sit above the type dispatch, so it pruned the whole SUBTREE: wrapping the
  * path one level down, as `{content:{path:"<suite>/t.mjs"}}`, walked straight
@@ -240,8 +290,9 @@ const NODE_BUDGET = 512;
  * The array branch carries the PARENT key down on purpose: `{command:[…]}` is
  * still the same free text one level of container out.
  */
-function pathCandidates(input: Record<string, unknown>): string[] {
+function pathCandidates(toolName: string, input: Record<string, unknown>): string[] {
   const found: string[] = [];
+  const freeText = FREE_TEXT.get(toolName) ?? NO_FREE_TEXT;
   let budget = NODE_BUDGET;
   // BOTH spellings, for keys and values alike. The raw string keeps a literal
   // path judged literally; the prefix is the tree a pattern would expand into.
@@ -257,7 +308,7 @@ function pathCandidates(input: Record<string, unknown>): string[] {
   const visit = (key: string, value: unknown): void => {
     if (budget-- <= 0) return;
     if (typeof value === "string") {
-      if (!FREE_TEXT_KEYS.has(key)) push(value);
+      if (!freeText.has(key)) push(value);
       return;
     }
     if (Array.isArray(value)) {
@@ -439,6 +490,38 @@ export function decideToolPermission(
   allowedAgents: readonly string[] = [],
   canonicalise: (path: string) => string = LEXICAL_ONLY,
 ): PermissionResult {
+  const candidates = pathCandidates(toolName, input);
+  // A recursive tool searches its cwd IN ADDITION to any path it names. Phase 0
+  // folded cwd in only when no candidate was found, so a stray `glob` key
+  // switched the fold off and the guard judged the wrong target affirmatively.
+  if (RECURSIVE_TOOLS.has(toolName)) candidates.push(workspace);
+  const base = resolve(workspace);
+
+  // SEALED ROOTS: denied for EVERY tool, by any key, in either direction.
+  // No tool-name gate — an allowlist is fail-open to every read-capable tool
+  // the CLI adds and every MCP server the owner enables.
+  //
+  // THIS SCAN RUNS FIRST, BEFORE THE AGENT BRANCH BELOW. The branch used to
+  // return — allow as well as deny — before any candidate was looked at, so a
+  // well-formed shortlisted `Agent{subagent_type:ok, file_path:"<suite>/x"}` was
+  // ALLOWED with the sealed path never judged. That is unreachable only while
+  // ALLOWED_AGENTS is empty; it goes live the moment Phase 1 supplies a
+  // shortlist, which is precisely when nobody will be re-reading this ordering.
+  // A boundary whose reachability depends on a constant elsewhere is not a
+  // boundary. The sealed scan is now unconditional for every tool name.
+  for (const candidate of candidates) {
+    if (sealedRoots.some((root) => containsOrIsInside(root, candidate, base, canonicalise))) {
+      return {
+        behavior: "deny",
+        message:
+          "That path is the SEALED ACCEPTANCE SUITE. It is held out on purpose: it is the " +
+          "independent check on whether this ticket was actually delivered, and a build that reads " +
+          "it can satisfy it without satisfying the ticket. Build from the brief and from " +
+          "`visible-acceptance/` in the workspace.",
+      };
+    }
+  }
+
   // THE AGENT TOOL. Delegation is the point of this builder, but the Agent
   // tool's own fields can step outside every boundary the run has:
   //   - isolation:"worktree" writes outside sandbox.filesystem.allowWrite
@@ -474,29 +557,6 @@ export function decideToolPermission(
       };
     }
     return { behavior: "allow" };
-  }
-
-  const candidates = pathCandidates(input);
-  // A recursive tool searches its cwd IN ADDITION to any path it names. Phase 0
-  // folded cwd in only when no candidate was found, so a stray `glob` key
-  // switched the fold off and the guard judged the wrong target affirmatively.
-  if (RECURSIVE_TOOLS.has(toolName)) candidates.push(workspace);
-  const base = resolve(workspace);
-
-  // SEALED ROOTS: denied for EVERY tool, by any key, in either direction.
-  // No tool-name gate — an allowlist is fail-open to every read-capable tool
-  // the CLI adds and every MCP server the owner enables.
-  for (const candidate of candidates) {
-    if (sealedRoots.some((root) => containsOrIsInside(root, candidate, base, canonicalise))) {
-      return {
-        behavior: "deny",
-        message:
-          "That path is the SEALED ACCEPTANCE SUITE. It is held out on purpose: it is the " +
-          "independent check on whether this ticket was actually delivered, and a build that reads " +
-          "it can satisfy it without satisfying the ticket. Build from the brief and from " +
-          "`visible-acceptance/` in the workspace.",
-      };
-    }
   }
 
   // WRITES stay confined to the workspace. Still tool-name-gated: this is about

@@ -368,6 +368,119 @@ test("NEGATIVE CONTROL: free-text keys are still not scanned", () => {
   assert.equal(decideWith("Agent", { prompt: `read ${HELD_OUT}`, subagent_type: "x", run_in_background: false }).behavior, "deny");
 });
 
+test("free text is scoped PER TOOL — `command` is Bash's alone", () => {
+  // The exemption for `command` is justified by ONE fact: with
+  // `autoAllowBashIfSandboxed` a sandboxed Bash never reaches this function at
+  // all, and the OS sandbox's denyRead is the layer that covers it. That
+  // argument is about Bash. A key-name set handed the same exemption to every
+  // tool that happens to name an argument `command` or `code` — including MCP
+  // servers, which run OUTSIDE the CLI's sandbox and are covered by nothing else.
+  assert.equal(decideWith("Bash", { command: `ls ${HELD_OUT}` }).behavior, "allow");
+  assert.equal(
+    decideWith("Monitor", {
+      command: `${HELD_OUT}/t.mjs`,
+      description: "watch",
+      timeout_ms: 1000,
+      persistent: false,
+    }).behavior,
+    "deny",
+    "another tool's `command` is not Bash's",
+  );
+  assert.equal(decideWith("REPL", { code: `${HELD_OUT}/t.mjs` }).behavior, "deny");
+});
+
+test("an unknown tool inherits NO exemption — every globally-exempt name is judged", () => {
+  // Each of these was exempt for EVERY tool name, so any MCP server could carry
+  // a sealed path in one of them and be allowed. An unknown tool now gets no
+  // exemptions at all: deny-by-default, the polarity the rest of this file uses.
+  for (const key of [
+    "content", "new_string", "old_string", "command", "prompt", "description",
+    "instructions", "code", "script", "body", "message", "text", "new_source",
+  ]) {
+    assert.equal(
+      decideWith("mcp__unknown__do", { [key]: `${HELD_OUT}/t.mjs` }).behavior,
+      "deny",
+      `key ${key} on an unknown tool`,
+    );
+  }
+});
+
+test("NEGATIVE CONTROL: each listed tool keeps its OWN free text", () => {
+  // Scoping must not become "exempt nothing": these are the ordinary calls a
+  // build makes, and each one names the suite in a field that is genuinely prose.
+  assert.equal(
+    decideWith("Write", { file_path: `${WORKSPACE}/n.md`, content: `see ${HELD_OUT}` }).behavior,
+    "allow",
+  );
+  assert.equal(
+    decideWith("Edit", {
+      file_path: `${WORKSPACE}/a.ts`,
+      old_string: `see ${HELD_OUT}`,
+      new_string: `still ${HELD_OUT}`,
+      replace_all: false,
+    }).behavior,
+    "allow",
+  );
+  assert.equal(
+    decideWith("Bash", { command: `ls ${HELD_OUT}`, description: `list ${HELD_OUT}` }).behavior,
+    "allow",
+  );
+  // MultiEdit's exemption is the one that depends on the walker carrying the
+  // parent key DOWN through an array of objects: the free-text names sit on the
+  // inner objects, not on `edits`. If that propagation is ever lost, ordinary
+  // multi-edits start being denied as sealed reads.
+  assert.equal(
+    decideWith("MultiEdit", {
+      file_path: `${WORKSPACE}/a.ts`,
+      edits: [
+        { old_string: `see ${HELD_OUT}`, new_string: "x", replace_all: false },
+        { old_string: "y", new_string: `moved to ${HELD_OUT}`, replace_all: false },
+      ],
+    }).behavior,
+    "allow",
+  );
+});
+
+test("NEGATIVE CONTROL: a write PAYLOAD beginning with `/` is free text, not an escape", () => {
+  // THIS IS WHAT PINS THE TABLE'S EXEMPTION SIDE, and it took a surviving mutant
+  // to find. Deleting an entry mostly changes NOTHING observable, because a
+  // non-exempt string is judged WHOLE: `content:"see <suite>"` resolves to
+  // `<workspace>/see <suite>`, which is inside the workspace and not the suite,
+  // so it is allowed with or without the exemption. Removing Bash's `command`
+  // left the whole suite green.
+  //
+  // The observable class is a payload that RESOLVES OUTSIDE the workspace, which
+  // for Write/Edit/MultiEdit/NotebookEdit — all PATH_TOOLS, where EVERY candidate
+  // must be inside the workspace — means any string starting with `/`. That is
+  // not a corner case: it is every file that opens with a `/* … */` banner and
+  // every config value edited to an absolute path. Delete one of these four
+  // entries and the corresponding line below goes red with the workspace message.
+  assert.equal(
+    decideWith("Write", {
+      file_path: `${WORKSPACE}/src/generated.ts`,
+      content: "/* generated — do not edit */\nexport const x = 1;\n",
+    }).behavior,
+    "allow",
+    "a file whose first character is `/` is not a path out of the workspace",
+  );
+  assert.equal(
+    decideWith("Edit", {
+      file_path: `${WORKSPACE}/vite.config.ts`,
+      old_string: "cacheDir: './node_modules/.vite'",
+      new_string: "/usr/local/share/vite-cache",
+      replace_all: false,
+    }).behavior,
+    "allow",
+  );
+  assert.equal(
+    decideWith("MultiEdit", {
+      file_path: `${WORKSPACE}/a.ts`,
+      edits: [{ old_string: "x", new_string: "/* banner */", replace_all: false }],
+    }).behavior,
+    "allow",
+  );
+});
+
 test("NEGATIVE CONTROL: a notebook cell's SOURCE is free text, not a path", () => {
   // `new_source` is NotebookEdit's write payload — cell code, which routinely
   // contains `../` inside string literals. `resolve()` collapses `..` anywhere
@@ -507,6 +620,35 @@ test("NEGATIVE CONTROL: a well-formed Agent call on the shortlist is allowed", (
 
 test("NEGATIVE CONTROL: the Agent guard does not affect other tools", () => {
   assert.equal(decide("Read", `${WORKSPACE}/index.html`).behavior, "allow");
+});
+
+test("an Agent call carrying a sealed path is denied, shortlisted or not", () => {
+  // The Agent branch RETURNED — allow or deny — before the sealed scan ever ran,
+  // so a well-formed shortlisted call could carry a sealed path in any other
+  // field and be allowed. Unreachable today only because ALLOWED_AGENTS is empty;
+  // it goes live the moment Phase 1 supplies a shortlist, which is exactly when
+  // nobody will be re-reading this branch. The deny must come from the SEALED
+  // scan, not from the shortlist: every field here is otherwise well-formed.
+  for (const tool of ["Agent", "Task"]) {
+    const result = decideToolPermission(
+      tool,
+      { subagent_type: "code-reviewer", run_in_background: false, file_path: `${HELD_OUT}/t.mjs` },
+      WORKSPACE,
+      SEALED,
+      ["code-reviewer"],
+    ) as { behavior: string; message?: string };
+    assert.equal(result.behavior, "deny", tool);
+    assert.match(String(result.message), /SEALED ACCEPTANCE SUITE/, `${tool}: the sealed scan must be what denies`);
+  }
+});
+
+test("NEGATIVE CONTROL: a clean shortlisted Agent call still runs", () => {
+  // Moving the sealed scan first must not deny delegation outright: `prompt` is
+  // Agent's own free text and the shortlist still decides the rest.
+  assert.equal(
+    decideAgent({ subagent_type: "code-reviewer", run_in_background: false, prompt: "review src/" }).behavior,
+    "allow",
+  );
 });
 
 /**
