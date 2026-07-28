@@ -15,8 +15,12 @@
  */
 
 import { strict as assert } from "node:assert";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { decideToolPermission } from "./claude-builder.js";
+import { fileURLToPath } from "node:url";
+import { canonicaliseForDecision, decideToolPermission } from "./claude-builder.js";
 
 const WORKSPACE = "/tmp/dash/runs/r1/workspace";
 const HELD_OUT = "/tmp/dash/acceptance";
@@ -351,4 +355,149 @@ test("NEGATIVE CONTROL: a well-formed Agent call on the shortlist is allowed", (
 
 test("NEGATIVE CONTROL: the Agent guard does not affect other tools", () => {
   assert.equal(decide("Read", `${WORKSPACE}/index.html`).behavior, "allow");
+});
+
+/**
+ * A real workspace on disk with a symlink laundering a path into the suite.
+ *
+ * The root is REALPATH'd on purpose. On macOS `os.tmpdir()` is
+ * `/var/folders/...`, itself a symlink to `/private/var/folders/...`, so a
+ * fixture rooted at the raw tmpdir would make every assertion below turn on
+ * that incidental symlink rather than on the one under test — it would go red
+ * whether or not the boundary works. Observed: `realpathSync.native` on a raw
+ * `mkdtempSync(tmpdir())` path changes the `/var` prefix to `/private/var`.
+ *
+ * The module-level `WORKSPACE`/`HELD_OUT` constants are deliberately NOT used
+ * here for the same reason: `/tmp` is a symlink to `/private/tmp` on this
+ * volume, so feeding canonicalised output back alongside a raw `/tmp/...`
+ * constant compares two spellings of the same directory and proves nothing.
+ */
+function symlinkFixture(): { base: string; suite: string; ws: string } {
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), "seal-")));
+  const suite = join(base, "acceptance");
+  const ws = join(base, "workspace");
+  mkdirSync(suite, { recursive: true });
+  mkdirSync(ws, { recursive: true });
+  writeFileSync(join(suite, "canary.txt"), "CANARY");
+  symlinkSync(suite, join(ws, "link"));
+  return { base, suite, ws };
+}
+
+test("a symlink pointing into the suite is resolved before the decision", () => {
+  const { suite, ws } = symlinkFixture();
+  const laundered = join(ws, "link", "canary.txt");
+
+  // Purely lexical resolution keeps it inside the workspace and allows it. This
+  // is an honest limit of the PURE function, documented rather than implied:
+  // `resolve()` cannot see a symlink, and creating one is a legal in-workspace
+  // write that needs no read of the target.
+  assert.equal(decideToolPermission("Read", { file_path: laundered }, ws, [suite]).behavior, "allow");
+
+  // Canonicalising first is what closes it.
+  const real = canonicaliseForDecision(laundered);
+  assert.equal(decideToolPermission("Read", { file_path: real }, ws, [suite]).behavior, "deny");
+
+  // THE ASSERTION THAT MATTERS: the RAW path a build would actually send,
+  // judged the way the closure judges it. Canonicalising only the workspace and
+  // the sealed roots — which is all the plan's closure did — leaves this ALLOW;
+  // that was probed against dist/ before this line existed.
+  for (const candidate of [laundered, "link/canary.txt", "./link/../link/canary.txt"]) {
+    const result = decideToolPermission(
+      "Read",
+      { file_path: candidate },
+      ws,
+      [suite],
+      [],
+      canonicaliseForDecision,
+    ) as { behavior: string; message?: string };
+    assert.equal(result.behavior, "deny", `raw laundered candidate ${candidate}`);
+    assert.match(String(result.message), /SEALED ACCEPTANCE SUITE/);
+  }
+});
+
+test("a symlink escaping the workspace does not launder a WRITE past the confinement", () => {
+  // The sealed-root check does not fire here: the destination is not the suite,
+  // it is merely outside the workspace. Only the write confinement stands, and
+  // lexically `<ws>/escape/evil.txt` looks like an in-workspace path.
+  const { base, suite, ws } = symlinkFixture();
+  const outside = join(base, "outside");
+  mkdirSync(outside, { recursive: true });
+  symlinkSync(outside, join(ws, "escape"));
+  const target = join(ws, "escape", "evil.txt");
+
+  assert.equal(decideToolPermission("Write", { file_path: target }, ws, [suite]).behavior, "allow");
+
+  const result = decideToolPermission(
+    "Write",
+    { file_path: target },
+    ws,
+    [suite],
+    [],
+    canonicaliseForDecision,
+  ) as { behavior: string; message?: string };
+  assert.equal(result.behavior, "deny");
+  assert.match(String(result.message), /only write inside its own workspace/);
+});
+
+test("canonicaliseForDecision is total — a non-existent path passes through", () => {
+  // Every Write names a path that does not exist yet, so a canonicaliser that
+  // threw or returned "" on ENOENT would fail the run rather than the read.
+  assert.equal(canonicaliseForDecision("/no/such/path/at/all.txt"), "/no/such/path/at/all.txt");
+  const { ws } = symlinkFixture();
+  assert.equal(canonicaliseForDecision(join(ws, "a", "b", "c.txt")), join(ws, "a", "b", "c.txt"));
+});
+
+test("NEGATIVE CONTROL: canonicalising does not block ordinary work", () => {
+  const { suite, ws } = symlinkFixture();
+  const allowed = (input: Record<string, unknown>, tool: string): string =>
+    (decideToolPermission(tool, input, ws, [suite], [], canonicaliseForDecision) as { behavior: string })
+      .behavior;
+
+  assert.equal(allowed({ file_path: join(ws, "src", "index.html") }, "Write"), "allow");
+  assert.equal(allowed({ file_path: join(ws, "src", "app.ts") }, "Read"), "allow");
+  assert.equal(allowed({ file_path: "src/app.ts" }, "Edit"), "allow");
+  // A non-file URL must not be mangled into a path by the fs-aware step either.
+  assert.equal(allowed({ file_path: "https://example.com/acceptance" }, "Read"), "allow");
+  // Reads outside the workspace that are not the suite stay allowed.
+  assert.equal(allowed({ file_path: "/usr/share/doc/readme" }, "Read"), "allow");
+});
+
+test("WIRING: the builder's canUseTool actually receives the sealed roots", () => {
+  // Phase 0's CRITICAL gap: mutating the call site to pass [] left the suite
+  // green, so the boundary could be disconnected from the orchestrator and
+  // nothing failed. This test fails if that wire is ever cut.
+  //
+  // The suite runs from `dist/`, which contains no `.ts` at all, so the source
+  // is read from `src/` two directories up. `fileURLToPath` rather than
+  // `.pathname`, which would leave a percent-encoded path on any checkout whose
+  // directory names contain spaces.
+  const src = readFileSync(
+    fileURLToPath(new URL("../../src/builders/claude-builder.ts", import.meta.url)),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /decideToolPermission\(\s*toolName,\s*input,\s*ws,\s*roots/,
+    "the closure must pass the resolved sealed roots, not a literal",
+  );
+  assert.match(
+    src,
+    /const roots = sealedRoots\.map\(canonicaliseForDecision\)/,
+    "roots must derive from request.sealedRoots",
+  );
+  assert.match(
+    src,
+    /const ws = canonicaliseForDecision\(workspace\)/,
+    "the workspace must be canonicalised too, or a workspace reached through a symlink never matches",
+  );
+  assert.match(
+    src,
+    /decideToolPermission\([^;]*canonicaliseForDecision\s*\)/,
+    "the closure must INJECT the canonicaliser; without it the raw candidate stays lexical and symlink laundering reopens",
+  );
+  assert.doesNotMatch(
+    src,
+    /decideToolPermission\([^)]*,\s*\[\]\s*\)/,
+    "no call site may pass an empty sealed-roots literal",
+  );
 });

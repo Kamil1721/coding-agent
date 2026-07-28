@@ -54,7 +54,8 @@
  * THE SDK'S `total_cost_usd` IS NOT READ. See claude-common.ts.
  */
 
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -199,9 +200,53 @@ function normaliseCandidate(value: string): string {
   return s;
 }
 
-function insideDir(dir: string, candidate: string, base: string): boolean {
-  const root = resolve(dir);
-  const target = resolve(base, candidate);
+/**
+ * Resolve a path through symlinks, as far as it exists.
+ *
+ * {@link decideToolPermission} is pure and therefore lexical, so it cannot see
+ * that `<workspace>/link/x` is really `<suite>/x`. Creating that link is a legal
+ * in-workspace write and needs no read of the target, so the pure check alone is
+ * defeatable. The fs-aware step belongs here, in the caller, and is handed to
+ * the decision function as the `canonicalise` argument.
+ *
+ * Total by construction: a path that does not exist yet — which is EVERY Write
+ * target — has its longest existing ancestor resolved and the remainder
+ * re-appended. It never throws and never returns "".
+ */
+export function canonicaliseForDecision(candidatePath: string): string {
+  let head = resolve(candidatePath);
+  const tail: string[] = [];
+  for (let i = 0; i < 64; i += 1) {
+    try {
+      return tail.length === 0
+        ? realpathSync.native(head)
+        : join(realpathSync.native(head), ...tail);
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(candidatePath);
+      tail.unshift(basename(head));
+      head = parent;
+    }
+  }
+  return resolve(candidatePath);
+}
+
+/**
+ * The pure default for the `canonicalise` argument: no filesystem, no change.
+ *
+ * Every four- and five-argument call — which is every unit test that does not
+ * build a fixture on disk — keeps exactly the lexical behaviour it had.
+ */
+const LEXICAL_ONLY = (path: string): string => path;
+
+function insideDir(
+  dir: string,
+  candidate: string,
+  base: string,
+  canonicalise: (path: string) => string,
+): boolean {
+  const root = canonicalise(resolve(dir));
+  const target = canonicalise(resolve(base, candidate));
   return target === root || target.startsWith(`${root}/`);
 }
 
@@ -222,16 +267,36 @@ function insideDir(dir: string, candidate: string, base: string): boolean {
  * WRITES, where over-denying blocks legitimate work, and `allowWrite` covers
  * that boundary at the OS level.
  */
-function containsOrIsInside(root: string, candidate: string, base: string): boolean {
-  const rootAbs = resolve(root).toLowerCase();
-  const target = resolve(base, normaliseCandidate(candidate)).toLowerCase();
+function containsOrIsInside(
+  root: string,
+  candidate: string,
+  base: string,
+  canonicalise: (path: string) => string,
+): boolean {
+  // BOTH sides go through the same canonicaliser. Canonicalising only the
+  // candidate would compare `/private/tmp/dash/acceptance` against a root still
+  // spelled `/tmp/dash/acceptance` and return ALLOW for the suite itself.
+  const rootAbs = canonicalise(resolve(root)).toLowerCase();
+  const target = canonicalise(resolve(base, normaliseCandidate(candidate))).toLowerCase();
   if (target === rootAbs) return true;
   if (target.startsWith(`${rootAbs}/`)) return true;
   return rootAbs.startsWith(target === "/" ? "/" : `${target}/`);
 }
 
-function insideWorkspace(workspace: string, candidate: string): boolean {
-  return insideDir(workspace, candidate, resolve(workspace));
+/**
+ * The write confinement, canonicalised on both sides for the same reason.
+ *
+ * `<workspace>/escape -> /etc` is lexically inside the workspace, so without
+ * this the sealed check would pass the path (it is not the suite) and the
+ * confinement would allow a write straight out of the workspace. Demonstrated
+ * red before this argument was threaded through.
+ */
+function insideWorkspace(
+  workspace: string,
+  candidate: string,
+  canonicalise: (path: string) => string,
+): boolean {
+  return insideDir(workspace, candidate, resolve(workspace), canonicalise);
 }
 
 /**
@@ -240,6 +305,15 @@ function insideWorkspace(workspace: string, candidate: string): boolean {
  *
  * Relative paths are resolved against the workspace, which is the builder's
  * `cwd` — the same resolution the CLI performs.
+ *
+ * `canonicalise` is the one fs-aware step, INJECTED rather than performed here,
+ * so this body still touches no filesystem and is still synchronous. It
+ * defaults to the identity, which is what every unit call below relies on. The
+ * closure passes {@link canonicaliseForDecision}; without it every comparison
+ * is lexical and `<workspace>/link -> <suite>` launders a read straight past
+ * the check. Pre-canonicalising `input` in the CALLER instead would not work:
+ * `resolve()` mangles a `file:` scheme into a relative segment before
+ * `normaliseCandidate` ever sees it, re-opening the URI bypass.
  */
 export function decideToolPermission(
   toolName: string,
@@ -247,6 +321,7 @@ export function decideToolPermission(
   workspace: string,
   sealedRoots: readonly string[],
   allowedAgents: readonly string[] = [],
+  canonicalise: (path: string) => string = LEXICAL_ONLY,
 ): PermissionResult {
   // THE AGENT TOOL. Delegation is the point of this builder, but the Agent
   // tool's own fields can step outside every boundary the run has:
@@ -296,7 +371,7 @@ export function decideToolPermission(
   // No tool-name gate — an allowlist is fail-open to every read-capable tool
   // the CLI adds and every MCP server the owner enables.
   for (const candidate of candidates) {
-    if (sealedRoots.some((root) => containsOrIsInside(root, candidate, base))) {
+    if (sealedRoots.some((root) => containsOrIsInside(root, candidate, base, canonicalise))) {
       return {
         behavior: "deny",
         message:
@@ -311,7 +386,7 @@ export function decideToolPermission(
   // WRITES stay confined to the workspace. Still tool-name-gated: this is about
   // where the build may put files, not about what it may look at.
   for (const candidate of candidates) {
-    if (PATH_TOOLS.has(toolName) && !insideWorkspace(workspace, candidate)) {
+    if (PATH_TOOLS.has(toolName) && !insideWorkspace(workspace, candidate, canonicalise)) {
       return {
         behavior: "deny",
         message:
@@ -340,11 +415,26 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
 
     const sealedRoots = request.sealedRoots.map((root) => resolve(root));
 
+    // Delegation is not configured until Phase 1 supplies a shortlist, and an
+    // empty list denies every Agent/Task call outright. Fail-closed by design:
+    // a subagent inherits none of this closure's boundaries automatically.
+    const allowedAgents: readonly string[] = [];
+
     const canUseTool = async (
       toolName: string,
       input: Record<string, unknown>,
-    ): Promise<PermissionResult> =>
-      decideToolPermission(toolName, input, workspace, sealedRoots);
+    ): Promise<PermissionResult> => {
+      // Canonicalise the WORKSPACE and the ROOTS: if either is itself reached
+      // through a symlink, a comparison against a realpath'd candidate would
+      // never match. `canonicaliseForDecision` is then INJECTED so the
+      // candidate inside `input` is canonicalised too — at the point where
+      // `normaliseCandidate` and base-resolution have already run. Passing
+      // pre-canonicalised input instead would re-open the `file:` URI bypass,
+      // because `resolve()` mangles the scheme before the normaliser sees it.
+      const ws = canonicaliseForDecision(workspace);
+      const roots = sealedRoots.map(canonicaliseForDecision);
+      return decideToolPermission(toolName, input, ws, roots, allowedAgents, canonicaliseForDecision);
+    };
 
     const options: Options = {
       cwd: workspace,
