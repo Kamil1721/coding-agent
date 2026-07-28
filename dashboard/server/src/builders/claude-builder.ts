@@ -27,12 +27,16 @@
  *     tested.
  *   - `canUseTool` denies the `Agent`/`Task` tool unless `isolation` is absent,
  *     `run_in_background` is explicitly `false`, and `subagent_type` is on a
- *     configured shortlist. THE SHORTLIST IS EMPTY TODAY — Phase 1 supplies it —
- *     so every delegation attempt is refused outright, with a message naming the
- *     permitted agents as "(none configured)". That is the fail-closed
- *     direction, not a regression: a subagent inherits none of these boundaries
- *     automatically, and `Options.agents` limits only what the orchestrator can
- *     see, while `subagent_type` is a free string in the SDK schema.
+ *     configured shortlist. THE SHORTLIST IS NO LONGER EMPTY: Phase 1 Task 3
+ *     supplied it, and it arrives on `BuildRequest.allowedAgents` — the
+ *     orchestrator passes `shortlistFor(classifySurface(ticket))`, roughly two
+ *     dozen names out of the 144 `settingSources: ["user"]` makes visible. An
+ *     EMPTY array still denies every delegation, with a message naming the
+ *     permitted agents as "(none configured)", and that remains the fail-closed
+ *     default rather than a regression: a subagent inherits none of these
+ *     boundaries automatically, and `Options.agents` limits only what the
+ *     orchestrator can see, while `subagent_type` is a free string in the SDK
+ *     schema.
  *   - The acceptance suite lives OUTSIDE the workspace (dashboard/acceptance),
  *     is never mounted into it, and the held-out half is never copied in.
  *
