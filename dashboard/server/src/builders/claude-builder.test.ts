@@ -1114,6 +1114,17 @@ test("HOOK: SELECTIVITY — the shortlisted agent runs in the same configuration
     });
     assert.deepEqual(answer, { continue: true }, type);
   }
+  // AND THE SAME CALL UNDER THE OTHER NAME. `Task` is `Agent` renamed, and the
+  // name half of the entry condition ROUTES both — so both must also be able to
+  // come back allowed. A hook that blanket-denied anything called `Task` would
+  // pass every deny assertion in this file while being half a boundary in the
+  // other direction, which is why this is asserted rather than inferred from
+  // membership of the name set.
+  assert.deepEqual(
+    await ask(options, "Task", { subagent_type: "debugger", run_in_background: false }),
+    { continue: true },
+    "Task is Agent under its other name — guarded, not blanket-denied",
+  );
 });
 
 test("HOOK: the slot fires for EVERY tool, so everything else must continue", async () => {
