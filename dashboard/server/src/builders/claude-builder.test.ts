@@ -126,3 +126,39 @@ test("NEGATIVE CONTROL: a sibling of the suite is not an ancestor", () => {
   assert.equal(decide("Grep", "/tmp/dash/acceptance-notes").behavior, "allow");
   assert.equal(decide("Read", `${WORKSPACE}/src`).behavior, "allow");
 });
+
+function decideWith(tool: string, input: Record<string, unknown>): { behavior: string; message?: string } {
+  return decideToolPermission(tool, input, WORKSPACE, SEALED) as { behavior: string; message?: string };
+}
+
+test("an MCP read tool cannot reach the suite — the guard is not a name allowlist", () => {
+  const holdout = `${HELD_OUT}/T-1/holdout/greeting.test.mjs`;
+  assert.equal(decideWith("mcp__filesystem__read_file", { path: holdout }).behavior, "deny");
+  assert.equal(decideWith("ReadMcpResource", { uri: holdout }).behavior, "deny");
+  assert.equal(decideWith("SomeToolShippingNextYear", { file: holdout }).behavior, "deny");
+});
+
+test("every path-bearing key is inspected, not just file_path", () => {
+  const holdout = `${HELD_OUT}/T-1`;
+  for (const key of ["path", "notebook_path", "dir", "directory", "cwd", "uri", "file", "filename", "target", "root", "glob"]) {
+    assert.equal(decideWith("Read", { [key]: holdout }).behavior, "deny", `key ${key}`);
+  }
+});
+
+test("array-valued path inputs are inspected element by element", () => {
+  assert.equal(
+    decideWith("Read", { paths: [`${WORKSPACE}/a.ts`, `${HELD_OUT}/T-1/holdout/x.mjs`] }).behavior,
+    "deny",
+  );
+});
+
+test("NEGATIVE CONTROL: free-text keys are NOT scanned as paths", () => {
+  // A build legitimately writes a file whose CONTENT mentions the suite path,
+  // and legitimately runs a Bash command string. Scanning free text would deny
+  // ordinary work and teach the model to obfuscate rather than comply.
+  assert.equal(decideWith("Write", { file_path: `${WORKSPACE}/notes.md`, content: `see ${HELD_OUT}` }).behavior, "allow");
+  assert.equal(decideWith("Bash", { command: `ls ${HELD_OUT}` }).behavior, "allow");
+  // And dropping the tool-name allowlist must not become "deny every unknown
+  // tool": an MCP read of a BENIGN path is ordinary work and stays allowed.
+  assert.equal(decideWith("mcp__filesystem__read_file", { path: `${WORKSPACE}/src/a.ts` }).behavior, "allow");
+});

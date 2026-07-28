@@ -36,8 +36,10 @@
  * `heldOutPass` and `falseFinish` meaningless for that run, and there is no
  * detector for it. Two layers now:
  *
- *   1. {@link decideToolPermission} denies Read/Grep/Glob/NotebookRead — as
- *      well as the write tools — for any path resolving into the suite store.
+ *   1. {@link decideToolPermission} denies ANY tool — built-in, `mcp__*`, or
+ *      one that ships next year — carrying a path that resolves into the suite
+ *      store. It was a tool-name allowlist until 2026-07-28, which was
+ *      structurally fail-open; see PATH_INPUT_KEYS below.
  *      EXECUTED: unit-tested directly, with a negative control.
  *   2. `sandbox.filesystem.denyRead` names the suite store to the CLI's own OS
  *      sandbox, which is the only layer that can cover Bash. PLUMBING EXECUTED
@@ -86,28 +88,47 @@ export const DEFAULT_MAX_TURNS = 400;
 /** Tools whose input names a path that must stay inside the workspace. */
 const PATH_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
+// READ_TOOLS (a tool-name allowlist) was removed on 2026-07-28. It was
+// structurally fail-open: `mcp__*` read tools and ReadMcpResource were never in
+// it and returned ALLOW on a sealed path. Sealed roots are now denied for every
+// tool name; only the WRITE confinement below is still name-gated.
+//
+// `Bash` remains uncovered by this function and cannot be covered here: with
+// `autoAllowBashIfSandboxed: true` a sandboxed command never reaches
+// `canUseTool` at all, and pattern-matching shell text for `cat`/`grep` would
+// be a filter anyone could step around while reading as if it were a boundary.
+// The OS-level `denyRead` below is the layer that covers Bash.
+
 /**
- * Tools that READ a named path. Denied when the path lands in the sealed suite
- * store — reading the held-out tests is not a lesser version of editing them,
- * it is the same defeat of the gate reached a different way.
+ * Keys under which any tool — built-in, MCP, or one that ships next year —
+ * carries a path it will act on.
  *
- * `Bash` is deliberately NOT in this set and cannot be: with
- * `autoAllowBashIfSandboxed: true` a sandboxed command never reaches
- * `canUseTool` at all, and pattern-matching shell text for `cat`/`grep` would
- * be a filter anyone could step around while reading as if it were a boundary.
- * The OS-level `denyRead` below is the layer that covers Bash.
+ * DELIBERATELY EXCLUDED: `content`, `new_string`, `old_string`, `command`,
+ * `prompt`, `description`, `instructions`. Those carry free text. A build
+ * legitimately writes a file whose content mentions the suite path, and denying
+ * that would block ordinary work while teaching the model to obfuscate rather
+ * than comply.
  */
-const READ_TOOLS = new Set(["Read", "NotebookRead", "Glob", "Grep"]);
+const PATH_INPUT_KEYS = [
+  "file_path", "path", "notebook_path", "dir", "directory", "cwd",
+  "uri", "resource", "file", "filename", "target", "root", "glob",
+  "paths", "files",
+] as const;
 
-/** Keys under which the SDK's file tools carry the path they act on. */
-const PATH_INPUT_KEYS = ["file_path", "path", "notebook_path"] as const;
-
-function pathInput(input: Record<string, unknown>): string | null {
+/** Every path-shaped value in the input, flattened. */
+function pathInputs(input: Record<string, unknown>): string[] {
+  const found: string[] = [];
   for (const key of PATH_INPUT_KEYS) {
     const value = input[key];
-    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "string" && value.length > 0) {
+      found.push(value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === "string" && item.length > 0) found.push(item);
+      }
+    }
   }
-  return null;
+  return found;
 }
 
 function insideDir(dir: string, candidate: string, base: string): boolean {
@@ -149,9 +170,14 @@ export function decideToolPermission(
   workspace: string,
   sealedRoots: readonly string[],
 ): PermissionResult {
-  const raw = pathInput(input);
-  if (raw !== null && (PATH_TOOLS.has(toolName) || READ_TOOLS.has(toolName))) {
-    if (sealedRoots.some((root) => containsOrIsInside(root, raw, resolve(workspace)))) {
+  const candidates = pathInputs(input);
+  const base = resolve(workspace);
+
+  // SEALED ROOTS: denied for EVERY tool, by any key, in either direction.
+  // No tool-name gate — an allowlist is fail-open to every read-capable tool
+  // the CLI adds and every MCP server the owner enables.
+  for (const candidate of candidates) {
+    if (sealedRoots.some((root) => containsOrIsInside(root, candidate, base))) {
       return {
         behavior: "deny",
         message:
@@ -162,12 +188,17 @@ export function decideToolPermission(
       };
     }
   }
-  if (raw !== null && PATH_TOOLS.has(toolName) && !insideWorkspace(workspace, raw)) {
-    return {
-      behavior: "deny",
-      message:
-        `This run may only write inside its own workspace (${workspace}). Put the implementation there.`,
-    };
+
+  // WRITES stay confined to the workspace. Still tool-name-gated: this is about
+  // where the build may put files, not about what it may look at.
+  for (const candidate of candidates) {
+    if (PATH_TOOLS.has(toolName) && !insideWorkspace(workspace, candidate)) {
+      return {
+        behavior: "deny",
+        message:
+          `This run may only write inside its own workspace (${workspace}). Put the implementation there.`,
+      };
+    }
   }
   // Everything else is allowed WITHOUT asking, because there is nobody to ask:
   // an unanswered permission prompt has no park deadline and would hang the run
