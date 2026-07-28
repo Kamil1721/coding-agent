@@ -21,8 +21,11 @@
  * nothing read-denying — its path-related field, `additionalDirectories`, is an
  * ALLOW list, so reaching for it would widen access, not narrow it. There is
  * therefore no mechanism on this driver equivalent to the Claude driver's
- * `sandbox.filesystem.denyRead`, and `request.sealedRoots`
- * (`dashboard/acceptance`) is readable by a Codex build with `cat` or `grep`.
+ * `sandbox.filesystem.denyRead`, and `request.sealedRoots` is readable by a
+ * Codex build with `cat` or `grep`. That field now carries TWO roots, not one:
+ * `dashboard/acceptance` (the suite store) and `dashboard/results/scorer-out`,
+ * whose `result.json` persists `criterionCoverage[].testRefs` — held-out TEST
+ * TITLES — outside the sealed store. Both are exposed on this path.
  *
  * CONSEQUENCE, PLAINLY: if a Codex build reads the held-out tests, that run's
  * `heldOutPass` and `falseFinish` mean nothing, and nothing detects it. The

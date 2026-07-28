@@ -25,6 +25,14 @@
  *     resolved path escapes the workspace — a second, independent check, since
  *     a defence that exists in one layer only is a defence that has never been
  *     tested.
+ *   - `canUseTool` denies the `Agent`/`Task` tool unless `isolation` is absent,
+ *     `run_in_background` is explicitly `false`, and `subagent_type` is on a
+ *     configured shortlist. THE SHORTLIST IS EMPTY TODAY — Phase 1 supplies it —
+ *     so every delegation attempt is refused outright, with a message naming the
+ *     permitted agents as "(none configured)". That is the fail-closed
+ *     direction, not a regression: a subagent inherits none of these boundaries
+ *     automatically, and `Options.agents` limits only what the orchestrator can
+ *     see, while `subagent_type` is a free string in the SDK schema.
  *   - The acceptance suite lives OUTSIDE the workspace (dashboard/acceptance),
  *     is never mounted into it, and the held-out half is never copied in.
  *
@@ -34,7 +42,8 @@
  * filesystem two directories above the workspace. A builder that reads the
  * held-out tests can satisfy them without satisfying the ticket, which makes
  * `heldOutPass` and `falseFinish` meaningless for that run, and there is no
- * detector for it. Two layers now:
+ * detector for it. Two MECHANISMS now — which is not the same as two layers for
+ * any given tool, because only the first of them has been exercised:
  *
  *   1. {@link decideToolPermission} denies ANY tool — built-in, `mcp__*`, or
  *      one that ships next year — carrying a path that resolves into the suite
@@ -44,9 +53,14 @@
  *      scanned except named free text; see FREE_TEXT_KEYS below.
  *      EXECUTED: unit-tested directly, with a negative control.
  *   2. `sandbox.filesystem.denyRead` names the suite store to the CLI's own OS
- *      sandbox, which is the only layer that can cover Bash. PLUMBING EXECUTED
- *      (the value reaches the CLI's `--settings`); ENFORCEMENT NOT EXERCISED —
- *      proving it needs a real build, which costs quota.
+ *      sandbox, which is the only layer that can cover Bash. NOT EXECUTED, in
+ *      either half. `src/builders/settings-plumbing.test.ts` builds its OWN
+ *      `Options` literal and asserts its OWN local root round-trips into the
+ *      `--settings` payload; it never calls this builder, so it cannot detect
+ *      this file sending the wrong roots or none. Enforcement by the OS sandbox
+ *      is likewise unexercised — proving it needs a real build, which costs
+ *      quota. Whether `denyRead` binds in-process tools at all (as opposed to
+ *      sandboxed Bash only) is UNRESOLVED; see dashboard/STATUS.md §3.
  *
  * This is still weaker than the bake-off's boundary, which is a container the
  * held-out half is never mounted into. Said plainly in dashboard/STATUS.md.
@@ -458,10 +472,13 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
         // `autoAllowBashIfSandboxed` means a sandboxed command never reaches
         // `canUseTool`. It is enforced by the CLI's own OS sandbox, and THAT
         // ENFORCEMENT HAS NOT BEEN EXERCISED HERE — running a build to prove it
-        // costs subscription quota. What has been executed is that this value
-        // reaches the CLI: `test/settings-plumbing.mjs` runs the SDK against a
-        // stub executable and asserts the acceptance root appears in the
-        // `--settings` payload. See dashboard/STATUS.md, "The held-out boundary".
+        // costs subscription quota. NOR HAS THIS PLUMBING BEEN EXERCISED:
+        // `src/builders/settings-plumbing.test.ts` runs the SDK against a stub
+        // executable, but with an `Options` literal it builds itself, asserting
+        // that its own local root round-trips into the `--settings` payload. It
+        // never invokes this builder, so if the line below sent the wrong roots
+        // or none, that test would still pass. See dashboard/STATUS.md, "The
+        // held-out boundary".
         filesystem: { allowWrite: [workspace], denyRead: sealedRoots },
       },
       // Metered credentials stripped: a build must be subscription traffic or
