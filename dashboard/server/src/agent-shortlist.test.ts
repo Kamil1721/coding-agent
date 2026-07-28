@@ -203,14 +203,14 @@ test("bounds are total — an agent with no entry still gets a usable one", () =
   assert.ok(b.maxTurns > 0 && b.maxTurns <= 60, `unknown agent got maxTurns ${String(b.maxTurns)}`);
 });
 
-test("effort is a real rung or null — null means the run's own effort stands", () => {
-  const rungs = new Set([null, "low", "medium", "high", "xhigh", "max"]);
-  for (const [, agents] of LANES) {
-    for (const a of agents) {
-      assert.ok(rungs.has(boundsFor(a).effort), `${a}: effort ${String(boundsFor(a).effort)}`);
-    }
-  }
-});
+/*
+ * "effort is a real rung or null" WAS HERE AND WENT WITH THE FIELD (2026-07-29).
+ * `AgentBounds.effort` was null for every agent and its only consumer was a spread
+ * into `AgentDefinition.effort`, which is deleted — so the test asserted that a
+ * constant null was one of six permitted values. The decision it stood for (this
+ * program does not invent a per-agent effort rung; the run's own rung stands) is
+ * recorded in prose on `boundsFor`, where it costs no green test to say.
+ */
 
 /*
  * THE REPORT CONTRACT'S TESTS ARE NOT HERE ANY MORE — build-prompt.test.ts HAS

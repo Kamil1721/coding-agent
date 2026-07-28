@@ -27,8 +27,6 @@
  * exactly like a lane that had nothing to do.
  */
 
-import type { AnthropicEffort } from "bakeoff/dist/contracts.js";
-
 /** Pipeline stage. Lanes are server-side labels, and per spec 6.1 their ordering is advisory. */
 export type Lane = "spec" | "design" | "build" | "review" | "gate";
 
@@ -200,14 +198,20 @@ export function laneOf(agent: string): Lane | null {
 /**
  * How much room one delegated agent gets.
  *
- * `effort` is `AnthropicEffort | null` where NULL MEANS "the run's own effort
- * stands" — see {@link boundsFor} for why every entry is currently null.
+ * ONE FIELD, NOT TWO. This carried `effort: AnthropicEffort | null` until
+ * 2026-07-29 and every entry returned null, meaning "the run's own effort
+ * stands". Its only consumer was a conditional spread into
+ * `AgentDefinition.effort`, and that definition is gone — probe I measured it not
+ * binding for any name this run can delegate to. A field that is null everywhere,
+ * read by nobody, and typed against a route that no longer exists is decoration
+ * with a type annotation, so it went with the route.
+ *
+ * THE DECISION IT RECORDED IS KEPT, in prose on {@link boundsFor}, because it was
+ * a real decision: this program does not invent a per-agent effort rung.
  */
 export interface AgentBounds {
   /** Agentic turns (API round-trips) this agent should be given. */
   readonly maxTurns: number;
-  /** A rung to override the run's effort with, or null to inherit it. */
-  readonly effort: AnthropicEffort | null;
 }
 
 /**
@@ -298,18 +302,19 @@ const UNKNOWN_AGENT_TURNS = 15;
  * When a route exists that applies a per-agent bound, this is what it applies.
  * Until then: a table, tested as a table, claiming nothing.
  *
- * WHY EVERY `effort` IS NULL. Null means the run's own effort stands — the rung
- * the owner picked in the UI, which reaches the session as `Options.effort`.
- * There is no measurement behind any per-agent rung: nothing has been run at two
- * efforts and compared. Inventing rungs here would silently override an owner's
- * choice on evidence that does not exist, and would look exactly like a policy
- * that had been decided. The field stays in the signature because a bound and an
- * effort would be applied through the same route, and it is the honest place for
- * a measured value to land.
+ * AND THERE IS NO PER-AGENT EFFORT, WHICH IS A DECISION RATHER THAN AN OMISSION.
+ * The run's own rung — the one the owner picked in the UI, which reaches the
+ * session as `Options.effort` — stands for every agent. Nothing here has been run
+ * at two efforts and compared, so any rung this file named would be invention
+ * silently overriding an owner's choice, wearing the look of a policy somebody
+ * decided. A `null` field said that too, and said it while pointing at a route
+ * that has since been deleted; a sentence says it without a type annotation
+ * implying a mechanism. If a rung is ever measured, it lands next to
+ * {@link AgentBounds.maxTurns} and this paragraph is what it replaces.
  */
 export function boundsFor(agent: string): AgentBounds {
   const override = AGENT_TURNS.get(agent);
-  if (override !== undefined) return { maxTurns: override, effort: null };
+  if (override !== undefined) return { maxTurns: override };
   const lane = laneOf(agent);
-  return { maxTurns: lane === null ? UNKNOWN_AGENT_TURNS : LANE_TURNS[lane], effort: null };
+  return { maxTurns: lane === null ? UNKNOWN_AGENT_TURNS : LANE_TURNS[lane] };
 }
