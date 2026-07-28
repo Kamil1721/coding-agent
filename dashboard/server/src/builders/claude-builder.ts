@@ -49,8 +49,10 @@
  *      one that ships next year — carrying a path that resolves into the suite
  *      store. It was a tool-name allowlist until 2026-07-28, then briefly a
  *      KEY allowlist — the same fail-open shape on another axis, and it was
- *      defeated by `Glob`'s required `pattern` argument. Every value is now
- *      scanned except named free text; see FREE_TEXT_KEYS below. A value is
+ *      defeated by `Glob`'s required `pattern` argument. Every value AND every
+ *      object KEY is now scanned, at any depth up to NODE_BUDGET nodes, except
+ *      a named free-text key's own string; see FREE_TEXT_KEYS, NODE_BUDGET and
+ *      pathCandidates below. A string is
  *      also judged by the TREE it would walk, not only by its raw spelling —
  *      `Glob{pattern:"/tmp/**\/*.mjs"}` names no sealed path and matches every
  *      file under `/tmp`; see globPrefix below.
@@ -140,6 +142,9 @@ const RECURSIVE_TOOLS = new Set(["Grep", "Glob"]);
  * A build legitimately writes a file whose CONTENT mentions the suite path and
  * legitimately runs a shell command naming it, so these stay exempt.
  *
+ * The exemption reaches a STRING ONLY — see pathCandidates. Naming a key here
+ * does not seal off whatever sits beneath it.
+ *
  * `new_source` is NotebookEdit's write PAYLOAD — cell code, which routinely
  * contains `../` inside a string literal. `resolve()` collapses `..` anywhere
  * in a string, not only at its start, so scanning this key denied a legitimate
@@ -185,36 +190,91 @@ function globPrefix(value: string): string {
 }
 
 /**
+ * How many nodes the walker will look at before it stops.
+ *
+ * A TOTAL BUDGET, NOT A DEPTH CAP. The cap was `depth > 6`, and a depth cap is
+ * cheap to step over: eight levels of `{nest:…}` around a sealed `file_path`
+ * returned ALLOW against dist, at no cost to the attacker. A budget bounds the
+ * adversarial work — which is the only thing the cap was ever for — and closes
+ * the DEPTH escape outright, because nesting no longer buys anything that
+ * breadth does not also cost.
+ *
+ * WHAT IT DOES NOT CLOSE, said plainly rather than implied: the budget is
+ * spent, not restored, so once it runs out the walk stops and later siblings
+ * are never scanned. `{pad:[…600 zeroes…], evil:{file_path:"<suite>/x"}}`
+ * returns ALLOW — measured against dist, not reasoned about. Any finite bound
+ * has this property; the choice is which shape of input pays for it, and
+ * padding to 512 nodes is a great deal more conspicuous in a transcript than
+ * adding a seventh `{nest:…}`. Removing it entirely is not the answer either —
+ * an unbounded walk over attacker-shaped input is a denial of service, and a
+ * cyclic object would not terminate. Narrowing it (charge only CONTAINER
+ * nodes, or scan breadth-first so shallow keys are never starved by a deep
+ * sibling) is a real improvement and is deliberately NOT done here: it is
+ * outside this change and belongs with the per-tool work, not smuggled in
+ * beside it. This comment is the record until STATUS.md carries it — an
+ * unwritten limit is one the next reader has to rediscover by being bitten.
+ *
+ * 512 is far above any real tool input (the largest built-in schema has a
+ * handful of keys) and far below anything that costs measurable time.
+ */
+const NODE_BUDGET = 512;
+
+/**
  * Every value in the input that could name a path — which is every string that
- * is not explicitly free text, at any depth.
+ * is not explicitly free text, plus every object KEY, at any depth, for the
+ * first NODE_BUDGET nodes (see its limits above).
+ *
+ * KEYS ARE CANDIDATES TOO. Only values were read, so a map keyed BY path —
+ * `{files:{"<suite>/FROZEN.json": "…"}}`, the ordinary shape of a multi-file
+ * write tool — put the sealed path in a position nothing looked at. Probed
+ * against dist: ALLOW.
+ *
+ * A FREE-TEXT KEY EXEMPTS ITS OWN STRING, NOTHING ELSE. The exemption used to
+ * sit above the type dispatch, so it pruned the whole SUBTREE: wrapping the
+ * path one level down, as `{content:{path:"<suite>/t.mjs"}}`, walked straight
+ * past the guard. Probed against dist: ALLOW. The exemption exists because a
+ * build legitimately writes content and shell text that NAME the suite — that
+ * argument covers a string and does not extend to an object beneath it, which
+ * no tool schema puts there as prose.
+ *
+ * The array branch carries the PARENT key down on purpose: `{command:[…]}` is
+ * still the same free text one level of container out.
  */
 function pathCandidates(input: Record<string, unknown>): string[] {
   const found: string[] = [];
-  const visit = (key: string, value: unknown, depth: number): void => {
-    if (depth > 6) return;
-    if (FREE_TEXT_KEYS.has(key)) return;
+  let budget = NODE_BUDGET;
+  // BOTH spellings, for keys and values alike. The raw string keeps a literal
+  // path judged literally; the prefix is the tree a pattern would expand into.
+  // Any rewrite of this visitor MUST keep this pair — see the mid-segment glob
+  // test. (The Task 3 plan snippet dropped it; that would have silently undone
+  // the glob fix while every new test still passed.)
+  const push = (value: string): void => {
+    if (value.length === 0) return;
+    found.push(value);
+    const prefix = globPrefix(value);
+    if (prefix !== value) found.push(prefix);
+  };
+  const visit = (key: string, value: unknown): void => {
+    if (budget-- <= 0) return;
     if (typeof value === "string") {
-      if (value.length > 0) {
-        // BOTH spellings. The raw value keeps a literal path judged literally;
-        // the prefix is the tree a pattern would expand into. Any rewrite of
-        // this visitor MUST keep this push — see the mid-segment glob test.
-        found.push(value);
-        const prefix = globPrefix(value);
-        if (prefix !== value) found.push(prefix);
-      }
+      if (!FREE_TEXT_KEYS.has(key)) push(value);
       return;
     }
     if (Array.isArray(value)) {
-      for (const item of value) visit(key, item, depth + 1);
+      for (const item of value) visit(key, item);
       return;
     }
     if (value !== null && typeof value === "object") {
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        visit(k, v, depth + 1);
+        push(k);
+        visit(k, v);
       }
     }
   };
-  for (const [k, v] of Object.entries(input)) visit(k, v, 0);
+  // The root object goes through the same branch, so its keys are scanned too.
+  // The empty key name belongs to no exemption, which is the right default:
+  // there is no tool whose whole input is free text.
+  visit("", input);
   return found;
 }
 

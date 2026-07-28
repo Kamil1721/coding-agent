@@ -287,6 +287,78 @@ test("nested object and array values are reached", () => {
   assert.equal(decideWith("AnyTool", { targets: [`${WORKSPACE}/a`, `${HELD_OUT}/b`] }).behavior, "deny");
 });
 
+test("a sealed path used as an object KEY is denied", () => {
+  // The walker read VALUES only, so a map keyed BY path — the ordinary shape of
+  // a multi-file write tool — carried the suite path in a position nothing
+  // looked at. Probed against dist: ALLOW.
+  assert.equal(
+    decideWith("mcp__fs__write_files", {
+      files: { [`${HELD_OUT}/FROZEN.json`]: "overwritten" },
+    }).behavior,
+    "deny",
+  );
+  // The same shape one level down, and with the sealed path as a key whose
+  // value is itself an object rather than a string.
+  assert.equal(
+    decideWith("AnyTool", { edits: { batch: { [`${HELD_OUT}/T-1/x.mjs`]: { text: "x" } } } }).behavior,
+    "deny",
+  );
+});
+
+test("a free-text key shields only STRINGS, not a whole subtree", () => {
+  // `if (FREE_TEXT_KEYS.has(key)) return;` sat ABOVE the type dispatch, so a
+  // free-text name pruned the entire subtree beneath it, not just its own
+  // string. Wrapping the path in an object under `content` or `command` walked
+  // straight past the guard. Both probed against dist: ALLOW.
+  assert.equal(decideWith("AnyTool", { content: { path: `${HELD_OUT}/t.mjs` } }).behavior, "deny");
+  assert.equal(decideWith("AnyTool", { command: { file: `${HELD_OUT}/t.mjs` } }).behavior, "deny");
+  // An ARRAY of objects under a free-text key is the same escape.
+  assert.equal(
+    decideWith("AnyTool", { prompt: [{ file_path: `${HELD_OUT}/t.mjs` }] }).behavior,
+    "deny",
+  );
+});
+
+test("deep nesting cannot outrun the walker", () => {
+  // The cap was `depth > 6`, which is a number an attacker can simply exceed:
+  // eight levels of `{nest:…}` returned ALLOW against dist. A total NODE BUDGET
+  // bounds adversarial work without publishing a depth to step over.
+  let nested: Record<string, unknown> = { file_path: `${HELD_OUT}/t.mjs` };
+  for (let i = 0; i < 12; i += 1) nested = { nest: nested };
+  assert.equal(decideWith("AnyTool", nested).behavior, "deny");
+
+  let deeper: Record<string, unknown> = { file_path: `${HELD_OUT}/t.mjs` };
+  for (let i = 0; i < 60; i += 1) deeper = { nest: deeper };
+  assert.equal(decideWith("AnyTool", deeper).behavior, "deny", "sixty levels is still inside the budget");
+});
+
+test("NEGATIVE CONTROL: free-text STRINGS are still exempt", () => {
+  // Scanning keys and subtrees must not start scanning free text itself: a
+  // build legitimately writes a file whose CONTENT names the suite and
+  // legitimately runs a shell command naming it.
+  assert.equal(
+    decideWith("Write", { file_path: `${WORKSPACE}/n.md`, content: `see ${HELD_OUT}` }).behavior,
+    "allow",
+  );
+  assert.equal(decideWith("Bash", { command: `ls ${HELD_OUT}` }).behavior, "allow");
+  // An array of free-text STRINGS inherits its key's exemption — the array
+  // branch carries the parent key down, and must keep doing so.
+  assert.equal(
+    decideWith("Bash", { command: [`ls ${HELD_OUT}`, `cat ${HELD_OUT}/t.mjs`] }).behavior,
+    "allow",
+  );
+  // And the ordinary keys of an ordinary call are not themselves paths.
+  assert.equal(
+    decideWith("Edit", {
+      file_path: `${WORKSPACE}/a.ts`,
+      old_string: `see ${HELD_OUT}`,
+      new_string: "x",
+      replace_all: false,
+    }).behavior,
+    "allow",
+  );
+});
+
 test("NEGATIVE CONTROL: free-text keys are still not scanned", () => {
   assert.equal(
     decideWith("Write", { file_path: `${WORKSPACE}/n.md`, content: `see ${HELD_OUT}` }).behavior,
