@@ -74,6 +74,7 @@ import {
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
 import { shortlistFor } from "./agent-shortlist.js";
 import type { ApiCriterion, ApiPhase, ApiRunStatus } from "./api-types.js";
+import { writeEnvironmentRecord } from "./build-environment.js";
 import type { AuthProbe } from "./auth.js";
 import { truncate } from "./claude-common.js";
 import type { RateLimitState } from "./claude-common.js";
@@ -582,6 +583,25 @@ export class Orchestrator {
       rateLimit: (state) => this.#noteRateLimit(runId, state),
       session: (id) => {
         store.updateRun(runId, { builderSessionId: id });
+      },
+      // THE RUN'S ENVIRONMENT, ONTO DISK BESIDE ITS RECORD.
+      //
+      // `run.json` cannot carry this: `RunRecord` is a bake-off contract type and
+      // `bakeoff/` is not ours to modify, so the inventory goes in its own file in
+      // the same directory rather than being dropped for want of a field. The two
+      // are read together; `environmentHash` is what tells two runs of the same
+      // ticket apart when their output differs and the brief did not.
+      //
+      // A failure here must NOT take the build down. This is the record of the
+      // build, not the build, and losing the record of a run that otherwise
+      // succeeded to an EACCES on one file would be the tail wagging the dog. It
+      // is logged as a warning instead, which is itself a record.
+      environment: (environment) => {
+        try {
+          writeEnvironmentRecord(runPaths.results, environment);
+        } catch (error) {
+          this.#emitLog(runId, "warn", `the run environment could not be recorded: ${describeError(error)}`);
+        }
       },
       raw: (text) => log.write(text),
     };

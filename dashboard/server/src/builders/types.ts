@@ -20,6 +20,7 @@
  */
 
 import type { AnthropicEffort } from "bakeoff/dist/contracts.js";
+import type { RunEnvironment } from "../build-environment.js";
 import type { RateLimitState } from "../claude-common.js";
 import type { TokenTotals } from "../tokens.js";
 
@@ -32,6 +33,22 @@ export interface BuildEventSink {
   rateLimit(state: RateLimitState): void;
   /** The provider's session/thread id, as soon as it is known. */
   session(id: string): void;
+  /**
+   * What the CLI reported it had loaded: agents, skills, tools, MCP servers,
+   * plugins, plus a hash of all of them.
+   *
+   * REQUIRED, NOT OPTIONAL, for the same reason `allowedAgents` is: an optional
+   * hook is one a driver can quietly not implement, and the thing it records —
+   * everything `settingSources: ["user"]` dragged in — is the largest input a
+   * build has that appears nowhere in the ticket. Two runs of a byte-identical
+   * ticket can build different things; this is what says so.
+   *
+   * EMITTED ONCE, by the Anthropic driver, from `system/init`. The Codex driver
+   * has no equivalent message and never calls it — which is honest: it loads no
+   * such environment. A driver that emits nothing here is recorded as having no
+   * environment, not as having an unknown one.
+   */
+  environment(environment: RunEnvironment): void;
   /** Raw transcript text for the run's build log file. */
   raw(text: string): void;
 }

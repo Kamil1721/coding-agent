@@ -90,10 +90,12 @@ import {
   truncate,
 } from "../claude-common.js";
 import type { RateLimitState } from "../claude-common.js";
+import { describeEnvironment, environmentFromInit } from "../build-environment.js";
+import type { InitEnvelope, RunEnvironment } from "../build-environment.js";
 import { subscriptionSubprocessEnv } from "../subprocess-env.js";
 import { addTokens, zeroTokens } from "../tokens.js";
 import type { TokenTotals } from "../tokens.js";
-import type { BuildOutcome, BuildRequest, SubscriptionBuilder } from "./types.js";
+import type { BuildEventSink, BuildOutcome, BuildRequest, SubscriptionBuilder } from "./types.js";
 
 /** Set to "1" to let a build run when the CLI sandbox cannot start. */
 export const ALLOW_UNSANDBOXED_ENV = "DASHBOARD_ALLOW_UNSANDBOXED_BUILDER";
@@ -708,6 +710,30 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
   };
 }
 
+/**
+ * Record what the CLI says it loaded, the moment it says it.
+ *
+ * ITS OWN FUNCTION SO IT CAN BE ASSERTED. The `system/init` branch of the loop
+ * below is only reachable by spawning a CLI, which costs subscription quota, so
+ * a capture written inline there would be reviewed rather than executed — the
+ * same defect the header records about `settings-plumbing.test.ts`. What a unit
+ * test can prove is that this function captures every category and both emits
+ * and logs; what it cannot prove is that the loop calls it. That single call
+ * site is the residual, and it is measured by the live probe instead (see
+ * `build-environment.ts`).
+ *
+ * BOTH THE SINK AND THE LOG, deliberately. The sink is the only route to the run
+ * directory, where the record has to survive for the next reader; the log line is
+ * what tells the person watching a build that 144 agents and 3 MCP servers just
+ * loaded, at the point where that is still actionable.
+ */
+export function announceEnvironment(init: InitEnvelope, sink: BuildEventSink): RunEnvironment {
+  const environment = environmentFromInit(init);
+  sink.environment(environment);
+  sink.log("info", describeEnvironment(environment));
+  return environment;
+}
+
 export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
   readonly provider = "anthropic" as const;
 
@@ -739,6 +765,12 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
           sessionId = message.session_id;
           sink.session(message.session_id);
           sink.log("info", `Claude session ${message.session_id} started in ${workspace}`);
+          // THE ENVIRONMENT, RECORDED BEFORE THE FIRST TURN. This message is the
+          // CLI's own statement of what `settingSources: ["user"]` discovered,
+          // and it is the only statement of it: nothing later in the stream
+          // repeats the inventory, so a capture missed here is a run whose
+          // largest input is unrecoverable afterwards.
+          announceEnvironment(message, sink);
           continue;
         }
 

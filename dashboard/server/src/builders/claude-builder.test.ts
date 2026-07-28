@@ -20,7 +20,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { shortlistFor } from "../agent-shortlist.js";
-import { buildOptions, canonicaliseForDecision, decideToolPermission } from "./claude-builder.js";
+import type { RunEnvironment } from "../build-environment.js";
+import {
+  announceEnvironment,
+  buildOptions,
+  canonicaliseForDecision,
+  decideToolPermission,
+} from "./claude-builder.js";
 import type { BuildRequest } from "./types.js";
 
 const WORKSPACE = "/tmp/dash/runs/r1/workspace";
@@ -793,6 +799,7 @@ function req(overrides: Partial<BuildRequest> = {}): BuildRequest {
       tokens() {},
       rateLimit() {},
       session() {},
+      environment() {},
       raw() {},
     },
     env: {},
@@ -1115,4 +1122,43 @@ test("an empty shortlist still denies everything — fail closed", async () => {
     callContext(),
   );
   assert.equal(write?.behavior, "allow");
+});
+
+test("the environment the CLI reports is emitted on the sink AND logged", async () => {
+  // `settingSources: ["user"]` is the largest unrecorded input this program has,
+  // and the header of claude-builder.ts demands no UNRECORDED input. The record
+  // is only made if this branch fires: capture without emission is the same as
+  // no capture, because the orchestrator is what persists it.
+  const emitted: RunEnvironment[] = [];
+  const logs: string[] = [];
+  const sink = {
+    ...req().sink,
+    environment: (env: RunEnvironment) => emitted.push(env),
+    log: (_level: "info" | "warn" | "error", text: string) => logs.push(text),
+  };
+
+  const environment = announceEnvironment(
+    {
+      session_id: "sess-9",
+      cwd: WORKSPACE,
+      model: "claude-opus-5",
+      claude_code_version: "2.0.0",
+      agents: ["code-reviewer"],
+      skills: ["postgres", "taste-skill"],
+      tools: ["Read", "Agent"],
+      mcp_servers: [{ name: "context7", status: "connected" }],
+      plugins: [{ name: "railway" }],
+    },
+    sink,
+  );
+
+  assert.equal(emitted.length, 1, "the sink is the only route to the run directory");
+  assert.deepEqual(emitted[0], environment);
+  assert.deepEqual(environment.skills, ["postgres", "taste-skill"]);
+  assert.equal(
+    logs.filter((line) => /environment —/.test(line)).length,
+    1,
+    "and one line says what loaded, while the build is starting",
+  );
+  assert.match(logs.join("\n"), /context7/, "including which MCP servers appeared");
 });
