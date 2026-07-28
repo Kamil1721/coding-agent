@@ -90,6 +90,20 @@ import {
   truncate,
 } from "../claude-common.js";
 import type { RateLimitState } from "../claude-common.js";
+import {
+  LaneWatch,
+  compactionFrom,
+  contextSample,
+  describeCompaction,
+  describeContextSample,
+} from "../build-context.js";
+import type {
+  CompactBoundaryEnvelope,
+  CompactionRecord,
+  ContextSample,
+  ContextUsageEnvelope,
+  LaneBoundary,
+} from "../build-context.js";
 import { describeEnvironment, environmentFromInit } from "../build-environment.js";
 import type { InitEnvelope, RunEnvironment } from "../build-environment.js";
 import { subscriptionSubprocessEnv } from "../subprocess-env.js";
@@ -734,6 +748,117 @@ export function announceEnvironment(init: InitEnvelope, sink: BuildEventSink): R
   return environment;
 }
 
+/**
+ * The one method of `Query` this file needs to read context usage.
+ *
+ * A NARROW STRUCTURAL TYPE, not the `Query` interface, so a test can supply a
+ * source that answers, throws, or never answers at all — the three behaviours
+ * that matter here, none of which a real `Query` can be made to perform on
+ * demand without spending subscription quota. A real `Query` satisfies it.
+ */
+export interface ContextUsageSource {
+  getContextUsage(): Promise<ContextUsageEnvelope>;
+}
+
+/**
+ * How long a context sample may take before it is abandoned.
+ *
+ * `getContextUsage()` is a CONTROL REQUEST over the CLI's stdio, not a local
+ * computation: it is written to the child's stdin and answered by a
+ * `control_response` demultiplexed on the SDK's own reader loop. Read from
+ * `sdk.mjs` rather than assumed — that reader is independent of the message
+ * iterator this builder drains, so awaiting a control response inside the
+ * `for await` loop cannot deadlock against it. What it CAN do is never arrive,
+ * if the child has wedged or is shutting down, and the message loop would then
+ * wait forever on INSTRUMENTATION. Five seconds is far above a healthy
+ * round-trip and far below anything a person watching a build would call a stall.
+ */
+export const CONTEXT_SAMPLE_TIMEOUT_MS = 5_000;
+
+/**
+ * Read the context window at a lane boundary, emit it, log it.
+ *
+ * NEVER THROWS, NEVER STALLS, NEVER FAILS THE BUILD. Same polarity as the
+ * environment write: this is the record of the build, not the build, and losing a
+ * sample of an otherwise healthy run to a transport error would be the tail
+ * wagging the dog. A failure is logged — a missing sample has to be explainable
+ * too — and null is returned.
+ *
+ * The timeout is INJECTED for the same reason `canonicalise` is in
+ * {@link decideToolPermission}: the production default would otherwise make the
+ * "never answers" test take five seconds, and a slow test is a skipped test.
+ */
+export async function sampleContextAt(
+  boundary: LaneBoundary,
+  source: ContextUsageSource,
+  sink: BuildEventSink,
+  timeoutMs: number = CONTEXT_SAMPLE_TIMEOUT_MS,
+): Promise<ContextSample | null> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    // The loser of the race is settled but unobserved; `usage` is undefined only
+    // on the timeout branch. Without the `catch` on the pending promise, a late
+    // rejection after the timer wins is an unhandled rejection, which on Node
+    // takes the process down — the build killed by its own instrumentation.
+    const pending = source.getContextUsage();
+    pending.catch(() => {
+      /* observed so a late failure cannot crash the run */
+    });
+    const usage = await Promise.race([
+      pending,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          resolve(undefined);
+        }, timeoutMs);
+      }),
+    ]);
+    if (usage === undefined) {
+      sink.log(
+        "warn",
+        `context usage was not read at ${boundary.agent}: the CLI did not answer within ` +
+          `${String(timeoutMs)}ms`,
+      );
+      return null;
+    }
+    const sample = contextSample(boundary, usage);
+    sink.contextUsage(sample);
+    sink.log("info", describeContextSample(sample));
+    return sample;
+  } catch (error) {
+    sink.log(
+      "warn",
+      `context usage was not read at ${boundary.agent}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * Record that the context window was summarised.
+ *
+ * ITS OWN FUNCTION SO IT CAN BE ASSERTED, exactly like
+ * {@link announceEnvironment}: the branch that calls it is reachable only by
+ * spawning a CLI, so a capture written inline there would be reviewed rather than
+ * executed.
+ *
+ * LOGGED AS A WARNING, not as info. A compaction is not a statistic about a
+ * healthy run — it is the single best explanation for a run that produced
+ * mediocre output without failing, and the person watching should see it at the
+ * level that means "the thing you get back may be worse from here".
+ */
+export function noteCompaction(
+  message: CompactBoundaryEnvelope,
+  sink: BuildEventSink,
+): CompactionRecord {
+  const record = compactionFrom(message);
+  sink.compaction(record);
+  sink.log("warn", describeCompaction(record));
+  return record;
+}
+
 export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
   readonly provider = "anthropic" as const;
 
@@ -747,6 +872,10 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
 
     const allowUnsandboxed = (request.env[ALLOW_UNSANDBOXED_ENV] ?? "").trim() === "1";
     const options = buildOptions(request, allowUnsandboxed);
+    // WHICH DELEGATED AGENTS ARE IN FLIGHT. Needed because `task_notification` —
+    // the message saying an agent finished — does not carry `subagent_type`; only
+    // `task_started` does. See build-context.ts.
+    const lanes = new LaneWatch();
 
     const abortController = new AbortController();
     const onAbort = (): void => {
@@ -771,6 +900,30 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
           // repeats the inventory, so a capture missed here is a run whose
           // largest input is unrecoverable afterwards.
           announceEnvironment(message, sink);
+          continue;
+        }
+
+        // THE CONTEXT TIMELINE. Three branches, one call each; everything they
+        // call is unit-tested in build-context.test.ts and claude-builder.test.ts
+        // because this loop itself costs subscription quota to reach.
+        if (message.type === "system" && message.subtype === "task_started") {
+          lanes.started(message);
+          continue;
+        }
+
+        if (message.type === "system" && message.subtype === "task_notification") {
+          // Null unless this completion left the agent's lane with nothing
+          // running — see LaneWatch for what "a lane went quiet" can and cannot
+          // mean when nothing says how many agents a lane will run.
+          const boundary = lanes.closed(message);
+          if (boundary !== null) await sampleContextAt(boundary, session, sink);
+          continue;
+        }
+
+        if (message.type === "system" && message.subtype === "compact_boundary") {
+          // SAID ONCE, IN THE STREAM. Miss it and the best explanation for a
+          // mediocre run is gone; there is no later message that repeats it.
+          noteCompaction(message, sink);
           continue;
         }
 

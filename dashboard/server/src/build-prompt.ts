@@ -54,6 +54,26 @@
  *   that default, so a builder that never sets it delegates exactly zero times.
  *   And a model that reads "denied" as a transient fault retries the identical
  *   call — at roughly a turn apiece, against a boundary that will never move.
+ *
+ * PHASE 1 TASK 7 ADDS A FIFTH: THE REPORT CONTRACT, WHICH IS WHERE THE CONTEXT
+ * BUDGET IS ACTUALLY SPENT OR SAVED. Delegation is not only how the work gets
+ * split — it is the primary context-compression mechanism (spec 15.1). A
+ * subagent runs in its OWN context window, so fifty tool calls inside it cost
+ * the orchestrator only the size of the report that comes back. That is roughly
+ * 50:1, and it inverts the moment a subagent answers with narration: the parent's
+ * window is the one under pressure, it is what compaction destroys, and
+ * compaction is silent. The run does not fail — it forgets its own earlier
+ * decisions and quietly gets worse, which is harder to notice than a failure.
+ *
+ * WHY THE CONTRACT IS STATED TO THE ORCHESTRATOR RATHER THAN TO EACH SUBAGENT.
+ * Spec 15.1 asks for it in "every `AgentDefinition.prompt`". Phase 1 has no
+ * AgentDefinitions: `settingSources: ["user"]` loads the owner's agent bodies
+ * from disk, and spec 6.2 deleted the compiler that would have rewritten them.
+ * The only text this program controls that reaches a subagent is the `prompt`
+ * the orchestrator writes on each Agent call — so the format is given to the
+ * orchestrator to pass on, WITH the reason. A bare format is followed until the
+ * model judges that more detail would help, which is the failure; a model that
+ * knows why complies when it matters.
  */
 
 import { WORKSPACE } from "bakeoff/dist/runner.js";
@@ -186,6 +206,27 @@ function delegationSection(allowedAgents: readonly string[]): readonly string[] 
     "  does not need five lanes; a pipeline run for its own sake is not effort.",
     "- Several of these are read-only lenses with no file-writing tools. One that hands back",
     "  findings instead of edits is not refusing you — pass its findings to an agent that builds.",
+    "",
+    "WHAT THEY HAND BACK — ASK FOR IT IN EVERY `prompt` YOU SEND",
+    "- A specialist works in its own context window, not in yours. It can open twenty files and",
+    "  make fifty tool calls, and none of that reaches you: you get its report and nothing else.",
+    "  That is what lets a build this size fit at all, and it holds only while the reports are",
+    "  short. One that answers with pages of narration moves all of it into YOUR context, which",
+    "  is the one that runs out.",
+    "- When yours fills up it gets summarised to make room. Summarising drops detail, and what",
+    "  it drops first is the decisions you made early on. The build carries on and quietly gets",
+    "  worse, and nothing announces it. Short reports are how you stay out of that.",
+    "- So end every prompt you send with this:",
+    "",
+    "    Reply with these four lines and nothing else:",
+    "    DONE:       one line, what you accomplished",
+    "    FILES:      the files changed or created, one path per line",
+    '    NEXT:       what the next specialist needs to know, or "nothing"',
+    '    UNRESOLVED: what you could not finish, or "none"',
+    "    Do not narrate your process, do not paste file contents, do not restate the ticket.",
+    "",
+    "- Then read the paths they listed rather than asking anyone to quote a file back to you.",
+    "  You share one workspace, so everything they wrote is already on disk under your own eyes.",
     "",
     "The lanes below are the order the work wants to happen in.",
     ...lanes,

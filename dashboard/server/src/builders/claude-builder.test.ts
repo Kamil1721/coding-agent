@@ -20,12 +20,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { shortlistFor } from "../agent-shortlist.js";
+import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
 import type { RunEnvironment } from "../build-environment.js";
 import {
   announceEnvironment,
   buildOptions,
   canonicaliseForDecision,
   decideToolPermission,
+  noteCompaction,
+  sampleContextAt,
 } from "./claude-builder.js";
 import type { BuildRequest } from "./types.js";
 
@@ -800,6 +803,8 @@ function req(overrides: Partial<BuildRequest> = {}): BuildRequest {
       rateLimit() {},
       session() {},
       environment() {},
+      contextUsage() {},
+      compaction() {},
       raw() {},
     },
     env: {},
@@ -1161,4 +1166,110 @@ test("the environment the CLI reports is emitted on the sink AND logged", async 
     "and one line says what loaded, while the build is starting",
   );
   assert.match(logs.join("\n"), /context7/, "including which MCP servers appeared");
+});
+
+/**
+ * PHASE 1 TASK 7 STEP 5 — CONTEXT SAMPLING, EXERCISED WITHOUT A CLI.
+ *
+ * Same argument as `announceEnvironment` above: the `for await` loop is reachable
+ * only by spending subscription quota, so what a unit test can prove is that the
+ * sampler emits, logs, and cannot take the build down. What it cannot prove is
+ * that the loop calls it — that single call site is the residual, and it is
+ * stated rather than implied.
+ *
+ * THE TIMEOUT IS INJECTED for the same reason `canonicalise` is: a 5-second
+ * production default would otherwise make the "never answers" test take five
+ * seconds, and a test slow enough to skip is a test that gets skipped.
+ */
+function collectingSink(): {
+  sink: BuildRequest["sink"];
+  samples: ContextSample[];
+  compactions: CompactionRecord[];
+  logs: string[];
+} {
+  const samples: ContextSample[] = [];
+  const compactions: CompactionRecord[] = [];
+  const logs: string[] = [];
+  return {
+    samples,
+    compactions,
+    logs,
+    sink: {
+      ...req().sink,
+      contextUsage: (sample: ContextSample) => samples.push(sample),
+      compaction: (record: CompactionRecord) => compactions.push(record),
+      log: (_level: "info" | "warn" | "error", text: string) => logs.push(text),
+    },
+  };
+}
+
+const USAGE: ContextUsageEnvelope = {
+  totalTokens: 150_000,
+  maxTokens: 200_000,
+  percentage: 75,
+  model: "claude-opus-5",
+  categories: [{ name: "Messages", tokens: 140_000 }],
+};
+
+const BOUNDARY = { taskId: "t1", agent: "code-reviewer", lane: "review", status: "completed" } as const;
+
+test("a closed lane samples the context, emits it and logs it", async () => {
+  const { sink, samples, logs } = collectingSink();
+  const sample = await sampleContextAt(BOUNDARY, { getContextUsage: async () => USAGE }, sink);
+
+  assert.equal(sample?.percentage, 75);
+  assert.equal(samples.length, 1, "the sink is the only route to the run directory");
+  assert.deepEqual(samples[0], sample);
+  assert.equal(logs.filter((line) => /context/i.test(line)).length, 1);
+});
+
+test("a sample that never answers does not stall the build", async () => {
+  // `getContextUsage()` is a control request over the CLI's stdio. A CLI that has
+  // wedged would otherwise hold the message loop open forever, and the build
+  // would hang on INSTRUMENTATION — the tail wagging the dog.
+  const { sink, samples, logs } = collectingSink();
+  const started = Date.now();
+  const sample = await sampleContextAt(
+    BOUNDARY,
+    { getContextUsage: () => new Promise<ContextUsageEnvelope>(() => {}) },
+    sink,
+    20,
+  );
+
+  assert.equal(sample, null);
+  assert.equal(samples.length, 0);
+  assert.ok(Date.now() - started < 2_000, "it gave up rather than waiting");
+  assert.equal(logs.length, 1, "and said so, because a missing sample must be explainable");
+});
+
+test("a sample that throws is recorded as a warning and the build carries on", async () => {
+  const { sink, samples, logs } = collectingSink();
+  const sample = await sampleContextAt(
+    BOUNDARY,
+    {
+      getContextUsage: () => Promise.reject(new Error("transport closed")),
+    },
+    sink,
+  );
+
+  assert.equal(sample, null);
+  assert.equal(samples.length, 0);
+  assert.match(logs.join("\n"), /transport closed/, "the reason is kept, not swallowed");
+});
+
+test("a compaction is emitted on the sink and named in the log", () => {
+  // The single best explanation for a run that produced mediocre output. If it is
+  // not captured while it happens, it is not recoverable afterwards at all.
+  const { sink, compactions, logs } = collectingSink();
+  const record = noteCompaction(
+    {
+      compact_metadata: { trigger: "auto", pre_tokens: 180_000, post_tokens: 60_000, duration_ms: 900 },
+    },
+    sink,
+  );
+
+  assert.equal(record.preTokens, 180_000);
+  assert.equal(compactions.length, 1);
+  assert.deepEqual(compactions[0], record);
+  assert.match(logs.join("\n"), /compact/i);
 });

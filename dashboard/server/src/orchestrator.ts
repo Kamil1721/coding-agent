@@ -74,6 +74,8 @@ import {
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
 import { shortlistFor } from "./agent-shortlist.js";
 import type { ApiCriterion, ApiPhase, ApiRunStatus } from "./api-types.js";
+import { appendContextEvent } from "./build-context.js";
+import type { ContextEvent } from "./build-context.js";
 import { writeEnvironmentRecord } from "./build-environment.js";
 import type { AuthProbe } from "./auth.js";
 import { truncate } from "./claude-common.js";
@@ -572,6 +574,22 @@ export class Orchestrator {
     writeFileSync(runPaths.promptFile, redactForPersistence(prompt), "utf8");
 
     let tokens: TokenTotals = zeroTokens(entry.option.provider === "openai" ? "openai" : "anthropic");
+    // WHY CONTEXT EVENTS APPEND WHERE THE ENVIRONMENT OVERWRITES. The environment
+    // is one statement made once, at init; context usage and compaction are a
+    // SERIES — a long build samples at every lane boundary and may compact more
+    // than once, and each occurrence is separate evidence about a run that got
+    // quietly worse. Overwriting would leave a file saying a four-hour build
+    // measured its context exactly once.
+    //
+    // A failure here must NOT take the build down, for the same reason the
+    // environment write must not: this is the record of the build, not the build.
+    const recordContextEvent = (event: ContextEvent): void => {
+      try {
+        appendContextEvent(runPaths.results, event);
+      } catch (error) {
+        this.#emitLog(runId, "warn", `a context event could not be recorded: ${describeError(error)}`);
+      }
+    };
     const sink: BuildEventSink = {
       log: (level, text) => this.#emitLog(runId, level, text),
       tool: (name, summary) => this.#emit(runId, { type: "tool", name, summary }),
@@ -602,6 +620,12 @@ export class Orchestrator {
         } catch (error) {
           this.#emitLog(runId, "warn", `the run environment could not be recorded: ${describeError(error)}`);
         }
+      },
+      contextUsage: (sample) => {
+        recordContextEvent(sample);
+      },
+      compaction: (record) => {
+        recordContextEvent(record);
       },
       raw: (text) => log.write(text),
     };

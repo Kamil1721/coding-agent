@@ -151,6 +151,70 @@ test("an empty shortlist advertises no delegation at all — the prompt fails cl
   }
 });
 
+/**
+ * PHASE 1 TASK 7 — THE REPORT CONTRACT.
+ *
+ * WHY A PROMPT CLAUSE IS THE LOAD-BEARING PART OF CONTEXT DISCIPLINE. Delegation
+ * is not only how the canvas gets a graph; it is the primary context-compression
+ * mechanism (spec 15.1). A subagent runs in its OWN context window — it may burn
+ * fifty tool calls, read twenty files and write ten, and the parent sees only the
+ * final report. That is roughly 50:1 for free, and it is the entire reason a
+ * build that touches design, frontend, backend and database fits at all.
+ *
+ * IT HOLDS ONLY IF REPORTS STAY SMALL. A subagent that hands back 8k tokens of
+ * narration puts the problem straight back into the one context that is under
+ * pressure. And the failure is silent: the parent's window fills, the SDK
+ * compacts, compaction is lossy, and the orchestrator starts forgetting decisions
+ * it made an hour ago. The run does not fail — it quietly gets worse, which is
+ * strictly worse than stopping, because nothing tells you the output stopped
+ * being trustworthy.
+ *
+ * WHY IT LIVES IN THE ORCHESTRATOR'S PROMPT AND NOWHERE ELSE. Spec 15.1 asks for
+ * this in "every `AgentDefinition.prompt`". Phase 1 has no AgentDefinitions:
+ * `settingSources: ["user"]` loads the owner's agent bodies from disk and spec 6.2
+ * deliberately deleted the compiler that would have rewritten them. The only text
+ * this program controls that reaches a subagent is the `prompt` the ORCHESTRATOR
+ * writes on each Agent call — so the contract is stated to the orchestrator, as
+ * something to pass on. That is a weaker mechanism than a compiled system prompt
+ * and it is the strongest one Phase 1 has.
+ */
+test("every delegated agent is told to return a COMPACT structured report", () => {
+  // A subagent runs in its own context and the parent sees only its report.
+  // That is the compression. A subagent that narrates 8k tokens hands the
+  // problem straight back to the parent.
+  const p = buildPrompt({ ticketText: "x", allowedAgents: ["backend-developer"] });
+  assert.match(p, /report/i);
+  assert.match(p, /files (changed|touched)/i, "the report contract must name what to include");
+  assert.match(p, /do not (narrate|paste|include the full)/i, "and what to leave out");
+});
+
+test("the report contract names all four fields, not just the idea of a report", () => {
+  // The plan's own assertions are satisfied by prose that gestures at brevity.
+  // A format only compresses if it is a format: four labelled lines the
+  // orchestrator can paste into a subagent's prompt verbatim.
+  const p = buildPrompt({ ticketText: "x", allowedAgents: ["backend-developer"] });
+  for (const field of ["DONE", "FILES", "NEXT", "UNRESOLVED"]) {
+    assert.match(p, new RegExp(`${field}:`), `the report contract omits ${field}:`);
+  }
+});
+
+test("the report contract says WHY, because a model that understands complies better", () => {
+  // A bare format is followed until the subagent judges that more detail would
+  // help — which is exactly the failure. The reason is the part that generalises:
+  // the parent's context is the scarce resource and narration spends it.
+  const p = buildPrompt({ ticketText: "x", allowedAgents: ["backend-developer"] });
+  assert.match(p, /context/i, "the reason is about context, and must be stated");
+  assert.match(p, /own context (window|of its own)|its own context/i);
+});
+
+test("with delegation off, no report contract is advertised either", () => {
+  // Same polarity as the rest of this section: `allowedAgents: []` is the guard's
+  // fail-closed default, and a report contract for delegation that cannot happen
+  // is text the builder pays for and can never use.
+  const p = buildPrompt({ ticketText: "x", allowedAgents: [] });
+  assert.doesNotMatch(p, /UNRESOLVED/, "nothing will be delegated, so nothing reports back");
+});
+
 test("the parts of the prompt Phase 0 depends on are unchanged", () => {
   // Task 4 edits the builder's first turn. The self-report contract and the
   // sealed-suite framing are load-bearing elsewhere (`falseFinish` cannot be

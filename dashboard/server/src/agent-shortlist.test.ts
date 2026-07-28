@@ -24,7 +24,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
-import { DELIVERY_LANES, shortlistFor } from "./agent-shortlist.js";
+import { DELIVERY_LANES, boundsFor, laneOf, shortlistFor } from "./agent-shortlist.js";
 
 const SURFACES = ["web-ui", "fullstack", "api", "cli", "library", "background-jobs"] as const;
 
@@ -128,4 +128,99 @@ test("context-manager runs in every lane set — it owns shared context", () => 
   for (const surface of ["web-ui", "api", "cli"] as const) {
     assert.ok(shortlistFor(surface).includes("context-manager"));
   }
+});
+
+/**
+ * PHASE 1 TASK 7 — PER-AGENT BOUNDS.
+ *
+ * `DEFAULT_MAX_TURNS = 400` is SESSION-level: it bounds the whole build, not any
+ * one lens inside it. Spec 11 item 3 records the consequence — one runaway lens
+ * consumes the run's budget before GATE/FIX starts, and GATE/FIX is where the
+ * defects found by REVIEW actually get closed. So each agent carries its own
+ * number.
+ *
+ * WHAT THESE TESTS DO NOT PROVE, said here rather than implied: that the bound is
+ * ENFORCED. See `boundsFor` in agent-shortlist.ts — `AgentInput` has no turn
+ * field, so Phase 1 has nowhere to apply it. This is the table; applying it is
+ * Phase 2's job and is recorded as open.
+ */
+test("every shortlisted agent carries an explicit turn bound", () => {
+  // DEFAULT_MAX_TURNS is session-level. One unbounded lens can consume the whole
+  // run's budget before GATE/FIX starts.
+  for (const [lane, agents] of LANES) {
+    for (const a of agents) {
+      const b = boundsFor(a);
+      assert.ok(b.maxTurns > 0 && b.maxTurns <= 60, `${lane}/${a}: maxTurns ${String(b.maxTurns)}`);
+    }
+  }
+});
+
+test("the DESIGN lane gets a larger budget — 5 images with retries is turn-hungry", () => {
+  assert.ok(boundsFor("taste-frontend-expert").maxTurns >= 25);
+  assert.ok(boundsFor("security-auditor").maxTurns <= boundsFor("taste-frontend-expert").maxTurns);
+});
+
+test("a read-mostly lens is cheaper than an agent that writes the implementation", () => {
+  // The shape the plan asks for, asserted rather than left to the table's author:
+  // review/audit lenses are read-mostly (~15) and build agents need room (~40).
+  // Equal numbers everywhere would satisfy every bound above while bounding
+  // nothing relative to anything.
+  for (const lens of DELIVERY_LANES.review) {
+    for (const builder of DELIVERY_LANES.build) {
+      assert.ok(
+        boundsFor(lens).maxTurns < boundsFor(builder).maxTurns,
+        `${lens} (${String(boundsFor(lens).maxTurns)}) should be cheaper than ` +
+          `${builder} (${String(boundsFor(builder).maxTurns)})`,
+      );
+    }
+  }
+});
+
+test("bounds are total — an agent with no entry still gets a usable one", () => {
+  // `allowedAgents` is a plain array and `BuildRequest` does not require its
+  // members to be in DELIVERY_LANES. A lookup that returned undefined here would
+  // be read as "no bound", which is the unbounded lens this whole table exists to
+  // prevent.
+  const b = boundsFor("some-future-agent");
+  assert.ok(b.maxTurns > 0 && b.maxTurns <= 60, `unknown agent got maxTurns ${String(b.maxTurns)}`);
+});
+
+test("effort is a real rung or null — null means the run's own effort stands", () => {
+  const rungs = new Set([null, "low", "medium", "high", "xhigh", "max"]);
+  for (const [, agents] of LANES) {
+    for (const a of agents) {
+      assert.ok(rungs.has(boundsFor(a).effort), `${a}: effort ${String(boundsFor(a).effort)}`);
+    }
+  }
+});
+
+/**
+ * LANE ATTRIBUTION, for the context samples in Task 7 Step 5.
+ *
+ * A `task_notification` carries `task_id` and `status` and NOT `subagent_type`
+ * (verified in the SDK typings: only `task_started` has it, and it is optional).
+ * Turning a closing task into "which lane just finished" therefore needs the
+ * agent name, which needs this lookup.
+ */
+test("laneOf answers with the lane an agent belongs to", () => {
+  assert.equal(laneOf("code-reviewer"), "review");
+  assert.equal(laneOf("backend-developer"), "build");
+  assert.equal(laneOf("context-manager"), "spec");
+  assert.equal(laneOf("debugger"), "gate");
+});
+
+test("laneOf is total — an unknown agent has no lane rather than a wrong one", () => {
+  // Attribution has to degrade to "unknown", never to a plausible-looking lane:
+  // a context sample labelled with the wrong lane is worse than one labelled with
+  // none, because it reads as evidence.
+  assert.equal(laneOf("some-future-agent"), null);
+  assert.equal(laneOf(""), null);
+});
+
+test("a dual-lane agent resolves to its FIRST lane, and that is a known approximation", () => {
+  // `ui-designer` is deliberately in DESIGN (tokens) and REVIEW (the visual
+  // gate). Nothing in a task message says which role it was invoked in, so the
+  // lookup answers with the earlier lane. The sample carries the AGENT name too,
+  // so the ambiguity is recoverable rather than lost.
+  assert.equal(laneOf("ui-designer"), "design");
 });

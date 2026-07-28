@@ -20,6 +20,7 @@
  */
 
 import type { AnthropicEffort } from "bakeoff/dist/contracts.js";
+import type { CompactionRecord, ContextSample } from "../build-context.js";
 import type { RunEnvironment } from "../build-environment.js";
 import type { RateLimitState } from "../claude-common.js";
 import type { TokenTotals } from "../tokens.js";
@@ -49,6 +50,24 @@ export interface BuildEventSink {
    * environment, not as having an unknown one.
    */
   environment(environment: RunEnvironment): void;
+  /**
+   * How full the orchestrator's context window was when a lane went quiet.
+   *
+   * Sampled at lane boundaries rather than continuously: a boundary is where the
+   * number is interpretable ("BUILD cost 60k") and polling would add turns of its
+   * own. Emitted from Phase 1 even though nothing renders it until Phase 3 — the
+   * data has to exist before the first long build, or that build is
+   * unexplainable (spec 15.2, 15.4).
+   */
+  contextUsage(sample: ContextSample): void;
+  /**
+   * The context window was summarised to make room, and detail was lost.
+   *
+   * THE SINGLE BEST EXPLANATION for a run that produced mediocre output without
+   * failing. It is not recoverable after the fact — the SDK says it once, in the
+   * stream — so it is captured when it happens or not at all.
+   */
+  compaction(record: CompactionRecord): void;
   /** Raw transcript text for the run's build log file. */
   raw(text: string): void;
 }
