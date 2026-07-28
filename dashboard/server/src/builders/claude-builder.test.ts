@@ -883,6 +883,17 @@ test("WIRING: a run with no sealed roots denies nothing at the POLICY tier", () 
   assert.equal(options.managedSettings?.allowManagedPermissionRulesOnly, true);
 });
 
+test("WIRING: no MCP server is available to a build", () => {
+  const managed = buildOptions(req(), false).managedSettings;
+  // An empty allowlist is documented as "no servers are allowed". The builder
+  // writes code in a workspace; it has no business deploying, driving a browser
+  // or spawning a remote agent, and REMOVING that surface is complete by
+  // construction in a way that enumerating dangerous tool names never is.
+  assert.deepEqual(managed?.allowedMcpServers, []);
+  // The `Only` lock stops the owner's own settings re-adding any.
+  assert.equal(managed?.allowManagedMcpServersOnly, true);
+});
+
 test("WIRING: the handed-in canUseTool actually denies a sealed path", async () => {
   // Behavioural, not structural: call the function the SDK would call.
   const decide = buildOptions(req(), false).canUseTool;
@@ -1167,6 +1178,53 @@ test("an empty shortlist still denies everything — fail closed", async () => {
     callContext(),
   );
   assert.equal(write?.behavior, "allow");
+});
+
+/**
+ * THE SHAPE BACKSTOP — Phase 1.1 Task 3.
+ *
+ * The Agent branch was gated on the tool NAME, and
+ * `mcp__plugin_railway_railway__railway-agent{isolation:"remote"}` matched none
+ * of it while running the build off this machine entirely. Enumerating such
+ * tools is the READ_TOOLS mistake on a third axis: the list is never complete.
+ */
+test("a delegation-shaped MCP tool is judged, not waved through on its name", () => {
+  const result = decideToolPermission(
+    "mcp__plugin_railway_railway__railway-agent",
+    { isolation: "remote", run_in_background: true, prompt: "ship it" },
+    "/w",
+    [],
+    ["code-reviewer"],
+  ) as { behavior: string; message?: string };
+  assert.equal(result.behavior, "deny");
+  assert.match(String(result.message), /isolation/i);
+});
+
+test("an ordinary tool carrying none of those fields is untouched — negative control", () => {
+  // Without this, "judge everything" would pass the test above while breaking
+  // every ordinary MCP read the build legitimately makes.
+  const result = decideToolPermission("mcp__x__list_things", { limit: 10 }, "/w", [], []);
+  assert.equal(result.behavior, "allow");
+});
+
+test("an Agent call carrying NONE of the three fields is still denied", () => {
+  // THE REGRESSION THIS PINS, and why the branch condition is a DISJUNCTION
+  // rather than the shape check alone. `subagent_type` is OPTIONAL in the SDK's
+  // own `AgentInput` (sdk-tools.d.ts:496) and `run_in_background` documents
+  // itself as defaulting to background — so `Agent{description, prompt}` is a
+  // schema-valid call that carries none of the three delegation fields. Under a
+  // pure `isDelegationShaped(input)` condition it leaves the branch unjudged,
+  // is not a PATH_TOOL, and returns ALLOW: a background general-purpose
+  // delegation waved through by the guard that exists to stop exactly that.
+  const result = decideToolPermission(
+    "Agent",
+    { description: "review it", prompt: "go" },
+    "/w",
+    [],
+    ["code-reviewer"],
+  ) as { behavior: string; message?: string };
+  assert.equal(result.behavior, "deny");
+  assert.match(String(result.message), /run_in_background/);
 });
 
 test("the environment the CLI reports is emitted on the sink AND logged", async () => {

@@ -25,7 +25,14 @@
  *     resolved path escapes the workspace — a second, independent check, since
  *     a defence that exists in one layer only is a defence that has never been
  *     tested.
- *   - `canUseTool` denies the `Agent`/`Task` tool unless `isolation` is absent,
+ *   - The MCP surface is REMOVED from a build outright:
+ *     `managedSettings.allowedMcpServers: []` with `allowManagedMcpServersOnly`.
+ *     Measured at zero servers against 13 unnarrowed. A delegation-shaped MCP
+ *     tool cannot be enumerated reliably — `railway-agent{isolation:"remote"}`
+ *     matched no name gate — so the surface is narrowed away rather than guarded.
+ *   - `canUseTool` denies a DELEGATION-SHAPED call — `Agent`/`Task` by name, or
+ *     any tool of any name carrying `subagent_type`, `isolation` or
+ *     `run_in_background` (see delegation-hook.ts) — unless `isolation` is absent,
  *     `run_in_background` is explicitly `false`, and `subagent_type` is on a
  *     configured shortlist. THE SHORTLIST IS NO LONGER EMPTY: Phase 1 Task 3
  *     supplied it, and it arrives on `BuildRequest.allowedAgents` — the
@@ -121,6 +128,7 @@ import type {
 import { describeEnvironment, environmentFromInit } from "../build-environment.js";
 import type { InitEnvelope, RunEnvironment } from "../build-environment.js";
 import { subscriptionSubprocessEnv } from "../subprocess-env.js";
+import { isDelegationShaped } from "./delegation-hook.js";
 import { addTokens, zeroTokens } from "../tokens.js";
 import type { TokenTotals } from "../tokens.js";
 import type { BuildEventSink, BuildOutcome, BuildRequest, SubscriptionBuilder } from "./types.js";
@@ -564,7 +572,23 @@ export function decideToolPermission(
   //   - isolation:"remote" runs the build OFF-HOST entirely
   //   - run_in_background DEFAULTS TO TRUE, so children keep writing the
   //     workspace after the parent returns and the gate scores a moving tree
-  if (toolName === "Agent" || toolName === "Task") {
+  //
+  // JUDGED BY NAME **OR** BY SHAPE, and the disjunction is deliberate — this is
+  // a DIVERGENCE from the Phase 1.1 plan, which wrote `if
+  // (isDelegationShaped(input))` alone. Measured before it was changed: under
+  // the shape check alone, `Agent{description, prompt}` returns ALLOW. The SDK's
+  // own `AgentInput` makes `subagent_type` OPTIONAL (sdk-tools.d.ts:496) and
+  // `run_in_background` documents itself as defaulting to background, so that
+  // call is schema-valid, carries none of the three fields, and is a background
+  // general-purpose delegation waved through by the guard that exists to stop
+  // exactly that. Pinned by "an Agent call carrying NONE of the three fields is
+  // still denied", which goes red the moment the name half is removed.
+  //
+  // The plan's argument is that a name test is INSUFFICIENT, never that it is
+  // harmful — `mcp__plugin_railway_railway__railway-agent{isolation:"remote"}`
+  // matches no name and must still be judged. A disjunction is strictly a
+  // widening: nothing judged before became unjudged.
+  if (toolName === "Agent" || toolName === "Task" || isDelegationShaped(input)) {
     if ("isolation" in input && input["isolation"] !== undefined) {
       return {
         behavior: "deny",
@@ -756,6 +780,30 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     managedSettings: {
       permissions: { deny: sealedRoots.map(denyReadRule) },
       allowManagedPermissionRulesOnly: true,
+      // NO MCP SERVERS. `allowedMcpServers: []` is documented as "no servers are
+      // allowed" (sdk.d.ts:5119); the `Only` lock stops user settings re-adding
+      // any. MEASURED: zero servers reach a run under this pair, against 13
+      // unnarrowed.
+      //
+      // THIS IS NARROWING, NOT GUARDING, and that is the whole point. The Agent
+      // branch was gated on the tool NAME, so a delegation-shaped MCP tool —
+      // `railway-agent{isolation:"remote"}` runs the build off this machine
+      // entirely — sailed past it. Enumerating such tools is the READ_TOOLS
+      // mistake again: the list is never complete. Removing the whole surface is
+      // complete by construction. The shape backstop in `decideToolPermission`
+      // stays, for a tool that reaches `canUseTool` from somewhere this does not
+      // reach.
+      //
+      // TYPE, CHECKED RATHER THAN ASSUMED: `allowedMcpServers` is
+      // `Array<{serverName?, serverCommand?, serverUrl?}>` (sdk.d.ts:5121), NOT
+      // `string[]` as the plan's prose said. An empty array satisfies it, so no
+      // `deniedMcpServers` fallback is needed here — but anything non-empty must
+      // be written as objects, not names.
+      //
+      // A BUILD KEEPS NONE OF THIS. It writes code in a workspace; it has no
+      // business deploying, driving a browser, or spawning a remote agent.
+      allowedMcpServers: [],
+      allowManagedMcpServersOnly: true,
     },
     sandbox: {
       enabled: true,
