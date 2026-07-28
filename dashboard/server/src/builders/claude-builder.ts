@@ -1,0 +1,311 @@
+/**
+ * builders/claude-builder.ts — the Anthropic build driver.
+ *
+ * AUTHENTICATION: `claude setup-token` / `claude auth login`. No API key is
+ * read, passed or required. The SDK spawns the `claude` binary, which uses the
+ * OAuth token it stores itself (on macOS, in the login keychain).
+ *
+ * ISOLATION, AND HOW IT DIFFERS FROM THE BAKE-OFF'S. The bake-off runs its
+ * builder inside a pinned container with egress denied — that seal is a
+ * measurement control, worth 14.1-20.7pp of apparent quality. The dashboard
+ * builder runs ON THE HOST, because a personal tool that cannot `npm install`
+ * cannot build anything. That is a real difference and it is recorded here
+ * rather than glossed: a dashboard run is not a bake-off run and the two must
+ * never be compared. What IS enforced:
+ *
+ *   - `cwd` is the run's own workspace, and the CLI's sandbox is enabled with
+ *     `filesystem.allowWrite` scoped to that directory, so a build cannot
+ *     write outside its workspace.
+ *   - `failIfUnavailable: true` by default. If the sandbox cannot start, the
+ *     run FAILS with a named remediation instead of silently continuing
+ *     unsandboxed with write access to the whole home directory. The owner can
+ *     opt out deliberately with DASHBOARD_ALLOW_UNSANDBOXED_BUILDER=1.
+ *   - `canUseTool` answers every permission request itself, so nothing can
+ *     park waiting for a human who is not there. It also denies writes whose
+ *     resolved path escapes the workspace — a second, independent check, since
+ *     a defence that exists in one layer only is a defence that has never been
+ *     tested.
+ *   - The acceptance suite lives OUTSIDE the workspace (dashboard/acceptance),
+ *     is never mounted into it, and the held-out half is never copied in.
+ *
+ * THE HELD-OUT SUITE IS ALSO DENIED FOR READING, added by the integrator on
+ * 2026-07-27 after auditing this file. Until then the suite was protected
+ * against being WRITTEN and not against being READ, and it sits on the host
+ * filesystem two directories above the workspace. A builder that reads the
+ * held-out tests can satisfy them without satisfying the ticket, which makes
+ * `heldOutPass` and `falseFinish` meaningless for that run, and there is no
+ * detector for it. Two layers now:
+ *
+ *   1. {@link decideToolPermission} denies Read/Grep/Glob/NotebookRead — as
+ *      well as the write tools — for any path resolving into the suite store.
+ *      EXECUTED: unit-tested directly, with a negative control.
+ *   2. `sandbox.filesystem.denyRead` names the suite store to the CLI's own OS
+ *      sandbox, which is the only layer that can cover Bash. PLUMBING EXECUTED
+ *      (the value reaches the CLI's `--settings`); ENFORCEMENT NOT EXERCISED —
+ *      proving it needs a real build, which costs quota.
+ *
+ * This is still weaker than the bake-off's boundary, which is a container the
+ * held-out half is never mounted into. Said plainly in dashboard/STATUS.md.
+ *
+ * THE SDK'S `total_cost_usd` IS NOT READ. See claude-common.ts.
+ */
+
+import { resolve } from "node:path";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  NOT_RATE_LIMITED,
+  assistantText,
+  extractTokens,
+  rateLimitFrom,
+  resultErrorText,
+  summariseToolInput,
+  toolUses,
+  truncate,
+} from "../claude-common.js";
+import type { RateLimitState } from "../claude-common.js";
+import { subscriptionSubprocessEnv } from "../subprocess-env.js";
+import { addTokens, zeroTokens } from "../tokens.js";
+import type { TokenTotals } from "../tokens.js";
+import type { BuildOutcome, BuildRequest, SubscriptionBuilder } from "./types.js";
+
+/** Set to "1" to let a build run when the CLI sandbox cannot start. */
+export const ALLOW_UNSANDBOXED_ENV = "DASHBOARD_ALLOW_UNSANDBOXED_BUILDER";
+
+/**
+ * Turn caps.
+ *
+ * NOT a stuck-detector. doc 03 section 7.8 is explicit: 79% of unresolved
+ * long-horizon runs time out WHILE STILL MAKING PROGRESS, so heuristic
+ * stuck-detection kills runs that were converging. This is a plain boundary,
+ * like a wall clock, and when it is hit the run is recorded as incomplete
+ * rather than failed-for-inability.
+ */
+export const DEFAULT_MAX_TURNS = 400;
+
+/** Tools whose input names a path that must stay inside the workspace. */
+const PATH_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+/**
+ * Tools that READ a named path. Denied when the path lands in the sealed suite
+ * store — reading the held-out tests is not a lesser version of editing them,
+ * it is the same defeat of the gate reached a different way.
+ *
+ * `Bash` is deliberately NOT in this set and cannot be: with
+ * `autoAllowBashIfSandboxed: true` a sandboxed command never reaches
+ * `canUseTool` at all, and pattern-matching shell text for `cat`/`grep` would
+ * be a filter anyone could step around while reading as if it were a boundary.
+ * The OS-level `denyRead` below is the layer that covers Bash.
+ */
+const READ_TOOLS = new Set(["Read", "NotebookRead", "Glob", "Grep"]);
+
+/** Keys under which the SDK's file tools carry the path they act on. */
+const PATH_INPUT_KEYS = ["file_path", "path", "notebook_path"] as const;
+
+function pathInput(input: Record<string, unknown>): string | null {
+  for (const key of PATH_INPUT_KEYS) {
+    const value = input[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+function insideDir(dir: string, candidate: string, base: string): boolean {
+  const root = resolve(dir);
+  const target = resolve(base, candidate);
+  return target === root || target.startsWith(`${root}/`);
+}
+
+function insideWorkspace(workspace: string, candidate: string): boolean {
+  return insideDir(workspace, candidate, resolve(workspace));
+}
+
+/**
+ * The permission decision, as a pure function, so it can be exercised without
+ * spawning a CLI. `claude-builder.test.ts` calls it directly.
+ *
+ * Relative paths are resolved against the workspace, which is the builder's
+ * `cwd` — the same resolution the CLI performs.
+ */
+export function decideToolPermission(
+  toolName: string,
+  input: Record<string, unknown>,
+  workspace: string,
+  sealedRoots: readonly string[],
+): PermissionResult {
+  const raw = pathInput(input);
+  if (raw !== null && (PATH_TOOLS.has(toolName) || READ_TOOLS.has(toolName))) {
+    if (sealedRoots.some((root) => insideDir(root, raw, resolve(workspace)))) {
+      return {
+        behavior: "deny",
+        message:
+          "That path is the SEALED ACCEPTANCE SUITE. It is held out on purpose: it is the " +
+          "independent check on whether this ticket was actually delivered, and a build that reads " +
+          "it can satisfy it without satisfying the ticket. Build from the brief and from " +
+          "`visible-acceptance/` in the workspace.",
+      };
+    }
+  }
+  if (raw !== null && PATH_TOOLS.has(toolName) && !insideWorkspace(workspace, raw)) {
+    return {
+      behavior: "deny",
+      message:
+        `This run may only write inside its own workspace (${workspace}). Put the implementation there.`,
+    };
+  }
+  // Everything else is allowed WITHOUT asking, because there is nobody to ask:
+  // an unanswered permission prompt has no park deadline and would hang the run
+  // forever.
+  return { behavior: "allow" };
+}
+
+export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
+  readonly provider = "anthropic" as const;
+
+  async build(request: BuildRequest): Promise<BuildOutcome> {
+    const { sink, workspace } = request;
+    let tokens = zeroTokens("anthropic");
+    let rateLimit: RateLimitState = NOT_RATE_LIMITED;
+    let sessionId: string | null = request.resumeSessionId;
+    let completed = false;
+    let failure: string | null = null;
+
+    const allowUnsandboxed = (request.env[ALLOW_UNSANDBOXED_ENV] ?? "").trim() === "1";
+
+    const sealedRoots = request.sealedRoots.map((root) => resolve(root));
+
+    const canUseTool = async (
+      toolName: string,
+      input: Record<string, unknown>,
+    ): Promise<PermissionResult> =>
+      decideToolPermission(toolName, input, workspace, sealedRoots);
+
+    const options: Options = {
+      cwd: workspace,
+      model: request.modelId,
+      maxTurns: DEFAULT_MAX_TURNS,
+      permissionMode: "acceptEdits",
+      canUseTool,
+      includePartialMessages: false,
+      // The builder gets the full Claude Code tool set: it is building software.
+      tools: { type: "preset", preset: "claude_code" },
+      // The owner's global CLAUDE.md, settings and plugins are NOT loaded. The
+      // ticket brief is the specification; anything else is an uncontrolled
+      // input that changes what was built without appearing in the ticket.
+      settingSources: [],
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: !allowUnsandboxed,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: allowUnsandboxed,
+        // `denyRead` is the ONLY layer that covers Bash, because
+        // `autoAllowBashIfSandboxed` means a sandboxed command never reaches
+        // `canUseTool`. It is enforced by the CLI's own OS sandbox, and THAT
+        // ENFORCEMENT HAS NOT BEEN EXERCISED HERE — running a build to prove it
+        // costs subscription quota. What has been executed is that this value
+        // reaches the CLI: `test/settings-plumbing.mjs` runs the SDK against a
+        // stub executable and asserts the acceptance root appears in the
+        // `--settings` payload. See dashboard/STATUS.md, "The held-out boundary".
+        filesystem: { allowWrite: [workspace], denyRead: sealedRoots },
+      },
+      // Metered credentials stripped: a build must be subscription traffic or
+      // it silently becomes a bill the dashboard reports as costUsd: null.
+      env: subscriptionSubprocessEnv(request.env),
+      ...(request.effort === null ? {} : { effort: request.effort }),
+      ...(request.resumeSessionId === null ? {} : { resume: request.resumeSessionId }),
+    };
+
+    const abortController = new AbortController();
+    const onAbort = (): void => {
+      abortController.abort();
+    };
+    request.signal.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      const session = query({
+        prompt: request.prompt,
+        options: { ...options, abortController },
+      });
+
+      for await (const message of session as AsyncIterable<SDKMessage>) {
+        if (message.type === "system" && message.subtype === "init") {
+          sessionId = message.session_id;
+          sink.session(message.session_id);
+          sink.log("info", `Claude session ${message.session_id} started in ${workspace}`);
+          continue;
+        }
+
+        if (message.type === "assistant") {
+          const text = assistantText(message);
+          if (text.trim().length > 0) {
+            sink.raw(`\n[assistant]\n${text}\n`);
+            sink.log("info", truncate(text, 500));
+          }
+          for (const use of toolUses(message)) {
+            sink.tool(use.name, summariseToolInput(use.input));
+          }
+          continue;
+        }
+
+        if (message.type === "rate_limit_event") {
+          rateLimit = rateLimitFrom(message.rate_limit_info);
+          sink.rateLimit(rateLimit);
+          continue;
+        }
+
+        if (message.type === "result") {
+          tokens = addTokens(tokens, extractTokens(message.usage, message.num_turns));
+          sink.tokens(tokens);
+          if (message.subtype === "success") {
+            completed = true;
+            sink.raw(`\n[result] success after ${String(message.num_turns)} turn(s)\n`);
+          } else {
+            failure = `${message.subtype}: ${resultErrorText(message)}`;
+            sink.log("warn", `build ended: ${failure}`);
+            sink.raw(`\n[result] ${failure}\n`);
+          }
+          continue;
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (request.signal.aborted) {
+        return { sessionId, tokens, rateLimit, completed: false, cancelled: true, failure: null };
+      }
+      if (/rate.?limit|usage limit|429/i.test(message)) {
+        rateLimit = { limited: true, retryAfterSec: null, kind: null, utilization: null };
+        sink.rateLimit(rateLimit);
+      }
+      failure = describeFailure(message, allowUnsandboxed);
+      sink.log("error", failure);
+    } finally {
+      request.signal.removeEventListener("abort", onAbort);
+    }
+
+    return {
+      sessionId,
+      tokens,
+      rateLimit,
+      completed,
+      cancelled: request.signal.aborted,
+      failure,
+    };
+  }
+}
+
+function describeFailure(message: string, allowUnsandboxed: boolean): string {
+  if (!allowUnsandboxed && /sandbox/i.test(message)) {
+    return (
+      `the Claude CLI sandbox could not start: ${truncate(message, 400)}. ` +
+      `The build was stopped rather than run unsandboxed with write access to the whole home ` +
+      `directory. To accept that risk deliberately, set ${ALLOW_UNSANDBOXED_ENV}=1 and restart the ` +
+      `dashboard.`
+    );
+  }
+  return truncate(message, 600);
+}
+
+/** Tokens for a build that never started. Keeps the caller's arithmetic total. */
+export function noBuildTokens(): TokenTotals {
+  return zeroTokens("anthropic");
+}
