@@ -528,6 +528,15 @@ export class Orchestrator {
     const builder: SubscriptionBuilder =
       entry.option.provider === "openai" ? new CodexSubscriptionBuilder() : new ClaudeSubscriptionBuilder();
 
+    // ONE EXPRESSION, TWO CONSUMERS. This value is both what the prompt names
+    // and what `canUseTool` allowlists (`allowedAgents`, below). Calling
+    // `shortlistFor` twice would compile and read fine and drift the moment
+    // Task 5 changes one call site — and the drift is silent in BOTH
+    // directions: an agent named in the prompt but missing from the guard burns
+    // turns on calls that can never succeed, and one allowed but unnamed is a
+    // specialist the orchestrator never learns it has.
+    const delegationShortlist = shortlistFor("fullstack");
+
     const resuming = row.builderSessionId !== null;
     const prompt = resuming
       ? resumeBuilderPrompt(
@@ -535,7 +544,11 @@ export class Orchestrator {
             ? "the provider's rate-limit window was exhausted"
             : "the dashboard was interrupted",
         )
-      : dashboardBuilderPrompt(ticket.brief, runPaths.workspace);
+      : dashboardBuilderPrompt({
+          ticketText: ticket.brief,
+          workspaceDir: runPaths.workspace,
+          allowedAgents: delegationShortlist,
+        });
     // REDACTED ON THE WAY TO DISK. The prompt embeds the ticket text, and here
     // the ticket text is FREE-FORM OWNER INPUT typed into a web form — not a
     // frozen, harness-authored brief as in the bake-off. Every other persisted
@@ -594,7 +607,10 @@ export class Orchestrator {
       // failure mode of a too-narrow one is silent: the orchestrator asks for a
       // specialist, the guard denies it, and the lane produces nothing, which
       // looks exactly like a lane that had nothing to do.
-      allowedAgents: shortlistFor("fullstack"),
+      //
+      // Task 5 changes `delegationShortlist` above, ONCE, and the prompt and
+      // this boundary move together.
+      allowedAgents: delegationShortlist,
       modelId: row.modelId,
       effort: entry.effort,
       resumeSessionId: row.builderSessionId,
