@@ -3,7 +3,11 @@
 Written by the integrator on 2026-07-27, after installing both trees, running
 the pipeline, and auditing the seal on the dashboard path. **Corrected on
 2026-07-28** by the Phase 0 held-out-boundary pass; every claim it changed is
-dated in place rather than silently overwritten.
+dated in place rather than silently overwritten. **Corrected again on
+2026-07-29** by the Phase 1.1 enforcement pass, which stopped asking the SDK's
+type definitions which layers enforce anything and measured it against live
+sessions — including by REMOVING a layer and watching the boundary fail. Same
+rule: dated in place, never silently overwritten.
 
 Nothing here is aspirational. Every claim carries its evidence level, and there
 are **three**, not two:
@@ -14,6 +18,15 @@ are **three**, not two:
   Their word, recorded as their word.
 
 If something is missing from all three, it is not here.
+
+An EXECUTED claim dated **2026-07-29** carries one extra thing, and where it
+does the row says so: the layer was **removed** and the boundary was watched
+failing. A layer that is never removed has not been shown to be the one doing
+the work — this document has twice recorded a mechanism as load-bearing that
+turned out to enforce nothing. Those runs belong to the Phase 1.1 pass, not to
+this session; each names the artefact under
+`dashboard/server/probes/results/` that records it, and those artefacts are
+read-only.
 
 ---
 
@@ -64,27 +77,93 @@ above supersedes. What is there now, with its evidence level:
 
 | Layer | Driver | Evidence |
 |---|---|---|
-| `decideToolPermission` denies the sealed roots — the suite store **and** `results/scorer-out` — for **every tool name**, built-in or `mcp__*` or one that ships next year; by **every value in the input at any depth**, arrays and nested objects included, **and by every object KEY**, except a free-text key's own STRING **on the one tool that key owns it** (`Bash{command}`, `Write{content}`, …) — an unknown tool inherits no exemption at all; judging a glob by the **literal tree it would walk** rather than its raw spelling; in **either direction**, i.e. a candidate inside a sealed root *or* one that contains it; comparing **case-folded canonical forms** with `file://` URIs and percent-encoding decoded first; resolving relatives against the builder's `cwd`, and folding that `cwd` in **unconditionally** for `Grep`/`Glob` | Anthropic | **EXECUTED** — 62 unit tests in `src/builders/claude-builder.test.ts` (62 pass, 0 fail), every widening carrying a negative control that ordinary work is still allowed. **Corrected 2026-07-28 (second pass).** Until that pass this row read "any of 15 path-bearing input keys" — a KEY allowlist, which an adversarial review defeated with `Glob{pattern:"<suite>/**/*"}`, `pattern` not being on the list. The polarity is now inverted: every value is a suspected path unless its key is named free text. **Widened again 2026-07-28 (third pass)** after five more bypasses were probed open against the shipping `dist`: an un-expanded wildcard above the sealed root, a depth-8 nest outrunning the walker's depth cap, a sealed path used as an object KEY, a free-text key pruning its whole SUBTREE, and `command` exempt for every tool rather than for `Bash`. All five now deny; the Agent branch no longer returns before the sealed scan. **Two of the class are still OPEN — see §3.** Still a pure-function proof: `decideToolPermission` performs no filesystem access and no `await`, and the caller injects the fs-aware canonicaliser, so symlink resolution is exercised only through that injection. That the hook fires for **subagent-originated** calls is unverified (§3). |
-| `decideToolPermission` denies the `Agent`/`Task` tool unless `isolation` is absent, `run_in_background` is explicitly `false`, and `subagent_type` is on a configured shortlist | Anthropic | **EXECUTED** — 8 dedicated Agent-guard tests among those 62 (counted in the file). **Corrected 2026-07-28 (third pass):** the sealed-root scan now runs BEFORE this branch, because the branch used to return — allow as well as deny — before any candidate was judged, so a well-formed shortlisted `Agent{subagent_type:ok, file_path:"<suite>/x"}` was ALLOWED. That was unreachable only while the shortlist is empty. The shortlist is empty in production today, so **all** delegation is denied; see §2.4. |
-| `sandbox.filesystem.denyRead` names the sealed roots to the CLI's OS sandbox | Anthropic | **SPLIT — half executed, half not. Corrected 2026-07-28 (third pass).** The BUILDER SIDE is now EXECUTED: `buildOptions(request, allowUnsandboxed)` is an exported seam and `claude-builder.test.ts` asserts the returned object directly — `denyRead` is every sealed root canonicalised, `allowWrite` is the workspace alone, `cwd` shares that spelling, `sandbox.enabled` is true and `failIfUnavailable` true unless opted out, `canUseTool` is present AND denies a sealed path when called. Emptying `denyRead` or widening `allowWrite` to `/` now turns tests red (recorded in §1.9). The OS SIDE is still **NOT EXECUTED**: no run has shown the CLI's sandbox refusing a read, and `settings-plumbing.test.ts` still only proves the SDK forwards a `denyRead` array it was handed directly — it never calls the builder. Whether `denyRead` binds anything beyond sandboxed Bash is unresolved (§3). |
+| `decideToolPermission` denies the sealed roots — the suite store **and** `results/scorer-out` — for **every tool name**, built-in or `mcp__*` or one that ships next year; by **every value in the input at any depth**, arrays and nested objects included, **and by every object KEY**, except a free-text key's own STRING **on the one tool that key owns it** (`Bash{command}`, `Write{content}`, …) — an unknown tool inherits no exemption at all; judging a glob by the **literal tree it would walk** rather than its raw spelling; in **either direction**, i.e. a candidate inside a sealed root *or* one that contains it; comparing **case-folded canonical forms** with `file://` URIs and percent-encoding decoded first; resolving relatives against the builder's `cwd`, and folding that `cwd` in **unconditionally** for `Grep`/`Glob` | Anthropic | **EXECUTED** — 62 unit tests in `src/builders/claude-builder.test.ts` (62 pass, 0 fail), every widening carrying a negative control that ordinary work is still allowed. **Corrected 2026-07-28 (second pass).** Until that pass this row read "any of 15 path-bearing input keys" — a KEY allowlist, which an adversarial review defeated with `Glob{pattern:"<suite>/**/*"}`, `pattern` not being on the list. The polarity is now inverted: every value is a suspected path unless its key is named free text. **Widened again 2026-07-28 (third pass)** after five more bypasses were probed open against the shipping `dist`: an un-expanded wildcard above the sealed root, a depth-8 nest outrunning the walker's depth cap, a sealed path used as an object KEY, a free-text key pruning its whole SUBTREE, and `command` exempt for every tool rather than for `Bash`. All five now deny; the Agent branch no longer returns before the sealed scan. **Two of the class are still OPEN — see §3.** Still a pure-function proof: `decideToolPermission` performs no filesystem access and no `await`, and the caller injects the fs-aware canonicaliser, so symlink resolution is exercised only through that injection. **Corrected 2026-07-29 (Phase 1.1).** Two things this row used to say are now history. The Agent/Task branch inside this function is **deleted** — `canUseTool` is never consulted for the Agent tool, measured under `acceptEdits`, `default` **and** `dontAsk`, the callback returning deny and the subagent starting in every arm (`probes/results/A-default.json`, `A-dontAsk.json`); see §2.4. And this scan is no longer the layer that stops a sealed read: in the live adversarial run the sealed `Read` came back with the POLICY tier's phrase, not this callback's message, so in production it is a backstop for tools the policy rule does not name, not the boundary. Whether it fires for **subagent-originated** calls is still unverified, and now matters less: the tool that spawns subagents never reaches it at all. |
+| A programmatic **`PreToolUse` hook** — not `canUseTool` — denies a delegation unless `isolation` is absent, `run_in_background` is explicitly `false`, and `subagent_type` is on this run's shortlist; the same hook denies `SendMessage` outright | Anthropic | **EXECUTED, AND PROVEN LOAD-BEARING BY REMOVAL. Replaced 2026-07-29 (Phase 1.1).** Until that date this row described 8 `canUseTool` tests over a branch **the engine never called**, and claimed the shortlist was empty; both were false — the shortlist has been non-empty since `4e05543`, and the branch was dead in all three permission modes measured. The three conditions are unchanged in substance; they now sit in a slot the engine consults. Live adversarial run 2 (`probes/results/DOD.json`, `runs.DOD-2`): `wordpress-master` was named in the ticket, the model emitted the delegation, the hook saw it and denied it — **no `task_started`, no `SubagentStart`, no agentId minted, no tokens billed** — while shortlisted `code-reviewer` started in the SAME session and billed 14,834 tokens, so the absence is a measurement rather than a model that never delegated. **Removal proof:** make the hook return `{continue:true}` and that run FAILS — `wordpress-master` runs, with its own agentId and 15,871 tokens. Independently reproduced by flipping one bit of the hook's decision in `probes/results/F-AUDIT-MUTATION.json` (`mutationRestoredSpawn: true`; the background child started and billed 15,047). **This is the WEAK half of the boundary — read the asymmetry below before you rely on it.** |
+| `sandbox.filesystem.denyRead` names the sealed roots to the CLI's OS sandbox | Anthropic | **EXECUTED ON BOTH SIDES — corrected 2026-07-29 — AND IT COVERS BASH ONLY.** The BUILDER SIDE was already executed (2026-07-28, third pass): `buildOptions(request, allowUnsandboxed)` is an exported seam and `claude-builder.test.ts` asserts the returned object directly — `denyRead` every sealed root canonicalised, `allowWrite` the workspace alone, `cwd` in the same spelling, `sandbox.enabled` true, `failIfUnavailable` true unless opted out. Emptying `denyRead` or widening `allowWrite` to `/` turns tests red (§1.9). The OS SIDE is now executed too: in live run 1 a sandboxed `cat` of the sealed file came back `Operation not permitted` — the seatbelt's own words, not a permission message (`probes/results/DOD.json`, `runs.DOD-1.observations.sealedCatRecords`). **What makes it a layer of its own is the isolating removal:** with `managedSettings.permissions.deny` EMPTIED, `cat` was still refused. So Bash is covered TWICE, independently. **It does NOT cover the in-process `Read` tool** — Phase 1 measured `denyRead` alone leaving that tool free, and that asymmetry is why the row below exists. `settings-plumbing.test.ts` still proves nothing about any of this: it builds its own `Options` literal and never calls the builder. |
+| `managedSettings.permissions.deny` names the sealed roots at the CLI's **POLICY** tier, with `allowManagedPermissionRulesOnly` so nothing in user, project or local settings can widen it | Anthropic | **EXECUTED, AND PROVEN LOAD-BEARING BY REMOVAL. New 2026-07-29 (Phase 1.1) — this is the layer the in-process `Read` tool has, and it is the ONLY one it has.** Probe B, three consecutive live runs under strengthened gates, then live adversarial run 1: `Read` of the sealed file returned `File is in a directory that is denied by your permission settings.`, the sentinel appeared nowhere, the read WAS attempted, and non-sealed files stayed readable by both `Read` and `cat` in the same run, so the denial is scoped rather than a blanket break (`probes/results/B.json`, `probes/results/history/B-2026-07-28T19-*.json`, `probes/results/DOD.json` `runs.DOD-1`). **Removal proof:** empty the deny array and run 1 FAILS with the sentinel leaking into the transcript. No callback and no hook is involved — precedence is `user < project < local < flag < policy` and this is the policy tier, and the sealed `Read` never reaches the `PreToolUse` hook at all because this rule stops it first. **Credit the PAIR, not the deny rule alone:** the rule and `allowManagedPermissionRulesOnly` were never separated in any run. |
 | anything | **OpenAI / Codex** | **NONE.** `ThreadOptions` exposes no read restriction; `sandboxMode: "workspace-write"` limits writes only, and `additionalDirectories` is an *allow* list. A Codex build can `cat` the held-out suite. |
 
 Two further facts you should not have to discover:
 
 - `autoAllowBashIfSandboxed: true` means a sandboxed Bash command **never
-  reaches** the permission hook. `cat`/`grep` are covered only by the OS layer —
-  the one that is unverified on Anthropic and absent on Codex.
+  reaches** the permission callback. `cat`/`grep` are covered by the OS layer,
+  which on Anthropic is no longer unverified — **corrected 2026-07-29**: it was
+  measured refusing a sealed `cat` with `Operation not permitted`, and measured
+  still refusing it with the policy-tier rule emptied. On **Codex** that layer
+  is absent, and no other layer replaces it.
+- **The count of layers DIFFERS PER TOOL, and one rule does not cover both.**
+  `sdk.d.ts:6194` says `Read(...)` deny rules merge into the sandbox's
+  `denyRead`, and until 2026-07-29 this document leaned on that to claim one
+  rule covered the in-process `Read` tool and sandboxed Bash together. **The
+  merge claim is withdrawn as an attribution.** With `permissions.deny` emptied
+  the sandboxed `cat` was still refused, so the two are INDEPENDENT layers, and
+  the earlier run — which had both set — could never have told "the rule
+  merged" from "`denyRead` bound on its own". The honest count: sandboxed Bash
+  has **two** layers, the in-process `Read` tool has **one**. The two refusals
+  are distinguishable by their text, and that is the discriminator worth
+  keeping: `File is in a directory that is denied by your permission settings.`
+  is the policy tier; `Operation not permitted` is the seatbelt.
 - Deliberately not fixed by withholding the plaintext during the build window:
   any durable on-disk form is equally readable by a same-UID process, and an
   in-memory-only form makes a server restart destroy the suite. That trade was
   considered and rejected, not overlooked.
 
 **Consequence, stated plainly:** a `heldOutPass` recorded on or after
-2026-07-28 is a policy-enforced result — a rule inside the CLI that the build is
-asked to obey, not a filesystem the build cannot reach. One recorded before
-2026-07-28 is not even that: it was produced under a boundary with an executed
-bypass and cannot be retrospectively verified. Neither is the bake-off's sealed
-measurement, and neither may be reported as one.
+2026-07-29 is a policy-enforced result — literally a rule at the CLI's policy
+tier plus an OS sandbox clause, not a filesystem the build cannot reach. That
+is stronger than it was on 2026-07-28, when the same sentence had to be written
+about a permission callback; it is still policy inside a process running as the
+owner's own UID, so it is not the bake-off's container and may not be reported
+as one. A `heldOutPass` recorded before 2026-07-28 is not even that: it was
+produced under a boundary with an executed bypass and cannot be retrospectively
+verified.
+
+### The two boundaries are NOT the same strength, and that is deliberate
+
+**New 2026-07-29 (Phase 1.1).** This system enforces two different things by
+two different mechanisms, and the gap between them is the single most useful
+thing on this page.
+
+| | Sealed-suite integrity | Delegation shortlist |
+|---|---|---|
+| Enforced by | `managedSettings.permissions.deny` + `allowManagedPermissionRulesOnly` — the CLI's **policy** tier — and `sandbox.filesystem.denyRead` | ONE programmatic `PreToolUse` hook, with no `matcher`. Nothing else. |
+| Callback involved | none | the whole of it |
+| Can the owner's own settings widen it | **no** — precedence is `user < project < local < flag < policy` | not applicable; there is no settings expression of `subagent_type` at all |
+| Proven load-bearing by | emptying `permissions.deny` → run 1 FAILS, sentinel leaks. Emptying it while keeping `denyRead` → `cat` still refused, `Read` not | making the hook return `{continue:true}` → run 2 FAILS, `wordpress-master` runs with its own agentId and 15,871 tokens |
+| If it fails | `heldOutPass` and `falseFinish` are meaningless for that run, and **nothing detects it** | a wasted run, wrong-tier spend, a subagent nobody shortlisted |
+
+The strong layer carries the property that must not fail. The weak layer
+carries the property whose failure costs a run. What Phase 1 got wrong was
+having integrity depend on the weak layer — and the weak layer, at that point,
+was a callback that was never consulted at all.
+
+**Why the shortlist cannot be moved to the strong tier:** no engine mechanism
+expresses `subagent_type`. `disallowedTools` is name-granular, `permissions.deny`
+is path-granular, and `subagent_type` is a free string in the SDK's schema.
+`Options.agents` does not bind for these names either (§2.4). The hook is not
+the preferred instrument; it is the only one.
+
+**THE LATENT RISK, recorded because it is one plugin install away.** A
+`PreToolUse` hook that returns `permissionDecision: "allow"` pre-empts
+`canUseTool` entirely — `sdk.d.ts:4166`, verbatim: *"PreToolUse hook denies
+bypass canUseTool and are not covered here"* — and that bypass was proven live
+on a fixture hook, with the sealed suite's contents coming back in the
+transcript. Builds therefore set `managedSettings.allowManagedHooksOnly: true`.
+Probe C measured what that lock does and does not do: it suppressed a
+project-tier hook **and** a flag-tier hook (more than `sdk.d.ts:5418` names)
+while our own programmatic `Options.hooks` callback still fired under it
+(`probes/results/C.json`).
+
+**The cost, recorded rather than glossed: that lock also disables the owner's
+`secret-guard.sh`**, which is protective — it hard-blocks writing a live Stripe
+secret key into a file or a command. A build writes only inside its own
+workspace and is handed no secrets, so the exposure is small. It is not zero,
+and it is a real thing traded away for a bypass that is currently latent: every
+hook installed in `~/.claude/` today emits only `"deny"`.
+
+**What is NOT measured here:** whether a foreign `allow`-returning hook would
+pre-empt OUR deny. The lock removes the case rather than answering it. If the
+lock is ever turned off, that question is open again and unanswered.
 
 ---
 
@@ -265,7 +344,7 @@ Everything below was read in the wired code and, where marked, executed.
 | Scorer gets no network | `--network=none` is hardcoded in `scorer.ts`; `assertSealedInvocation` re-checks the argv and rejects conflicting or network-restoring flags (`--net`, `--dns`, `--add-host`) | **Intact.** `gateEnv()` exposes only `PATH`, `HOME`, results dir, acceptance root, image ref, timeout — there is no network knob to override. EXECUTED via the dry run and 3 e2e containers. |
 | `agentDeclaredDone` from a structured signal | `readSelfReport(workspace)` → `.bakeoff/self-report.json`, compared `status === "done"` | **Intact.** No prose is parsed anywhere. EXECUTED via the dry run. |
 | Builder cannot **write** the held-out suite | permission hook + `sandbox.filesystem.allowWrite` + `materialiseVisibleSubset` refuses a workspace inside `acceptance/` and refuses a visible file that mentions `holdout/` | **Intact.** EXECUTED (unit tests). |
-| Builder cannot **read** the held-out suite | see §0 | **WAS OPEN, and the 2026-07-27 close was incomplete — an executed bypass survived it until 2026-07-28.** Now closed on the Anthropic path — every input value judged, canonical case-folded comparison, `file://` and percent-encoding normalised, symlinks resolved by the caller — and still absent on Codex, so: asymmetric. Read §0 before trusting a result, and treat any result dated before 2026-07-28 as unverified. |
+| Builder cannot **read** the held-out suite | see §0 | **WAS OPEN, and the 2026-07-27 close was incomplete — an executed bypass survived it until 2026-07-28.** Now closed on the Anthropic path — and **corrected 2026-07-29**: this row used to describe only the permission callback's scan (every input value judged, canonical case-folded comparison, `file://` and percent-encoding normalised, symlinks resolved by the caller), which is no longer the layer that does the work. A live run measured the `Read` refused by the POLICY tier and a sandboxed `cat` refused by the OS sandbox, independently of each other. Still absent on Codex, so: asymmetric. Read §0 before trusting a result, and treat any result dated before 2026-07-28 as unverified. |
 | Only the visible half reaches the workspace | `materialiseVisibleSubset` filters `visibility !== "visible"`, flattens the paths so the builder never learns a `visible/` directory existed, and therefore never learns a sibling `holdout/` might | **Intact.** EXECUTED via the dry run. |
 | Dashboard records cannot pollute a campaign | `assertOutsideBakeoff` at startup on all four roots; `gateEnv` redirects `BAKEOFF_RESULTS_DIR` / `BAKEOFF_ACCEPTANCE_ROOT` | **Intact.** EXECUTED (2 tests). |
 
@@ -352,6 +431,28 @@ The 2 skips are the same quota-gated live-smoke tests as on 2026-07-27
 2026-07-28 lines above are left as they were recorded; each was true when
 written.
 
+Re-run on **2026-07-29**, after the Phase 1.1 enforcement pass and its
+corrections. This is the first entry where the count goes DOWN, and that is the
+correct outcome rather than a regression:
+
+```
+dashboard/server  npm run clean && npm test
+                  240 tests, 238 pass, 0 fail, 2 skipped
+                  tsc --noEmit              clean
+```
+
+Arithmetic, so nobody has to guess: 245 (baseline) **+1** delivery test for the
+report contract **−6** shape tests deleted **+1** absence test **−1** test for a
+field that no longer exists = 240. The six deleted tests asserted the SHAPE of
+`Options.agents` per-agent definitions — a mechanism since measured
+**unreachable** (§2.4) — and one more pinned an `effort` field whose only reader
+was that same dead spread. Deleting a green test that asserts a dead mechanism
+is the point of the pass, not damage from it; the replacement absence test also
+re-asserts the hook, so it cannot go green by the guard vanishing. `npm run
+clean` first, so no stale `dist/**/*.test.js` inflated the count. The 2 skips
+were verified BY NAME, not by count: "the spec seat runs over the
+subscription…" and "a SeatCallRequest's jsonSchema is APPLIED…".
+
 #### The wiring mutations, re-applied one at a time
 
 Phase 0.1 shipped a "wiring" test that matched regexes against
@@ -384,16 +485,28 @@ is not a test kill. It was made compile-clean by exporting that constant, so the
 only behavioural change was the missing callback. The other four compile
 unchanged. Source restored and re-verified green at 96/94/0/2 afterwards.
 
-#### The re-attack against `dist`
+**This whole subsection is Phase 0.2 history as of 2026-07-29** and is kept
+because the mutations it records still bind the sealed-root wiring. The
+`ALLOWED_AGENTS` detail no longer describes the tree: the Agent branch those
+tests covered is deleted, and the shortlist it consulted moved to a
+`PreToolUse` hook (§2.4). Whether all five still kill after Phase 1.1's edits
+to `buildOptions` has **not** been re-measured — a green suite says nothing
+about that, which is the whole lesson of §6.
+
+#### The re-attack against `dist` (Phase 0.2 — 2026-07-28)
 
 A scratch probe (not committed — it is an attack script, not a fixture) fired
 every bypass from Phase 0, 0.1 and 0.2 at the **shipping `dist/`**, plus every
 negative control: **140 checks, 0 failures.** Each attack had to DENY *and* carry
-the sealed-suite message, so an Agent call that is refused by the empty shortlist
-cannot pass for the wrong reason. The negative controls include
+the sealed-suite message, so an Agent call refused for a different reason could
+not pass for the wrong one. The negative controls include
 `Glob{pattern:"**/*.ts"}`, `Bash{command:"ls <suite>"}`,
 `Write{content:"see <suite>"}`, `Grep{pattern:"TODO"}`, a clean shortlisted
 `Agent` call, `/tmp/dash/acceptance-notes`, and an ordinary `MultiEdit`.
+**Dated, not current:** the Agent-call rows in that re-attack exercised a branch
+that no longer exists, and the phrasing they were recorded under ("refused by
+the empty shortlist") was already wrong when written — the shortlist has been
+non-empty since `4e05543`. The sealed-path rows are unaffected.
 
 **Four inputs still returned ALLOW that nobody chose** — three spellings of a
 sealed path embedded in shell or code text under a non-exempt key, and one
@@ -464,15 +577,27 @@ ever carries the email, org id or org name the CLI prints.
 ### 2.2 The builder could read the held-out suite
 
 See **§0**. Two mechanisms were added on the Anthropic driver — the permission
-callback and `sandbox.filesystem.denyRead` — and the Codex gap was documented in
-the driver itself rather than left to be found. **Do not read that as "two
-layers" for a given tool.** Only the permission callback is executed as a
-BOUNDARY (62 unit tests in `claude-builder.test.ts` as of the third 2026-07-28
-pass). Of `denyRead`, only this codebase's half is exercised — that the builder
-puts the right roots in the right field — and the CLI's OS enforcement of it is
-not, in either half; whether it binds anything other than sandboxed Bash is
-unresolved. For `Read`/`Glob`/`Grep`/MCP the callback may well be the only layer
-there is. See §3.
+callback and `sandbox.filesystem.denyRead` — a third (the policy tier) landed on
+2026-07-29, and the Codex gap was documented in the driver itself rather than
+left to be found. **Do not read three mechanisms as three layers for a given
+tool.** **Corrected 2026-07-29**, where this paragraph used to say the callback
+was the only executed boundary:
+
+- **Sandboxed `Bash`** has **two** independent layers — `denyRead` and the
+  policy rule — and reaches the permission callback under neither, because
+  `autoAllowBashIfSandboxed: true`. Independence is measured, not inferred: with
+  `permissions.deny` emptied the `cat` was still refused.
+- **The in-process `Read` tool** has **one**: the policy rule. `denyRead` was
+  measured not to bind it. The callback's sealed scan sits behind that rule and
+  was not what refused the read in the live run.
+- **`Glob`/`Grep`/`mcp__*`** are covered by the callback's sealed scan. Whether
+  the policy rule — spelled `Read(//<root>/**)` — also binds them is
+  **UNMEASURED**: every live run exercised `Read` and `Bash cat` only, and
+  assuming the rule generalises by tool name would be the same
+  inference-dressed-as-measurement that got the `sdk.d.ts:6194` merge claim
+  withdrawn. The MCP surface is separately removed outright —
+  `allowedMcpServers: []` plus `allowManagedMcpServersOnly`, measured at 0
+  servers against 13 unnarrowed (`probes/results/mcp.json`).
 
 This added a required field to `BuildRequest`. There is **exactly one**
 construction site in the tree (confirmed by grepping `\.build\(` across
@@ -501,20 +626,127 @@ check, with the workspace and ticket text leaving the machine — and left
 `run_in_background` at its default of `true`, under which children keep writing
 the workspace after the phase returns and the gate scores a moving artefact.
 
-Closed before any delegation was built. `subagent_type` is now an allowlist
-enforced at the permission layer, because `Options.agents` limits only what the
-orchestrator can see and `subagent_type` is a free string in the SDK schema.
+Closed before any delegation was built — or so this section said. The guard was
+put in `canUseTool`, where the three conditions were correct and **never
+consulted**.
 
-**Live behaviour change you should know about before your next run.** The
-allowlist is the guard's optional 5th parameter and defaults to `[]`. The single
-production call site (`claude-builder.ts:276`, the only one — verified by
-grepping `decideToolPermission` across `server/src`) passes four arguments, so
-the shortlist is empty in every real build today and **every `Agent`/`Task` call
-is denied**, with a message naming the permitted agents as "(none configured)".
-That is intended, not a regression: an empty list means "no delegation
-configured", and the denial is what makes the shortlist a boundary rather than a
-suggestion. It stays that way until Phase 1 threads a compiled shortlist
-through. A build that tries to delegate before then will be refused.
+**REWRITTEN 2026-07-29 (Phase 1.1). Everything below the first paragraph of this
+section was false, and it was false in the direction that matters: it described
+a boundary that enforced nothing.** Both of the claims it made are now measured
+wrong. The shortlist was NOT empty — it has arrived on
+`BuildRequest.allowedAgents` since commit `4e05543`, roughly two dozen names
+from `shortlistFor(classifySurface(ticket))`. And the layer named as the
+enforcer does not run.
+
+#### `canUseTool` is never consulted for the Agent tool
+
+Probe A, both arms plus the `acceptEdits` arm from Phase 1: the callback
+returned `{behavior:"deny"}` for the delegation, was consulted for **no tool at
+all** (`denyConsulted=[]`), and `wordpress-master` started anyway — under
+`default`, under `dontAsk`, under `acceptEdits`. An apparatus control in the
+same option shape had `canUseTool` fire normally for `Write`, so "the callback
+is not wired" is ruled out (`probes/results/A-default.json`,
+`A-dontAsk.json`, `probes/results/raw/apparatus-canusetool-result.json`). There
+is no permission mode that fixes it. All THREE conditions were vacuous, not just
+the shortlist — the `isolation` guard and the `run_in_background` guard were
+dead in production too, while the file header read as though they were boundaries.
+
+The branch is **deleted** rather than left as documentation. A `PreToolUse`
+hook now carries the same three conditions; it REPLACES those guards, it does
+not supplement them. The SDK points here itself — `sdk.mjs`'s shadow-warning
+text reads *"To gate every tool call, use a PreToolUse hook instead."*
+
+#### `SendMessage` — the shortlist bounds WHICH AGENTS EXIST, not HOW MUCH WORK THEY RECEIVE
+
+Measured by probe H, four arms of one live session (`probes/results/H.json`).
+The hook fires for `SendMessage` too, with `tool_name: "SendMessage"` and
+`tool_input` keys `to, summary, message, type, recipient, content` —
+**`subagent_type` absent in every firing**. So the delegation guard returned
+`{continue: true}` **by construction**: nothing in the call looked like a
+delegation, because starting an agent and feeding one are different calls. In
+the SAME session that denied a `wordpress-master` spawn — so the guard was
+demonstrably armed — `SendMessage` resumed `code-reviewer` and produced a second
+`task_started` plus a `SubagentStart` carrying orchestrator instructions no
+shortlist rule ever saw.
+
+**Static evidence, read off the bundled CLI's strings rather than observed at
+runtime** (`H.json`'s own `staticEvidence` block, and kept in that category
+here): the tool's permission check self-permits —
+`async checkPermissions(e,t){return{behavior:"allow",updatedInput:e}}` — and
+`backfillObservableInput` MUTATES `tool_input` in place, adding
+`type`/`recipient`/`content`. The second one has a live consequence: the guard's
+shape test has to be a SUBSET test, because "exactly the three schema keys"
+would be green in a unit test and open in production. **It also carries an
+unmeasured over-deny.** Which OTHER tools get `content` backfilled is unknown.
+If the backfill is wide, a tool whose real schema is `{from, to}` — a move or a
+copy — arrives carrying a body and is denied here. The unit tests pass RAW
+inputs, so they cannot see it. It fails in the safe direction and the denial
+names itself in the transcript: **if a build is ever refused a move, this
+paragraph is why**, and the fix is to require a body key the backfill does not
+add.
+
+**The fix is outright denial**, and that is the best a `PreToolUse` hook can do
+rather than a lazy choice. Validating a resume means checking the target against
+the agents this run actually started — and the agentId appears ONLY in the Agent
+tool's RESULT, which `PreToolUse` never sees. A hook inspecting `to` would be
+judging a display name against nothing: the shape of check this phase exists to
+delete, not to add. The cost is small and real: an orchestrator that wants more
+from an agent starts another one and puts everything in that call's own prompt.
+
+One thing probe H did NOT establish, recorded so it is not credited to us:
+`SendMessage` never reached an agent the shortlist had denied, but that refusal
+came from the CLI's own roster resolution ("No agent named … is reachable"),
+which is not the shortlist (`probes/results/H2-DENIED-TARGET.json`).
+
+#### `Options.agents` DOES NOT BIND — and the roster will tell you it did
+
+Probe I, three live sessions, three field pairs, each with a negative control in
+the same session (`probes/results/I.json`). For a name that ALSO exists in
+`~/.claude/agents/`, the on-disk definition wins and the `Options` entry leaves
+no observable trace on the child:
+
+- **prompt** — the on-disk `code-reviewer` ignored our nonce; a fresh name
+  (`zzz-probe-only-agent`), registered identically and existing only in
+  `Options.agents`, echoed it. The definition channel demonstrably works in that
+  very session.
+- **model** — same split, independent of the prompt: the fresh child ran on
+  `claude-haiku-4-5-20251001` (our definition), the colliding name on
+  `claude-opus-5[1m]` (the model named in `code-reviewer.md`).
+- **maxTurns** — `maxTurns: 1` cut the fresh child off after one round-trip and
+  was DROPPED for the colliding name, which took 2 turns to read a file and
+  report it.
+
+**All 26 shortlisted agents exist in `~/.claude/agents/`**, and the hook denies
+everything off the shortlist, so the per-agent block was not merely inert — it
+was **unreachable**. It has been deleted, along with the report contract that
+rode on `AgentDefinition.prompt`. The contract itself survives, and it survives
+on a channel that was measured to work: in probe I's S2 session
+(`s2.delegations[1]`) the on-disk `code-reviewer` — the child whose definition
+was discarded, running the disk model — followed an instruction present ONLY in
+the Agent call's own `prompt` argument, read the file that instruction named,
+and returned its contents (`SEED-I-8HXQ2P5L-ONDISK-WV4M`, `toolNames: ["Read"]`
+in the child's own transcript). The per-call prompt reaches a child that the
+`AgentDefinition` does not. Nothing checks that the orchestrator
+actually pastes the contract into a call, and nothing truncates a subagent that
+narrates anyway — it is an instruction, not a boundary, and it is written down
+here as one.
+
+**THE VERIFICATION TRAP, which is the part that will catch the next reader.**
+`supportedAgents()` advertises the `Options` entry — our description, our model
+— and `getContextUsage().agents[]` sources it to `flagSettings`, while the
+engine runs the disk definition. The init roster lists `code-reviewer` **twice**:
+the disk entry and the `Options` entry coexist under one name. A check that
+stops at the roster concludes the definition bound. It did not.
+
+**`AgentDefinition.background` is inert for EVERYONE**, and that is a separate
+finding rather than a consequence of the collision: `background: false` failed
+to hold even for the fresh name whose `model` field demonstrably bound in the
+same delegation — both came back `status: async_launched` with
+`background_tasks_changed` reporting them live. It is a per-FIELD no-op. **This
+deserves its own probe**: n=1 per arm, one model, SDK 0.3.220, and if
+`background` is genuinely unhonourable then "a detached child cannot keep
+writing the workspace after the phase returns" rests entirely on the hook's
+`run_in_background !== false` denial and on nothing structural.
 
 ---
 
@@ -533,25 +765,23 @@ Nothing here has been observed working. **Do not describe any of it as working.*
 - **Cancel of a live build.** Cancel of a *queued* run is tested.
 - **`deploy: true` through the full pipeline.** `PreviewHost` is unit-tested
   alone.
-- **`sandbox.filesystem.denyRead` is ENFORCED BY NOBODY WE HAVE OBSERVED.**
-  Corrected twice. This bullet first said "the value reaches the CLI", which was
-  an overclaim: `src/builders/settings-plumbing.test.ts` constructs its OWN
+- ~~**`sandbox.filesystem.denyRead` is ENFORCED BY NOBODY WE HAVE OBSERVED.**~~
+  **RESOLVED 2026-07-29 — moved to §0.** Corrected three times, and the history
+  is worth keeping. It first said "the value reaches the CLI", which was an
+  overclaim: `src/builders/settings-plumbing.test.ts` constructs its OWN
   `Options` literal with its own local `heldOutRoot` and asserts that same local
   variable round-trips into the `--settings` payload — a property of the SDK, not
-  of this codebase, and it never invokes `ClaudeSubscriptionBuilder`. Corrected
-  again 2026-07-28: the builder's half IS now tested — `buildOptions` is asserted
-  to put every canonicalised sealed root in `denyRead`, and emptying that array
-  turns two tests red. What remains untested is everything past the seam: **no
-  run has shown the CLI's OS sandbox actually refusing a read.** `denyRead` is
-  the ONLY layer covering Bash, because `autoAllowBashIfSandboxed: true` means a
-  sandboxed Bash call never reaches `canUseTool` — so for Bash the boundary today
-  rests entirely on an unobserved mechanism.
-- **Whether `denyRead` covers in-process tools is UNRESOLVED.** The typings scope
-  filesystem clauses to "within the sandbox"/"sandboxed commands", and state
-  explicitly that in-process WebFetch is not gated by the network equivalent. If
-  `denyRead` binds only sandboxed Bash, then for `Read`/`Glob`/`Grep`/MCP the
-  permission callback is the ONLY layer — not one of two. The Phase 0.5 canary
-  probe settles it.
+  of this codebase, and it never invokes `ClaudeSubscriptionBuilder`. On
+  2026-07-28 the builder's half became tested. On 2026-07-29 the OS side was
+  observed: a sandboxed `cat` of a sealed file refused with `Operation not
+  permitted`, and still refused with the policy rule emptied. Bash is covered
+  twice, independently.
+- ~~**Whether `denyRead` covers in-process tools is UNRESOLVED.**~~ **RESOLVED
+  2026-07-29: it does NOT.** Phase 1 measured `denyRead` alone leaving the
+  in-process `Read` tool free, which matches the typings scoping filesystem
+  clauses to "within the sandbox"/"sandboxed commands". So `Read` has exactly
+  one layer — the policy-tier deny rule — and the Phase 0.5 canary probe this
+  bullet used to defer to was never needed for this question.
 - **The wiring is now behaviourally tested — corrected 2026-07-28.** This bullet
   used to say the wiring test was a source-shape assertion. It was, and that was
   worse than no test: `buildOptions`'s predecessor could have `canUseTool`
@@ -565,9 +795,12 @@ Nothing here has been observed working. **Do not describe any of it as working.*
   **What this does NOT prove:** that the CLI honours `denyRead`, or that
   `canUseTool` fires for subagent-originated calls. Unit tests prove the predicate
   and this codebase's wiring of it; they say nothing about the CLI's behaviour on
-  the far side of that seam. Both still need the Phase 0.5 canary probe. A test
-  that drove `ClaudeSubscriptionBuilder` against a stub executable would be
-  stronger still.
+  the far side of that seam. A test that drove `ClaudeSubscriptionBuilder`
+  against a stub executable would be stronger still. **Half-answered
+  2026-07-29:** the CLI's behaviour on the far side is now measured by live runs
+  for `denyRead` and the policy rule (§0), and the subagent-origination question
+  turned out to be the wrong one to ask — for the tool that spawns subagents,
+  `canUseTool` is not consulted at all.
 - **STILL OPEN: a sealed path EMBEDDED in shell or code text under a non-exempt
   key is allowed.** Measured against `dist` on 2026-07-28, not reasoned about:
   `Monitor{command:"cat <suite>/t.mjs"}`, `Monitor{cmd:"cat <suite>/t.mjs"}` and
@@ -582,10 +815,12 @@ Nothing here has been observed working. **Do not describe any of it as working.*
   text filter rather than a boundary: `acc''eptance`, `$HOME/../dash/…` and
   `cd <suite>; cat t.mjs` all step around it while it reads like a boundary in a
   table. The layer that actually covers text-executing tools is the OS sandbox's
-  `denyRead` — unexercised, above — and for an out-of-process `mcp__*` server
-  there is no such layer at all. `Bash{command:…}` is in the same position and is
-  exempt deliberately: `autoAllowBashIfSandboxed` means a sandboxed Bash never
-  reaches the callback anyway.
+  `denyRead` — **exercised as of 2026-07-29**, so this bullet is less bad than it
+  was, though the residue is unchanged: an out-of-process `mcp__*` server has no
+  such layer at all, and the MCP surface is removed from a build for exactly that
+  reason. `Bash{command:…}` is in the same position and is exempt deliberately:
+  `autoAllowBashIfSandboxed` means a sandboxed Bash never reaches the callback
+  anyway.
 - **STILL OPEN: the walker's node budget can be starved.** `NODE_BUDGET` is 512
   nodes, spent and not restored, so once it runs out later siblings are never
   scanned. Measured against `dist`: `{pad:[…600 zeroes…], evil:{file_path:
@@ -599,12 +834,17 @@ Nothing here has been observed working. **Do not describe any of it as working.*
 - **Case-folding over-denies on a case-sensitive volume.** A genuinely distinct
   `/x/ACCEPTANCE` would be denied alongside `/x/acceptance`. Deliberate: the
   safe direction for a sealed root.
-- **Whether `canUseTool` fires for subagent-originated calls is UNVERIFIED.**
-  Inferred from the SDK's `agentID` plumbing and corroborated by
-  `SDKPermissionDeniedMessage.agent_id`, but never observed. The Phase 0.5
-  canary probe settles both this and the item above in one cheap run. Until it
-  does, the Agent-tool guard of §2.4 is proven only as a pure function, not as
-  wiring.
+- **Whether `canUseTool` fires for subagent-originated calls is UNVERIFIED**, and
+  the sentence this bullet used to end with — "the Agent-tool guard of §2.4 is
+  proven only as a pure function" — was **generous**. Corrected 2026-07-29: that
+  guard was not merely unproven as wiring, it was never called, and it has been
+  deleted. What remains open is narrower and still open: whether the sealed-root
+  scan in `canUseTool` fires for a `Read`/`Grep` issued by a subagent rather than
+  the orchestrator. Inferred from the SDK's `agentID` plumbing and corroborated
+  by `SDKPermissionDeniedMessage.agent_id`, never observed. It matters less than
+  it did, because the policy-tier rule needs no callback and applies to the
+  session.
+
 - **The judge seat against a real model.** Its parsing is tested against
   fixtures.
 - **`DEFAULT_SEAT_CALL_MAX_TURNS = 8`** is a measured floor from one suite, not
@@ -612,6 +852,43 @@ Nothing here has been observed working. **Do not describe any of it as working.*
 - **Every named Codex model id.** The dashboard asserts only `codex-default`
   ("whatever the CLI is configured to use"). Anything in
   `DASHBOARD_CODEX_MODELS` is your assertion, not the dashboard's.
+
+#### UNMEASURED, and not to be laundered into "should hold"
+
+Every item here was reachable by an experiment somebody chose not to run, or by
+one this environment cannot run. None of it may be written up as covered.
+
+- **`isolation: "remote"`.** Denied by construction, never measured — it is
+  availability-gated and runs off-host, so there was nothing here to observe it
+  with. `isolation: "worktree"` IS measured, against a real git-repo fixture so
+  a worktree failure could not be mistaken for a hook effect; the denied call
+  came back with the hook's verbatim reason rather than a git error.
+- **`allowManagedHooksOnly: true` composed with the background / absent-flag /
+  selective-policy arms.** Probe E measured the lock for FOREGROUND delegation
+  only. Composing the two is an inference — a reasonable one, since the lock
+  gates WHETHER programmatic hooks run at all rather than per-tool shape — and
+  an inference is what it stays until somebody runs it.
+- **Permission modes other than `acceptEdits`** for the hook. Probe A covered
+  `default` and `dontAsk` for the *callback*; the hook was measured under
+  `acceptEdits`, which is what production sets.
+- **Whether `Options.agents.prompt` reaches ANY child.** Both children in probe
+  I's DoD-3 arm reported no critical system reminder — including the one with no
+  disk file, whose `model` field demonstrably bound. So `oursInForce=false` is
+  equally consistent with "the disk definition overrode ours" and "prompt/reminder
+  fields are not observable through self-report". **No positive control fired
+  for that channel**, which is why the nonce in the reply body — not the
+  reminder — is what probe I's verdict rests on.
+- **The third start-observable never went positive anywhere.** `startedFor()`
+  watches three channels; every subagent in every arm ran with `tool_uses: 0`,
+  so the third never fired even for agents that demonstrably started. **Read
+  every deny as TWO demonstrated channels going silent, not three.**
+- **Whether `AgentDefinition.disallowedTools` does anything.** Probe G2 measured
+  a per-agent `disallowedTools: ["mcp__*"]` child at 620 tools, 589 of them
+  `mcp__` — identical to an unnarrowed child. Probe G3 then removed that field
+  and the narrowed child stayed at 28 tools with zero `mcp__`, so the work is
+  being done by the SESSION-level `allowedMcpServers: []` lock. Which of the two
+  narrowings does what was not separated by any single run, and the per-agent one
+  is now deleted along with the rest of the block.
 
 ---
 
@@ -659,11 +936,17 @@ Recorded as their word. Where it matters, it is worth re-running yourself.
    Any `heldOutPass` in your existing data that predates 2026-07-28 is
    unverified — §0 says why, and there is no way to recover the answer after the
    fact.
-6. **Delegation is currently denied outright.** The Agent-tool guard added on
-   2026-07-28 ships with an empty shortlist, so every `Agent`/`Task` call a build
-   makes is refused with "(none configured)". That is deliberate — see §2.4 —
-   but if a build reports that it could not delegate, this is why, and it is not
-   a credential or a network fault.
+6. **Delegation is allowed, but only to this run's shortlist, and `SendMessage`
+   is denied outright.** Corrected 2026-07-29: this item used to say delegation
+   was denied outright because the shortlist was empty. It has not been empty
+   since `4e05543`. A build may delegate to roughly two dozen agents chosen by
+   `shortlistFor(classifySurface(ticket))`; anything else is refused by a
+   `PreToolUse` hook with a message naming the permitted agents, and a resume via
+   `SendMessage` is refused whoever it is addressed to. If a build reports it
+   could not delegate, that is why — not a credential or a network fault. An
+   EMPTY shortlist still denies everything, and that remains the fail-closed
+   default. See §2.4, and read §0's asymmetry table before treating this as a
+   boundary of the same strength as the sealed suite.
 7. **Do not paste a secret into a ticket.** The ticket text is sent to the
    provider verbatim, because it is the prompt. On-disk copies are redacted; that
    is a second line of defence, not the first.
@@ -672,3 +955,42 @@ Recorded as their word. Where it matters, it is worth re-running yourself.
 9. The first run of a ticket authors and freezes a suite. That costs quota
    before any building happens, and a suite authored under an older prompt is
    not re-authored automatically.
+10. **If you are about to add a check, read §6 first.** Seven checks in this
+    repo have shipped green over something that did nothing. The pattern is
+    cheap to repeat and expensive to find.
+
+---
+
+## 6. The defect this repo keeps shipping — SEVEN instances, and counting
+
+**New 2026-07-29.** One shape accounts for every false green this project has
+produced: **a check that can only observe success.** It is worth the space
+because the next author will not be caught by the seven below — they will be
+caught by the eighth, and the only defence is knowing the shape.
+
+| # | The check | What it could not see |
+|---|---|---|
+| 1 | The **16-probe review** of the sealed boundary | It exercised only the vectors its own author designed for, and reported 16/16. A later adversarial pass walked through `Grep{path:<ancestor-of-suite>}` (§0). Whether that exact vector was among the 16 is not recorded; what is recorded is that the review's coverage was measured against its own author's imagination, which is why 16/16 meant nothing. |
+| 2 | The **source-text "wiring" test** | It matched regexes against `claude-builder.ts`'s own SOURCE. `canUseTool` deleted, `denyRead` emptied, `allowWrite` widened to `/`, sandbox off — the suite stayed green at 76/74/0 through all four. |
+| 3 | **`settings-plumbing.test.ts`** | It constructs its OWN `Options` literal, then asserts that same local variable round-trips into the `--settings` payload. It never calls the builder. It is a test of `JSON.stringify`. **Still in the tree**, still green, and still proves nothing about this codebase. |
+| 4 | **Probes C and D**, as the plan wrote them | `positive: true` and `negativeControl: true` shipped as HARDCODED LITERALS, each justified by a comment. Probe C's run declared no non-managed hook at all, so its "user hooks were suppressed" was a constant. Fixed with a real project-tier fixture hook and a byte-identical paired control. |
+| 5 | **The probe harness's own exit code** | The gate keyed on `notes.startsWith("INCONCLUSIVE:")` alone, so a plain `FAIL` exited **0**. Run 1 recorded three FAILs — including the probe gating the whole approach — and exited 0. This was the defect the harness was built to prevent, sitting inside the harness. |
+| 6 | **The Task 5 token seam** | The per-model fix was reverted at its SOLE production call site and the suite stayed byte-identical at 200/198/0/2 — every assertion lived where the function was called directly. The arithmetic was then lifted into a seam and pinned by five tests; an auditor reverted the CALL SITE and the suite stayed green at 229/227/0/2. **The seam moved the hole one line; it did not close it.** What closes it is driving `build()` with synthetic envelopes and reading the sink. |
+| 7 | **A test pinning `AgentBounds.effort`** | It asserted a field that was `null` for all 26 agents, whose only reader was a conditional spread into `AgentDefinition.effort` — a route probe I measured does not bind for any name this run can delegate to. Green forever, over a mechanism that does nothing. Deleted 2026-07-29 with the route. |
+
+Instances 2, 3, 6 and 7 share a sharper sub-shape worth naming on its own: **the
+assertion and the production path were never connected.** A test that calls a
+function directly can never tell you the loop still calls it. A seam helps read
+the code; it does not make the call site load-bearing.
+
+**The rule that came out of this, and it is cheap:** every check must be shown,
+in the same run, to be able to observe the OPPOSITE outcome. For a probe, that
+is a negative control in the same session. For a boundary, it is REMOVAL —
+delete the layer, watch the boundary fail, put it back. Every 2026-07-29 claim
+in §0 carries one; the older EXECUTED rows mostly do not, and that is a real
+difference in strength between them.
+
+**Seven is a running tally, not a final count.** The docblock at
+`claude-builder.test.ts:1742` still says "six times" because it was written
+before instance 7. If you find an eighth, increment it here and say what it
+could not see.
