@@ -162,3 +162,18 @@ test("NEGATIVE CONTROL: free-text keys are NOT scanned as paths", () => {
   // tool": an MCP read of a BENIGN path is ordinary work and stays allowed.
   assert.equal(decideWith("mcp__filesystem__read_file", { path: `${WORKSPACE}/src/a.ts` }).behavior, "allow");
 });
+
+test("a recursive tool with NO path defaults to cwd and is judged on that", () => {
+  // pathInputs() returns nothing, so the guard saw no candidate at all.
+  // The CLI still runs the search — against cwd.
+  const sealedCwd = decideToolPermission("Grep", { pattern: "assert" }, HELD_OUT, SEALED);
+  assert.equal(sealedCwd.behavior, "deny", "cwd inside the suite must be denied");
+
+  const ancestorCwd = decideToolPermission("Grep", { pattern: "assert" }, "/tmp/dash", SEALED);
+  assert.equal(ancestorCwd.behavior, "deny", "cwd containing the suite must be denied");
+});
+
+test("NEGATIVE CONTROL: a recursive tool with no path in a clean workspace is allowed", () => {
+  assert.equal(decideToolPermission("Grep", { pattern: "TODO" }, WORKSPACE, SEALED).behavior, "allow");
+  assert.equal(decideToolPermission("Glob", { pattern: "**/*.ts" }, WORKSPACE, SEALED).behavior, "allow");
+});

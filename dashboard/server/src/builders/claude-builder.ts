@@ -88,6 +88,13 @@ export const DEFAULT_MAX_TURNS = 400;
 /** Tools whose input names a path that must stay inside the workspace. */
 const PATH_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
+/**
+ * Tools that walk a directory tree. When their path argument is omitted the CLI
+ * searches the CURRENT WORKING DIRECTORY, so "no path" is not "no target" — it
+ * is a target we have to name ourselves before we can judge it.
+ */
+const RECURSIVE_TOOLS = new Set(["Grep", "Glob"]);
+
 // READ_TOOLS (a tool-name allowlist) was removed on 2026-07-28. It was
 // structurally fail-open: `mcp__*` read tools and ReadMcpResource were never in
 // it and returned ALLOW on a sealed path. Sealed roots are now denied for every
@@ -171,6 +178,9 @@ export function decideToolPermission(
   sealedRoots: readonly string[],
 ): PermissionResult {
   const candidates = pathInputs(input);
+  if (candidates.length === 0 && RECURSIVE_TOOLS.has(toolName)) {
+    candidates.push(workspace);
+  }
   const base = resolve(workspace);
 
   // SEALED ROOTS: denied for EVERY tool, by any key, in either direction.
