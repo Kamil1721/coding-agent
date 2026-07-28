@@ -71,6 +71,15 @@
  *      is likewise unexercised — proving it needs a real build, which costs
  *      quota. Whether `denyRead` binds in-process tools at all (as opposed to
  *      sandboxed Bash only) is UNRESOLVED; see dashboard/STATUS.md §3.
+ *   3. `managedSettings.permissions.deny` names the suite store as a POLICY-TIER
+ *      rule, with `allowManagedPermissionRulesOnly` so no user, project or local
+ *      setting can widen it back open. THIS IS THE STRONG ONE, and the only one
+ *      of the three measured against a running CLI: probe B, three consecutive
+ *      PASSes, denying the in-process Read tool AND sandboxed `cat` from a
+ *      single rule with distinguishable error text for each. It needs no
+ *      callback and no hook — which is the point, since mechanism 1 depends on
+ *      `canUseTool` being consulted and for the Agent tool it is not. See
+ *      `buildOptions`.
  *
  * This is still weaker than the bake-off's boundary, which is a container the
  * held-out half is never mounted into. Said plainly in dashboard/STATUS.md.
@@ -635,6 +644,20 @@ export function makeCanUseTool(
 }
 
 /**
+ * A sealed root as a permission rule.
+ *
+ * `Read(//abs/path/**)` — the double slash is the syntax for an ABSOLUTE path,
+ * so an already-absolute root produces THREE leading slashes and that is
+ * correct, not a bug. Pinned literally in claude-builder.test.ts against a root
+ * no canonicaliser rewrites, because a wrong prefix here fails silently: the
+ * rule matches nothing, the CLI reports no error, and the suite is open again
+ * with every test still green.
+ */
+function denyReadRule(root: string): string {
+  return `Read(//${root}/**)`;
+}
+
+/**
  * The `Options` object handed to the SDK, as a function so it can be ASSERTED.
  *
  * It used to be a literal inside `build()`, reachable only by spawning a CLI.
@@ -703,6 +726,37 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     // sessions and can block completion; if a build hangs there, exclude that one
     // hook rather than reverting this decision.
     settingSources: ["user"],
+    // THE SEALED BOUNDARY, AT THE POLICY TIER.
+    //
+    // WHY NOT THE CALLBACK. `canUseTool` is not consulted for every tool under
+    // every permissionMode — Phase 1 measured it never consulted for Agent — and
+    // a PreToolUse hook returning "allow" pre-empts it outright (sdk.d.ts:4166,
+    // verbatim: "PreToolUse hook denies bypass canUseTool and are not covered
+    // here"). A boundary a hook can switch off is not a boundary. Settings
+    // precedence is user < project < local < flag < policy (sdk.d.ts:5499) and
+    // `Options.managedSettings` IS the policy tier — there is no admin tier on
+    // this machine, so it applies as the sole policy source — which is why
+    // nothing in the owner's settings can widen this.
+    //
+    // MEASURED, NOT ASSUMED: probe B, three consecutive PASSes, with
+    // mechanism-distinct denial text proving BOTH layers bind from this one
+    // rule — the in-process Read tool says "File is in a directory that is
+    // denied by your permission settings", sandboxed `cat` says "Operation not
+    // permitted" (seatbelt). That second string is the evidence for the
+    // sdk.d.ts:6194 claim that Read(...) deny rules merge into the sandbox's own
+    // `denyRead`; Phase 1 found `denyRead` ALONE does not bind in-process Read,
+    // so the converse was measured rather than assumed symmetric.
+    //
+    // THE PAIR IS WHAT WAS MEASURED. `permissions.deny` and
+    // `allowManagedPermissionRulesOnly` were always set together in the probe and
+    // never separated, so credit belongs to both, not to the deny rule alone. The
+    // lock costs the owner nothing today — their `permissions` block is empty,
+    // checked rather than assumed — and it is set anyway, because the point is
+    // that a rule added to user settings later cannot re-open this.
+    managedSettings: {
+      permissions: { deny: sealedRoots.map(denyReadRule) },
+      allowManagedPermissionRulesOnly: true,
+    },
     sandbox: {
       enabled: true,
       failIfUnavailable: !allowUnsandboxed,

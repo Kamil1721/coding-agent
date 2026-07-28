@@ -843,6 +843,46 @@ test("WIRING: the sandbox is enabled, and fails closed unless opted out", () => 
   assert.equal(buildOptions(req(), true).sandbox?.failIfUnavailable, false);
 });
 
+/**
+ * THE SEALED BOUNDARY AT THE POLICY TIER — Phase 1.1 Task 1.
+ *
+ * The rule string is spelled out HERE rather than imported from the builder. A
+ * test that calls the production formatter to compute its own expectation is the
+ * `settings-plumbing.test.ts` defect again: it asserts the implementation equals
+ * itself and stays green when the syntax is wrong. The double slash is the
+ * absolute-path prefix, so an already-absolute root yields THREE leading slashes
+ * and that is correct — pinned literally in the second assertion, where the root
+ * is a path that no canonicaliser will rewrite.
+ */
+test("WIRING: the sealed roots are denied at the POLICY tier, not only by the callback", () => {
+  const managed = buildOptions(req(), false).managedSettings;
+  assert.ok(managed, "managedSettings must be set — the callback is not a boundary on its own");
+  assert.deepEqual(
+    managed.permissions?.deny,
+    // Canonicalised, exactly like denyRead: two layers that disagree about what a
+    // path is are not two layers. Derived from SEALED rather than hardcoded,
+    // because /tmp is a symlink to /private/tmp on macOS.
+    SEALED.map(canonicaliseForDecision).map((root) => `Read(//${root}/**)`),
+  );
+  // The lock is what stops the owner's own settings widening it back open.
+  assert.equal(managed.allowManagedPermissionRulesOnly, true);
+
+  // THE THREE-SLASH FORM, PINNED. `/x/acceptance` does not exist, so
+  // canonicalisation returns it unchanged and the expected string can be a
+  // literal — the one place the syntax itself is asserted rather than derived.
+  const literal = buildOptions(req({ sealedRoots: ["/x/acceptance"] }), false);
+  assert.deepEqual(literal.managedSettings?.permissions?.deny, ["Read(///x/acceptance/**)"]);
+});
+
+test("WIRING: a run with no sealed roots denies nothing at the POLICY tier", () => {
+  // THE NEGATIVE CONTROL. A boundary that denies everything would pass the test
+  // above; this is what says the deny list is SCOPED to the roots it was given.
+  const options = buildOptions(req({ sealedRoots: [] }), false);
+  assert.deepEqual(options.managedSettings?.permissions?.deny, []);
+  // The lock still ships: it is about whose rules count, not about how many.
+  assert.equal(options.managedSettings?.allowManagedPermissionRulesOnly, true);
+});
+
 test("WIRING: the handed-in canUseTool actually denies a sealed path", async () => {
   // Behavioural, not structural: call the function the SDK would call.
   const decide = buildOptions(req(), false).canUseTool;
