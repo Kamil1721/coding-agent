@@ -25,12 +25,15 @@ import type {
   PreToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 import { REPORT_CONTRACT_REMINDER, boundsFor, shortlistFor } from "../agent-shortlist.js";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
 import type { RunEnvironment } from "../build-environment.js";
-import type { ResultUsageEnvelope } from "../claude-common.js";
+import type { RateLimitState, ResultUsageEnvelope } from "../claude-common.js";
 import { modelRows, zeroTokens } from "../tokens.js";
 import type { TokenTotals } from "../tokens.js";
 import {
+  ClaudeSubscriptionBuilder,
   announceEnvironment,
   buildOptions,
   canonicaliseForDecision,
@@ -39,6 +42,7 @@ import {
   recordResultTokens,
   sampleContextAt,
 } from "./claude-builder.js";
+import type { BuildSession } from "./claude-builder.js";
 import type { BuildRequest } from "./types.js";
 
 const WORKSPACE = "/tmp/dash/runs/r1/workspace";
@@ -1525,11 +1529,17 @@ test("the environment the CLI reports is emitted on the sink AND logged", async 
 /**
  * PHASE 1 TASK 7 STEP 5 — CONTEXT SAMPLING, EXERCISED WITHOUT A CLI.
  *
- * Same argument as `announceEnvironment` above: the `for await` loop is reachable
- * only by spending subscription quota, so what a unit test can prove is that the
- * sampler emits, logs, and cannot take the build down. What it cannot prove is
- * that the loop calls it — that single call site is the residual, and it is
- * stated rather than implied.
+ * Same argument as `announceEnvironment` above: what these prove is that the
+ * sampler emits, logs, and cannot take the build down — including the two
+ * failure shapes (never answers, throws) that no real CLI can be made to perform
+ * on demand.
+ *
+ * THE CALL SITE IS NO LONGER A RESIDUAL. This block used to end "what it cannot
+ * prove is that the loop calls it", and that sentence was true of
+ * `recordResultTokens` too until an auditor deleted ITS call site with the suite
+ * green. The loop is now driven directly — see "THE LOOP" at the end of this
+ * file — so the `task_notification` branch that calls this sampler is executed
+ * by a test rather than described by a comment.
  *
  * THE TIMEOUT IS INJECTED for the same reason `canonicalise` is: a 5-second
  * production default would otherwise make the "never answers" test take five
@@ -1641,23 +1651,26 @@ test("a compaction is emitted on the sink and named in the log", () => {
  * site can be deleted with a green suite is not protected, and this repo has now
  * shipped that same defect six times.
  *
- * WHY A SEAM AND NOT AN END-TO-END TEST. The `for await` loop is reachable only
- * by spawning a real CLI, which costs subscription quota. So the arithmetic was
- * lifted out of the branch into {@link recordResultTokens} — the same move
- * `buildOptions`, `announceEnvironment` and `noteCompaction` already made in this
- * file, for the same reason — and that function is what these tests call.
+ * THE SEAM WAS NOT ENOUGH, AND THAT IS MEASURED TOO. The arithmetic was lifted
+ * out of the branch into {@link recordResultTokens} and pinned by the five tests
+ * below. An auditor then reverted the CALL SITE — line 1187, back to
+ * `addTokens(tokens, extractTokens(message.usage, message.num_turns))` — left
+ * this function intact and exported, and the suite stayed FULLY GREEN at
+ * 229/227/0/2 against a rebuilt dist. The seam had MOVED the hole one line, not
+ * closed it. These tests are still worth having: they are where the arithmetic's
+ * properties are pinned, and they are far cheaper to read than the loop. What
+ * they cannot do, and never could, is say that production still calls this.
  *
- * THE RESIDUAL, STATED RATHER THAN IMPLIED, exactly as it is for
- * `announceEnvironment` and `noteCompaction`: what a unit test can prove is that
- * this function accumulates per model, emits, and warns; what it cannot prove is
- * that the loop CALLS it. Re-inlining the old code over that one call site would
- * still pass. What has changed is the size of the hole: it was a whole
- * accumulation whose every property was untested, and it is now a single line
- * whose replacement no longer has anywhere quiet to hide.
+ * WHAT CLOSES IT IS "THE LOOP" AT THE END OF THIS FILE. The message stream is
+ * injectable, so `build()` is driven with synthetic envelopes and the same skewed
+ * frame is read back off the sink. Under the mutation above those assertions go
+ * red: 40,000 input tokens, no model rows, no disagreement warning.
  *
- * A SOURCE-TEXT TEST WOULD BE WORSE THAN NOTHING. `buildOptions` was "wired" by
- * regexes over this file's own source; the whole boundary was disconnected and
- * the regexes still matched. See that function's docstring.
+ * A SOURCE-TEXT TEST WOULD BE WORSE THAN NOTHING, AND AN AST CANARY IS THE SAME
+ * INSTRUMENT. `buildOptions` was once "wired" by regexes over this file's own
+ * source; the whole boundary was disconnected and the regexes still matched. A
+ * parser fixes the spelling of that check, not its category: it can prove a call
+ * appears in a branch, never that the branch is what the SDK's messages reach.
  */
 
 /** The SDK's own `ModelUsage` shape, cost field and all — see claude-common.test.ts. */
@@ -1826,4 +1839,349 @@ test("a second result frame ACCUMULATES onto the first — resume adds, it does 
   );
   assert.equal(emitted.length, 2, "each frame is emitted as it arrives");
   assert.deepEqual(emitted[1], second);
+});
+
+/**
+ * THE LOOP, DRIVEN — 2026-07-28. THE FIX FOR A MEASURED, SHIPPED HOLE.
+ *
+ * WHAT HAPPENED. Commit b3dcb21 lifted the result branch's token accounting into
+ * `recordResultTokens` and pinned it with the five tests above. An auditor then
+ * reverted the CALL SITE ONLY — `tokens = recordResultTokens(tokens, message,
+ * sink)` back to the inlined `addTokens(tokens, extractTokens(message.usage,
+ * message.num_turns))` plus `sink.tokens(tokens)` — while leaving
+ * `recordResultTokens` intact, exported and green. THE SUITE STAYED FULLY GREEN
+ * at 229/227/0/2 against a genuinely rebuilt dist. The mutation is not cosmetic:
+ * a live run carried THREE per-model rows, so it silently destroys the
+ * attribution of every real build, and per-model attribution is the whole point
+ * of that commit (76% of one run's spend was OPUS subagents while `modelId` said
+ * haiku).
+ *
+ * WHY NOT A SOURCE-TEXT OR AST "WIRING CANARY". Phase 0.1 shipped exactly that:
+ * a wiring test that matched regexes against claude-builder.ts's own source and
+ * stayed green while the code under test was DELETED. Swapping the regex for a
+ * parser makes the check well-spelled, not well-founded — it would assert that a
+ * call APPEARS in a branch, which is a claim about text, while the thing at risk
+ * is what the SDK's own messages produce on the sink. The category of test is
+ * what failed before, so the category is what changed here.
+ *
+ * WHAT CHANGED. `ClaudeSubscriptionBuilder` takes its session from a
+ * `SessionFactory` that defaults to the SDK's `query`. A test supplies synthetic
+ * envelopes — the same JSON the CLI writes down its stdout pipe — and the whole
+ * `for await` loop runs with no subprocess, no quota and no network. Every
+ * branch of it is now ordinary code under test.
+ *
+ * THE HOLE THE SEAM CREATES IS PINNED BELOW: a default argument can be swapped
+ * for a stub, so the default is asserted to BE the SDK's `query`, by identity.
+ */
+
+/**
+ * A message as the CLI delivers it: JSON off a subprocess pipe.
+ *
+ * CAST DELIBERATELY, AND NARROWLY. `SDKMessage` is a large discriminated union
+ * whose members carry `uuid`, `parent_tool_use_id` and full Anthropic content
+ * blocks that this loop never reads; writing them out would make the fixture
+ * about the SDK's types rather than about the builder's behaviour. The fields
+ * that MATTER are type-checked anyway — every token-bearing frame below is built
+ * by spreading `skewedResult()` / `agreeingResult()`, which are typed
+ * `ResultUsageEnvelope`, so the numbers this file asserts on cannot drift into a
+ * shape the production code would not accept.
+ */
+function envelope(message: Record<string, unknown>): SDKMessage {
+  return message as unknown as SDKMessage;
+}
+
+/** A session that replays fixed envelopes and answers one control request. */
+function sessionOf(
+  messages: readonly SDKMessage[],
+  usage: ContextUsageEnvelope = USAGE,
+): BuildSession {
+  return {
+    async *[Symbol.asyncIterator](): AsyncGenerator<SDKMessage, void> {
+      for (const message of messages) yield message;
+    },
+    getContextUsage: async (): Promise<ContextUsageEnvelope> => usage,
+  };
+}
+
+interface LoopRecord {
+  readonly sink: BuildRequest["sink"];
+  readonly sessions: string[];
+  readonly environments: RunEnvironment[];
+  readonly samples: ContextSample[];
+  readonly compactions: CompactionRecord[];
+  readonly emitted: TokenTotals[];
+  readonly tools: string[];
+  readonly rateLimits: RateLimitState[];
+  readonly raw: string[];
+  readonly warnings: string[];
+}
+
+/** Every sink method, recorded — the loop's only observable output. */
+function loopSink(): LoopRecord {
+  const record = {
+    sessions: [] as string[],
+    environments: [] as RunEnvironment[],
+    samples: [] as ContextSample[],
+    compactions: [] as CompactionRecord[],
+    emitted: [] as TokenTotals[],
+    tools: [] as string[],
+    rateLimits: [] as RateLimitState[],
+    raw: [] as string[],
+    warnings: [] as string[],
+  };
+  return {
+    ...record,
+    sink: {
+      log: (level: "info" | "warn" | "error", text: string) => {
+        if (level === "warn") record.warnings.push(text);
+      },
+      tool: (name: string) => record.tools.push(name),
+      tokens: (totals: TokenTotals) => record.emitted.push(totals),
+      rateLimit: (state: RateLimitState) => record.rateLimits.push(state),
+      session: (id: string) => record.sessions.push(id),
+      environment: (env: RunEnvironment) => record.environments.push(env),
+      contextUsage: (sample: ContextSample) => record.samples.push(sample),
+      compaction: (compaction: CompactionRecord) => record.compactions.push(compaction),
+      raw: (text: string) => record.raw.push(text),
+    },
+  };
+}
+
+/** Run a build over a fixed stream of envelopes. No CLI, no quota. */
+async function runLoop(
+  messages: readonly SDKMessage[],
+  record: LoopRecord,
+  overrides: Partial<BuildRequest> = {},
+): Promise<Awaited<ReturnType<ClaudeSubscriptionBuilder["build"]>>> {
+  const builder = new ClaudeSubscriptionBuilder(() => sessionOf(messages));
+  return builder.build(req({ sink: record.sink, ...overrides }));
+}
+
+test("THE LOOP: the result branch reports PER MODEL — the mutation that shipped green", async () => {
+  // THE ASSERTION THE AUDITOR'S REVERT BREAKS. `extractTokens(message.usage, …)`
+  // returns four scalars and NO model, so under the inlined form `byModel` is
+  // empty and `inputTokens` is the frame's 40,000 scalar rather than the 10,000
+  // its own rows sum to. The skewed fixture is the only one on which the two
+  // implementations differ at all — on an agreeing frame both say 10,000.
+  const record = loopSink();
+  const outcome = await runLoop(
+    [envelope({ type: "result", subtype: "success", ...skewedResult() })],
+    record,
+  );
+
+  assert.equal(record.emitted.length, 1, "the loop emitted no token total at all");
+  const emitted = record.emitted[0];
+  assert.ok(emitted);
+  assert.deepEqual(
+    modelRows(emitted).map((row) => row.model),
+    ["claude-haiku-4-5-20251001", "claude-opus-5[1m]"],
+    "the loop collapsed the run's spend onto no model — this is the shipped mutation",
+  );
+  assert.equal(emitted.inputTokens, 10_000, "the scalar 40,000 was reported instead of the rows");
+  assert.equal(emitted.callCount, 12);
+
+  // The disagreement warning is the other half the audit deleted, and it is
+  // observable ONLY on a skewed frame.
+  assert.equal(
+    record.warnings.filter((line) => /disagree/i.test(line)).length,
+    1,
+    "the CLI contradicting its own breakdown went unreported",
+  );
+
+  // AND WHAT THE RUN RETURNS IS WHAT THE SINK SAW. An accumulation that emits
+  // correctly but returns something else is the same lie one field over.
+  assert.deepEqual(outcome.tokens, emitted);
+  assert.equal(outcome.completed, true);
+  assert.equal(outcome.failure, null);
+});
+
+test("THE LOOP: a second result frame ACCUMULATES inside build(), it does not replace", async () => {
+  // The running total is threaded through the loop by hand, so "the branch calls
+  // the right function" is not the same as "the branch keeps the total". A
+  // resumed build sees more than one result frame.
+  const record = loopSink();
+  const outcome = await runLoop(
+    [
+      envelope({ type: "result", subtype: "success", ...agreeingResult() }),
+      envelope({ type: "result", subtype: "success", ...agreeingResult() }),
+    ],
+    record,
+  );
+
+  assert.equal(record.emitted.length, 2, "each frame is emitted as it arrives");
+  assert.equal(outcome.tokens.inputTokens, 20_000);
+  assert.equal(outcome.tokens.callCount, 24);
+  assert.deepEqual(
+    modelRows(outcome.tokens).map((row) => [row.model, row.outputTokens]),
+    [
+      ["claude-haiku-4-5-20251001", 1_920],
+      ["claude-opus-5[1m]", 6_080],
+    ],
+    "the merge stays per model rather than folding the two into one row",
+  );
+});
+
+test("THE LOOP: a failed result still counts its spend and names the failure", async () => {
+  // NEGATIVE CONTROL ON THE BRANCH ORDER: the accounting sits ABOVE the
+  // success/failure split, so a run that ends in an error still reports what it
+  // spent. Moving the call inside the `success` arm would leave the test above
+  // green and lose the tokens of every failed run.
+  const record = loopSink();
+  const outcome = await runLoop(
+    [
+      envelope({
+        type: "result",
+        subtype: "error_max_turns",
+        errors: ["turn limit reached"],
+        ...agreeingResult(),
+      }),
+    ],
+    record,
+  );
+
+  assert.equal(record.emitted.length, 1);
+  assert.equal(outcome.tokens.inputTokens, 10_000);
+  assert.equal(outcome.completed, false);
+  assert.match(String(outcome.failure), /error_max_turns/);
+  assert.match(String(outcome.failure), /turn limit reached/);
+});
+
+test("THE LOOP: init, a closed lane and a compaction all reach the sink", async () => {
+  // THE SAME RESIDUAL, ON THREE MORE CALL SITES. `announceEnvironment`,
+  // `sampleContextAt` and `noteCompaction` each carried "a test cannot prove the
+  // loop calls it" in their own docstrings — the identical sentence that was true
+  // of `recordResultTokens` right up until an auditor deleted its call site with
+  // the suite green. One driven stream closes all three.
+  const record = loopSink();
+  const outcome = await runLoop(
+    [
+      envelope({
+        type: "system",
+        subtype: "init",
+        session_id: "sess-77",
+        cwd: WORKSPACE,
+        model: "claude-opus-5",
+        claude_code_version: "2.0.0",
+        agents: ["code-reviewer"],
+        skills: ["postgres"],
+        tools: ["Read", "Agent"],
+        mcp_servers: [],
+        plugins: [],
+      }),
+      envelope({
+        type: "system",
+        subtype: "task_started",
+        task_id: "t1",
+        subagent_type: "code-reviewer",
+      }),
+      envelope({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "t1",
+        status: "completed",
+      }),
+      envelope({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: {
+          trigger: "auto",
+          pre_tokens: 180_000,
+          post_tokens: 60_000,
+          duration_ms: 900,
+        },
+      }),
+      envelope({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "reading the brief" },
+            { type: "tool_use", id: "tu-1", name: "Read", input: { file_path: "brief.md" } },
+          ],
+        },
+      }),
+      envelope({
+        type: "rate_limit_event",
+        rate_limit_info: { status: "rejected", rateLimitType: "five_hour", utilization: 97 },
+      }),
+      envelope({ type: "result", subtype: "success", ...agreeingResult() }),
+    ],
+    record,
+  );
+
+  // system/init: the session id and the environment inventory, said once.
+  assert.deepEqual(record.sessions, ["sess-77"]);
+  assert.equal(outcome.sessionId, "sess-77");
+  assert.equal(record.environments.length, 1, "the loop recorded no environment");
+  assert.deepEqual(record.environments[0]?.skills, ["postgres"]);
+
+  // task_started + task_notification: the lane went quiet, so the context window
+  // was sampled through the session's own control request.
+  assert.equal(record.samples.length, 1, "a closed lane produced no context sample");
+  assert.equal(record.samples[0]?.agent, "code-reviewer");
+  assert.equal(record.samples[0]?.percentage, 75);
+
+  // compact_boundary: said once in the stream, or lost.
+  assert.equal(record.compactions.length, 1, "the loop dropped a compaction");
+  assert.equal(record.compactions[0]?.preTokens, 180_000);
+
+  // assistant: transcript text and the tool timeline.
+  assert.deepEqual(record.tools, ["Read"]);
+  assert.match(record.raw.join(""), /reading the brief/);
+
+  // rate_limit_event: the state the orchestrator reports and resumes on.
+  assert.equal(record.rateLimits.length, 1);
+  assert.equal(record.rateLimits[0]?.limited, true);
+  assert.equal(outcome.rateLimit.kind, "five_hour");
+});
+
+test("THE LOOP: NEGATIVE CONTROL — an empty stream builds nothing and claims nothing", async () => {
+  // Without this, a loop that emitted a fabricated total on entry would satisfy
+  // every assertion above. A run that produced no result frame reports no spend,
+  // no completion and no failure.
+  const record = loopSink();
+  const outcome = await runLoop([], record);
+
+  assert.deepEqual(record.emitted, []);
+  assert.deepEqual(record.samples, []);
+  assert.equal(outcome.completed, false);
+  assert.equal(outcome.failure, null);
+  assert.equal(outcome.sessionId, null);
+  assert.deepEqual(outcome.tokens, zeroTokens("anthropic"));
+});
+
+test("THE LOOP: the prompt and the built Options are what the session is started with", async () => {
+  // THE SEAM'S OWN WIRING. A factory that ignored its arguments would let every
+  // test above pass while production spawned a CLI with no `cwd`, no sandbox and
+  // no hooks. What `buildOptions` returns is asserted exhaustively elsewhere in
+  // this file; what THIS says is that the object handed to the SDK is that one,
+  // for this request, with the abort controller attached.
+  let seen: { prompt: string; options: Options } | null = null;
+  const builder = new ClaudeSubscriptionBuilder((params) => {
+    seen = params;
+    return sessionOf([]);
+  });
+  const request = req({ prompt: "build the ticket", allowedAgents: ["code-reviewer"] });
+  await builder.build(request);
+
+  const params = seen as { prompt: string; options: Options } | null;
+  assert.ok(params, "the session was never started");
+  assert.equal(params.prompt, "build the ticket");
+  assert.equal(params.options.cwd, canonicaliseForDecision(WORKSPACE));
+  assert.equal(typeof params.options.canUseTool, "function");
+  assert.equal(params.options.hooks?.PreToolUse?.length, 1);
+  assert.deepEqual(params.options.sandbox?.filesystem?.denyRead, SEALED.map(canonicaliseForDecision));
+  assert.deepEqual(Object.keys(params.options.agents ?? {}), ["code-reviewer"]);
+  assert.ok(params.options.abortController, "an uncancellable build cannot be stopped");
+});
+
+test("THE LOOP: the DEFAULT session factory is the SDK's own `query`", async () => {
+  // THE HOLE THE SEAM CREATES, PINNED. Injecting the stream is what makes the
+  // loop testable; it also makes it possible to ship a builder wired to a stub,
+  // which would leave every test above green and every real build inert. The
+  // default is asserted BY IDENTITY, which is why `query` is assigned directly in
+  // claude-builder.ts rather than wrapped in an arrow function.
+  assert.equal(new ClaudeSubscriptionBuilder().startSession, query);
+  // And the orchestrator's construction — `new ClaudeSubscriptionBuilder()` with
+  // no argument — is the one that gets the default.
+  assert.equal(new ClaudeSubscriptionBuilder().provider, "anthropic");
 });

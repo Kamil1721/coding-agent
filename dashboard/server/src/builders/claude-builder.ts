@@ -910,14 +910,15 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
 /**
  * Record what the CLI says it loaded, the moment it says it.
  *
- * ITS OWN FUNCTION SO IT CAN BE ASSERTED. The `system/init` branch of the loop
- * below is only reachable by spawning a CLI, which costs subscription quota, so
- * a capture written inline there would be reviewed rather than executed — the
- * same defect the header records about `settings-plumbing.test.ts`. What a unit
- * test can prove is that this function captures every category and both emits
- * and logs; what it cannot prove is that the loop calls it. That single call
- * site is the residual, and it is measured by the live probe instead (see
- * `build-environment.ts`).
+ * ITS OWN FUNCTION SO IT CAN BE ASSERTED — and SINCE 2026-07-28 THE CALL SITE IS
+ * ASSERTED TOO. This function is unit-tested directly (it captures every
+ * category, emits and logs), and the `system/init` branch that calls it is
+ * driven with synthetic envelopes through {@link SessionFactory}: see "THE LOOP"
+ * tests in claude-builder.test.ts. The residual this docstring used to record —
+ * "what it cannot prove is that the loop calls it" — is CLOSED, because deleting
+ * this call now turns an assertion red rather than nothing at all. That residual
+ * was not hypothetical: the identically-shaped one on `recordResultTokens` was
+ * exploited by an auditor with the suite fully green.
  *
  * BOTH THE SINK AND THE LOG, deliberately. The sink is the only route to the run
  * directory, where the record has to survive for the next reader; the log line is
@@ -1023,9 +1024,10 @@ export async function sampleContextAt(
  * Record that the context window was summarised.
  *
  * ITS OWN FUNCTION SO IT CAN BE ASSERTED, exactly like
- * {@link announceEnvironment}: the branch that calls it is reachable only by
- * spawning a CLI, so a capture written inline there would be reviewed rather than
- * executed.
+ * {@link announceEnvironment} — and, since the stream became injectable, its
+ * CALL SITE is asserted too: the `compact_boundary` branch is driven with a
+ * synthetic envelope in claude-builder.test.ts, so deleting the call turns an
+ * assertion red.
  *
  * LOGGED AS A WARNING, not as info. A compaction is not a statistic about a
  * healthy run — it is the single best explanation for a run that produced
@@ -1068,10 +1070,20 @@ export function noteCompaction(
  * which pins it with a SKEWED frame, the only fixture on which the row-sourced
  * and scalar-sourced answers differ.
  *
- * THE RESIDUAL IS THE ONE CALL SITE, and it is the same residual those two
- * functions carry: a test can prove this accumulates per model, emits and warns;
- * it cannot prove the loop calls it. What changed is that the untested surface
- * is now one line instead of a whole accumulation.
+ * THE ONE CALL SITE WAS THE RESIDUAL, AND AN AUDITOR TOOK IT. The docstring here
+ * used to read "a test can prove this accumulates per model, emits and warns; it
+ * cannot prove the loop calls it" — and the mutation that reverted line 1187 to
+ * the inlined `addTokens(tokens, extractTokens(message.usage, message.num_turns))`
+ * left the suite fully green at 229/227/0/2 against a rebuilt dist, with this
+ * function still exported and still tested. Lifting the arithmetic out of the
+ * branch made the hole smaller, not absent.
+ *
+ * IT IS CLOSED NOW BY MAKING THE LOOP ITSELF TESTABLE, not by asserting harder
+ * about this function: {@link SessionFactory} injects the message stream, and
+ * "THE LOOP" tests in claude-builder.test.ts drive a SKEWED result envelope
+ * through `build()` and read the per-model rows off the sink. Under that
+ * mutation the sink reports 40,000 input tokens with NO model rows and no
+ * disagreement warning, and three assertions go red.
  *
  * IT ADDS, IT DOES NOT REPLACE. A resumed build sees more than one result frame,
  * and `sink.tokens` is documented as CUMULATIVE.
@@ -1093,8 +1105,58 @@ export function recordResultTokens(
   return next;
 }
 
+/**
+ * The message stream a build drains, plus the one control request it makes of
+ * it.
+ *
+ * A NARROW STRUCTURAL TYPE, for the same reason {@link ContextUsageSource} is
+ * one: the real `Query` can only be obtained by spawning a CLI, which costs
+ * subscription quota, and a loop reachable only that way is a loop nothing
+ * executes. `Query` satisfies this by construction — it IS an
+ * `AsyncGenerator<SDKMessage, void>` and it does carry `getContextUsage` — so
+ * the production path is unchanged and the type is not a parallel definition
+ * of it.
+ */
+export type BuildSession = AsyncIterable<SDKMessage> & ContextUsageSource;
+
+/** How a build obtains its session. `query` is the production value. */
+export type SessionFactory = (params: { prompt: string; options: Options }) => BuildSession;
+
 export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
   readonly provider = "anthropic" as const;
+
+  /**
+   * THE MESSAGE LOOP IS INJECTABLE, AND THAT IS A FIX RATHER THAN A TIDY-UP.
+   *
+   * WHAT WAS MEASURED. Commit b3dcb21 lifted the result branch's arithmetic into
+   * {@link recordResultTokens} and tested that function well. An auditor then
+   * reverted the CALL SITE — `tokens = recordResultTokens(tokens, message, sink)`
+   * back to `addTokens(tokens, extractTokens(message.usage, message.num_turns))`
+   * with `sink.tokens(tokens)` — left `recordResultTokens` itself intact and
+   * exported, and the suite stayed FULLY GREEN at 229/227/0/2 against a rebuilt
+   * dist. The seam had MOVED the hole, not closed it: every property was pinned
+   * on a function, and nothing said the loop still called it. That mutation is
+   * not academic — a live run carried three per-model rows, so it destroys the
+   * per-model attribution of every real build while shipping green.
+   *
+   * WHY NOT A SOURCE-TEXT ASSERTION. This repo already shipped that: Phase 0.1's
+   * "wiring test" matched regexes against this file's source and stayed green
+   * while the code under test was DELETED. An AST canary is the same instrument
+   * with better parsing — it can prove a call exists, never that the call is the
+   * one the SDK's own messages reach. Injecting the stream makes the loop an
+   * ORDINARY function of its input: synthetic envelopes go in, sink events come
+   * out, and the mutation above turns those assertions red.
+   *
+   * THE ONE HOLE THIS SEAM CREATES IS PINNED. A default argument can be swapped
+   * for a stub, so `claude-builder.test.ts` asserts this field is the SDK's own
+   * `query` by IDENTITY on a default-constructed builder. `query` is assigned
+   * directly rather than wrapped, precisely so that identity holds.
+   */
+  readonly startSession: SessionFactory;
+
+  constructor(startSession: SessionFactory = query) {
+    this.startSession = startSession;
+  }
 
   async build(request: BuildRequest): Promise<BuildOutcome> {
     const { sink, workspace } = request;
@@ -1118,12 +1180,12 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
     request.signal.addEventListener("abort", onAbort, { once: true });
 
     try {
-      const session = query({
+      const session = this.startSession({
         prompt: request.prompt,
         options: { ...options, abortController },
       });
 
-      for await (const message of session as AsyncIterable<SDKMessage>) {
+      for await (const message of session) {
         if (message.type === "system" && message.subtype === "init") {
           sessionId = message.session_id;
           sink.session(message.session_id);
@@ -1137,9 +1199,11 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
           continue;
         }
 
-        // THE CONTEXT TIMELINE. Three branches, one call each; everything they
-        // call is unit-tested in build-context.test.ts and claude-builder.test.ts
-        // because this loop itself costs subscription quota to reach.
+        // THE CONTEXT TIMELINE. Three branches, one call each. What they call is
+        // unit-tested in build-context.test.ts and claude-builder.test.ts, and
+        // THESE BRANCHES ARE DRIVEN with synthetic envelopes through
+        // `startSession` — a real CLI costs subscription quota, an injected
+        // stream costs nothing and reaches the same code.
         if (message.type === "system" && message.subtype === "task_started") {
           lanes.started(message);
           continue;
@@ -1180,10 +1244,13 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
         }
 
         if (message.type === "result") {
-          // ONE CALL, AND THE ARITHMETIC LIVES IN A FUNCTION A TEST CAN REACH.
-          // See {@link recordResultTokens}: everything this branch used to do
-          // inline was invisible to the suite, because the loop costs
-          // subscription quota to enter.
+          // ONE CALL, AND THIS LINE IS THE ONE AN AUDITOR REVERTED WITH THE SUITE
+          // FULLY GREEN. Replacing it with
+          // `addTokens(tokens, extractTokens(message.usage, message.num_turns))`
+          // destroys per-model attribution on every real run — a live run carried
+          // three model rows — and cost nothing until the stream became
+          // injectable. It is now covered by "THE LOOP" tests, which drive a
+          // skewed result envelope through `build()` and read the sink.
           tokens = recordResultTokens(tokens, message, sink);
           if (message.subtype === "success") {
             completed = true;
