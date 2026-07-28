@@ -66,14 +66,36 @@
  * decisions and quietly gets worse, which is harder to notice than a failure.
  *
  * WHY THE CONTRACT IS STATED TO THE ORCHESTRATOR RATHER THAN TO EACH SUBAGENT.
- * Spec 15.1 asks for it in "every `AgentDefinition.prompt`". Phase 1 has no
- * AgentDefinitions: `settingSources: ["user"]` loads the owner's agent bodies
- * from disk, and spec 6.2 deleted the compiler that would have rewritten them.
- * The only text this program controls that reaches a subagent is the `prompt`
- * the orchestrator writes on each Agent call — so the format is given to the
- * orchestrator to pass on, WITH the reason. A bare format is followed until the
- * model judges that more detail would help, which is the failure; a model that
- * knows why complies when it matters.
+ * Spec 15.1 asks for it in "every `AgentDefinition.prompt`". THAT ROUTE WAS BUILT
+ * AND IS MEASURED DEAD. Probe I registered one definition under a name that
+ * exists in ~/.claude/agents/ and an identical one under a name that does not:
+ * the fresh name echoed its definition's nonce and ran its definition's model,
+ * while the colliding name echoed nothing and ran the model declared in its own
+ * disk frontmatter. `Options.agents` does not bind for a name with a file on
+ * disk — and "every shortlisted agent exists on disk" is a green test in
+ * agent-shortlist.test.ts, so there is no shortlisted name it could bind. An
+ * `AgentDefinition.prompt` would reach nobody this run delegates to.
+ *
+ * THE CHANNEL USED INSTEAD IS THE ONE MEASURED TO REACH A CHILD. The `prompt`
+ * argument on each Agent call is authored by the model per call and is not an
+ * `AgentDefinition` field, so probe I's finding does not touch it. The same probe
+ * shows it landing: S2 delegated to the on-disk `code-reviewer` — the child whose
+ * definition was measured discarded, running the disk model `claude-opus-5[1m]` —
+ * with an instruction carried ONLY in that argument ("read this file, reply with
+ * that token verbatim and nothing else"). It read the file and replied with
+ * exactly the token and nothing else, a string the probe asserts appears in no
+ * prompt and no path. The argument reaches the child, and it shapes what the child
+ * sends back.
+ *
+ * WHAT THIS ROUTE DOES NOT GUARANTEE, SAID PLAINLY. It is an INSTRUCTION TO THE
+ * ORCHESTRATOR, not a bound the engine applies. Nothing inspects an Agent call to
+ * check the contract was pasted into it, nothing truncates a reply that ignores
+ * it, and a failure at either step is silent — the build carries on with a fuller
+ * parent window and says nothing. That makes it WEAKER than the AgentDefinition
+ * route was believed to be, and stronger than that route actually is, which is
+ * zero. It is stated WITH its reason for exactly that purpose: a bare format is
+ * followed until the model judges that more detail would help, which is the
+ * failure mode; a model that knows why complies when it matters.
  */
 
 import { WORKSPACE } from "bakeoff/dist/runner.js";
@@ -154,6 +176,19 @@ const ROLE_NOTES: ReadonlyMap<string, string> = new Map([
  *
  * Empty is the guard's fail-closed default, and a prompt that still described
  * delegation would be describing a capability every call to which is denied.
+ *
+ * THE REPORT CONTRACT IS AUTHORED HERE AND THIS IS ITS ONLY DELIVERY ROUTE.
+ * `Options.agents` does not bind for a name that has a file in ~/.claude/agents/
+ * (probe I) and every shortlisted name has one, so nothing carried on an
+ * `AgentDefinition` — prompt, reminder, turn budget — reaches these agents. What
+ * does reach them is the `prompt` argument the orchestrator writes on each Agent
+ * call, measured in the same probe, and the block below is what the orchestrator
+ * is told to put there.
+ *
+ * THAT IS AN INSTRUCTION, NOT AN ENFORCED BOUND. Nothing checks that the
+ * orchestrator pasted it into a given call, and nothing truncates a subagent that
+ * narrates anyway. Editing the wording below is editing the entire mechanism —
+ * there is no second layer behind it.
  */
 function delegationSection(allowedAgents: readonly string[]): readonly string[] {
   if (allowedAgents.length === 0) return [];

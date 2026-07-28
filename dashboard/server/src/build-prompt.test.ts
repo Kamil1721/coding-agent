@@ -169,14 +169,24 @@ test("an empty shortlist advertises no delegation at all — the prompt fails cl
  * strictly worse than stopping, because nothing tells you the output stopped
  * being trustworthy.
  *
- * WHY IT LIVES IN THE ORCHESTRATOR'S PROMPT AND NOWHERE ELSE. Spec 15.1 asks for
- * this in "every `AgentDefinition.prompt`". Phase 1 has no AgentDefinitions:
- * `settingSources: ["user"]` loads the owner's agent bodies from disk and spec 6.2
- * deliberately deleted the compiler that would have rewritten them. The only text
- * this program controls that reaches a subagent is the `prompt` the ORCHESTRATOR
- * writes on each Agent call — so the contract is stated to the orchestrator, as
- * something to pass on. That is a weaker mechanism than a compiled system prompt
- * and it is the strongest one Phase 1 has.
+ * WHY IT LIVES IN THE ORCHESTRATOR'S PROMPT AND NOWHERE ELSE, MEASURED IN BOTH
+ * DIRECTIONS. Spec 15.1 asks for this in "every `AgentDefinition.prompt`", and
+ * that route is dead: probe I registered identical definitions under a name that
+ * exists in ~/.claude/agents/ and a name that does not, and only the fresh name
+ * echoed its definition's nonce and ran its definition's model. `Options.agents`
+ * does not bind for a name with a file on disk, and the first test in
+ * agent-shortlist.test.ts proves every shortlisted name has one.
+ *
+ * THE OTHER DIRECTION IS MEASURED TOO, which is what makes this a route rather
+ * than a hope. Probe I's S2 delegated to the on-disk `code-reviewer` — the child
+ * whose definition was discarded — with an instruction carried ONLY in the Agent
+ * call's `prompt` argument, and the child obeyed it and replied with exactly what
+ * it asked for and nothing else.
+ *
+ * AND IT IS AN INSTRUCTION, NOT A BOUND. Nothing checks that the orchestrator
+ * pasted the contract into a given call and nothing truncates a subagent that
+ * narrates anyway, so these tests pin the TEXT the orchestrator is given — which
+ * is the whole of what this program controls — and not compliance with it.
  */
 test("every delegated agent is told to return a COMPACT structured report", () => {
   // A subagent runs in its own context and the parent sees only its report.
@@ -196,6 +206,26 @@ test("the report contract names all four fields, not just the idea of a report",
   for (const field of ["DONE", "FILES", "NEXT", "UNRESOLVED"]) {
     assert.match(p, new RegExp(`${field}:`), `the report contract omits ${field}:`);
   }
+});
+
+test("the contract is attached to EVERY Agent call — the delivery instruction IS the route", () => {
+  // WITHOUT THIS SENTENCE THERE IS NO MECHANISM AT ALL. The contract cannot ride
+  // on an `AgentDefinition` (probe I: `Options.agents` does not bind for a name
+  // with a file on disk, and every shortlisted name has one), so the only text of
+  // ours that reaches a subagent is the `prompt` the orchestrator writes on each
+  // Agent call — and that prompt is authored per call. A contract stated once, in
+  // the abstract, is attached to no call: the orchestrator has to be told to put
+  // it in every one.
+  //
+  // The other tests in this section pin the FORMAT. This pins the DELIVERY, which
+  // is the half that would go missing without a word of the format changing.
+  const p = buildPrompt({ ticketText: "x", allowedAgents: ["backend-developer"] });
+  assert.match(p, /in every `?prompt`? you send/i, "the section must say where it goes");
+  assert.match(
+    p,
+    /end every prompt you send with this/i,
+    "and say it as an instruction to repeat per call, not as background",
+  );
 });
 
 test("the report contract says WHY, because a model that understands complies better", () => {
