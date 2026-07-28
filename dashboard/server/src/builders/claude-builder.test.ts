@@ -106,3 +106,23 @@ test("NEGATIVE CONTROL: other results are still readable", () => {
   // Screenshots and logs under results/ are served to the UI and are not sealed.
   assert.equal(decide("Read", "/tmp/dash/results/screenshots/r1/home.png").behavior, "allow");
 });
+
+test("a recursive search from an ANCESTOR of the suite is denied", () => {
+  // THE LIVE BYPASS. insideDir only asked "is the candidate inside the suite?".
+  // A recursive tool given a parent directory walks down INTO the suite.
+  for (const tool of ["Grep", "Glob"]) {
+    assert.equal(decide(tool, "/tmp/dash").behavior, "deny", `${tool} from an ancestor`);
+    assert.equal(decide(tool, "/tmp").behavior, "deny", `${tool} from a distant ancestor`);
+    assert.equal(decide(tool, "/").behavior, "deny", `${tool} from the filesystem root`);
+  }
+});
+
+test("the ancestor rule also covers relative climbs", () => {
+  assert.equal(decide("Grep", "../../..").behavior, "deny");
+});
+
+test("NEGATIVE CONTROL: a sibling of the suite is not an ancestor", () => {
+  assert.equal(decide("Grep", "/tmp/dash/runs").behavior, "allow");
+  assert.equal(decide("Grep", "/tmp/dash/acceptance-notes").behavior, "allow");
+  assert.equal(decide("Read", `${WORKSPACE}/src`).behavior, "allow");
+});

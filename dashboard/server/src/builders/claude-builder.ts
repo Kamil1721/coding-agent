@@ -116,6 +116,22 @@ function insideDir(dir: string, candidate: string, base: string): boolean {
   return target === root || target.startsWith(`${root}/`);
 }
 
+/**
+ * True when `candidate` is inside `root` OR recursively CONTAINS it.
+ *
+ * The second half is the one that was missing. `Grep`/`Glob` take a DIRECTORY
+ * and walk it recursively, so a candidate that is an ancestor of the sealed
+ * store reaches every file in it without ever naming it. Asking only "is the
+ * candidate inside the root?" answers the wrong question for a recursive tool.
+ */
+function containsOrIsInside(root: string, candidate: string, base: string): boolean {
+  const rootAbs = resolve(root);
+  const target = resolve(base, candidate);
+  if (target === rootAbs) return true;
+  if (target.startsWith(`${rootAbs}/`)) return true;
+  return rootAbs.startsWith(target === "/" ? "/" : `${target}/`);
+}
+
 function insideWorkspace(workspace: string, candidate: string): boolean {
   return insideDir(workspace, candidate, resolve(workspace));
 }
@@ -135,7 +151,7 @@ export function decideToolPermission(
 ): PermissionResult {
   const raw = pathInput(input);
   if (raw !== null && (PATH_TOOLS.has(toolName) || READ_TOOLS.has(toolName))) {
-    if (sealedRoots.some((root) => insideDir(root, raw, resolve(workspace)))) {
+    if (sealedRoots.some((root) => containsOrIsInside(root, raw, resolve(workspace)))) {
       return {
         behavior: "deny",
         message:
