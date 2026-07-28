@@ -176,7 +176,45 @@ export function decideToolPermission(
   input: Record<string, unknown>,
   workspace: string,
   sealedRoots: readonly string[],
+  allowedAgents: readonly string[] = [],
 ): PermissionResult {
+  // THE AGENT TOOL. Delegation is the point of this builder, but the Agent
+  // tool's own fields can step outside every boundary the run has:
+  //   - isolation:"worktree" writes outside sandbox.filesystem.allowWrite
+  //   - isolation:"remote" runs the build OFF-HOST entirely
+  //   - run_in_background DEFAULTS TO TRUE, so children keep writing the
+  //     workspace after the parent returns and the gate scores a moving tree
+  if (toolName === "Agent" || toolName === "Task") {
+    if ("isolation" in input && input["isolation"] !== undefined) {
+      return {
+        behavior: "deny",
+        message:
+          "This run does not permit `isolation`. A worktree writes outside the run's workspace and " +
+          "`remote` runs the build off this machine, outside every boundary protecting the sealed " +
+          "acceptance suite. Delegate in-place instead.",
+      };
+    }
+    if (input["run_in_background"] !== false) {
+      return {
+        behavior: "deny",
+        message:
+          "Set `run_in_background: false`. It defaults to true, and a background subagent keeps " +
+          "writing the workspace after this phase returns — the gate would then score a moving " +
+          "artefact and the result would depend on timing.",
+      };
+    }
+    const requested = input["subagent_type"];
+    if (typeof requested !== "string" || !allowedAgents.includes(requested)) {
+      return {
+        behavior: "deny",
+        message:
+          `\`${String(requested)}\` is not available to this run. Delegate to one of: ` +
+          `${allowedAgents.join(", ") || "(none configured)"}.`,
+      };
+    }
+    return { behavior: "allow" };
+  }
+
   const candidates = pathInputs(input);
   if (candidates.length === 0 && RECURSIVE_TOOLS.has(toolName)) {
     candidates.push(workspace);

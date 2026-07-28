@@ -177,3 +177,86 @@ test("NEGATIVE CONTROL: a recursive tool with no path in a clean workspace is al
   assert.equal(decideToolPermission("Grep", { pattern: "TODO" }, WORKSPACE, SEALED).behavior, "allow");
   assert.equal(decideToolPermission("Glob", { pattern: "**/*.ts" }, WORKSPACE, SEALED).behavior, "allow");
 });
+
+const AGENTS = ["code-reviewer", "debugger"];
+
+function decideAgent(input: Record<string, unknown>): { behavior: string; message?: string } {
+  return decideToolPermission("Agent", input, WORKSPACE, SEALED, AGENTS) as {
+    behavior: string;
+    message?: string;
+  };
+}
+
+test("an Agent call escaping the host is denied", () => {
+  for (const isolation of ["remote", "worktree"]) {
+    const result = decideAgent({
+      subagent_type: "code-reviewer",
+      run_in_background: false,
+      isolation,
+    });
+    assert.equal(result.behavior, "deny", `isolation:${isolation}`);
+    assert.match(String(result.message), /isolation/i);
+  }
+});
+
+test("an Agent call must be synchronous — background is the SDK default", () => {
+  const omitted = decideAgent({ subagent_type: "code-reviewer" });
+  assert.equal(omitted.behavior, "deny", "omitted run_in_background defaults to true");
+  assert.match(String(omitted.message), /run_in_background/);
+
+  const explicit = decideAgent({ subagent_type: "code-reviewer", run_in_background: true });
+  assert.equal(explicit.behavior, "deny");
+});
+
+test("subagent_type is an allowlist, not a suggestion", () => {
+  const result = decideAgent({ subagent_type: "general-purpose", run_in_background: false });
+  assert.equal(result.behavior, "deny");
+  assert.match(String(result.message), /code-reviewer/, "the denial must name what IS allowed");
+});
+
+test("no configured shortlist means no delegation", () => {
+  const result = decideToolPermission(
+    "Agent",
+    { subagent_type: "code-reviewer", run_in_background: false },
+    WORKSPACE,
+    SEALED,
+  ) as { behavior: string };
+  assert.equal(result.behavior, "deny");
+
+  // `Task` is the same tool under its other name. Guarding only "Agent" would
+  // leave the whole branch reachable by renaming the call.
+  const asTask = decideToolPermission(
+    "Task",
+    { subagent_type: "code-reviewer", run_in_background: false },
+    WORKSPACE,
+    SEALED,
+  ) as { behavior: string };
+  assert.equal(asTask.behavior, "deny", "Task is Agent under another name");
+});
+
+test("NEGATIVE CONTROL: a well-formed Agent call on the shortlist is allowed", () => {
+  assert.equal(
+    decideAgent({ subagent_type: "code-reviewer", run_in_background: false, prompt: "review src/" }).behavior,
+    "allow",
+  );
+  assert.equal(
+    decideAgent({ subagent_type: "debugger", run_in_background: false }).behavior,
+    "allow",
+  );
+  // The `Task` name must be guarded, not blanket-denied: the same well-formed
+  // call is allowed under either name.
+  assert.equal(
+    decideToolPermission(
+      "Task",
+      { subagent_type: "debugger", run_in_background: false },
+      WORKSPACE,
+      SEALED,
+      AGENTS,
+    ).behavior,
+    "allow",
+  );
+});
+
+test("NEGATIVE CONTROL: the Agent guard does not affect other tools", () => {
+  assert.equal(decide("Read", `${WORKSPACE}/index.html`).behavior, "allow");
+});
