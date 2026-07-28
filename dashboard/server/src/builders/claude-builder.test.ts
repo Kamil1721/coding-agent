@@ -15,12 +15,12 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
-import { canonicaliseForDecision, decideToolPermission } from "./claude-builder.js";
+import { buildOptions, canonicaliseForDecision, decideToolPermission } from "./claude-builder.js";
+import type { BuildRequest } from "./types.js";
 
 const WORKSPACE = "/tmp/dash/runs/r1/workspace";
 const HELD_OUT = "/tmp/dash/acceptance";
@@ -462,42 +462,128 @@ test("NEGATIVE CONTROL: canonicalising does not block ordinary work", () => {
   assert.equal(allowed({ file_path: "/usr/share/doc/readme" }, "Read"), "allow");
 });
 
-test("WIRING: the builder's canUseTool actually receives the sealed roots", () => {
-  // Phase 0's CRITICAL gap: mutating the call site to pass [] left the suite
-  // green, so the boundary could be disconnected from the orchestrator and
-  // nothing failed. This test fails if that wire is ever cut.
-  //
-  // The suite runs from `dist/`, which contains no `.ts` at all, so the source
-  // is read from `src/` two directories up. `fileURLToPath` rather than
-  // `.pathname`, which would leave a percent-encoded path on any checkout whose
-  // directory names contain spaces.
-  const src = readFileSync(
-    fileURLToPath(new URL("../../src/builders/claude-builder.ts", import.meta.url)),
-    "utf8",
+/**
+ * THE WIRING, ASSERTED AS AN OBJECT.
+ *
+ * Phase 0.1's wiring test read this file's SOURCE and matched regexes against
+ * it. It passed while the behaviour was gone: deleting `canUseTool` from the
+ * `Options` literal, emptying `denyRead`, widening `allowWrite` to `/` and
+ * turning the sandbox off each left the suite green at 76/74/0. A test that
+ * greps source is not a test of behaviour — it reads as coverage while covering
+ * nothing, which is worse than no test at all. It is deleted.
+ *
+ * `buildOptions` exists so the object handed to the SDK can be asserted
+ * DIRECTLY. Every assertion below fails if the corresponding wire is cut.
+ */
+function req(overrides: Partial<BuildRequest> = {}): BuildRequest {
+  const base: BuildRequest = {
+    runId: "r1",
+    prompt: "build it",
+    workspace: WORKSPACE,
+    sealedRoots: SEALED,
+    modelId: "claude-opus-5",
+    effort: null,
+    resumeSessionId: null,
+    signal: new AbortController().signal,
+    sink: {
+      log() {},
+      tool() {},
+      tokens() {},
+      rateLimit() {},
+      session() {},
+      raw() {},
+    },
+    env: {},
+  };
+  return { ...base, ...overrides };
+}
+
+/** The three fields the SDK requires of a `canUseTool` caller. */
+function callContext(): { signal: AbortSignal; toolUseID: string; requestId: string } {
+  return { signal: new AbortController().signal, toolUseID: "tu-1", requestId: "rq-1" };
+}
+
+test("WIRING: canUseTool is actually handed to the SDK", () => {
+  assert.equal(typeof buildOptions(req(), false).canUseTool, "function");
+});
+
+test("WIRING: denyRead carries every sealed root, canonicalised", () => {
+  const options = buildOptions(req(), false);
+  assert.deepEqual(
+    options.sandbox?.filesystem?.denyRead,
+    SEALED.map(canonicaliseForDecision),
   );
+});
+
+test("WIRING: allowWrite is the workspace and nothing else", () => {
+  const options = buildOptions(req(), false);
+  assert.deepEqual(options.sandbox?.filesystem?.allowWrite, [canonicaliseForDecision(WORKSPACE)]);
+  // cwd shares the spelling: a cwd of `/tmp/...` against an allowWrite of
+  // `/private/tmp/...` is the same layer disagreement this seam exists to close.
+  assert.equal(options.cwd, canonicaliseForDecision(WORKSPACE));
+});
+
+test("WIRING: the sandbox is enabled, and fails closed unless opted out", () => {
+  assert.equal(buildOptions(req(), false).sandbox?.enabled, true);
+  assert.equal(buildOptions(req(), false).sandbox?.failIfUnavailable, true);
+  assert.equal(buildOptions(req(), true).sandbox?.failIfUnavailable, false);
+});
+
+test("WIRING: the handed-in canUseTool actually denies a sealed path", async () => {
+  // Behavioural, not structural: call the function the SDK would call.
+  const decide = buildOptions(req(), false).canUseTool;
+  assert.equal(typeof decide, "function", "the SDK is handed no permission callback at all");
+  const denied = await decide?.("Read", { file_path: `${HELD_OUT}/t.mjs` }, callContext());
+  assert.equal(denied?.behavior, "deny");
   assert.match(
-    src,
-    /decideToolPermission\(\s*toolName,\s*input,\s*ws,\s*roots/,
-    "the closure must pass the resolved sealed roots, not a literal",
+    denied && denied.behavior === "deny" ? denied.message : "",
+    /SEALED ACCEPTANCE SUITE/,
   );
-  assert.match(
-    src,
-    /const roots = sealedRoots\.map\(canonicaliseForDecision\)/,
-    "roots must derive from request.sealedRoots",
-  );
-  assert.match(
-    src,
-    /const ws = canonicaliseForDecision\(workspace\)/,
-    "the workspace must be canonicalised too, or a workspace reached through a symlink never matches",
-  );
-  assert.match(
-    src,
-    /decideToolPermission\([^;]*canonicaliseForDecision\s*\)/,
-    "the closure must INJECT the canonicaliser; without it the raw candidate stays lexical and symlink laundering reopens",
-  );
-  assert.doesNotMatch(
-    src,
-    /decideToolPermission\([^)]*,\s*\[\]\s*\)/,
-    "no call site may pass an empty sealed-roots literal",
-  );
+
+  // NEGATIVE CONTROL: the wire is connected to the real predicate, not to a
+  // deny-everything stub — ordinary in-workspace work still runs.
+  const allowed = await decide?.("Read", { file_path: `${WORKSPACE}/src/app.ts` }, callContext());
+  assert.equal(allowed?.behavior, "allow");
+});
+
+test("WIRING: settingSources stays empty — no uncontrolled input", () => {
+  assert.deepEqual(buildOptions(req(), false).settingSources, []);
+});
+
+test("WIRING: a symlinked workspace is spelled the same way in every layer", () => {
+  // The reason canonicalisation happens ONCE, inside buildOptions. Previously
+  // the predicate saw `canonicaliseForDecision` output while denyRead/allowWrite
+  // saw a lexical `resolve()`, so a workspace or suite reached through a symlink
+  // was one path to the sandbox and another to the guard.
+  const { base, suite, ws } = symlinkFixture();
+  const linkedWs = join(base, "ws-link");
+  symlinkSync(ws, linkedWs);
+  const options = buildOptions(req({ workspace: linkedWs, sealedRoots: [suite] }), false);
+
+  assert.deepEqual(options.sandbox?.filesystem?.allowWrite, [realpathSync.native(ws)]);
+  assert.deepEqual(options.sandbox?.filesystem?.denyRead, [realpathSync.native(suite)]);
+  assert.equal(options.cwd, realpathSync.native(ws));
+});
+
+test("WIRING: the closure INJECTS the canonicaliser — a laundered path is denied", async () => {
+  // The fourth thing the deleted source-grep asserted, now behavioural: without
+  // `canonicaliseForDecision` threaded into `decideToolPermission`, the raw
+  // candidate stays lexical and `<ws>/link/canary.txt` reads the suite while
+  // looking like an in-workspace path.
+  const { suite, ws } = symlinkFixture();
+  const decide = buildOptions(req({ workspace: ws, sealedRoots: [suite] }), false).canUseTool;
+  assert.equal(typeof decide, "function");
+
+  for (const candidate of [join(ws, "link", "canary.txt"), "link/canary.txt"]) {
+    const result = await decide?.("Read", { file_path: candidate }, callContext());
+    assert.equal(result?.behavior, "deny", `laundered candidate ${candidate}`);
+    assert.match(
+      result && result.behavior === "deny" ? result.message : "",
+      /SEALED ACCEPTANCE SUITE/,
+    );
+  }
+
+  // NEGATIVE CONTROL: a real in-workspace file is still writable.
+  const allowed = await decide?.("Write", { file_path: join(ws, "index.html") }, callContext());
+  assert.equal(allowed?.behavior, "allow");
 });

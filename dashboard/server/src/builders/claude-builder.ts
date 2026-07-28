@@ -72,7 +72,7 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   NOT_RATE_LIMITED,
   assistantText,
@@ -414,6 +414,104 @@ export function decideToolPermission(
   return { behavior: "allow" };
 }
 
+/**
+ * Delegation is not configured until Phase 1 supplies a shortlist, and an empty
+ * list denies every Agent/Task call outright. Fail-closed by design: a subagent
+ * inherits none of this closure's boundaries automatically.
+ */
+const ALLOWED_AGENTS: readonly string[] = [];
+
+/**
+ * The permission callback the SDK is handed, as its own exported function.
+ *
+ * `workspace` and `sealedRoots` arrive ALREADY CANONICAL from
+ * {@link buildOptions}; canonicalising again here would be harmless — the
+ * transform is idempotent — but doing it once at the seam is what keeps the
+ * predicate and the OS sandbox looking at the same spelling.
+ *
+ * `canonicaliseForDecision` is then INJECTED so the candidate inside `input` is
+ * canonicalised too, at the point where `normaliseCandidate` and
+ * base-resolution have already run. Pre-canonicalising `input` in this caller
+ * instead would re-open the `file:` URI bypass, because `resolve()` mangles the
+ * scheme before the normaliser ever sees it. Without the injection,
+ * `<workspace>/link -> <suite>` launders a read straight past the check.
+ */
+export function makeCanUseTool(
+  workspace: string,
+  sealedRoots: readonly string[],
+  allowedAgents: readonly string[],
+): CanUseTool {
+  return async (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> =>
+    decideToolPermission(
+      toolName,
+      input,
+      workspace,
+      sealedRoots,
+      allowedAgents,
+      canonicaliseForDecision,
+    );
+}
+
+/**
+ * The `Options` object handed to the SDK, as a function so it can be ASSERTED.
+ *
+ * It used to be a literal inside `build()`, reachable only by spawning a CLI.
+ * Deleting `canUseTool` from it, emptying `denyRead`, widening `allowWrite` to
+ * `/` and disabling the sandbox all left the test suite green — the whole
+ * boundary could be disconnected and nothing failed, because the only "wiring"
+ * test matched regexes against this file's SOURCE TEXT. See
+ * `claude-builder.test.ts`, which now asserts the returned object directly.
+ *
+ * CANONICALISATION HAPPENS HERE, ONCE. The predicate previously received
+ * `canonicaliseForDecision` output while `denyRead`/`allowWrite`/`cwd` received
+ * a lexical `resolve()`, so a workspace or a sealed root reached through a
+ * symlink — which is every path under `/tmp` on macOS — was one directory to
+ * the guard and a different one to the CLI's own sandbox. Two layers that
+ * disagree about what a path is are not two layers.
+ */
+export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): Options {
+  const workspace = canonicaliseForDecision(request.workspace);
+  const sealedRoots = request.sealedRoots.map((root) => canonicaliseForDecision(root));
+
+  return {
+    cwd: workspace,
+    model: request.modelId,
+    maxTurns: DEFAULT_MAX_TURNS,
+    permissionMode: "acceptEdits",
+    canUseTool: makeCanUseTool(workspace, sealedRoots, ALLOWED_AGENTS),
+    includePartialMessages: false,
+    // The builder gets the full Claude Code tool set: it is building software.
+    tools: { type: "preset", preset: "claude_code" },
+    // The owner's global CLAUDE.md, settings and plugins are NOT loaded. The
+    // ticket brief is the specification; anything else is an uncontrolled
+    // input that changes what was built without appearing in the ticket.
+    settingSources: [],
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: !allowUnsandboxed,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: allowUnsandboxed,
+      // `denyRead` is the ONLY layer that covers Bash, because
+      // `autoAllowBashIfSandboxed` means a sandboxed command never reaches
+      // `canUseTool`. It is enforced by the CLI's own OS sandbox, and THAT
+      // ENFORCEMENT HAS NOT BEEN EXERCISED HERE — running a build to prove it
+      // costs subscription quota. What IS exercised now is the plumbing on this
+      // side of it: `claude-builder.test.ts` asserts these two arrays are the
+      // canonicalised workspace and the canonicalised sealed roots.
+      // `src/builders/settings-plumbing.test.ts` still proves only that an
+      // `Options` literal it builds itself round-trips into the `--settings`
+      // payload; it never invokes this builder. See dashboard/STATUS.md, "The
+      // held-out boundary".
+      filesystem: { allowWrite: [workspace], denyRead: sealedRoots },
+    },
+    // Metered credentials stripped: a build must be subscription traffic or
+    // it silently becomes a bill the dashboard reports as costUsd: null.
+    env: subscriptionSubprocessEnv(request.env),
+    ...(request.effort === null ? {} : { effort: request.effort }),
+    ...(request.resumeSessionId === null ? {} : { resume: request.resumeSessionId }),
+  };
+}
+
 export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
   readonly provider = "anthropic" as const;
 
@@ -426,67 +524,7 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
     let failure: string | null = null;
 
     const allowUnsandboxed = (request.env[ALLOW_UNSANDBOXED_ENV] ?? "").trim() === "1";
-
-    const sealedRoots = request.sealedRoots.map((root) => resolve(root));
-
-    // Delegation is not configured until Phase 1 supplies a shortlist, and an
-    // empty list denies every Agent/Task call outright. Fail-closed by design:
-    // a subagent inherits none of this closure's boundaries automatically.
-    const allowedAgents: readonly string[] = [];
-
-    const canUseTool = async (
-      toolName: string,
-      input: Record<string, unknown>,
-    ): Promise<PermissionResult> => {
-      // Canonicalise the WORKSPACE and the ROOTS: if either is itself reached
-      // through a symlink, a comparison against a realpath'd candidate would
-      // never match. `canonicaliseForDecision` is then INJECTED so the
-      // candidate inside `input` is canonicalised too — at the point where
-      // `normaliseCandidate` and base-resolution have already run. Passing
-      // pre-canonicalised input instead would re-open the `file:` URI bypass,
-      // because `resolve()` mangles the scheme before the normaliser sees it.
-      const ws = canonicaliseForDecision(workspace);
-      const roots = sealedRoots.map(canonicaliseForDecision);
-      return decideToolPermission(toolName, input, ws, roots, allowedAgents, canonicaliseForDecision);
-    };
-
-    const options: Options = {
-      cwd: workspace,
-      model: request.modelId,
-      maxTurns: DEFAULT_MAX_TURNS,
-      permissionMode: "acceptEdits",
-      canUseTool,
-      includePartialMessages: false,
-      // The builder gets the full Claude Code tool set: it is building software.
-      tools: { type: "preset", preset: "claude_code" },
-      // The owner's global CLAUDE.md, settings and plugins are NOT loaded. The
-      // ticket brief is the specification; anything else is an uncontrolled
-      // input that changes what was built without appearing in the ticket.
-      settingSources: [],
-      sandbox: {
-        enabled: true,
-        failIfUnavailable: !allowUnsandboxed,
-        autoAllowBashIfSandboxed: true,
-        allowUnsandboxedCommands: allowUnsandboxed,
-        // `denyRead` is the ONLY layer that covers Bash, because
-        // `autoAllowBashIfSandboxed` means a sandboxed command never reaches
-        // `canUseTool`. It is enforced by the CLI's own OS sandbox, and THAT
-        // ENFORCEMENT HAS NOT BEEN EXERCISED HERE — running a build to prove it
-        // costs subscription quota. NOR HAS THIS PLUMBING BEEN EXERCISED:
-        // `src/builders/settings-plumbing.test.ts` runs the SDK against a stub
-        // executable, but with an `Options` literal it builds itself, asserting
-        // that its own local root round-trips into the `--settings` payload. It
-        // never invokes this builder, so if the line below sent the wrong roots
-        // or none, that test would still pass. See dashboard/STATUS.md, "The
-        // held-out boundary".
-        filesystem: { allowWrite: [workspace], denyRead: sealedRoots },
-      },
-      // Metered credentials stripped: a build must be subscription traffic or
-      // it silently becomes a bill the dashboard reports as costUsd: null.
-      env: subscriptionSubprocessEnv(request.env),
-      ...(request.effort === null ? {} : { effort: request.effort }),
-      ...(request.resumeSessionId === null ? {} : { resume: request.resumeSessionId }),
-    };
+    const options = buildOptions(request, allowUnsandboxed);
 
     const abortController = new AbortController();
     const onAbort = (): void => {
