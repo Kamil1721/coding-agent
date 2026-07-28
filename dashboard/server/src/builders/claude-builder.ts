@@ -86,12 +86,13 @@ import type { CanUseTool, Options, PermissionResult, SDKMessage } from "@anthrop
 import {
   NOT_RATE_LIMITED,
   assistantText,
-  extractTokens,
   rateLimitFrom,
   resultErrorText,
+  resultTokens,
   summariseToolInput,
   toolUses,
   truncate,
+  usageDisagreement,
 } from "../claude-common.js";
 import type { RateLimitState } from "../claude-common.js";
 import {
@@ -950,8 +951,20 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
         }
 
         if (message.type === "result") {
-          tokens = addTokens(tokens, extractTokens(message.usage, message.num_turns));
+          // WHICH MODEL SPENT IT IS HALF THE ANSWER, AND `usage` CANNOT GIVE IT.
+          // It is four scalars with no model on them, and this build delegates
+          // most of its work: a measured Phase 1 run put 76% of its spend on OPUS
+          // subagents while the run's `modelId` said `haiku`, and every one of
+          // those tokens was reported under the wrong model because the record
+          // had nowhere else to put them. `resultTokens` reads the SAME frame's
+          // per-model breakdown — the one the CLI sums to produce that scalar —
+          // so the total and the attribution come from one place.
+          tokens = addTokens(tokens, resultTokens(message));
           sink.tokens(tokens);
+          // The CLI contradicting itself is a warning, not a silent correction:
+          // see `usageDisagreement`.
+          const disagreement = usageDisagreement(message);
+          if (disagreement !== null) sink.log("warn", disagreement);
           if (message.subtype === "success") {
             completed = true;
             sink.raw(`\n[result] success after ${String(message.num_turns)} turn(s)\n`);
