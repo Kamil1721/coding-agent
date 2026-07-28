@@ -38,8 +38,10 @@
  *
  *   1. {@link decideToolPermission} denies ANY tool — built-in, `mcp__*`, or
  *      one that ships next year — carrying a path that resolves into the suite
- *      store. It was a tool-name allowlist until 2026-07-28, which was
- *      structurally fail-open; see PATH_INPUT_KEYS below.
+ *      store. It was a tool-name allowlist until 2026-07-28, then briefly a
+ *      KEY allowlist — the same fail-open shape on another axis, and it was
+ *      defeated by `Glob`'s required `pattern` argument. Every value is now
+ *      scanned except named free text; see FREE_TEXT_KEYS below.
  *      EXECUTED: unit-tested directly, with a negative control.
  *   2. `sandbox.filesystem.denyRead` names the suite store to the CLI's own OS
  *      sandbox, which is the only layer that can cover Bash. PLUMBING EXECUTED
@@ -107,34 +109,54 @@ const RECURSIVE_TOOLS = new Set(["Grep", "Glob"]);
 // The OS-level `denyRead` below is the layer that covers Bash.
 
 /**
- * Keys under which any tool — built-in, MCP, or one that ships next year —
- * carries a path it will act on.
+ * Keys whose values are FREE TEXT, not paths.
  *
- * DELIBERATELY EXCLUDED: `content`, `new_string`, `old_string`, `command`,
- * `prompt`, `description`, `instructions`. Those carry free text. A build
- * legitimately writes a file whose content mentions the suite path, and denying
- * that would block ordinary work while teaching the model to obfuscate rather
- * than comply.
+ * This is a denylist, and that polarity is the whole point. Phase 0 used an
+ * allowlist of path-bearing keys and it failed exactly as the tool-name
+ * allowlist before it did: `Glob`'s required argument is `pattern`, which was
+ * not on the list, so `Glob{pattern:"<suite>/**\/*"}` returned ALLOW. An
+ * allowlist is only as good as the enumerator's imagination; a denylist of
+ * free text fails closed against every key nobody thought of.
+ *
+ * A build legitimately writes a file whose CONTENT mentions the suite path and
+ * legitimately runs a shell command naming it, so these stay exempt.
+ *
+ * `new_source` is NotebookEdit's write PAYLOAD — cell code, which routinely
+ * contains `../` inside a string literal. `resolve()` collapses `..` anywhere
+ * in a string, not only at its start, so scanning this key denied a legitimate
+ * cell edit with the workspace-write message; that was demonstrated red before
+ * it was added here. Being a write payload it cannot enable a sealed READ.
  */
-const PATH_INPUT_KEYS = [
-  "file_path", "path", "notebook_path", "dir", "directory", "cwd",
-  "uri", "resource", "file", "filename", "target", "root", "glob",
-  "paths", "files",
-] as const;
+const FREE_TEXT_KEYS = new Set([
+  "content", "new_string", "old_string", "command", "prompt",
+  "description", "instructions", "code", "script", "body", "message", "text",
+  "new_source",
+]);
 
-/** Every path-shaped value in the input, flattened. */
-function pathInputs(input: Record<string, unknown>): string[] {
+/**
+ * Every value in the input that could name a path — which is every string that
+ * is not explicitly free text, at any depth.
+ */
+function pathCandidates(input: Record<string, unknown>): string[] {
   const found: string[] = [];
-  for (const key of PATH_INPUT_KEYS) {
-    const value = input[key];
-    if (typeof value === "string" && value.length > 0) {
-      found.push(value);
-    } else if (Array.isArray(value)) {
-      for (const item of value) {
-        if (typeof item === "string" && item.length > 0) found.push(item);
+  const visit = (key: string, value: unknown, depth: number): void => {
+    if (depth > 6) return;
+    if (FREE_TEXT_KEYS.has(key)) return;
+    if (typeof value === "string") {
+      if (value.length > 0) found.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(key, item, depth + 1);
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        visit(k, v, depth + 1);
       }
     }
-  }
+  };
+  for (const [k, v] of Object.entries(input)) visit(k, v, 0);
   return found;
 }
 
@@ -215,10 +237,11 @@ export function decideToolPermission(
     return { behavior: "allow" };
   }
 
-  const candidates = pathInputs(input);
-  if (candidates.length === 0 && RECURSIVE_TOOLS.has(toolName)) {
-    candidates.push(workspace);
-  }
+  const candidates = pathCandidates(input);
+  // A recursive tool searches its cwd IN ADDITION to any path it names. Phase 0
+  // folded cwd in only when no candidate was found, so a stray `glob` key
+  // switched the fold off and the guard judged the wrong target affirmatively.
+  if (RECURSIVE_TOOLS.has(toolName)) candidates.push(workspace);
   const base = resolve(workspace);
 
   // SEALED ROOTS: denied for EVERY tool, by any key, in either direction.

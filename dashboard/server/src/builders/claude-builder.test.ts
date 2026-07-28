@@ -178,6 +178,63 @@ test("NEGATIVE CONTROL: a recursive tool with no path in a clean workspace is al
   assert.equal(decideToolPermission("Glob", { pattern: "**/*.ts" }, WORKSPACE, SEALED).behavior, "allow");
 });
 
+test("Glob's REAL required argument is `pattern`, and it is judged", () => {
+  // sdk-tools.d.ts:630-638 — GlobInput { pattern: string; path?: string }.
+  // Phase 0 listed `glob`, which is not a Glob key at all.
+  assert.equal(decideWith("Glob", { pattern: `${HELD_OUT}/**/*` }).behavior, "deny");
+  assert.equal(decideWith("Glob", { pattern: `${HELD_OUT}/T-1/*.mjs` }).behavior, "deny");
+});
+
+test("a present non-path key does not suppress judging the cwd", () => {
+  // Phase 0 folded cwd in ONLY when zero candidates were found, so any stray
+  // key turned the fold off and the guard judged the wrong target.
+  const r = decideToolPermission("Grep", { pattern: "x", glob: "*.mjs" }, "/tmp/dash", SEALED);
+  assert.equal((r as { behavior: string }).behavior, "deny");
+});
+
+test("an unlisted key carrying a sealed path is still denied", () => {
+  for (const key of ["sourcePath", "outputFile", "notebook", "somethingNew", "attachment"]) {
+    assert.equal(decideWith("AnyTool", { [key]: `${HELD_OUT}/t.mjs` }).behavior, "deny", key);
+  }
+});
+
+test("nested object and array values are reached", () => {
+  assert.equal(decideWith("AnyTool", { opts: { where: `${HELD_OUT}/t.mjs` } }).behavior, "deny");
+  assert.equal(decideWith("AnyTool", { targets: [`${WORKSPACE}/a`, `${HELD_OUT}/b`] }).behavior, "deny");
+});
+
+test("NEGATIVE CONTROL: free-text keys are still not scanned", () => {
+  assert.equal(
+    decideWith("Write", { file_path: `${WORKSPACE}/n.md`, content: `see ${HELD_OUT}` }).behavior,
+    "allow",
+  );
+  assert.equal(decideWith("Bash", { command: `ls ${HELD_OUT}` }).behavior, "allow");
+  assert.equal(decideWith("Agent", { prompt: `read ${HELD_OUT}`, subagent_type: "x", run_in_background: false }).behavior, "deny");
+});
+
+test("NEGATIVE CONTROL: a notebook cell's SOURCE is free text, not a path", () => {
+  // `new_source` is NotebookEdit's write payload — cell code, which routinely
+  // contains `../` inside string literals. `resolve()` collapses `..` anywhere
+  // in a string, so scanning this key would deny a legitimate edit whose cell
+  // happens to open a relative file. It is the same category as `content` and
+  // `code`, and being a write payload it cannot enable a sealed READ.
+  assert.equal(
+    decideWith("NotebookEdit", {
+      notebook_path: `${WORKSPACE}/n.ipynb`,
+      new_source: "data = open('../../../../etc/hosts')",
+      cell_type: "code",
+      edit_mode: "replace",
+    }).behavior,
+    "allow",
+  );
+});
+
+test("NEGATIVE CONTROL: ordinary values are not mistaken for paths", () => {
+  assert.equal(decideWith("Grep", { pattern: "TODO", path: `${WORKSPACE}` }).behavior, "allow");
+  assert.equal(decideWith("Glob", { pattern: "**/*.ts", path: `${WORKSPACE}` }).behavior, "allow");
+  assert.equal(decideWith("Read", { file_path: `${WORKSPACE}/a.ts`, limit: 100, offset: 0 }).behavior, "allow");
+});
+
 const AGENTS = ["code-reviewer", "debugger"];
 
 function decideAgent(input: Record<string, unknown>): { behavior: string; message?: string } {
