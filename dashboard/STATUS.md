@@ -338,7 +338,8 @@ dashboard/server  npm test        76 tests, 74 pass, 0 fail, 2 skipped (quota)
 ```
 
 Re-run a third time on 2026-07-28, after the wiring seam and the four residual
-fixes added 20 more tests:
+fixes added 20 more tests (21 written, net of the source-grepping "wiring" test
+that was deleted for asserting on text rather than behaviour):
 
 ```
 dashboard/server  npm test        96 tests, 94 pass, 0 fail, 2 skipped (quota)
@@ -394,8 +395,14 @@ cannot pass for the wrong reason. The negative controls include
 `Write{content:"see <suite>"}`, `Grep{pattern:"TODO"}`, a clean shortlisted
 `Agent` call, `/tmp/dash/acceptance-notes`, and an ordinary `MultiEdit`.
 
-**Five inputs still returned ALLOW and are NOT counted as closed** — they are
-recorded in §3 rather than hidden here.
+**Four inputs still returned ALLOW that nobody chose** — three spellings of a
+sealed path embedded in shell or code text under a non-exempt key, and one
+budget-starvation shape. They are NOT counted as closed; they are recorded in §3
+rather than hidden here. A fifth, `Bash{command:"cat <suite>/t.mjs"}`, also
+returns ALLOW and is the ONE that is deliberate: with `autoAllowBashIfSandboxed`
+a sandboxed Bash never reaches this callback at all, so scanning its command
+string would deny ordinary work while buying nothing. Do not "fix" that one here
+— the layer for it is the OS sandbox's `denyRead`.
 
 ---
 
