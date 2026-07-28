@@ -1267,6 +1267,92 @@ test("HOOK: an empty shortlist denies every delegation — fail closed", async (
   );
 });
 
+/**
+ * THE `SendMessage` SCOPE HOLE, CLOSED AT THE SLOT — 2026-07-28, PROBE H.
+ *
+ * MEASURED: the hook fires for `SendMessage` with `tool_name: "SendMessage"` and
+ * `tool_input` keys `to, summary, message, type, recipient, content`, all
+ * strings, `subagent_type` ABSENT in every firing across four arms. The guard as
+ * shipped returned `{continue: true}` for it BY CONSTRUCTION — no name matched,
+ * no delegation field was present.
+ *
+ * DEMONSTRATED WITH THE GUARD ARMED: in the SAME session that denied a
+ * `wordpress-master` spawn, `SendMessage` resumed `code-reviewer` and produced a
+ * SECOND `task_started` plus `SubagentStart`, carrying orchestrator instructions
+ * the guard never saw. The shortlist bounds WHICH AGENTS EXIST, not HOW MUCH WORK
+ * THEY RECEIVE — and the second half is where the tokens and the workspace writes
+ * actually happen.
+ */
+test("HOOK: SendMessage is DENIED OUTRIGHT, even to a SHORTLISTED agent", async () => {
+  // THE SHORTLIST IS NOT THE BOUNDARY HERE, AND THAT IS THE POINT. `code-reviewer`
+  // is on this run's shortlist and may be STARTED; it may not be handed a second
+  // instruction stream out of band. A denial that depended on the target's name
+  // would have waved through the very call that was measured.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  const reason = denialReason(
+    await ask(options, "SendMessage", {
+      to: "code-reviewer",
+      summary: "continue the review",
+      message: "keep going, here is the rest of the plan",
+      // CLI-ADDED, measured: `backfillObservableInput` mutates the input in
+      // place, so these three arrive alongside the schema's own keys. A guard
+      // keyed on "exactly the three schema keys" would be green here and open in
+      // production.
+      type: "text",
+      recipient: "code-reviewer",
+      content: "keep going, here is the rest of the plan",
+    }),
+  );
+  assert.match(reason, /SendMessage/);
+  // The reason reaches the MODEL verbatim as an is_error tool_result, so it has
+  // to say what to do instead.
+  assert.match(reason, /Agent/);
+});
+
+test("HOOK: the SendMessage gate is NAME **OR** SHAPE — each alone is fail-open", async () => {
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+
+  // NAME, with none of the shape keys. `SendMessage` reported the SAME literal
+  // name on both surfaces — unlike Agent/Task, where the same call is "Agent" at
+  // the hook and "Task" in `permission_denials` — which is why the name is
+  // usable here and is not usable there.
+  denialReason(await ask(options, "SendMessage", { message: "carry on" }));
+  denialReason(await ask(options, "SendMessage", {}));
+
+  // SHAPE, under a name nobody enumerated. A name allowlist is the READ_TOOLS
+  // mistake, and this repo has paid for it twice already.
+  const relayed = denialReason(
+    await ask(options, "mcp__plugin_x__relay", { to: "code-reviewer", content: "keep going" }),
+  );
+  assert.match(relayed, /SendMessage|resume/i);
+});
+
+test("HOOK: NEGATIVE CONTROL — ordinary tools and real delegation are untouched", async () => {
+  // WITHOUT THIS, "deny anything with a body" passes every assertion above while
+  // closing the build. That failure does not read as a security regression; it
+  // reads as a broken builder, and it gets "fixed" by deleting the guard.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  for (const [tool, input] of [
+    ["Bash", { command: "npm ci" }],
+    ["Write", { file_path: `${WORKSPACE}/index.html`, content: "<h1>hi</h1>" }],
+    ["Read", { file_path: `${WORKSPACE}/src/app.ts` }],
+    ["mcp__x__move", { from: `${WORKSPACE}/a`, to: `${WORKSPACE}/b` }],
+  ] as const) {
+    assert.deepEqual(await ask(options, tool, input), { continue: true }, tool);
+  }
+  // AND DELEGATION ITSELF STILL WORKS. The build's whole context strategy is
+  // delegation; a SendMessage rule that swallowed the Agent call would be a
+  // bigger regression than the hole it closed.
+  assert.deepEqual(
+    await ask(options, "Agent", {
+      subagent_type: "code-reviewer",
+      run_in_background: false,
+      prompt: "review src/",
+    }),
+    { continue: true },
+  );
+});
+
 test("HOOK: the PRODUCTION shortlist round-trips through the hook, name for name", async () => {
   // A REGRESSION GUARD, green on arrival — said plainly rather than dressed up
   // as a TDD red. Every other delegation test here hands the guard a shortlist

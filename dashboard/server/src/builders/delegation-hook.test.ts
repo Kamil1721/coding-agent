@@ -16,7 +16,7 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { decideDelegation, isDelegationShaped } from "./delegation-hook.js";
+import { decideDelegation, isAgentMessage, isDelegationShaped } from "./delegation-hook.js";
 
 test("a call is delegation-shaped by its FIELDS, whatever the tool is called", () => {
   // NO TOOL NAME IS CONSULTED, and that is not stylistic. `toolName === "Agent"`
@@ -182,6 +182,85 @@ test("a delegation WITHOUT subagent_type denies — it does not abstain", () => 
   const bare = decideDelegation({ description: "d", prompt: "p" }, ["code-reviewer"]);
   assert.equal(bare.allow, false);
   assert.match(bare.allow ? "" : bare.reason, /run_in_background/);
+});
+
+/**
+ * THE `SendMessage` SCOPE HOLE — 2026-07-28, PROBE H.
+ *
+ * WHAT WAS MEASURED, in four arms of a live session. The PreToolUse hook DOES
+ * fire for `SendMessage`, with `tool_name: "SendMessage"` and a `tool_input`
+ * whose keys are `to`, `summary`, `message`, `type`, `recipient`, `content` —
+ * all strings, and `subagent_type` ABSENT in EVERY firing. The guard as shipped
+ * routed on the Agent/Task names or on delegation shape, so it returned
+ * `{continue: true}` for `SendMessage` BY CONSTRUCTION.
+ *
+ * WHAT THAT COST, demonstrated with the guard armed: in the SAME session that
+ * denied a `wordpress-master` spawn, `SendMessage` resumed `code-reviewer` and
+ * produced a SECOND `task_started` plus a `SubagentStart`, carrying orchestrator
+ * instructions the guard never saw. THE SHORTLIST BOUNDS WHICH AGENTS EXIST, NOT
+ * HOW MUCH WORK THEY RECEIVE.
+ *
+ * WHY OUTRIGHT DENIAL RATHER THAN A NARROWER RULE. A PreToolUse hook cannot do
+ * better here: to validate a resume it would have to check the target agentId,
+ * and the agentId appears ONLY in the Agent tool's RESULT, which PreToolUse never
+ * sees. A guard that cannot see what it is guarding is the vacuous-green shape
+ * this whole phase exists to remove, so the tool is denied outright. The
+ * orchestrator delegates with Agent and has no need to resume one: everything a
+ * subagent needs belongs in the Agent call's own prompt.
+ */
+test("an agent-messaging call is caught by its NAME — measured the same on both surfaces", () => {
+  // KEYED ON THE NAME, and that is measured rather than assumed: `SendMessage`
+  // reported the same literal string at the hook and in the transcript, unlike
+  // Agent/Task, where the SAME call is "Agent" at the hook and "Task" in
+  // `permission_denials`.
+  assert.equal(isAgentMessage("SendMessage", {}), true);
+  assert.equal(isAgentMessage("SendMessage", { to: "code-reviewer", message: "carry on" }), true);
+});
+
+test("the CLI's OWN added keys do not decide it — this is a subset test, not an equality", () => {
+  // MEASURED: `tool_input` carries CLI-ADDED keys. `type`, `recipient` and
+  // `content` come from `backfillObservableInput`, which mutates the input in
+  // place, so the three schema keys are not what arrives. Keying on "exactly
+  // {to, summary, message}" would have been green here and open in production.
+  assert.equal(
+    isAgentMessage("SendMessage", {
+      to: "code-reviewer",
+      summary: "continue the review",
+      message: "keep going, here is the rest of the plan",
+      type: "text",
+      recipient: "code-reviewer",
+      content: "keep going, here is the rest of the plan",
+    }),
+    true,
+  );
+});
+
+test("the SHAPE half catches a messaging tool under any other name", () => {
+  // NAME ALONE IS FAIL-OPEN — the READ_TOOLS mistake, which this file has already
+  // paid for twice. A tool that resumes an agent under a name nobody enumerated
+  // is the same call. The shape is "names a TARGET and carries a BODY".
+  assert.equal(isAgentMessage("mcp__plugin_x__relay", { to: "code-reviewer", message: "go" }), true);
+  assert.equal(isAgentMessage("SendMessageV2", { to: "debugger", content: "go" }), true);
+  assert.equal(isAgentMessage("Notify", { to: "debugger", summary: "go" }), true);
+});
+
+test("NEGATIVE CONTROL: an ordinary tool is not a message — the `to` conjunct is load-bearing", () => {
+  // Without these, "anything with a body" would deny every Write the build makes
+  // — which would not read as a security regression, it would read as a builder
+  // that cannot do anything, and it would be "fixed" by deleting the guard.
+  assert.equal(isAgentMessage("Bash", { command: "npm ci" }), false);
+  assert.equal(isAgentMessage("Write", { file_path: "/w/index.html", content: "<h1>hi</h1>" }), false);
+  assert.equal(isAgentMessage("Edit", { file_path: "/w/a.ts", old_string: "a", new_string: "b" }), false);
+  // A target with no body is not a message either — `to` alone is a field name
+  // shared with plenty of ordinary inputs.
+  assert.equal(isAgentMessage("mcp__x__move", { to: "/w/dest", from: "/w/src" }), false);
+  // A DELEGATION is not a message: it is judged by `decideDelegation`, which can
+  // ALLOW a shortlisted agent. Swallowing it here would close delegation
+  // entirely while every delegation test stayed green on its own function.
+  assert.equal(
+    isAgentMessage("Agent", { subagent_type: "code-reviewer", run_in_background: false, prompt: "review" }),
+    false,
+  );
 });
 
 test("NEGATIVE CONTROL: the decision is not a deny-everything stub", () => {

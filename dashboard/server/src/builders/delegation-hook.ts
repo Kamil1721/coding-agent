@@ -28,6 +28,17 @@
  *                tokens) and denied `wordpress-master` in the SAME session
  *   under lock   survives `managedSettings.allowManagedHooksOnly: true`
  *
+ * WHAT THE SHORTLIST NEVER BOUNDED, AND NOW DOES NOT HAVE TO (probe H,
+ * 2026-07-28). The hook fires for `SendMessage` too — `tool_name:
+ * "SendMessage"`, `tool_input` keys `to, summary, message, type, recipient,
+ * content`, `subagent_type` ABSENT in all four arms — so the guard waved it
+ * through by construction, and in the SAME session that denied a
+ * `wordpress-master` spawn it resumed `code-reviewer` with a second
+ * `task_started` and a `SubagentStart` the guard never saw. The shortlist bounds
+ * WHICH AGENTS EXIST, not HOW MUCH WORK THEY RECEIVE. `isAgentMessage` denies
+ * that call outright; see it for why outright is the best a PreToolUse hook can
+ * do.
+ *
  * RESIDUAL, RECORDED RATHER THAN LAUNDERED: `isolation: "remote"` is
  * availability-gated and off-host, so it is denied by construction and not by
  * measurement; `allowManagedHooksOnly` composed with the background/absent arms
@@ -89,6 +100,70 @@ import type {
 export function isDelegationShaped(input: Record<string, unknown>): boolean {
   return "subagent_type" in input || "isolation" in input;
 }
+
+/**
+ * A tool call RESUMES AN AGENT when it names a target and carries a body for it.
+ *
+ * WHY THIS EXISTS, MEASURED (probe H, four arms of one live session). The
+ * PreToolUse slot DOES fire for `SendMessage`, with `tool_name: "SendMessage"`
+ * and `tool_input` keys `to`, `summary`, `message`, `type`, `recipient`,
+ * `content` — all strings, and `subagent_type` ABSENT in every firing. The guard
+ * above routes on the Agent/Task names or on delegation SHAPE, so `SendMessage`
+ * came back `{continue: true}` BY CONSTRUCTION: nothing in it looked like a
+ * delegation, because starting an agent and feeding one are different calls.
+ *
+ * WHAT IT COST, with the guard armed: in the SAME session that denied a
+ * `wordpress-master` spawn, `SendMessage` resumed `code-reviewer` and produced a
+ * SECOND `task_started` plus a `SubagentStart` carrying orchestrator instructions
+ * the guard never saw. THE SHORTLIST BOUNDS WHICH AGENTS EXIST, NOT HOW MUCH WORK
+ * THEY RECEIVE — and the work is where the tokens, the turns and the workspace
+ * writes are.
+ *
+ * NAME **OR** SHAPE, and the name half is usable HERE in a way it is not for
+ * delegation: `SendMessage` reported the SAME literal name on both surfaces (the
+ * hook input and the transcript), whereas the same delegation is `Agent` at the
+ * hook and `Task` in `permission_denials`. The shape half exists because a name
+ * allowlist is fail-open to every tool nobody enumerated — the READ_TOOLS mistake
+ * this codebase has already paid for twice.
+ *
+ * THE SHAPE IS A SUBSET TEST, NOT A KEY-SET EQUALITY, and that is measured
+ * rather than stylistic: `tool_input` arrives with CLI-ADDED keys —
+ * `type`/`recipient`/`content` come from `backfillObservableInput`, which mutates
+ * the input in place — so "exactly the three schema keys" would have been green
+ * in a test and open in production. `to` is required in the conjunction because
+ * a body alone is every `Write` the build makes.
+ *
+ * A DELEGATION IS NOT A MESSAGE. `Agent{subagent_type, prompt}` carries no `to`,
+ * so it falls through to `decideDelegation`, which can still ALLOW a shortlisted
+ * agent. Swallowing it here would close delegation outright.
+ */
+export function isAgentMessage(toolName: string, input: Record<string, unknown>): boolean {
+  if (AGENT_MESSAGE_TOOL_NAMES.has(toolName)) return true;
+  if (!("to" in input)) return false;
+  return "message" in input || "content" in input || "summary" in input;
+}
+
+/** The agent-messaging tool, under the one name it was MEASURED to report. */
+const AGENT_MESSAGE_TOOL_NAMES: ReadonlySet<string> = new Set(["SendMessage"]);
+
+/**
+ * Why a resume is denied, in the words the model reads.
+ *
+ * FAIL-CLOSED BEATS A GUARD THAT CANNOT SEE WHAT IT IS GUARDING. There is no
+ * narrower rule available to a PreToolUse hook: validating a resume means
+ * checking the target agentId against the ones this run started, and the agentId
+ * appears ONLY in the Agent tool's RESULT, which PreToolUse never sees. A hook
+ * that inspected `to` would be judging a display name against nothing — the
+ * shape of check this phase exists to delete, not to add.
+ *
+ * The cost is real and small: the orchestrator delegates with Agent and never
+ * needs to resume, because everything a subagent needs belongs in that call's own
+ * prompt. A build that wants more from an agent starts another one.
+ */
+export const AGENT_MESSAGE_DENIAL =
+  "`SendMessage` is not available to this run: it resumes an agent that is already " +
+  "running and hands it work no boundary here can see. Start a fresh delegation with the " +
+  "Agent tool instead, and put everything the agent needs in that call's own prompt.";
 
 /** Allowed, or denied with a reason the MODEL reads verbatim. */
 export type DelegationDecision = { allow: true } | { allow: false; reason: string };
@@ -214,6 +289,20 @@ export function makeDelegationHook(allowedAgents: readonly string[]): HookCallba
           return { continue: true };
         }
         const shaped = toolInput as Record<string, unknown>;
+        // RESUMING AN AGENT IS DENIED BEFORE THE DELEGATION DECISION, AND THE
+        // ORDER IS LOAD-BEARING. `SendMessage` carries no `subagent_type` and no
+        // `run_in_background`, so falling through to `decideDelegation` would
+        // deny it with "Set `run_in_background: false`. It defaults to true" —
+        // false for this tool, and delivered to the model verbatim.
+        if (isAgentMessage(preToolUse.tool_name, shaped)) {
+          return {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: AGENT_MESSAGE_DENIAL,
+            },
+          };
+        }
         if (!DELEGATION_TOOL_NAMES.has(preToolUse.tool_name) && !isDelegationShaped(shaped)) {
           return { continue: true };
         }

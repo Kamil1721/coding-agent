@@ -44,6 +44,16 @@
  *     The hook's deny was measured to prevent the spawn outright — no
  *     `task_started`, no `SubagentStart`, no tokens billed, and not one
  *     `background_tasks_changed` envelope.
+ *     THE SAME HOOK DENIES `SendMessage` OUTRIGHT, and that is a second measured
+ *     hole rather than tidiness (probe H): the hook fires for it with
+ *     `subagent_type` ABSENT in every arm, so the delegation guard returned
+ *     `{continue: true}` by construction, and in the SAME session that denied a
+ *     `wordpress-master` spawn a `SendMessage` resumed `code-reviewer` with a
+ *     second `task_started` and `SubagentStart` the guard never saw. The
+ *     shortlist bounds WHICH AGENTS EXIST, not HOW MUCH WORK THEY RECEIVE. A
+ *     hook cannot do better than outright denial here — validating a resume
+ *     needs the agentId, which appears only in the Agent tool's RESULT, and
+ *     PreToolUse never sees a result.
  *     THE SHORTLIST IS NO LONGER EMPTY: Phase 1 Task 3 supplied it, and it
  *     arrives on `BuildRequest.allowedAgents` — the orchestrator passes
  *     `shortlistFor(classifySurface(ticket))`, roughly two dozen names out of
