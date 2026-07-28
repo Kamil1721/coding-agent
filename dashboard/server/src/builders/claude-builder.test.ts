@@ -189,6 +189,86 @@ test("Glob's REAL required argument is `pattern`, and it is judged", () => {
   assert.equal(decideWith("Glob", { pattern: `${HELD_OUT}/T-1/*.mjs` }).behavior, "deny");
 });
 
+test("a glob pattern is judged by its literal prefix, not the raw string", () => {
+  // A glob names a TREE. `/tmp/**/*.mjs` is neither inside the sealed root nor a
+  // literal ancestor of it — `resolve()` keeps the `**` as a path segment — yet
+  // the tool walks every file under `/tmp`, suite included. All five ALLOWed
+  // against dist before this test existed, except the last, which is here as a
+  // regression guard because its `path` is already an ancestor.
+  assert.equal(
+    decideWith("Glob", { pattern: `${HELD_OUT}/../**/*.mjs` }).behavior, "deny",
+    "climb out of the suite then wildcard back down",
+  );
+  assert.equal(
+    decideWith("Glob", { pattern: "/tmp/dash/**/*.mjs" }).behavior, "deny",
+    "wildcard from the suite's parent",
+  );
+  assert.equal(
+    decideWith("Glob", { pattern: "/tmp/**/*.test.mjs" }).behavior, "deny",
+    "wildcard from a distant ancestor",
+  );
+  assert.equal(
+    decideWith("Glob", { pattern: "../../../**/*.mjs" }).behavior, "deny",
+    "relative climb then wildcard",
+  );
+  assert.equal(
+    decideWith("Grep", { path: "/tmp/dash", glob: "**/*.mjs" }).behavior, "deny",
+    "Grep's separate glob argument over an ancestor path",
+  );
+});
+
+test("truncation goes back to the last separator, and covers every metacharacter", () => {
+  // MID-SEGMENT. Every assertion above puts the `*` straight after a `/`, so
+  // cutting at the metacharacter and cutting at the preceding separator agree
+  // and the difference is untested. `/tmp/dash/accept*` is NOT `/tmp/dash/`:
+  // as a literal it is neither inside `/tmp/dash/acceptance` nor an ancestor of
+  // it, so a prefix that stops at the metacharacter returns ALLOW while the
+  // glob expands into the suite.
+  assert.equal(
+    decideWith("Glob", { pattern: "/tmp/dash/accept*/T-1/*.mjs" }).behavior, "deny",
+    "mid-segment wildcard must truncate to its containing directory",
+  );
+  // `*` is not the only metacharacter a shell-style glob honours.
+  assert.equal(
+    decideWith("Glob", { pattern: "/tmp/dash/acceptanc?/t.mjs" }).behavior, "deny",
+    "single-character wildcard",
+  );
+  assert.equal(
+    decideWith("Glob", { pattern: "/tmp/dash/{acceptance,src}/**" }).behavior, "deny",
+    "brace alternation",
+  );
+  assert.equal(
+    decideWith("Glob", { pattern: "/tmp/dash/[a-z]cceptance/t.mjs" }).behavior, "deny",
+    "character class",
+  );
+});
+
+test("NEGATIVE CONTROL: workspace-scoped globs still work", () => {
+  // Truncation must not become "deny every pattern". These are the ordinary
+  // shape of a build's own search and they stay allowed.
+  assert.equal(decideWith("Glob", { pattern: "**/*.ts" }).behavior, "allow", "bare recursive glob");
+  assert.equal(decideWith("Glob", { pattern: "src/**/*.tsx" }).behavior, "allow", "relative subtree");
+  assert.equal(
+    decideWith("Glob", { pattern: `${WORKSPACE}/**/*.ts` }).behavior, "allow",
+    "absolute workspace subtree",
+  );
+  assert.equal(
+    decideWith("Glob", { pattern: `${WORKSPACE}/src/comp*/*.tsx` }).behavior, "allow",
+    "mid-segment wildcard inside the workspace",
+  );
+  // A literal path is still judged literally — the raw value is kept alongside
+  // its prefix, so truncation cannot LOSE a deny either.
+  assert.equal(
+    decideWith("Glob", { pattern: `${HELD_OUT}/T-1/*.mjs` }).behavior, "deny",
+    "the raw value is still judged",
+  );
+  // Next.js dynamic-route filenames carry brackets and are not globs at all.
+  assert.equal(
+    decideWith("Read", { file_path: `${WORKSPACE}/src/app/[id]/page.tsx` }).behavior, "allow",
+    "a bracketed filename inside the workspace",
+  );
+});
+
 test("a present non-path key does not suppress judging the cwd", () => {
   // Phase 0 folded cwd in ONLY when zero candidates were found, so any stray
   // key turned the fold off and the guard judged the wrong target.

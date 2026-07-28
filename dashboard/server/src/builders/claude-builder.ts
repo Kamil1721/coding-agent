@@ -50,7 +50,10 @@
  *      store. It was a tool-name allowlist until 2026-07-28, then briefly a
  *      KEY allowlist — the same fail-open shape on another axis, and it was
  *      defeated by `Glob`'s required `pattern` argument. Every value is now
- *      scanned except named free text; see FREE_TEXT_KEYS below.
+ *      scanned except named free text; see FREE_TEXT_KEYS below. A value is
+ *      also judged by the TREE it would walk, not only by its raw spelling —
+ *      `Glob{pattern:"/tmp/**\/*.mjs"}` names no sealed path and matches every
+ *      file under `/tmp`; see globPrefix below.
  *      EXECUTED: unit-tested directly, with a negative control.
  *   2. `sandbox.filesystem.denyRead` names the suite store to the CLI's own OS
  *      sandbox, which is the only layer that can cover Bash. NOT EXECUTED, in
@@ -150,6 +153,38 @@ const FREE_TEXT_KEYS = new Set([
 ]);
 
 /**
+ * The literal prefix of a glob pattern — the directory the tool will actually
+ * walk.
+ *
+ * A GLOB NAMES A TREE, NOT A FILE. `resolve()` treats `**` as an ordinary path
+ * segment, so `/tmp/**\/*.mjs` came out as the literal string `/tmp/**\/*.mjs`,
+ * which is neither inside the sealed root nor a lexical ancestor of it — ALLOW,
+ * while the expanded pattern matches every file under `/tmp`, suite included.
+ * Probed against dist: `Glob{pattern:"/tmp/**\/*.mjs"}` returned allow.
+ *
+ * Truncation goes back to the last SEPARATOR, not to the metacharacter. Cutting
+ * at the metacharacter leaves `/tmp/dash/accept*` as `/tmp/dash/accept`, which
+ * is not `/tmp/dash/acceptance` and not an ancestor of it — so the bypass simply
+ * moves mid-segment. The containing directory IS the tree that gets walked.
+ *
+ * The whole class `*?[]{}` is cut on, not just `*`: `acceptanc?` and
+ * `{acceptance,src}` expand into the suite exactly as `**` does.
+ *
+ * Deliberately NOT gated on tool name. A name gate is fail-open to every
+ * `mcp__*` search tool, which is the mistake READ_TOOLS made. The cost is a
+ * bounded over-deny — a LITERAL path containing a metacharacter is judged by its
+ * parent directory too — which is the safe direction, and the raw value is kept
+ * alongside so nothing that was denied becomes allowed.
+ */
+function globPrefix(value: string): string {
+  const cut = value.search(/[*?[\]{}]/);
+  if (cut === -1) return value;
+  const head = value.slice(0, cut);
+  const lastSep = head.lastIndexOf("/");
+  return lastSep === -1 ? "." : head.slice(0, lastSep + 1);
+}
+
+/**
  * Every value in the input that could name a path — which is every string that
  * is not explicitly free text, at any depth.
  */
@@ -159,7 +194,14 @@ function pathCandidates(input: Record<string, unknown>): string[] {
     if (depth > 6) return;
     if (FREE_TEXT_KEYS.has(key)) return;
     if (typeof value === "string") {
-      if (value.length > 0) found.push(value);
+      if (value.length > 0) {
+        // BOTH spellings. The raw value keeps a literal path judged literally;
+        // the prefix is the tree a pattern would expand into. Any rewrite of
+        // this visitor MUST keep this push — see the mid-segment glob test.
+        found.push(value);
+        const prefix = globPrefix(value);
+        if (prefix !== value) found.push(prefix);
+      }
       return;
     }
     if (Array.isArray(value)) {
