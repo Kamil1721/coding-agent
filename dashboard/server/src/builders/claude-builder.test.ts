@@ -19,6 +19,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { shortlistFor } from "../agent-shortlist.js";
 import { buildOptions, canonicaliseForDecision, decideToolPermission } from "./claude-builder.js";
 import type { BuildRequest } from "./types.js";
 
@@ -625,10 +626,13 @@ test("NEGATIVE CONTROL: the Agent guard does not affect other tools", () => {
 test("an Agent call carrying a sealed path is denied, shortlisted or not", () => {
   // The Agent branch RETURNED — allow or deny — before the sealed scan ever ran,
   // so a well-formed shortlisted call could carry a sealed path in any other
-  // field and be allowed. Unreachable today only because ALLOWED_AGENTS is empty;
-  // it goes live the moment Phase 1 supplies a shortlist, which is exactly when
-  // nobody will be re-reading this branch. The deny must come from the SEALED
-  // scan, not from the shortlist: every field here is otherwise well-formed.
+  // field and be allowed. That was unreachable while the shortlist was a module
+  // constant fixed at `[]`; TASK 3 MADE IT REACHABLE by sourcing the shortlist
+  // from `BuildRequest.allowedAgents`, and this test is no longer hypothetical.
+  // The deny must come from the SEALED scan, not from the shortlist: every field
+  // here is otherwise well-formed. The same assertion is made against the real
+  // `Options.canUseTool` in "the Phase 0 guards survive delegation being
+  // enabled" — this one keeps it on the pure predicate, where it is cheapest.
   for (const tool of ["Agent", "Task"]) {
     const result = decideToolPermission(
       tool,
@@ -775,6 +779,10 @@ function req(overrides: Partial<BuildRequest> = {}): BuildRequest {
     prompt: "build it",
     workspace: WORKSPACE,
     sealedRoots: SEALED,
+    // FAIL-CLOSED IS THE DEFAULT, here as in production. Every test that wants
+    // delegation names its own shortlist, so no assertion below depends on a
+    // permission it did not ask for.
+    allowedAgents: [],
     modelId: "claude-opus-5",
     effort: null,
     resumeSessionId: null,
@@ -858,7 +866,7 @@ test("WIRING: loading user settings does NOT weaken the sealed boundary", async 
   // `canUseTool` and the Agent guard are all set here in `buildOptions`, not in
   // ~/.claude/settings.json, so loading the owner's environment cannot move any
   // of them. Asserted against the SAME options object that carries ["user"].
-  const options = buildOptions(req(), false);
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
   assert.deepEqual(options.settingSources, ["user"], "the premise: user settings ARE loaded");
 
   assert.deepEqual(options.sandbox?.filesystem?.denyRead, SEALED.map(canonicaliseForDecision));
@@ -883,17 +891,41 @@ test("WIRING: loading user settings does NOT weaken the sealed boundary", async 
     /SEALED ACCEPTANCE SUITE/,
   );
 
-  // ...and the Agent guard is still fail-closed. This is the strongest single
-  // proof that user settings did not reach the boundary: the CLI now discovers
-  // 144 of the owner's agents, and delegation is STILL denied, because the
-  // shortlist is a constant in this module rather than anything a setting can
-  // supply. Task 3 fills it; until then an allow here would be the regression.
+  // ...and the Agent guard is still the only thing that decides delegation.
+  //
+  // RE-POINTED IN TASK 3, NOT DELETED. This assertion used to read "delegation
+  // must stay closed until Task 3 opens it", which was true while the shortlist
+  // was a module constant fixed at `[]`. Task 3 moved the boundary onto
+  // `request.allowedAgents`, so left alone this test would have stayed green off
+  // the fail-closed default while its own comment described a mechanism that no
+  // longer exists — passively green, and lying. It now makes the SAME claim
+  // against the new mechanism, and it is still the strongest single proof that
+  // user settings did not reach the boundary:
+  //
+  // `wordpress-master` is a REAL agent in ~/.claude/agents (verified on disk),
+  // so under `settingSources: ["user"]` the CLI discovers it and would happily
+  // run it. It is denied anyway, because the request did not name it. What the
+  // owner's environment makes VISIBLE and what this run may USE are two
+  // different sets, and only the second is a permission.
+  const offShortlist = await decideWithUserSettings?.(
+    "Agent",
+    { subagent_type: "wordpress-master", run_in_background: false, prompt: "review" },
+    callContext(),
+  );
+  assert.equal(
+    offShortlist?.behavior,
+    "deny",
+    "a discoverable owner agent the request did not name must still be denied",
+  );
+
+  // ...while the agent the REQUEST named runs. Without this the assertion above
+  // would pass against a guard that had simply stopped delegating at all.
   const delegated = await decideWithUserSettings?.(
     "Agent",
     { subagent_type: "code-reviewer", run_in_background: false, prompt: "review" },
     callContext(),
   );
-  assert.equal(delegated?.behavior, "deny", "delegation must stay closed until Task 3 opens it");
+  assert.equal(delegated?.behavior, "allow", "the request's own shortlist is what opens delegation");
 
   // NEGATIVE CONTROL: none of the above is a deny-everything stub.
   const allowed = await decideWithUserSettings?.(
@@ -940,4 +972,147 @@ test("WIRING: the closure INJECTS the canonicaliser — a laundered path is deni
   // NEGATIVE CONTROL: a real in-workspace file is still writable.
   const allowed = await decide?.("Write", { file_path: join(ws, "index.html") }, callContext());
   assert.equal(allowed?.behavior, "allow");
+});
+
+/**
+ * DELEGATION, THROUGH THE OPTIONS OBJECT THE SDK IS ACTUALLY HANDED.
+ *
+ * The `decideAgent` tests near the top of this file exercise the PURE predicate
+ * with a shortlist passed by hand; they proved the branch was correct while
+ * `buildOptions` still fed it a module constant of `[]`, so the whole branch was
+ * dead code in production. These tests close that gap: they read the shortlist
+ * off `BuildRequest` exactly as a run does, through the async `canUseTool` the
+ * SDK calls, which is the only path that can be trusted to be live.
+ *
+ * Every call below is `await`ed. `makeCanUseTool` returns an async arrow, so
+ * `o.canUseTool(...)` is a Promise and `.behavior` on it is `undefined` —
+ * `assert.equal(undefined, "deny")` fails loudly but `assert.notEqual` style
+ * checks would have passed silently.
+ */
+test("delegation is ON for shortlisted agents", async () => {
+  const o = buildOptions(req({ allowedAgents: ["code-reviewer", "debugger"] }), false);
+  for (const type of ["code-reviewer", "debugger"]) {
+    const r = await o.canUseTool?.(
+      "Agent",
+      { subagent_type: type, run_in_background: false, prompt: "review" },
+      callContext(),
+    );
+    assert.equal(r?.behavior, "allow", type);
+  }
+  // `Task` is the same tool under its other name; a shortlist that only opened
+  // one of the two names would be half a boundary in the other direction.
+  const asTask = await o.canUseTool?.(
+    "Task",
+    { subagent_type: "debugger", run_in_background: false },
+    callContext(),
+  );
+  assert.equal(asTask?.behavior, "allow");
+});
+
+test("delegation stays CLOSED for anything off the shortlist", async () => {
+  const o = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  // `general-purpose` is the SDK's own built-in and the name a model reaches for
+  // first; `wordpress-master` is a real agent on disk, discoverable under
+  // `settingSources: ["user"]`; `""` and `"Agent"` are the malformed shapes.
+  for (const type of ["general-purpose", "wordpress-master", "", "Agent"]) {
+    const r = await o.canUseTool?.(
+      "Agent",
+      { subagent_type: type, run_in_background: false },
+      callContext(),
+    );
+    assert.equal(r?.behavior, "deny", type);
+  }
+  // A missing field is not an empty string: `allowedAgents.includes(undefined)`
+  // would be false anyway, but the typeof check is what makes that a decision.
+  const missing = await o.canUseTool?.("Agent", { run_in_background: false }, callContext());
+  assert.equal(missing?.behavior, "deny", "no subagent_type at all");
+});
+
+test("the Phase 0 guards survive delegation being enabled", async () => {
+  // The failure this is written against: turning delegation on by filling the
+  // shortlist, and the isolation/background/sealed checks quietly becoming
+  // unreachable because the allow now returns before them. Each call here is
+  // WELL-FORMED apart from the one field under test, and names an agent that IS
+  // on the shortlist, so nothing but the guard under test can produce the deny.
+  const o = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  const call = (input: Record<string, unknown>) => o.canUseTool?.("Agent", input, callContext());
+
+  for (const isolation of ["remote", "worktree"]) {
+    const r = await call({ subagent_type: "code-reviewer", run_in_background: false, isolation });
+    assert.equal(r?.behavior, "deny", `isolation:${isolation}`);
+    assert.match(r && r.behavior === "deny" ? r.message : "", /isolation/i);
+  }
+
+  // `run_in_background` DEFAULTS TO TRUE in the SDK, so an omitted field is the
+  // dangerous case, not the safe one.
+  const background = await call({ subagent_type: "code-reviewer" });
+  assert.equal(background?.behavior, "deny", "omitted run_in_background");
+  assert.match(
+    background && background.behavior === "deny" ? background.message : "",
+    /run_in_background/,
+  );
+
+  // THE ORDERING ASSERTION. The sealed scan runs BEFORE the Agent branch, so a
+  // shortlisted, synchronous, isolation-free call carrying a sealed path in any
+  // other field is still denied — and the message proves it was the SEALED scan
+  // that denied it, not the shortlist.
+  const sealed = await call({
+    subagent_type: "code-reviewer",
+    run_in_background: false,
+    file_path: `${HELD_OUT}/t.mjs`,
+  });
+  assert.equal(sealed?.behavior, "deny", "a sealed path on a SHORTLISTED Agent call");
+  assert.match(
+    sealed && sealed.behavior === "deny" ? sealed.message : "",
+    /SEALED ACCEPTANCE SUITE/,
+    "the sealed scan must be what denies, not the shortlist",
+  );
+});
+
+test("the PRODUCTION shortlist round-trips through the guard, name for name", async () => {
+  // A REGRESSION GUARD, green on arrival — not a TDD red, and said plainly
+  // rather than dressed up as one. It exists because every other test in this
+  // file hands the guard a shortlist it wrote itself, so all 111 would stay
+  // green if `shortlistFor` started returning nothing, or if a single one of
+  // Task 2's 26 names were misspelled. A wrong name does not fail loudly: the
+  // orchestrator asks for an agent, the guard denies it, and the lane produces
+  // nothing, which looks exactly like a lane that had nothing to do.
+  //
+  // `fullstack` is what `orchestrator.ts` passes until the Task 5 classifier
+  // lands, so this is the literal set a run is given today.
+  const production = shortlistFor("fullstack");
+  assert.ok(production.length > 0, "shortlistFor must never hand the guard an empty list");
+  const o = buildOptions(req({ allowedAgents: production }), false);
+  for (const type of production) {
+    const r = await o.canUseTool?.(
+      "Agent",
+      { subagent_type: type, run_in_background: false, prompt: "go" },
+      callContext(),
+    );
+    assert.equal(r?.behavior, "allow", type);
+  }
+});
+
+test("an empty shortlist still denies everything — fail closed", async () => {
+  // The default state of the system and the reason `allowedAgents` is required
+  // rather than optional: a build that is handed no shortlist does the work
+  // itself. It does not get the 144 agents the owner's settings made visible.
+  const o = buildOptions(req({ allowedAgents: [] }), false);
+  for (const tool of ["Agent", "Task"]) {
+    const r = await o.canUseTool?.(
+      tool,
+      { subagent_type: "code-reviewer", run_in_background: false },
+      callContext(),
+    );
+    assert.equal(r?.behavior, "deny", tool);
+    assert.match(r && r.behavior === "deny" ? r.message : "", /none configured/);
+  }
+
+  // NEGATIVE CONTROL: an empty shortlist closes DELEGATION, not the build.
+  const write = await o.canUseTool?.(
+    "Write",
+    { file_path: `${WORKSPACE}/index.html` },
+    callContext(),
+  );
+  assert.equal(write?.behavior, "allow");
 });

@@ -61,6 +61,27 @@ export interface BuildRequest {
    * at all.
    */
   readonly sealedRoots: readonly string[];
+  /**
+   * THE DELEGATION BOUNDARY. The `subagent_type` values this build may pass to
+   * the Agent/Task tool, and nothing else is reachable.
+   *
+   * AN EMPTY ARRAY DENIES ALL DELEGATION, BY DESIGN. Fail-closed is the default
+   * state: a caller that forgets this field cannot compile, and a caller that
+   * passes `[]` gets a build that does everything itself rather than one that
+   * may reach for any of the 144 agents `settingSources: ["user"]` makes
+   * visible. Visibility is not permission — `settingSources` decides what the
+   * orchestrator can SEE, this decides what it may USE, and neither compensates
+   * for the other being widened.
+   *
+   * Populated from `shortlistFor(surface)` (`src/agent-shortlist.ts`), which is
+   * pure and synchronous precisely because it feeds a permission boundary.
+   *
+   * ENFORCED BY THE ANTHROPIC DRIVER ONLY, in its `canUseTool` Agent branch. The
+   * Codex driver ignores it completely — it has no per-tool permission callback
+   * and is out of scope for orchestration (spec 14) — so this is a policy inside
+   * one CLI, exactly like {@link sealedRoots} above.
+   */
+  readonly allowedAgents: readonly string[];
   /** Catalog model id, as chosen in the UI. */
   readonly modelId: string;
   /** Effort rung, or null when the model has no effort parameter. */

@@ -72,6 +72,7 @@ import {
   resolveHarnessIdentity,
 } from "bakeoff/dist/spec-agent.js";
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
+import { shortlistFor } from "./agent-shortlist.js";
 import type { ApiCriterion, ApiPhase, ApiRunStatus } from "./api-types.js";
 import type { AuthProbe } from "./auth.js";
 import { truncate } from "./claude-common.js";
@@ -581,6 +582,19 @@ export class Orchestrator {
         this.#deps.paths.acceptance,
         join(this.#deps.paths.results, "scorer-out"),
       ],
+      // THE DELEGATION BOUNDARY. `settingSources: ["user"]` makes 144 agents
+      // visible to the builder; this is the far smaller set it may actually
+      // reach, enforced in the Anthropic driver's `canUseTool` Agent branch.
+      // Visibility is not permission, and widening one never substitutes for
+      // the other.
+      //
+      // TODO(Task 5): classify the ticket surface and pass
+      // `shortlistFor(classifySurface(ticketText))`. Until that lands every run
+      // gets `fullstack` — deliberately the WIDEST shortlist, because the
+      // failure mode of a too-narrow one is silent: the orchestrator asks for a
+      // specialist, the guard denies it, and the lane produces nothing, which
+      // looks exactly like a lane that had nothing to do.
+      allowedAgents: shortlistFor("fullstack"),
       modelId: row.modelId,
       effort: entry.effort,
       resumeSessionId: row.builderSessionId,

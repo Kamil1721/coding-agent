@@ -504,11 +504,17 @@ export function decideToolPermission(
   // THIS SCAN RUNS FIRST, BEFORE THE AGENT BRANCH BELOW. The branch used to
   // return — allow as well as deny — before any candidate was looked at, so a
   // well-formed shortlisted `Agent{subagent_type:ok, file_path:"<suite>/x"}` was
-  // ALLOWED with the sealed path never judged. That is unreachable only while
-  // ALLOWED_AGENTS is empty; it goes live the moment Phase 1 supplies a
-  // shortlist, which is precisely when nobody will be re-reading this ordering.
+  // ALLOWED with the sealed path never judged.
+  //
+  // THAT PATH IS NOW LIVE. Phase 0 wrote "unreachable only while ALLOWED_AGENTS
+  // is empty; it goes live the moment Phase 1 supplies a shortlist" — Task 3 is
+  // that moment. `buildOptions` feeds this predicate `request.allowedAgents`,
+  // so a shortlisted `subagent_type` reaches the code below on every real run.
   // A boundary whose reachability depends on a constant elsewhere is not a
-  // boundary. The sealed scan is now unconditional for every tool name.
+  // boundary; the sealed scan is unconditional for every tool name, and the
+  // ordering is covered end-to-end by "the Phase 0 guards survive delegation
+  // being enabled" in claude-builder.test.ts, which asserts the denial message
+  // is the SEALED one rather than the shortlist's.
   for (const candidate of candidates) {
     if (sealedRoots.some((root) => containsOrIsInside(root, candidate, base, canonicalise))) {
       return {
@@ -577,13 +583,6 @@ export function decideToolPermission(
 }
 
 /**
- * Delegation is not configured until Phase 1 supplies a shortlist, and an empty
- * list denies every Agent/Task call outright. Fail-closed by design: a subagent
- * inherits none of this closure's boundaries automatically.
- */
-const ALLOWED_AGENTS: readonly string[] = [];
-
-/**
  * The permission callback the SDK is handed, as its own exported function.
  *
  * `workspace` and `sealedRoots` arrive ALREADY CANONICAL from
@@ -640,7 +639,19 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     model: request.modelId,
     maxTurns: DEFAULT_MAX_TURNS,
     permissionMode: "acceptEdits",
-    canUseTool: makeCanUseTool(workspace, sealedRoots, ALLOWED_AGENTS),
+    // THE DELEGATION BOUNDARY, taken from the REQUEST rather than from a
+    // constant in this module. It was `const ALLOWED_AGENTS = []` through Phase
+    // 0, which denied every Agent/Task call and made the whole branch dead code
+    // in production; the orchestrator now supplies `shortlistFor(surface)`.
+    //
+    // FAIL-CLOSED SURVIVES THE CHANGE: the field is REQUIRED on `BuildRequest`,
+    // so a caller cannot omit it, and `[]` still denies every delegation. What
+    // is gone is the guarantee-by-constant — which is why "the Phase 0 guards
+    // survive delegation being enabled" in claude-builder.test.ts re-proves
+    // isolation, the background default and the sealed scan against a
+    // shortlist that ALLOWS, where before they could only be proven against a
+    // shortlist that denied everything anyway.
+    canUseTool: makeCanUseTool(workspace, sealedRoots, request.allowedAgents),
     includePartialMessages: false,
     // The builder gets the full Claude Code tool set: it is building software.
     tools: { type: "preset", preset: "claude_code" },
