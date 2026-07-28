@@ -176,73 +176,26 @@ export function laneOf(agent: string): Lane | null {
   return null;
 }
 
-/**
- * The report contract, as a CRITICAL SYSTEM REMINDER rather than prose in a
- * prompt body.
+/*
+ * WHAT WAS DELETED HERE ON 2026-07-29, AND WHERE IT WENT.
  *
- * §15.4 items 1-2 were authored and never applied: the contract sat in a plan
- * document while the subagents' own system prompts told them to narrate.
- * Whichever of the two the model followed, it was not this one. Delegation is
- * this system's context compression — a subagent that replays its 50 tool calls
- * into the parent's window is a subagent that made context WORSE. §15 measured
- * 110-190k tokens on a ticket where the contract holds against 260-500k+ on the
- * same ticket where it does not.
+ * `REPORT_CONTRACT_REMINDER` and `reportContract(agent)` lived here to fill
+ * `AgentDefinition.prompt` and `criticalSystemReminder_EXPERIMENTAL` on the
+ * per-agent entries `buildOptions` used to emit through `Options.agents`. Probe I
+ * measured that channel: a definition registered under a name that also exists in
+ * ~/.claude/agents/ is not consulted at all — the colliding name ran its disk
+ * frontmatter's model and echoed none of the definition's prompt, while an
+ * identical definition under a fresh name bound on both. Every name in
+ * DELIVERY_LANES exists on disk ("every shortlisted agent exists on disk", the
+ * first test in agent-shortlist.test.ts), so those two exports had no reader.
  *
- * IT NAMES WHAT NOT TO SEND, not merely "be brief". "Be concise" is advice; the
- * measured failure is a specific behaviour, and a rule that does not name the
- * behaviour it forbids is one the model can honour while still doing it.
+ * THE CONTRACT ITSELF IS NOT DELETED — it moved to the only channel measured to
+ * reach a child: the `prompt` argument the orchestrator writes on each Agent call.
+ * It is stated to the orchestrator in build-prompt.ts's delegation section, with
+ * the reason, and pinned by build-prompt.test.ts. Do not restore a second copy
+ * here: two texts for one contract is how they drift, and only one of them is on a
+ * channel that works.
  */
-export const REPORT_CONTRACT_REMINDER =
-  "Return ONLY your findings and what you changed — file paths, decisions, and what " +
-  "is still open. Do NOT replay your tool calls, quote file contents you read, or " +
-  "narrate your process. Your report enters a parent context that must survive the " +
-  "whole build; everything you leave out is budget the next lane gets to spend.";
-
-/**
- * One agent's system prompt, for the `AgentDefinition` this run supplies.
- *
- * MEASURED SINCE THIS WAS WRITTEN, AND IT IS NEITHER "REPLACES" NOR "MERGES" FOR
- * AN ON-DISK NAME: the DoD run had `system/init` list `code-reviewer` TWICE, and
- * `subagent_type: "code-reviewer"` resolved to the DISK definition — the disk
- * frontmatter's model, the disk `tools`, the disk body, and THIS PROMPT ABSENT.
- * The definition below did not replace anything and did not merge into anything;
- * it was not consulted.
- *
- * WHAT IS STILL UNMEASURED, IN BOTH DIRECTIONS: whether this `prompt` or
- * `criticalSystemReminder_EXPERIMENTAL` reaches ANY child. The reminder came back
- * null from a child that had NO disk file either, so "only on-disk agents ignore
- * it" is not established — nothing is. Probe I is measuring the no-disk-file case
- * now.
- *
- * IT STAYS SELF-SUFFICIENT ANYWAY — naming the role and the lane rather than
- * only "report tersely" — because the case where it DOES land is the case where a
- * child would otherwise not know what it is.
- *
- * WHY SUPPLY A DEFINITION AT ALL. `maxTurns`, `effort`, `background: false` and
- * `disallowedTools: ["mcp__*"]` exist ONLY on an `AgentDefinition`, and that type
- * REQUIRES `prompt`. This used to argue the last two were "boundaries that hold
- * whether or not `canUseTool` is consulted" — probe G2 measured them INERT for an
- * on-disk agent (620 tools, 589 `mcp__*`, identical to the unnarrowed control),
- * so that argument is withdrawn. What removes the MCP surface is the session-level
- * `managedSettings.allowedMcpServers: []`. The definition is still supplied for
- * the case probe I is measuring: a `subagent_type` with no file on disk.
- *
- * TOTAL FOR AN UNKNOWN NAME, like everything else in this module. An agent on no
- * lane must not receive a prompt reading "your undefined lane".
- */
-export function reportContract(agent: string): string {
-  const lane = laneOf(agent);
-  const role =
-    lane === null
-      ? `You are the \`${agent}\` subagent, delegated one step of a larger build.`
-      : `You are the \`${agent}\` subagent, running this build's ${lane.toUpperCase()} lane.`;
-  return (
-    `${role} Work only inside the run's workspace, from the ticket brief and the ` +
-    "visible acceptance tests in it, and apply whatever expertise your own definition " +
-    "gives you.\n\n" +
-    `WHEN YOU FINISH, REPORT — do not narrate. ${REPORT_CONTRACT_REMINDER}`
-  );
-}
 
 /**
  * How much room one delegated agent gets.
@@ -318,44 +271,41 @@ const UNKNOWN_AGENT_TURNS = 15;
  * `undefined`, because `undefined` reads downstream as "no bound" and that is the
  * unbounded lens this table exists to stop.
  *
- * APPLIED SINCE PHASE 1.1 TASK 4 — this paragraph used to say the opposite and
- * was true when it was written. Two facts, both read off the SDK's own typings
- * rather than assumed:
+ * NOT WIRED TO ANYTHING, AND THAT IS THE HONEST STATE AS OF 2026-07-29. This
+ * function has no production caller. It is a table of numbers with no route that
+ * applies them, said here rather than left for a reader to infer from an options
+ * object that no longer carries them.
  *
- *   1. `AgentInput` — the Agent/Task tool's schema (`sdk-tools.d.ts`) — has
- *      `description`, `prompt`, `subagent_type`, `model`, `run_in_background`,
- *      `name`, `team_name`, `mode` and `isolation`. There is NO turn field, so a
- *      bound still cannot be attached to an individual delegation CALL.
- *   2. `AgentDefinition` DOES carry `maxTurns` and `effort`, and `buildOptions`
- *      now emits one per shortlisted agent through `Options.agents`. That type
- *      REQUIRES `prompt`, so this run supplies one ({@link reportContract}) —
- *      whether that REPLACES the body loaded from the owner's disk under
- *      `settingSources: ["user"]` is unmeasured, and the trade is argued on
- *      `reportContract` rather than glossed here.
+ * BOTH ROUTES ARE CLOSED, MEASURED RATHER THAN ASSUMED:
  *
- * WHAT WAS "NOT PROVEN" IS NOW MEASURED, AND IT IS THE BAD ANSWER (2026-07-28).
- * This paragraph used to read "the enforcement needs a live run to observe, and
- * no such run has been made". Two runs have now been made. Probe G2 removed the
- * session-level narrowing and kept the per-agent `disallowedTools`: the child
- * enumerated 620 tools, 589 of them `mcp__*`, IDENTICAL to the unnarrowed
- * control. The DoD run found `subagent_type` resolving to the DISK definition —
- * disk model, disk tools, disk body, our prompt absent. So for a shortlisted
- * name that HAS a file in ~/.claude/agents/ — roughly 141 of them —
- * `maxTurns`, `disallowedTools` and `background: false` bind NOTHING.
+ *   THE CALL   `AgentInput` — the Agent/Task tool's schema (`sdk-tools.d.ts`) —
+ *              has `description`, `prompt`, `subagent_type`, `model`,
+ *              `run_in_background`, `name`, `team_name`, `mode` and `isolation`.
+ *              There is NO turn field, so a bound cannot ride on an individual
+ *              delegation call.
+ *   THE        `AgentDefinition` does carry `maxTurns` and `effort`, and
+ *   DEFINITION `buildOptions` emitted one per shortlisted agent until 2026-07-29.
+ *              Probe I measured `maxTurns: 1` cutting off a child registered
+ *              under a FRESH name after one round-trip, and NOT binding a child
+ *              registered identically under a name that also exists in
+ *              ~/.claude/agents/ — which is every name in DELIVERY_LANES. The
+ *              field works; it does not reach these agents. The wiring was
+ *              deleted rather than left reading like a budget.
  *
- * The bounds are still computed and still sent, because a `subagent_type` with
- * NO disk file has nothing to resolve to and this definition may be what binds
- * it; probe I is measuring exactly that. "It is in the options object" is not
- * "it bounded anything", and for on-disk agents it is now measured NOT to have.
+ * WHY THE TABLE STAYS. The numbers are still the right numbers and the failure
+ * they describe is real — `DEFAULT_MAX_TURNS = 400` is session-level, so one
+ * runaway lens can spend the whole run before GATE/FIX starts (spec 11 item 3).
+ * When a route exists that applies a per-agent bound, this is what it applies.
+ * Until then: a table, tested as a table, claiming nothing.
  *
  * WHY EVERY `effort` IS NULL. Null means the run's own effort stands — the rung
  * the owner picked in the UI, which reaches the session as `Options.effort`.
  * There is no measurement behind any per-agent rung: nothing has been run at two
  * efforts and compared. Inventing rungs here would silently override an owner's
  * choice on evidence that does not exist, and would look exactly like a policy
- * that had been decided. The field is part of the signature this task specifies
- * because a bound and an effort are applied through the same
- * `AgentDefinition`, and it is the honest place for a measured value to land.
+ * that had been decided. The field stays in the signature because a bound and an
+ * effort would be applied through the same route, and it is the honest place for
+ * a measured value to land.
  */
 export function boundsFor(agent: string): AgentBounds {
   const override = AGENT_TURNS.get(agent);

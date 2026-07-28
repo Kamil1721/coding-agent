@@ -61,8 +61,10 @@
  *     denies every delegation, with a reason naming the permitted agents as
  *     "(none configured)", and that remains the fail-closed default rather than
  *     a regression: a subagent inherits none of these boundaries automatically,
- *     and `Options.agents` limits only what the orchestrator can see, while
- *     `subagent_type` is a free string in the SDK schema.
+ *     `subagent_type` is a free string in the SDK schema, and NOTHING ELSE IN
+ *     THIS OBJECT NARROWS DELEGATION — `Options.agents` was measured (probe I)
+ *     not to bind for any name that exists in ~/.claude/agents/, which is every
+ *     name this run shortlists, so this hook is the only narrowing there is.
  *   - The owner's OWN hooks are suppressed for a build
  *     (`managedSettings.allowManagedHooksOnly`), because a PreToolUse hook
  *     returning "allow" pre-empts `canUseTool` outright. That also disables
@@ -136,18 +138,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type {
-  AgentDefinition,
   CanUseTool,
   Options,
   PermissionResult,
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import {
-  REPORT_CONTRACT_REMINDER,
-  boundsFor,
-  laneOf,
-  reportContract,
-} from "../agent-shortlist.js";
 import {
   NOT_RATE_LIMITED,
   assistantText,
@@ -757,75 +752,58 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     // envelope. See delegation-hook.ts for the rest of what was measured and
     // what was not.
     hooks: { PreToolUse: [makeDelegationHook(request.allowedAgents)] },
-    // THE PER-AGENT DEFINITIONS — AND FOR AN ON-DISK AGENT THEY ARE INERT.
-    // MEASURED TWICE, 2026-07-28, AFTER THIS COMMENT CLAIMED "DEFENCE IN DEPTH":
+    // NO `agents:` KEY, AND ITS ABSENCE IS THE MEASUREMENT — NOT AN OVERSIGHT.
     //
-    //   probe G2   the session-level narrowing removed, these per-agent
-    //              `disallowedTools` kept: the child still enumerated 620 tools,
-    //              589 of them `mcp__*` — IDENTICAL to the unnarrowed control.
-    //              The per-agent lock removed nothing at all.
-    //   the DoD    `system/init` listed `code-reviewer` TWICE, and
-    //   run        `subagent_type: "code-reviewer"` resolved to the DISK
-    //              definition: the disk frontmatter's model, the disk `tools`,
-    //              the disk body — and our `reportContract` prompt ABSENT.
-    //              `Options.agents` did not restrict the reachable set either.
+    // This object carried one `AgentDefinition` per shortlisted agent until
+    // 2026-07-29: a `prompt` (the report contract), a
+    // `criticalSystemReminder_EXPERIMENTAL`, a per-lane `maxTurns`,
+    // `disallowedTools: ["mcp__*"]` and `background: false`. Every one of those
+    // fields is measured NOT TO REACH the agents this run delegates to.
     //
-    // SO, FOR THE ~141 SHORTLISTED NAMES THAT EXIST IN ~/.claude/agents/,
-    // `disallowedTools`, `maxTurns` and `background: false` ARE ALL INERT. The
-    // name resolves to the file on disk and this object is not consulted. What
-    // actually removes the MCP surface is the SESSION-level
-    // `managedSettings.allowedMcpServers: []` below, measured at zero servers
-    // against 13 unnarrowed — one real layer, not two.
+    //   probe G2   session-level narrowing removed, the per-agent
+    //              `disallowedTools` kept: the child enumerated 620 tools, 589 of
+    //              them `mcp__*` — IDENTICAL to the unnarrowed control.
+    //   probe I    identical definitions under a name that HAS a file in
+    //              ~/.claude/agents/ and one that does not. The fresh name echoed
+    //              its definition's nonce and ran its definition's model; the
+    //              colliding name echoed nothing and ran the model from its disk
+    //              frontmatter. `maxTurns: 1` cut the fresh child off after one
+    //              round-trip and did not bind the colliding one; `background:
+    //              false` bound neither. `Options.agents` DOES NOT BIND for a name
+    //              that exists on disk.
     //
-    // THE WIRING STAYS, AND SO DOES THE CONTRACT, for a reason that is measured
-    // to be plausible and not yet measured to be true: a `subagent_type` with NO
-    // disk file has nothing to resolve to, and this definition may be what binds
-    // it. PROBE I IS MEASURING EXACTLY THAT RIGHT NOW. Deleting the wiring would
-    // remove the thing under measurement; leaving a "defence in depth" claim on
-    // it would be the dead-boundary defect this phase exists to remove. So the
-    // code stays and the CLAIM is corrected — see claude-builder.test.ts, where
-    // the tests assert this object's SHAPE and say plainly that shape is not
-    // enforcement.
+    // WHY THAT MAKES THE BLOCK UNREACHABLE RATHER THAN MERELY INERT. The only name
+    // it could bind is one with NO file in ~/.claude/agents/. Two facts close that
+    // door: "every shortlisted agent exists on disk" is a green test in
+    // agent-shortlist.test.ts, so no shortlisted name is such a name — and the
+    // PreToolUse hook above denies every `subagent_type` off the shortlist, so no
+    // OTHER name gets to run either. There is no delegation this run can perform
+    // for which a definition here would be consulted.
     //
-    // UNMEASURED, IN BOTH DIRECTIONS: whether `prompt` /
-    // `criticalSystemReminder_EXPERIMENTAL` reaches ANY child. The reminder came
-    // back null from a child that had no disk file either, so "on-disk agents
-    // ignore it" is NOT established — nothing is, and this line records that
-    // rather than guessing which way it falls.
+    // WHY IT IS DELETED RATHER THAN KEPT WITH AN HONEST COMMENT. `AgentDefinition`
+    // REQUIRES `prompt`, and `prompt` is precisely the field probe I measured
+    // discarded, so there is no subset of it that says something true. And keeping
+    // it is worse than useless: probe I found `supportedAgents()` advertising the
+    // Options entry's own description and model, with `getContextUsage()` sourcing
+    // it to "flagSettings", while the engine ran the disk definition. A reader who
+    // checks the roster concludes the definition bound. It did not.
     //
-    // WHY THE CONTRACT IS WORTH CARRYING ANYWAY. Delegation is this system's
-    // context compression — a subagent that narrates its 50 tool calls back into
-    // the parent's window is a subagent that made context WORSE. §15 measured
-    // 110-190k tokens if the contract holds and 260-500k+ if it does not, on the
-    // same ticket. If probe I says it never lands, the contract has to move into
-    // the orchestrator's own prompt for the Agent call, which is the one channel
-    // measured to reach a child.
-    //
-    // `effort` IS SPREAD CONDITIONALLY AND IS DEAD TODAY. Every `boundsFor()`
-    // entry returns `effort: null`, meaning "the run's own effort stands", so
-    // this spread contributes nothing a test can observe and deleting it would
-    // break none. It is here because a bound and an effort are applied through
-    // the SAME `AgentDefinition`, and a measured per-agent rung has nowhere else
-    // to land. `AnthropicEffort` is exactly the named union
-    // `AgentDefinition.effort` accepts, checked rather than assumed — no cast,
-    // no mapping.
-    agents: Object.fromEntries(
-      request.allowedAgents.map((name): [string, AgentDefinition] => {
-        const bounds = boundsFor(name);
-        return [
-          name,
-          {
-            description: `Shortlisted for this run's ${laneOf(name) ?? "unknown"} lane.`,
-            prompt: reportContract(name),
-            criticalSystemReminder_EXPERIMENTAL: REPORT_CONTRACT_REMINDER,
-            maxTurns: bounds.maxTurns,
-            ...(bounds.effort === null ? {} : { effort: bounds.effort }),
-            disallowedTools: ["mcp__*"],
-            background: false,
-          },
-        ];
-      }),
-    ),
+    // WHAT REPLACED EACH FIELD, so nothing is silently dropped:
+    //   prompt / reminder   the report contract, in the orchestrator's own build
+    //                       prompt, which it is told to paste into each Agent
+    //                       call's `prompt` — the one channel probe I measured
+    //                       reaching a child. See build-prompt.ts.
+    //   disallowedTools     the SESSION-level `managedSettings.allowedMcpServers:
+    //                       []` below, measured at zero servers against 13.
+    //   background: false   the PreToolUse hook above, which denies any delegation
+    //                       whose `run_in_background` is not exactly false —
+    //                       measured to prevent the spawn outright.
+    //   maxTurns            NOTHING. `boundsFor()` still computes the per-lane
+    //                       numbers and they are still the right numbers, but no
+    //                       route applies them: `AgentInput` has no turn field, so
+    //                       a bound cannot ride on the call either. Recorded as
+    //                       open rather than papered over with wiring that does
+    //                       not bind.
     includePartialMessages: false,
     // The builder gets the full Claude Code tool set: it is building software.
     tools: { type: "preset", preset: "claude_code" },
@@ -834,8 +812,10 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     //
     // PROBED 2026-07-28: settingSources [] discovers 16 skills, ALL built-in, and
     // NONE of the owner's 41. AgentDefinition.skills can only name a DISCOVERED
-    // skill, so under [] every preload silently resolves to nothing. There is no
-    // programmatic equivalent for skills the way Options.agents is for agents.
+    // skill, so under [] every preload silently resolves to nothing. And there is
+    // no programmatic route to fall back on: `Options.agents` looks like one for
+    // agents and probe I measured it not binding for any name that exists on
+    // disk, so [] would cost the skills and buy nothing.
     //
     // The original justification was COMPARABILITY — an uncontrolled input that
     // changes what gets built without appearing in the ticket. Model comparison

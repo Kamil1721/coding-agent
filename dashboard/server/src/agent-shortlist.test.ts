@@ -24,14 +24,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
-import {
-  DELIVERY_LANES,
-  REPORT_CONTRACT_REMINDER,
-  boundsFor,
-  laneOf,
-  reportContract,
-  shortlistFor,
-} from "./agent-shortlist.js";
+import { DELIVERY_LANES, boundsFor, laneOf, shortlistFor } from "./agent-shortlist.js";
 
 const SURFACES = ["web-ui", "fullstack", "api", "cli", "library", "background-jobs"] as const;
 
@@ -146,10 +139,19 @@ test("context-manager runs in every lane set — it owns shared context", () => 
  * defects found by REVIEW actually get closed. So each agent carries its own
  * number.
  *
- * WHAT THESE TESTS DO NOT PROVE, said here rather than implied: that the bound is
- * ENFORCED. See `boundsFor` in agent-shortlist.ts — `AgentInput` has no turn
- * field, so Phase 1 has nowhere to apply it. This is the table; applying it is
- * Phase 2's job and is recorded as open.
+ * WHAT THESE TESTS DO NOT PROVE, SAID HERE RATHER THAN IMPLIED: that the bound is
+ * ENFORCED, or that anything reads it at all. `boundsFor` has NO production caller
+ * as of 2026-07-29. Both routes it could have taken are measured shut — the Agent
+ * tool's own `AgentInput` has no turn field, and `AgentDefinition.maxTurns` was
+ * measured (probe I) binding a child registered under a FRESH name while not
+ * binding one registered identically under a name that also exists in
+ * ~/.claude/agents/, which is every name in DELIVERY_LANES. The wiring that used
+ * to send it was deleted rather than left reading like a budget.
+ *
+ * These tests are therefore about a TABLE: that its numbers are present, ordered
+ * sensibly relative to each other, and total for an unknown name. That is worth
+ * keeping — the numbers are the reasoning, and they are what a future enforcement
+ * route would apply — as long as no title here claims a bound that binds.
  */
 test("every shortlisted agent carries an explicit turn bound", () => {
   // DEFAULT_MAX_TURNS is session-level. One unbounded lens can consume the whole
@@ -201,47 +203,24 @@ test("effort is a real rung or null — null means the run's own effort stands",
   }
 });
 
-/**
- * THE REPORT CONTRACT — Phase 1.1 Task 4.
+/*
+ * THE REPORT CONTRACT'S TESTS ARE NOT HERE ANY MORE — build-prompt.test.ts HAS
+ * THEM (deleted 2026-07-29).
  *
- * §15.4 items 1-2 were authored and never applied: the contract sat in a plan
- * document while the subagents' own system prompts told them to narrate. §15
- * measured 110-190k tokens on a ticket when the contract holds and 260-500k+ on
- * the same ticket when it does not. These tests pin the TEXT; that it reaches
- * the agent is pinned in claude-builder.test.ts, against the options object.
+ * Three tests stood here over `REPORT_CONTRACT_REMINDER` and
+ * `reportContract(agent)`, which existed to fill `AgentDefinition.prompt` and
+ * `criticalSystemReminder_EXPERIMENTAL` on the entries `buildOptions` sent through
+ * `Options.agents`. Probe I measured that channel not binding for a name that
+ * exists in ~/.claude/agents/, and the first test in this file proves every
+ * shortlisted name does. The exports had no reader, so they went, and their tests
+ * went with them rather than being re-pointed at a second copy of the same text.
+ *
+ * The contract itself is intact on the channel probe I measured reaching a child:
+ * the `prompt` the orchestrator writes on each Agent call, stated in
+ * build-prompt.ts and pinned by five tests in build-prompt.test.ts — the four
+ * fields, the reason, the fail-closed empty case, and the instruction to attach it
+ * to every call.
  */
-test("the reminder tells an agent what NOT to send back, not merely to be brief", () => {
-  // "Be concise" is advice. The measured failure is a subagent replaying its 50
-  // tool calls into the parent's window, so the prohibition has to name that.
-  assert.match(REPORT_CONTRACT_REMINDER, /tool call/i);
-  assert.match(REPORT_CONTRACT_REMINDER, /narrate|process/i);
-  assert.match(REPORT_CONTRACT_REMINDER, /file path|findings/i);
-});
-
-test("an agent's prompt names the agent and its lane, then the contract", () => {
-  // SELF-SUFFICIENT ON PURPOSE. Whether `Options.agents` REPLACES the owner's
-  // on-disk agent body or merges with it is unmeasured (recorded on
-  // `reportContract`). Under replacement, a prompt that was only a reporting
-  // rule would leave a child that does not know what it is. Naming the role and
-  // the lane makes the worst case a benign one.
-  const reviewer = reportContract("code-reviewer");
-  assert.match(reviewer, /code-reviewer/);
-  assert.match(reviewer, /review/i);
-  assert.match(reviewer, /report/i);
-
-  // NEGATIVE CONTROL: it is per-agent, not one constant wearing 26 hats.
-  assert.notEqual(reviewer, reportContract("nextjs-developer"));
-  assert.match(reportContract("nextjs-developer"), /nextjs-developer/);
-  assert.match(reportContract("nextjs-developer"), /build/i);
-});
-
-test("an agent on no lane still gets a usable prompt", () => {
-  // `allowedAgents` is a plain array; a name from outside DELIVERY_LANES must
-  // not produce a prompt reading "your undefined lane".
-  const unknown = reportContract("some-future-agent");
-  assert.match(unknown, /some-future-agent/);
-  assert.ok(!/undefined|null/.test(unknown), unknown);
-});
 
 /**
  * LANE ATTRIBUTION, for the context samples in Task 7 Step 5.

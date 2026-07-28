@@ -24,7 +24,7 @@ import type {
   Options,
   PreToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
-import { REPORT_CONTRACT_REMINDER, boundsFor, shortlistFor } from "../agent-shortlist.js";
+import { shortlistFor } from "../agent-shortlist.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
@@ -1541,92 +1541,51 @@ test("an ordinary tool carrying none of those fields is untouched — negative c
 });
 
 /**
- * THE PER-AGENT DEFINITIONS — AND WHAT THEY ARE MEASURED **NOT** TO DO.
+ * THE PER-AGENT DEFINITIONS — DELETED 2026-07-29, AND THIS IS WHAT REPLACED THEM.
  *
- * REWRITTEN 2026-07-28, BECAUSE THE ORIGINAL VERSIONS OF THESE TWO TESTS MADE
- * CLAIMS THE MECHANISM DOES NOT SUPPORT. They pinned `disallowedTools:
- * ["mcp__*"]` and `maxTurns` as literals in the options object under titles like
- * "a subagent gets no MCP tools and cannot detach" — the settings-plumbing.test.ts
- * shape, this repo's signature defect: assert a value, describe it as a boundary,
- * and the boundary is never tested at all.
+ * THREE TESTS STOOD HERE AND ASSERTED THE SHAPE OF A MECHANISM MEASURED NOT TO
+ * RUN. They pinned `prompt`, `criticalSystemReminder_EXPERIMENTAL`, per-lane
+ * `maxTurns`, `disallowedTools: ["mcp__*"]` and `background: false` in the options
+ * object. Their titles said SHAPE and their bodies said so too — which was the
+ * honest version of the settings-plumbing.test.ts defect, but still a page of
+ * green tests standing over dead wiring.
  *
- * WHAT WAS MEASURED, TWICE:
- *   probe G2   session-level narrowing removed, these per-agent `disallowedTools`
- *              kept -> the child enumerated 620 tools, 589 of them `mcp__*`,
- *              IDENTICAL to the unnarrowed control. The per-agent lock removed
- *              nothing.
- *   DoD run    `system/init` listed `code-reviewer` TWICE and `subagent_type`
- *              resolved to the DISK definition — disk model, disk tools, disk
- *              body, and our `reportContract` prompt ABSENT. `Options.agents`
- *              did not restrict the reachable set either.
+ * WHAT CLOSED IT (probe I, 2026-07-28). Identical definitions were registered
+ * under a name that exists in ~/.claude/agents/ and one that does not. The fresh
+ * name echoed its definition's nonce and ran its definition's model, and
+ * `maxTurns: 1` cut it off after one round-trip. The colliding name echoed
+ * nothing, ran the model from its own disk frontmatter, and was bound by neither
+ * `maxTurns` nor `background: false`. `Options.agents` does not bind for a name
+ * with a file on disk.
  *
- * So for the ~141 shortlisted names that have a file in ~/.claude/agents/,
- * `disallowedTools`, `maxTurns` and `background: false` are INERT. What actually
- * removes the MCP surface is the SESSION-level `managedSettings.allowedMcpServers:
- * []`, asserted in "WIRING: no MCP server is available to a build" above and
- * measured at zero servers against 13 unnarrowed.
+ * UNREACHABLE, NOT MERELY INERT — which is what makes deletion safe rather than a
+ * judgement call. The only name the block could bind is one with NO disk file.
+ * "every shortlisted agent exists on disk" (agent-shortlist.test.ts) proves no
+ * shortlisted name is such a name, and the PreToolUse hook denies every
+ * `subagent_type` off the shortlist, so no other name runs either. There is no
+ * delegation this run can make for which a definition would have been consulted.
  *
- * WHY THESE TESTS ARE KEPT AT ALL. The wiring is deliberately not deleted: a
- * `subagent_type` with NO disk file has nothing to resolve to, and this
- * definition may be what binds it. PROBE I IS MEASURING THAT NOW. These tests
- * pin the INPUT that probe is measuring against — that this run really does send
- * per-agent bounds derived from `boundsFor`, and does not send an empty object —
- * so a silent change to the input cannot be mistaken for a probe result. They
- * assert SHAPE, and they say so in their titles.
- *
- * UNMEASURED, RECORDED AS SUCH: whether `prompt` or
- * `criticalSystemReminder_EXPERIMENTAL` reaches ANY child is unknown in BOTH
- * directions — the reminder came back null from a child with no disk file too, so
- * neither "it lands" nor "it never lands" is established.
+ * ONE TEST REPLACES THEM, AND IT ASSERTS AN ABSENCE. An absence test is worth
+ * having here for one reason: the field is trivially re-addable, it type-checks,
+ * it shows up in `supportedAgents()` and `getContextUsage()` sourced to
+ * "flagSettings" — probe I's verification trap — and it would read to the next
+ * reader as a per-agent budget. This says it is gone on purpose.
  */
-test("SHAPE: every shortlisted agent is SENT a definition built from boundsFor", () => {
+test("buildOptions sends NO per-agent definitions — measured unreachable, deliberately absent", () => {
+  // NOT "the definitions are empty" — the key is not sent at all. A `{}` would be
+  // the same behaviour and a different statement: it would read as a block
+  // somebody meant to fill.
   const options = buildOptions(
     req({ allowedAgents: ["code-reviewer", "nextjs-developer"] }),
     false,
   );
-  const agents = options.agents ?? {};
-  assert.deepEqual(Object.keys(agents).sort(), ["code-reviewer", "nextjs-developer"]);
+  assert.equal(options.agents, undefined, "Options.agents does not bind for an on-disk name");
 
-  const reviewer = agents["code-reviewer"];
-  assert.ok(reviewer, "a shortlisted agent must be defined, not just permitted");
-  // The contract is IN THE PAYLOAD. Whether it reaches the child is UNMEASURED —
-  // the DoD run found our prompt absent for an on-disk agent, and the reminder
-  // came back null from a child with no disk file either. This asserts what is
-  // sent, which is all this file can see.
-  assert.match(reviewer.prompt, /report/i);
-  assert.match(reviewer.prompt, /code-reviewer/, "and the agent is named in what is sent");
-  assert.equal(reviewer.criticalSystemReminder_EXPERIMENTAL, REPORT_CONTRACT_REMINDER);
-
-  // PER AGENT, NOT ONE CONSTANT WEARING TWO HATS — `maxTurns: 15` everywhere
-  // would satisfy the two equalities while carrying no per-agent bound at all.
-  // Measured INERT for an on-disk name; kept because probe I is measuring
-  // whether it binds a name with no disk file.
-  const builder = agents["nextjs-developer"];
-  assert.ok(builder);
-  assert.equal(reviewer.maxTurns, boundsFor("code-reviewer").maxTurns);
-  assert.equal(builder.maxTurns, boundsFor("nextjs-developer").maxTurns);
-  assert.notEqual(reviewer.maxTurns, builder.maxTurns);
-});
-
-test("SHAPE: the definition CARRIES disallowedTools and background:false — inert on disk, pending probe I", () => {
-  const def = (buildOptions(req({ allowedAgents: ["code-reviewer"] }), false).agents ?? {})[
-    "code-reviewer"
-  ];
-  assert.ok(def);
-  // WHAT THIS DOES AND DOES NOT SAY. It says the options object carries these two
-  // fields. It does NOT say a child loses its MCP tools or cannot detach: probe
-  // G2 measured a child with this exact `disallowedTools` enumerating 620 tools,
-  // 589 of them `mcp__*` — the same as the unnarrowed control. The layer that
-  // does remove them is the session-level `allowedMcpServers: []` asserted
-  // above; this one is the input probe I is currently measuring.
-  assert.deepEqual(def.disallowedTools, ["mcp__*"]);
-  assert.equal(def.background, false);
-});
-
-test("an empty shortlist defines NO agents — the negative control", () => {
-  // The fail-closed default, and the assertion that says these definitions are
-  // built from the request rather than from a table in this module.
-  assert.deepEqual(buildOptions(req({ allowedAgents: [] }), false).agents, {});
+  // AND THE BOUNDARY THAT DID SURVIVE IS STILL HERE, in the same object, so this
+  // test cannot pass by the delegation guard having gone missing along with the
+  // decoration. The hook is what denies an off-shortlist agent; it is exercised
+  // for real in the HOOK section above.
+  assert.equal(options.hooks?.PreToolUse?.length, 1, "the hook is the delegation boundary");
 });
 
 test("the environment the CLI reports is emitted on the sink AND logged", async () => {
@@ -2312,7 +2271,32 @@ test("THE LOOP: the prompt and the built Options are what the session is started
   assert.equal(typeof params.options.canUseTool, "function");
   assert.equal(params.options.hooks?.PreToolUse?.length, 1);
   assert.deepEqual(params.options.sandbox?.filesystem?.denyRead, SEALED.map(canonicaliseForDecision));
-  assert.deepEqual(Object.keys(params.options.agents ?? {}), ["code-reviewer"]);
+  // THIS REQUEST'S SHORTLIST, THROUGH THE OBJECT THE SDK IS HANDED. This line read
+  // `Object.keys(params.options.agents)` until 2026-07-29. That key is gone —
+  // `Options.agents` does not bind for a name that exists on disk (probe I) — and
+  // it was the only place the request's array was legible without asking the guard.
+  // So ask the guard: the hook closes over the array rather than exposing it, and
+  // its ANSWER is the only evidence the request reached the session.
+  assert.equal(
+    (
+      await ask(params.options, "Agent", {
+        subagent_type: "code-reviewer",
+        run_in_background: false,
+      })
+    ).continue,
+    true,
+    "the shortlisted agent this request named is permitted by the hook the SDK got",
+  );
+  assert.match(
+    denialReason(
+      await ask(params.options, "Agent", {
+        subagent_type: "wordpress-master",
+        run_in_background: false,
+      }),
+    ),
+    /code-reviewer/,
+    "and it is THIS request's array — the denial names what this run may use",
+  );
   assert.ok(params.options.abortController, "an uncancellable build cannot be stopped");
 });
 
