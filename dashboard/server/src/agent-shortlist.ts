@@ -201,23 +201,31 @@ export const REPORT_CONTRACT_REMINDER =
 /**
  * One agent's system prompt, for the `AgentDefinition` this run supplies.
  *
- * SELF-SUFFICIENT, NOT JUST A REPORTING RULE, and that is a hedge against a
- * measurement this project has NOT made. Whether `Options.agents` REPLACES a
- * same-named agent loaded from the owner's disk under `settingSources: ["user"]`
- * or merges with it is UNMEASURED — the SDK typings state no precedence, and
- * checking it needs a live run (Phase 1.1 Task 7 can observe it; a unit test
- * cannot). Under replacement, a prompt carrying only "report tersely" would
- * leave a child that does not know what it is; naming the role and the lane
- * makes the worst case benign rather than broken. Recorded here rather than
- * left for the next reader to discover by being bitten.
+ * MEASURED SINCE THIS WAS WRITTEN, AND IT IS NEITHER "REPLACES" NOR "MERGES" FOR
+ * AN ON-DISK NAME: the DoD run had `system/init` list `code-reviewer` TWICE, and
+ * `subagent_type: "code-reviewer"` resolved to the DISK definition — the disk
+ * frontmatter's model, the disk `tools`, the disk body, and THIS PROMPT ABSENT.
+ * The definition below did not replace anything and did not merge into anything;
+ * it was not consulted.
  *
- * WHY SUPPLY A DEFINITION AT ALL, given that risk: `maxTurns`, `effort`,
- * `background: false` and `disallowedTools: ["mcp__*"]` exist ONLY on an
- * `AgentDefinition`, and that type REQUIRES `prompt`. The last two are
- * boundaries that hold whether or not `canUseTool` is ever consulted, which is
- * the whole lesson of Phase 1, so the trade is taken deliberately: a possible
- * quality regression in exchange for enforcement that does not depend on a
- * callback the engine may never call.
+ * WHAT IS STILL UNMEASURED, IN BOTH DIRECTIONS: whether this `prompt` or
+ * `criticalSystemReminder_EXPERIMENTAL` reaches ANY child. The reminder came back
+ * null from a child that had NO disk file either, so "only on-disk agents ignore
+ * it" is not established — nothing is. Probe I is measuring the no-disk-file case
+ * now.
+ *
+ * IT STAYS SELF-SUFFICIENT ANYWAY — naming the role and the lane rather than
+ * only "report tersely" — because the case where it DOES land is the case where a
+ * child would otherwise not know what it is.
+ *
+ * WHY SUPPLY A DEFINITION AT ALL. `maxTurns`, `effort`, `background: false` and
+ * `disallowedTools: ["mcp__*"]` exist ONLY on an `AgentDefinition`, and that type
+ * REQUIRES `prompt`. This used to argue the last two were "boundaries that hold
+ * whether or not `canUseTool` is consulted" — probe G2 measured them INERT for an
+ * on-disk agent (620 tools, 589 `mcp__*`, identical to the unnarrowed control),
+ * so that argument is withdrawn. What removes the MCP surface is the session-level
+ * `managedSettings.allowedMcpServers: []`. The definition is still supplied for
+ * the case probe I is measuring: a `subagent_type` with no file on disk.
  *
  * TOTAL FOR AN UNKNOWN NAME, like everything else in this module. An agent on no
  * lane must not receive a prompt reading "your undefined lane".
@@ -325,10 +333,20 @@ const UNKNOWN_AGENT_TURNS = 15;
  *      `settingSources: ["user"]` is unmeasured, and the trade is argued on
  *      `reportContract` rather than glossed here.
  *
- * WHAT IS STILL NOT PROVEN: that the engine HONOURS `maxTurns` on a definition
- * it was handed. The wiring is pinned by a unit test; the enforcement needs a
- * live run to observe, and no such run has been made. "It is in the options
- * object" is not "it bounded anything".
+ * WHAT WAS "NOT PROVEN" IS NOW MEASURED, AND IT IS THE BAD ANSWER (2026-07-28).
+ * This paragraph used to read "the enforcement needs a live run to observe, and
+ * no such run has been made". Two runs have now been made. Probe G2 removed the
+ * session-level narrowing and kept the per-agent `disallowedTools`: the child
+ * enumerated 620 tools, 589 of them `mcp__*`, IDENTICAL to the unnarrowed
+ * control. The DoD run found `subagent_type` resolving to the DISK definition —
+ * disk model, disk tools, disk body, our prompt absent. So for a shortlisted
+ * name that HAS a file in ~/.claude/agents/ — roughly 141 of them —
+ * `maxTurns`, `disallowedTools` and `background: false` bind NOTHING.
+ *
+ * The bounds are still computed and still sent, because a `subagent_type` with
+ * NO disk file has nothing to resolve to and this definition may be what binds
+ * it; probe I is measuring exactly that. "It is in the options object" is not
+ * "it bounded anything", and for on-disk agents it is now measured NOT to have.
  *
  * WHY EVERY `effort` IS NULL. Null means the run's own effort stands — the rung
  * the owner picked in the UI, which reaches the session as `Options.effort`.

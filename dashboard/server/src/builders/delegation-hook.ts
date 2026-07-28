@@ -133,14 +133,36 @@ export function isDelegationShaped(input: Record<string, unknown>): boolean {
  * in a test and open in production. `to` is required in the conjunction because
  * a body alone is every `Write` the build makes.
  *
+ * AN UNMEASURED OVER-DENY RIDES ON THAT, AND IT IS RECORDED RATHER THAN LEFT TO
+ * BE REDISCOVERED BY A BROKEN BUILD. `backfillObservableInput` was observed
+ * adding `content` for THIS tool; WHICH OTHER TOOLS IT BACKFILLS IS UNMEASURED.
+ * If it attaches `content` more widely, a tool whose real schema is just
+ * `{from, to}` — a move or copy — would arrive carrying a body and be denied
+ * here. The unit tests pass RAW inputs, so they cannot see it. It fails in the
+ * safe direction and the denial text names itself in the transcript, so it is
+ * left as is; if a build is ever denied a move, this paragraph is the reason and
+ * the fix is to require a body key the backfill does not add.
+ *
  * A DELEGATION IS NOT A MESSAGE. `Agent{subagent_type, prompt}` carries no `to`,
  * so it falls through to `decideDelegation`, which can still ALLOW a shortlisted
  * agent. Swallowing it here would close delegation outright.
+ *
+ * `input` IS `unknown`, AND THE NARROWING HAPPENS HERE. It took `Record<string,
+ * unknown>` for one commit, which forced the call below the hook's "not an
+ * object" early return — and that return is `{continue: true}`, so `SendMessage`
+ * with a null, string or array `tool_input` was WAVED THROUGH while three
+ * comments and a test title said "denied outright". Measured against dist. The
+ * NAME half needs no input at all; making the parameter `unknown` is what lets it
+ * be judged before the input is, while keeping the `in` operator from throwing —
+ * a hook that throws is an unhandled rejection on the SDK's own reader loop and
+ * takes the whole run down.
  */
-export function isAgentMessage(toolName: string, input: Record<string, unknown>): boolean {
+export function isAgentMessage(toolName: string, input: unknown): boolean {
   if (AGENT_MESSAGE_TOOL_NAMES.has(toolName)) return true;
-  if (!("to" in input)) return false;
-  return "message" in input || "content" in input || "summary" in input;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return false;
+  const shaped = input as Record<string, unknown>;
+  if (!("to" in shaped)) return false;
+  return "message" in shaped || "content" in shaped || "summary" in shaped;
 }
 
 /** The agent-messaging tool, under the one name it was MEASURED to report. */
@@ -159,6 +181,16 @@ const AGENT_MESSAGE_TOOL_NAMES: ReadonlySet<string> = new Set(["SendMessage"]);
  * The cost is real and small: the orchestrator delegates with Agent and never
  * needs to resume, because everything a subagent needs belongs in that call's own
  * prompt. A build that wants more from an agent starts another one.
+ *
+ * THE BUILDER PROMPT DELIBERATELY DOES NOT MENTION THIS TOOL, and that is a
+ * decision rather than an omission. build-prompt.ts's own test-enforced rule is
+ * NEVER NAME A FORBIDDEN CAPABILITY — naming one is how a model learns it exists
+ * (the same argument that keeps `isolation` out of the prompt, with a test
+ * asserting the word is absent). The remediation rides on THIS string instead: a
+ * PreToolUse deny delivers `permissionDecisionReason` verbatim as an `is_error`
+ * tool_result, so a model that reaches for the tool anyway — as one did in probe
+ * H — is told what to do instead at the moment it matters, and the prompt already
+ * says a denial is permanent and not worth retrying.
  */
 export const AGENT_MESSAGE_DENIAL =
   "`SendMessage` is not available to this run: it resumes an agent that is already " +
@@ -282,19 +314,20 @@ export function makeDelegationHook(allowedAgents: readonly string[]): HookCallba
       async (input): Promise<SyncHookJSONOutput> => {
         const preToolUse = input as PreToolUseHookInput;
         const toolInput = preToolUse.tool_input;
-        // A tool input that is not an object cannot be a delegation and must not
-        // throw: a hook that throws is an unhandled rejection on the SDK's own
-        // reader loop, which takes the whole run down.
-        if (toolInput === null || typeof toolInput !== "object" || Array.isArray(toolInput)) {
-          return { continue: true };
-        }
-        const shaped = toolInput as Record<string, unknown>;
-        // RESUMING AN AGENT IS DENIED BEFORE THE DELEGATION DECISION, AND THE
-        // ORDER IS LOAD-BEARING. `SendMessage` carries no `subagent_type` and no
-        // `run_in_background`, so falling through to `decideDelegation` would
-        // deny it with "Set `run_in_background: false`. It defaults to true" —
-        // false for this tool, and delivered to the model verbatim.
-        if (isAgentMessage(preToolUse.tool_name, shaped)) {
+        // RESUMING AN AGENT IS JUDGED FIRST, AND ABOVE THE MALFORMED-INPUT
+        // RETURN. That return is `{continue: true}`, and it sat above this call
+        // for one commit: `SendMessage` with a null, string or array `tool_input`
+        // was waved through while the title said "denied outright". The NAME half
+        // of this predicate needs no input at all, so nothing is gained by
+        // waiting for the input to be well formed — and `isAgentMessage` takes
+        // `unknown` precisely so it can be asked here without throwing.
+        //
+        // IT IS ALSO ABOVE THE DELEGATION DECISION, and that order is
+        // load-bearing too: `SendMessage` carries no `run_in_background`, so
+        // falling through to `decideDelegation` would deny it with "Set
+        // `run_in_background: false`. It defaults to true" — false for this tool,
+        // and delivered to the model verbatim.
+        if (isAgentMessage(preToolUse.tool_name, toolInput)) {
           return {
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -303,6 +336,13 @@ export function makeDelegationHook(allowedAgents: readonly string[]): HookCallba
             },
           };
         }
+        // A tool input that is not an object cannot be a delegation and must not
+        // throw: a hook that throws is an unhandled rejection on the SDK's own
+        // reader loop, which takes the whole run down.
+        if (toolInput === null || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+          return { continue: true };
+        }
+        const shaped = toolInput as Record<string, unknown>;
         if (!DELEGATION_TOOL_NAMES.has(preToolUse.tool_name) && !isDelegationShaped(shaped)) {
           return { continue: true };
         }

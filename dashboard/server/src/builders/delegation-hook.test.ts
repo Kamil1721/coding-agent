@@ -217,6 +217,30 @@ test("an agent-messaging call is caught by its NAME — measured the same on bot
   assert.equal(isAgentMessage("SendMessage", { to: "code-reviewer", message: "carry on" }), true);
 });
 
+test("a MALFORMED input does not launder the name past the gate", () => {
+  // THE FAIL-OPEN THIS PREDICATE SHIPPED FOR ONE COMMIT. The hook's "not an
+  // object" early return sat ABOVE this call, so `SendMessage` with a null,
+  // string or array `tool_input` came back `{continue: true}` — the name half,
+  // the half measured to be reliable for this tool and the half that needs no
+  // input at all, was gated behind a check on the input. "Denied outright" was
+  // false in the title, in three comments and in a commit message.
+  //
+  // The name is judged BEFORE the input is looked at, and the input is then
+  // narrowed here rather than by the caller, so the `in` operator can never
+  // throw: a hook that throws is an unhandled rejection on the SDK's own reader
+  // loop, which takes the whole run down.
+  assert.equal(isAgentMessage("SendMessage", null), true);
+  assert.equal(isAgentMessage("SendMessage", "not an object"), true);
+  assert.equal(isAgentMessage("SendMessage", ["to", "code-reviewer"]), true);
+  assert.equal(isAgentMessage("SendMessage", undefined), true);
+
+  // NEGATIVE CONTROL: a malformed input under any other name is not a message,
+  // and judging it must not throw either.
+  assert.equal(isAgentMessage("Bash", null), false);
+  assert.equal(isAgentMessage("Bash", "not an object"), false);
+  assert.equal(isAgentMessage("mcp__x__relay", ["to", "code-reviewer"]), false);
+});
+
 test("the CLI's OWN added keys do not decide it — this is a subset test, not an equality", () => {
   // MEASURED: `tool_input` carries CLI-ADDED keys. `type`, `recipient` and
   // `content` come from `backfillObservableInput`, which mutates the input in

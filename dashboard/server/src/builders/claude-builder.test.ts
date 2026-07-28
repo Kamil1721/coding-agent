@@ -1327,6 +1327,27 @@ test("HOOK: the SendMessage gate is NAME **OR** SHAPE — each alone is fail-ope
   assert.match(relayed, /SendMessage|resume/i);
 });
 
+test("HOOK: a MALFORMED SendMessage input is still DENIED — the name needs no input", async () => {
+  // THE FAIL-OPEN THIS CLOSES, FOUND IN REVIEW OF THE COMMIT THAT INTRODUCED IT.
+  // The hook's "tool_input is not an object" early return — which exists so a
+  // malformed input cannot throw inside the hook — sat ABOVE the SendMessage
+  // gate, so `SendMessage` with a null, string or array input came back
+  // `{continue: true}`. Measured against dist before this test existed. "Denied
+  // outright" was false for exactly the inputs an adversary controls.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  for (const malformed of [null, "not an object", ["to", "code-reviewer"]]) {
+    assert.match(denialReason(await ask(options, "SendMessage", malformed)), /SendMessage/);
+  }
+
+  // NEGATIVE CONTROL, AND IT IS THE ONE THAT MATTERS: hoisting a check above the
+  // input guard must not make ordinary malformed inputs deny — or throw. A hook
+  // that throws is an unhandled rejection on the SDK's own reader loop and takes
+  // the run down.
+  assert.deepEqual(await ask(options, "Bash", null), { continue: true });
+  assert.deepEqual(await ask(options, "Bash", "not an object"), { continue: true });
+  assert.deepEqual(await ask(options, "Grep", ["TODO"]), { continue: true });
+});
+
 test("HOOK: NEGATIVE CONTROL — ordinary tools and real delegation are untouched", async () => {
   // WITHOUT THIS, "deny anything with a body" passes every assertion above while
   // closing the build. That failure does not read as a security regression; it
