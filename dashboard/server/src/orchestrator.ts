@@ -93,6 +93,7 @@ import { describeTokens, toApiTokens, zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
 import { SubscriptionSeatCaller } from "./subscription-caller.js";
 import { ticketFromText } from "./ticket.js";
+import { classifySurface } from "./surface.js";
 
 const exec = promisify(execFile);
 
@@ -530,12 +531,21 @@ export class Orchestrator {
 
     // ONE EXPRESSION, TWO CONSUMERS. This value is both what the prompt names
     // and what `canUseTool` allowlists (`allowedAgents`, below). Calling
-    // `shortlistFor` twice would compile and read fine and drift the moment
-    // Task 5 changes one call site — and the drift is silent in BOTH
-    // directions: an agent named in the prompt but missing from the guard burns
-    // turns on calls that can never succeed, and one allowed but unnamed is a
-    // specialist the orchestrator never learns it has.
-    const delegationShortlist = shortlistFor("fullstack");
+    // `shortlistFor` twice would compile and read fine and drift the moment one
+    // call site changes — and the drift is silent in BOTH directions: an agent
+    // named in the prompt but missing from the guard burns turns on calls that
+    // can never succeed, and one allowed but unnamed is a specialist the
+    // orchestrator never learns it has.
+    //
+    // Classified from `ticket.brief` — the same string the prompt is built from
+    // on the next line, so what the surface was decided from is exactly what the
+    // builder is asked to deliver. `classifySurface` is pure, total and keyword
+    // -based on purpose (see surface.ts): it runs before the build session
+    // exists, on the path that builds a permission boundary, and a boundary that
+    // can time out or be refused is not a boundary. An unrecognisable ticket
+    // classifies `fullstack`, the widest set, because under-delegation is the
+    // failure nobody sees.
+    const delegationShortlist = shortlistFor(classifySurface(ticket.brief));
 
     const resuming = row.builderSessionId !== null;
     const prompt = resuming
@@ -601,15 +611,9 @@ export class Orchestrator {
       // Visibility is not permission, and widening one never substitutes for
       // the other.
       //
-      // TODO(Task 5): classify the ticket surface and pass
-      // `shortlistFor(classifySurface(ticketText))`. Until that lands every run
-      // gets `fullstack` — deliberately the WIDEST shortlist, because the
-      // failure mode of a too-narrow one is silent: the orchestrator asks for a
-      // specialist, the guard denies it, and the lane produces nothing, which
-      // looks exactly like a lane that had nothing to do.
-      //
-      // Task 5 changes `delegationShortlist` above, ONCE, and the prompt and
-      // this boundary move together.
+      // Now derived from the ticket's surface rather than pinned to the widest
+      // set. Computed ONCE, above, so this boundary and the prompt that names
+      // these agents cannot disagree.
       allowedAgents: delegationShortlist,
       modelId: row.modelId,
       effort: entry.effort,
