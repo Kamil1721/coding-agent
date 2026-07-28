@@ -644,10 +644,33 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     includePartialMessages: false,
     // The builder gets the full Claude Code tool set: it is building software.
     tools: { type: "preset", preset: "claude_code" },
-    // The owner's global CLAUDE.md, settings and plugins are NOT loaded. The
-    // ticket brief is the specification; anything else is an uncontrolled
-    // input that changes what was built without appearing in the ticket.
-    settingSources: [],
+    // The owner's agents, skills and CLAUDE.md ARE loaded. This reverses the
+    // original decision deliberately, on probe evidence and an owner decision.
+    //
+    // PROBED 2026-07-28: settingSources [] discovers 16 skills, ALL built-in, and
+    // NONE of the owner's 41. AgentDefinition.skills can only name a DISCOVERED
+    // skill, so under [] every preload silently resolves to nothing. There is no
+    // programmatic equivalent for skills the way Options.agents is for agents.
+    //
+    // The original justification was COMPARABILITY — an uncontrolled input that
+    // changes what gets built without appearing in the ticket. Model comparison
+    // has been dropped (it existed to pit Claude against Codex; Codex is out of
+    // scope), so that cost is now close to zero while the benefit is the whole
+    // skill system, which the DESIGN lane and the motion bar depend on.
+    //
+    // WHAT THIS DOES NOT WEAKEN: the sealed boundary. denyRead, allowWrite,
+    // canUseTool and the Agent guard are all set here, not in user settings, and
+    // are unaffected. `heldOutPass` still means "did this build deliver?".
+    // That is asserted, not claimed: see "loading user settings does NOT weaken
+    // the sealed boundary" in claude-builder.test.ts, which reads all four off
+    // the same options object that carries ["user"].
+    //
+    // ALSO LOADED: the owner's hooks — guard.sh and secret-guard.sh (PreToolUse,
+    // both protective), verify.sh (PostToolUse + Stop), migration-lint.sh,
+    // session-summary.sh. `verify.sh full` on Stop is built for interactive
+    // sessions and can block completion; if a build hangs there, exclude that one
+    // hook rather than reverting this decision.
+    settingSources: ["user"],
     sandbox: {
       enabled: true,
       failIfUnavailable: !allowUnsandboxed,

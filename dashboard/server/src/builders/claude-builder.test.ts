@@ -840,8 +840,68 @@ test("WIRING: the handed-in canUseTool actually denies a sealed path", async () 
   assert.equal(allowed?.behavior, "allow");
 });
 
-test("WIRING: settingSources stays empty — no uncontrolled input", () => {
-  assert.deepEqual(buildOptions(req(), false).settingSources, []);
+test("WIRING: the owner's environment is loaded", () => {
+  // This REPLACES "settingSources stays empty — no uncontrolled input". The
+  // reversal is deliberate, on probe evidence plus an owner decision, and the
+  // full justification lives on the value in `buildOptions`.
+  //
+  // Probed 2026-07-28: settingSources [] yields 16 skills, ALL built-in, and
+  // ZERO of the owner's 41; ["user"] yields 162 skills and 144+ agents.
+  // AgentDefinition.skills can only name a DISCOVERED skill, so [] silently
+  // preloads nothing.
+  assert.deepEqual(buildOptions(req(), false).settingSources, ["user"]);
+});
+
+test("WIRING: loading user settings does NOT weaken the sealed boundary", async () => {
+  // The claim this test makes EXECUTABLE rather than prose: `settingSources`
+  // widens what a build can SEE, never what it may DO. denyRead, allowWrite,
+  // `canUseTool` and the Agent guard are all set here in `buildOptions`, not in
+  // ~/.claude/settings.json, so loading the owner's environment cannot move any
+  // of them. Asserted against the SAME options object that carries ["user"].
+  const options = buildOptions(req(), false);
+  assert.deepEqual(options.settingSources, ["user"], "the premise: user settings ARE loaded");
+
+  assert.deepEqual(options.sandbox?.filesystem?.denyRead, SEALED.map(canonicaliseForDecision));
+  assert.deepEqual(options.sandbox?.filesystem?.allowWrite, [canonicaliseForDecision(WORKSPACE)]);
+  assert.equal(options.sandbox?.enabled, true);
+  assert.equal(options.sandbox?.failIfUnavailable, true);
+  assert.equal(typeof options.canUseTool, "function");
+
+  const decideWithUserSettings = options.canUseTool;
+  assert.equal(typeof decideWithUserSettings, "function", "no permission callback survived");
+
+  // Structural equality above proves the arrays; these two calls prove the
+  // predicate still behaves. The sealed suite is unreadable...
+  const sealed = await decideWithUserSettings?.(
+    "Read",
+    { file_path: `${HELD_OUT}/t.mjs` },
+    callContext(),
+  );
+  assert.equal(sealed?.behavior, "deny");
+  assert.match(
+    sealed && sealed.behavior === "deny" ? sealed.message : "",
+    /SEALED ACCEPTANCE SUITE/,
+  );
+
+  // ...and the Agent guard is still fail-closed. This is the strongest single
+  // proof that user settings did not reach the boundary: the CLI now discovers
+  // 144 of the owner's agents, and delegation is STILL denied, because the
+  // shortlist is a constant in this module rather than anything a setting can
+  // supply. Task 3 fills it; until then an allow here would be the regression.
+  const delegated = await decideWithUserSettings?.(
+    "Agent",
+    { subagent_type: "code-reviewer", run_in_background: false, prompt: "review" },
+    callContext(),
+  );
+  assert.equal(delegated?.behavior, "deny", "delegation must stay closed until Task 3 opens it");
+
+  // NEGATIVE CONTROL: none of the above is a deny-everything stub.
+  const allowed = await decideWithUserSettings?.(
+    "Write",
+    { file_path: `${WORKSPACE}/index.html` },
+    callContext(),
+  );
+  assert.equal(allowed?.behavior, "allow");
 });
 
 test("WIRING: a symlinked workspace is spelled the same way in every layer", () => {
