@@ -1207,6 +1207,29 @@ test("an ordinary tool carrying none of those fields is untouched — negative c
   assert.equal(result.behavior, "allow");
 });
 
+test("a WRITE carrying delegation fields is still confined to the workspace", () => {
+  // THE ORDERING THIS PINS. The delegation branch RETURNS — allow as well as
+  // deny — and it used to be reachable only for `Agent`/`Task`, neither of which
+  // is a PATH_TOOL, so the write confinement below it could not be skipped. The
+  // shape half of the condition removes that guarantee: a `Write` carrying
+  // `subagent_type` and `run_in_background: false` is delegation-shaped, passes
+  // all three delegation checks, and would return ALLOW with the escaping
+  // `file_path` never judged. The confinement therefore runs BEFORE the branch.
+  //
+  // The call is deliberately WELL-FORMED and SHORTLISTED: nothing but the write
+  // confinement can produce this deny, so the assertion cannot pass for the
+  // wrong reason.
+  const result = decideToolPermission(
+    "Write",
+    { file_path: "/etc/passwd", subagent_type: "code-reviewer", run_in_background: false },
+    WORKSPACE,
+    [],
+    ["code-reviewer"],
+  ) as { behavior: string; message?: string };
+  assert.equal(result.behavior, "deny");
+  assert.match(String(result.message), /workspace/i);
+});
+
 test("an Agent call carrying NONE of the three fields is still denied", () => {
   // THE REGRESSION THIS PINS, and why the branch condition is a DISJUNCTION
   // rather than the shape check alone. `subagent_type` is OPTIONAL in the SDK's

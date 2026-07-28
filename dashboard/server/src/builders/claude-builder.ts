@@ -578,6 +578,28 @@ export function decideToolPermission(
     }
   }
 
+  // WRITES stay confined to the workspace. Still tool-name-gated: this is about
+  // where the build may put files, not about what it may look at.
+  //
+  // HOISTED ABOVE THE DELEGATION BRANCH, AND THE ORDER IS LOAD-BEARING. That
+  // branch RETURNS — allow as well as deny — and while it was gated on the tool
+  // NAME it could never match a PATH_TOOL, so this loop could not be skipped.
+  // The shape half of the condition below removes that guarantee:
+  // `Write{file_path:"/etc/passwd", subagent_type:<shortlisted>,
+  // run_in_background:false}` is delegation-shaped, passes all three delegation
+  // checks, and returned ALLOW with the escaping path never judged — measured
+  // against dist before this was moved, not reasoned about. Same defect as the
+  // sealed-scan ordering recorded below, one check further down.
+  for (const candidate of candidates) {
+    if (PATH_TOOLS.has(toolName) && !insideWorkspace(workspace, candidate, canonicalise)) {
+      return {
+        behavior: "deny",
+        message:
+          `This run may only write inside its own workspace (${workspace}). Put the implementation there.`,
+      };
+    }
+  }
+
   // THE AGENT TOOL. Delegation is the point of this builder, but the Agent
   // tool's own fields can step outside every boundary the run has:
   //   - isolation:"worktree" writes outside sandbox.filesystem.allowWrite
@@ -598,8 +620,13 @@ export function decideToolPermission(
   //
   // The plan's argument is that a name test is INSUFFICIENT, never that it is
   // harmful — `mcp__plugin_railway_railway__railway-agent{isolation:"remote"}`
-  // matches no name and must still be judged. A disjunction is strictly a
-  // widening: nothing judged before became unjudged.
+  // matches no name and must still be judged.
+  //
+  // WHAT THE DISJUNCTION COST, stated rather than glossed: it widens what gets
+  // JUDGED, and because this branch returns ALLOW it also made the write
+  // confinement skippable by a PATH_TOOL carrying delegation fields. That is why
+  // the confinement now runs ABOVE this branch, pinned by "a WRITE carrying
+  // delegation fields is still confined to the workspace".
   if (toolName === "Agent" || toolName === "Task" || isDelegationShaped(input)) {
     if ("isolation" in input && input["isolation"] !== undefined) {
       return {
@@ -631,17 +658,6 @@ export function decideToolPermission(
     return { behavior: "allow" };
   }
 
-  // WRITES stay confined to the workspace. Still tool-name-gated: this is about
-  // where the build may put files, not about what it may look at.
-  for (const candidate of candidates) {
-    if (PATH_TOOLS.has(toolName) && !insideWorkspace(workspace, candidate, canonicalise)) {
-      return {
-        behavior: "deny",
-        message:
-          `This run may only write inside its own workspace (${workspace}). Put the implementation there.`,
-      };
-    }
-  }
   // Everything else is allowed WITHOUT asking, because there is nobody to ask:
   // an unanswered permission prompt has no park deadline and would hang the run
   // forever.
