@@ -20,30 +20,44 @@
  *     run FAILS with a named remediation instead of silently continuing
  *     unsandboxed with write access to the whole home directory. The owner can
  *     opt out deliberately with DASHBOARD_ALLOW_UNSANDBOXED_BUILDER=1.
- *   - `canUseTool` answers every permission request itself, so nothing can
+ *   - `canUseTool` answers every permission request IT IS ASKED, so nothing can
  *     park waiting for a human who is not there. It also denies writes whose
  *     resolved path escapes the workspace — a second, independent check, since
  *     a defence that exists in one layer only is a defence that has never been
- *     tested.
+ *     tested. IT IS NOT ASKED FOR EVERY TOOL: probe A measured it consulted for
+ *     no tool at all when the model delegates, under `acceptEdits`, `default`
+ *     AND `dontAsk` alike. Nothing that must hold may depend on it alone.
  *   - The MCP surface is REMOVED from a build outright:
  *     `managedSettings.allowedMcpServers: []` with `allowManagedMcpServersOnly`.
  *     Measured at zero servers against 13 unnarrowed. A delegation-shaped MCP
  *     tool cannot be enumerated reliably — `railway-agent{isolation:"remote"}`
  *     matched no name gate — so the surface is narrowed away rather than guarded.
- *   - `canUseTool` denies a DELEGATION-SHAPED call — `Agent`/`Task` by name, or
- *     any tool of any name carrying `subagent_type`, `isolation` or
- *     `run_in_background` (see delegation-hook.ts) — unless `isolation` is absent,
- *     `run_in_background` is explicitly `false`, and `subagent_type` is on a
- *     configured shortlist. THE SHORTLIST IS NO LONGER EMPTY: Phase 1 Task 3
- *     supplied it, and it arrives on `BuildRequest.allowedAgents` — the
- *     orchestrator passes `shortlistFor(classifySurface(ticket))`, roughly two
- *     dozen names out of the 144 `settingSources: ["user"]` makes visible. An
- *     EMPTY array still denies every delegation, with a message naming the
- *     permitted agents as "(none configured)", and that remains the fail-closed
- *     default rather than a regression: a subagent inherits none of these
- *     boundaries automatically, and `Options.agents` limits only what the
- *     orchestrator can see, while `subagent_type` is a free string in the SDK
- *     schema.
+ *   - A `PreToolUse` HOOK — not `canUseTool` — denies a DELEGATION: `Agent`/
+ *     `Task` by name, or any tool of any name carrying `subagent_type` or
+ *     `isolation` (see delegation-hook.ts), unless `isolation` is absent,
+ *     `run_in_background` is explicitly `false`, and `subagent_type` is on the
+ *     configured shortlist. Those three conditions are UNCHANGED; what changed
+ *     on 2026-07-28 is that they now sit in a slot the engine consults. In
+ *     `canUseTool` they were vacuous: probe A ran the delegation under
+ *     `acceptEdits`, `default` and `dontAsk`, the callback returned deny, was
+ *     asked about nothing at all, and `wordpress-master` started in every arm.
+ *     The hook's deny was measured to prevent the spawn outright — no
+ *     `task_started`, no `SubagentStart`, no tokens billed, and not one
+ *     `background_tasks_changed` envelope.
+ *     THE SHORTLIST IS NO LONGER EMPTY: Phase 1 Task 3 supplied it, and it
+ *     arrives on `BuildRequest.allowedAgents` — the orchestrator passes
+ *     `shortlistFor(classifySurface(ticket))`, roughly two dozen names out of
+ *     the 144 `settingSources: ["user"]` makes visible. An EMPTY array still
+ *     denies every delegation, with a reason naming the permitted agents as
+ *     "(none configured)", and that remains the fail-closed default rather than
+ *     a regression: a subagent inherits none of these boundaries automatically,
+ *     and `Options.agents` limits only what the orchestrator can see, while
+ *     `subagent_type` is a free string in the SDK schema.
+ *   - The owner's OWN hooks are suppressed for a build
+ *     (`managedSettings.allowManagedHooksOnly`), because a PreToolUse hook
+ *     returning "allow" pre-empts `canUseTool` outright. That also disables
+ *     secret-guard.sh, which is a real cost and is recorded on the value in
+ *     `buildOptions` rather than glossed.
  *   - The acceptance suite lives OUTSIDE the workspace (dashboard/acceptance),
  *     is never mounted into it, and the held-out half is never copied in.
  *
@@ -140,7 +154,7 @@ import type {
 import { describeEnvironment, environmentFromInit } from "../build-environment.js";
 import type { InitEnvelope, RunEnvironment } from "../build-environment.js";
 import { subscriptionSubprocessEnv } from "../subprocess-env.js";
-import { isDelegationShaped } from "./delegation-hook.js";
+import { makeDelegationHook } from "./delegation-hook.js";
 import { addTokens, zeroTokens } from "../tokens.js";
 import type { TokenTotals } from "../tokens.js";
 import type { BuildEventSink, BuildOutcome, BuildRequest, SubscriptionBuilder } from "./types.js";
@@ -520,6 +534,12 @@ function insideWorkspace(
  * The permission decision, as a pure function, so it can be exercised without
  * spawning a CLI. `claude-builder.test.ts` calls it directly.
  *
+ * WHAT IT DECIDES, AFTER TASK 2: sealed-root reads and workspace-confined
+ * writes. It no longer decides DELEGATION, and it takes no `allowedAgents`
+ * argument — the parameter went with the branch, because an argument nothing
+ * reads is the same dead-boundary defect one level down. Delegation is decided
+ * by the `PreToolUse` hook (delegation-hook.ts), which the engine actually asks.
+ *
  * Relative paths are resolved against the workspace, which is the builder's
  * `cwd` — the same resolution the CLI performs.
  *
@@ -537,7 +557,6 @@ export function decideToolPermission(
   input: Record<string, unknown>,
   workspace: string,
   sealedRoots: readonly string[],
-  allowedAgents: readonly string[] = [],
   canonicalise: (path: string) => string = LEXICAL_ONLY,
 ): PermissionResult {
   const candidates = pathCandidates(toolName, input);
@@ -581,15 +600,16 @@ export function decideToolPermission(
   // WRITES stay confined to the workspace. Still tool-name-gated: this is about
   // where the build may put files, not about what it may look at.
   //
-  // HOISTED ABOVE THE DELEGATION BRANCH, AND THE ORDER IS LOAD-BEARING. That
-  // branch RETURNS — allow as well as deny — and while it was gated on the tool
-  // NAME it could never match a PATH_TOOL, so this loop could not be skipped.
-  // The shape half of the condition below removes that guarantee:
+  // IT STAYS ABOVE WHATEVER COMES NEXT, AND THAT ORDER IS LOAD-BEARING. It was
+  // hoisted here in commit ea52322 to fix a MEASURED escape: the delegation
+  // branch that used to sit below it RETURNED — allow as well as deny — so
   // `Write{file_path:"/etc/passwd", subagent_type:<shortlisted>,
-  // run_in_background:false}` is delegation-shaped, passes all three delegation
-  // checks, and returned ALLOW with the escaping path never judged — measured
-  // against dist before this was moved, not reasoned about. Same defect as the
-  // sealed-scan ordering recorded below, one check further down.
+  // run_in_background:false}` passed all three delegation checks and returned
+  // ALLOW with the escaping path never judged. Task 2 deleted that branch, so
+  // today nothing below can return early and the hoist looks redundant. IT IS
+  // NOT: it is what makes the confinement independent of whatever the next
+  // change adds underneath, and putting it back below a returning branch
+  // re-opens a hole that was found by measurement rather than by review.
   for (const candidate of candidates) {
     if (PATH_TOOLS.has(toolName) && !insideWorkspace(workspace, candidate, canonicalise)) {
       return {
@@ -600,64 +620,22 @@ export function decideToolPermission(
     }
   }
 
-  // THE AGENT TOOL. Delegation is the point of this builder, but the Agent
-  // tool's own fields can step outside every boundary the run has:
-  //   - isolation:"worktree" writes outside sandbox.filesystem.allowWrite
-  //   - isolation:"remote" runs the build OFF-HOST entirely
-  //   - run_in_background DEFAULTS TO TRUE, so children keep writing the
-  //     workspace after the parent returns and the gate scores a moving tree
+  // THE AGENT BRANCH USED TO BE HERE, AND IT WAS DELETED IN PHASE 1.1 TASK 2
+  // RATHER THAN FIXED. It gated delegation on three conditions — `isolation`
+  // absent, `run_in_background === false`, `subagent_type` on the shortlist —
+  // and probe A measured that ALL THREE were vacuous in production: across
+  // `acceptEdits`, `default` AND `dontAsk`, this callback returned deny, was
+  // consulted for NO TOOL AT ALL, and the subagent started anyway. Code that
+  // reads like a boundary and enforces nothing is worse than no code, because
+  // every reader after it believes the boundary exists.
   //
-  // JUDGED BY NAME **OR** BY SHAPE, and the disjunction is deliberate — this is
-  // a DIVERGENCE from the Phase 1.1 plan, which wrote `if
-  // (isDelegationShaped(input))` alone. Measured before it was changed: under
-  // the shape check alone, `Agent{description, prompt}` returns ALLOW. The SDK's
-  // own `AgentInput` makes `subagent_type` OPTIONAL (sdk-tools.d.ts:496) and
-  // `run_in_background` documents itself as defaulting to background, so that
-  // call is schema-valid, carries none of the three fields, and is a background
-  // general-purpose delegation waved through by the guard that exists to stop
-  // exactly that. Pinned by "an Agent call carrying NONE of the three fields is
-  // still denied", which goes red the moment the name half is removed.
+  // THE THREE CONDITIONS WERE NOT WRONG — THEY WERE NEVER ASKED. They live
+  // unchanged in `decideDelegation` (delegation-hook.ts), behind the
+  // `PreToolUse` slot `buildOptions` registers, which IS consulted and whose
+  // deny was measured to prevent the spawn outright. Nothing here supplements
+  // them; a second copy in a callback the engine skips would be the same lie in
+  // a smaller font.
   //
-  // The plan's argument is that a name test is INSUFFICIENT, never that it is
-  // harmful — `mcp__plugin_railway_railway__railway-agent{isolation:"remote"}`
-  // matches no name and must still be judged.
-  //
-  // WHAT THE DISJUNCTION COST, stated rather than glossed: it widens what gets
-  // JUDGED, and because this branch returns ALLOW it also made the write
-  // confinement skippable by a PATH_TOOL carrying delegation fields. That is why
-  // the confinement now runs ABOVE this branch, pinned by "a WRITE carrying
-  // delegation fields is still confined to the workspace".
-  if (toolName === "Agent" || toolName === "Task" || isDelegationShaped(input)) {
-    if ("isolation" in input && input["isolation"] !== undefined) {
-      return {
-        behavior: "deny",
-        message:
-          "This run does not permit `isolation`. A worktree writes outside the run's workspace and " +
-          "`remote` runs the build off this machine, outside every boundary protecting the sealed " +
-          "acceptance suite. Delegate in-place instead.",
-      };
-    }
-    if (input["run_in_background"] !== false) {
-      return {
-        behavior: "deny",
-        message:
-          "Set `run_in_background: false`. It defaults to true, and a background subagent keeps " +
-          "writing the workspace after this phase returns — the gate would then score a moving " +
-          "artefact and the result would depend on timing.",
-      };
-    }
-    const requested = input["subagent_type"];
-    if (typeof requested !== "string" || !allowedAgents.includes(requested)) {
-      return {
-        behavior: "deny",
-        message:
-          `\`${String(requested)}\` is not available to this run. Delegate to one of: ` +
-          `${allowedAgents.join(", ") || "(none configured)"}.`,
-      };
-    }
-    return { behavior: "allow" };
-  }
-
   // Everything else is allowed WITHOUT asking, because there is nobody to ask:
   // an unanswered permission prompt has no park deadline and would hang the run
   // forever.
@@ -679,20 +657,9 @@ export function decideToolPermission(
  * scheme before the normaliser ever sees it. Without the injection,
  * `<workspace>/link -> <suite>` launders a read straight past the check.
  */
-export function makeCanUseTool(
-  workspace: string,
-  sealedRoots: readonly string[],
-  allowedAgents: readonly string[],
-): CanUseTool {
+export function makeCanUseTool(workspace: string, sealedRoots: readonly string[]): CanUseTool {
   return async (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> =>
-    decideToolPermission(
-      toolName,
-      input,
-      workspace,
-      sealedRoots,
-      allowedAgents,
-      canonicaliseForDecision,
-    );
+    decideToolPermission(toolName, input, workspace, sealedRoots, canonicaliseForDecision);
 }
 
 /**
@@ -735,19 +702,38 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     model: request.modelId,
     maxTurns: DEFAULT_MAX_TURNS,
     permissionMode: "acceptEdits",
-    // THE DELEGATION BOUNDARY, taken from the REQUEST rather than from a
-    // constant in this module. It was `const ALLOWED_AGENTS = []` through Phase
-    // 0, which denied every Agent/Task call and made the whole branch dead code
-    // in production; the orchestrator now supplies `shortlistFor(surface)`.
+    // THE SEALED-PATH AND WORKSPACE-WRITE GUARD, AND NOTHING ELSE ANY MORE.
     //
-    // FAIL-CLOSED SURVIVES THE CHANGE: the field is REQUIRED on `BuildRequest`,
-    // so a caller cannot omit it, and `[]` still denies every delegation. What
-    // is gone is the guarantee-by-constant — which is why "the Phase 0 guards
-    // survive delegation being enabled" in claude-builder.test.ts re-proves
-    // isolation, the background default and the sealed scan against a
-    // shortlist that ALLOWS, where before they could only be proven against a
-    // shortlist that denied everything anyway.
-    canUseTool: makeCanUseTool(workspace, sealedRoots, request.allowedAgents),
+    // IT NO LONGER CARRIES DELEGATION, and it no longer takes a shortlist. It
+    // did until Task 2, and probe A measured that the engine asks this callback
+    // for NO TOOL AT ALL when the model delegates — so that half was dead. What
+    // it still does is real and still reached: it is the layer that denies a
+    // sealed path to a tool the OS sandbox does not cover, and it never parks
+    // waiting for a human who is not there.
+    canUseTool: makeCanUseTool(workspace, sealedRoots),
+    // THE DELEGATION BOUNDARY, IN THE ONLY SLOT THE ENGINE ASKS.
+    //
+    // THE SHORTLIST COMES FROM THE REQUEST, not from a constant in this module.
+    // It was `const ALLOWED_AGENTS = []` through Phase 0; the orchestrator now
+    // supplies `shortlistFor(surface)`. FAIL-CLOSED SURVIVES THE MOVE: the field
+    // is REQUIRED on `BuildRequest`, so a caller cannot omit it, and `[]` still
+    // denies every delegation.
+    //
+    // WHY NOT `canUseTool`, MEASURED RATHER THAN ASSERTED. Probe A ran the
+    // delegation under `acceptEdits`, `default` AND `dontAsk`. In every arm the
+    // callback returned `{behavior:"deny"}`, was consulted for NO TOOL AT ALL,
+    // and `wordpress-master` started anyway. An apparatus control in the same
+    // option shape had `canUseTool` fire normally for `Write`, so "the callback
+    // is not wired" is ruled out. There is no permission mode that fixes it, and
+    // the SDK says so itself: `sdk.mjs`'s shadow warning reads "To gate every
+    // tool call, use a PreToolUse hook instead."
+    //
+    // ONE SLOT, NO MATCHER, and the deny genuinely prevents the spawn: no
+    // `task_started`, no `SubagentStart`, no agentId minted, no tokens billed
+    // (the allow control billed 20639), and not one `background_tasks_changed`
+    // envelope. See delegation-hook.ts for the rest of what was measured and
+    // what was not.
+    hooks: { PreToolUse: [makeDelegationHook(request.allowedAgents)] },
     // THE REPORT CONTRACT, DELIVERED WHERE IT BINDS, AND THE PER-AGENT LOCKS.
     //
     // `boundsFor()` existed through Phase 1 with NO production call site: the
@@ -853,6 +839,23 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     managedSettings: {
       permissions: { deny: sealedRoots.map(denyReadRule) },
       allowManagedPermissionRulesOnly: true,
+      // THE OWNER'S OWN HOOKS ARE SUPPRESSED FOR A BUILD. A PreToolUse hook
+      // returning `permissionDecision: "allow"` pre-empts `canUseTool` outright
+      // (sdk.d.ts:4166, verbatim) — proven live on a fixture hook, with the
+      // sealed suite's contents coming back in the transcript. Today that bypass
+      // is LATENT: every hook installed in ~/.claude/ emits only "deny", and one
+      // installed plugin makes it live. Probe C measured that this lock
+      // suppresses project- and flag-tier hooks while OUR programmatic
+      // `Options.hooks` callback above still fires — which is the only reason
+      // the lock is affordable at all.
+      //
+      // THE COST, RECORDED RATHER THAN GLOSSED: this also disables the owner's
+      // secret-guard.sh, which is protective — it hard-blocks writing a live
+      // secret key into a file or a command. A build writes only inside its own
+      // workspace and is handed no secrets (`subscriptionSubprocessEnv` strips
+      // the metered credentials), so the exposure is small. It is NOT zero, and
+      // it belongs in dashboard/STATUS.md as well as here.
+      allowManagedHooksOnly: true,
       // NO MCP SERVERS. `allowedMcpServers: []` is documented as "no servers are
       // allowed" (sdk.d.ts:5119); the `Only` lock stops user settings re-adding
       // any. MEASURED: zero servers reach a run under this pair, against 13

@@ -19,6 +19,11 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type {
+  HookCallbackMatcher,
+  Options,
+  PreToolUseHookInput,
+} from "@anthropic-ai/claude-agent-sdk";
 import { REPORT_CONTRACT_REMINDER, boundsFor, shortlistFor } from "../agent-shortlist.js";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
 import type { RunEnvironment } from "../build-environment.js";
@@ -375,7 +380,15 @@ test("NEGATIVE CONTROL: free-text keys are still not scanned", () => {
     "allow",
   );
   assert.equal(decideWith("Bash", { command: `ls ${HELD_OUT}` }).behavior, "allow");
-  assert.equal(decideWith("Agent", { prompt: `read ${HELD_OUT}`, subagent_type: "x", run_in_background: false }).behavior, "deny");
+  // Agent's `prompt` is its own free text and is exempt here too — a build
+  // legitimately writes prompts that NAME the suite without reading it.
+  //
+  // THIS LINE USED TO ASSERT `deny`, AND THE DENY WAS A PIGGYBACK. It came from
+  // the shortlist (`subagent_type: "x"` was on no list), not from anything this
+  // test is about, so it read as free-text coverage while measuring the Agent
+  // branch. That branch is gone; the shortlist deny is asserted where it now
+  // happens, in the HOOK tests below.
+  assert.equal(decideWith("Agent", { prompt: `read ${HELD_OUT}` }).behavior, "allow");
 });
 
 test("free text is scoped PER TOOL — `command` is Bash's alone", () => {
@@ -549,117 +562,64 @@ test("NEGATIVE CONTROL: canonicalisation does not widen the boundary", () => {
   assert.equal(decideWith("Read", { file_path: "file:./x" }).behavior, "allow");
 });
 
-const AGENTS = ["code-reviewer", "debugger"];
-
-function decideAgent(input: Record<string, unknown>): { behavior: string; message?: string } {
-  return decideToolPermission("Agent", input, WORKSPACE, SEALED, AGENTS) as {
-    behavior: string;
-    message?: string;
-  };
-}
-
-test("an Agent call escaping the host is denied", () => {
-  for (const isolation of ["remote", "worktree"]) {
-    const result = decideAgent({
-      subagent_type: "code-reviewer",
-      run_in_background: false,
-      isolation,
-    });
-    assert.equal(result.behavior, "deny", `isolation:${isolation}`);
-    assert.match(String(result.message), /isolation/i);
-  }
-});
-
-test("an Agent call must be synchronous — background is the SDK default", () => {
-  const omitted = decideAgent({ subagent_type: "code-reviewer" });
-  assert.equal(omitted.behavior, "deny", "omitted run_in_background defaults to true");
-  assert.match(String(omitted.message), /run_in_background/);
-
-  const explicit = decideAgent({ subagent_type: "code-reviewer", run_in_background: true });
-  assert.equal(explicit.behavior, "deny");
-});
-
-test("subagent_type is an allowlist, not a suggestion", () => {
-  const result = decideAgent({ subagent_type: "general-purpose", run_in_background: false });
-  assert.equal(result.behavior, "deny");
-  assert.match(String(result.message), /code-reviewer/, "the denial must name what IS allowed");
-});
-
-test("no configured shortlist means no delegation", () => {
-  const result = decideToolPermission(
-    "Agent",
-    { subagent_type: "code-reviewer", run_in_background: false },
-    WORKSPACE,
-    SEALED,
-  ) as { behavior: string };
-  assert.equal(result.behavior, "deny");
-
-  // `Task` is the same tool under its other name. Guarding only "Agent" would
-  // leave the whole branch reachable by renaming the call.
-  const asTask = decideToolPermission(
-    "Task",
-    { subagent_type: "code-reviewer", run_in_background: false },
-    WORKSPACE,
-    SEALED,
-  ) as { behavior: string };
-  assert.equal(asTask.behavior, "deny", "Task is Agent under another name");
-});
-
-test("NEGATIVE CONTROL: a well-formed Agent call on the shortlist is allowed", () => {
-  assert.equal(
-    decideAgent({ subagent_type: "code-reviewer", run_in_background: false, prompt: "review src/" }).behavior,
-    "allow",
-  );
-  assert.equal(
-    decideAgent({ subagent_type: "debugger", run_in_background: false }).behavior,
-    "allow",
-  );
-  // The `Task` name must be guarded, not blanket-denied: the same well-formed
-  // call is allowed under either name.
-  assert.equal(
-    decideToolPermission(
-      "Task",
-      { subagent_type: "debugger", run_in_background: false },
-      WORKSPACE,
-      SEALED,
-      AGENTS,
-    ).behavior,
-    "allow",
-  );
-});
-
-test("NEGATIVE CONTROL: the Agent guard does not affect other tools", () => {
-  assert.equal(decide("Read", `${WORKSPACE}/index.html`).behavior, "allow");
-});
-
-test("an Agent call carrying a sealed path is denied, shortlisted or not", () => {
-  // The Agent branch RETURNED — allow or deny — before the sealed scan ever ran,
-  // so a well-formed shortlisted call could carry a sealed path in any other
-  // field and be allowed. That was unreachable while the shortlist was a module
-  // constant fixed at `[]`; TASK 3 MADE IT REACHABLE by sourcing the shortlist
-  // from `BuildRequest.allowedAgents`, and this test is no longer hypothetical.
-  // The deny must come from the SEALED scan, not from the shortlist: every field
-  // here is otherwise well-formed. The same assertion is made against the real
-  // `Options.canUseTool` in "the Phase 0 guards survive delegation being
-  // enabled" — this one keeps it on the pure predicate, where it is cheapest.
+/**
+ * WHAT USED TO BE HERE — SIX `decideAgent` TESTS, DELETED IN PHASE 1.1 TASK 2.
+ *
+ * They asserted that `decideToolPermission` denied `isolation`, denied a
+ * background delegation and enforced the shortlist. Every one of them PASSED,
+ * and every one of them was measuring a function the engine never calls: probe A
+ * ran the delegation under `acceptEdits`, `default` AND `dontAsk`, and this
+ * callback was consulted for no tool at all while `wordpress-master` started
+ * anyway. Six green tests over a dead branch is this project's signature defect
+ * — a check that can only observe success — so the branch went and they went
+ * with it.
+ *
+ * WHERE THE COVERAGE WENT, rather than being quietly dropped: the three
+ * conditions are pinned on `decideDelegation` in delegation-hook.test.ts, and
+ * pinned again END TO END through `buildOptions(...).hooks.PreToolUse` in the
+ * HOOK tests below — which is the object the SDK is actually handed. Deleting a
+ * test whose subject is gone is honest; deleting one whose subject moved would
+ * not be.
+ *
+ * The two tests kept below are the ones whose subject did NOT move: the sealed
+ * scan still runs for a delegation-named tool, and it still runs FIRST.
+ */
+test("an Agent call carrying a sealed path is denied by the SEALED scan", () => {
+  // THE ORDERING THIS PINS, and it survived the branch deletion because it was
+  // never about delegation. The Agent branch used to RETURN — allow as well as
+  // deny — before the sealed scan ran, so a well-formed shortlisted call could
+  // carry a sealed path in any other field and be allowed. The scan now runs
+  // first for every tool name, and nothing below it returns early at all.
+  //
+  // Every field here is otherwise well-formed, so only the sealed scan can
+  // produce this deny — and the message is asserted to prove it did.
   for (const tool of ["Agent", "Task"]) {
     const result = decideToolPermission(
       tool,
       { subagent_type: "code-reviewer", run_in_background: false, file_path: `${HELD_OUT}/t.mjs` },
       WORKSPACE,
       SEALED,
-      ["code-reviewer"],
     ) as { behavior: string; message?: string };
     assert.equal(result.behavior, "deny", tool);
     assert.match(String(result.message), /SEALED ACCEPTANCE SUITE/, `${tool}: the sealed scan must be what denies`);
   }
 });
 
-test("NEGATIVE CONTROL: a clean shortlisted Agent call still runs", () => {
+test("NEGATIVE CONTROL: a clean Agent call is not denied by the sealed scan", () => {
   // Moving the sealed scan first must not deny delegation outright: `prompt` is
-  // Agent's own free text and the shortlist still decides the rest.
+  // Agent's own free text and must not be read as a path.
+  //
+  // THIS ASSERTS LESS THAN ITS ANCESTOR DID, AND SAYS SO. `decideToolPermission`
+  // no longer decides delegation, so "allow" here means "the sealed scan and the
+  // write confinement found nothing", NOT "this delegation is permitted". The
+  // permission is the hook's, and it is asserted there.
   assert.equal(
-    decideAgent({ subagent_type: "code-reviewer", run_in_background: false, prompt: "review src/" }).behavior,
+    decideToolPermission(
+      "Agent",
+      { subagent_type: "code-reviewer", run_in_background: false, prompt: "review src/" },
+      WORKSPACE,
+      SEALED,
+    ).behavior,
     "allow",
   );
 });
@@ -714,7 +674,6 @@ test("a symlink pointing into the suite is resolved before the decision", () => 
       { file_path: candidate },
       ws,
       [suite],
-      [],
       canonicaliseForDecision,
     ) as { behavior: string; message?: string };
     assert.equal(result.behavior, "deny", `raw laundered candidate ${candidate}`);
@@ -739,7 +698,6 @@ test("a symlink escaping the workspace does not launder a WRITE past the confine
     { file_path: target },
     ws,
     [suite],
-    [],
     canonicaliseForDecision,
   ) as { behavior: string; message?: string };
   assert.equal(result.behavior, "deny");
@@ -757,7 +715,7 @@ test("canonicaliseForDecision is total — a non-existent path passes through", 
 test("NEGATIVE CONTROL: canonicalising does not block ordinary work", () => {
   const { suite, ws } = symlinkFixture();
   const allowed = (input: Record<string, unknown>, tool: string): string =>
-    (decideToolPermission(tool, input, ws, [suite], [], canonicaliseForDecision) as { behavior: string })
+    (decideToolPermission(tool, input, ws, [suite], canonicaliseForDecision) as { behavior: string })
       .behavior;
 
   assert.equal(allowed({ file_path: join(ws, "src", "index.html") }, "Write"), "allow");
@@ -926,9 +884,9 @@ test("WIRING: the owner's environment is loaded", () => {
 test("WIRING: loading user settings does NOT weaken the sealed boundary", async () => {
   // The claim this test makes EXECUTABLE rather than prose: `settingSources`
   // widens what a build can SEE, never what it may DO. denyRead, allowWrite,
-  // `canUseTool` and the Agent guard are all set here in `buildOptions`, not in
-  // ~/.claude/settings.json, so loading the owner's environment cannot move any
-  // of them. Asserted against the SAME options object that carries ["user"].
+  // `canUseTool` and the delegation HOOK are all set here in `buildOptions`, not
+  // in ~/.claude/settings.json, so loading the owner's environment cannot move
+  // any of them. Asserted against the SAME options object that carries ["user"].
   const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
   assert.deepEqual(options.settingSources, ["user"], "the premise: user settings ARE loaded");
 
@@ -954,41 +912,44 @@ test("WIRING: loading user settings does NOT weaken the sealed boundary", async 
     /SEALED ACCEPTANCE SUITE/,
   );
 
-  // ...and the Agent guard is still the only thing that decides delegation.
+  // ...and the DELEGATION guard is unmoved by the owner's settings either.
   //
-  // RE-POINTED IN TASK 3, NOT DELETED. This assertion used to read "delegation
-  // must stay closed until Task 3 opens it", which was true while the shortlist
-  // was a module constant fixed at `[]`. Task 3 moved the boundary onto
-  // `request.allowedAgents`, so left alone this test would have stayed green off
-  // the fail-closed default while its own comment described a mechanism that no
-  // longer exists — passively green, and lying. It now makes the SAME claim
-  // against the new mechanism, and it is still the strongest single proof that
-  // user settings did not reach the boundary:
+  // RE-POINTED TWICE, NEVER DELETED, AND THE SECOND MOVE IS THE INTERESTING ONE.
+  // Task 3 pointed it from a module constant at `request.allowedAgents`. Task 2
+  // points it from `canUseTool` at the HOOK, because probe A measured the
+  // callback consulted for no tool at all when the model delegates — so this
+  // assertion had been passing against a mechanism that never ran. Left on
+  // `canUseTool` it would now return ALLOW by fallthrough and go red for the
+  // right reason; left there and "fixed" by deleting it, the strongest single
+  // proof that user settings do not reach the delegation boundary would be gone.
   //
   // `wordpress-master` is a REAL agent in ~/.claude/agents (verified on disk),
   // so under `settingSources: ["user"]` the CLI discovers it and would happily
   // run it. It is denied anyway, because the request did not name it. What the
   // owner's environment makes VISIBLE and what this run may USE are two
   // different sets, and only the second is a permission.
-  const offShortlist = await decideWithUserSettings?.(
-    "Agent",
-    { subagent_type: "wordpress-master", run_in_background: false, prompt: "review" },
-    callContext(),
-  );
+  const offShortlist = await ask(options, "Agent", {
+    subagent_type: "wordpress-master",
+    run_in_background: false,
+    prompt: "review",
+  });
   assert.equal(
-    offShortlist?.behavior,
+    offShortlist.hookSpecificOutput?.permissionDecision,
     "deny",
     "a discoverable owner agent the request did not name must still be denied",
   );
 
   // ...while the agent the REQUEST named runs. Without this the assertion above
   // would pass against a guard that had simply stopped delegating at all.
-  const delegated = await decideWithUserSettings?.(
-    "Agent",
-    { subagent_type: "code-reviewer", run_in_background: false, prompt: "review" },
-    callContext(),
+  assert.deepEqual(
+    await ask(options, "Agent", {
+      subagent_type: "code-reviewer",
+      run_in_background: false,
+      prompt: "review",
+    }),
+    { continue: true },
+    "the request's own shortlist is what opens delegation",
   );
-  assert.equal(delegated?.behavior, "allow", "the request's own shortlist is what opens delegation");
 
   // NEGATIVE CONTROL: none of the above is a deny-everything stub.
   const allowed = await decideWithUserSettings?.(
@@ -1038,216 +999,419 @@ test("WIRING: the closure INJECTS the canonicaliser — a laundered path is deni
 });
 
 /**
- * DELEGATION, THROUGH THE OPTIONS OBJECT THE SDK IS ACTUALLY HANDED.
+ * DELEGATION, THROUGH THE HOOK SLOT THE SDK IS ACTUALLY HANDED — Phase 1.1 Task 2.
  *
- * The `decideAgent` tests near the top of this file exercise the PURE predicate
- * with a shortlist passed by hand; they proved the branch was correct while
- * `buildOptions` still fed it a module constant of `[]`, so the whole branch was
- * dead code in production. These tests close that gap: they read the shortlist
- * off `BuildRequest` exactly as a run does, through the async `canUseTool` the
- * SDK calls, which is the only path that can be trusted to be live.
+ * THESE TESTS REPLACE A SUITE THAT COULD ONLY OBSERVE A FUNCTION, NEVER A
+ * BOUNDARY. Every delegation test in this file used to call `canUseTool`, and
+ * probe A measured that the engine asks `canUseTool` for NO TOOL AT ALL when the
+ * model delegates: the callback returned deny across `acceptEdits`, `default`
+ * and `dontAsk`, and `wordpress-master` started anyway, in every arm. So the
+ * whole delegation half of this file was green against a mechanism that never
+ * ran — the project's signature defect, a check that can only observe success.
  *
- * Every call below is `await`ed. `makeCanUseTool` returns an async arrow, so
- * `o.canUseTool(...)` is a Promise and `.behavior` on it is `undefined` —
- * `assert.equal(undefined, "deny")` fails loudly but `assert.notEqual` style
- * checks would have passed silently.
+ * Everything below goes through `buildOptions(...).hooks.PreToolUse`, which is
+ * the object the SDK is handed. Calling `makeDelegationHook` directly instead
+ * would be `settings-plumbing.test.ts` again: a factory asserted against itself,
+ * green while nothing wires it in.
  */
-test("delegation is ON for shortlisted agents", async () => {
-  const o = buildOptions(req({ allowedAgents: ["code-reviewer", "debugger"] }), false);
-  for (const type of ["code-reviewer", "debugger"]) {
-    const r = await o.canUseTool?.(
-      "Agent",
-      { subagent_type: type, run_in_background: false, prompt: "review" },
-      callContext(),
-    );
-    assert.equal(r?.behavior, "allow", type);
+type HookAnswer = {
+  continue?: boolean;
+  hookSpecificOutput?: {
+    hookEventName?: string;
+    permissionDecision?: string;
+    permissionDecisionReason?: string;
+  };
+};
+
+function preToolUse(toolName: string, toolInput: unknown): PreToolUseHookInput {
+  return {
+    hook_event_name: "PreToolUse",
+    session_id: "s-1",
+    transcript_path: "/tmp/dash/runs/r1/transcript.jsonl",
+    cwd: WORKSPACE,
+    tool_name: toolName,
+    tool_input: toolInput,
+    tool_use_id: "tu-1",
+  };
+}
+
+/**
+ * The ONE slot, read off the options object rather than constructed here.
+ *
+ * `matcher` is asserted ABSENT. Probe E registered three slots and they all
+ * fired for the same `tool_use_id`, so which one carried the decision was never
+ * measured — and a `matcher: "Task"` slot fired for a call whose `tool_name` was
+ * "Agent", which plain name-matching does not explain. A no-matcher slot assumes
+ * nothing about name resolution, and probe F Gap 3 confirmed it suffices alone.
+ */
+function delegationSlot(options: Options): HookCallbackMatcher {
+  const slots = options.hooks?.PreToolUse;
+  assert.ok(slots, "the SDK was handed NO PreToolUse hook — the guard does not run");
+  assert.equal(slots.length, 1, "ONE slot is what was measured");
+  const slot = slots[0];
+  assert.ok(slot);
+  assert.equal(slot.matcher, undefined, "the matcher must be OMITTED, not named");
+  assert.equal(slot.hooks.length, 1, "exactly one callback");
+  return slot;
+}
+
+/** Ask the hook the SDK would ask, with the three arguments `HookCallback` takes. */
+async function ask(options: Options, toolName: string, toolInput: unknown): Promise<HookAnswer> {
+  const callback = delegationSlot(options).hooks[0];
+  assert.ok(callback);
+  const answer = await callback(preToolUse(toolName, toolInput), "tu-1", {
+    signal: new AbortController().signal,
+  });
+  return answer as HookAnswer;
+}
+
+function denialReason(answer: HookAnswer): string {
+  assert.equal(answer.hookSpecificOutput?.hookEventName, "PreToolUse");
+  assert.equal(answer.hookSpecificOutput?.permissionDecision, "deny");
+  return answer.hookSpecificOutput?.permissionDecisionReason ?? "";
+}
+
+test("HOOK: an off-shortlist delegation is DENIED where the engine actually asks", async () => {
+  // `wordpress-master` is a REAL agent in ~/.claude/agents, so under
+  // `settingSources: ["user"]` the CLI discovers it and would happily run it. It
+  // is denied because the REQUEST did not name it: what the owner's environment
+  // makes VISIBLE and what this run may USE are two different sets.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  const reason = denialReason(
+    await ask(options, "Agent", {
+      subagent_type: "wordpress-master",
+      run_in_background: false,
+      prompt: "review",
+    }),
+  );
+  assert.match(reason, /wordpress-master/);
+  // The reason reaches the MODEL verbatim as an is_error tool_result, so it has
+  // to name what IS permitted.
+  assert.match(reason, /code-reviewer/);
+
+  // `general-purpose` is the SDK's own built-in and the name a model reaches for
+  // first; `""` and `"Agent"` are the malformed shapes; a MISSING field is not
+  // an empty string, and a non-string is malformed rather than absent — the
+  // `typeof` half of the check is what makes each of those a decision rather
+  // than an accident of `includes()`.
+  for (const subagent_type of ["general-purpose", "", "Agent", 42, null]) {
+    denialReason(await ask(options, "Agent", { subagent_type, run_in_background: false }));
   }
-  // `Task` is the same tool under its other name; a shortlist that only opened
-  // one of the two names would be half a boundary in the other direction.
-  const asTask = await o.canUseTool?.(
-    "Task",
-    { subagent_type: "debugger", run_in_background: false },
+  denialReason(await ask(options, "Agent", { run_in_background: false }));
+});
+
+test("HOOK: SELECTIVITY — the shortlisted agent runs in the same configuration", async () => {
+  // Measured in ONE live session: a single no-matcher slot allowed
+  // `code-reviewer` (it started and billed 13842 tokens) and denied
+  // `wordpress-master` (it did not start). Without this the test above would
+  // pass against a hook that had simply stopped delegating at all.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer", "debugger"] }), false);
+  for (const type of ["code-reviewer", "debugger"]) {
+    const answer = await ask(options, "Agent", {
+      subagent_type: type,
+      run_in_background: false,
+      prompt: "review",
+    });
+    assert.deepEqual(answer, { continue: true }, type);
+  }
+});
+
+test("HOOK: the slot fires for EVERY tool, so everything else must continue", async () => {
+  // THE MEASURED BUILD RULE THIS PINS. This slot is consulted for every tool,
+  // Bash included. A callback that denies — or even omits `continue` — for
+  // anything without delegation shape gates the WHOLE SESSION, not just
+  // delegation. That failure would not look like a security regression; it would
+  // look like a builder that cannot do anything.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  for (const [tool, input] of [
+    ["Bash", { command: "npm ci" }],
+    ["Read", { file_path: `${WORKSPACE}/src/app.ts` }],
+    ["Write", { file_path: `${WORKSPACE}/index.html`, content: "<h1>hi</h1>" }],
+    ["Grep", { pattern: "TODO" }],
+    ["mcp__x__list_things", { limit: 10 }],
+  ] as const) {
+    assert.deepEqual(await ask(options, tool, input), { continue: true }, tool);
+  }
+  // Not an object at all — a malformed input must not throw inside the hook,
+  // because a throwing hook is an unhandled rejection on the SDK's own loop.
+  assert.deepEqual(await ask(options, "Bash", null), { continue: true });
+  assert.deepEqual(await ask(options, "Bash", "not an object"), { continue: true });
+});
+
+test("HOOK: a BACKGROUNDED BASH is not a delegation — `run_in_background` is shared", async () => {
+  // MEASURED AGAINST THE SDK's OWN SCHEMAS, not assumed: `run_in_background`
+  // appears at exactly two sites, `AgentInput:504` and `BashInput:548`. Under
+  // `canUseTool` this collision could not fire, because
+  // `autoAllowBashIfSandboxed: true` means a sandboxed Bash never reaches the
+  // callback. The hook slot DOES fire for Bash, so routing on
+  // `run_in_background` would deny `npm run dev` with a reason reading "It
+  // defaults to true" — which is FALSE for Bash and reaches the model verbatim.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  assert.deepEqual(
+    await ask(options, "Bash", { command: "npm run dev", run_in_background: true }),
+    { continue: true },
+  );
+});
+
+test("HOOK: the carve-out is keyed on SHAPE, not on the name `Bash`", async () => {
+  // WITHOUT THIS, THE TEST ABOVE IS A NAME EXEMPTION — the READ_TOOLS defect for
+  // the fourth time. A tool called `Bash` that carries a delegation TARGET is
+  // still a delegation and is still judged.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  const named = denialReason(
+    await ask(options, "Bash", { command: "x", subagent_type: "wordpress-master" }),
+  );
+  assert.match(named, /run_in_background/);
+  const isolated = denialReason(
+    await ask(options, "Bash", { command: "x", isolation: "remote" }),
+  );
+  assert.match(isolated, /isolation/i);
+});
+
+test("HOOK: the two guards that died with the shortlist hold through the hook", async () => {
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+
+  // `worktree` was measured against a real git-repo fixture, so a worktree
+  // failure could not be mistaken for a hook effect: the denied call came back
+  // with the hook's verbatim reason, not a git error. `remote` is
+  // availability-gated and off-host, so it is denied by construction.
+  for (const isolation of ["remote", "worktree"]) {
+    const reason = denialReason(
+      await ask(options, "Agent", {
+        subagent_type: "code-reviewer",
+        run_in_background: false,
+        isolation,
+      }),
+    );
+    assert.match(reason, /isolation/i, isolation);
+  }
+
+  // ABSENT is the production default and was the untested dangerous state. It is
+  // now measured in all three — false, true, absent — and under deny not one
+  // `background_tasks_changed` envelope appeared: the background task never came
+  // into existence.
+  const absent = denialReason(await ask(options, "Agent", { subagent_type: "code-reviewer" }));
+  assert.match(absent, /run_in_background/);
+  const explicit = denialReason(
+    await ask(options, "Agent", { subagent_type: "code-reviewer", run_in_background: true }),
+  );
+  assert.match(explicit, /run_in_background/);
+});
+
+test("HOOK: the entry condition is NAME **OR** SHAPE — each alone is fail-open", async () => {
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+
+  // SHAPE ALONE MISSES THIS. `subagent_type` is OPTIONAL in `AgentInput`
+  // (sdk-tools.d.ts:496), so `Agent{description, prompt}` is schema-valid,
+  // carries NONE of the routed fields, and defaults to BACKGROUND. Measured
+  // against dist: a pure shape test returned ALLOW for it.
+  const bare = denialReason(
+    await ask(options, "Agent", { description: "review it", prompt: "go" }),
+  );
+  assert.match(bare, /run_in_background/);
+  // The same call under its other name. The hook input said "Agent" in every
+  // probe arm while `permission_denials` said "Task" for the SAME call, so both
+  // names are checked and NEITHER decides.
+  assert.match(denialReason(await ask(options, "Task", { description: "d", prompt: "p" })), /run_in_background/);
+
+  // NAME ALONE MISSES THIS. `mcp__plugin_railway_railway__railway-agent` matches
+  // no name we gate on and carries `isolation: "remote"`, which runs the build
+  // off this machine entirely — outside every boundary protecting the sealed
+  // suite. Measured against dist: a pure name test returned ALLOW.
+  const mcp = denialReason(
+    await ask(options, "mcp__plugin_railway_railway__railway-agent", {
+      isolation: "remote",
+      run_in_background: true,
+      prompt: "ship it",
+    }),
+  );
+  assert.match(mcp, /isolation/i);
+});
+
+test("HOOK: an empty shortlist denies every delegation — fail closed", async () => {
+  // The default state of the system and the reason `allowedAgents` is REQUIRED
+  // rather than optional: a build handed no shortlist does the work itself. It
+  // does not get the 144 agents the owner's settings made visible.
+  const options = buildOptions(req({ allowedAgents: [] }), false);
+  for (const tool of ["Agent", "Task"]) {
+    const reason = denialReason(
+      await ask(options, tool, { subagent_type: "code-reviewer", run_in_background: false }),
+    );
+    assert.match(reason, /none configured/, tool);
+  }
+  // NEGATIVE CONTROL: an empty shortlist closes DELEGATION, not the build.
+  assert.deepEqual(
+    await ask(buildOptions(req({ allowedAgents: [] }), false), "Write", {
+      file_path: `${WORKSPACE}/index.html`,
+    }),
+    { continue: true },
+  );
+});
+
+test("HOOK: the PRODUCTION shortlist round-trips through the hook, name for name", async () => {
+  // A REGRESSION GUARD, green on arrival — said plainly rather than dressed up
+  // as a TDD red. Every other delegation test here hands the guard a shortlist
+  // it wrote itself, so all of them would stay green if `shortlistFor` started
+  // returning nothing, or if a single one of its names were misspelled. A wrong
+  // name does not fail loudly: the orchestrator asks for an agent, the hook
+  // denies it, and the lane produces nothing — which looks exactly like a lane
+  // that had nothing to do.
+  //
+  // RE-POINTED AT THE HOOK IN TASK 2. Left on `canUseTool` it would have stayed
+  // green while asserting nothing, because with the Agent branch deleted every
+  // one of those calls returns allow by fallthrough. That is the vacuous-green
+  // this project keeps shipping.
+  const production = shortlistFor("fullstack");
+  assert.ok(production.length > 0, "shortlistFor must never hand the guard an empty list");
+  const options = buildOptions(req({ allowedAgents: production }), false);
+  for (const type of production) {
+    assert.deepEqual(
+      await ask(options, "Agent", { subagent_type: type, run_in_background: false, prompt: "go" }),
+      { continue: true },
+      type,
+    );
+  }
+});
+
+test("HOOK: the owner's own hooks are suppressed for a build", async () => {
+  // A PreToolUse hook returning `permissionDecision: "allow"` PRE-EMPTS
+  // `canUseTool` outright (sdk.d.ts:4166, verbatim: "PreToolUse hook denies
+  // bypass canUseTool and are not covered here") — proven live on a fixture
+  // hook, with the sealed suite's contents coming back in the transcript. Today
+  // that bypass is LATENT: every hook in ~/.claude/ emits only "deny". One
+  // installed plugin makes it live.
+  const managed = buildOptions(req(), false).managedSettings;
+  assert.equal(managed?.allowManagedHooksOnly, true);
+  // AND OUR OWN CALLBACK STILL FIRES UNDER THE LOCK — probe C measured exactly
+  // this pair, which is the only reason the lock is affordable. Structurally the
+  // lock and the hook live on the same options object, so this asserts they ship
+  // together rather than one silently replacing the other.
+  assert.deepEqual(
+    await ask(buildOptions(req({ allowedAgents: ["code-reviewer"] }), false), "Agent", {
+      subagent_type: "code-reviewer",
+      run_in_background: false,
+    }),
+    { continue: true },
+  );
+});
+
+/**
+ * WHAT USED TO BE HERE — FIVE `canUseTool` DELEGATION TESTS, RE-POINTED OR
+ * DELETED IN PHASE 1.1 TASK 2.
+ *
+ * They were written to close a real gap: the `decideAgent` tests handed the
+ * predicate a shortlist by hand, while `buildOptions` fed it a module constant
+ * of `[]`, so the branch was dead in production and every one of those tests was
+ * green anyway. These read the shortlist off `BuildRequest` exactly as a run
+ * does — and were still green against a mechanism the engine never consults.
+ *
+ * ONE LAYER OF WIRING FURTHER IN, AND STILL NOT REACHING THE ENGINE. That is the
+ * lesson worth keeping: "asserted through the object the SDK is handed" is
+ * necessary and was not sufficient, because the SDK is handed several things and
+ * only some of them are asked. The HOOK tests above assert through the slot that
+ * was MEASURED to fire and to stop the spawn.
+ *
+ * Where each went:
+ *   delegation is ON for shortlisted agents      -> HOOK: SELECTIVITY
+ *   delegation stays CLOSED off the shortlist    -> HOOK: an off-shortlist delegation is DENIED
+ *   the Phase 0 guards survive delegation        -> HOOK: the two guards ... ; sealed half kept below
+ *   the PRODUCTION shortlist round-trips         -> HOOK: the PRODUCTION shortlist round-trips
+ *   an empty shortlist still denies everything   -> HOOK: an empty shortlist denies every delegation
+ *
+ * Not one of them was dropped, and none was left pointing at `canUseTool`, where
+ * it would now return ALLOW by fallthrough and pass while asserting nothing.
+ */
+test("the sealed scan still judges a DELEGATION-named call, through the real canUseTool", async () => {
+  // THE HALF THAT DID NOT MOVE. The sealed scan runs for every tool name, and it
+  // ran BEFORE the Agent branch precisely so a well-formed shortlisted call
+  // could not carry a sealed path past it in some other field. The branch is
+  // gone; the scan is not, and it is still reached through the callback the SDK
+  // is handed rather than only through the pure function.
+  const o = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
+  const sealed = await o.canUseTool?.(
+    "Agent",
+    {
+      subagent_type: "code-reviewer",
+      run_in_background: false,
+      file_path: `${HELD_OUT}/t.mjs`,
+    },
     callContext(),
   );
-  assert.equal(asTask?.behavior, "allow");
-});
-
-test("delegation stays CLOSED for anything off the shortlist", async () => {
-  const o = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
-  // `general-purpose` is the SDK's own built-in and the name a model reaches for
-  // first; `wordpress-master` is a real agent on disk, discoverable under
-  // `settingSources: ["user"]`; `""` and `"Agent"` are the malformed shapes.
-  for (const type of ["general-purpose", "wordpress-master", "", "Agent"]) {
-    const r = await o.canUseTool?.(
-      "Agent",
-      { subagent_type: type, run_in_background: false },
-      callContext(),
-    );
-    assert.equal(r?.behavior, "deny", type);
-  }
-  // A missing field is not an empty string: `allowedAgents.includes(undefined)`
-  // would be false anyway, but the typeof check is what makes that a decision.
-  const missing = await o.canUseTool?.("Agent", { run_in_background: false }, callContext());
-  assert.equal(missing?.behavior, "deny", "no subagent_type at all");
-});
-
-test("the Phase 0 guards survive delegation being enabled", async () => {
-  // The failure this is written against: turning delegation on by filling the
-  // shortlist, and the isolation/background/sealed checks quietly becoming
-  // unreachable because the allow now returns before them. Each call here is
-  // WELL-FORMED apart from the one field under test, and names an agent that IS
-  // on the shortlist, so nothing but the guard under test can produce the deny.
-  const o = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false);
-  const call = (input: Record<string, unknown>) => o.canUseTool?.("Agent", input, callContext());
-
-  for (const isolation of ["remote", "worktree"]) {
-    const r = await call({ subagent_type: "code-reviewer", run_in_background: false, isolation });
-    assert.equal(r?.behavior, "deny", `isolation:${isolation}`);
-    assert.match(r && r.behavior === "deny" ? r.message : "", /isolation/i);
-  }
-
-  // `run_in_background` DEFAULTS TO TRUE in the SDK, so an omitted field is the
-  // dangerous case, not the safe one.
-  const background = await call({ subagent_type: "code-reviewer" });
-  assert.equal(background?.behavior, "deny", "omitted run_in_background");
-  assert.match(
-    background && background.behavior === "deny" ? background.message : "",
-    /run_in_background/,
-  );
-
-  // THE ORDERING ASSERTION. The sealed scan runs BEFORE the Agent branch, so a
-  // shortlisted, synchronous, isolation-free call carrying a sealed path in any
-  // other field is still denied — and the message proves it was the SEALED scan
-  // that denied it, not the shortlist.
-  const sealed = await call({
-    subagent_type: "code-reviewer",
-    run_in_background: false,
-    file_path: `${HELD_OUT}/t.mjs`,
-  });
   assert.equal(sealed?.behavior, "deny", "a sealed path on a SHORTLISTED Agent call");
   assert.match(
     sealed && sealed.behavior === "deny" ? sealed.message : "",
     /SEALED ACCEPTANCE SUITE/,
-    "the sealed scan must be what denies, not the shortlist",
+    "the sealed scan must be what denies",
   );
-});
 
-test("the PRODUCTION shortlist round-trips through the guard, name for name", async () => {
-  // A REGRESSION GUARD, green on arrival — not a TDD red, and said plainly
-  // rather than dressed up as one. It exists because every other test in this
-  // file hands the guard a shortlist it wrote itself, so all 111 would stay
-  // green if `shortlistFor` started returning nothing, or if a single one of
-  // Task 2's 26 names were misspelled. A wrong name does not fail loudly: the
-  // orchestrator asks for an agent, the guard denies it, and the lane produces
-  // nothing, which looks exactly like a lane that had nothing to do.
-  //
-  // `fullstack` is what `orchestrator.ts` passes until the Task 5 classifier
-  // lands, so this is the literal set a run is given today.
-  const production = shortlistFor("fullstack");
-  assert.ok(production.length > 0, "shortlistFor must never hand the guard an empty list");
-  const o = buildOptions(req({ allowedAgents: production }), false);
-  for (const type of production) {
-    const r = await o.canUseTool?.(
-      "Agent",
-      { subagent_type: type, run_in_background: false, prompt: "go" },
-      callContext(),
-    );
-    assert.equal(r?.behavior, "allow", type);
-  }
-});
-
-test("an empty shortlist still denies everything — fail closed", async () => {
-  // The default state of the system and the reason `allowedAgents` is required
-  // rather than optional: a build that is handed no shortlist does the work
-  // itself. It does not get the 144 agents the owner's settings made visible.
-  const o = buildOptions(req({ allowedAgents: [] }), false);
-  for (const tool of ["Agent", "Task"]) {
-    const r = await o.canUseTool?.(
-      tool,
-      { subagent_type: "code-reviewer", run_in_background: false },
-      callContext(),
-    );
-    assert.equal(r?.behavior, "deny", tool);
-    assert.match(r && r.behavior === "deny" ? r.message : "", /none configured/);
-  }
-
-  // NEGATIVE CONTROL: an empty shortlist closes DELEGATION, not the build.
-  const write = await o.canUseTool?.(
-    "Write",
-    { file_path: `${WORKSPACE}/index.html` },
+  // NEGATIVE CONTROL: the callback is not a deny-everything stub, and it does
+  // NOT decide delegation any more — a clean delegation reaches it and is waved
+  // on, because the permission was already settled by the hook.
+  const clean = await o.canUseTool?.(
+    "Agent",
+    { subagent_type: "wordpress-master", run_in_background: true, prompt: "review" },
     callContext(),
   );
-  assert.equal(write?.behavior, "allow");
+  assert.equal(
+    clean?.behavior,
+    "allow",
+    "canUseTool no longer judges delegation — asserting a deny here would be asserting a lie",
+  );
 });
 
 /**
- * THE SHAPE BACKSTOP — Phase 1.1 Task 3.
+ * THE SHAPE JUDGEMENT — Phase 1.1 Task 3, RE-POINTED AT THE HOOK IN TASK 2.
  *
- * The Agent branch was gated on the tool NAME, and
- * `mcp__plugin_railway_railway__railway-agent{isolation:"remote"}` matched none
- * of it while running the build off this machine entirely. Enumerating such
- * tools is the READ_TOOLS mistake on a third axis: the list is never complete.
+ * Task 3 put a NAME-or-SHAPE delegation branch in `decideToolPermission`,
+ * because `mcp__plugin_railway_railway__railway-agent{isolation:"remote"}`
+ * matched no name gate while running the build off this machine entirely.
+ * That reasoning is intact and its tests live on — they moved to the HOOK
+ * section above ("the entry condition is NAME **OR** SHAPE"), because probe A
+ * then measured that `canUseTool` is asked about no tool at all when the model
+ * delegates, so judging shape THERE decided nothing.
+ *
+ * Left here on the callback, those two assertions would have gone green by
+ * FALLTHROUGH the moment the branch was deleted — the deny they asserted
+ * replaced by an allow, with no test turning red. That is the exact vacuous
+ * green this phase exists to stop, so they were moved rather than kept.
+ *
+ * The write confinement below did NOT move, because it never depended on the
+ * branch.
  */
-test("a delegation-shaped MCP tool is judged, not waved through on its name", () => {
-  const result = decideToolPermission(
-    "mcp__plugin_railway_railway__railway-agent",
-    { isolation: "remote", run_in_background: true, prompt: "ship it" },
-    "/w",
-    [],
-    ["code-reviewer"],
-  ) as { behavior: string; message?: string };
-  assert.equal(result.behavior, "deny");
-  assert.match(String(result.message), /isolation/i);
-});
-
-test("an ordinary tool carrying none of those fields is untouched — negative control", () => {
-  // Without this, "judge everything" would pass the test above while breaking
-  // every ordinary MCP read the build legitimately makes.
-  const result = decideToolPermission("mcp__x__list_things", { limit: 10 }, "/w", [], []);
-  assert.equal(result.behavior, "allow");
-});
-
 test("a WRITE carrying delegation fields is still confined to the workspace", () => {
-  // THE ORDERING THIS PINS. The delegation branch RETURNS — allow as well as
-  // deny — and it used to be reachable only for `Agent`/`Task`, neither of which
-  // is a PATH_TOOL, so the write confinement below it could not be skipped. The
-  // shape half of the condition removes that guarantee: a `Write` carrying
-  // `subagent_type` and `run_in_background: false` is delegation-shaped, passes
-  // all three delegation checks, and would return ALLOW with the escaping
-  // `file_path` never judged. The confinement therefore runs BEFORE the branch.
+  // THE ORDERING THIS PINS, AND WHY IT OUTLIVED THE BRANCH IT WAS WRITTEN
+  // AGAINST. The delegation branch RETURNED — allow as well as deny — and once
+  // its condition grew a SHAPE half it became reachable for a PATH_TOOL: a
+  // `Write` carrying `subagent_type` and `run_in_background: false` passed all
+  // three delegation checks and returned ALLOW with the escaping `file_path`
+  // never judged. Measured against dist, then fixed in ea52322 by hoisting the
+  // confinement above it.
   //
-  // The call is deliberately WELL-FORMED and SHORTLISTED: nothing but the write
-  // confinement can produce this deny, so the assertion cannot pass for the
-  // wrong reason.
+  // Task 2 deleted the branch, so today nothing below the confinement returns
+  // early and this cannot regress the way it did. IT IS KEPT ANYWAY: it is the
+  // only test that pins the confinement's POSITION rather than its logic, and
+  // the next check added underneath is exactly when that matters again.
+  //
+  // The call is deliberately WELL-FORMED and SHORTLIST-SHAPED: nothing but the
+  // write confinement can produce this deny, so it cannot pass for the wrong
+  // reason.
   const result = decideToolPermission(
     "Write",
     { file_path: "/etc/passwd", subagent_type: "code-reviewer", run_in_background: false },
     WORKSPACE,
     [],
-    ["code-reviewer"],
   ) as { behavior: string; message?: string };
   assert.equal(result.behavior, "deny");
   assert.match(String(result.message), /workspace/i);
 });
 
-test("an Agent call carrying NONE of the three fields is still denied", () => {
-  // THE REGRESSION THIS PINS, and why the branch condition is a DISJUNCTION
-  // rather than the shape check alone. `subagent_type` is OPTIONAL in the SDK's
-  // own `AgentInput` (sdk-tools.d.ts:496) and `run_in_background` documents
-  // itself as defaulting to background — so `Agent{description, prompt}` is a
-  // schema-valid call that carries none of the three delegation fields. Under a
-  // pure `isDelegationShaped(input)` condition it leaves the branch unjudged,
-  // is not a PATH_TOOL, and returns ALLOW: a background general-purpose
-  // delegation waved through by the guard that exists to stop exactly that.
-  const result = decideToolPermission(
-    "Agent",
-    { description: "review it", prompt: "go" },
-    "/w",
-    [],
-    ["code-reviewer"],
-  ) as { behavior: string; message?: string };
-  assert.equal(result.behavior, "deny");
-  assert.match(String(result.message), /run_in_background/);
+test("an ordinary tool carrying none of those fields is untouched — negative control", () => {
+  // Without this, "judge everything" would pass every assertion above while
+  // breaking every ordinary read the build legitimately makes.
+  assert.equal(
+    decideToolPermission("mcp__x__list_things", { limit: 10 }, "/w", []).behavior,
+    "allow",
+  );
 });
 
 /**
