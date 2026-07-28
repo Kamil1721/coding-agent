@@ -3,16 +3,24 @@
  *
  * WHY THIS FILE EXISTS. Phase 1 Task 1 set `settingSources: ["user"]`, which makes
  * 144 of the owner's agents visible to the orchestrator. Visibility is not
- * permission: the `canUseTool` Agent branch shipped in Phase 0 is the boundary,
- * and this module is what will fill it (Task 3). 144 agents is a noisy search
- * space; the shortlist is the curation.
+ * permission: the boundary is the `PreToolUse` hook in
+ * `builders/delegation-hook.ts`, and this module compiles the list it is fed.
+ * (It was written as the `canUseTool` Agent branch in Phase 0. Probe A then
+ * measured that callback asked about NO TOOL AT ALL when the model delegates —
+ * under `acceptEdits`, `default` and `dontAsk` alike — and the branch was deleted
+ * in Phase 1.1 Task 2 rather than left reading like a guard.) 144 agents is a
+ * noisy search space; the shortlist is the curation.
  *
  * The FIRST test is the load-bearing one. A misspelled agent name is a SILENT
- * capability loss — the orchestrator asks for an agent that does not exist,
- * `canUseTool` denies it, and the lane quietly does nothing. Nothing downstream
- * notices, because a lane that produced no output is indistinguishable from a
- * lane that had nothing to do. So the names are asserted against the frontmatter
- * on disk rather than reviewed by eye.
+ * capability loss — the orchestrator asks for an agent that does not exist, the
+ * hook denies it, and the lane quietly does nothing. Nothing downstream notices,
+ * because a lane that produced no output is indistinguishable from a lane that
+ * had nothing to do. So the names are asserted against the frontmatter on disk
+ * rather than reviewed by eye.
+ *
+ * THAT SAME TEST IS ALSO WHAT MAKES `Options.agents` UNREACHABLE, which is why
+ * `buildOptions` no longer sends per-agent definitions: probe I measured them not
+ * binding for a name that exists on disk, and every name below does.
  *
  * Note the key that trap is set on: `trigger-dev-expert` lives in a file called
  * `trigger-dev-task-writer.md`. `subagent_type` matches the frontmatter `name:`,
@@ -33,7 +41,8 @@ const LANES = Object.entries(DELIVERY_LANES) as ReadonlyArray<[string, readonly 
 
 test("every shortlisted agent exists on disk", () => {
   // A typo here is a silent capability loss: the orchestrator asks for an agent
-  // that does not exist, canUseTool denies it, and the lane quietly does nothing.
+  // that does not exist, the PreToolUse hook denies it, and the lane quietly does
+  // nothing.
   const dir = join(homedir(), ".claude", "agents");
   const onDisk = new Set(
     readdirSync(dir)

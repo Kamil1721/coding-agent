@@ -117,7 +117,13 @@ export interface BuilderPromptRequest {
   /** The run's workspace. The build may not write outside it. */
   readonly workspaceDir: string;
   /**
-   * The delegation shortlist — EXACTLY the array `canUseTool` allowlists.
+   * The delegation shortlist — EXACTLY the array the guard allowlists, and the
+   * guard is the `PreToolUse` hook in builders/delegation-hook.ts. NOT
+   * `canUseTool`: probe A ran the same delegation under `acceptEdits`, `default`
+   * and `dontAsk`, and in every arm the callback was asked about no tool at all
+   * while the subagent started anyway. A future wiring change reads this line, so
+   * it names the slot that actually decides.
+   *
    * It must be the same value, from the same expression, as
    * `BuildRequest.allowedAgents`: a prompt that names an agent the guard denies
    * spends turns on calls that cannot succeed, and a prompt that omits one the

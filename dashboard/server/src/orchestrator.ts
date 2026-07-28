@@ -533,7 +533,9 @@ export class Orchestrator {
       entry.option.provider === "openai" ? new CodexSubscriptionBuilder() : new ClaudeSubscriptionBuilder();
 
     // ONE EXPRESSION, TWO CONSUMERS. This value is both what the prompt names
-    // and what `canUseTool` allowlists (`allowedAgents`, below). Calling
+    // and what the Anthropic driver's `PreToolUse` hook allowlists
+    // (`allowedAgents`, below — and NOT `canUseTool`, which probe A measured is
+    // consulted for no tool at all when the model delegates). Calling
     // `shortlistFor` twice would compile and read fine and drift the moment one
     // call site changes — and the drift is silent in BOTH directions: an agent
     // named in the prompt but missing from the guard burns turns on calls that

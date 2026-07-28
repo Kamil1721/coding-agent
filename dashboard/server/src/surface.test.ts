@@ -5,8 +5,10 @@
  * `allowedAgents` is the delegation boundary. So a misclassification is not a
  * cosmetic routing miss: it decides which specialists the build is permitted to
  * reach at all, and the failure is SILENT in one direction. Too narrow a surface
- * means the orchestrator asks for an agent, `canUseTool` denies it, and the lane
- * produces nothing — indistinguishable from a lane that had nothing to do.
+ * means the orchestrator asks for an agent, the `PreToolUse` hook denies it
+ * (builders/delegation-hook.ts — not `canUseTool`, which probe A measured is
+ * asked about no tool at all when the model delegates), and the lane produces
+ * nothing — indistinguishable from a lane that had nothing to do.
  *
  * That asymmetry is why the last test here is as load-bearing as the first: an
  * unrecognisable ticket must fall back to `fullstack`, the WIDEST lane set, never
