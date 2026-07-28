@@ -24,7 +24,14 @@ import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
-import { DELIVERY_LANES, boundsFor, laneOf, shortlistFor } from "./agent-shortlist.js";
+import {
+  DELIVERY_LANES,
+  REPORT_CONTRACT_REMINDER,
+  boundsFor,
+  laneOf,
+  reportContract,
+  shortlistFor,
+} from "./agent-shortlist.js";
 
 const SURFACES = ["web-ui", "fullstack", "api", "cli", "library", "background-jobs"] as const;
 
@@ -192,6 +199,48 @@ test("effort is a real rung or null — null means the run's own effort stands",
       assert.ok(rungs.has(boundsFor(a).effort), `${a}: effort ${String(boundsFor(a).effort)}`);
     }
   }
+});
+
+/**
+ * THE REPORT CONTRACT — Phase 1.1 Task 4.
+ *
+ * §15.4 items 1-2 were authored and never applied: the contract sat in a plan
+ * document while the subagents' own system prompts told them to narrate. §15
+ * measured 110-190k tokens on a ticket when the contract holds and 260-500k+ on
+ * the same ticket when it does not. These tests pin the TEXT; that it reaches
+ * the agent is pinned in claude-builder.test.ts, against the options object.
+ */
+test("the reminder tells an agent what NOT to send back, not merely to be brief", () => {
+  // "Be concise" is advice. The measured failure is a subagent replaying its 50
+  // tool calls into the parent's window, so the prohibition has to name that.
+  assert.match(REPORT_CONTRACT_REMINDER, /tool call/i);
+  assert.match(REPORT_CONTRACT_REMINDER, /narrate|process/i);
+  assert.match(REPORT_CONTRACT_REMINDER, /file path|findings/i);
+});
+
+test("an agent's prompt names the agent and its lane, then the contract", () => {
+  // SELF-SUFFICIENT ON PURPOSE. Whether `Options.agents` REPLACES the owner's
+  // on-disk agent body or merges with it is unmeasured (recorded on
+  // `reportContract`). Under replacement, a prompt that was only a reporting
+  // rule would leave a child that does not know what it is. Naming the role and
+  // the lane makes the worst case a benign one.
+  const reviewer = reportContract("code-reviewer");
+  assert.match(reviewer, /code-reviewer/);
+  assert.match(reviewer, /review/i);
+  assert.match(reviewer, /report/i);
+
+  // NEGATIVE CONTROL: it is per-agent, not one constant wearing 26 hats.
+  assert.notEqual(reviewer, reportContract("nextjs-developer"));
+  assert.match(reportContract("nextjs-developer"), /nextjs-developer/);
+  assert.match(reportContract("nextjs-developer"), /build/i);
+});
+
+test("an agent on no lane still gets a usable prompt", () => {
+  // `allowedAgents` is a plain array; a name from outside DELIVERY_LANES must
+  // not produce a prompt reading "your undefined lane".
+  const unknown = reportContract("some-future-agent");
+  assert.match(unknown, /some-future-agent/);
+  assert.ok(!/undefined|null/.test(unknown), unknown);
 });
 
 /**

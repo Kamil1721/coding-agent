@@ -98,7 +98,19 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { CanUseTool, Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  AgentDefinition,
+  CanUseTool,
+  Options,
+  PermissionResult,
+  SDKMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import {
+  REPORT_CONTRACT_REMINDER,
+  boundsFor,
+  laneOf,
+  reportContract,
+} from "../agent-shortlist.js";
 import {
   NOT_RATE_LIMITED,
   assistantText,
@@ -720,6 +732,51 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     // shortlist that ALLOWS, where before they could only be proven against a
     // shortlist that denied everything anyway.
     canUseTool: makeCanUseTool(workspace, sealedRoots, request.allowedAgents),
+    // THE REPORT CONTRACT, DELIVERED WHERE IT BINDS, AND THE PER-AGENT LOCKS.
+    //
+    // `boundsFor()` existed through Phase 1 with NO production call site: the
+    // contract was prose in a plan and the turn budgets bound nothing, while the
+    // subagents' own system prompts said something different. Delegation is this
+    // system's context compression — a subagent that narrates its 50 tool calls
+    // back into the parent's window is a subagent that made context WORSE. §15
+    // measured 110-190k tokens if the contract holds and 260-500k+ if it does
+    // not, on the same ticket.
+    //
+    // TWO OF THESE FIELDS ARE BOUNDARY, NOT BUDGET, and they hold whether or not
+    // `canUseTool` is ever consulted — which is the whole lesson of Phase 1:
+    //   - `background: false` stops a detached child writing the workspace after
+    //     the phase returns, so the gate cannot score a moving artefact.
+    //   - `disallowedTools: ["mcp__*"]` removes every MCP tool from the child;
+    //     the spec is documented to strip all MCP tools, and a background child
+    //     was measured at 625 tools against the parent's 42. It is the per-agent
+    //     half of the session-level narrowing in `managedSettings` below —
+    //     defence in depth, because a subagent inherits nothing automatically.
+    //
+    // `effort` IS SPREAD CONDITIONALLY AND IS DEAD TODAY. Every `boundsFor()`
+    // entry returns `effort: null`, meaning "the run's own effort stands", so
+    // this spread contributes nothing a test can observe and deleting it would
+    // break none. It is here because a bound and an effort are applied through
+    // the SAME `AgentDefinition`, and a measured per-agent rung has nowhere else
+    // to land. `AnthropicEffort` is exactly the named union
+    // `AgentDefinition.effort` accepts, checked rather than assumed — no cast,
+    // no mapping.
+    agents: Object.fromEntries(
+      request.allowedAgents.map((name): [string, AgentDefinition] => {
+        const bounds = boundsFor(name);
+        return [
+          name,
+          {
+            description: `Shortlisted for this run's ${laneOf(name) ?? "unknown"} lane.`,
+            prompt: reportContract(name),
+            criticalSystemReminder_EXPERIMENTAL: REPORT_CONTRACT_REMINDER,
+            maxTurns: bounds.maxTurns,
+            ...(bounds.effort === null ? {} : { effort: bounds.effort }),
+            disallowedTools: ["mcp__*"],
+            background: false,
+          },
+        ];
+      }),
+    ),
     includePartialMessages: false,
     // The builder gets the full Claude Code tool set: it is building software.
     tools: { type: "preset", preset: "claude_code" },

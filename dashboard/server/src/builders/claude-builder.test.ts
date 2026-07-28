@@ -19,7 +19,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { shortlistFor } from "../agent-shortlist.js";
+import { REPORT_CONTRACT_REMINDER, boundsFor, shortlistFor } from "../agent-shortlist.js";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
 import type { RunEnvironment } from "../build-environment.js";
 import {
@@ -1225,6 +1225,60 @@ test("an Agent call carrying NONE of the three fields is still denied", () => {
   ) as { behavior: string; message?: string };
   assert.equal(result.behavior, "deny");
   assert.match(String(result.message), /run_in_background/);
+});
+
+/**
+ * THE PER-AGENT DEFINITIONS — Phase 1.1 Task 4.
+ *
+ * `boundsFor()` shipped through Phase 1 with ZERO production call sites: the
+ * report contract was prose in a plan document and the turn budgets bound
+ * nothing. An unused function that reads like a boundary is worse than no
+ * function. These tests are what make the call site real.
+ */
+test("every shortlisted agent is DEFINED with its bounds, not just named", () => {
+  const options = buildOptions(
+    req({ allowedAgents: ["code-reviewer", "nextjs-developer"] }),
+    false,
+  );
+  const agents = options.agents ?? {};
+  assert.deepEqual(Object.keys(agents).sort(), ["code-reviewer", "nextjs-developer"]);
+
+  const reviewer = agents["code-reviewer"];
+  assert.ok(reviewer, "a shortlisted agent must be defined, not just permitted");
+  // The report contract has to reach the subagent's own prompt, or it is prose
+  // in a plan document that nothing enforces.
+  assert.match(reviewer.prompt, /report/i);
+  assert.match(reviewer.prompt, /code-reviewer/, "and the agent must know what it is");
+  assert.equal(reviewer.criticalSystemReminder_EXPERIMENTAL, REPORT_CONTRACT_REMINDER);
+
+  // `boundsFor()` finally binds to something the engine reads.
+  const builder = agents["nextjs-developer"];
+  assert.ok(builder);
+  assert.equal(reviewer.maxTurns, boundsFor("code-reviewer").maxTurns);
+  assert.equal(builder.maxTurns, boundsFor("nextjs-developer").maxTurns);
+  // NOT ONE CONSTANT WEARING TWO HATS. Without this, `maxTurns: 15` everywhere
+  // would satisfy both assertions above while binding nothing per agent.
+  assert.notEqual(reviewer.maxTurns, builder.maxTurns);
+});
+
+test("a subagent gets no MCP tools and cannot detach", () => {
+  const def = (buildOptions(req({ allowedAgents: ["code-reviewer"] }), false).agents ?? {})[
+    "code-reviewer"
+  ];
+  assert.ok(def);
+  // CRITICAL 5: a background child was measured at 625 tools against the
+  // parent's 42. `mcp__*` is documented to remove ALL MCP tools.
+  assert.deepEqual(def.disallowedTools, ["mcp__*"]);
+  // CRITICAL 1, the half that does NOT depend on `canUseTool` being consulted:
+  // a detached child keeps writing the workspace after the phase returns, and
+  // the gate would then score a moving artefact.
+  assert.equal(def.background, false);
+});
+
+test("an empty shortlist defines NO agents — the negative control", () => {
+  // The fail-closed default, and the assertion that says these definitions are
+  // built from the request rather than from a table in this module.
+  assert.deepEqual(buildOptions(req({ allowedAgents: [] }), false).agents, {});
 });
 
 test("the environment the CLI reports is emitted on the sink AND logged", async () => {

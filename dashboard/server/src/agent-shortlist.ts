@@ -174,6 +174,66 @@ export function laneOf(agent: string): Lane | null {
 }
 
 /**
+ * The report contract, as a CRITICAL SYSTEM REMINDER rather than prose in a
+ * prompt body.
+ *
+ * §15.4 items 1-2 were authored and never applied: the contract sat in a plan
+ * document while the subagents' own system prompts told them to narrate.
+ * Whichever of the two the model followed, it was not this one. Delegation is
+ * this system's context compression — a subagent that replays its 50 tool calls
+ * into the parent's window is a subagent that made context WORSE. §15 measured
+ * 110-190k tokens on a ticket where the contract holds against 260-500k+ on the
+ * same ticket where it does not.
+ *
+ * IT NAMES WHAT NOT TO SEND, not merely "be brief". "Be concise" is advice; the
+ * measured failure is a specific behaviour, and a rule that does not name the
+ * behaviour it forbids is one the model can honour while still doing it.
+ */
+export const REPORT_CONTRACT_REMINDER =
+  "Return ONLY your findings and what you changed — file paths, decisions, and what " +
+  "is still open. Do NOT replay your tool calls, quote file contents you read, or " +
+  "narrate your process. Your report enters a parent context that must survive the " +
+  "whole build; everything you leave out is budget the next lane gets to spend.";
+
+/**
+ * One agent's system prompt, for the `AgentDefinition` this run supplies.
+ *
+ * SELF-SUFFICIENT, NOT JUST A REPORTING RULE, and that is a hedge against a
+ * measurement this project has NOT made. Whether `Options.agents` REPLACES a
+ * same-named agent loaded from the owner's disk under `settingSources: ["user"]`
+ * or merges with it is UNMEASURED — the SDK typings state no precedence, and
+ * checking it needs a live run (Phase 1.1 Task 7 can observe it; a unit test
+ * cannot). Under replacement, a prompt carrying only "report tersely" would
+ * leave a child that does not know what it is; naming the role and the lane
+ * makes the worst case benign rather than broken. Recorded here rather than
+ * left for the next reader to discover by being bitten.
+ *
+ * WHY SUPPLY A DEFINITION AT ALL, given that risk: `maxTurns`, `effort`,
+ * `background: false` and `disallowedTools: ["mcp__*"]` exist ONLY on an
+ * `AgentDefinition`, and that type REQUIRES `prompt`. The last two are
+ * boundaries that hold whether or not `canUseTool` is ever consulted, which is
+ * the whole lesson of Phase 1, so the trade is taken deliberately: a possible
+ * quality regression in exchange for enforcement that does not depend on a
+ * callback the engine may never call.
+ *
+ * TOTAL FOR AN UNKNOWN NAME, like everything else in this module. An agent on no
+ * lane must not receive a prompt reading "your undefined lane".
+ */
+export function reportContract(agent: string): string {
+  const lane = laneOf(agent);
+  const role =
+    lane === null
+      ? `You are the \`${agent}\` subagent, delegated one step of a larger build.`
+      : `You are the \`${agent}\` subagent, running this build's ${lane.toUpperCase()} lane.`;
+  return (
+    `${role} Work only inside the run's workspace, from the ticket brief and the ` +
+    "visible acceptance tests in it, and apply whatever expertise your own definition " +
+    "gives you.\n\n" +
+    `WHEN YOU FINISH, REPORT — do not narrate. ${REPORT_CONTRACT_REMINDER}`
+  );
+}
+
+/**
  * How much room one delegated agent gets.
  *
  * `effort` is `AnthropicEffort | null` where NULL MEANS "the run's own effort
@@ -247,23 +307,25 @@ const UNKNOWN_AGENT_TURNS = 15;
  * `undefined`, because `undefined` reads downstream as "no bound" and that is the
  * unbounded lens this table exists to stop.
  *
- * NOT ENFORCED IN PHASE 1, AND THAT MUST NOT BE MISREAD AS ENFORCEMENT. Two
- * facts, both read off the SDK's own typings rather than assumed:
+ * APPLIED SINCE PHASE 1.1 TASK 4 — this paragraph used to say the opposite and
+ * was true when it was written. Two facts, both read off the SDK's own typings
+ * rather than assumed:
  *
  *   1. `AgentInput` — the Agent/Task tool's schema (`sdk-tools.d.ts`) — has
  *      `description`, `prompt`, `subagent_type`, `model`, `run_in_background`,
- *      `name`, `team_name`, `mode` and `isolation`. There is NO turn field. A
- *      bound cannot be attached to an individual delegation call.
- *   2. `AgentDefinition` DOES carry `maxTurns` and `effort` — but it also
- *      REQUIRES `description` and `prompt`, so supplying one through
- *      `Options.agents` means re-authoring the agent body this run deliberately
- *      loads from the owner's disk. That is the frontmatter compiler spec 6.2
- *      deleted when `settingSources: ["user"]` was adopted.
+ *      `name`, `team_name`, `mode` and `isolation`. There is NO turn field, so a
+ *      bound still cannot be attached to an individual delegation CALL.
+ *   2. `AgentDefinition` DOES carry `maxTurns` and `effort`, and `buildOptions`
+ *      now emits one per shortlisted agent through `Options.agents`. That type
+ *      REQUIRES `prompt`, so this run supplies one ({@link reportContract}) —
+ *      whether that REPLACES the body loaded from the owner's disk under
+ *      `settingSources: ["user"]` is unmeasured, and the trade is argued on
+ *      `reportContract` rather than glossed here.
  *
- * So this is the TABLE, and applying it is Phase 2's problem — it lands with the
- * DESIGN lane, which is where per-agent definitions come back. Carried forward in
- * the plan's backlog rather than dropped, and stated here so the next reader does
- * not infer a limit that is not being applied.
+ * WHAT IS STILL NOT PROVEN: that the engine HONOURS `maxTurns` on a definition
+ * it was handed. The wiring is pinned by a unit test; the enforcement needs a
+ * live run to observe, and no such run has been made. "It is in the options
+ * object" is not "it bounded anything".
  *
  * WHY EVERY `effort` IS NULL. Null means the run's own effort stands — the rung
  * the owner picked in the UI, which reaches the session as `Options.effort`.
