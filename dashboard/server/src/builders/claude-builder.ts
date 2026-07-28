@@ -55,6 +55,7 @@
  */
 
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -160,6 +161,44 @@ function pathCandidates(input: Record<string, unknown>): string[] {
   return found;
 }
 
+/**
+ * Reduce a raw input value to the path a consuming tool would actually open.
+ *
+ * Three transforms, each closing a confirmed bypass:
+ *   file: URI    — `resolve()` treats the scheme as a relative segment, so
+ *                  `file:///x/y` became `<workspace>/file:/x/y` and missed.
+ *                  Matched on `file:` and not on `file://`: RFC 8089 permits
+ *                  the authority to be omitted, and `fileURLToPath` maps
+ *                  `file:/x/y` to `/x/y` exactly as it maps `file:///x/y`, so
+ *                  the narrower anchor left an openable form allowed.
+ *   percent      — the consuming tool decodes AFTER our check, so `%61cceptance`
+ *                  and `%2e%2e` reached the suite unseen.
+ *   other scheme — `https://…` is not a path; leave it alone rather than
+ *                  mangling it into one.
+ */
+function normaliseCandidate(value: string): string {
+  let s = value;
+  if (/^file:/i.test(s)) {
+    try {
+      s = fileURLToPath(s);
+    } catch {
+      /* malformed; fall through */
+    }
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    return s; // a non-file URL is not a filesystem path
+  }
+  // At most twice: once handles ordinary encoding, twice catches `%252e`. An
+  // unbounded loop would be a denial of service on a crafted input.
+  for (let i = 0; i < 2 && /%[0-9a-f]{2}/i.test(s); i += 1) {
+    try {
+      s = decodeURIComponent(s);
+    } catch {
+      break;
+    }
+  }
+  return s;
+}
+
 function insideDir(dir: string, candidate: string, base: string): boolean {
   const root = resolve(dir);
   const target = resolve(base, candidate);
@@ -173,10 +212,19 @@ function insideDir(dir: string, candidate: string, base: string): boolean {
  * and walk it recursively, so a candidate that is an ancestor of the sealed
  * store reaches every file in it without ever naming it. Asking only "is the
  * candidate inside the root?" answers the wrong question for a recursive tool.
+ *
+ * CASE-FOLDED, deliberately. macOS and Windows volumes are case-INSENSITIVE
+ * while `resolve()` is case-PRESERVING and `===`/`startsWith` are
+ * case-SENSITIVE, so `/x/Acceptance` compared unequal to `/x/acceptance` and
+ * the OS then opened the very file the comparison had just cleared. Folding
+ * over-denies on a case-sensitive volume — that is the safe direction for a
+ * sealed root. `insideDir` above stays case-sensitive on purpose: it guards
+ * WRITES, where over-denying blocks legitimate work, and `allowWrite` covers
+ * that boundary at the OS level.
  */
 function containsOrIsInside(root: string, candidate: string, base: string): boolean {
-  const rootAbs = resolve(root);
-  const target = resolve(base, candidate);
+  const rootAbs = resolve(root).toLowerCase();
+  const target = resolve(base, normaliseCandidate(candidate)).toLowerCase();
   if (target === rootAbs) return true;
   if (target.startsWith(`${rootAbs}/`)) return true;
   return rootAbs.startsWith(target === "/" ? "/" : `${target}/`);

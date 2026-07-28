@@ -235,6 +235,41 @@ test("NEGATIVE CONTROL: ordinary values are not mistaken for paths", () => {
   assert.equal(decideWith("Read", { file_path: `${WORKSPACE}/a.ts`, limit: 100, offset: 0 }).behavior, "allow");
 });
 
+test("a CASE-VARIANT path cannot reach the suite — this volume is case-insensitive", () => {
+  assert.equal(decideWith("Read", { file_path: "/tmp/dash/Acceptance/t.mjs" }).behavior, "deny");
+  assert.equal(decideWith("Read", { file_path: "/tmp/DASH/acceptance/t.mjs" }).behavior, "deny");
+  assert.equal(decideWith("Read", { file_path: "/TMP/DASH/ACCEPTANCE/t.mjs" }).behavior, "deny");
+  assert.equal(decideWith("Grep", { path: "/tmp/Dash" }).behavior, "deny");
+});
+
+test("a file:// URI is resolved to a path before comparison", () => {
+  assert.equal(decideWith("ReadMcpResource", { uri: `file://${HELD_OUT}/t.mjs` }).behavior, "deny");
+  assert.equal(decideWith("Read", { file_path: `file://${HELD_OUT}/t.mjs` }).behavior, "deny");
+  // RFC 8089 allows the authority to be omitted entirely. `fileURLToPath` maps
+  // `file:/tmp/x` to `/tmp/x` exactly as it maps `file:///tmp/x`, so a matcher
+  // anchored on `file://` misses a form that opens the real file. Probed:
+  // ALLOW before this assertion existed.
+  assert.equal(decideWith("Read", { file_path: `file:${HELD_OUT}/t.mjs` }).behavior, "deny");
+  assert.equal(decideWith("ReadMcpResource", { uri: `FILE://${HELD_OUT}/t.mjs` }).behavior, "deny");
+});
+
+test("percent-encoded forms are decoded before comparison", () => {
+  assert.equal(decideWith("Read", { path: "/tmp/dash/%61cceptance/t.mjs" }).behavior, "deny");
+  assert.equal(decideWith("Read", { path: `${WORKSPACE}/%2e%2e/%2e%2e/%2e%2e/acceptance/t.mjs` }).behavior, "deny");
+});
+
+test("NEGATIVE CONTROL: canonicalisation does not widen the boundary", () => {
+  assert.equal(decideWith("Read", { file_path: "/tmp/dash/acceptance-notes/x.md" }).behavior, "allow");
+  assert.equal(decideWith("Read", { file_path: "/tmp/dash/Acceptance-Notes/x.md" }).behavior, "allow");
+  assert.equal(decideWith("Write", { file_path: `${WORKSPACE}/index.html` }).behavior, "allow");
+  assert.equal(decideWith("Read", { file_path: "https://example.com/acceptance" }).behavior, "allow");
+  // The `file:` anchor is wider than `file://`, so it keeps its own control:
+  // `fileURLToPath("file:notes.txt")` is "/notes.txt", which is not the suite
+  // and must stay allowed. Probed, not assumed.
+  assert.equal(decideWith("Read", { file_path: "file:notes.txt" }).behavior, "allow");
+  assert.equal(decideWith("Read", { file_path: "file:./x" }).behavior, "allow");
+});
+
 const AGENTS = ["code-reviewer", "debugger"];
 
 function decideAgent(input: Record<string, unknown>): { behavior: string; message?: string } {
