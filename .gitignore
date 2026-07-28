@@ -1,0 +1,29 @@
+node_modules/
+dist/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# Run state and artefacts — never in version control.
+dashboard/data/
+dashboard/runs/
+dashboard/results/
+dashboard/screenshots/
+bakeoff/dist/
+bakeoff/results/
+bakeoff/dry-run/
+bakeoff/.scorer-modes-e2e/
+
+# THE SEALED ACCEPTANCE SUITE. Held out on purpose — committing it would put
+# the held-out tests in reach of anything that reads the repo.
+dashboard/acceptance/
+
+# Tooling scratch
+.debugfix-active
+.debugfix-blocks
+.playwright-mcp/
+
+# Secrets — never committed. See ~/.claude/scripts/set-secret.sh
+.env
+.env.*
+!.env.example
