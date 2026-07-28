@@ -64,9 +64,9 @@ above supersedes. What is there now, with its evidence level:
 
 | Layer | Driver | Evidence |
 |---|---|---|
-| `decideToolPermission` denies the sealed roots — the suite store **and** `results/scorer-out` — for **every tool name**, built-in or `mcp__*` or one that ships next year; by **every value in the input at any depth**, arrays and nested objects included, except a named list of free-text keys (`content`, `command`, `prompt`, …); in **either direction**, i.e. a candidate inside a sealed root *or* one that contains it; comparing **case-folded canonical forms** with `file://` URIs and percent-encoding decoded first; resolving relatives against the builder's `cwd`, and folding that `cwd` in **unconditionally** for `Grep`/`Glob` | Anthropic | **EXECUTED** — 42 unit tests in `src/builders/claude-builder.test.ts`, every widening carrying a negative control that ordinary work is still allowed. **Corrected 2026-07-28 (second pass).** Until that pass this row read "any of 15 path-bearing input keys" — a KEY allowlist, which an adversarial review defeated with `Glob{pattern:"<suite>/**/*"}`, `pattern` not being on the list. The polarity is now inverted: every value is a suspected path unless its key is named free text. Still a pure-function proof: `decideToolPermission` performs no filesystem access and no `await`, and the caller injects the fs-aware canonicaliser, so symlink resolution is exercised only through that injection. That the hook fires for **subagent-originated** calls is unverified (§3). |
-| `decideToolPermission` denies the `Agent`/`Task` tool unless `isolation` is absent, `run_in_background` is explicitly `false`, and `subagent_type` is on a configured shortlist | Anthropic | **EXECUTED** — 6 dedicated Agent-guard tests among those 42 (counted in the file). The shortlist is empty in production today, so **all** delegation is denied; see §2.4. |
-| `sandbox.filesystem.denyRead` names the sealed roots to the CLI's OS sandbox | Anthropic | **NOT EXECUTED.** `settings-plumbing.test.ts` proves the SDK forwards a `denyRead` array it was handed directly; it never calls the builder, so it cannot detect the builder sending the wrong roots or none. Neither the plumbing from `request.sealedRoots` nor the OS enforcement has been exercised. |
+| `decideToolPermission` denies the sealed roots — the suite store **and** `results/scorer-out` — for **every tool name**, built-in or `mcp__*` or one that ships next year; by **every value in the input at any depth**, arrays and nested objects included, **and by every object KEY**, except a free-text key's own STRING **on the one tool that key owns it** (`Bash{command}`, `Write{content}`, …) — an unknown tool inherits no exemption at all; judging a glob by the **literal tree it would walk** rather than its raw spelling; in **either direction**, i.e. a candidate inside a sealed root *or* one that contains it; comparing **case-folded canonical forms** with `file://` URIs and percent-encoding decoded first; resolving relatives against the builder's `cwd`, and folding that `cwd` in **unconditionally** for `Grep`/`Glob` | Anthropic | **EXECUTED** — 62 unit tests in `src/builders/claude-builder.test.ts` (62 pass, 0 fail), every widening carrying a negative control that ordinary work is still allowed. **Corrected 2026-07-28 (second pass).** Until that pass this row read "any of 15 path-bearing input keys" — a KEY allowlist, which an adversarial review defeated with `Glob{pattern:"<suite>/**/*"}`, `pattern` not being on the list. The polarity is now inverted: every value is a suspected path unless its key is named free text. **Widened again 2026-07-28 (third pass)** after five more bypasses were probed open against the shipping `dist`: an un-expanded wildcard above the sealed root, a depth-8 nest outrunning the walker's depth cap, a sealed path used as an object KEY, a free-text key pruning its whole SUBTREE, and `command` exempt for every tool rather than for `Bash`. All five now deny; the Agent branch no longer returns before the sealed scan. **Two of the class are still OPEN — see §3.** Still a pure-function proof: `decideToolPermission` performs no filesystem access and no `await`, and the caller injects the fs-aware canonicaliser, so symlink resolution is exercised only through that injection. That the hook fires for **subagent-originated** calls is unverified (§3). |
+| `decideToolPermission` denies the `Agent`/`Task` tool unless `isolation` is absent, `run_in_background` is explicitly `false`, and `subagent_type` is on a configured shortlist | Anthropic | **EXECUTED** — 8 dedicated Agent-guard tests among those 62 (counted in the file). **Corrected 2026-07-28 (third pass):** the sealed-root scan now runs BEFORE this branch, because the branch used to return — allow as well as deny — before any candidate was judged, so a well-formed shortlisted `Agent{subagent_type:ok, file_path:"<suite>/x"}` was ALLOWED. That was unreachable only while the shortlist is empty. The shortlist is empty in production today, so **all** delegation is denied; see §2.4. |
+| `sandbox.filesystem.denyRead` names the sealed roots to the CLI's OS sandbox | Anthropic | **SPLIT — half executed, half not. Corrected 2026-07-28 (third pass).** The BUILDER SIDE is now EXECUTED: `buildOptions(request, allowUnsandboxed)` is an exported seam and `claude-builder.test.ts` asserts the returned object directly — `denyRead` is every sealed root canonicalised, `allowWrite` is the workspace alone, `cwd` shares that spelling, `sandbox.enabled` is true and `failIfUnavailable` true unless opted out, `canUseTool` is present AND denies a sealed path when called. Emptying `denyRead` or widening `allowWrite` to `/` now turns tests red (recorded in §1.9). The OS SIDE is still **NOT EXECUTED**: no run has shown the CLI's sandbox refusing a read, and `settings-plumbing.test.ts` still only proves the SDK forwards a `denyRead` array it was handed directly — it never calls the builder. Whether `denyRead` binds anything beyond sandboxed Bash is unresolved (§3). |
 | anything | **OpenAI / Codex** | **NONE.** `ThreadOptions` exposes no read restriction; `sandboxMode: "workspace-write"` limits writes only, and `additionalDirectories` is an *allow* list. A Codex build can `cat` the held-out suite. |
 
 Two further facts you should not have to discover:
@@ -337,10 +337,65 @@ dashboard/server  npm test        76 tests, 74 pass, 0 fail, 2 skipped (quota)
                   npm run typecheck         clean (exit 0)
 ```
 
+Re-run a third time on 2026-07-28, after the wiring seam and the four residual
+fixes added 20 more tests:
+
+```
+dashboard/server  npm test        96 tests, 94 pass, 0 fail, 2 skipped (quota)
+                  claude-builder.test.js    62 tests, 62 pass, 0 fail
+                  npm run typecheck         clean (exit 0)
+```
+
 The 2 skips are the same quota-gated live-smoke tests as on 2026-07-27
-(`DASHBOARD_LIVE_SMOKE`), unchanged by either pass. The 2026-07-27 and first
+(`DASHBOARD_LIVE_SMOKE`), unchanged by any pass. The 2026-07-27 and earlier
 2026-07-28 lines above are left as they were recorded; each was true when
 written.
+
+#### The wiring mutations, re-applied one at a time
+
+Phase 0.1 shipped a "wiring" test that matched regexes against
+`claude-builder.ts`'s SOURCE TEXT. Five mutations that DISCONNECT the boundary
+entirely each left that suite green at 76/74/0. All five were re-applied to
+source on 2026-07-28 against the seam introduced this pass — `dist` rebuilt each
+time, `npm test` run each time — and each now turns tests red:
+
+```
+mutation applied to src/builders/claude-builder.ts        fail  tests caught by
+----------------------------------------------------------------------------------
+delete `canUseTool: makeCanUseTool(...)` from buildOptions   3   WIRING: canUseTool is actually handed to the SDK
+                                                                WIRING: the handed-in canUseTool actually denies a sealed path
+                                                                WIRING: the closure INJECTS the canonicaliser
+denyRead: sealedRoots -> denyRead: []                        2   WIRING: denyRead carries every sealed root, canonicalised
+                                                                WIRING: a symlinked workspace is spelled the same way in every layer
+allowWrite: [workspace] -> [workspace, "/"]                  2   WIRING: allowWrite is the workspace and nothing else
+                                                                WIRING: a symlinked workspace is spelled the same way in every layer
+sandbox.enabled: true -> false                               1   WIRING: the sandbox is enabled, and fails closed unless opted out
+request.sealedRoots.map(canonicalise) -> .slice(0,0).map()   4   WIRING: denyRead carries every sealed root, canonicalised
+                                                                WIRING: the handed-in canUseTool actually denies a sealed path
+                                                                WIRING: a symlinked workspace is spelled the same way in every layer
+                                                                WIRING: the closure INJECTS the canonicaliser
+```
+
+Recorded because it changes what the first row means: the plain deletion of
+`canUseTool` does not COMPILE on its own (`noUnusedLocals` then rejects the now
+unused `ALLOWED_AGENTS`), and a mutation that fails `tsc` runs zero tests, which
+is not a test kill. It was made compile-clean by exporting that constant, so the
+only behavioural change was the missing callback. The other four compile
+unchanged. Source restored and re-verified green at 96/94/0/2 afterwards.
+
+#### The re-attack against `dist`
+
+A scratch probe (not committed — it is an attack script, not a fixture) fired
+every bypass from Phase 0, 0.1 and 0.2 at the **shipping `dist/`**, plus every
+negative control: **140 checks, 0 failures.** Each attack had to DENY *and* carry
+the sealed-suite message, so an Agent call that is refused by the empty shortlist
+cannot pass for the wrong reason. The negative controls include
+`Glob{pattern:"**/*.ts"}`, `Bash{command:"ls <suite>"}`,
+`Write{content:"see <suite>"}`, `Grep{pattern:"TODO"}`, a clean shortlisted
+`Agent` call, `/tmp/dash/acceptance-notes`, and an ordinary `MultiEdit`.
+
+**Five inputs still returned ALLOW and are NOT counted as closed** — they are
+recorded in §3 rather than hidden here.
 
 ---
 
@@ -404,11 +459,13 @@ ever carries the email, org id or org name the CLI prints.
 See **§0**. Two mechanisms were added on the Anthropic driver — the permission
 callback and `sandbox.filesystem.denyRead` — and the Codex gap was documented in
 the driver itself rather than left to be found. **Do not read that as "two
-layers" for a given tool.** Only the permission callback is executed at all
-(42 unit tests in `claude-builder.test.ts` as of the second 2026-07-28 pass);
-`denyRead` is unexercised in both halves, and whether it binds anything other
-than sandboxed Bash is unresolved. For `Read`/`Glob`/`Grep`/MCP the callback may
-well be the only layer there is. See §3.
+layers" for a given tool.** Only the permission callback is executed as a
+BOUNDARY (62 unit tests in `claude-builder.test.ts` as of the third 2026-07-28
+pass). Of `denyRead`, only this codebase's half is exercised — that the builder
+puts the right roots in the right field — and the CLI's OS enforcement of it is
+not, in either half; whether it binds anything other than sandboxed Bash is
+unresolved. For `Read`/`Glob`/`Grep`/MCP the callback may well be the only layer
+there is. See §3.
 
 This added a required field to `BuildRequest`. There is **exactly one**
 construction site in the tree (confirmed by grepping `\.build\(` across
@@ -469,28 +526,69 @@ Nothing here has been observed working. **Do not describe any of it as working.*
 - **Cancel of a live build.** Cancel of a *queued* run is tested.
 - **`deploy: true` through the full pipeline.** `PreviewHost` is unit-tested
   alone.
-- **`sandbox.filesystem.denyRead` has still never been exercised, and the
-  plumbing claim was an overclaim — corrected 2026-07-28.** This bullet used to
-  say "the value reaches the CLI". What
-  `src/builders/settings-plumbing.test.ts` actually does is construct its own
-  `Options` literal with its own local `heldOutRoot`, hand it to the SDK, and
-  assert that same local variable round-trips into the `--settings` payload. It
-  never invokes `ClaudeSubscriptionBuilder`, so it cannot detect the builder
-  sending the wrong roots, stale roots, or none at all. It proves the SDK
-  forwards what it is handed — a property of the SDK, not of this codebase. No
-  run has proven the OS sandbox refuses a read either. `denyRead` is the ONLY
-  layer covering Bash, because `autoAllowBashIfSandboxed: true` means a
-  sandboxed Bash call never reaches `canUseTool`.
+- **`sandbox.filesystem.denyRead` is ENFORCED BY NOBODY WE HAVE OBSERVED.**
+  Corrected twice. This bullet first said "the value reaches the CLI", which was
+  an overclaim: `src/builders/settings-plumbing.test.ts` constructs its OWN
+  `Options` literal with its own local `heldOutRoot` and asserts that same local
+  variable round-trips into the `--settings` payload — a property of the SDK, not
+  of this codebase, and it never invokes `ClaudeSubscriptionBuilder`. Corrected
+  again 2026-07-28: the builder's half IS now tested — `buildOptions` is asserted
+  to put every canonicalised sealed root in `denyRead`, and emptying that array
+  turns two tests red. What remains untested is everything past the seam: **no
+  run has shown the CLI's OS sandbox actually refusing a read.** `denyRead` is
+  the ONLY layer covering Bash, because `autoAllowBashIfSandboxed: true` means a
+  sandboxed Bash call never reaches `canUseTool` — so for Bash the boundary today
+  rests entirely on an unobserved mechanism.
 - **Whether `denyRead` covers in-process tools is UNRESOLVED.** The typings scope
   filesystem clauses to "within the sandbox"/"sandboxed commands", and state
   explicitly that in-process WebFetch is not gated by the network equivalent. If
   `denyRead` binds only sandboxed Bash, then for `Read`/`Glob`/`Grep`/MCP the
   permission callback is the ONLY layer — not one of two. The Phase 0.5 canary
   probe settles it.
-- **The wiring test is a source-shape assertion, not an execution.** It greps
-  `claude-builder.ts` for the call shape. It kills the specific mutation that
-  went undetected in Phase 0, but a test that drove `ClaudeSubscriptionBuilder`
-  against the stub executable would be strictly stronger.
+- **The wiring is now behaviourally tested — corrected 2026-07-28.** This bullet
+  used to say the wiring test was a source-shape assertion. It was, and that was
+  worse than no test: `buildOptions`'s predecessor could have `canUseTool`
+  deleted, `denyRead` emptied, `allowWrite` widened to `/` and the sandbox turned
+  off, and the suite stayed green at 76/74/0 through all four. `buildOptions(request,
+  allowUnsandboxed)` is now an exported seam and the returned object is asserted
+  directly: `canUseTool` present and denying a sealed path when CALLED, `denyRead`
+  carrying every sealed root canonicalised, `allowWrite` the workspace alone,
+  `cwd` in the same spelling, sandbox enabled and failing closed. All five
+  disconnection mutations now kill at least one test each — the table is in §1.9.
+  **What this does NOT prove:** that the CLI honours `denyRead`, or that
+  `canUseTool` fires for subagent-originated calls. Unit tests prove the predicate
+  and this codebase's wiring of it; they say nothing about the CLI's behaviour on
+  the far side of that seam. Both still need the Phase 0.5 canary probe. A test
+  that drove `ClaudeSubscriptionBuilder` against a stub executable would be
+  stronger still.
+- **STILL OPEN: a sealed path EMBEDDED in shell or code text under a non-exempt
+  key is allowed.** Measured against `dist` on 2026-07-28, not reasoned about:
+  `Monitor{command:"cat <suite>/t.mjs"}`, `Monitor{cmd:"cat <suite>/t.mjs"}` and
+  `REPL{src:"read('<suite>/t.mjs')"}` all return ALLOW. A non-exempt string is
+  judged WHOLE, so `"cat /tmp/dash/acceptance/t.mjs"` resolves to
+  `<workspace>/cat /tmp/…`, which is neither the suite nor an ancestor of it.
+  What the third pass DID close is the same tool carrying a BARE sealed path
+  (`Monitor{command:"<suite>/t.mjs"}` now denies). **The Phase 0.2 plan header
+  listed this bypass as closed by that change. It is not, and the plan was wrong
+  about it** — its own task text asserted on the bare-path form. Closing the
+  embedded form means pulling path-like TOKENS out of free-form text, which is a
+  text filter rather than a boundary: `acc''eptance`, `$HOME/../dash/…` and
+  `cd <suite>; cat t.mjs` all step around it while it reads like a boundary in a
+  table. The layer that actually covers text-executing tools is the OS sandbox's
+  `denyRead` — unexercised, above — and for an out-of-process `mcp__*` server
+  there is no such layer at all. `Bash{command:…}` is in the same position and is
+  exempt deliberately: `autoAllowBashIfSandboxed` means a sandboxed Bash never
+  reaches the callback anyway.
+- **STILL OPEN: the walker's node budget can be starved.** `NODE_BUDGET` is 512
+  nodes, spent and not restored, so once it runs out later siblings are never
+  scanned. Measured against `dist`: `{pad:[…600 zeroes…], evil:{file_path:
+  "<suite>/x"}}` returns ALLOW. The budget replaced a depth cap that was worse
+  (eight `{nest:…}` levels sufficed), and any finite bound has this property —
+  an unbounded walk over attacker-shaped input is a denial of service and would
+  not terminate on a cyclic object. Narrowing it (charge only CONTAINER nodes, or
+  walk breadth-first so shallow keys are never starved by a deep sibling) is the
+  real fix and is not done. Padding to 512 nodes is at least conspicuous in a
+  transcript in a way a seventh `{nest:…}` was not.
 - **Case-folding over-denies on a case-sensitive volume.** A genuinely distinct
   `/x/ACCEPTANCE` would be denied alongside `/x/acceptance`. Deliberate: the
   safe direction for a sealed root.
