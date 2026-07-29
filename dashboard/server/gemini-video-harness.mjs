@@ -185,3 +185,32 @@ test("NO CONVERTER, NO CALL — a missing webp converter costs zero", async (t) 
   assert.equal(fake.requests.length, 0, "THE POINT: not one request was made");
   await fake.close();
 });
+
+test("THE HARD TIMEOUT — an operation that never finishes exits 2, having actually polled", async (t) => {
+  // Trap 1. The script blocks BY DESIGN, so a missing deadline is a run that
+  // hangs for as long as the operation does. Exit code alone is not enough:
+  // "gave up after one GET" and "polled to the deadline" produce the same code
+  // and, on a fast machine, the same wall clock. The POLL COUNT is the evidence.
+  const fake = await fakeFor(t, { neverDone: true });
+  const f = fixture();
+  const started = Date.now();
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url, timeout: 20_000 });
+  const elapsed = Date.now() - started;
+  assert.equal(r.killed, false, "the SCRIPT stopped itself; the harness did not have to kill it");
+  assert.equal(r.code, 2, "exit 2 is the timeout code and nothing else uses it");
+  assert.match(r.stderr, /timed out/i);
+  const polls = fake.requests.filter((q) => q.method === "GET" && q.path.includes("FAKE-SENTINEL-7"));
+  assert.ok(polls.length >= 2, `expected repeated polling, saw ${polls.length}`);
+  assert.ok(elapsed < 12_000, `stopped at its own deadline (${elapsed}ms), not at the harness's`);
+  await fake.close();
+});
+
+test("a pending operation is waited out, not abandoned", async (t) => {
+  const fake = await fakeFor(t, { pollsBeforeDone: 3 });
+  const f = fixture();
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url });
+  assert.equal(r.code, 0, r.stderr);
+  const polls = fake.requests.filter((q) => q.method === "GET" && q.path.includes("FAKE-SENTINEL-7"));
+  assert.equal(polls.length, 3, "polled until done:true, then stopped polling");
+  await fake.close();
+});
