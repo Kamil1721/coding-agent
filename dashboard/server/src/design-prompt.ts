@@ -266,3 +266,64 @@ export function designHandoffSection(input: {
   }
   return lines.join("\n");
 }
+
+/**
+ * The visual gate is `ui-designer`, and the author is named here only so the
+ * separation is checkable rather than remembered (spec §7.4: "an agent grading
+ * its own art direction is not a gate").
+ */
+export const VISUAL_GATE_AGENT = "ui-designer";
+export const VISUAL_GATE_AUTHOR = "taste-frontend-expert";
+export const VISUAL_GATE_REPORT = "review/visual-gate.md";
+
+export function visualGatePrompt(input: {
+  manifest: DesignManifest | null;
+  workspace: string;
+  previewUrl: string | null;
+}): string {
+  const lines: string[] = [
+    "VISUAL GATE — QUALITY tier, and it NEVER blocks a run.",
+    "",
+    "You are grading, not building, and you did not author what you are grading.",
+    "Report what you find; a finding informs the owner and does not fail the build.",
+    "",
+  ];
+  lines.push(
+    input.previewUrl === null
+      ? "There is no preview URL for this run, so no screenshots can be captured. Grade what " +
+        "you can from the source in the workspace and say plainly which criteria you could not " +
+        "answer — an unanswerable criterion reported as a pass is worse than one reported as unknown."
+      : `The built site is running at ${input.previewUrl}. Capture ONE screenshot per section with ` +
+        `Playwright, at the aspect ratio of that section's mockup, so the pair is comparable.`,
+    "",
+  );
+
+  if (input.manifest === null || input.manifest.refs.length === 0) {
+    lines.push(
+      "THERE IS NO REFERENCE IMAGE for this run — the DESIGN lane degraded. Grade against the",
+      "rule-based floor alone and say so in the report; do not invent a reference.",
+      "",
+    );
+  } else {
+    lines.push("Read each mockup and its screenshot as a pair:", "");
+    for (const ref of input.manifest.refs) {
+      const locked = ref.path === input.manifest.lockedMockup;
+      lines.push(`  ${locked ? "LOCKED  " : "        "}${ref.path}   [${ref.section}, ${ref.aspect}] ${ref.intent}`);
+    }
+    lines.push(
+      "",
+      input.manifest.lockedMockup === null
+        ? "No mockup was locked, so grade against the set and say that the comparison is loose."
+        : `Grade against the LOCKED mockup: ${input.manifest.lockedMockup}. The question is "does this ` +
+          `match the design that was CHOSEN", not "does this resemble something we generated". ` +
+          `Resembling a different mockup from the set is not a pass.`,
+      "",
+    );
+  }
+
+  lines.push(
+    `Write ${VISUAL_GATE_REPORT}: one verdict per section, each naming the criterion, what you saw,`,
+    "and what would close the gap. Every criterion is QUALITY tier — it reports, it never blocks.",
+  );
+  return lines.join("\n");
+}

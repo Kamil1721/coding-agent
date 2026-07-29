@@ -3,13 +3,19 @@ import { test } from "node:test";
 
 import type { DesignCapability } from "./design-capability.js";
 import type { DesignManifest } from "./design-manifest.js";
+import { toVisualManifest } from "./design-manifest.js";
 import {
   designHandoffSection,
   designSegmentPrompt,
   DESIGN_DIALS,
   IMAGE_TO_CODE_SKILL,
   MIN_DESIGN_REFS,
+  visualGatePrompt,
+  VISUAL_GATE_AGENT,
+  VISUAL_GATE_AUTHOR,
+  VISUAL_GATE_REPORT,
 } from "./design-prompt.js";
+import { visualCriteriaFor } from "./visual-criteria.js";
 
 const WS = "/runs/r1/workspace";
 const CAP: DesignCapability = {
@@ -235,4 +241,53 @@ test("an unlocked manifest still hands over every path, and says nothing is lock
   const p = handoff({ manifest: unlocked });
   assert.ok(p.includes(HERO));
   assert.match(p, /no mockup (is |was )?locked/i);
+});
+
+/* ---- Task 12: the visual gate, and the author who may not grade -------- */
+
+test("the gate is ui-designer and NEVER the author", () => {
+  assert.equal(VISUAL_GATE_AGENT, "ui-designer");
+  assert.notEqual(VISUAL_GATE_AGENT, VISUAL_GATE_AUTHOR);
+  const p = visualGatePrompt({ manifest: LOCKED, workspace: WS, previewUrl: "http://127.0.0.1:4180" });
+  assert.doesNotMatch(p, /taste-frontend-expert/, "an agent grading its own art direction is not a gate");
+});
+
+test("the gate grades against the LOCKED mockup, one screenshot per section, at the mockup's aspect", () => {
+  const p = visualGatePrompt({ manifest: LOCKED, workspace: WS, previewUrl: "http://127.0.0.1:4180" });
+  assert.ok(p.includes(HERO));
+  assert.match(p, /21:9/, "the hero's aspect, so the screenshot is comparable to the still");
+  assert.match(p, /http:\/\/127\.0\.0\.1:4180/);
+  assert.ok(p.includes(VISUAL_GATE_REPORT));
+});
+
+test("the gate is told it is QUALITY and NON-BLOCKING", () => {
+  // Owner decision, spec decision #9 and §7.4: subjective judgement informs, it
+  // does not false-fail a run. A gate that thinks it can fail a build will write
+  // a report that reads like one.
+  const p = visualGatePrompt({ manifest: LOCKED, workspace: WS, previewUrl: null });
+  assert.match(p, /QUALITY/);
+  assert.match(p, /never blocks|non-blocking/i);
+});
+
+test("every criterion the gate is handed is QUALITY tier — asserted through the real module", () => {
+  const criteria = visualCriteriaFor(toVisualManifest(LOCKED));
+  // ADDED BEYOND THE PLAN: a for-of over an empty array asserts nothing and
+  // passes, so an emptied criteria list would leave this test green while the
+  // gate was handed no criteria at all.
+  assert.ok(criteria.length > 0, "a vacuous loop is not an assertion about tiers");
+  for (const criterion of criteria) assert.equal(criterion.tier, "QUALITY");
+});
+
+test("with no mockups the gate still runs, on the rule-based floor", () => {
+  // Spec §6.5: "the visual gate falls back to rule-based scoring with no
+  // reference PNGs". A degraded lane must not silently skip the gate.
+  const p = visualGatePrompt({ manifest: null, workspace: WS, previewUrl: null });
+  assert.ok(p.length > 0);
+  assert.match(p, /no reference/i);
+  assert.ok(visualCriteriaFor({ lockedMockup: null }).length > 0);
+});
+
+test("with no preview URL the gate says what it cannot do rather than pretending", () => {
+  const p = visualGatePrompt({ manifest: LOCKED, workspace: WS, previewUrl: null });
+  assert.match(p, /no preview/i);
 });
