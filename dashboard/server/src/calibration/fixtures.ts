@@ -147,7 +147,13 @@ export const FIXTURES: readonly CalibrationFixture[] = [
       "frozen suite asserts an email field, a submit control and a confirmation — nothing about a message " +
       "field, and nothing about copy at all. The message control is guarded by " +
       "correct-portfolio-artefact.test.ts, which was measured to fail ALONE. The COPY is guarded by " +
-      "NOTHING: revert it to one clause per project and every check in this tree stays green.",
+      "NOTHING: revert it to one clause per project and every check in this tree stays green. " +
+      "WHAT WAS DELIBERATELY LEFT FAILING, because the line between re-implementing a control and tuning " +
+      "one is only checkable if something is on the other side of it: the artefact still has no " +
+      "meta name=description. One was drafted during the rewrite and then removed. 4B's REQ-011 demands " +
+      "one of at least 40 characters, and REQ-011 is on 4B's OWN list of numeric bars the ticket cannot " +
+      "support — adding the tag because a criterion named it is exactly the move this fixture exists to " +
+      "make impossible. The same applies to copy length: no character floor was aimed at.",
   },
   {
     name: "missing-section",
