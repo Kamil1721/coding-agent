@@ -286,12 +286,20 @@ export function extractAssumptions(
     const base = { id: `A-${index + 1}`, criterionId: criterion.id, statement: criterion.statement };
 
     if (shared.length >= MIN_SHARED_CONTENT_TOKENS) {
+      // Credit only the words the QUOTED sentence actually contains. A real
+      // ticket is several sentences; the support for one criterion is usually
+      // spread across them, and listing all of it beside a single quotation
+      // tells the owner they wrote "hero" in a sentence that does not contain
+      // it. The one check this record invites — read the quote, find the words
+      // — would then fail, and a record that cannot be checked by eye is the
+      // same as no record.
+      const sentence = supportingSentence(ticket, shared);
+      const inSentence = new Set(tokenize(sentence));
+      const quotedShared = shared.filter((t) => inSentence.has(t));
       return {
         ...base,
         source: "ticket" as const,
-        because:
-          `you wrote: "${supportingSentence(ticket, shared)}" ` +
-          `— shared wording: ${shared.join(", ")}.`,
+        because: `you wrote: "${sentence}" — shared wording: ${quotedShared.join(", ")}.`,
       };
     }
 

@@ -87,6 +87,27 @@ test("the stopword-only criterion lands on `inferred` specifically, not on `defa
     "an inference must name what the ticket DID give it to work with");
 });
 
+test("the quoted sentence contains every word the reason credits as shared", () => {
+  // A real ticket is several sentences, and every other test here uses one. The
+  // owner's only check on a `ticket` label is to read the quote and find the
+  // words in it; crediting support to a sentence that does not carry it breaks
+  // exactly that check while still reading as evidence.
+  const a = extractAssumptions(
+    "Build a portfolio site for Ada Lovelace. It needs a hero with her name, a projects " +
+      "section listing at least three projects, and a contact form that confirms when submitted.",
+    [c("C-1", "the hero displays the name Ada Lovelace")],
+  );
+  const because = String(a.find((x) => x.criterionId === "C-1")?.because);
+  const quoted = because.match(/you wrote: "([^"]+)"/)?.[1] ?? "";
+  const credited = (because.match(/shared wording: (.+)\.$/)?.[1] ?? "").split(", ");
+  assert.ok(quoted.length > 0, "a `ticket` reason must quote the owner's own sentence");
+  assert.ok(credited.length > 0 && credited[0] !== "", "and must name what it matched on");
+  for (const word of credited) {
+    assert.ok(quoted.toLowerCase().includes(word),
+      `"${word}" is credited to a sentence that does not contain it: ${quoted}`);
+  }
+});
+
 test("the rendered record drops nothing — an unrendered inference is an invisible one", () => {
   // Ordering is asserted above; this asserts presence. A renderer that emitted
   // only the section it considered interesting would satisfy the ordering test
