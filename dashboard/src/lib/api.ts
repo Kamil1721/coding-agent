@@ -154,17 +154,41 @@ export function createRun(
   return request<CreateRunResponse>(KEY.runs, {
     method: "POST",
     body: JSON.stringify({
-      // AUTO UNTIL THE MOCKUP CARDS EXIST, AND THIS LINE IS NOT OPTIONAL.
+      // "ask" BECAUSE THE CARDS NOW EXIST. This line was `"auto"` for exactly as
+      // long as nothing in the app could answer a design park: the server treats
+      // a dashboard submission as interactive, so a policy of "ask" with no card
+      // UI meant every web-UI ticket parked at awaiting_input for the full
+      // DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN and then fallback-locked the first
+      // mockup. `DesignLockPanel` is the channel that was missing, so the park is
+      // now a decision the owner can actually make.
       //
-      // The server treats a dashboard submission as interactive, so its lock
-      // policy would be "ask" — and no card UI ships in this phase, so there is
-      // nothing in the app that can choose a mockup. Joined up, every web-UI
-      // ticket submitted from here would park at awaiting_input for the full
-      // DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN and then fallback-lock the first
-      // mockup: worse than either end of the design, produced by two
-      // individually-correct decisions. Delete this in the same commit that
-      // ships the cards, and not before. `contract-parity.test.ts` asserts it.
-      designLock: "auto",
+      // WHY IT IS STATED RATHER THAN INFERRED. The server has a second way to
+      // read interactivity — a `Referer` from the dashboard origin
+      // (`designLockInteractive` in server/src/http.ts) — and omitting the field
+      // to lean on it would be the more elegant version of this. It is not taken:
+      // `/api/*` reaches the backend through `next.config.ts`'s rewrite in the
+      // normal deployment, and nothing on this side can prove that proxy forwards
+      // `Referer`. A dropped header there would silently downgrade every
+      // dashboard submission to "auto" and the cards would be UI nobody can
+      // reach. A stated field cannot be lost by a header policy.
+      //
+      // AND THE ASYMMETRY §17.3 RULE 2 EXISTS FOR SURVIVES BY CONSTRUCTION. This
+      // module is browser-only with one caller — the form submit in
+      // `app/page.tsx` — so everything that reaches this function IS a person at
+      // the dashboard. curl, cron and scripts never enter this file; they POST
+      // /api/runs directly, carry no `designLock` and no dashboard `Referer`, and
+      // `designLockPolicy(undefined, false)` gives them "auto". A mis-read
+      // interactive request auto-selects and records the pick as automatic; a
+      // mis-read cron request would park forever, and nothing here can hand a
+      // cron request an "ask".
+      //
+      // WHERE IT STOPS TODAY, said rather than left to be discovered: the create
+      // -run route validates `designLock` and does not pass it to
+      // `store.createRun`, so no run created over HTTP parks yet whatever this
+      // sends. `db.ts` already accepts and persists both fields. That seam is in
+      // server/src/http.ts and is reported, not reached from here.
+      designLock: "ask",
+      // AFTER the default, so a caller that states a policy still wins.
       ...body,
     }),
   });

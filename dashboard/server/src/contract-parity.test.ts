@@ -53,9 +53,14 @@ import { SSE_EVENT_TYPES } from "./api-types.js";
  * skips — a parity check that quietly stops finding the other package is the
  * purest can't-fail check there is.
  */
-const CLIENT_LIB = join(import.meta.dirname, "..", "..", "src", "lib");
+const CLIENT_SRC = join(import.meta.dirname, "..", "..", "src");
+const CLIENT_LIB = join(CLIENT_SRC, "lib");
 const CLIENT_TYPES = join(CLIENT_LIB, "api-types.ts");
 const CLIENT_STREAM = join(CLIENT_LIB, "use-run-stream.ts");
+const CLIENT_API = join(CLIENT_LIB, "api.ts");
+/** The design-lock pair: the cards, and the page that hands their click a run id. */
+const CLIENT_CARDS = join(CLIENT_SRC, "components", "run", "design-lock.tsx");
+const CLIENT_RUN_PAGE = join(CLIENT_SRC, "app", "runs", "[runId]", "page.tsx");
 
 /** The server's list, widened once so it can be compared against parsed text. */
 const SERVER: readonly string[] = SSE_EVENT_TYPES;
@@ -271,19 +276,82 @@ test("CONTRACT: the client's RunDetail declares the gate/fix loop outcome, with 
   );
 });
 
-test("CONTRACT: the client sends designLock explicitly while there is no card UI", () => {
-  // NOT COVERED 1: no mockup-card component ships in this phase. `interactive`
-  // is true for a dashboard-submitted run, so `designLockPolicy` would return
-  // "ask" and every web-UI ticket the owner submits from the dashboard would
-  // park for the full timeout with nothing in the UI able to unpark it. Two
-  // individually-correct decisions, joined into a 30-minute stall.
-  //
-  // Comments are stripped first: the explanation ABOVE that line in api.ts must
-  // not be what satisfies this check.
-  const api = join(CLIENT_LIB, "api.ts");
+/* -------------------------------------------------------------------------
+ * The lock policy the client asks for, AND the UI that can answer it
+ *
+ * THIS CHECK WAS `designLock: "auto"` AND THE CONDITION IT GUARDED WAS ALWAYS A
+ * JOINT ONE: auto BECAUSE no card UI existed. `interactive` is true for a
+ * dashboard-submitted run, so a policy of "ask" with nothing on screen able to
+ * choose meant every web-UI ticket parked for the full timeout and then
+ * fallback-locked the first mockup — two individually-correct decisions joined
+ * into a 30-minute stall. The cards shipped, so the safe value flipped.
+ *
+ * SO IT IS STILL TWO HALVES, and collapsing it to `/designLock: "ask"/` would be
+ * the same mistake in the other direction: a literal check that cannot see the
+ * failure it was created for. The cards being deleted, refactored out or
+ * disconnected from `resumeRun` while `"ask"` stays behind puts the run right
+ * back where it was — parked, with nothing able to unpark it — and a one-sided
+ * check would be green through all of it. BOTH halves are asserted here, so
+ * removing either end turns this red.
+ *
+ * WHAT IT CANNOT SEE, because it is text across a package boundary: whether a
+ * click actually reaches the server carrying the choice. That is
+ * `dashboard/tests/design-lock.browser.spec.ts`, which drives a real browser
+ * against a real `POST /api/runs/:id/resume` and reads the body off the wire.
+ * This test proves the two ends EXIST and name each other; that suite proves
+ * they work.
+ * ---------------------------------------------------------------------- */
+
+test("CONTRACT: the client asks for the lock policy its cards can answer", () => {
+  // Comments are stripped first, here and in every region below: the
+  // explanation ABOVE that line in api.ts must not be what satisfies this check.
+  const create = region(
+    readClient(CLIENT_API),
+    CLIENT_API,
+    "export function createRun(",
+    "\nexport ",
+  );
+
+  // HALF ONE: the policy. Scoped to `createRun`'s own body rather than the whole
+  // file, so this reads the object that is actually POSTed — and so a legitimate
+  // "auto" somewhere else in api.ts later cannot trip the refusal below.
   assert.match(
-    withoutComments(readClient(api)),
+    create,
+    /designLock: "ask"/,
+    "createRun no longer asks for a design lock: the mockup cards would never be reached, " +
+      "because a dashboard submission that does not ask cannot park",
+  );
+  // A LEFT-BEHIND OR RE-ADDED "auto" IS THE QUIET VERSION OF THAT. Both keys in
+  // one literal is legal JavaScript and the last one wins, so `match` above
+  // cannot see it.
+  assert.doesNotMatch(
+    create,
     /designLock: "auto"/,
-    "a dashboard-submitted run would park with nothing able to resume it",
+    "createRun states BOTH lock policies; whichever key is written last is the one on the wire",
+  );
+
+  // HALF TWO: the UI that answers the park. `readClient` throws when the file is
+  // absent, so deleting the card component fails here rather than reporting
+  // agreement between two things that no longer exist.
+  const cards = withoutComments(readClient(CLIENT_CARDS));
+  assert.match(
+    cards,
+    /onClick=\{\(\) => onChoose\(shot\.path\)\}/,
+    "no card emits a choice any more: the panel renders five mockups and cannot answer the park",
+  );
+
+  const page = withoutComments(readClient(CLIENT_RUN_PAGE));
+  assert.match(
+    page,
+    /onChoose=\{onChooseMockup\}/,
+    "the run page renders no design-lock panel wired to a choice handler",
+  );
+  // THE CHOICE MUST TRAVEL. `resumeRun(runId)` with no second argument is a
+  // different request: it hands the pick to `ui-designer` and records it as
+  // automatic, which is the timeout's behaviour, not a click's.
+  assert.match(
+    page,
+    /resumeRun\(runId, chosenMockup\)/,
+    "a card click resumes without carrying the chosen mockup, putting ui-designer's name on the owner's decision",
   );
 });
