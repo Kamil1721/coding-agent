@@ -101,6 +101,28 @@ export function detectDesignCapability(opts: {
   };
 }
 
+/**
+ * Override for the image script's location.
+ *
+ * EXISTS FOR THE NEGATIVE CONTROL, AND THAT IS A GOOD ENOUGH REASON. THE TRAP's
+ * proof is a run whose image script is deliberately broken, and the script is
+ * reached by an ABSOLUTE path — `designSegmentPrompt` puts
+ * `capability.imageScript` into the agent's instructions verbatim — so no `PATH`
+ * shim can intercept it. Without this the one control that matters could not be
+ * executed without vandalising the owner's `~/.claude/scripts/`.
+ *
+ * A BLANK VALUE IS NOT AN OVERRIDE. An empty or whitespace-only variable is what
+ * an unset shell export looks like, and honouring it would resolve the script to
+ * `""` — `existsSync("")` is false, so the lane would silently degrade on a
+ * machine where the real script is present.
+ */
+export const DESIGN_SCRIPT_ENV = "DASHBOARD_GEMINI_IMAGE_SCRIPT";
+
+export function designScriptPath(env: NodeJS.ProcessEnv, homeDir: string): string {
+  const override = (env[DESIGN_SCRIPT_ENV] ?? "").trim();
+  return override.length > 0 ? override : expandHome(GEMINI_IMAGE_SCRIPT, homeDir);
+}
+
 export interface PreflightCheck {
   readonly id: "python3" | "npx-impeccable" | "image-script" | "gemini-key" | "tmpdir";
   readonly ok: boolean;
