@@ -531,6 +531,14 @@ dashboard/server  npm test        271 tests, 269 pass, 0 fail, 2 skipped (quota)
                   measurement: dashboard/server/probes/results/calibration-4a.json
 ```
 
+**Read "7/7 ... AND failing tier" narrowly.** Three of those tiers —
+`blank-page`, `missing-section`, `stub-markers` — were **corrected from
+FUNCTIONAL to BLOCKING against this measurement**, in this session, with the
+gate id quoted in `fixtures.ts` (Revision 2 R7 authorises that correction once).
+For those three the tier match is a **recording, not a confirmation**. The four
+others — `correct-portfolio`, `broken-build`, `reward-hacked`,
+`stock-motion-only` — matched what was declared before the run.
+
 **This proves the SCORING PATH: that the Tier-0 gates fire, that reward-hack
 detection inspects test files the artefact shipped, that the tier arithmetic in
 `computeOutcome` is right against real container output, and that the verdict
@@ -539,28 +547,71 @@ so the discrimination they produce was **chosen by their author — who had read
 all seven artefacts — not measured**. Task 4B authors a suite from the ticket
 alone and is the one that answers Gap 4. Do not read this row as Gap 4 closed.
 
-**The mutation was executed, not reasoned about.** The three content criteria
-(hero, three projects, contact confirmation) were replaced with one contentless
-criterion, `dist` rebuilt, the suite re-run: `blank-page`, `missing-section` and
-`stub-markers` all stopped failing and calibration went **RED — 3 of 7 tests
-failed, exit 1**. Restored; the file's sha256 is identical before and after
-(`b60ce081…3ab190`) and the suite is green again. Recorded in
-`probes/results/calibration-4a.json` under `.mutation`, raw rows in
-`calibration-4a.mutation-gutted.json`. **Corrected against the plan's
-prediction:** R4 expected `blank-page` to flip to `pass`; it flips to
-`pass_with_notes`, because two QUALITY findings survive any mutation of the
-suite (`QUALITY:default_serif_font` from the container's own DOM observation,
-and the VIS-MOTION-AUTHORED note). That is why the false-pass assertion asserts
-`outcome === "fail"` rather than `!== "pass"` — **`pass_with_notes` renders as
-"PASSED WITH NOTES" and an owner reading it walks away trusting the artefact.**
+**The mutation was executed, not reasoned about — and then RE-EXECUTED FROM
+SCRATCH by a second agent** rather than inherited from the first one's notes.
+The three content criteria (hero, three projects, contact confirmation) were
+replaced with one contentless criterion, `dist` rebuilt, the suite re-run:
+`blank-page`, `missing-section` and `stub-markers` all stopped failing and
+calibration went **RED — 3 of 7 tests failed, exit 1**, first failure
+`missing-section: expected fail, got pass_with_notes`. Restored; the file's
+sha256 is identical before and after (`b60ce081…3ab190`), `git diff HEAD` for
+that path is empty, and the suite is green again (7/7, exit 0). Recorded in
+`probes/results/calibration-4a.json` under `.mutations[0]`, raw rows in
+`calibration-4a.mutation-gutted.json`. Both runs agree in every field, which is
+the useful result: **the mutation is reproducible.**
 
-**Does-not-skip, verified by negative control.** Run with
-`BAKEOFF_SCORER_IMAGE` pointed at an image that does not exist, the suite exits
-**1** with `CALIBRATION DID NOT RUN: the scorer image … is not built`, plus the
-build command. No `test.skip`, no docker probe that turns green when the daemon
-is absent.
+**Corrected against the plan's prediction:** R4 expected `blank-page` to flip to
+`pass`; it flips to `pass_with_notes`, because two QUALITY findings survive any
+mutation of the suite (`QUALITY:default_serif_font` from the container's own DOM
+observation, and the VIS-MOTION-AUTHORED note). That is why the false-pass
+assertion asserts `outcome === "fail"` rather than `!== "pass"` —
+**`pass_with_notes` renders as "PASSED WITH NOTES" and an owner reading it walks
+away trusting the artefact.**
 
-**Four things this measured that were previously assumed. None was worked
+**New, and it makes the mutation worse than first recorded:** under the gutted
+suite all three flipped fixtures also flip **`heldOutPass` from false to TRUE**.
+The bake-off's own co-primary metric is fooled by the same mutation, so it is
+**not an independent second opinion on a bad suite** — nothing downstream would
+have disagreed. Also incidental but useful: with the content criteria gone,
+`reward-hacked`'s only failed gate is `GATE:no-reward-hack-exploits`, which
+shows the exploit gate alone standing between a rigged suite and a green run.
+
+**A second mutation, because one assertion inside a green suite could not fire.**
+The held-out-leak check (`a held-out test id leaked into the verdict`) could not
+be made to fail by any current input: `evidenceRequired` — the only field
+carrying a `T-n` id — never reaches the verdict. So `statementFor` was
+temporarily changed to append `(evidence: T-1)`: the test went **RED on
+`correct-portfolio`** (1 of 7, exit 1), a PASSING fixture, which is the case that
+matters, since the assumption summary renders criterion prose on green runs too.
+Reverted. Re-executed in the finishing session, not inherited. Recorded as
+`M2-leak-a-held-out-test-id`.
+
+**A third, on a guard added while finishing.** `qualityFindingsFor` used to take
+`motion[0]`; `visualCriteriaFor` emits two motion criteria, so reordering
+`FLOOR` would have silently relabelled every finding `VIS-MOTION-RESTRAINT`
+while still testing the authored-motion patterns. It now selects by id and
+throws if the id is gone. Breaking the id makes it throw, naming the criteria
+that do exist. Narrower than the other two and labelled so: applied to the
+compiled build and checked by direct call, not through a container.
+
+**Does-not-skip, verified by negative control on BOTH branches.**
+`environmentProblem()` can fail for a missing daemon or a missing image, and a
+fresh clone hits the second while a laptop with Docker Desktop closed hits the
+first, so testing only the convenient one would leave half the guarantee
+unmeasured.
+
+```
+DOCKER_HOST=tcp://127.0.0.1:1        exit 1   7 cancelled, 0 pass, 0 SKIPPED
+  "CALIBRATION DID NOT RUN: the docker daemon did not answer `docker version`"
+BAKEOFF_SCORER_IMAGE=<nonexistent>   exit 1   7 cancelled, 0 pass, 0 SKIPPED
+  "CALIBRATION DID NOT RUN: the scorer image … is not built"
+```
+
+The throw is raised from the suite's `before()` hook, so the tests report
+CANCELLED rather than passing. No `test.skip`, no docker probe that turns green
+when the daemon is absent.
+
+**FIVE things this measured that were previously assumed. None was worked
 around by moving an expectation:**
 
 - `GATE:suite-green` is a **BLOCKING** container gate that fails whenever ANY
@@ -587,6 +638,21 @@ around by moving an expectation:**
   gate catches an artefact that does not build, **not** that the grader sees the
   TS2345 the fixture was authored around. Backlog. No fixture artefact was
   edited — `fixtures.ts` forbids exactly that.
+- **`VIS-MOTION-RESTRAINT` is never graded, and green here is not evidence it
+  holds.** `visualCriteriaFor` emits two motion criteria; `qualityFindingsFor`
+  decides exactly one (`VIS-MOTION-AUTHORED`), because "is the stagger capped,
+  does one focal sequence carry the page" has no deterministic offline proxy and
+  a criterion that cannot be decided is a finding generator, not a check. This
+  was raised as a forward risk against `correct-portfolio` and **measured rather
+  than argued**: that fixture's `app.js` staggers *every* observed row
+  (`IntersectionObserver` adding `.in` at `i*90`ms), which is close to the "same
+  entrance replayed on every section" the criterion warns against, yet
+  `fixtures.ts` requires it to grade a plain `pass`. It does today only because
+  nothing evaluates the criterion — the conflict is dormant, not absent. When
+  Phase 2b puts a vision model behind it, `correct-portfolio` is a live
+  false-fail candidate, and **the fixture is the thing to look at first**: a
+  false-fail control whose motion is borderline is a weak control. Neither the
+  criterion nor the fixture was loosened to make this go away. Backlog.
 
 ---
 

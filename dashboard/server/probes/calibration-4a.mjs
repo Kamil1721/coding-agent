@@ -18,16 +18,28 @@
  *   node probes/calibration-4a.mjs blank-page      # one
  *   CAL_CONCURRENCY=1 node probes/calibration-4a.mjs
  *   CAL_LABEL=mutation-M2 node probes/calibration-4a.mjs   # writes a labelled record
+ *   CAL_DIST=../dist-mine node probes/calibration-4a.mjs   # a private build
  *
  * Exit: 0 every fixture matched, 1 a fixture disagreed, 2 it could not run.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DIST = join(HERE, "..", "dist");
+// CAL_DIST exists because `npm run build` writes a SHARED dist/ that concurrent
+// agents in this package also compile into, and a probe that recompiles under
+// someone else's feet corrupts their run as well as its own. The compiled tree
+// must stay at `dashboard/server/<dir>/`, though: `artefactDir()` and
+// `CALIBRATION_RUN_ROOT` resolve fixtures and results by walking up from
+// `import.meta.url`, so a build at any other depth silently looks for the
+// artefacts in a directory that does not exist.
+const DIST = process.env["CAL_DIST"]
+  ? isAbsolute(process.env["CAL_DIST"])
+    ? process.env["CAL_DIST"]
+    : resolve(HERE, process.env["CAL_DIST"])
+  : join(HERE, "..", "dist");
 const RESULTS = join(HERE, "results");
 
 let gradeFixture;
@@ -190,14 +202,24 @@ const record = {
 
 mkdirSync(RESULTS, { recursive: true });
 const outFile = join(RESULTS, label === "baseline" ? "calibration-4a.json" : `calibration-4a.${label}.json`);
-// The mutation record is the one thing in this file that a re-run cannot
-// reproduce — it took a temporary edit to the committed suite. Losing it on the
-// next measurement would quietly delete the evidence that calibration can fail.
+// The mutation records are the one thing in this file that a re-run cannot
+// reproduce — each took a temporary edit to committed source. Losing them on the
+// next measurement would quietly delete the evidence that calibration can fail,
+// which is the only evidence that it is a test rather than a report.
 try {
   const previous = JSON.parse(readFileSync(outFile, "utf8"));
-  if (previous.mutation !== undefined) record.mutation = previous.mutation;
+  for (const key of ["mutations", "motionSatisfierSplit"]) {
+    if (previous[key] !== undefined) record[key] = previous[key];
+  }
 } catch {
   /* no previous record: nothing to carry forward */
+}
+if (record.mutations === undefined) {
+  // Said out loud rather than left as an absent key. A measurement file with no
+  // mutation record is a file nobody has watched fail.
+  record.mutationsMissing =
+    "NO MUTATION RECORD. This measurement has not been shown capable of going red. See " +
+    "docs/superpowers/plans/2026-07-28-phase-2e-grader.md, Revision 2 R4.";
 }
 writeFileSync(outFile, `${JSON.stringify(record, null, 2)}\n`, "utf8");
 

@@ -28,11 +28,32 @@
  * the verdict shared across the assertions below; grading per test would
  * multiply that by five for no extra signal.
  *
- * THE MUTATION THAT MAKES IT WORTH ANYTHING was run on 2026-07-29 and is
- * recorded in probes/results/calibration-4a.mutation-gutted.json: replacing the
- * hero/projects/contact criteria with one contentless criterion flips
- * `blank-page`, `missing-section` and `stub-markers` out of "fail" and turns
- * this file RED. A calibration nobody has watched fail is not verified.
+ * THREE MUTATIONS WERE RUN ON 2026-07-29, all recorded under `.mutations` in
+ * probes/results/calibration-4a.json, and M1 and M2 were RE-RUN FROM SCRATCH by
+ * a second agent rather than inherited. A calibration nobody has watched fail is
+ * not verified, and neither is a single assertion inside one.
+ *   1. Replacing the hero/projects/contact criteria with one contentless
+ *      criterion flips `blank-page`, `missing-section` and `stub-markers` out of
+ *      "fail" and turns this file RED (3 of 7 tests, exit 1). It flips their
+ *      `heldOutPass` to TRUE as well — the gutted suite fools the bake-off's own
+ *      co-primary metric, so nothing downstream would have disagreed.
+ *   2. Making `statementFor` append a `T-n` id turns the held-out-leak assertion
+ *      RED (1 of 7, exit 1). Without that run it would be an assertion nothing
+ *      can currently make fire, which is the defect this repo has shipped seven
+ *      times.
+ *   3. Breaking `MOTION_CRITERION_ID` makes `qualityFindingsFor` throw. Narrower
+ *      than the other two, and labelled so in the record: it was applied to the
+ *      compiled build and checked by a direct call, not through a container.
+ *
+ * BOTH does-not-skip branches were exercised, not just the convenient one.
+ * `environmentProblem()` can fail for a missing daemon or a missing image, and a
+ * fresh clone hits the second while a laptop with Docker Desktop closed hits the
+ * first. Measured: exit 1, seven tests CANCELLED, **zero skipped**, in both.
+ *
+ * KNOWN, AND NOT WORTH FIXING HERE: when one fixture throws, `Promise.all` over
+ * the grading workers rejects while the other workers keep running, so a partial
+ * failure can leave a `docker run` outliving this process. The gate still fails
+ * loudly, which is what it is for; a leftover container costs a `docker ps`.
  */
 
 import assert from "node:assert/strict";

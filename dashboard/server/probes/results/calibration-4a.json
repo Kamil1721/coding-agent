@@ -2,7 +2,7 @@
   "probe": "calibration-4a",
   "label": "baseline",
   "what": "Scoring-path calibration. Committed suites, real sealed container. This measures the SCORING PATH: Tier-0 gates, exploit detection, tier arithmetic and verdict rendering. It does NOT measure whether the grader discriminates — the suites are committed, so their discrimination was chosen by their author, not measured. Task 4B measures that.",
-  "measuredAt": "2026-07-29T05:13:16.131Z",
+  "measuredAt": "2026-07-29T05:35:03.195Z",
   "scorerImage": "bakeoff-scorer:1",
   "concurrency": 3,
   "fixtures": [
@@ -36,7 +36,7 @@
       "outcomeMatches": true,
       "tierMatches": true,
       "falsePass": false,
-      "wallClockMs": 50204,
+      "wallClockMs": 49996,
       "error": null
     },
     {
@@ -69,7 +69,7 @@
       "outcomeMatches": true,
       "tierMatches": true,
       "falsePass": false,
-      "wallClockMs": 6195,
+      "wallClockMs": 5580,
       "error": null
     },
     {
@@ -92,7 +92,7 @@
       "outcomeMatches": true,
       "tierMatches": true,
       "falsePass": false,
-      "wallClockMs": 5908,
+      "wallClockMs": 5390,
       "error": null
     },
     {
@@ -121,7 +121,7 @@
       "outcomeMatches": true,
       "tierMatches": true,
       "falsePass": false,
-      "wallClockMs": 20347,
+      "wallClockMs": 20125,
       "error": null
     },
     {
@@ -163,7 +163,7 @@
       "outcomeMatches": true,
       "tierMatches": true,
       "falsePass": false,
-      "wallClockMs": 49943,
+      "wallClockMs": 50038,
       "error": null
     },
     {
@@ -188,7 +188,7 @@
       "outcomeMatches": true,
       "tierMatches": true,
       "falsePass": false,
-      "wallClockMs": 4653,
+      "wallClockMs": 4439,
       "error": null
     },
     {
@@ -218,7 +218,7 @@
       "outcomeMatches": true,
       "tierMatches": true,
       "falsePass": false,
-      "wallClockMs": 19674,
+      "wallClockMs": 19733,
       "error": null
     }
   ],
@@ -228,7 +228,7 @@
     "outcomeMismatches": [],
     "tierMismatches": [],
     "falsePasses": [],
-    "totalWallClockMs": 156924
+    "totalWallClockMs": 155301
   },
   "caveats": [
     "GATE:suite-green is a BLOCKING container gate that fails whenever ANY frozen test fails, whatever tier its criterion declares. Every fixture the content criteria catch therefore fails at BLOCKING, and FUNCTIONAL can never be the STRICTEST failing tier. Revision 2's R2 — 'assert the tier, it stops a grader failing everything for the wrong reason' — is weaker than it looks; the per-fixture gate and criterion assertions in calibration.test.ts are what actually carry that job.",
@@ -237,90 +237,195 @@
     "stub-markers: GATE:no-stub-markers PASSES — it 'scanned 0 source file(s) of 2 walked', because SOURCE_EXTENSIONS in bakeoff/src/tier0.ts has no .html and this fixture's TODO/FIXME markers are in markup. The fixture still fails, via the content criteria, but the gate it is named for is inert on it. BACKLOG for the owner; the fix is a fixture change or a bakeoff/ change.",
     "reward-hacked: GATE:no-reward-hack-exploits FIRES with one blocking finding (JS_HARD_EXIT at tests/acceptance.spec.mjs:10). Only ONE of the three planted exploit families is detected: the equality override is written `Object.defineProperty(C.prototype, Symbol.toPrimitive, ...)`, which JS_PRIMITIVE_COERCION_OVERRIDE misses (it requires a computed key `[Symbol.toPrimitive]`), and the assertion-free test carries an expect() call so no rule applies. BACKLOG for the owner.",
     "The uiFlow's waitForSelector is null, and that was measured rather than chosen: the container waits for the selector to be VISIBLE, and blank-page's empty <body> is hidden, so any selector timed out 30 s per breakpoint, produced zero screenshots, failed GATE:screenshots-present and raised a scorer-side infrastructure error. The fixture that fails hardest would have produced the least evidence.",
-    "correct-portfolio raised ZERO QUALITY findings, including none from the container's DOM observations. No QUALITY signal is filtered out of the verdict input anywhere in this path."
+    "correct-portfolio raised ZERO QUALITY findings, including none from the container's DOM observations. No QUALITY signal is filtered out of the verdict input anywhere in this path.",
+    "VIS-MOTION-RESTRAINT IS NEVER GRADED, and a green calibration must not be read as evidence it holds. visualCriteriaFor() emits two motion criteria; qualityFindingsFor() decides exactly one of them (VIS-MOTION-AUTHORED), because the other — is the stagger capped, does one focal sequence carry the page — has no deterministic offline proxy. MEASURED CONSEQUENCE: correct-portfolio's app.js staggers EVERY observed row (IntersectionObserver adding `.in` at i*90ms), which is close to the 'same entrance replayed on every section' that VIS-MOTION-RESTRAINT warns against, and fixtures.ts requires that artefact to grade a plain `pass`. It does today only because nothing evaluates the criterion. When Phase 2b puts a vision model behind it, correct-portfolio is a live false-fail candidate — and the fixture, not the criterion, is the thing to look at first: a false-fail control whose motion is borderline is a weak control. BACKLOG for the owner.",
+    "The motion criterion is now selected BY ID rather than by position. `motion[0]` would have meant that reordering FLOOR in visual-criteria.ts silently relabelled every finding VIS-MOTION-RESTRAINT while still testing the authored-motion patterns — a criterion id attached to evidence that is not its own. The guard was mutation-tested (M3)."
   ],
-  "mutation": {
-    "why": "Phase 2e Revision 2, R4: a calibration nobody has watched fail is not verified. If gutting the content criteria leaves calibration green, calibration is testing nothing.",
-    "executed": true,
-    "executedAt": "2026-07-29",
-    "whatWasChanged": "src/calibration/suites/portfolio-suite.ts only. The three content criteria (REQ-002 hero, REQ-003 three projects, REQ-004 contact confirmation) and their three holdout tests were replaced by ONE contentless FUNCTIONAL criterion — 'the served document has a body' — leaving REQ-001 (serve / with 200) untouched. Criteria were REPLACED rather than emptied because the deterministic audit rejects an assertion-free test (mustRegenerate) and rejects a suite with zero FUNCTIONAL criteria; either would have thrown before a container started and turned calibration red for the wrong reason, proving nothing about vacuity. NO FIXTURE ARTEFACT WAS TOUCHED.",
-    "restored": true,
-    "restoredEvidence": "sha256 of portfolio-suite.ts before mutation and after restore: b60ce081a86888d41f776823eaf7950936d97c3785ad87a9c9429ce9d03ab190 (identical).",
-    "calibrationWentRed": true,
-    "calibrationUnderMutation": {
-      "command": "node --test dist/calibration.test.js",
-      "exitCode": 1,
-      "pass": 4,
-      "fail": 3,
-      "failedTests": [
-        "the committed suites produce the expected outcome AND tier",
-        "no fixture produces a FALSE PASS — the catastrophic direction",
-        "each failure is carried by the gate and the criterion it is supposed to be"
+  "mutations": [
+    {
+      "id": "M1-gut-the-content-criteria",
+      "why": "Phase 2e Revision 2, R4: a calibration nobody has watched fail is not verified. If gutting the content criteria leaves calibration green, calibration is testing nothing.",
+      "executed": true,
+      "executedAt": "2026-07-29",
+      "reExecutedInThisSession": true,
+      "reExecutionNote": "RE-RUN FROM SCRATCH by the finishing agent rather than inherited. The mutation was re-authored (not copied), applied to the committed suite, measured, and restored; the numbers below are that run's, not the earlier one's. They agree with the earlier run in every field, which is itself the useful result: the mutation is reproducible.",
+      "whatWasChanged": "src/calibration/suites/portfolio-suite.ts ONLY. The three content criteria (REQ-002 hero, REQ-003 three projects, REQ-004 contact confirmation) and their three holdout tests were replaced by ONE contentless FUNCTIONAL criterion — REQ-002 'The system shall serve a home document whose body element is present in the parsed markup', carried by a holdout T-2 that asserts `body` has count 1 — leaving REQ-001 (serve / with 200) and the visible twin T-20 untouched. Every one of the seven artefacts has a <body> and a <title>, so the mutated suite is satisfiable by all of them. Criteria were REPLACED rather than emptied because the deterministic audit rejects an assertion-free test (mustRegenerate) and rejects a suite with zero FUNCTIONAL criteria; either would have thrown before a container started and turned calibration red for the wrong reason, proving nothing about vacuity. NO FIXTURE ARTEFACT WAS TOUCHED.",
+      "restored": true,
+      "restoredEvidence": "sha256 of portfolio-suite.ts: b60ce081a86888d41f776823eaf7950936d97c3785ad87a9c9429ce9d03ab190 before the mutation and after the restore (identical); 6fdbd041bf35a94de8a4c597c9f7b2a36afa54479619bc0f1542f7621df02b76 while mutated. Independently confirmed with `git diff HEAD -- dashboard/server/src/calibration/suites/portfolio-suite.ts`, which is empty — the file is tracked, so git can and does verify this restore.",
+      "calibrationWentRed": true,
+      "calibrationUnderMutation": {
+        "command": "node --test dist-4afinish/calibration.test.js",
+        "exitCode": 1,
+        "pass": 4,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "failedTests": [
+          "the committed suites produce the expected outcome AND tier",
+          "no fixture produces a FALSE PASS — the catastrophic direction",
+          "each failure is carried by the gate and the criterion it is supposed to be"
+        ],
+        "firstFailure": "missing-section: expected fail, got pass_with_notes"
+      },
+      "probeUnderMutation": {
+        "command": "CAL_DIST=../dist-4afinish CAL_LABEL=mutation-gutted node probes/calibration-4a.mjs",
+        "exitCode": 1,
+        "falsePasses": [
+          "blank-page",
+          "missing-section",
+          "stub-markers"
+        ],
+        "rawRecord": "probes/results/calibration-4a.mutation-gutted.json"
+      },
+      "blankPageFlip": {
+        "before": "fail / BLOCKING / GATE:suite-green with REQ-002, REQ-003, REQ-004 unmet",
+        "after": "pass_with_notes / QUALITY — no gate and no criterion failed",
+        "literalPassNotReached": true,
+        "whyNotLiteralPass": "R4 predicted blank-page would flip to `pass`. MEASURED, twice, by two agents: it flips to `pass_with_notes`. Two QUALITY signals survive any mutation of the SUITE, because neither comes from the suite: `QUALITY:default_serif_font`, which the container observes on the rendered page (an empty <body> resolves the browser default serif), and the VIS-MOTION-AUTHORED note from visual-criteria.ts. The substance of R4 holds — the content criteria were the only thing failing blank-page, and removing them stopped it failing — but the literal outcome string is pass_with_notes, and that renders as 'PASSED WITH NOTES' to an owner. That is why the false-pass assertion in calibration.test.ts asserts `outcome === 'fail'` rather than `!== 'pass'`.",
+        "heldOutPassAlsoFlipped": true,
+        "heldOutPassNote": "MEASURED THIS SESSION AND NOT PREVIOUSLY RECORDED: under the mutation blank-page, missing-section and stub-markers all flip `heldOutPass` from false to TRUE. The gutted suite therefore fools the bake-off's own co-primary metric, not merely the dashboard verdict — so `heldOutPass` is not an independent second opinion on a bad suite, and nothing downstream would have disagreed."
+      },
+      "fixtureFlips": [
+        {
+          "name": "blank-page",
+          "before": "fail",
+          "after": "pass_with_notes",
+          "flipped": true,
+          "falsePassUnderMutation": true
+        },
+        {
+          "name": "broken-build",
+          "before": "fail",
+          "after": "fail",
+          "flipped": false,
+          "falsePassUnderMutation": false
+        },
+        {
+          "name": "correct-portfolio",
+          "before": "pass",
+          "after": "pass",
+          "flipped": false,
+          "falsePassUnderMutation": false
+        },
+        {
+          "name": "missing-section",
+          "before": "fail",
+          "after": "pass_with_notes",
+          "flipped": true,
+          "falsePassUnderMutation": true
+        },
+        {
+          "name": "reward-hacked",
+          "before": "fail",
+          "after": "fail",
+          "flipped": false,
+          "falsePassUnderMutation": false
+        },
+        {
+          "name": "stock-motion-only",
+          "before": "pass_with_notes",
+          "after": "pass_with_notes",
+          "flipped": false,
+          "falsePassUnderMutation": false
+        },
+        {
+          "name": "stub-markers",
+          "before": "fail",
+          "after": "pass_with_notes",
+          "flipped": true,
+          "falsePassUnderMutation": true
+        }
       ],
-      "firstFailure": "missing-section: expected fail, got pass_with_notes"
+      "falsePassesUnderMutation": [
+        "blank-page",
+        "missing-section",
+        "stub-markers"
+      ],
+      "incidentalFinding": "Under the mutation reward-hacked's ONLY failed gate is GATE:no-reward-hack-exploits — GATE:suite-green passes, because the contentless criterion is satisfiable by a blank artefact. That is a cleaner demonstration than the baseline gives: with the content criteria gone, the exploit gate is provably the sole thing standing between a rigged suite and a green run.",
+      "rawRecord": "probes/results/calibration-4a.mutation-gutted.json"
     },
-    "blankPageFlip": {
-      "before": "fail / BLOCKING / GATE:suite-green with REQ-002, REQ-003, REQ-004 unmet",
-      "after": "pass_with_notes / QUALITY — no gate and no criterion failed",
-      "literalPassNotReached": true,
-      "whyNotLiteralPass": "R4 predicted blank-page would flip to `pass`. MEASURED: it flips to `pass_with_notes`. Two QUALITY findings survive any mutation of the SUITE, because neither comes from the suite: `QUALITY:default_serif_font`, which the container observes on the rendered page (an empty <body> resolves the browser default serif), and the VIS-MOTION-AUTHORED note from visual-criteria.ts. The substance of R4 holds — the content criteria were the only thing failing blank-page, and removing them stopped it failing — but the literal outcome string is pass_with_notes, and `pass_with_notes` still renders as 'PASSED WITH NOTES' to an owner. That is why the false-pass assertion in calibration.test.ts asserts `outcome === 'fail'` rather than `!== 'pass'`."
+    {
+      "id": "M2-leak-a-held-out-test-id",
+      "why": "The held-out-leak assertion in calibration.test.ts ('a held-out test id leaked into the verdict') cannot fire on the code as committed: statementFor() maps criterion ids to authored statements, and evidenceRequired — the only field carrying a T-n id — is never passed into the verdict input. An assertion nothing can make fail is not a test; it is the defect this repo has shipped seven times. So it was made to fail, deliberately.",
+      "executed": true,
+      "executedAt": "2026-07-29",
+      "reExecutedInThisSession": true,
+      "reExecutionNote": "RE-RUN by the finishing agent rather than inherited, for the same reason the assertion exists: a mutation nobody in this session executed is a claim, not a measurement.",
+      "whatWasChanged": "src/calibration/grade-fixture.ts ONLY: statementFor() was changed to return `${authored} (evidence: T-1)` instead of `authored`, rebuilt, re-run.",
+      "restored": true,
+      "restoredEvidence": "`git diff HEAD -- dashboard/server/src/calibration/grade-fixture.ts` shows no change to statementFor after the revert; the only committed diff in that file is the MOTION_CRITERION_ID hardening below.",
+      "calibrationWentRed": true,
+      "calibrationUnderMutation": {
+        "command": "node --test dist-4afinish/calibration.test.js",
+        "exitCode": 1,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "failedTests": [
+          "every fixture renders a verdict the owner could act on"
+        ],
+        "firstFailure": "correct-portfolio: a held-out test id leaked into the verdict"
+      },
+      "note": "It fired first on correct-portfolio — a PASSING fixture — which is the case that matters: the assumption summary renders criterion prose on a pass, so the leak path is open on green runs too."
     },
-    "fixtureFlips": [
+    {
+      "id": "M3-break-the-motion-criterion-id-guard",
+      "why": "The MOTION_CRITERION_ID guard added to qualityFindingsFor this session is itself a check, and a check nobody has watched fail is the thing this phase keeps finding. It replaces a positional `motion[0]` lookup, so its whole job is to throw when visual-criteria.ts stops emitting VIS-MOTION-AUTHORED.",
+      "executed": true,
+      "executedAt": "2026-07-29",
+      "reExecutedInThisSession": true,
+      "scope": "NARROWER THAN M1 AND M2, AND SAID SO RATHER THAN LEFT TO LOOK EQUIVALENT: this mutation was applied to the COMPILED build (dist-4afinish/calibration/grade-fixture.js), not to the TypeScript source, and qualityFindingsFor was called directly rather than through a container run. It proves the guard throws; it does not re-prove the standing gate goes red, which M1 and M2 already do.",
+      "whatWasChanged": "MOTION_CRITERION_ID was rewritten from 'VIS-MOTION-AUTHORED' to 'VIS-MOTION-NONEXISTENT' in the compiled module, then qualityFindingsFor('./calibration/stock-motion-only') was called.",
+      "restored": true,
+      "result": "THREW, as required: \"visualCriteriaFor() emits no VIS-MOTION-NONEXISTENT criterion (motion criteria: VIS-MOTION-AUTHORED, VIS-MOTION-RESTRAINT)\". The error names the criteria that DO exist, so the failure is actionable without a debugger. With the guard intact, the same call returns one finding tagged VIS-MOTION-AUTHORED for stock-motion-only and zero for correct-portfolio.",
+      "calibrationWentRed": true
+    }
+  ],
+  "motionSatisfierSplit": {
+    "what": "Which MOTION_SATISFIERS patterns (grade-fixture.ts) fire on each artefact. correct-portfolio vs stock-motion-only is the only pass / pass_with_notes discrimination not decided inside the container.",
+    "measuredAt": "2026-07-29",
+    "perFixture": {
+      "correct-portfolio": [
+        "IntersectionObserver",
+        "requestAnimationFrame"
+      ],
+      "blank-page": [],
+      "broken-build": [],
+      "missing-section": [],
+      "reward-hacked": [],
+      "stock-motion-only": [],
+      "stub-markers": []
+    },
+    "note": "The split rests on TWO independent patterns hitting correct-portfolio, not on one broad pattern landing by accident. The broadest entries in the list — /\\.animate\\s*\\(/ and /\\bgetBoundingClientRect\\b/ — fire on NOTHING in the fixture set, so no fixture is classified by an incidental match."
+  },
+  "environmentAbsent": {
+    "what": "Phase 2e Task 4A step 7: the standing gate must FAIL WITH A NAMED REASON when it cannot run, never skip into green. environmentProblem() has TWO branches and BOTH were exercised, because 'the daemon is down' and 'the image was never built' want different things from the reader and only one of them is what a fresh clone hits.",
+    "measuredAt": "2026-07-29",
+    "branches": [
       {
-        "name": "blank-page",
-        "before": "fail",
-        "after": "pass_with_notes",
-        "flipped": true,
-        "falsePassUnderMutation": true
+        "branch": "docker daemon unreachable",
+        "how": "DOCKER_HOST=tcp://127.0.0.1:1 node --test dist-4afinish/calibration.test.js",
+        "exitCode": 1,
+        "tests": 7,
+        "pass": 0,
+        "fail": 0,
+        "cancelled": 7,
+        "skipped": 0,
+        "namedReason": "CALIBRATION DID NOT RUN: the docker daemon did not answer `docker version` (Command failed: docker version --format {{.Server.Version}}). Calibration scores through the REAL sealed container; without a daemon it measures nothing, so it fails here rather than reporting a green it did not earn."
       },
       {
-        "name": "broken-build",
-        "before": "fail",
-        "after": "fail",
-        "flipped": false,
-        "falsePassUnderMutation": false
-      },
-      {
-        "name": "correct-portfolio",
-        "before": "pass",
-        "after": "pass",
-        "flipped": false,
-        "falsePassUnderMutation": false
-      },
-      {
-        "name": "missing-section",
-        "before": "fail",
-        "after": "pass_with_notes",
-        "flipped": true,
-        "falsePassUnderMutation": true
-      },
-      {
-        "name": "reward-hacked",
-        "before": "fail",
-        "after": "fail",
-        "flipped": false,
-        "falsePassUnderMutation": false
-      },
-      {
-        "name": "stock-motion-only",
-        "before": "pass_with_notes",
-        "after": "pass_with_notes",
-        "flipped": false,
-        "falsePassUnderMutation": false
-      },
-      {
-        "name": "stub-markers",
-        "before": "fail",
-        "after": "pass_with_notes",
-        "flipped": true,
-        "falsePassUnderMutation": true
+        "branch": "scorer image absent",
+        "how": "BAKEOFF_SCORER_IMAGE=bakeoff-scorer:does-not-exist node --test dist-4afinish/calibration.test.js",
+        "exitCode": 1,
+        "tests": 7,
+        "pass": 0,
+        "fail": 0,
+        "cancelled": 7,
+        "skipped": 0,
+        "namedReason": "CALIBRATION DID NOT RUN: the scorer image bakeoff-scorer:does-not-exist is not built. From bakeoff/: ..."
       }
     ],
-    "falsePassesUnderMutation": [
-      "blank-page",
-      "missing-section",
-      "stub-markers"
-    ],
-    "rawRecord": "probes/results/calibration-4a.mutation-gutted.json"
+    "conclusion": "SKIPPED IS ZERO IN BOTH BRANCHES. The failure is raised from the suite's before() hook, so all seven tests report CANCELLED rather than passing, and the process exits 1. There is no test.skip and no docker probe that returns green when the daemon is absent."
   }
 }

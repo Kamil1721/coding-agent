@@ -133,6 +133,22 @@ const MOTION_SATISFIERS: readonly RegExp[] = [
   /\bWeb\s*Animations\b|\.animate\s*\(/,
 ];
 
+/**
+ * The ONE visual criterion this module claims to decide.
+ *
+ * `VIS-MOTION-RESTRAINT` — the other motion criterion — is deliberately NOT
+ * graded here and no finding is ever emitted for it. It asks whether a stagger
+ * is capped and whether one focal sequence carries the page, which no offline
+ * text scan can answer. MEASURED CONSEQUENCE, recorded because a green
+ * calibration would otherwise be misread as evidence it holds:
+ * `correct-portfolio` staggers EVERY observed row (`app.js`: an
+ * IntersectionObserver adding `.in` at `i * 90`ms), which is close to the
+ * "same entrance replayed on every section" that criterion warns against. When
+ * Phase 2b puts a vision model behind it, that fixture is a live false-fail
+ * candidate and the fixture — not the criterion — is the thing to look at first.
+ */
+const MOTION_CRITERION_ID = "VIS-MOTION-AUTHORED";
+
 /** Files whose text can carry motion. HTML counts: inline `<script>` is script. */
 const MOTION_SOURCE_SUFFIXES: readonly string[] = [".js", ".mjs", ".cjs", ".ts", ".html", ".htm"];
 
@@ -179,22 +195,30 @@ function readMotionSources(dir: string): string {
  * is a finding generator rather than a check.
  *
  * IT IS ALSO THE NEGATIVE CONTROL FOR TASK 2. The statement is taken from
- * `visualCriteriaFor`, not rewritten here, and an empty motion set throws. If
- * Task 2 ever returns `[]`, `stock-motion-only` would otherwise grade a clean
- * `pass`, become indistinguishable from `correct-portfolio`, and calibration
- * would stay green with the visual path dead — R3, exactly.
+ * `visualCriteriaFor`, not rewritten here, and a missing motion criterion throws.
+ * If Task 2 ever stops emitting one, `stock-motion-only` would otherwise grade a
+ * clean `pass`, become indistinguishable from `correct-portfolio`, and
+ * calibration would stay green with the visual path dead — R3, exactly.
+ *
+ * SELECTED BY ID, NOT BY POSITION, and that is load-bearing. `visualCriteriaFor`
+ * emits TWO motion criteria — `VIS-MOTION-AUTHORED` and `VIS-MOTION-RESTRAINT` —
+ * and only the first has a deterministic proxy. Taking `motion[0]` would mean
+ * that reordering `FLOOR` in visual-criteria.ts silently relabels every finding
+ * `VIS-MOTION-RESTRAINT` while still testing the authored-motion patterns: a
+ * criterion id attached to evidence that does not belong to it, which is this
+ * repo's signature defect in a smaller font.
  */
 export function qualityFindingsFor(dir: string): readonly string[] {
   const motion = visualCriteriaFor({ lockedMockup: null }).filter((criterion) => criterion.check === "motion");
-  if (motion.length === 0) {
+  const authored = motion.find((criterion) => criterion.id === MOTION_CRITERION_ID);
+  if (authored === undefined) {
     throw new Error(
-      "visualCriteriaFor() returned no motion criterion. With none, pass_with_notes is unreachable and " +
-        "stock-motion-only grades identically to correct-portfolio — calibration would stay green with " +
-        "the visual-criteria path dead (Phase 2e Revision 2, R3).",
+      `visualCriteriaFor() emits no ${MOTION_CRITERION_ID} criterion (motion criteria: ` +
+        `${motion.map((criterion) => criterion.id).join(", ") || "none"}). Without it, pass_with_notes is ` +
+        "unreachable and stock-motion-only grades identically to correct-portfolio — calibration would " +
+        "stay green with the visual-criteria path dead (Phase 2e Revision 2, R3).",
     );
   }
-  const authored = motion[0];
-  if (authored === undefined) return [];
   const text = readMotionSources(dir);
   if (MOTION_SATISFIERS.some((pattern) => pattern.test(text))) return [];
   return [
