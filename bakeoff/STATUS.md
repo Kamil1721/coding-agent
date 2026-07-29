@@ -7,11 +7,18 @@ modules together and running the pipeline end to end.
 D2) and each is proved by execution; section 1 now records what was decided, why,
 and what residual risk each fix leaves. Read it before anything else — one of
 these defects would have presented in the final report as "every model failed".
-The scorer image was rebuilt for both fixes, so its digest moved (it was
-`sha256:c7f5e1a4…` before this session; the last build of this tree resolved to
-`sha256:1c06aa11…`). RE-RESOLVE IT YOURSELF with `docker image inspect
-bakeoff-scorer:1 --format '{{.Id}}'` immediately before the campaign, pin that
-value, and do not rebuild again: the digest is held-constant variable 3.**
+The scorer image was rebuilt for both fixes, so its digest moved. IT HAS MOVED
+AGAIN SINCE: `sha256:c7f5e1a4…` before 2026-07-27, `sha256:1c06aa11…` on
+2026-07-27, and `sha256:bcd01771…` on 2026-07-29 when the QUALITY-gate fix landed
+in `scorer-container.ts` / `scorer-protocol.ts`. **Every digest written into this
+file is a dated record of what ran, never a statement about what is installed
+now — including the ones below, which still say `1c06aa11…` because that is the
+image those measurements were taken on.** The dated chain, and what each move
+means for the calibration records, is in `dashboard/STATUS.md` §1.3.
+RE-RESOLVE IT YOURSELF with `docker image inspect bakeoff-scorer:1 --format
+'{{.Id}}'` immediately before the campaign, pin that value, and do not rebuild
+again: the digest is held-constant variable 3, and score records taken either
+side of a move are not comparable with each other.**
 
 Nothing in this file is aspirational. Where something is untested, it says so.
 

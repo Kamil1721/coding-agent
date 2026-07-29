@@ -189,6 +189,12 @@ running against stale code.
 
 ### 1.2 The bake-off dry run is GREEN — 24 checks, 0 failures
 
+**Run 2026-07-27. The digest inside the transcript below is that day's image and
+is left exactly as the tool printed it** — it is a record of what ran, not a
+claim about what is installed now. The current value and the moves since are in
+§1.3. Editing a number inside a captured transcript to keep it looking current
+would turn evidence into decoration.
+
 `npm run bakeoff -- dry-run`, whole pipeline, real containers. The tail:
 
 ```
@@ -215,12 +221,39 @@ DRY RUN COMPLETE — every stage ran and every check passed.
 including the blank-page negative control (`GATE:boot` FAIL,
 `heldOutPass=false`, `falseFinish=true`).
 
-### 1.3 The scorer image digest is unmoved, and I checked it properly
+### 1.3 The scorer image digest — a dated chain, because it has now moved twice
 
-`docker image inspect bakeoff-scorer:1 --format '{{.Id}}'` resolves to
-**`sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353`** —
-the value recorded in `bakeoff/STATUS.md` §1.1 item 8 and `docker/README.md`
-§2.2. It matches.
+**THE DIGEST IS HELD-CONSTANT VARIABLE 3. Score records taken either side of a
+move are not comparable with each other, and nothing in the record announces
+that on its own — which is why this section is a chain of dated entries rather
+than a single current value. An entry is never overwritten when the digest
+moves; overwriting a measurement record falsifies it, and this repository's
+whole thesis is that records survive.**
+
+Every value below was resolved with `docker image inspect bakeoff-scorer:1
+--format '{{.Id}}'` at the stated date. **Re-resolve it yourself before a
+campaign — never transcribe one of these.** A transcribed digest certifies
+nothing: it proves only that somebody copied a string.
+
+| date | digest | what moved it |
+|---|---|---|
+| before 2026-07-27 | `sha256:c7f5e1a4…` | superseded by the two D1/D2 fixes |
+| 2026-07-27 | `sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353` | the `node --test` second pass and the D2 fix |
+| **2026-07-29** | **`sha256:bcd017714ba73e07d3222fb83dda350081edba88e60abf607d469641a2974874`** | **the QUALITY-gate fix in `scorer-container.ts` / `scorer-protocol.ts` — `GATE:suite-green` now ignores a failing test whose title names only QUALITY criteria** |
+
+**What that means for the calibration records already committed.**
+`dashboard/server/probes/results/calibration-4b.json` records
+`scorerImage.id = sha256:1c06aa11…`, so the authoring-calibration matrix in §1.11
+was measured on the PRE-fix image and **cannot be compared line-for-line with any
+run taken after 2026-07-29**. The §1.10 scoring-path calibration has the same
+boundary. Neither record is wrong; both are dated, and the date is the point.
+
+#### The 2026-07-27 entry, as originally written and still true of that build
+
+`docker image inspect bakeoff-scorer:1 --format '{{.Id}}'` resolved to
+`sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353` — the
+value recorded in `bakeoff/STATUS.md` §1.1 item 8 and `docker/README.md` §2.2.
+It matched.
 
 Stronger than that record currently claims, and it is mine because I ran it:
 
@@ -243,6 +276,15 @@ I made **no edit to `bakeoff/src`**. Confirmed two ways: `find src -name '*.ts'
 the session produced a `dist/` whose every emitted `.js` hashes identically to
 the snapshot taken before I started. The nine newer files above therefore belong
 to the prior module agents, and the image digest is unmoved by anything I did.
+
+**That last sentence is true of the 2026-07-27 session and false of the one
+after it.** On 2026-07-29 `bakeoff/src/scorer-container.ts` and
+`scorer-protocol.ts` were edited deliberately, with the owner's approval, to stop
+a QUALITY-only test failure gating the run through `GATE:suite-green`. The image
+was rebuilt and the digest moved to the 2026-07-29 row above. The fix was proved
+by a probe written BEFORE it and run against the OLD image — 28/31 with the three
+reds being exactly the defect, 31/31 after, controls green in both directions —
+and `scorer-modes.e2e.mjs` stayed 29/29 across the change.
 
 ### 1.4 The server binds 127.0.0.1 and REFUSES everything else
 
@@ -757,10 +799,27 @@ REQ-009  QUALITY     no horizontal overflow at 375px, the name stays in the view
 Four criteria the spec seat wrote from prose it had never seen an artefact for
 separate the killer fixture from the control.
 
-**Read that narrowly, because the verdict did not discriminate at all.** All
-seven fixtures graded `fail` at `BLOCKING`. The thing the owner actually reads
-was **identical for all seven inputs**, correct artefact included. Split the
-twelve authored criteria by how much signal each carried:
+**Read that narrowly, because the verdict did not discriminate where it counts.**
+All seven fixtures graded `fail` at `BLOCKING`.
+
+> **CORRECTION, 2026-07-29.** This paragraph originally said the page the owner
+> reads was "identical for all seven inputs". **That is wrong, and it was wrong
+> when written — it was inferred from the outcome column rather than read off the
+> pages.** The seven rendered verdicts are on disk under
+> `dashboard/results/calibration-4b/<stamp>/run/*.verdict.md` and all seven are
+> byte-different: `blank-page` names five unmet requirements and `correct-portfolio`
+> names three, with different summary lines and different bodies. What is
+> identical is the **headline and the outcome** — every one says `DID NOT PASS`
+> at `BLOCKING` — which is the part the owner reads first and the part that
+> decides whether a fix loop fires. The body already discriminates. Stating it as
+> total made the defect sound larger and, worse, pointed the fix at the wrong
+> module: the page does not need to be taught to discriminate, it needs to stop
+> counting a roll-up gate as a requirement. See the `GATE:suite-green` finding
+> below, which is the actual mechanism. The correction is recorded rather than
+> silently edited because a claim this file got wrong by not looking is exactly
+> the failure mode §6 exists to count.
+
+Split the twelve authored criteria by how much signal each carried:
 
 ```
  4 of 12   REQ-001, 004, 008, 009   fail on blank-page, pass on correct-portfolio  -> DISCRIMINATE
@@ -842,7 +901,38 @@ grader defect and half fixture defect, and nobody downstream can tell which.
 fixture grading wrong is a grader defect and that editing an artefact to move a
 result defeats the point of having one. Nothing here was loosened.
 
-**Two defects this measured that no earlier run could have:**
+**Three defects this measured that no earlier run could have:**
+
+- **The verdict page renders a tier-0 ROLL-UP GATE as an owner-facing
+  requirement, with fabricated provenance.** Found 2026-07-29 by reading the
+  rendered pages rather than the matrix. The first entry under *"These are the
+  things you asked for that are not there"* on the CORRECT portfolio is:
+
+  ```
+  - GATE:suite-green
+    - INFERRED, not something you wrote — the grader added this — nothing you
+      wrote appears in it. It is the grader's guess about what your ticket
+      implies, and the distinctive words your ticket gave it were: portfolio,
+      ada, lovelace, hero, name, project, section, listing (+8 more).
+  ```
+
+  Three defects in one entry. **(a)** A machine id renders where a sentence
+  belongs. **(b)** `spec-assumptions.ts` ran its ticket-overlap heuristic over the
+  string `"GATE:suite-green"`, found no overlap, and emitted prose designed to
+  explain an inferred *acceptance criterion*. A fixed, always-on infrastructure
+  check is not an inference about the ticket; the provenance machinery should
+  never have been pointed at it. **(c)** `GATE:suite-green` is a CATCH-ALL that
+  fails whenever any frozen test fails, so on `correct-portfolio` the *"1
+  BLOCKING"* in the summary line **is the same fact as the "2 FUNCTIONAL" listed
+  underneath it**, counted a second time at a stricter tier. That is the whole of
+  why `failingTier` returns `BLOCKING` for all seven fixtures and discriminates
+  nothing, and why the headline cannot tell a correct portfolio from a blank
+  page. It is one defect wearing two backlog numbers.
+
+  **Tier-0 gate IDS are not held out** — the complete list is a public constant in
+  `bakeoff/src/scorer-protocol.ts` — so naming *which* gate failed is inside the
+  boundary and is exactly the discrimination the page lacks. Only `detail` and
+  `evidenceRef` carry test titles, and those stay unrendered.
 
 - **A QUALITY criterion authored into a frozen suite blocks the run.** Five of
   the twelve (REQ-008…REQ-012) are QUALITY, and every one of their failures
@@ -1370,7 +1460,12 @@ Recorded as their word. Where it matters, it is worth re-running yourself.
    identical context, and the digest recorded in every score certifies nothing.
 4. **Re-resolve and pin the image digest** after your last edit to `bakeoff/src`
    — any source edit moves it, because stage 1 of the Dockerfile compiles `src/`.
-   Today it is `sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353`.
+   **Resolve it, do not read it from here.** `docker image inspect
+   bakeoff-scorer:1 --format '{{.Id}}'`. It has moved twice already and §1.3
+   carries the dated chain; a digest copied out of a document proves only that
+   somebody copied a string. If the value you resolve is not the one in §1.3's
+   last row, something rebuilt the image and every score record on the other side
+   of that rebuild belongs to a different held-constant world.
 5. **Read §0.** Decide whether a `heldOutPass` from this tool means what you want
    it to mean, particularly on the Codex path where the read boundary is absent.
    Any `heldOutPass` in your existing data that predates 2026-07-28 is
@@ -1401,12 +1496,12 @@ Recorded as their word. Where it matters, it is worth re-running yourself.
 
 ---
 
-## 6. The defect this repo keeps shipping — NINE instances, and counting
+## 6. The defect this repo keeps shipping — TEN instances, and counting
 
 **New 2026-07-29.** One shape accounts for every false green this project has
 produced: **a check that can only observe success.** It is worth the space
-because the next author will not be caught by the nine below — they will be
-caught by the tenth, and the only defence is knowing the shape.
+because the next author will not be caught by the ten below — they will be
+caught by the eleventh, and the only defence is knowing the shape.
 
 **Instances 8 and 9 were added the same day the table was written, by an
 adversarial pass over the phase that wrote it.** That is the most useful fact in
@@ -1425,6 +1520,7 @@ running the mutation is.
 | 7 | **A test pinning `AgentBounds.effort`** | It asserted a field that was `null` for all 26 agents, whose only reader was a conditional spread into `AgentDefinition.effort` — a route probe I measured does not bind for any name this run can delegate to. Green forever, over a mechanism that does nothing. Deleted 2026-07-29 with the route. |
 | 8 | **The calibration FALSE-PASS test** — `calibration.test.ts`, "no fixture produces a FALSE PASS" | It looped `MUST_FAIL` asserting `outcome === "fail"`. Every `MUST_FAIL` fixture has `expected: "fail"`, which the test ABOVE it already asserts for every fixture — so it was **logically implied and could not fail unless that one already had**. Emptying `MUST_FAIL` (`.slice(0, 0)`, fixtures untouched) left the whole gate **green at 7/7, exit 0**. It survived an adversarial pass of 28 mutations in which 26 went red. Worse: `fixtures.ts` claimed in its header that the false-pass direction was asserted "SEPARATELY and more loudly than overall accuracy" — **a false claim sitting inside the file that documents this very defect.** Closed 2026-07-29: the test now asserts its own derivation and `heldOutPass === false`; re-run under the same mutation it fails ALONE, 1 of 7. **Both new clauses were mutated separately** — M4 empties `MUST_FAIL`, M5 hardcodes `heldOutPass: true` — because a fix proved by one mutation leaves the other clause exactly as unproven as the thing being fixed. |
 | 9 | **Two held-out-leak assertions in `run-report.test.ts`** | `assert.doesNotMatch(verdict, HELD_OUT_TITLE)` and the `holdout test T-2` twin, over `verdict.md`. That run never reaches the gate, so the file is the **no-verdict page, which prints no criterion prose at all** — there is nothing for a criterion-borne leak to ride in on. MEASURED: rendering that page from criteria whose statements carried both markers gives 807 bytes containing neither; the same criteria marked scored give 1879 bytes containing both. The `forAssumptions` blanking of `evidenceRequired` is the same shape — passing the field through leaves all ten tests green, because `ApiCriterion` **has no such field**. Milder than the others and said so: the boundary IS proven, by the `assumptions.md` twins (red under a `#recordCriteria` mutation) and by `verdict.test.ts` against `detail`/`evidenceRef`. Relabelled at the assertion site 2026-07-29, not deleted — they go live the day the run reaches the gate. |
+| 10 | **The reduced-motion specs written to PREVENT instance ten** — `dashboard/tests/canvas-edges.browser.spec.ts` | They declared `test.use({ reducedMotion: "reduce" })`. **Playwright 1.62 dropped `reducedMotion` as a top-level fixture; it belongs inside `contextOptions`.** The bare key is accepted at runtime and **emulates nothing**, so every spec below it ran the browser in its DEFAULT motion state while asserting the reduced-motion rule — a suite that would have gone green whether or not the rule existed. Caught by `npm run typecheck`, not by the tests, and caught *inside the file written to keep the canvas honest about motion*. Fixed at `canvas-edges.browser.spec.ts:154`; the paired negative control at :122 proves the dash disappears only under emulation. **The lesson is the flag's, not the author's: a runtime that silently accepts an option it no longer honours turns a real check into decoration with no error anywhere.** |
 
 Instances 2, 3, 6 and 7 share a sharper sub-shape worth naming on its own: **the
 assertion and the production path were never connected.** A test that calls a
@@ -1438,12 +1534,21 @@ delete the layer, watch the boundary fail, put it back. Every 2026-07-29 claim
 in §0 carries one; the older EXECUTED rows mostly do not, and that is a real
 difference in strength between them.
 
-**Nine is a running tally, not a final count.** Two docblocks lag it by
+**Ten is a running tally, not a final count.** Two docblocks lag it by
 construction, and are left rather than swept so the drift stays visible:
 `claude-builder.test.ts:1753` says "six times" (written before instance 7), and
 `calibration.test.ts:19` says "five times" of the narrower *skipped-and-reported-
-green* sub-shape, which is its own count and not this one. If you find a tenth,
-increment it here and say what it could not see.
+green* sub-shape, which is its own count and not this one. If you find an
+eleventh, increment it here and say what it could not see.
+
+**Instance 10 adds the one thing the other nine could not show.** Every earlier
+instance was a check whose author had written it wrong. Instance 10 was written
+CORRECTLY against the API the author believed existed, and the runtime silently
+accepted an option it no longer honoured. **No test failed, no warning printed,
+and only the type-checker knew.** So the rule needs a second half: run the
+mutation, *and* verify the emulation you asked for actually took effect —
+because a dependency can turn a live check into decoration between one minor
+version and the next without touching your code at all.
 
 **And the thing instances 8 and 9 add to the rule:** it is not enough for a check
 to be capable of failing in principle. Both of them WERE capable of failing —
