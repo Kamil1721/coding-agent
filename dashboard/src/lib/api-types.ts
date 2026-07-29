@@ -90,6 +90,29 @@ export interface Screenshot {
   readonly capturedAt: string;
 }
 
+/**
+ * The DESIGN lane's lock — the server's `ApiDesignLock`, mirrored by hand.
+ *
+ * NOTHING BUT `contract-parity.test.ts` COMPARES THIS WITH THE SERVER. The two
+ * packages are separate TypeScript programs, so a field that exists on the
+ * server and not here compiles clean on both sides, is serialised, arrives, and
+ * never renders. That test reads this file as text and asserts every field
+ * below by name; if you change one, change it there in the same commit.
+ *
+ * `mockups[].path` is an ABSOLUTE HOST PATH, like `screenshots[].path` — a
+ * browser cannot open it. `src/lib/screenshots.ts` turns it into a URL on
+ * `GET /api/runs/:id/screenshots/:file`, which is the route these images are
+ * served by (spec §17.1: no new image route exists for this).
+ */
+export interface DesignLockState {
+  /** The run is parked RIGHT NOW waiting for a mockup to be chosen. */
+  readonly awaiting: boolean;
+  readonly mockups: readonly Screenshot[];
+  readonly locked: string | null;
+  readonly lockedBy: "owner" | "ui-designer" | "fallback" | null;
+  readonly reason: string | null;
+}
+
 export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: RunPhase;
@@ -123,6 +146,16 @@ export interface RunDetail extends RunSummary {
    * never "written but missing".
    */
   readonly verdictPath: string;
+  /**
+   * The DESIGN lane's lock, or `null` when this run has no DESIGN lane.
+   *
+   * THE NULL IS LOAD-BEARING AND IS NOT THE SAME AS AN EMPTY LOCK. `null` means
+   * "no DESIGN lane on this run"; `{awaiting: false, locked: null}` means "the
+   * lane ran and produced nothing to lock" — degraded, or failed. Render
+   * different things for them; a run whose lane silently produced no mockups is
+   * the case the whole lane's reporting exists to make visible.
+   */
+  readonly designLock: DesignLockState | null;
 }
 
 export interface HealthState {
@@ -135,6 +168,15 @@ export interface CreateRunRequest {
   readonly ticketText: string;
   readonly modelId: string;
   readonly deploy?: boolean;
+  /**
+   * Who picks the mockup: the owner (`"ask"`) or `ui-designer` (`"auto"`).
+   *
+   * OPTIONAL HERE, REQUIRED-BUT-NULLABLE ON THE SERVER, the same asymmetry
+   * `deploy` already has: a caller omits what it has no opinion about, and the
+   * wire carries the absence. `api.ts` fills in `"auto"` for every dashboard
+   * submission — read the comment there before removing it.
+   */
+  readonly designLock?: "auto" | "ask" | null;
 }
 
 export interface CreateRunResponse {

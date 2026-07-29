@@ -11,13 +11,16 @@
  */
 
 import { strict as assert } from "node:assert";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type {
+  ApiDesignLock,
+  ApiErrorResponse,
+  CreateRunResponse,
   GraphState,
   ModelOption,
   RunDetail,
@@ -30,10 +33,14 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import type { StoredEvent } from "./db.js";
-import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
+import { DESIGN_MOCKUP_LABEL, writeDesignLock } from "./design-lock.js";
+import type { DesignLockRecord } from "./design-lock.js";
+import type { DesignLockedBy } from "./design-manifest.js";
+import { LOOPBACK_HOST, createDashboardServer, designLockInteractive } from "./http.js";
 import type { RunController } from "./http.js";
 import { CODEX_DEFAULT_MODEL_ID, ModelCatalog } from "./models.js";
-import { ensureDirs, resolvePaths } from "./paths.js";
+import type { DashboardPaths } from "./paths.js";
+import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
 
 const FAKE_MODELS: readonly ModelInfo[] = [
   {
@@ -47,11 +54,17 @@ const FAKE_MODELS: readonly ModelInfo[] = [
   { value: "haiku", displayName: "Haiku", description: "", supportsEffort: false },
 ];
 
+interface ResumeCall {
+  readonly runId: string;
+  readonly chosenMockup: string | null;
+}
+
 interface Harness {
   readonly base: string;
   readonly store: RunStore;
   readonly bus: RunEventBus;
-  readonly calls: { pump: number; cancelled: string[]; resumed: string[] };
+  readonly paths: DashboardPaths;
+  readonly calls: { pump: number; cancelled: string[]; resumed: ResumeCall[] };
   close(): Promise<void>;
 }
 
@@ -79,7 +92,7 @@ async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
   const bus = new RunEventBus(store);
   const auth = new AuthProbe({ claudeBin, codexBin, env: process.env });
   const catalog = new ModelCatalog(auth, {}, async () => FAKE_MODELS);
-  const calls = { pump: 0, cancelled: [] as string[], resumed: [] as string[] };
+  const calls = { pump: 0, cancelled: [] as string[], resumed: [] as ResumeCall[] };
   const orchestrator: RunController = {
     pump: () => {
       calls.pump += 1;
@@ -89,9 +102,23 @@ async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
       store.updateRun(runId, { status: "cancelled", endedAt: new Date().toISOString() });
       return true;
     },
-    resume: (runId) => {
-      calls.resumed.push(runId);
-      return false;
+    /**
+     * A FIXTURE, NOT THE THING UNDER TEST.
+     *
+     * Whether a chosen path is one of the run's mockups is decided inside the
+     * real `Orchestrator` — it holds the manifest and the lock. This stub mimics
+     * that decision only so the ROUTER's two jobs can be observed: forwarding
+     * the parsed `chosenMockup`, and turning a `false` into a 409 that names the
+     * path. Nothing below may be read as proof that the SERVER validates the
+     * path; the check that the value crossed the seam at all is
+     * `calls.resumed`.
+     */
+    resume: (runId, chosenMockup = null) => {
+      calls.resumed.push({ runId, chosenMockup: chosenMockup ?? null });
+      const row = store.getRun(runId);
+      if (row === null || row.status !== "awaiting_input") return false;
+      if (chosenMockup === null || chosenMockup === undefined) return true;
+      return store.listScreenshots(runId).some((shot) => shot.path === chosenMockup);
     },
   };
 
@@ -103,6 +130,7 @@ async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
     base: `http://${LOOPBACK_HOST}:${String(address.port)}`,
     store,
     bus,
+    paths,
     calls,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -723,4 +751,397 @@ test("GRAPH: ?lastEventId= resumes, because EventSource cannot send a header", a
   } finally {
     await harness.close();
   }
+});
+
+/* -------------------------------------------------------------------------
+ * The DESIGN lock on the HTTP contract — spec §17, Phase 2b Task 11
+ *
+ * WHAT THESE TESTS CAN AND CANNOT SEE. The orchestrator is stubbed here (see
+ * the file header), so nothing below runs a DESIGN lane. What is under test is
+ * the ROUTER: the `designLock` value it accepts on `POST /api/runs`, the
+ * `{chosenMockup}` it parses off `POST /api/runs/:id/resume` and forwards, and
+ * the projection `toDetail` builds from `results/design-lock.json` plus the
+ * run's screenshot rows. The lane that writes those two artefacts is tested in
+ * `orchestrator.test.ts`.
+ * ---------------------------------------------------------------------- */
+
+const MODEL = "opus[1m]";
+
+/** A real 1x1 PNG. The screenshots route types by extension, but bytes are cheap. */
+const ONE_PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+interface JsonResponse {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+async function postJson(harness: Harness, path: string, body: unknown): Promise<JsonResponse> {
+  const response = await fetch(`${harness.base}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const text = await response.text();
+  return { status: response.status, body: text.length > 0 ? JSON.parse(text) : null };
+}
+
+async function detailOf(harness: Harness, runId: string): Promise<RunDetail> {
+  const response = await fetch(`${harness.base}/api/runs/${runId}`);
+  assert.equal(response.status, 200);
+  return (await response.json()) as RunDetail;
+}
+
+async function newRun(
+  harness: Harness,
+  ticketText: string,
+  extra: Record<string, unknown> = {},
+): Promise<string> {
+  const created = await postJson(harness, "/api/runs", { ticketText, modelId: MODEL, ...extra });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  return (created.body as CreateRunResponse).runId;
+}
+
+/**
+ * A run whose DESIGN lane has already happened, assembled from OUTSIDE the
+ * orchestrator.
+ *
+ * The real `Orchestrator` writes `results/design-lock.json` and registers each
+ * mockup through `store.addScreenshot`; it is stubbed here for the reason the
+ * file header gives. So this writes exactly the two artefacts `toDetail` reads,
+ * plus the PNGs on disk that `GET /api/runs/:id/screenshots/:file` serves. It
+ * also registers ONE screenshot that is NOT a mockup, so that the label filter
+ * has something to exclude — otherwise `mockups === screenshots` would satisfy
+ * a filter that does nothing.
+ */
+async function designRun(
+  harness: Harness,
+  record: DesignLockRecord,
+  mockupCount: number,
+): Promise<{ runId: string; mockups: readonly string[] }> {
+  const runId = await newRun(harness, "a portfolio page");
+  const shotDir = join(harness.paths.results, "screenshots", runId);
+  mkdirSync(shotDir, { recursive: true });
+
+  const mockups: string[] = [];
+  for (let index = 1; index <= mockupCount; index += 1) {
+    const path = join(shotDir, `0${String(index)}-section.png`);
+    writeFileSync(path, ONE_PIXEL_PNG);
+    harness.store.addScreenshot(runId, {
+      path,
+      label: `${DESIGN_MOCKUP_LABEL}section ${String(index)}`,
+      capturedAt: new Date().toISOString(),
+    });
+    mockups.push(path);
+  }
+  const notAMockup = join(shotDir, "built-page.png");
+  writeFileSync(notAMockup, ONE_PIXEL_PNG);
+  harness.store.addScreenshot(runId, {
+    path: notAMockup,
+    label: "the built page",
+    capturedAt: new Date().toISOString(),
+  });
+
+  const runPaths = runPathsFor(harness.paths, runId);
+  ensureRunDirs(runPaths);
+  writeDesignLock(runPaths.results, record);
+  if (record.awaiting) harness.store.updateRun(runId, { status: "awaiting_input" });
+  return { runId, mockups };
+}
+
+const PARKED_AT = "2026-07-29T10:00:00.000Z";
+
+function parkedRecord(): DesignLockRecord {
+  return { awaiting: true, parkedAt: PARKED_AT, locked: null, lockedBy: null, reason: null };
+}
+
+test("POST /api/runs accepts designLock and refuses anything that is not auto, ask or absent", async () => {
+  const harness = await startHarness(true);
+  try {
+    for (const value of ["ask", "auto", null]) {
+      const created = await postJson(harness, "/api/runs", {
+        ticketText: "a portfolio page",
+        modelId: MODEL,
+        designLock: value,
+      });
+      assert.equal(created.status, 201, `designLock: ${JSON.stringify(value)} must be accepted`);
+    }
+    const absent = await postJson(harness, "/api/runs", { ticketText: "a portfolio page", modelId: MODEL });
+    assert.equal(absent.status, 201, "absent is not an error — §17.3 rule 2 defaults it");
+
+    for (const value of [7, "sometimes", true, {}, []]) {
+      const refused = await postJson(harness, "/api/runs", {
+        ticketText: "a portfolio page",
+        modelId: MODEL,
+        designLock: value,
+      });
+      assert.equal(refused.status, 400, `designLock: ${JSON.stringify(value)} must not be accepted`);
+      assert.equal((refused.body as ApiErrorResponse).error, "invalid_body");
+      assert.match(
+        String((refused.body as ApiErrorResponse).message),
+        /designLock/,
+        "an error that does not name the field is not actionable",
+      );
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("RunDetail.designLock is null for a run that never had a DESIGN lane", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = await newRun(harness, "a cli that renames files");
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.designLock, null);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a lane that RAN and locked nothing is {awaiting:false, locked:null} — which null could not say", async () => {
+  // THE REASON THIS IS ONE NULLABLE FIELD RATHER THAN FOUR FLAT ONES.
+  //
+  // `null` means "this run has no DESIGN lane". `{awaiting:false, locked:null}`
+  // means "the lane ran and produced nothing to lock" — degraded, or failed.
+  // Those are different facts, the UI says different things about them, and a
+  // flat `awaiting: boolean` + `locked: string | null` pair could not tell them
+  // apart: both would read as `false, null`.
+  const harness = await startHarness(true);
+  try {
+    const { runId } = await designRun(
+      harness,
+      { awaiting: false, parkedAt: PARKED_AT, locked: null, lockedBy: null, reason: null },
+      0,
+    );
+    const detail = await detailOf(harness, runId);
+    assert.notEqual(detail.designLock, null, "a lane that ran is not a run with no lane");
+    assert.equal(detail.designLock?.awaiting, false);
+    assert.equal(detail.designLock?.locked, null);
+    assert.deepEqual(detail.designLock?.mockups, []);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a PARKED run reports awaiting:true and lists the mockups the owner has to choose between", async () => {
+  const harness = await startHarness(true);
+  try {
+    const { runId, mockups } = await designRun(harness, parkedRecord(), 5);
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.status, "awaiting_input");
+    assert.equal(detail.designLock?.awaiting, true);
+    assert.equal(detail.designLock?.locked, null);
+    assert.deepEqual(
+      detail.designLock?.mockups.map((shot) => shot.path),
+      mockups,
+      "the owner cannot click what the API does not list",
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a locked run carries WHO chose and WHY, not just the path (§17.3 rule 4)", async () => {
+  const harness = await startHarness(true);
+  try {
+    const { runId, mockups } = await designRun(
+      harness,
+      {
+        awaiting: false,
+        parkedAt: PARKED_AT,
+        locked: "",
+        lockedBy: "fallback",
+        reason: "the timeout expired; the first mockup in manifest order was locked automatically",
+      },
+      3,
+    );
+    // The record is rewritten with a path the fixture now knows.
+    writeDesignLock(runPathsFor(harness.paths, runId).results, {
+      awaiting: false,
+      parkedAt: PARKED_AT,
+      locked: mockups[0] ?? "",
+      lockedBy: "fallback",
+      reason: "the timeout expired; the first mockup in manifest order was locked automatically",
+    });
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.designLock?.locked, mockups[0]);
+    assert.equal(detail.designLock?.lockedBy, "fallback");
+    assert.match(String(detail.designLock?.reason), /timeout expired/);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("designLock.mockups is the DESIGN lane's screenshots and not every screenshot", async () => {
+  // The filter is on `ApiScreenshot.label`, and `DESIGN_MOCKUP_LABEL` has ONE
+  // definition (design-lock.ts) which both this test and the orchestrator's
+  // writer import. Typing the string here instead would let the const drift
+  // while every assertion stayed green.
+  const harness = await startHarness(true);
+  try {
+    const { runId, mockups } = await designRun(harness, parkedRecord(), 2);
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.screenshots.length, 3, "the fixture registered a non-mockup screenshot too");
+    assert.equal(detail.designLock?.mockups.length, 2);
+    for (const shot of detail.designLock?.mockups ?? []) {
+      assert.ok(shot.label.startsWith(DESIGN_MOCKUP_LABEL), `${shot.label} is not a mockup`);
+    }
+    assert.deepEqual(detail.designLock?.mockups.map((shot) => shot.path), mockups);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the mockups the API lists are fetchable from the screenshots route", async () => {
+  // §17.1: "The screenshots route already serves images by basename." If the
+  // mockup is not under results/screenshots/<runId>/, the owner sees five
+  // broken cards and nothing anywhere reports an error.
+  const harness = await startHarness(true);
+  try {
+    const { runId } = await designRun(harness, parkedRecord(), 5);
+    const detail = await detailOf(harness, runId);
+    const first = detail.designLock?.mockups[0];
+    assert.ok(first !== undefined, "a parked run with no listed mockup cannot be unparked from the UI");
+    const image = await fetch(
+      `${harness.base}/api/runs/${runId}/screenshots/${basename(first.path)}`,
+    );
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get("content-type"), "image/png");
+    // The BYTES, not just the status line. Also: an unread streamed body keeps
+    // the keep-alive connection open and `server.close()` then waits out
+    // `keepAliveTimeout`, which turned this test into a 63-second one.
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), ONE_PIXEL_PNG);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("costUsd is STILL null on a run whose DESIGN lane spent real money on images", async () => {
+  // The lane spends through a key resolved from ~/.gemini/api_key. That spend
+  // is a CALL COUNT in design-lane.json and it never becomes a dollar figure
+  // here: `costUsd: null` is system-wide for a subscription run.
+  const harness = await startHarness(true);
+  try {
+    const { runId } = await designRun(harness, parkedRecord(), 5);
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.costUsd, null);
+    assert.doesNotMatch(
+      JSON.stringify(detail.designLock),
+      /usd|cost|dollar|price/i,
+      "nothing in the design record may look like money",
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("POST /api/runs/:id/resume still accepts an EMPTY body — the rate-limit path is untouched", async () => {
+  // Every existing client posts nothing at all. Requiring a body would break
+  // resume for rate-limited runs, which is the path this route was built for.
+  const harness = await startHarness(true);
+  try {
+    const { runId } = await designRun(harness, parkedRecord(), 3);
+    const empty = await postJson(harness, `/api/runs/${runId}/resume`, undefined);
+    assert.equal(empty.status, 200);
+    assert.deepEqual(empty.body, { ok: true });
+    assert.deepEqual(
+      harness.calls.resumed,
+      [{ runId, chosenMockup: null }],
+      "an empty body must reach the orchestrator as `null`, not as a missing call",
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("POST /api/runs/:id/resume FORWARDS {chosenMockup} to the orchestrator", async () => {
+  // The router's whole job on this route. A body that parses but is dropped
+  // would leave every test above green and the owner's click doing nothing.
+  const harness = await startHarness(true);
+  try {
+    const { runId, mockups } = await designRun(harness, parkedRecord(), 3);
+    const chosen = mockups[1] ?? "";
+    const resumed = await postJson(harness, `/api/runs/${runId}/resume`, { chosenMockup: chosen });
+    assert.equal(resumed.status, 200);
+    assert.deepEqual(harness.calls.resumed, [{ runId, chosenMockup: chosen }]);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a chosenMockup the run does not own is 409, and a refused choice leaves it parked", async () => {
+  const harness = await startHarness(true);
+  try {
+    const { runId } = await designRun(harness, parkedRecord(), 3);
+    const bad = await postJson(harness, `/api/runs/${runId}/resume`, { chosenMockup: "/etc/passwd" });
+    assert.equal(bad.status, 409);
+    assert.equal((bad.body as ApiErrorResponse).error, "not_resumable");
+    assert.match(
+      String((bad.body as ApiErrorResponse).message),
+      /\/etc\/passwd/,
+      "a refusal that does not name the path it refused is not diagnosable",
+    );
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.status, "awaiting_input", "a refused choice leaves the run parked");
+    assert.equal(detail.designLock?.awaiting, true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("resume refuses a chosenMockup that is not a string, and a body that is not JSON", async () => {
+  const harness = await startHarness(true);
+  try {
+    const { runId } = await designRun(harness, parkedRecord(), 3);
+    const wrongType = await postJson(harness, `/api/runs/${runId}/resume`, { chosenMockup: 7 });
+    assert.equal(wrongType.status, 400);
+    assert.match(String((wrongType.body as ApiErrorResponse).message), /chosenMockup/);
+
+    const notJson = await fetch(`${harness.base}/api/runs/${runId}/resume`, {
+      method: "POST",
+      body: "{not json",
+    });
+    assert.equal(notJson.status, 400);
+    assert.deepEqual(harness.calls.resumed, [], "a body that never parsed must not reach the orchestrator");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("CONTRACT: the wire's lockedBy union names exactly the domain's DesignLockedBy", () => {
+  // api-types.ts is DEPENDENCY-FREE on purpose — the frozen wire contract does
+  // not import domain modules — so `"owner" | "ui-designer" | "fallback"` is
+  // typed out in three places (server api-types, client api-types,
+  // design-manifest). Two of those are joined here, at compile time: each
+  // `Record` demands every member of its key union, and the two assignments
+  // demand mutual assignability, so a value added to or removed from either
+  // side fails to compile rather than drifting.
+  const domain: Record<DesignLockedBy, true> = { owner: true, "ui-designer": true, fallback: true };
+  const wire: Record<NonNullable<ApiDesignLock["lockedBy"]>, true> = domain;
+  const back: Record<DesignLockedBy, true> = wire;
+  assert.deepEqual(Object.keys(back).sort(), ["fallback", "owner", "ui-designer"]);
+});
+
+test("designLockInteractive is §17.3 rule 2's missing definition — and has NO caller yet", () => {
+  // CONCERN 6: "not interactive" is undefined in the spec, so it is defined
+  // narrowly — an explicit `designLock`, or a `Referer` from a loopback page.
+  // Everything else (curl, cron, a script) is non-interactive and therefore
+  // `auto`, because a mis-classified cron request would park forever.
+  //
+  // IT IS DELIBERATELY UNCALLED. Its only consumer is `store.createRun`'s
+  // `interactive` column, which Phase 2b Task 10 adds to db.ts — another wave's
+  // file. Computing it inside `createRun` and throwing the result away would be
+  // worse than not computing it: it would read as wired. See the docblock in
+  // http.ts.
+  assert.equal(designLockInteractive("ask", undefined), true, "an explicit designLock is a deliberate caller");
+  assert.equal(designLockInteractive("auto", undefined), true);
+  assert.equal(designLockInteractive(null, undefined), false, "curl sends no Referer and asks for nothing");
+  assert.equal(designLockInteractive(undefined, undefined), false);
+  assert.equal(designLockInteractive(null, "http://127.0.0.1:4319/runs/run-1"), true);
+  assert.equal(designLockInteractive(null, "http://localhost:4176/"), true);
+  assert.equal(designLockInteractive(null, "https://evil.example.com/"), false);
+  assert.equal(designLockInteractive(null, "not a url"), false, "an unparseable Referer is not a dashboard");
 });

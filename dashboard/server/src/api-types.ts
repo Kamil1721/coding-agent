@@ -90,6 +90,29 @@ export interface ApiScreenshot {
   readonly capturedAt: string;
 }
 
+/**
+ * The DESIGN lane's lock (spec §17), as the UI needs it.
+ *
+ * `mockups` are `ApiScreenshot`s because that is what the run already stores
+ * and what `GET /api/runs/:id/screenshots/:file` already serves — §17.1's "the
+ * screenshots route already serves images by basename" is the whole reason no
+ * new image route exists for this feature.
+ *
+ * `lockedBy` REPEATS A UNION THAT design-manifest.ts ALSO DECLARES, and that is
+ * deliberate: this file imports nothing, because the frozen wire contract must
+ * not drag domain modules into the client's mental model. The join between the
+ * two spellings is a compile-time check in api.test.ts ("CONTRACT: the wire's
+ * lockedBy union names exactly the domain's DesignLockedBy"), not an import.
+ */
+export interface ApiDesignLock {
+  /** The run is parked RIGHT NOW waiting for a mockup to be chosen. */
+  readonly awaiting: boolean;
+  readonly mockups: readonly ApiScreenshot[];
+  readonly locked: string | null;
+  readonly lockedBy: "owner" | "ui-designer" | "fallback" | null;
+  readonly reason: string | null;
+}
+
 export interface RunSummary {
   readonly runId: string;
   readonly ticketTitle: string;
@@ -143,6 +166,18 @@ export interface RunDetail extends RunSummary {
    * false` for a gate that never ran.
    */
   readonly verdictPath: string;
+  /**
+   * The DESIGN lane's lock, or `null` when this run has no DESIGN lane.
+   *
+   * ONE NULLABLE FIELD RATHER THAN FOUR FLAT ONES, AND THE NULL IS LOAD-BEARING.
+   * `null` means "this run has no DESIGN lane at all"; `{awaiting: false,
+   * locked: null, …}` means "the lane ran and produced nothing to lock" — a
+   * degraded lane, or one that failed. Those are different facts, and the UI
+   * says different things about them. A flat pair of `awaiting: boolean` and
+   * `locked: string | null` could not express the difference: both cases would
+   * read as `false, null`.
+   */
+  readonly designLock: ApiDesignLock | null;
 }
 
 /* -------------------------------------------------------------------------
@@ -568,6 +603,16 @@ export interface CreateRunRequest {
   readonly ticketText: string;
   readonly modelId: string;
   readonly deploy: boolean | null;
+  /**
+   * §17.3 rule 2: a cron-submitted run auto-selects its mockup.
+   *
+   * `null` or absent means AUTO for a non-interactive caller — a scheduled run
+   * that parks forever waiting for a click is the exact failure unattended
+   * operation exists to avoid. `designLockInteractive` in http.ts is where
+   * "interactive" is defined, and CONCERN 6 in the Phase 2b plan is why the
+   * failure direction is the one it is.
+   */
+  readonly designLock: "auto" | "ask" | null;
 }
 
 export interface CreateRunResponse {

@@ -204,6 +204,11 @@ export const RUN_DETAIL: RunDetail = {
   previewUrl: null,
   inferredCriteria: 0,
   verdictPath: "",
+  // This fixture's ticket is "Add a test suite to the dashboard client" — a run
+  // with no DESIGN lane, which is exactly what `null` means. `{awaiting: false,
+  // locked: null}` would say something different: that a lane ran and locked
+  // nothing.
+  designLock: null,
 };
 
 /** The same run under a second id, served with a replaying stream. */

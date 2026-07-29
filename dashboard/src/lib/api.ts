@@ -139,7 +139,20 @@ export function createRun(
 ): Promise<CreateRunResponse> {
   return request<CreateRunResponse>(KEY.runs, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      // AUTO UNTIL THE MOCKUP CARDS EXIST, AND THIS LINE IS NOT OPTIONAL.
+      //
+      // The server treats a dashboard submission as interactive, so its lock
+      // policy would be "ask" — and no card UI ships in this phase, so there is
+      // nothing in the app that can choose a mockup. Joined up, every web-UI
+      // ticket submitted from here would park at awaiting_input for the full
+      // DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN and then fallback-lock the first
+      // mockup: worse than either end of the design, produced by two
+      // individually-correct decisions. Delete this in the same commit that
+      // ships the cards, and not before. `contract-parity.test.ts` asserts it.
+      designLock: "auto",
+      ...body,
+    }),
   });
 }
 

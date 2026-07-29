@@ -53,10 +53,11 @@ import type { AuthProbe } from "./auth.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import type { RunRow, RunStore } from "./db.js";
+import { DESIGN_MOCKUP_LABEL, readDesignLock } from "./design-lock.js";
 import type { ModelCatalog } from "./models.js";
 import { describeError } from "./orchestrator.js";
 import type { DashboardPaths } from "./paths.js";
-import { safeSegment } from "./paths.js";
+import { runPathsFor, safeSegment } from "./paths.js";
 import { ticketFromText } from "./ticket.js";
 
 /** The only interface this server will bind. */
@@ -80,7 +81,17 @@ export interface RunController {
   /** Recompute queue positions and start the next run if idle. */
   pump(): void;
   cancel(runId: string): boolean;
-  resume(runId: string): boolean;
+  /**
+   * Continue a stopped run.
+   *
+   * `chosenMockup` is the owner's DESIGN-lock choice (spec §17.1) and is
+   * OPTIONAL, because the route existed first for the rate-limit path and every
+   * client on that path posts no body at all. `false` means "not resumable" —
+   * a finished run, or a chosen path that is not one of this run's mockups. The
+   * router turns that into a 409 and does not distinguish the two, because only
+   * the orchestrator holds the manifest that could.
+   */
+  resume(runId: string, chosenMockup?: string | null): boolean;
 }
 
 export interface HttpDeps {
@@ -125,7 +136,13 @@ function toSummary(row: RunRow): RunSummary {
   };
 }
 
-function toDetail(row: RunRow, store: RunStore): RunDetail {
+function toDetail(row: RunRow, store: RunStore, paths: DashboardPaths): RunDetail {
+  const screenshots = store.listScreenshots(row.runId);
+  // ABSENT MEANS "NO DESIGN LANE", AND THAT IS NOT THE SAME AS AN EMPTY LOCK.
+  // The record is written by the lane itself, so a run that never had one has
+  // no file — and `null` here says exactly that, while a file saying
+  // `{awaiting: false, locked: null}` says the lane ran and locked nothing.
+  const lock = readDesignLock(runPathsFor(paths, row.runId).results);
   return {
     ...toSummary(row),
     ticketText: row.ticketText,
@@ -134,17 +151,71 @@ function toDetail(row: RunRow, store: RunStore): RunDetail {
     tokens: row.tokens,
     // ALWAYS null. A subscription consumes quota and is not billed per token;
     // there is no dollar figure to report and none is invented. See
-    // api-types.ts and claude-common.ts.
+    // api-types.ts and claude-common.ts. The DESIGN lane spends against a
+    // Gemini key and that spend is a CALL COUNT in design-lane.json; it does
+    // not become a dollar figure here or anywhere else.
     costUsd: null,
     rateLimit: { limited: row.rateLimited, retryAfterSec: row.rateLimitRetryAfterSec },
-    screenshots: store.listScreenshots(row.runId),
+    screenshots,
     artifactPath: row.artifactPath,
     previewUrl: row.previewUrl,
     // Both straight off the row, and both mean "nothing recorded yet" at their
     // zero value rather than "unknown". See api-types.ts.
     inferredCriteria: row.inferredCriteria,
     verdictPath: row.verdictPath,
+    designLock:
+      lock === null
+        ? null
+        : {
+            awaiting: lock.awaiting,
+            // Filtered on the label the lane wrote, whose ONE definition is
+            // `DESIGN_MOCKUP_LABEL` in design-lock.ts. A second spelling here
+            // is how the owner's mockup cards quietly become empty.
+            mockups: screenshots.filter((shot) => shot.label.startsWith(DESIGN_MOCKUP_LABEL)),
+            locked: lock.locked,
+            lockedBy: lock.lockedBy,
+            reason: lock.reason,
+          },
   };
+}
+
+/**
+ * Hosts a `Referer` may name for the request to count as coming from the
+ * dashboard's own page. The server binds loopback only (see the file header),
+ * so nothing else can be one.
+ */
+const DASHBOARD_ORIGIN_HOSTS: readonly string[] = [LOOPBACK_HOST, "localhost"];
+
+/**
+ * Is this create-run request INTERACTIVE, in the sense spec §17.3 rule 2 leaves
+ * undefined?
+ *
+ * Rule 2 says a cron run auto-selects, and never says what makes a request a
+ * cron run. Defined narrowly here: a request is interactive when it carries an
+ * explicit `designLock`, or a `Referer` from a loopback page. Everything else —
+ * `curl`, cron, a script — is non-interactive and therefore `auto`. The failure
+ * direction was chosen deliberately: a mis-classified interactive request
+ * auto-selects (a mockup the owner did not pick, recorded as automatic), while
+ * a mis-classified cron request would park forever, which is the failure rule 2
+ * exists to prevent.
+ *
+ * IT HAS NO CALLER YET, AND THAT IS RECORDED RATHER THAN HIDDEN. Its only
+ * consumer is the `interactive` column on `runs`, which Phase 2b Task 10 adds
+ * to `db.ts` along with `design_lock`; that file belongs to another wave and is
+ * not edited here. Calling this from `createRun` and discarding the result
+ * would be worse than not calling it — a computed-and-thrown-away value on the
+ * production path reads as wiring. When the columns land, `createRun` passes
+ * `designLockPolicy(body["designLock"], designLockInteractive(...))` through
+ * `store.createRun`, and this comment goes with it.
+ */
+export function designLockInteractive(requested: unknown, referer: string | undefined): boolean {
+  if (requested === "auto" || requested === "ask") return true;
+  if (referer === undefined || referer.length === 0) return false;
+  try {
+    return DASHBOARD_ORIGIN_HOSTS.includes(new URL(referer).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
@@ -254,7 +325,7 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
 
   // GET /api/runs/:id
   if (segments.length === 3 && method === "GET") {
-    sendJson(response, 200, toDetail(row, deps.store));
+    sendJson(response, 200, toDetail(row, deps.store, deps.paths));
     return;
   }
 
@@ -294,14 +365,41 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
   }
 
   // POST /api/runs/:id/resume
+  //
+  // AN EMPTY BODY STILL RESUMES, byte-identically to before this route learned
+  // about mockups. The route exists for the rate-limit path and every client on
+  // it posts nothing; requiring a body would break resuming a rate-limited run
+  // in order to add a feature that path has no opinion about.
   if (segments.length === 4 && segments[3] === "resume" && method === "POST") {
-    const resumed = deps.orchestrator.resume(runId);
+    let chosenMockup: string | null = null;
+    const text = await readBody(request);
+    if (text.trim().length > 0) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch (error) {
+        sendError(response, 400, "invalid_body", describeError(error), "POST a JSON object, or no body at all.");
+        return;
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        sendError(response, 400, "invalid_body", "the body must be a JSON object", "Or send no body at all.");
+        return;
+      }
+      const chosen = (parsed as Record<string, unknown>)["chosenMockup"];
+      if (chosen !== undefined && chosen !== null && typeof chosen !== "string") {
+        sendError(response, 400, "invalid_body", "chosenMockup must be a string when present", null);
+        return;
+      }
+      chosenMockup = typeof chosen === "string" ? chosen : null;
+    }
+    const resumed: boolean = deps.orchestrator.resume(runId, chosenMockup);
     if (!resumed) {
       sendError(
         response,
         409,
         "not_resumable",
-        `run ${runId} is ${row.status} and cannot be resumed`,
+        `run ${runId} is ${row.status} and cannot be resumed` +
+          (chosenMockup === null ? "" : `, or ${chosenMockup} is not one of its mockups`),
         "A finished run is not resumed: re-running a scored artefact would overwrite a real result " +
           "with a second one taken under different conditions. Submit a new run instead.",
       );
@@ -362,6 +460,7 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
   const ticketText = body["ticketText"];
   const modelId = body["modelId"];
   const deploy = body["deploy"];
+  const designLock = body["designLock"];
 
   if (typeof ticketText !== "string" || ticketText.trim().length === 0) {
     sendError(response, 400, "invalid_ticket", "ticketText must be a non-empty string", null);
@@ -383,6 +482,17 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
   }
   if (deploy !== undefined && typeof deploy !== "boolean") {
     sendError(response, 400, "invalid_body", "deploy must be a boolean when present", null);
+    return;
+  }
+  if (designLock !== undefined && designLock !== null && designLock !== "auto" && designLock !== "ask") {
+    sendError(
+      response,
+      400,
+      "invalid_body",
+      'designLock must be "auto", "ask", null or absent',
+      "Absent means auto for a non-interactive caller (spec §17.3 rule 2): a scheduled run that " +
+        "parks forever waiting for a click is the failure unattended operation exists to avoid.",
+    );
     return;
   }
 
@@ -412,6 +522,14 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
 
   const ticket = ticketFromText(ticketText);
   const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+  // `designLock` IS VALIDATED ABOVE AND NOT YET PERSISTED, stated here rather
+  // than left to be discovered. It belongs in the `design_lock` and
+  // `interactive` columns on `runs`, which Phase 2b Task 10 adds to `db.ts`
+  // through `RUN_MIGRATIONS` — another wave's file, so this route stops at the
+  // seam instead of inventing a second store for one field. Until then a
+  // request that says `"ask"` is accepted and the lane's policy comes from
+  // `designLockPolicy`'s default. The two lines that close it are `designLock:`
+  // and `interactive:` on the input below, fed by `designLockInteractive`.
   deps.store.createRun({
     runId,
     ticketId: ticket.id,
