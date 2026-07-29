@@ -112,6 +112,21 @@ test("RULE 5: the lock record round-trips, and a park's clock is on DISK", () =>
   assert.equal(readDesignLock(mkdtempSync(join(tmpdir(), "design-lock-empty-"))), null);
 });
 
+test("RULE 5: a RESOLVED lock round-trips — the path, the chooser and the reason all survive the disk", () => {
+  // The parked record above is all nulls, so it cannot see a `writeDesignLock`
+  // that drops the three fields that matter. This is the record Task 10 writes
+  // once a lock is applied (`{awaiting: false, parkedAt: attempt.at, locked:
+  // attempt.path, lockedBy: attempt.by, reason: attempt.reason}`), and `locked`
+  // is the gate's input — rule 5 is exactly the claim that it is written down.
+  const dir = mkdtempSync(join(tmpdir(), "design-lock-resolved-"));
+  const record = { awaiting: false, parkedAt: AT, locked: B, lockedBy: "ui-designer", reason: "denser grid" } as const;
+  writeDesignLock(dir, record);
+  assert.deepEqual(readDesignLock(dir), record);
+  assert.equal(readDesignLock(dir)?.locked, B, "the gate's input is the field that must not be dropped");
+  assert.equal(readDesignLock(dir)?.lockedBy, "ui-designer", "RULE 4: who made it, still there after the disk");
+  assert.equal(readDesignLock(dir)?.reason, "denser grid", "RULE 4: and why");
+});
+
 test("RULE 4: when the chooser produced nothing, the fallback is RECORDED AS a fallback", () => {
   // Recording it as "ui-designer" would be a lie about provenance; recording
   // nothing would leave an unattended run unexplainable.
