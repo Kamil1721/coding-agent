@@ -42,7 +42,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -1411,9 +1411,33 @@ export class Orchestrator {
     // run's own signal, which the caller still owns.
     const loopAbort = childAbort(signal);
 
+    // COMPUTED ONCE, HERE, AND NOWHERE ELSE. `runGateFixLoop` restarts its
+    // attempt numbering at 1 on every entry — including after a resume — so the
+    // slot a result is archived under is `attempt + archiveBase`, not `attempt`.
+    // Recomputing it per attempt would be worse than not having it: attempt 1
+    // would raise the base it is measured from and attempt 2 would land two
+    // slots away, leaving a hole that reads as a lost attempt.
+    const archiveBase = highestArchivedAttempt(this.#deps.paths, runId);
+    if (archiveBase > 0) {
+      this.#emitLog(
+        runId,
+        "info",
+        `gate attempts already archived for this run: ${String(archiveBase)}. This resume archives from ` +
+          `attempt-${String(archiveBase + 1)} so the earlier rounds survive.`,
+      );
+    }
+
     const result = await runGateFixLoop({
       gate: async (attempt) => {
-        scored = await this.#gatePhase(runId, ticket, suite, runPaths, declaredDone, signal, attempt);
+        scored = await this.#gatePhase(
+          runId,
+          ticket,
+          suite,
+          runPaths,
+          declaredDone,
+          signal,
+          archiveBase + attempt,
+        );
         return scored.container;
       },
       runFix: async (task, prompt) => {
@@ -1581,13 +1605,20 @@ export class Orchestrator {
   /**
    * One gate attempt.
    *
-   * `attempt` is 1-based and is NOT decoration: the sealed scorer writes to a
-   * fixed path per run id (`gate-attempts.ts` explains why that cannot be
-   * changed from here), so attempt 2 clobbers attempt 1's `result.json` in
-   * place. The result is archived under `attempt-<n>/` the moment the scorer
-   * returns, and everything downstream reads the archive. Without that, a
-   * three-round run would end holding one result and no record of why it took
-   * three rounds.
+   * `slot` is 1-based and is NOT decoration: the sealed scorer writes to a fixed
+   * path per run id (`gate-attempts.ts` explains why that cannot be changed from
+   * here), so attempt 2 clobbers attempt 1's `result.json` in place. The result
+   * is archived under `attempt-<slot>/` the moment the scorer returns, and
+   * everything downstream reads the archive. Without that, a three-round run
+   * would end holding one result and no record of why it took three rounds.
+   *
+   * IT IS A SLOT AND NOT THE LOOP'S ATTEMPT NUMBER, and the rename is the whole
+   * of the resume fix. `runGateFixLoop` counts from 1 on every entry; the caller
+   * offsets by `highestArchivedAttempt` once so a resumed run's first attempt
+   * does not land on top of the pre-resume attempt 1. BOTH USES BELOW TAKE THE
+   * SAME VALUE — `#archiveAttempt` and `#readContainerResult` offset together or
+   * not at all, or attempt 3 is read out of attempt 1's directory, which is the
+   * defect `#readContainerResult`'s own docblock warns about.
    */
   async #gatePhase(
     runId: string,
@@ -1596,7 +1627,7 @@ export class Orchestrator {
     runPaths: RunPaths,
     declaredDone: boolean,
     signal: AbortSignal,
-    attempt: number,
+    slot: number,
   ): Promise<{ record: ScoreRecord | null; container: ContainerResult | null; failure: string | null }> {
     if (signal.aborted) return { record: null, container: null, failure: "cancelled" };
 
@@ -1618,12 +1649,12 @@ export class Orchestrator {
     try {
       const gate = await createGate(gateEnv(this.#deps.paths, this.#deps.env));
       record = await gate.score(runRecord, suite);
-      this.#archiveAttempt(runId, attempt);
+      this.#archiveAttempt(runId, slot);
     } catch (error) {
       // Archive whatever the scorer managed to write before it threw: a
       // container that failed halfway still produced evidence about this
       // attempt, and the next attempt is about to overwrite it.
-      this.#archiveAttempt(runId, attempt);
+      this.#archiveAttempt(runId, slot);
       // heldOutPass stays NULL. "The gate could not run" is not "the gate said
       // no", and the two must not look alike in the run list.
       const failure = describeError(error);
@@ -1649,7 +1680,7 @@ export class Orchestrator {
       });
     }
 
-    const container = this.#readContainerResult(runId, attempt);
+    const container = this.#readContainerResult(runId, slot);
     if (container !== null) this.#recordScreenshots(runId, container);
 
     for (const violation of record.protectedPathViolations) {
@@ -1749,11 +1780,11 @@ export class Orchestrator {
    * and turn a run that reached a real verdict into a harness fault. This is the
    * record of the attempt, not the attempt.
    */
-  #archiveAttempt(runId: string, attempt: number): void {
+  #archiveAttempt(runId: string, slot: number): void {
     try {
-      archiveAttempt(this.#deps.paths, runId, attempt);
+      archiveAttempt(this.#deps.paths, runId, slot);
     } catch (error) {
-      this.#emitLog(runId, "warn", `gate attempt ${String(attempt)} could not be archived: ${describeError(error)}`);
+      this.#emitLog(runId, "warn", `gate attempt ${String(slot)} could not be archived: ${describeError(error)}`);
     }
   }
 
@@ -1764,8 +1795,8 @@ export class Orchestrator {
    * already overwritten the latter by the time anyone asks, and reading it would
    * answer a question about attempt 1 with attempt 3's numbers.
    */
-  #readContainerResult(runId: string, attempt: number): ContainerResult | null {
-    return readAttempt(this.#deps.paths, runId, attempt);
+  #readContainerResult(runId: string, slot: number): ContainerResult | null {
+    return readAttempt(this.#deps.paths, runId, slot);
   }
 
   #recordScreenshots(runId: string, container: ContainerResult): void {
@@ -2088,6 +2119,47 @@ export async function workspaceDiff(workspace: string): Promise<string> {
       return "";
     }
   }
+}
+
+/**
+ * The highest `attempt-<n>` already archived for this run, or 0 when there are
+ * none. The offset every later attempt's archive slot is measured from.
+ *
+ * WHY IT IS NEEDED AT ALL. `runGateFixLoop` numbers its attempts 1, 2, 3 — from
+ * 1 on every entry, because it is a bounded loop and knows nothing about the run
+ * that contains it. A RESUME re-enters it. So a resumed run's first gate attempt
+ * was archived over `attempt-1/result.json` from before the resume, which is the
+ * exact history loss `gate-attempts.ts` was written to prevent, one level up:
+ * "a three-round run would end holding one result and no record of why it took
+ * three rounds" becomes "a resumed run holds no record of the rounds it ran
+ * before it was interrupted".
+ *
+ * WHY THE FILESYSTEM AND NOT `resumeCount * maxAttempts`. The stride is not
+ * fixed: `maxAttemptsFrom(env)` is read from the environment on every entry, so
+ * a run that burnt five attempts before a restart and resumed under a stride of
+ * three would compute a base of 3 and overwrite `attempt-4/`. The directories
+ * are the only record that cannot disagree with itself. `resumeCount` is still
+ * the right thing for the LOG LINE, where "resume #2" is what an operator reads.
+ *
+ * A NAME THAT DOES NOT PARSE IS SKIPPED, NEVER TREATED AS ZERO. `attempt-x/`
+ * counted as 0 would put the next slot back on top of `attempt-1/`.
+ */
+export function highestArchivedAttempt(paths: DashboardPaths, runId: string): number {
+  const dir = join(scorerOutRoot(paths), safeSegment(runId));
+  let highest = 0;
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const match = /^attempt-(\d+)$/.exec(entry.name);
+      if (match === null) continue;
+      const n = Number(match[1]);
+      if (Number.isSafeInteger(n) && n > highest) highest = n;
+    }
+  } catch {
+    // No directory yet: this run has never gated. Not an error, and not a reason
+    // to fail anything — the worst case of a mis-read here is an archive slot.
+  }
+  return highest;
 }
 
 /**

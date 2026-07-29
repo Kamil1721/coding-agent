@@ -17,7 +17,7 @@ import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { BAKEOFF_SCHEMA_VERSION } from "bakeoff/dist/contracts.js";
 import type { AcceptanceSuite } from "bakeoff/dist/contracts.js";
@@ -39,7 +39,8 @@ import { readDesignManifest, writeDesignManifest } from "./design-manifest.js";
 import { readDesignLaneRecord } from "./design-outcome.js";
 import { ModelCatalog } from "./models.js";
 import type { CatalogEntry } from "./models.js";
-import { Orchestrator, renderEvidence } from "./orchestrator.js";
+import { Orchestrator, highestArchivedAttempt, renderEvidence } from "./orchestrator.js";
+import { attemptPath, liveResultPath, readAttempt } from "./gate-attempts.js";
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
@@ -1175,4 +1176,132 @@ test("evidence never reads as an all-clear when the SCORER was the thing that br
   );
   assert.match(evidence, /scorer infrastructure/i);
   assert.match(evidence, /chromium failed to launch/);
+});
+
+/* -------------------------------------------------------------------------
+ * ATTEMPT ARCHIVES ACROSS A RESUME
+ *
+ * `gate-attempts.ts` exists so attempt 2 does not clobber attempt 1's
+ * `result.json`. `runGateFixLoop` numbers its attempts from 1 on EVERY entry,
+ * and a resume is another entry — so the same history loss the archive prevents
+ * inside one loop happened across two, one level up. A resumed run's first gate
+ * attempt landed on `attempt-1/result.json` and the pre-resume round was gone.
+ *
+ * WHAT THIS TEST DRIVES, AND IT IS THE PRODUCTION PATH. A real `Orchestrator`
+ * runs with no PATH, so `createGate` cannot find docker and `#gatePhase` takes
+ * its catch arm — which still calls `#archiveAttempt(runId, slot)`, the line
+ * under test. The pre-resume history is PLANTED as `attempt-1/` before the run
+ * starts, which is exactly the state a resumed run finds on disk; driving a real
+ * restart would add a process boundary and measure nothing extra.
+ * ---------------------------------------------------------------------- */
+
+const PRE_RESUME_MARK = "2020-01-01T00:00:00.000Z";
+const THIS_ATTEMPT_MARK = "2026-07-29T12:00:00.000Z";
+
+test("a resumed run archives BESIDE the earlier attempts, never on top of them", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-slot-"));
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  const paths = resolvePaths({ DASHBOARD_HOME: dir });
+  ensureDirs(paths);
+  const store = RunStore.open(paths.database);
+  const bus = new RunEventBus(store);
+  const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
+  const catalog = new FakeCatalog(auth, {}, async () => []);
+  const preview = new PreviewHost();
+  const runId = "run-slot";
+  const builder = new FakeBuilder({
+    workspace: () => runPathsFor(paths, runId).workspace,
+    pngCount: 0,
+    segmentTokens: [],
+    writeManifest: false,
+  });
+  const orchestrator = new Orchestrator({
+    store,
+    bus,
+    paths,
+    catalog,
+    auth,
+    preview,
+    // No PATH: the sealed gate cannot find docker and stops on infra at attempt
+    // 1, having archived whatever the scorer left behind.
+    env: { HOME: home },
+    makeBuilder: () => builder,
+    designRun: async () => ({ code: 0, stderr: "" }),
+    designCanWrite: () => true,
+  });
+
+  const ticketText = "Build a portfolio site. No design lane.";
+  freezeFor(ticketText, paths.acceptance);
+  store.createRun({
+    runId,
+    ticketId: "seeded-at-create",
+    ticketTitle: "Portfolio",
+    ticketText,
+    ticketSha256: "c".repeat(64),
+    modelId: "default",
+    provider: "anthropic",
+    deploy: false,
+    startedAt: new Date().toISOString(),
+    queuePosition: 1,
+    designLock: null,
+    interactive: false,
+  });
+
+  try {
+    // The state a resumed run finds: one round already archived, and a live
+    // `result.json` the scorer wrote for THIS round.
+    const earlier = attemptPath(paths, runId, 1);
+    mkdirSync(dirname(earlier), { recursive: true });
+    writeFileSync(earlier, JSON.stringify(containerFixture({ startedAt: PRE_RESUME_MARK })), "utf8");
+    const live = liveResultPath(paths, runId);
+    mkdirSync(dirname(live), { recursive: true });
+    writeFileSync(live, JSON.stringify(containerFixture({ startedAt: THIS_ATTEMPT_MARK })), "utf8");
+
+    orchestrator.pump();
+    for (const deadline = Date.now() + 30_000; ; ) {
+      const row = store.getRun(runId);
+      if (row !== null && (isTerminal(row.status) || row.status === "awaiting_input")) break;
+      if (Date.now() > deadline) throw new Error(`the run never settled (${store.getRun(runId)?.status ?? "gone"})`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert.equal(
+      readAttempt(paths, runId, 1)?.startedAt,
+      PRE_RESUME_MARK,
+      "the resumed run overwrote the earlier round's result.json — the exact history loss the archive exists to prevent",
+    );
+    assert.equal(
+      readAttempt(paths, runId, 2)?.startedAt,
+      THIS_ATTEMPT_MARK,
+      "this round was not archived beside the earlier one",
+    );
+  } finally {
+    await orchestrator.shutdown();
+    store.close();
+    removeDesignTree(dir);
+  }
+});
+
+test("the archive slot and the READ slot move together, or attempt 3 reports attempt 1's numbers", () => {
+  // `#archiveAttempt` and `#readContainerResult` take the same `slot`. Offsetting
+  // one and not the other is the failure `#readContainerResult`'s own docblock
+  // warns about, and it would be silent: every file is present and the numbers
+  // are simply the wrong round's. This pins the shared offset itself.
+  const dir = mkdtempSync(join(tmpdir(), "dash-slotbase-"));
+  const paths = resolvePaths({ DASHBOARD_HOME: dir });
+  ensureDirs(paths);
+  try {
+    assert.equal(highestArchivedAttempt(paths, "never-gated"), 0, "no directory is not attempt 1");
+    const root = dirname(attemptPath(paths, "r", 1));
+    mkdirSync(root, { recursive: true });
+    mkdirSync(dirname(attemptPath(paths, "r", 2)), { recursive: true });
+    mkdirSync(dirname(attemptPath(paths, "r", 10)), { recursive: true });
+    // A name that does not parse must be SKIPPED, not read as zero: counting it
+    // as 0 would put the next slot back on top of attempt-1.
+    mkdirSync(join(dirname(root), "attempt-x"), { recursive: true });
+    assert.equal(highestArchivedAttempt(paths, "r"), 10, "10 sorts after 2 numerically, not lexically");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
