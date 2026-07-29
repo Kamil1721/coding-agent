@@ -52,6 +52,33 @@
  *   time is `orchestrator.ts`'s gate/fix loop, which belongs to another wave.
  *   Being on the shortlist makes the pass POSSIBLE; it does not make it happen.
  *
+ *   AND THOSE TWO FACTS COMBINE INTO A THIRD THAT IS NEW, so it is said here
+ *   rather than inferred: THE AGENT IS NOW REACHABLE ON A PATH THAT SKIPS THIS
+ *   MODULE. `build-prompt.ts` builds its delegation section by grouping
+ *   `DELIVERY_LANES` by lane, so the orchestrator is now TOLD about
+ *   `human-factors-adversary` under REVIEW and writes the `prompt` argument of
+ *   that Agent call itself. Nothing in {@link adversaryOptions} travels with a
+ *   call made that way — not the loopback check in {@link shouldRunAdversary},
+ *   and not the PROD-OR-UNKNOWN rule block. What still holds on that path is:
+ *
+ *     - the agent file's own `disallowedTools:` frontmatter, which is the
+ *       mechanism {@link ADVERSARY_DISALLOWED_TOOLS} only MIRRORS, and which
+ *       probe I measured binding for a name that exists in ~/.claude/agents/;
+ *     - the agent file's own Safety section, which reads "Default to
+ *       PROD-OR-UNKNOWN unless the caller explicitly passed environment=TEST" —
+ *       so a caller that says nothing gets the forbidding branch. Note what that
+ *       means: the delegated path RELIES on the agent guessing right, which is
+ *       the exact reliance `adversaryOptions`' own docblock exists to remove;
+ *     - `preview.ts` binding 127.0.0.1 only, so the sole URL this program can
+ *       hand it is loopback anyway. That is a property of the preview server,
+ *       NOT a check performed on the call.
+ *
+ *   The safety posture of a delegated adversary pass therefore rests on the
+ *   agent file on disk. If that file's Safety section or its denylist is ever
+ *   weakened, this shortlist entry is what makes it reachable. "every tool this
+ *   module denies is denied by the agent on disk too" is the test that watches
+ *   half of that; nothing watches the Safety prose.
+ *
  *   THE OTHER HALF WAS NEVER A TEST. `BuildRequest.disallowedTools`
  *   (builders/types.ts) now exists, and it is a CARRIER with no reader: no driver
  *   consumes it and no caller sets it. It is also not the route a DELEGATED
