@@ -23,7 +23,11 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { AcceptanceCriterion } from "bakeoff/dist/contracts.js";
-import { extractAssumptions, renderAssumptions } from "./spec-assumptions.js";
+// A VALUE import, deliberately. A `import type` here would erase at runtime and
+// the drift test below would then compare the label table against nothing —
+// a check that can only observe success, which is the defect this repo ships.
+import { ALL_GATE_IDS, GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
+import { GATE_LABELS, extractAssumptions, gateLabel, renderAssumptions } from "./spec-assumptions.js";
 
 /** A minimal criterion. The tracer reads `id` and `statement` and nothing else. */
 function c(id: string, statement: string): AcceptanceCriterion {
@@ -138,5 +142,55 @@ test("a Tier-0 gate criterion is `default` — a house rule, not an inference ab
     const x = a.find((v) => v.criterionId === id);
     assert.equal(x?.source, "default", `${id} should be a house default`);
     assert.match(String(x?.because), /every run/i, "a default must say it is unconditional");
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * TIER-0 GATE IDS
+ *
+ * The tests above route a gate to `default` by matching its STATEMENT against a
+ * house-rule pattern. That only works when someone authored a statement. The
+ * scorer synthesises tier-0 gates with no authored prose, so what actually
+ * arrives is a criterion whose id AND statement are both the bare string
+ * `GATE:suite-green` — no pattern matches, no overlap with the ticket exists,
+ * and the tracer stamped it "INFERRED, not something you wrote — the grader
+ * added this". That is fabricated provenance on a fixed infrastructure check,
+ * and it is what shipped in the 4B run on 2026-07-29.
+ * ---------------------------------------------------------------------- */
+
+test("EVERY tier-0 gate id has a label — the table cannot drift from bakeoff's constant", () => {
+  // ALL_GATE_IDS is imported as a VALUE above. A new gate added in
+  // `bakeoff/src/scorer-protocol.ts` turns this red rather than rendering as a
+  // bare machine id in front of the owner, and a label for a gate that no longer
+  // exists turns it red too.
+  assert.deepEqual(
+    [...GATE_LABELS.keys()].sort(),
+    [...ALL_GATE_IDS].sort(),
+    "the owner-facing gate labels and the protocol's gate ids have drifted apart",
+  );
+  for (const id of ALL_GATE_IDS) {
+    const label = gateLabel(id);
+    assert.ok(label.length > 10, `${id} has no usable label`);
+    assert.doesNotMatch(label, /^GATE:/, `${id} renders as its own id, which is the defect`);
+  }
+});
+
+test("a gate criterion is `default` on its ID alone, never `inferred`, and reads as a sentence", () => {
+  // The ticket below shares nothing with "GATE:suite-green", which is exactly
+  // the input that produced the fabricated INFERRED label. The genuine
+  // inference beside it is the positive control: if this test went green because
+  // the module stopped labelling anything `inferred`, C-2 would catch it.
+  const a = extractAssumptions("Build a portfolio site for Ada Lovelace", [
+    { id: GATE_IDS.suiteGreen, statement: GATE_IDS.suiteGreen, tier: "BLOCKING", evidenceRequired: "" },
+    { id: GATE_IDS.build, statement: GATE_IDS.build, tier: "BLOCKING", evidenceRequired: "" },
+    c("C-2", "a project list renders at least three entries"),
+  ]);
+  assert.equal(a.find((x) => x.criterionId === "C-2")?.source, "inferred", "the positive control");
+  for (const id of [GATE_IDS.suiteGreen, GATE_IDS.build]) {
+    const x = a.find((v) => v.criterionId === id);
+    assert.equal(x?.source, "default", `${id} is a fixed check, not a guess about the ticket`);
+    assert.notEqual(x?.statement, id, `${id} still renders as its own machine id`);
+    assert.equal(x?.statement, gateLabel(id));
+    assert.doesNotMatch(String(x?.because), /grader's guess|nothing you wrote appears/);
   }
 });

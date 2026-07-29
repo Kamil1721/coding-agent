@@ -65,7 +65,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AcceptanceCriterion, CriterionResult } from "bakeoff/dist/contracts.js";
 import type { ApiCriterion, ApiRunStatus } from "./api-types.js";
-import { extractAssumptions, renderAssumptions } from "./spec-assumptions.js";
+import { extractAssumptions, isGateAssumption, renderAssumptions } from "./spec-assumptions.js";
 import type { Assumption } from "./spec-assumptions.js";
 import { renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
@@ -88,9 +88,19 @@ export const VERDICT_FILE = "verdict.md";
  *
  * `assumptions.md` splits the same set further, into guesses and house
  * defaults. That is a finer breakdown of this number, not a competing one.
+ *
+ * TIER-0 GATES ARE EXCLUDED, and they must be excluded HERE AND IN THE PAGE
+ * TOGETHER. A gate is not a criterion the owner did not state; it is not a
+ * criterion about their ticket at all, and there were twelve of them in the 4B
+ * run against ten authored requirements. Filtering them out of the verdict's
+ * listing while leaving them in this number would make the page drop twelve
+ * entries it had just claimed to have — the silent-drop defect, wearing an
+ * accurate-looking count. `verdict.ts:renderAssumptionSummary` applies the same
+ * `isGateAssumption` filter and `run-report.test.ts` reads the number back out
+ * of the rendered page to prove they agree.
  */
 export function countInferredAssumptions(assumptions: readonly Assumption[]): number {
-  return assumptions.filter((entry) => entry.source !== "ticket").length;
+  return assumptions.filter((entry) => !isGateAssumption(entry) && entry.source !== "ticket").length;
 }
 
 /**

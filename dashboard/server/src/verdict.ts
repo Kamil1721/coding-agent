@@ -67,7 +67,12 @@
  */
 
 import type { CriterionResult } from "bakeoff/dist/contracts.js";
+// VALUE imports. The gate id list is a public constant of the scorer protocol,
+// not something the sealed container produced, and importing it as a type would
+// erase at runtime — leaving the ordering below silently matching nothing.
+import { ALL_GATE_IDS, GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ApiCriterionTier } from "./api-types.js";
+import { gateLabel, isGateAssumption, isGateCriterionId } from "./spec-assumptions.js";
 import type { Assumption } from "./spec-assumptions.js";
 
 export type VerdictOutcome = "pass" | "fail" | "pass_with_notes";
@@ -119,17 +124,81 @@ function heldOutCount(input: VerdictInput, tier: ApiCriterionTier): number {
   return Math.max(1, Math.floor(raw));
 }
 
+/**
+ * Unmet criteria at a tier, GATES EXCLUDED.
+ *
+ * "Things the ticket asked for" is the only list this feeds, and a tier-0 gate
+ * was never asked for by anybody. See {@link unmetGates}.
+ */
 function unmetCriteria(input: VerdictInput, tier: ApiCriterionTier): readonly CriterionResult[] {
-  return input.criteriaResults.filter((result) => !result.passed && result.tier === tier);
+  return input.criteriaResults.filter(
+    (result) => !result.passed && result.tier === tier && !isGateCriterionId(result.criterionId),
+  );
 }
 
 /**
- * Every finding at a tier, from all three sources that can produce one: an unmet
- * visible criterion, an unmet held-out test, and — at QUALITY only — an authored
- * note that no test could have expressed.
+ * Did a NAMED requirement fail — one the owner can read in the section above?
+ *
+ * BLOCKING and FUNCTIONAL only, and the narrowing is deliberate. See
+ * {@link unmetGates}: `scorer-protocol.ts` already exempts QUALITY-only test
+ * failures from `GATE:suite-green`, so a suite-green failure standing beside
+ * nothing but QUALITY criterion failures was caused by something the criteria do
+ * NOT name — an untagged test, a non-zero exit, an unparseable report. Counting
+ * QUALITY as "already named" there would suppress the only record that the suite
+ * went red and turn a `fail` into `pass_with_notes`.
+ */
+function hasNamedGatingFailure(input: VerdictInput): boolean {
+  return unmetCriteria(input, "BLOCKING").length + unmetCriteria(input, "FUNCTIONAL").length > 0;
+}
+
+/**
+ * The tier-0 gates that failed, in protocol order, with the roll-up de-duplicated.
+ *
+ * WHY `GATE:suite-green` IS TREATED DIFFERENTLY FROM EVERY OTHER GATE. It is not
+ * an independent check. `scorer-protocol.ts` documents it as the catch-all that
+ * fires "when any test failed" — it exists so that a frozen test carrying no
+ * criterion tag still gates something. So whenever a criterion failure has
+ * already been named, suite-green is THE SAME FACT counted a second time, and
+ * counted at a stricter tier than the failure it rolls up. MEASURED, 4B run
+ * 2026-07-29: `cal4b-correct-portfolio` opened "3 things the ticket asked for
+ * are not there — 1 BLOCKING, 2 FUNCTIONAL" where the 1 BLOCKING WAS the 2
+ * FUNCTIONAL; `failingTier` therefore returned BLOCKING for all seven fixtures
+ * and discriminated nothing (backlog #32).
+ *
+ * IT IS SUPPRESSED, NEVER DELETED. When the suite went red and no criterion was
+ * attributed, suite-green is the only thing that knows, and it must still say
+ * so — a roll-up that can only ever be silent is a check that can only observe
+ * success. `verdict.test.ts` holds both directions.
+ */
+function unmetGates(input: VerdictInput): readonly CriterionResult[] {
+  const failed = input.criteriaResults.filter(
+    (result) => !result.passed && isGateCriterionId(result.criterionId),
+  );
+  const kept = hasNamedGatingFailure(input)
+    ? failed.filter((result) => result.criterionId !== GATE_IDS.suiteGreen)
+    : failed;
+  // Protocol order, not score-record order: the page must read the same way
+  // twice. An id the constant does not know goes last rather than vanishing.
+  return [...kept].sort((a, b) => gateRank(a.criterionId) - gateRank(b.criterionId));
+}
+
+function gateRank(id: string): number {
+  const index = ALL_GATE_IDS.indexOf(id);
+  return index === -1 ? ALL_GATE_IDS.length : index;
+}
+
+function unmetGatesAt(input: VerdictInput, tier: ApiCriterionTier): number {
+  return unmetGates(input).filter((result) => result.tier === tier).length;
+}
+
+/**
+ * Every finding at a tier, from all four sources that can produce one: an unmet
+ * visible criterion, a failed tier-0 gate, an unmet held-out test, and — at
+ * QUALITY only — an authored note that no test could have expressed.
  */
 function findingCount(input: VerdictInput, tier: ApiCriterionTier): number {
-  const counted = unmetCriteria(input, tier).length + heldOutCount(input, tier);
+  const counted =
+    unmetCriteria(input, tier).length + unmetGatesAt(input, tier) + heldOutCount(input, tier);
   return tier === "QUALITY" ? counted + input.qualityFindings.length : counted;
 }
 
@@ -209,10 +278,48 @@ function renderUnmetCriterion(
   return [`- ${prefix}${oneLine(assumption.statement)}`, `  - ${provenance}`];
 }
 
+/**
+ * The heading the gates render under. Exported so a test can assert WHERE a
+ * gate line sits rather than merely that the page contains it somewhere.
+ */
+export const GATE_SECTION_HEADING = "Checks every artefact must clear";
+
+/**
+ * The tier-0 gates that failed, as fixed sentences.
+ *
+ * SEPARATE FROM "things you asked for", because it is not one. A container gate
+ * is a fact about whether the artefact could be evaluated at all, and filing it
+ * under the owner's requirements is what let a machine id turn up in a list of
+ * sentences they wrote. The label comes from `spec-assumptions.ts`'s constant
+ * table — never from the assumption record, which is where the fabricated
+ * "INFERRED, not something you wrote" came from, and never from `detail`, which
+ * is written by the container and can quote a held-out test title.
+ */
+function renderGates(input: VerdictInput): readonly string[] {
+  const failed = unmetGates(input);
+  if (failed.length === 0) return [];
+  const lines = [
+    `## ${GATE_SECTION_HEADING}`,
+    "",
+    "These are not things you asked for. They run on every artefact whatever the",
+    "ticket says, and there is nothing to correct in your ticket here:",
+    "",
+  ];
+  for (const result of failed) {
+    lines.push(`- ${gateLabel(result.criterionId)} (${result.criterionId})`);
+  }
+  lines.push("");
+  return lines;
+}
+
 function renderWhy(input: VerdictInput): readonly string[] {
   const named = [...unmetCriteria(input, "BLOCKING"), ...unmetCriteria(input, "FUNCTIONAL")];
   const lines = ["## Why it did not pass", ""];
   if (named.length === 0) {
+    // A failed gate IS the reason, and it has already been stated above in its
+    // own words. Repeating the grader-defect paragraph there would report a
+    // working grader as broken on every build failure.
+    if (unmetGates(input).length > 0) return [];
     lines.push(
       "No requirement could be named. The failure is in the held-out counts below;",
       "if that section is empty too, the run was failed without a recorded reason,",
@@ -293,10 +400,27 @@ function renderAssumptionSummary(input: VerdictInput): readonly string[] {
     );
     return lines;
   }
-  const inferred = input.assumptions.filter((entry) => entry.source !== "ticket");
-  const total = input.assumptions.length;
+  // GATES ARE NOT ASSUMPTIONS ABOUT THE TICKET, so they are not counted as such
+  // and not listed as such — 12 of the 22 entries here were `GATE:*` lines in the
+  // 4B run, and a review document that is mostly boilerplate stops being read.
+  // The number is still stated: dropping twelve entries the page had just
+  // claimed to have would be its own defect. `run-report.ts` counts the same set
+  // for `RunDetail.inferredCriteria`, and its tests assert the two agree.
+  const ticketScoped = input.assumptions.filter((entry) => !isGateAssumption(entry));
+  const gateCount = input.assumptions.length - ticketScoped.length;
+  const gateNote =
+    gateCount === 0
+      ? []
+      : [
+          `Plus ${plural(gateCount, "fixed check that runs", "fixed checks that run")} on every artefact ` +
+            "whatever the ticket says — the build, the boot, the routes, the exploit scan.",
+          "Those are not guesses about your ticket and there is nothing in them to correct.",
+          "",
+        ];
+  const inferred = ticketScoped.filter((entry) => entry.source !== "ticket");
+  const total = ticketScoped.length;
   if (inferred.length === 0) {
-    lines.push(`All ${String(total)} criteria trace back to something you wrote.`, "");
+    lines.push(`All ${String(total)} criteria trace back to something you wrote.`, "", ...gateNote);
     return lines;
   }
   lines.push(
@@ -306,7 +430,7 @@ function renderAssumptionSummary(input: VerdictInput): readonly string[] {
   for (const entry of inferred) {
     lines.push(`- ${oneLine(entry.statement)}`, `  - ${oneLine(entry.because)}`);
   }
-  lines.push("");
+  lines.push("", ...gateNote);
   return lines;
 }
 
@@ -314,12 +438,32 @@ function plural(count: number, one: string, many: string): string {
   return `${String(count)} ${count === 1 ? one : many}`;
 }
 
+/**
+ * The one line an owner reads before deciding whether to open the run.
+ *
+ * IT SEPARATES THE TWO KINDS OF FAILURE, because they call for opposite next
+ * moves. "The projects section is missing" is a fix to the work; "the project
+ * does not build" is a fix to the ground the work stands on. Before this split
+ * the line read "3 things the ticket asked for are not there — 1 BLOCKING, 2
+ * FUNCTIONAL" for a correct portfolio whose only real defect was two FUNCTIONAL
+ * criteria, and the same shape of sentence for a blank page (backlog #36).
+ *
+ * The gate clause makes NO claim about what was or was not measured. A failed
+ * `GATE:screenshots-present` does not mean the artefact went unevaluated, so the
+ * line says what failed and stops there.
+ */
 function summaryLine(input: VerdictInput, outcome: VerdictOutcome): string {
-  const blocking = findingCount(input, "BLOCKING");
-  const functional = findingCount(input, "FUNCTIONAL");
-  const quality = findingCount(input, "QUALITY");
+  const gates = unmetGates(input).length;
+  const blocking = findingCount(input, "BLOCKING") - unmetGatesAt(input, "BLOCKING");
+  const functional = findingCount(input, "FUNCTIONAL") - unmetGatesAt(input, "FUNCTIONAL");
+  const quality = findingCount(input, "QUALITY") - unmetGatesAt(input, "QUALITY");
   if (outcome === "fail") {
-    return `${plural(blocking + functional, "thing the ticket asked for is", "things the ticket asked for are")} not there — ${String(blocking)} BLOCKING, ${String(functional)} FUNCTIONAL.`;
+    const gateClause = `${plural(gates, "check every artefact must clear did", "checks every artefact must clear did")} not pass.`;
+    if (blocking + functional === 0) {
+      return `${gateClause} No requirement from your ticket was reported as missing.`;
+    }
+    const asked = `${plural(blocking + functional, "thing the ticket asked for is", "things the ticket asked for are")} not there — ${String(blocking)} BLOCKING, ${String(functional)} FUNCTIONAL.`;
+    return gates === 0 ? asked : `${asked} ${gateClause}`;
   }
   if (outcome === "pass_with_notes") {
     return `Everything the ticket asked for is there. ${plural(quality, "note", "notes")} on quality, which do not fail the run.`;
@@ -346,7 +490,10 @@ export function renderVerdict(input: VerdictInput): string {
     quoteBlock(input.ticket),
     "",
   ];
-  if (outcome === "fail") lines.push(...renderWhy(input));
+  // GATES FIRST on a failing run. When the container stopped the artefact, that
+  // is the fact the owner has to act on before any requirement in the list below
+  // means anything.
+  if (outcome === "fail") lines.push(...renderGates(input), ...renderWhy(input));
   lines.push(...renderHeldOut(input));
   lines.push(...renderNotes(input));
   lines.push(...renderAssumptionSummary(input));

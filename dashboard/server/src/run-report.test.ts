@@ -54,6 +54,7 @@ import type { AcceptanceSuite } from "bakeoff/dist/contracts.js";
 import { JUDGE_SEAT, SPEC_SEAT } from "bakeoff/dist/config.js";
 import { acceptanceSuiteDigest, sha256Hex } from "bakeoff/dist/hash.js";
 import { freezeSuite, verifySuiteIntact } from "bakeoff/dist/spec-freeze.js";
+import { ALL_GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import { criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
 import type { SuiteDraft } from "bakeoff/dist/spec-types.js";
 import type { ApiCriterion, RunDetail } from "./api-types.js";
@@ -217,6 +218,44 @@ test("the inferred count reported by the API is the number the verdict prints", 
     md,
     new RegExp(`${String(counted)} of ${String(criteria.length)} criteria were inferred`),
     `the verdict and RunDetail.inferredCriteria disagree: the API would report ${String(counted)}`,
+  );
+});
+
+test("tier-0 gates are excluded from the inferred count in BOTH the API number and the page", () => {
+  // The dashboard's own criteria table carries no `GATE:*` rows, so this shape
+  // arrives from the calibration path — where 12 of 22 entries under "What this
+  // run assumed" were gate ids on 2026-07-29. Filtering them out of the page
+  // while leaving them in the number would make the page drop 12 entries it had
+  // just claimed to have, so the two move together or not at all.
+  const ticketed = [
+    criterion("REQ-001", "The system shall present at least three project entries.", "FUNCTIONAL", "pass"),
+    criterion("REQ-002", "The system shall expose a contact route that accepts a message.", "FUNCTIONAL", "pass"),
+  ];
+  const gates = ALL_GATE_IDS.map((id) => criterion(id, id, "BLOCKING", "pass" as const));
+  const criteria = [...gates, ...ticketed];
+
+  const withGates = countInferredAssumptions(assumptionsFor(TICKET, criteria));
+  const withoutGates = countInferredAssumptions(assumptionsFor(TICKET, ticketed));
+  assert.ok(withoutGates > 0, "a two-word ticket cannot support these criteria; the fixture is wrong if it does");
+  assert.equal(withGates, withoutGates, `${String(ALL_GATE_IDS.length)} gates inflated the API's inferred count`);
+
+  const md = renderVerdict({
+    ticket: TICKET,
+    criteriaResults: criteria.map((entry) => ({
+      criterionId: entry.id,
+      tier: entry.tier,
+      passed: true,
+      evidenceRef: null,
+      detail: null,
+    })),
+    qualityFindings: [],
+    assumptions: assumptionsFor(TICKET, criteria),
+    heldOutUnmet: { BLOCKING: 0, FUNCTIONAL: 0, QUALITY: 0 },
+  });
+  assert.match(
+    md,
+    new RegExp(`${String(withGates)} of ${String(ticketed.length)} criteria were inferred`),
+    "the page and RunDetail.inferredCriteria must count the same set",
   );
 });
 

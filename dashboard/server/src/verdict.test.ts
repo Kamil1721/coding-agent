@@ -31,9 +31,10 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { CriterionResult } from "bakeoff/dist/contracts.js";
+import { GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ApiCriterionTier } from "./api-types.js";
 import type { Assumption } from "./spec-assumptions.js";
-import { computeOutcome, failingTier, renderVerdict } from "./verdict.js";
+import { GATE_SECTION_HEADING, computeOutcome, failingTier, renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
 
 interface RunSpec {
@@ -59,6 +60,20 @@ interface RunSpec {
   readonly passing?: number;
   /** Satisfied criteria the grader invented. The dangerous ones on a pass. */
   readonly inferred?: number;
+  /**
+   * Tier-0 gate ids that FAILED, fed in with the exact fabricated provenance the
+   * live 4B run produced: statement = the bare id, source = `inferred`. That is
+   * not a straw man — it is what `dashboard/results/calibration-4b/.../
+   * cal4b-correct-portfolio.verdict.md` printed on 2026-07-29, because the
+   * token-overlap tracer was pointed at the string "GATE:suite-green" and found
+   * no overlap. A renderer that reads the assumption record for a gate will
+   * reproduce it, and these tests say so.
+   */
+  readonly unmetGates?: readonly string[];
+  /** Tier-0 gate ids that PASSED. Present so the gate section can be shown to discriminate. */
+  readonly metGates?: readonly string[];
+  /** An unmet criterion the grader genuinely inferred. The positive control for gate provenance. */
+  readonly unmetInferred?: readonly { readonly id: string; readonly statement: string }[];
 }
 
 function runWith(spec: RunSpec = {}): VerdictInput {
@@ -95,6 +110,12 @@ function runWith(spec: RunSpec = {}): VerdictInput {
   for (const entry of spec.unmet ?? []) {
     push(entry.id, entry.tier ?? "FUNCTIONAL", false, entry.statement, "ticket");
   }
+  for (const entry of spec.unmetInferred ?? []) {
+    push(entry.id, "FUNCTIONAL", false, entry.statement, "inferred");
+  }
+  // Every tier-0 gate is BLOCKING; scorer-protocol.ts section 2 says so.
+  for (const id of spec.unmetGates ?? []) push(id, "BLOCKING", false, id, "inferred");
+  for (const id of spec.metGates ?? []) push(id, "BLOCKING", true, id, "inferred");
   for (let i = 0; i < (spec.blocking ?? 0); i += 1) {
     push(`C-B${String(i)}`, "BLOCKING", false, `the site builds and boots (${String(i)})`, "ticket");
   }
@@ -227,4 +248,154 @@ test("failingTier reports the STRICTEST tier carrying a finding, and null only o
   // asserts QUALITY here for the stock-motion fixture.
   assert.equal(failingTier(runWith({ quality: 1 })), "QUALITY");
   assert.equal(failingTier(runWith({ passing: 2 })), null);
+});
+
+/* -------------------------------------------------------------------------
+ * TIER-0 GATES. Measured defect, `cal4b-correct-portfolio.verdict.md`,
+ * 2026-07-29: the page opened "3 things the ticket asked for are not there —
+ * 1 BLOCKING, 2 FUNCTIONAL" and the first entry was the literal string
+ * `GATE:suite-green`, annotated "INFERRED, not something you wrote — the grader
+ * added this". Three defects in one bullet: a machine id where a sentence
+ * belongs, fabricated provenance on a fixed infrastructure check, and a roll-up
+ * of the two FUNCTIONAL failures listed under it counted a second time at a
+ * stricter tier.
+ * ---------------------------------------------------------------------- */
+
+/** The body of one `## ` section, so a claim about WHERE a line sits can be made. */
+function sectionBody(markdown: string, heading: string): string {
+  const start = markdown.indexOf(`## ${heading}`);
+  assert.notEqual(start, -1, `the page has no "## ${heading}" section:\n${markdown}`);
+  const rest = markdown.slice(start + heading.length);
+  const end = rest.indexOf("\n## ");
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+test("a failing tier-0 gate renders as a sentence the owner can read, never as a bare id", () => {
+  const md = renderVerdict(runWith({ unmetGates: [GATE_IDS.build] }));
+  assert.match(md, /does not build/i, "the gate must be stated in owner-facing English");
+  assert.doesNotMatch(
+    md,
+    /^- GATE:build\s*$/m,
+    "a bare machine id is what shipped on 2026-07-29; the owner reads a requirement list and finds a symbol",
+  );
+});
+
+test("a gate is never given fabricated provenance, while a real inference keeps its own", () => {
+  // POSITIVE AND NEGATIVE IN ONE FIXTURE. An absence assertion alone passes if
+  // the renderer simply stops emitting the INFERRED prose for everyone, so the
+  // genuinely inferred criterion below must still carry it on the same page.
+  const md = renderVerdict(
+    runWith({
+      unmetGates: [GATE_IDS.build],
+      unmetInferred: [{ id: "REQ-009", statement: "the site exposes an RSS feed" }],
+    }),
+  );
+  assert.match(
+    md,
+    /INFERRED, not something you wrote/,
+    "the genuinely inferred requirement must still be labelled — otherwise this test proves nothing",
+  );
+  assert.doesNotMatch(
+    sectionBody(md, GATE_SECTION_HEADING),
+    /INFERRED|the grader added this|grader's guess/,
+    "a tier-0 gate is a fixed check, not a guess about what the ticket implied",
+  );
+});
+
+test("gates sit in their own section, not among the things the ticket asked for", () => {
+  const md = renderVerdict(
+    runWith({
+      unmetGates: [GATE_IDS.build],
+      unmet: [{ id: "REQ-005", statement: "the projects section lists three entries" }],
+    }),
+  );
+  const asked = sectionBody(md, "Why it did not pass");
+  assert.match(asked, /projects section/, "the ticket requirement belongs here");
+  assert.doesNotMatch(asked, /GATE:|does not build/i, "a container gate is not a thing the owner asked for");
+  assert.match(sectionBody(md, GATE_SECTION_HEADING), /does not build/i);
+});
+
+test("GATE:suite-green adds no finding when the failures it rolls up are already named", () => {
+  // The roll-up fails whenever ANY frozen test fails, so on a run with named
+  // criterion failures the "1 BLOCKING" IS the FUNCTIONAL failures counted again
+  // at a stricter tier. That is backlog #32: `failingTier` returned BLOCKING for
+  // every fixture and discriminated nothing.
+  const input = runWith({
+    unmetGates: [GATE_IDS.suiteGreen],
+    unmet: [
+      { id: "REQ-005", statement: "the projects section lists three entries" },
+      { id: "REQ-006", statement: "the contact form confirms on submit" },
+    ],
+  });
+  assert.equal(computeOutcome(input), "fail", "suppressing the roll-up must never turn a red run green");
+  assert.equal(failingTier(input), "FUNCTIONAL", "the strictest REAL finding is FUNCTIONAL");
+  const md = renderVerdict(input);
+  assert.doesNotMatch(md, /suite-green/, "the roll-up must not be listed beside the failures it rolls up");
+  assert.match(md, /2 things the ticket asked for are not there/, "counted once, not twice");
+});
+
+test("GATE:suite-green STILL reports when it is the only failure — the suite went red and nothing else said so", () => {
+  // THE NEGATIVE CONTROL FOR THE TEST ABOVE. Unconditional suppression would
+  // build a check that can only observe success: a frozen suite that went red
+  // with no criterion attributed would render as a clean pass.
+  const input = runWith({ unmetGates: [GATE_IDS.suiteGreen], passing: 3 });
+  assert.equal(computeOutcome(input), "fail");
+  assert.equal(failingTier(input), "BLOCKING");
+  const md = renderVerdict(input);
+  assert.match(md, /acceptance suite/i, "the one thing that failed must be named");
+  assert.match(md, /DID NOT PASS/);
+});
+
+test("GATE:suite-green is NOT suppressed by QUALITY-only criterion failures", () => {
+  // DELIBERATE NARROWING. `scorer-protocol.ts` already exempts QUALITY-only test
+  // failures from this gate, so a suite-green failure standing beside nothing but
+  // QUALITY failures came from something else — an untagged test, a non-zero
+  // exit, an unparseable report. Suppressing it there would flip `fail` to
+  // `pass_with_notes` and lose the only record that the suite went red.
+  const input = runWith({ unmetGates: [GATE_IDS.suiteGreen], quality: 2 });
+  assert.equal(computeOutcome(input), "fail", "QUALITY findings cannot absorb a red suite");
+  assert.equal(failingTier(input), "BLOCKING");
+});
+
+test("QUALITY still never gates once gates are counted separately", () => {
+  // The standing owner decision, re-asserted against the new counting path: a
+  // run whose only findings are QUALITY, with every gate green, is notes.
+  const input = runWith({ metGates: [GATE_IDS.build, GATE_IDS.suiteGreen], quality: 2 });
+  assert.equal(computeOutcome(input), "pass_with_notes");
+  assert.equal(failingTier(input), "QUALITY");
+});
+
+test("failingTier discriminates a gate failure from a ticket failure", () => {
+  // Requirement 6, and the reason the tier existed at all: a fixture stopped by
+  // the container and a fixture missing a section must not report the same tier
+  // for the same reason.
+  const gateOnly = runWith({ unmetGates: [GATE_IDS.build], passing: 3 });
+  const criterionOnly = runWith({
+    unmet: [{ id: "REQ-005", statement: "the projects section lists three entries" }],
+    passing: 3,
+  });
+  assert.equal(failingTier(gateOnly), "BLOCKING");
+  assert.equal(failingTier(criterionOnly), "FUNCTIONAL");
+  assert.notEqual(
+    failingTier(gateOnly),
+    failingTier(criterionOnly),
+    "before this change both were BLOCKING, because GATE:suite-green fired on everything",
+  );
+});
+
+test("gate ids are kept out of the assumption roll-call, and the count says how many there were", () => {
+  // 12 of the 22 entries under "What this run assumed" were `GATE:*` lines on
+  // 2026-07-29, which is how a review document stops being read. Dropping them
+  // silently would be its own defect, so the number is still stated.
+  const md = renderVerdict(
+    runWith({
+      metGates: [GATE_IDS.build, GATE_IDS.typecheck, GATE_IDS.lint],
+      inferred: 2,
+      passing: 1,
+    }),
+  );
+  const assumed = sectionBody(md, "What this run assumed");
+  assert.doesNotMatch(assumed, /GATE:/, "a fixed check is not an assumption about the ticket");
+  assert.match(assumed, /2 of 3 criteria were inferred/, "the ticket-scoped arithmetic must exclude gates");
+  assert.match(assumed, /3 fixed checks/, "and must still account for the gates it left out");
 });

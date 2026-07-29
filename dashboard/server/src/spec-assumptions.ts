@@ -66,6 +66,10 @@
  */
 
 import type { AcceptanceCriterion } from "bakeoff/dist/contracts.js";
+// A VALUE import, deliberately. `import type` erases at runtime, and the drift
+// test that compares {@link GATE_LABELS} against this list would then be
+// comparing the table against nothing — a check that can only observe success.
+import { GATE_IDS, GATE_ID_PREFIX } from "bakeoff/dist/scorer-protocol.js";
 
 /**
  * Where a criterion came from.
@@ -93,6 +97,118 @@ export interface Assumption {
    * unreviewable record is the same as no record.
    */
   readonly because: string;
+}
+
+/* -------------------------------------------------------------------------
+ * TIER-0 GATES — the one kind of criterion this module must never reason about
+ *
+ * MEASURED DEFECT, `dashboard/results/calibration-4b/2026-07-29T09-42-34-574Z/
+ * run/cal4b-correct-portfolio.verdict.md`. The scorer synthesises tier-0 gates
+ * as criteria with no authored prose, so what arrives here is a criterion whose
+ * id AND statement are both the bare string "GATE:suite-green". The overlap
+ * tracer below ran over that string, found nothing in common with the ticket —
+ * of course it did — and stamped it "INFERRED, not something you wrote — the
+ * grader added this. It is the grader's guess about what your ticket implies".
+ *
+ * Every word of that is false. A tier-0 gate is not an inference about the
+ * ticket; it is a fixed check that runs on every artefact whatever the ticket
+ * says. {@link HOUSE_RULES} already says this for gates that DO carry authored
+ * prose, by matching their statements. It cannot fire on a bare id, so the id
+ * itself has to be the key — which is safe, because the id list is a public
+ * constant rather than anything the sealed container produced.
+ *
+ * THE GATE IDS ARE NOT HELD OUT AND NAMING ONE IS NOT A LEAK. `ALL_GATE_IDS` is
+ * exported from `bakeoff/src/scorer-protocol.ts` and the `GATE:` prefix is
+ * reserved there. What may not render is a gate's `detail` or `evidenceRef` —
+ * those are written by the container and quote assertions, so they can carry
+ * held-out test titles. Naming WHICH gate failed is the discrimination the
+ * verdict page was missing; printing what the gate SAID is the boundary.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * One fixed, owner-facing sentence per tier-0 gate, stating the FAILURE.
+ *
+ * They are written in the failing voice because that is the only place they
+ * render: a gate that passed is not news. Keyed by the id and checked against
+ * `ALL_GATE_IDS` in the test file, so a gate added upstream turns the suite red
+ * instead of arriving on the owner's page as a machine id.
+ *
+ * NOTHING FROM THE CONTAINER MAY BE INTERPOLATED HERE. These are constants
+ * authored before any build, which is what makes them renderable at all.
+ */
+export const GATE_LABELS: ReadonlyMap<string, string> = new Map([
+  [
+    GATE_IDS.suiteIntact,
+    "The frozen acceptance suite was altered during the run, so nothing it reported can be trusted.",
+  ],
+  [
+    GATE_IDS.noProtectedPathWrites,
+    "Files that the run was not allowed to touch were written to.",
+  ],
+  [GATE_IDS.build, "The project does not build."],
+  [GATE_IDS.typecheck, "The project does not typecheck."],
+  [GATE_IDS.lint, "The project does not pass its own lint rules."],
+  [GATE_IDS.boot, "The app does not start up and answer on its own address."],
+  [GATE_IDS.routes, "At least one page the app declares does not answer when it is asked for."],
+  [
+    GATE_IDS.noStubMarkers,
+    "Stub markers — TODO, FIXME, \"coming soon\" — were left in the shipped source.",
+  ],
+  [
+    GATE_IDS.noRewardHackExploits,
+    "The acceptance suite was tampered with rather than satisfied, so a green suite would have meant nothing.",
+  ],
+  [GATE_IDS.dataPresent, "The data the app says it ships is not there."],
+  [
+    GATE_IDS.screenshotsPresent,
+    "No usable screenshot was captured, so there is no visual evidence of what was built.",
+  ],
+  [
+    GATE_IDS.suiteGreen,
+    "The frozen acceptance suite went red, and no single requirement accounts for it.",
+  ],
+]);
+
+/**
+ * Is this criterion id a tier-0 gate?
+ *
+ * The PREFIX decides, not membership of {@link GATE_LABELS}. `GATE:` is reserved
+ * by the protocol, so an id carrying it is a gate even when this module has no
+ * label for it yet — and treating an unlabelled gate as an ordinary criterion is
+ * how it would get fabricated provenance again. The label table's job is prose;
+ * the drift test is what keeps the two in step.
+ */
+export function isGateCriterionId(id: string): boolean {
+  return id.startsWith(GATE_ID_PREFIX);
+}
+
+/** True for the record of a gate criterion. Ticket-level notes are never gates. */
+export function isGateAssumption(assumption: Assumption): boolean {
+  return assumption.criterionId !== null && isGateCriterionId(assumption.criterionId);
+}
+
+/**
+ * The owner-facing sentence for a gate id.
+ *
+ * An id with no label says so IN ENGLISH rather than falling back to the id.
+ * The fallback is not decoration: the drift test makes an unlabelled gate a
+ * red suite, and if one ever reaches an owner anyway they get a sentence that
+ * tells them the grader is incomplete instead of a symbol they cannot act on.
+ */
+export function gateLabel(id: string): string {
+  return (
+    GATE_LABELS.get(id) ??
+    `A fixed check that runs on every artefact did not pass, and the grader has no ` +
+      `description for it (${id}). That missing description is a grader defect: report it.`
+  );
+}
+
+/** Why a gate carries `default`. Fixed prose: there is nothing here to trace. */
+function gateReason(id: string): string {
+  return (
+    `a fixed check that runs on every artefact whatever the ticket says (${id}). ` +
+    "It is not a guess about what you meant, so there is nothing here to correct."
+  );
 }
 
 /**
@@ -282,8 +398,22 @@ export function extractAssumptions(
   const ticketVocabulary = [...ticketTokens];
 
   return criteria.map((criterion, index) => {
-    const shared = contentTokens(criterion.statement).filter((t) => ticketTokens.has(t));
     const base = { id: `A-${index + 1}`, criterionId: criterion.id, statement: criterion.statement };
+
+    // BEFORE ANY TRACING. A tier-0 gate is not an inference about the ticket, so
+    // the overlap heuristic must never see it — running it and discarding the
+    // answer would leave the fabricated-provenance path one edit away from
+    // coming back. The statement is replaced too: what arrives is the bare id.
+    if (isGateCriterionId(criterion.id)) {
+      return {
+        ...base,
+        statement: gateLabel(criterion.id),
+        source: "default" as const,
+        because: gateReason(criterion.id),
+      };
+    }
+
+    const shared = contentTokens(criterion.statement).filter((t) => ticketTokens.has(t));
 
     if (shared.length >= MIN_SHARED_CONTENT_TOKENS) {
       // Credit only the words the QUOTED sentence actually contains. A real
