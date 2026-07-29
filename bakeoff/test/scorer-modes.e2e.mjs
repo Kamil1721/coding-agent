@@ -261,8 +261,14 @@ test("[REQ-002] T-2 a contactable email address is rendered", async ({ page }) =
 test("[REQ-003] T-3 the home document is served and is not blank", async ({ page }) => {
   const response = await page.goto("/");
   expect(response.status()).toBe(200);
+  // NOT a character-count floor. This asserts the criterion's own words — "is
+  // not blank" — and nothing about how much prose an implementation writes.
+  // A length bar the ticket never stated fails correct work: run 4B measured a
+  // correct portfolio rendering 189 characters and failing for it. The bar was
+  // never load-bearing here either — the blank artefact in the static-blank
+  // mode is caught by GATE:boot, not by this assertion.
   const rendered = (await page.locator("body").innerText()).trim();
-  expect(rendered.length).toBeGreaterThan(20);
+  expect(rendered).not.toBe("");
 });
 `,
       },

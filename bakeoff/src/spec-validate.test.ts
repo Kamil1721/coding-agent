@@ -482,3 +482,95 @@ test("deterministicAudit emits both findings and blocks on rule 1", () => {
   assert.deepEqual(criterionIdsOf(drift), ["REQ-002", "REQ-012"]);
   assert.ok(drift.every((f) => !f.mustRegenerate), "rule 3 must stay advisory through the audit");
 });
+
+/* -------------------------------------------------------------------------
+ * Comments are not code
+ *
+ * FOUND BY THE REGRESSION IT CAUSED, not by review. `bakeoff/test/scorer-modes.e2e.mjs`
+ * builds a throwaway suite whose T-3 used to assert `rendered.length > 20`.
+ * Removing the bar and replacing it with `expect(rendered).not.toBe("")` did
+ * NOT clear the finding — because the commit that removed it left a comment
+ * saying what the assertion used to read, and rule 1 matched the comment. The
+ * e2e stayed at 14/16 with the defect already gone.
+ *
+ * A comment can only ever be a FALSE POSITIVE: it does not execute, so it
+ * cannot fail a correct artefact. And rule 1 is BLOCKING — it throws the suite
+ * away and spends another authoring call. A rule that forces regeneration over
+ * a line of prose is worse than the bar it was written to catch.
+ *
+ * The controls below are what stop the fix from over-swinging into a false
+ * NEGATIVE, which is the direction that actually costs a measurement: masking
+ * too much would let a real bar hide behind a `//` inside a string.
+ * ---------------------------------------------------------------------- */
+
+const T3_STRUCTURAL = [
+  'import { expect, test } from "@playwright/test";',
+  "",
+  'test("[REQ-003] T-3 the home document is served and is not blank", async ({ page }) => {',
+  '  const response = await page.goto("/");',
+  "  expect(response.status()).toBe(200);",
+  "  const rendered = (await page.locator(\"body\").innerText()).trim();",
+  '  expect(rendered).not.toBe("");',
+  "});",
+].join("\n");
+
+test("a LINE comment quoting a floor does not fire rule 1", () => {
+  const source = T3_STRUCTURAL.replace(
+    "  const rendered =",
+    "  // it used to read `rendered.length > 20`, which the ticket never stated\n  const rendered =",
+  );
+  assert.ok(source.includes("rendered.length > 20"), "the fixture must carry the quoted bar");
+  const draft = draftOf(
+    [criterion("REQ-003", "The home document is served and is not blank.", ["T-3"])],
+    [{ path: "holdout/site.spec.mjs", source, testIds: ["T-3"], criterionIds: ["REQ-003"] }],
+  );
+  assert.deepEqual(proseLengthFloorFindings(draft), []);
+});
+
+test("a BLOCK comment quoting a floor does not fire rule 1", () => {
+  const source = T3_STRUCTURAL.replace(
+    "  const rendered =",
+    "  /* removed: expect(rendered.length).toBeGreaterThan(200) */\n  const rendered =",
+  );
+  const draft = draftOf(
+    [criterion("REQ-003", "The home document is served and is not blank.", ["T-3"])],
+    [{ path: "holdout/site.spec.mjs", source, testIds: ["T-3"], criterionIds: ["REQ-003"] }],
+  );
+  assert.deepEqual(proseLengthFloorFindings(draft), []);
+});
+
+test("POSITIVE CONTROL: masking comments does not disarm rule 1 on real code", () => {
+  // The same file that goes quiet above, with the bar RESTORED as executable
+  // code beside an unrelated comment. If this is silent, the fix over-swung and
+  // the rule is dead — which is worse than the false positive it replaced.
+  const source = T3_STRUCTURAL.replace(
+    '  expect(rendered).not.toBe("");',
+    "  // the document must carry real copy\n  expect(rendered.length).toBeGreaterThan(200);",
+  );
+  const draft = draftOf(
+    [criterion("REQ-003", "The home document is served and is not blank.", ["T-3"])],
+    [{ path: "holdout/site.spec.mjs", source, testIds: ["T-3"], criterionIds: ["REQ-003"] }],
+  );
+  const findings = proseLengthFloorFindings(draft);
+  assert.equal(findings.length, 1, `expected the real bar to still fire, got ${findings.length}`);
+  assert.match(findings[0]?.detail ?? "", /200/);
+});
+
+test("a `//` inside a STRING is not a comment — the producer survives masking", () => {
+  // The masker must not treat the slashes in a URL as a comment start. If it
+  // does, everything after them is blanked, the innerText producer disappears
+  // with it, and the file-level gate turns the whole rule off for this file.
+  const source = T3_STRUCTURAL.replace(
+    '  const response = await page.goto("/");',
+    '  const response = await page.goto("https://example.com/home");',
+  ).replace('  expect(rendered).not.toBe("");', "  expect(rendered.length).toBeGreaterThan(200);");
+  const draft = draftOf(
+    [criterion("REQ-003", "The home document is served and is not blank.", ["T-3"])],
+    [{ path: "holdout/site.spec.mjs", source, testIds: ["T-3"], criterionIds: ["REQ-003"] }],
+  );
+  assert.equal(
+    proseLengthFloorFindings(draft).length,
+    1,
+    "a URL in a string must not blank the rest of the file",
+  );
+});

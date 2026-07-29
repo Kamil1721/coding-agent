@@ -526,6 +526,103 @@ function maskEnvReferences(source: string): string {
   return source.replace(new RegExp(ENV_REFERENCE_PATTERN.source, ENV_REFERENCE_PATTERN.flags), "ENVREF");
 }
 
+/**
+ * Blank every comment, preserving offsets and line structure.
+ *
+ * WHY THIS EXISTS, and it was found by the regression it caused rather than by
+ * review. `bakeoff/test/scorer-modes.e2e.mjs` carried a gratuitous
+ * `rendered.length > 20` bar in a throwaway suite. Removing it did NOT clear
+ * rule 1's finding, because the commit that removed it left a comment saying
+ * what the assertion used to read — and the rule matched the COMMENT. The e2e
+ * stayed red at 14/16 with the defect already gone.
+ *
+ * A COMMENT CAN ONLY EVER BE A FALSE POSITIVE. It does not execute, so it can
+ * never fail a correct artefact. Rule 1 is BLOCKING: it discards the suite and
+ * spends another authoring call. A rule that forces regeneration over a line of
+ * prose is worse than the bar it was written to catch, and it would fire hardest
+ * on exactly the suites whose author bothered to explain itself.
+ *
+ * OFFSETS ARE PRESERVED — comment bodies become spaces, newlines survive —
+ * because `testSegments` slices by index. A masker that shortened the source
+ * would silently re-attribute every assertion after the first comment to the
+ * wrong test id, which is a far worse defect than the one being fixed.
+ *
+ * THE DIRECTION OF ERROR THAT MATTERS IS THE OTHER ONE. Masking too much makes
+ * a real bar invisible, and a detector that goes quiet is this repository's
+ * signature defect. So string and template bodies are walked rather than
+ * skipped, `//` inside a string stays code, and regex literals are recognised —
+ * `.replace(/\s+/g, " ")` appears verbatim in the real frozen fixtures, and a
+ * masker that mistook its slashes for a comment would blank the innerText
+ * producer beside it and turn the whole rule off for that file.
+ */
+function maskComments(source: string): string {
+  const out = source.split("");
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to && k < out.length; k += 1) if (out[k] !== "\n") out[k] = " ";
+  };
+  // A `/` starts a regex literal only where a value cannot already have ended.
+  // After an identifier, a digit, or a closing bracket it is division.
+  const regexMayStart = (at: number): boolean => {
+    for (let k = at - 1; k >= 0; k -= 1) {
+      const prev = source[k] ?? "";
+      if (/\s/.test(prev)) continue;
+      return !/[A-Za-z0-9_$)\]]/.test(prev);
+    }
+    return true;
+  };
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (c === "/" && next === "/") {
+      const end = source.indexOf("\n", i);
+      blank(i, end === -1 ? source.length : end);
+      i = end === -1 ? source.length : end;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === "`") {
+      i += 1;
+      while (i < source.length) {
+        if (source[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (source[i] === c) break;
+        i += 1;
+      }
+      i += 1;
+      continue;
+    }
+    if (c === "/" && regexMayStart(i)) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < source.length) {
+        const r = source[j];
+        if (r === "\\") {
+          j += 2;
+          continue;
+        }
+        if (r === "\n") break; // unterminated: it was division after all
+        if (r === "[") inClass = true;
+        else if (r === "]") inClass = false;
+        else if (r === "/" && !inClass) break;
+        j += 1;
+      }
+      i = j + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return out.join("");
+}
+
 const ASSERTION_PATTERN = /\b(?:assert|expect|should)\b/;
 
 /**
@@ -877,8 +974,13 @@ export function proseLengthFloorFindings(
   ticketBrief?: string,
 ): readonly AuditFinding[] {
   const findings: AuditFinding[] = [];
-  for (const file of draft.files) {
-    if (isSuiteManifestPath(file.path)) continue;
+  for (const rawFile of draft.files) {
+    if (isSuiteManifestPath(rawFile.path)) continue;
+    // COMMENTS ARE NOT CODE. Masked once, offsets preserved, and used for every
+    // read below — the file-level gate, the segmentation and the markup
+    // exclusion alike. Masking at only one of the three would leave the other
+    // two matching prose. See `maskComments`.
+    const file: DraftTestFile = { ...rawFile, source: maskComments(rawFile.source) };
     // FILE-LEVEL GATE. A file that never reads rendered text cannot be asserting
     // a floor on rendered text, whatever its numbers say. This is what keeps
     // REQ-001's `assert.ok(body.length >= 200)` on `await response.text()`
@@ -959,8 +1061,13 @@ export function numericAssertionDriftFindings(draft: SuiteDraft): readonly Audit
   ];
 
   const findings: AuditFinding[] = [];
-  for (const file of draft.files) {
-    if (isSuiteManifestPath(file.path) || file.visibility !== "holdout") continue;
+  for (const rawFile of draft.files) {
+    if (isSuiteManifestPath(rawFile.path) || rawFile.visibility !== "holdout") continue;
+    // Same masking as rule 1, for the same reason: a number quoted in a comment
+    // is not a threshold the test asserts. Advisory rather than blocking here,
+    // so the cost of the false positive is a misleading finding rather than a
+    // discarded suite — still worth not emitting.
+    const file: DraftTestFile = { ...rawFile, source: maskComments(rawFile.source) };
     for (const segment of testSegments(file)) {
       const owners = criteriaOwning(draft, segment.testId).filter((c) =>
         c.holdoutTestIds.includes(segment.testId),
