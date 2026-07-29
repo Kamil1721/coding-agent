@@ -23,8 +23,14 @@ const SCREENSHOT_BASE: string = (
   process.env["NEXT_PUBLIC_SCREENSHOT_BASE_URL"] ?? ""
 ).replace(/\/+$/, "");
 
-/** Last path segment, for POSIX and Windows separators alike. */
-function basename(path: string): string {
+/**
+ * Last path segment, for POSIX and Windows separators alike.
+ *
+ * EXPORTED because `src/lib/mockups.ts` matches a published mockup against the
+ * ref the lock was taken on by basename, and a second copy of this that ever
+ * disagreed about a trailing slash would mis-identify which card is locked.
+ */
+export function basename(path: string): string {
   const parts = path.split(/[/\\]/);
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     const part = parts[index];

@@ -163,10 +163,28 @@ export function cancelRun(runId: string): Promise<OkResponse> {
   );
 }
 
-export function resumeRun(runId: string): Promise<OkResponse> {
+/**
+ * Continue a stopped run, optionally naming the mockup to lock.
+ *
+ * NO BODY AT ALL WHEN THERE IS NO CHOICE, byte-identically to before this
+ * function learned about mockups. The route was built for the rate-limit path and
+ * the server's header commits to an empty body still resuming; `{chosenMockup:
+ * null}` would be a different request for no reason, on the path a rate-limited
+ * run depends on.
+ *
+ * A CHOICE IS SENT ONLY WHEN THE OWNER MADE ONE. Omitting it does not mean "any
+ * mockup" — it hands the pick to `ui-designer` and records it as automatic, which
+ * is the timeout's behaviour and is a different fact about the run than a click.
+ */
+export function resumeRun(
+  runId: string,
+  chosenMockup?: string,
+): Promise<OkResponse> {
   return request<OkResponse>(
     `/api/runs/${encodeURIComponent(runId)}/resume`,
-    { method: "POST" },
+    chosenMockup === undefined
+      ? { method: "POST" }
+      : { method: "POST", body: JSON.stringify({ chosenMockup }) },
   );
 }
 

@@ -31,6 +31,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import { CriteriaPanel } from "@/components/run/criteria";
+import { DesignLockPanel } from "@/components/run/design-lock";
 import { RunHeader } from "@/components/run/header";
 import {
   ApiDownNotice,
@@ -50,6 +51,7 @@ import { Notice, Panel, Skeleton } from "@/components/ui";
 import { ApiError, cancelRun, errorMessage, resumeRun } from "@/lib/api";
 import { findModel } from "@/lib/cost";
 import { useModels } from "@/lib/hooks";
+import { designLockPhase } from "@/lib/mockups";
 import { useLiveRun, useNow } from "@/lib/use-run-stream";
 
 function useRunIdParam(): string | null {
@@ -87,6 +89,27 @@ export default function RunPage(): ReactNode {
 
   const onCancel = act(cancelRun);
   const onResume = act(resumeRun);
+
+  /*
+   * NOT ROUTED THROUGH `act`, and not because of its signature.
+   *
+   * `act(resumeRun)` resumes with NO body, which hands the pick to `ui-designer`
+   * and records it as automatic. A click that quietly did that would put the
+   * owner's name on nobody's decision — or worse, `ui-designer`'s name on the
+   * owner's. The choice travels or the request does not.
+   */
+  const onChooseMockup = useCallback(
+    (chosenMockup: string): void => {
+      if (runId === null || busy) return;
+      setBusy(true);
+      setActionError(null);
+      void resumeRun(runId, chosenMockup)
+        .then(() => refresh())
+        .catch((cause: unknown) => setActionError(errorMessage(cause)))
+        .finally(() => setBusy(false));
+    },
+    [runId, busy, refresh],
+  );
 
   // Looked up rather than stored: hiding the housekeeping agents, or a run that
   // ends and re-folds, must not leave the inspector holding a node the canvas
@@ -138,6 +161,31 @@ export default function RunPage(): ReactNode {
 
   const model = findModel(models, run.modelId);
 
+  /*
+   * WHICH KIND OF `awaiting_input` THIS IS, WHICH IS THE ONLY REASON THE NOTICE
+   * BELOW IS CONDITIONAL.
+   *
+   * `awaiting_input` is also what `reconcileOnBoot` sets for any run whose
+   * builder subprocess died with the dashboard, and that run has no mockups and
+   * no question these cards can answer — its two moves really are resume and
+   * cancel, which is what `AwaitingInputNotice` says. Only a DESIGN park may
+   * replace it: there, the notice's "this dashboard has no channel to answer a
+   * mid-run question" is false, and the cards are the channel.
+   */
+  const lockPhase =
+    run.designLock === null ? null : designLockPhase(run.status, run.designLock);
+  const lockIsBlocking = lockPhase === "pending" || lockPhase === "closing";
+
+  const designLockPanel =
+    lockPhase === null ? null : (
+      <DesignLockPanel
+        run={run}
+        busy={busy}
+        onChoose={onChooseMockup}
+        onRefresh={refresh}
+      />
+    );
+
   return (
     <div className="flex flex-col gap-3">
       <RunHeader
@@ -158,9 +206,17 @@ export default function RunPage(): ReactNode {
       {run.status === "rate_limited" && (
         <RateLimitNotice run={run} onResume={onResume} busy={busy} />
       )}
-      {run.status === "awaiting_input" && (
+      {run.status === "awaiting_input" && lockPhase !== "pending" && (
         <AwaitingInputNotice onResume={onResume} onCancel={onCancel} busy={busy} />
       )}
+
+      {/*
+       * ABOVE THE CANVAS WHILE IT BLOCKS, BESIDE THE ARTEFACTS ONCE IT DOES NOT.
+       * A decision the run is stopped on belongs where the eye lands first; the
+       * same panel, after the choice is recorded, is one more thing the run
+       * produced and sits with the rest of the record.
+       */}
+      {lockIsBlocking && designLockPanel}
 
       <OutcomeNotice run={run} />
       <DeliveryNotice run={run} />
@@ -261,6 +317,8 @@ export default function RunPage(): ReactNode {
         <TracePane trace={trace} stream={stream} onReconnect={reconnect} />
         <CriteriaPanel criteria={run.criteria} />
       </div>
+
+      {!lockIsBlocking && designLockPanel}
 
       <ScreenshotsPanel runId={run.runId} screenshots={run.screenshots} />
     </div>
