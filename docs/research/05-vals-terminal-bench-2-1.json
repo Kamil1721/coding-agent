@@ -1,0 +1,362 @@
+[
+ {
+  "rank": 1,
+  "model": "GPT-5.6 Sol",
+  "score": 85.77,
+  "err": 1.35,
+  "cost": "$1.02",
+  "latency_s": 372.82
+ },
+ {
+  "rank": 2,
+  "model": "Claude Opus 5",
+  "score": 84.64,
+  "err": 0.99,
+  "cost": "$0.89",
+  "latency_s": 752.93
+ },
+ {
+  "rank": 3,
+  "model": "Kimi K3",
+  "score": 80.9,
+  "err": 0.65,
+  "cost": "$0.34",
+  "latency_s": 608.58
+ },
+ {
+  "rank": 4,
+  "model": "Claude Fable 5",
+  "score": 80.52,
+  "err": 1.35,
+  "cost": "$1.43",
+  "latency_s": 504.54
+ },
+ {
+  "rank": 5,
+  "model": "GPT-5.6 Luna",
+  "score": 79.03,
+  "err": 0.99,
+  "cost": "$0.27",
+  "latency_s": 355.75
+ },
+ {
+  "rank": 6,
+  "model": "GPT 5.5",
+  "score": 76.4,
+  "err": 0.65,
+  "cost": "$0.74",
+  "latency_s": 427.41
+ },
+ {
+  "rank": 7,
+  "model": "Claude Sonnet 5",
+  "score": 74.53,
+  "err": 2.08,
+  "cost": "$0.80",
+  "latency_s": 635.04
+ },
+ {
+  "rank": 8,
+  "model": "Gemini 3.5 Flash",
+  "score": 74.16,
+  "err": 1.12,
+  "cost": "$0.87",
+  "latency_s": 373.22
+ },
+ {
+  "rank": 9,
+  "model": "Gemini 3.6 Flash",
+  "score": 73.78,
+  "err": 1.63,
+  "cost": "$1.17",
+  "latency_s": 552.15
+ },
+ {
+  "rank": 10,
+  "model": "GPT-5.6 Terra",
+  "score": 73.41,
+  "err": 2.08,
+  "cost": "$0.71",
+  "latency_s": 260.9
+ },
+ {
+  "rank": 11,
+  "model": "Claude Opus 4.8",
+  "score": 71.91,
+  "err": 0.65,
+  "cost": "$2.41",
+  "latency_s": 929.9
+ },
+ {
+  "rank": 12,
+  "model": "Gemini 3.1 Pro Preview (02/26)",
+  "score": 70.79,
+  "err": 1.12,
+  "cost": "$0.58",
+  "latency_s": 410.25
+ },
+ {
+  "rank": 13,
+  "model": "Claude Opus 4.8",
+  "score": 69.66,
+  "err": 4.9,
+  "cost": "$0.97",
+  "latency_s": 359.97
+ },
+ {
+  "rank": 14,
+  "model": "Muse Spark 1.1",
+  "score": 69.29,
+  "err": 0.99,
+  "cost": "$0.42",
+  "latency_s": 624.77
+ },
+ {
+  "rank": 15,
+  "model": "Claude Opus 4.7",
+  "score": 68.54,
+  "err": 1.3,
+  "cost": "$1.98",
+  "latency_s": 816.59
+ },
+ {
+  "rank": 16,
+  "model": "Grok 4.5",
+  "score": 67.79,
+  "err": 4.42,
+  "cost": "$0.28",
+  "latency_s": 624.41
+ },
+ {
+  "rank": 17,
+  "model": "GLM 5.2",
+  "score": 67.79,
+  "err": 0.99,
+  "cost": "$0.43",
+  "latency_s": 820.51
+ },
+ {
+  "rank": 18,
+  "model": "Kimi K2.7 Code",
+  "score": 67.04,
+  "err": 0.38,
+  "cost": "$0.26",
+  "latency_s": 784.16
+ },
+ {
+  "rank": 19,
+  "model": "Qwen 3.7 Max",
+  "score": 61.05,
+  "err": 0.38,
+  "cost": "$0.33",
+  "latency_s": 935.2
+ },
+ {
+  "rank": 20,
+  "model": "MiMo V2.5",
+  "score": 60.67,
+  "err": 5.21,
+  "cost": "$0.02",
+  "latency_s": 775.24
+ },
+ {
+  "rank": 21,
+  "model": "Composer 2.5",
+  "score": 58.43,
+  "err": 5.25,
+  "cost": "N/A",
+  "latency_s": null
+ },
+ {
+  "rank": 22,
+  "model": "GPT 5.5",
+  "score": 57.3,
+  "err": 5.27,
+  "cost": "$0.65",
+  "latency_s": 202.47
+ },
+ {
+  "rank": 23,
+  "model": "GPT 5.5",
+  "score": 57.3,
+  "err": 5.27,
+  "cost": "$0.75",
+  "latency_s": 389.26
+ },
+ {
+  "rank": 24,
+  "model": "Claude Sonnet 4.6",
+  "score": 57.3,
+  "err": 0.65,
+  "cost": "$0.57",
+  "latency_s": 704.23
+ },
+ {
+  "rank": 25,
+  "model": "MiMo V2.5 Pro",
+  "score": 57.3,
+  "err": 5.27,
+  "cost": "$0.04",
+  "latency_s": 866.25
+ },
+ {
+  "rank": 26,
+  "model": "GLM 5.1",
+  "score": 56.93,
+  "err": 1.35,
+  "cost": "$0.23",
+  "latency_s": 940.94
+ },
+ {
+  "rank": 27,
+  "model": "GPT 5.4 Mini",
+  "score": 54.68,
+  "err": 4.56,
+  "cost": "$0.29",
+  "latency_s": 673.04
+ },
+ {
+  "rank": 28,
+  "model": "Gemini 3 Flash (12/25)",
+  "score": 53.93,
+  "err": 1.3,
+  "cost": "$0.15",
+  "latency_s": 376.16
+ },
+ {
+  "rank": 29,
+  "model": "Kimi K2.6",
+  "score": 53.56,
+  "err": 2.08,
+  "cost": "$0.14",
+  "latency_s": 932.36
+ },
+ {
+  "rank": 30,
+  "model": "MiniMax-M3",
+  "score": 53.56,
+  "err": 0.75,
+  "cost": "$0.21",
+  "latency_s": 1023.42
+ },
+ {
+  "rank": 31,
+  "model": "Qwen 3.6 Plus",
+  "score": 53.18,
+  "err": 1.63,
+  "cost": "$0.20",
+  "latency_s": 778.11
+ },
+ {
+  "rank": 32,
+  "model": "Qwen 3.7 Plus",
+  "score": 52.81,
+  "err": 0.65,
+  "cost": "$0.10",
+  "latency_s": 654.98
+ },
+ {
+  "rank": 33,
+  "model": "Nemotron 3 Ultra",
+  "score": 50.94,
+  "err": 2.92,
+  "cost": "N/A",
+  "latency_s": 584.12
+ },
+ {
+  "rank": 34,
+  "model": "Gemini 3.5 Flash Lite",
+  "score": 50.19,
+  "err": 0.99,
+  "cost": "$0.34",
+  "latency_s": 416.38
+ },
+ {
+  "rank": 35,
+  "model": "DeepSeek V4",
+  "score": 50.19,
+  "err": 1.5,
+  "cost": "$0.24",
+  "latency_s": 1078.16
+ },
+ {
+  "rank": 36,
+  "model": "MiniMax-M2.7",
+  "score": 48.69,
+  "err": 3.07,
+  "cost": "$0.07",
+  "latency_s": 812.64
+ },
+ {
+  "rank": 37,
+  "model": "Inkling",
+  "score": 47.57,
+  "err": 0.38,
+  "cost": "$2.42",
+  "latency_s": 771.55
+ },
+ {
+  "rank": 38,
+  "model": "Grok 4.20 (Reasoning)",
+  "score": 44.2,
+  "err": 0.99,
+  "cost": "$0.41",
+  "latency_s": 305.73
+ },
+ {
+  "rank": 39,
+  "model": "Claude Haiku 4.5 (Thinking)",
+  "score": 43.82,
+  "err": 1.95,
+  "cost": "$0.36",
+  "latency_s": 649.49
+ },
+ {
+  "rank": 40,
+  "model": "Grok 4.3",
+  "score": 41.95,
+  "err": 2.62,
+  "cost": "$0.98",
+  "latency_s": 470.71
+ },
+ {
+  "rank": 41,
+  "model": "GPT 5.4 Nano",
+  "score": 41.57,
+  "err": 2.97,
+  "cost": "$0.07",
+  "latency_s": 757.49
+ },
+ {
+  "rank": 42,
+  "model": "Mistral Medium 3.5",
+  "score": 38.95,
+  "err": 2.7,
+  "cost": "$1.19",
+  "latency_s": 989.17
+ },
+ {
+  "rank": 43,
+  "model": "Gemini 3.1 Flash Lite Preview",
+  "score": 34.08,
+  "err": 0.99,
+  "cost": "$0.08",
+  "latency_s": 278.34
+ },
+ {
+  "rank": 44,
+  "model": "Laguna M.1",
+  "score": 34.08,
+  "err": 1.63,
+  "cost": "N/A",
+  "latency_s": 1209.61
+ },
+ {
+  "rank": 45,
+  "model": "Laguna XS.2",
+  "score": 25.84,
+  "err": 2.97,
+  "cost": "N/A",
+  "latency_s": 1218.58
+ }
+]
