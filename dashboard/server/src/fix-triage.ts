@@ -18,7 +18,7 @@
  * from being silent.
  */
 
-import { ALL_FAILURE_CLASSES } from "./gate-report.js";
+import { ALL_FAILURE_CLASSES, gatingUnmet } from "./gate-report.js";
 import type { AgentVisibleReport, FailureClass, FixableFailure } from "./gate-report.js";
 
 export interface FixTask {
@@ -95,8 +95,12 @@ export function planFixes(report: AgentVisibleReport): readonly FixTask[] {
   if (report.infraFailure !== null) return [];
 
   const all: FixableFailure[] = [...report.failures];
-  const unmet = report.heldOutUnmet.BLOCKING + report.heldOutUnmet.FUNCTIONAL + report.heldOutUnmet.QUALITY;
-  if (unmet > 0) all.push(heldOutFailure(report));
+  // GATING TIERS ONLY. A QUALITY-only shortfall cannot change `heldOutPass`
+  // (`computeHeldOutPass` reads BLOCKING and FUNCTIONAL), so synthesising work
+  // for it would spend a fix round and a container run on something that was
+  // never going to move the verdict. The QUALITY count still reaches the fixer
+  // in any round that happens anyway, and always reaches the backlog.
+  if (gatingUnmet(report) > 0) all.push(heldOutFailure(report));
 
   const byAgent = new Map<string, FixableFailure[]>();
   for (const klass of ALL_FAILURE_CLASSES) {

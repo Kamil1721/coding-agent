@@ -296,12 +296,39 @@ function countUnmet(container: ContainerResult): Readonly<Record<CriterionTier, 
   return Object.freeze(counts);
 }
 
-/** Total unmet across every tier. QUALITY included: it is reported, not gating. */
+/** Total unmet across every tier. For REPORTING — never for a stop condition. */
 export function unmetTotal(report: AgentVisibleReport): number {
   return report.heldOutUnmet.BLOCKING + report.heldOutUnmet.FUNCTIONAL + report.heldOutUnmet.QUALITY;
 }
 
-/** Nothing left to fix: no gate failed and every criterion was satisfied. */
+/**
+ * Unmet criteria that can actually change the verdict.
+ *
+ * BLOCKING + FUNCTIONAL, because that is precisely what `computeHeldOutPass`
+ * reads (`bakeoff/src/contracts.ts`): `criteriaResults.filter((c) => c.tier ===
+ * "BLOCKING" || c.tier === "FUNCTIONAL")`. QUALITY is "REPORTED, NEVER GATING"
+ * — the scorer went out of its way to fix exactly that after the 4B run, where a
+ * BLOCKING gate carrying QUALITY failures silently overrode the decision and
+ * made `pass_with_notes` unreachable.
+ *
+ * A LOOP THAT COUNTED QUALITY HERE WOULD GATE ON IT. Measured on the way in:
+ * with QUALITY in the stop condition, a build that passed every tier-0 gate and
+ * left one QUALITY criterion unmet spent a fix round and two extra container
+ * runs — out of the owner's shared rate-limit window — and then finished
+ * `passed` anyway, because `heldOutPass` was true the whole time.
+ */
+export function gatingUnmet(report: AgentVisibleReport): number {
+  return report.heldOutUnmet.BLOCKING + report.heldOutUnmet.FUNCTIONAL;
+}
+
+/**
+ * Nothing left that this loop can usefully do: no gate failed and no GATING
+ * criterion is unmet.
+ *
+ * A QUALITY shortfall does not hold the loop open — and is not hidden either. It
+ * is stated in every fix prompt and in the backlog, where it is reported rather
+ * than gating, which is what the tier means.
+ */
 export function isGreen(report: AgentVisibleReport): boolean {
-  return report.infraFailure === null && report.failures.length === 0 && unmetTotal(report) === 0;
+  return report.infraFailure === null && report.failures.length === 0 && gatingUnmet(report) === 0;
 }

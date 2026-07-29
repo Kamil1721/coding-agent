@@ -42,8 +42,8 @@ const REASONS: Readonly<Record<StopReason, string>> = Object.freeze({
     "two consecutive gate runs produced the identical failures, so the fix round changed nothing " +
     "observable. The remaining budget was not spent proving that a third time.",
   infra:
-    "the sealed scorer itself failed, so THIS IS NOT A VERDICT ABOUT THE BUILD. Nothing below is " +
-    "evidence about the artefact; the gate could not run.",
+    "the gate did not complete, so THIS IS NOT A VERDICT ABOUT THE BUILD. Nothing below is evidence " +
+    "about the artefact.",
   cancelled: "the run was cancelled. Whatever is below was true at the last gate it completed.",
 });
 
@@ -116,7 +116,10 @@ export function renderBacklog(input: BacklogInput): string {
   ];
 
   if (infraFailure !== null) {
-    lines.push("", `**Infrastructure failure:** ${infraFailure}`);
+    // A run that stopped before the gate is not an infrastructure failure of the
+    // scorer, and labelling it as one would file the owner's own cancel under
+    // "the machine broke".
+    lines.push("", `**${input.reason === "infra" ? "Infrastructure failure" : "Why nothing was measured"}:** ${infraFailure}`);
   }
 
   lines.push("", "## Still broken", "", ...renderRemaining(input.remaining, measured));

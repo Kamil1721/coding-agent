@@ -239,6 +239,56 @@ test("an aborted run stops as cancelled, not as a verdict", async () => {
   assert.equal(r.passed, false, "cancelled is never a pass");
 });
 
+test("a QUALITY-only shortfall is GREEN — the loop stops where the verdict stops", async () => {
+  // `computeHeldOutPass` (bakeoff/src/contracts.ts:1438) filters to BLOCKING and
+  // FUNCTIONAL. QUALITY is "REPORTED, NEVER GATING" — the scorer went out of its
+  // way to fix exactly this after the 4B run, because a BLOCKING gate carrying
+  // QUALITY failures made `pass_with_notes` unreachable.
+  //
+  // If this loop's green condition counted QUALITY, it would spend a fix round
+  // and two extra container runs, out of the owner's shared rate-limit window,
+  // on work that cannot change the verdict — and then finish `passed` anyway.
+  const qualityOnly = containerFixture({
+    tier0: [tier0Fixture({ id: GATE_IDS.build, outcome: "pass", detail: "built in 4s" })],
+    criterionCoverage: [
+      coverageFixture({ criterionId: "C-1", tier: "BLOCKING", outcome: "passed" }),
+      coverageFixture({ criterionId: "C-2", tier: "QUALITY", outcome: "failed" }),
+      coverageFixture({ criterionId: "C-3", tier: "QUALITY", outcome: "unasserted" }),
+    ],
+  });
+  const seen: string[] = [];
+  const { gate, calls } = stubGate([qualityOnly]);
+  const r = await runLoop({ gate, maxAttempts: 3, onAgentPrompt: (p) => seen.push(p) });
+  assert.equal(r.reason, "green");
+  assert.equal(calls.length, 1, "no second container run for something that cannot fail the run");
+  assert.equal(seen.length, 0, "and no fix round");
+
+  // POSITIVE CONTROL, and the negative control for the line above: the identical
+  // shape at FUNCTIONAL is not green and does spend a round.
+  const functional = containerFixture({
+    tier0: [tier0Fixture({ id: GATE_IDS.build, outcome: "pass", detail: "built in 4s" })],
+    criterionCoverage: [coverageFixture({ criterionId: "C-2", tier: "FUNCTIONAL", outcome: "failed" })],
+  });
+  const second = stubGate([functional, green()]);
+  const r2 = await runLoop({ gate: second.gate, maxAttempts: 3, onAgentPrompt: (p) => seen.push(p) });
+  assert.equal(r2.reason, "green");
+  assert.equal(second.calls.length, 2, "it did fix and re-gate");
+  assert.equal(seen.length, 1);
+});
+
+test("a QUALITY shortfall still reaches the fixer when something else is broken", async () => {
+  // Reported, never gating: it does not hold the loop open, and it is not hidden
+  // from a round that is happening anyway.
+  const seen: string[] = [];
+  const mixed = containerFixture({
+    tier0: [tier0Fixture({ id: GATE_IDS.build, outcome: "fail", detail: "TS2345", command: "npm run build" })],
+    criterionCoverage: [coverageFixture({ criterionId: "C-2", tier: "QUALITY", outcome: "failed" })],
+  });
+  const { gate } = stubGate([mixed, green()]);
+  await runLoop({ gate, maxAttempts: 3, onAgentPrompt: (p) => seen.push(p) });
+  assert.match(seen[0] ?? "", /1 QUALITY/);
+});
+
 test("a gate interrupted by a cancel is cancelled, not an infrastructure fault", async () => {
   // An aborted gate produces no result, which looks exactly like a scorer that
   // broke. Reporting it as infra blames the machine for something the owner did.

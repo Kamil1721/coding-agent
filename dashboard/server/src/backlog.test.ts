@@ -113,8 +113,27 @@ test("an infra stop says the artefact was not measured, rather than listing fixe
     infraFailure: "chromium failed to launch",
   });
   assert.match(md, /chromium/);
+  assert.match(md, /Infrastructure failure/, "this one IS the machine, and says so");
   assert.match(md, /not a verdict|no verdict/i, "an infra stop is not a result about the build");
   assert.doesNotMatch(md, /nothing deferred/i, "an unmeasured build has not deferred nothing — it is unknown");
+});
+
+test("a run that stopped before the gate says UNKNOWN, and does not file itself as a machine fault", () => {
+  // The run cancelled during spec or build is exactly the run whose "what
+  // happened to my ticket?" is least answerable, and writing nothing for it
+  // leaves a missing file — which cannot be told apart from a step that never
+  // ran (CLAUDE.md rule 7).
+  const md = renderBacklog({
+    reason: "cancelled",
+    attempts: 0,
+    remaining: [],
+    heldOutUnmet: ZERO,
+    infraFailure: "the run was cancelled before the gate produced a result",
+  });
+  assert.match(md, /UNKNOWN/);
+  assert.doesNotMatch(md, /nothing deferred/i, "nothing was measured, so nothing is known to be clean");
+  assert.match(md, /Why nothing was measured/, "the owner's own cancel is not an infrastructure failure");
+  assert.doesNotMatch(md, /Infrastructure failure/);
 });
 
 test("work nothing was allowed to run is in the backlog, with the reason", () => {

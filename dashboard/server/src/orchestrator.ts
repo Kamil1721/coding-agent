@@ -73,11 +73,12 @@ import {
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
 import { shortlistFor } from "./agent-shortlist.js";
 import { writeBacklog } from "./backlog.js";
+import type { BacklogInput } from "./backlog.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
 import type { FixTask } from "./fix-triage.js";
 import { archiveAttempt, readAttempt, scorerOutRoot } from "./gate-attempts.js";
 import { maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
-import type { GateFixLoopResult } from "./gate-fix-loop.js";
+import type { GateFixLoopResult, StopReason } from "./gate-fix-loop.js";
 import type { ApiCriterion, ApiPhase, ApiRunStatus } from "./api-types.js";
 import { appendContextEvent } from "./build-context.js";
 import type { ContextEvent } from "./build-context.js";
@@ -307,6 +308,7 @@ export class Orchestrator {
       // A throw that escapes #execute is a harness fault, not a model result.
       const detail = describeError(error);
       this.#emitLog(runId, "error", detail);
+      this.#recordUnmeasuredBacklog(runId, "infra", detail);
       this.#finish(runId, "failed", {
         endedAt: new Date().toISOString(),
         failureReason: detail,
@@ -848,7 +850,20 @@ export class Orchestrator {
       result.passed ? "info" : "warn",
       `the gate/fix loop stopped after ${String(result.attempts)} attempt(s): ${result.reason}`,
     );
-    this.#recordBacklog(runId, runPaths, result);
+    // NOT ON A RATE LIMIT. That run is not terminal — the window drains and it
+    // resumes — and a backlog headed "Stopped: cancelled" for a run that is
+    // going to continue is a false statement about work that is not finished.
+    // The next attempt writes it.
+    if (rateLimit === null) {
+      this.#recordBacklog(runId, runPaths, {
+        reason: result.reason,
+        attempts: result.attempts,
+        remaining: result.report.failures,
+        heldOutUnmet: result.report.heldOutUnmet,
+        denied: result.deniedTasks,
+        infraFailure: result.report.infraFailure,
+      });
+    }
     return { scored, result, rateLimit };
   }
 
@@ -939,25 +954,37 @@ export class Orchestrator {
   }
 
   /**
-   * `backlog.md`, on every terminal outcome.
+   * `backlog.md`, on EVERY terminal outcome — including the ones that never
+   * reached the gate.
+   *
+   * A run cancelled during the spec or the build, and a run that died of a
+   * harness fault, are exactly the runs whose "what happened to my ticket?" is
+   * least answerable. Writing nothing for them leaves a missing file, and a
+   * missing file cannot be told apart from a step that never ran. What they get
+   * instead says UNKNOWN in both sections, because nothing was measured and the
+   * absence of a claim is the honest output (CLAUDE.md rule 7).
    *
    * A failure to write it must NOT take the run down — this is the record of the
    * run, not the run — so it is logged as a warning, which is itself a record.
    */
-  #recordBacklog(runId: string, runPaths: RunPaths, result: GateFixLoopResult): void {
+  #recordBacklog(runId: string, runPaths: RunPaths, input: BacklogInput): void {
     try {
-      const path = writeBacklog(runPaths.results, {
-        reason: result.reason,
-        attempts: result.attempts,
-        remaining: result.report.failures,
-        heldOutUnmet: result.report.heldOutUnmet,
-        denied: result.deniedTasks,
-        infraFailure: result.report.infraFailure,
-      });
+      const path = writeBacklog(runPaths.results, input);
       this.#emitLog(runId, "info", `what this run did not close is recorded in ${path}`);
     } catch (error) {
       this.#emitLog(runId, "warn", `the backlog could not be written: ${describeError(error)}`);
     }
+  }
+
+  /** The backlog for a run that stopped before the gate ever produced a result. */
+  #recordUnmeasuredBacklog(runId: string, reason: StopReason, why: string): void {
+    this.#recordBacklog(runId, runPathsFor(this.#deps.paths, runId), {
+      reason,
+      attempts: 0,
+      remaining: [],
+      heldOutUnmet: { BLOCKING: 0, FUNCTIONAL: 0, QUALITY: 0 },
+      infraFailure: why,
+    });
   }
 
   /**
@@ -1000,12 +1027,12 @@ export class Orchestrator {
     try {
       const gate = await createGate(gateEnv(this.#deps.paths, this.#deps.env));
       record = await gate.score(runRecord, suite);
-      archiveAttempt(this.#deps.paths, runId, attempt);
+      this.#archiveAttempt(runId, attempt);
     } catch (error) {
       // Archive whatever the scorer managed to write before it threw: a
       // container that failed halfway still produced evidence about this
       // attempt, and the next attempt is about to overwrite it.
-      archiveAttempt(this.#deps.paths, runId, attempt);
+      this.#archiveAttempt(runId, attempt);
       // heldOutPass stays NULL. "The gate could not run" is not "the gate said
       // no", and the two must not look alike in the run list.
       const failure = describeError(error);
@@ -1121,6 +1148,22 @@ export class Orchestrator {
       ledgerPath: runPaths.ledger,
       harnessErrors: [],
     };
+  }
+
+  /**
+   * Preserve this attempt's result before the next one overwrites it.
+   *
+   * NEVER THROWS. It is called on both arms of the gate's try/catch, and an
+   * EACCES or a full disk in the catch arm would escape `#gatePhase` entirely
+   * and turn a run that reached a real verdict into a harness fault. This is the
+   * record of the attempt, not the attempt.
+   */
+  #archiveAttempt(runId: string, attempt: number): void {
+    try {
+      archiveAttempt(this.#deps.paths, runId, attempt);
+    } catch (error) {
+      this.#emitLog(runId, "warn", `gate attempt ${String(attempt)} could not be archived: ${describeError(error)}`);
+    }
   }
 
   /**
@@ -1259,6 +1302,10 @@ export class Orchestrator {
 
   #cancelled(runId: string, log: BuildLog): void {
     log.close();
+    // Reached only from the spec and build phases — a cancel inside the loop
+    // comes back through the loop, which writes its own backlog with whatever
+    // the last completed gate knew.
+    this.#recordUnmeasuredBacklog(runId, "cancelled", "the run was cancelled before the gate produced a result");
     this.#finish(runId, "cancelled", { endedAt: new Date().toISOString(), queuePosition: null });
   }
 
