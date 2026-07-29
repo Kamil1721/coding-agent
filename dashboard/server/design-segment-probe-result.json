@@ -1,0 +1,59 @@
+{
+  "probe": "design-segment-resume-2b",
+  "runStamp": "2026-07-29T17:33:10.011Z",
+  "model": "claude-haiku-4-5-20251001",
+  "arms": {
+    "segment1": {
+      "text": "OK",
+      "sessionId": "dec9c160-ed9d-47d2-9fbc-8ebec81bd4d9",
+      "usage": {
+        "inputTokens": 10,
+        "outputTokens": 61,
+        "cacheReadTokens": 15232,
+        "cacheWriteTokens": 2469
+      },
+      "error": null
+    },
+    "segment2Armed": {
+      "text": "FERROUS",
+      "sessionId": "dec9c160-ed9d-47d2-9fbc-8ebec81bd4d9",
+      "usage": {
+        "inputTokens": 10,
+        "outputTokens": 71,
+        "cacheReadTokens": 17701,
+        "cacheWriteTokens": 91
+      },
+      "error": null
+    },
+    "segment2Control": {
+      "text": "UNKNOWN",
+      "sessionId": "acab11cd-2a5c-4cd8-bd0f-dc89aba6eede",
+      "usage": {
+        "inputTokens": 10,
+        "outputTokens": 69,
+        "cacheReadTokens": 17704,
+        "cacheWriteTokens": 0
+      },
+      "error": null
+    },
+    "summary": {
+      "armedKnows": true,
+      "controlKnows": false,
+      "sameSession": true
+    }
+  },
+  "verdict": "PASSED — the armed arm named the word and reported segment 1's session_id; the control arm, with the same prompt and no resume, did not. `resume: <sessionId>` continues the session.",
+  "tokenAccounting": "per-call",
+  "tokenAccountingEvidence": {
+    "comparable": [
+      "inputTokens",
+      "outputTokens",
+      "cacheReadTokens",
+      "cacheWriteTokens"
+    ],
+    "decreased": [
+      "cacheWriteTokens"
+    ]
+  },
+  "tokenAccountingDetail": "segment 2 reported LESS than segment 1 on cacheWriteTokens, and a running total cannot go down — so a resumed session reports PER-CALL totals and mergeTokenTotals must be a SUM. A field-wise max would silently drop segment 2's share of every field segment 1 happened to lead on."
+}

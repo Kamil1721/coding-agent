@@ -27,6 +27,7 @@ import { test } from "node:test";
 import {
   addTokens,
   describeTokens,
+  mergeTokenTotals,
   modelRows,
   toApiTokens,
   unattributedTokens,
@@ -286,4 +287,56 @@ test("an unexplained remainder is SAID, not hidden inside a model's figure", () 
     }),
   );
   assert.match(line, /unattributed: 10 input/);
+});
+
+/* -------------------------------------------------------------------------
+ * The two-segment merge
+ * ---------------------------------------------------------------------- */
+
+test("a second segment never LOWERS the run's reported totals", () => {
+  // THE DEFECT, EXACTLY. The build phase is two builder.build() calls against
+  // one session, and the orchestrator wrote toApiTokens(outcome.tokens) onto the
+  // row after each. A design segment that spent 1000 followed by a build segment
+  // that reported 10 left the run claiming 10 — a number smaller than what the
+  // owner had already been shown.
+  const afterDesign = { inputTokens: 1000, outputTokens: 40, cacheReadTokens: 7, cacheWriteTokens: 3 };
+  const segmentTwo = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  const merged = mergeTokenTotals(afterDesign, segmentTwo);
+  assert.ok(merged.inputTokens >= afterDesign.inputTokens);
+  assert.equal(merged.inputTokens, 1010, "per-call totals, so the run's spend is their sum");
+});
+
+test("EVERY field is carried, including the ones the FIRST segment led on", () => {
+  // WHY A SUM AND NOT A MAX, and this is the assertion that tells them apart.
+  // `design-segment-probe.mjs` measured a resumed session reporting LESS than its
+  // first segment on cacheWrite (2469 -> 91), which is only possible for per-call
+  // totals. Under a field-wise max, segment 2's 91 cache-write and its 71 output
+  // would vanish entirely because segment 1 happened to lead on both.
+  const first = { inputTokens: 10, outputTokens: 61, cacheReadTokens: 15232, cacheWriteTokens: 2469 };
+  const resumed = { inputTokens: 10, outputTokens: 71, cacheReadTokens: 17701, cacheWriteTokens: 91 };
+  assert.deepEqual(mergeTokenTotals(first, resumed), {
+    inputTokens: 20,
+    outputTokens: 132,
+    cacheReadTokens: 32933,
+    cacheWriteTokens: 2560,
+  });
+});
+
+test("the merge is field-wise, so no field borrows another's number", () => {
+  const previous = { inputTokens: 1000, outputTokens: 5, cacheReadTokens: 900, cacheWriteTokens: 0 };
+  const incoming = { inputTokens: 20, outputTokens: 700, cacheReadTokens: 1, cacheWriteTokens: 60 };
+  assert.deepEqual(mergeTokenTotals(previous, incoming), {
+    inputTokens: 1020,
+    outputTokens: 705,
+    cacheReadTokens: 901,
+    cacheWriteTokens: 60,
+  });
+});
+
+test("a run with nothing recorded yet takes the incoming row verbatim, never zeroes", () => {
+  // `RunRow.tokens` is null until the first token event. Treating null as a zero
+  // row would work by accident here and would be a claim ("this run reported 0")
+  // the moment any field of `incoming` were absent.
+  const incoming = { inputTokens: 12, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  assert.equal(mergeTokenTotals(null, incoming), incoming);
 });

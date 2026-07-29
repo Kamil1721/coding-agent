@@ -78,6 +78,27 @@ export interface RunRow {
   readonly inferredCriteria: number;
   /** Path to `verdict.md`, or "" while the run has not reached a terminal state. */
   readonly verdictPath: string;
+  /**
+   * The DESIGN segment returned of its own accord (Phase 2b).
+   *
+   * WHY THE SESSION ID CANNOT ANSWER THIS. The build phase is two
+   * `builder.build()` calls against one session, and `builderSessionId !== null`
+   * is true in four situations that need three different prompts — a fresh run, a
+   * design segment interrupted by a rate limit, a design segment finished and
+   * waiting on the lock, and a build segment interrupted. `nextBuildSegment`
+   * needs this column to tell the second from the third, and without it a
+   * resumed run takes the "the dashboard was interrupted" prompt, which names no
+   * locked mockup and loses the design with nothing reporting it.
+   */
+  readonly designSegmentDone: boolean;
+  /**
+   * The lock policy the run was CREATED with: `"auto"`, `"ask"`, or `""` for
+   * "the request said nothing". Empty is not `"auto"`: `designLockPolicy` reads
+   * it together with {@link RunRow.interactive} to apply §17.3 rule 2.
+   */
+  readonly designLock: string;
+  /** The request that created this run came from a human at the dashboard. */
+  readonly interactive: boolean;
   readonly updatedAt: string;
 }
 
@@ -102,6 +123,12 @@ export interface RunPatch {
   readonly failureReason?: string | null;
   readonly inferredCriteria?: number;
   readonly verdictPath?: string;
+  /**
+   * ONLY `designSegmentDone` IS PATCHABLE OF THE THREE. The other two are stated
+   * once, by the request that created the run, and a run whose lock policy could
+   * change halfway through is a run whose park has no explanation.
+   */
+  readonly designSegmentDone?: boolean;
 }
 
 export interface NewRun {
@@ -115,6 +142,14 @@ export interface NewRun {
   readonly deploy: boolean;
   readonly startedAt: string;
   readonly queuePosition: number;
+  /**
+   * §17.3 rule 2's two inputs, OPTIONAL so the HTTP layer can start supplying
+   * them without this file's other callers changing. Absent means exactly what
+   * an old row means: nothing was stated, and `designLockPolicy` decides from
+   * `interactive` alone.
+   */
+  readonly designLock?: "auto" | "ask" | null;
+  readonly interactive?: boolean;
 }
 
 /** One persisted SSE event, with the sequence number the replay depends on. */
@@ -263,6 +298,9 @@ CREATE TABLE IF NOT EXISTS runs (
   failure_reason             TEXT,
   inferred_criteria          INTEGER NOT NULL DEFAULT 0,
   verdict_path               TEXT NOT NULL DEFAULT '',
+  design_segment_done        INTEGER NOT NULL DEFAULT 0,
+  design_lock                TEXT NOT NULL DEFAULT '',
+  interactive                INTEGER NOT NULL DEFAULT 0,
   updated_at                 TEXT NOT NULL
 );
 
@@ -329,6 +367,9 @@ const RUN_COLUMNS = [
   "failure_reason",
   "inferred_criteria",
   "verdict_path",
+  "design_segment_done",
+  "design_lock",
+  "interactive",
   "updated_at",
 ].join(", ");
 
@@ -355,6 +396,22 @@ const ADDED_RUN_COLUMNS: readonly { readonly name: string; readonly ddl: string 
   {
     name: "verdict_path",
     ddl: "ALTER TABLE runs ADD COLUMN verdict_path TEXT NOT NULL DEFAULT ''",
+  },
+  // Phase 2b (the DESIGN lane). All three defaults are the "nothing recorded
+  // yet" value and all three are TRUE of every historical row: no run before
+  // this phase had a design segment, stated a lock policy, or was marked
+  // interactive.
+  {
+    name: "design_segment_done",
+    ddl: "ALTER TABLE runs ADD COLUMN design_segment_done INTEGER NOT NULL DEFAULT 0",
+  },
+  {
+    name: "design_lock",
+    ddl: "ALTER TABLE runs ADD COLUMN design_lock TEXT NOT NULL DEFAULT ''",
+  },
+  {
+    name: "interactive",
+    ddl: "ALTER TABLE runs ADD COLUMN interactive INTEGER NOT NULL DEFAULT 0",
   },
 ];
 
@@ -410,8 +467,9 @@ export class RunStore {
     this.#db
       .prepare(
         `INSERT INTO runs (run_id, ticket_id, ticket_title, ticket_text, ticket_sha256, model_id,
-           provider, deploy, status, phase, queue_position, started_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           provider, deploy, status, phase, queue_position, started_at, design_lock, interactive,
+           updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         safe.runId,
@@ -429,6 +487,11 @@ export class RunStore {
         "spec" satisfies ApiPhase,
         run.queuePosition,
         run.startedAt,
+        // NOT REDACTED, AND IT CANNOT BE: this is one of two literals or the
+        // empty string, and `redactForPersistence` on a short enum is a no-op
+        // that would still have to be read back through a guard.
+        run.designLock ?? "",
+        flag(run.interactive ?? false),
         now,
       );
     const created = this.getRun(run.runId);
@@ -508,6 +571,7 @@ export class RunStore {
     }
     if (patch.inferredCriteria !== undefined) push("inferred_criteria", patch.inferredCriteria);
     if (patch.verdictPath !== undefined) push("verdict_path", redactForPersistence(patch.verdictPath));
+    if (patch.designSegmentDone !== undefined) push("design_segment_done", flag(patch.designSegmentDone));
 
     push("updated_at", new Date().toISOString());
     values.push(runId);
@@ -659,6 +723,9 @@ function toRunRow(row: Row): RunRow {
     failureReason: strOrNull(row, "failure_reason"),
     inferredCriteria: num(row, "inferred_criteria"),
     verdictPath: str(row, "verdict_path"),
+    designSegmentDone: bool(row, "design_segment_done"),
+    designLock: str(row, "design_lock"),
+    interactive: bool(row, "interactive"),
     updatedAt: str(row, "updated_at"),
   };
 }

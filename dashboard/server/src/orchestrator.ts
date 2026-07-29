@@ -42,8 +42,9 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import {
   BAKEOFF_SCHEMA_VERSION,
@@ -71,15 +72,50 @@ import {
   resolveHarnessIdentity,
 } from "bakeoff/dist/spec-agent.js";
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
-import { shortlistFor } from "./agent-shortlist.js";
+import { DELIVERY_LANES, shortlistFor } from "./agent-shortlist.js";
 import { writeBacklog } from "./backlog.js";
 import type { BacklogInput } from "./backlog.js";
+import { graphResumeState, makeSegmentRemap, nextBuildSegment } from "./build-segment.js";
+import {
+  canWriteDir,
+  designPreflight,
+  designScriptPath,
+  detectDesignCapability,
+  execCommandRunner,
+} from "./design-capability.js";
+import type { CommandRunner, DesignPreflight } from "./design-capability.js";
+import { designSubprocessEnv, designTmpDirFor } from "./design-env.js";
+import { designLaneMode, designSurfaceGate } from "./design-lane.js";
+import type { DesignLaneMode } from "./design-lane.js";
+import {
+  DESIGN_MOCKUP_LABEL,
+  designLockPolicy,
+  designLockTimeoutMin,
+  designLockExpired,
+  fallbackChoice,
+  lockManifest,
+  readChoiceFile,
+  readDesignLock,
+  writeDesignLock,
+} from "./design-lock.js";
+import type { LockAttempt } from "./design-lock.js";
+import {
+  countDesignPngs,
+  pruneMissingRefs,
+  readDesignDirection,
+  readDesignManifest,
+  refsDirFor,
+  writeDesignManifest,
+} from "./design-manifest.js";
+import type { DesignManifest } from "./design-manifest.js";
+import { classifyDesignLane, designLaneFailureMessage, writeDesignLaneRecord } from "./design-outcome.js";
+import { designHandoffSection, designSegmentPrompt } from "./design-prompt.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
 import type { FixTask } from "./fix-triage.js";
 import { archiveAttempt, readAttempt, scorerOutRoot } from "./gate-attempts.js";
 import { maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
 import type { GateFixLoopResult, StopReason } from "./gate-fix-loop.js";
-import type { ApiCriterion, ApiPhase, ApiRunStatus } from "./api-types.js";
+import type { ApiCriterion, ApiPhase, ApiProvider, ApiRunStatus, GraphSseEvent } from "./api-types.js";
 import { appendContextEvent } from "./build-context.js";
 import type { ContextEvent } from "./build-context.js";
 import { writeEnvironmentRecord } from "./build-environment.js";
@@ -95,11 +131,11 @@ import { isTerminal } from "./db.js";
 import { RunEventBus } from "./bus.js";
 import { judgeArtifact } from "./judge.js";
 import type { ModelCatalog } from "./models.js";
-import { ensureRunDirs, gateEnv, runPathsFor } from "./paths.js";
+import { ensureRunDirs, gateEnv, runPathsFor, safeSegment } from "./paths.js";
 import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { writeAssumptions, writeRunVerdict } from "./run-report.js";
-import { describeTokens, toApiTokens, zeroTokens } from "./tokens.js";
+import { describeTokens, mergeTokenTotals, toApiTokens, zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
 import { SubscriptionSeatCaller } from "./subscription-caller.js";
 import { ticketFromText } from "./ticket.js";
@@ -149,7 +185,55 @@ export interface OrchestratorDeps {
   readonly auth: AuthProbe;
   readonly preview: PreviewHost;
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * How a provider becomes a driver. Defaulted to the two real ones.
+   *
+   * IT IS HERE BECAUSE THE BUILD PHASE IS NOW A SEQUENCE, NOT A CALL. Two
+   * `builder.build()` calls against one session, with a park, a lock and a
+   * node-id remap between them — and every one of those decisions is invisible
+   * to a test that cannot see the requests. Constructing the driver inline (as
+   * this file did until Phase 2b) meant the ONLY way to observe the sequencing
+   * was to spend the owner's subscription, which is a test nobody runs twice and
+   * therefore a sequencing nobody checks.
+   *
+   * ONE FACTORY, BOTH CALL SITES — `#buildPhase` and `#runFixTask`. Two would
+   * drift, and the drift would be a fix round running against a different driver
+   * from the build it is fixing.
+   */
+  readonly makeBuilder?: (provider: ApiProvider) => SubscriptionBuilder;
+  /**
+   * How the DESIGN preflight probes the machine, and whether a directory is
+   * writable. Defaulted to the real ones (`execCommandRunner`, `canWriteDir`).
+   *
+   * INJECTED FOR THE SAME REASON `design-capability.ts` injects them one level
+   * down: the real runner spawns `npx impeccable`, which reaches a registry. A
+   * preflight whose tests need a network is a preflight nobody runs, and a
+   * SEQUENCING test that pays 20 seconds per run to learn nothing about
+   * sequencing is worse than that.
+   */
+  readonly designRun?: CommandRunner;
+  readonly designCanWrite?: (dir: string) => boolean;
 }
+
+/**
+ * What the build phase came back with.
+ *
+ * THREE STATES, AND `parked` IS THE ONE THAT DID NOT EXIST BEFORE. `#buildPhase`
+ * used to return `BuildOutcome | null`, and `#execute` read `null` as "the run
+ * was cancelled" — it calls `#cancelled`, which calls `#finish("cancelled")`,
+ * which makes `isTerminal` true. A design park returning `null` would therefore
+ * mark the run cancelled AND unresumable, so the owner's click would land on a
+ * run the resume route already refuses. The plan wrote `return null` here; this
+ * discriminated union is what that line has to be instead, and
+ * "an ASK run parks at awaiting_input" is the assertion that says so.
+ */
+type BuildPhaseResult =
+  | { readonly kind: "outcome"; readonly outcome: BuildOutcome; readonly laneMode: DesignLaneMode }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "parked" };
+
+/** No preflight was run, because the pure surface gate already said "off". */
+const NO_PREFLIGHT: DesignPreflight = { checks: [], ok: true, blockers: [] };
 
 interface ActiveRun {
   readonly runId: string;
@@ -175,6 +259,16 @@ export class Orchestrator {
   #active: ActiveRun | null = null;
   #pumping = false;
   #stopped = false;
+  /**
+   * The live half of §17.3 rule 1's bound, one timer per parked run.
+   *
+   * IT IS THE LIVE HALF AND NOT THE BOUND. A timer lives in a process a restart
+   * destroys, and `awaiting_input` has no other exit — so `reconcileOnBoot`
+   * carries the durable half, reading `parkedAt` off `design-lock.json` and
+   * either finishing an expired park or re-arming this map for the REMAINDER of
+   * the window. Neither half alone bounds anything.
+   */
+  readonly #designLockTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(deps: OrchestratorDeps) {
     this.#deps = deps;
@@ -249,10 +343,40 @@ export class Orchestrator {
    * scored artefact would overwrite a real result with a second one taken under
    * different conditions.
    */
-  resume(runId: string): boolean {
+  resume(runId: string, chosenMockup: string | null = null): boolean {
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
     if (this.#active !== null && this.#active.runId === runId) return false;
+
+    // THE DESIGN-LOCK BRANCH COMES FIRST, and the existing body below is exactly
+    // what segment 2 needs afterwards: requeue, re-execute, and `nextBuildSegment`
+    // takes the build arm because the manifest is now locked.
+    //
+    // GATED ON THE PARK RECORD, NOT ON `awaiting_input`. `reconcileOnBoot` sets
+    // that status for ANY run whose builder subprocess died with the server,
+    // including one interrupted halfway through the DESIGN segment — and locking
+    // a half-finished manifest would skip the rest of the lane while looking like
+    // an owner's choice. `design-lock.json` with `awaiting: true` is written by
+    // `#parkForDesignLock` and by nothing else, so it names the one state a
+    // chosen mockup applies to.
+    const runPaths = runPathsFor(this.#deps.paths, runId);
+    const park = readDesignLock(runPaths.results);
+    if (row.status === "awaiting_input" && park !== null && park.awaiting) {
+      const manifest = readDesignManifest(runPaths.workspace);
+      if (manifest !== null && manifest.lockedMockup === null) {
+        const at = new Date().toISOString();
+        const attempt: LockAttempt | null =
+          chosenMockup === null
+            ? (readChoiceFile(refsDirFor(runPaths.workspace), manifest, at) ??
+              fallbackChoice(manifest, at, "no owner choice arrived before the timeout"))
+            : { path: chosenMockup, by: "owner", reason: "chosen by the owner in the dashboard", at };
+        // A REFUSED CHOICE LEAVES THE RUN PARKED. Resuming anyway would build to
+        // no design at all while the API had just answered 200.
+        if (!this.#applyDesignLock(runId, runPaths, manifest, attempt)) return false;
+      }
+    }
+    this.#clearDesignLockTimer(runId);
+
     this.#deps.store.updateRun(runId, {
       status: "queued",
       resumeCount: row.resumeCount + 1,
@@ -288,11 +412,34 @@ export class Orchestrator {
           "/resume continues it from where it stopped.",
       );
     }
+    // §17.3 RULE 1, THE DURABLE HALF. Every design park is bounded by a timer,
+    // and a timer lives in a process a restart destroys. WITHOUT THIS LOOP A
+    // RESTART DURING A PARK IS AN INFINITE PARK: `awaiting_input` has no other
+    // exit, and the run waits for a click that a cron submission was never going
+    // to produce.
+    for (const row of this.#deps.store.listByStatus("awaiting_input")) {
+      const paths = runPathsFor(this.#deps.paths, row.runId);
+      const park = readDesignLock(paths.results);
+      if (park === null || !park.awaiting) continue;
+      if (designLockExpired(park.parkedAt, new Date().toISOString(), designLockTimeoutMin(this.#deps.env))) {
+        this.#emitLog(row.runId, "warn", "the design-lock window expired while the dashboard was down");
+        this.resume(row.runId, null);
+      } else {
+        // RE-ARMED FOR THE REMAINDER, not for a fresh window: `#parkForDesignLock`
+        // is given the ORIGINAL `parkedAt`, so a dashboard that restarts every
+        // few minutes cannot push the deadline forward each time.
+        this.#parkForDesignLock(row.runId, paths, park.parkedAt);
+      }
+    }
     this.pump();
   }
 
   async shutdown(): Promise<void> {
     this.#stopped = true;
+    // A pending park timer holds a callback that writes to the store. `unref()`
+    // covers process exit and nothing else — a host that shuts the orchestrator
+    // down and closes the database still has these armed.
+    for (const runId of [...this.#designLockTimers.keys()]) this.#clearDesignLockTimer(runId);
     this.#active?.abort.abort();
     await this.#deps.preview.stop();
   }
@@ -354,9 +501,20 @@ export class Orchestrator {
       if (signal.aborted) return this.#cancelled(runId, log);
 
       // ---- PHASE 2: build ---------------------------------------------
+      // TWO SEGMENTS, ONE SESSION. `#buildPhase` runs the DESIGN segment and the
+      // BUILD segment against one `session_id`, with the lock between them.
       this.#setPhase(runId, "build");
-      const outcome = await this.#buildPhase(runId, ticket, runPaths, log, signal);
-      if (outcome === null) return this.#cancelled(runId, log);
+      const built = await this.#buildPhase(runId, ticket, runPaths, log, signal);
+      if (built.kind === "cancelled") return this.#cancelled(runId, log);
+      if (built.kind === "parked") {
+        // NOT TERMINAL, AND NOT A VERDICT. The run is `awaiting_input` with its
+        // mockups registered; segment 2 starts when `resume` applies a lock. No
+        // `#finish`, so nothing writes a verdict for a run that has not finished.
+        log.close();
+        return;
+      }
+      const outcome = built.outcome;
+      const laneMode = built.laneMode;
 
       if (outcome.rateLimit.limited) {
         log.close();
@@ -377,7 +535,7 @@ export class Orchestrator {
 
       // ---- PHASE 3: the sealed gate, then the bounded fix loop ---------
       this.#setPhase(runId, "gate");
-      const loop = await this.#gateFixLoop(runId, ticket, suite, runPaths, log, declaredDone, signal);
+      const loop = await this.#gateFixLoop(runId, ticket, suite, runPaths, log, declaredDone, laneMode, signal);
       const scored = loop.scored;
 
       // A fix round that ran into the provider's window is not a failed run.
@@ -553,16 +711,39 @@ export class Orchestrator {
 
   /* ---- phase 2: build ------------------------------------------------ */
 
+  /**
+   * The build phase: TWO `builder.build()` calls against ONE session.
+   *
+   * SEGMENT 1 IS THE DESIGN LANE, and its `allowedAgents` is narrowed to the SPEC
+   * and DESIGN lanes — so the `PreToolUse` delegation hook, the slot probe A
+   * measured the engine actually asks, is what stops BUILD starting before a
+   * design is locked. Nothing depends on the model choosing to stop, and the
+   * prompt's "do not start implementation" line is a courtesy on top of a
+   * boundary rather than the boundary itself.
+   *
+   * SEGMENT 2 RESUMES SEGMENT 1's `session_id` with the locked mockup's absolute
+   * path in its prompt. One session means one root node, real `parent_tool_use_id`
+   * edges, and one id for the resume path to persist — which is precisely why
+   * §6.1 rejected the lane-per-query model.
+   *
+   * BETWEEN THEM the run either PARKS (`designLock: "ask"`) or locks through
+   * `ui-designer`'s `choice.json` (`"auto"`). A park returns `{kind:"parked"}`
+   * and segment 2 starts on `resume`; there is no third call in either case.
+   *
+   * AND A LANE WITH `laneMode === "off"` TAKES EXACTLY ONE PASS with exactly the
+   * prompt and the shortlist it had before this phase existed — `designHandoffSection`
+   * returns "" for `off`, so a cli/api/library run's prompt is byte-identical.
+   */
   async #buildPhase(
     runId: string,
     ticket: Ticket,
     runPaths: RunPaths,
     log: BuildLog,
     signal: AbortSignal,
-  ): Promise<BuildOutcome | null> {
+  ): Promise<BuildPhaseResult> {
     const store = this.#deps.store;
-    const row = store.getRun(runId);
-    if (row === null) return null;
+    const row0 = store.getRun(runId);
+    if (row0 === null) return { kind: "cancelled" };
 
     await this.#prepareWorkspace(ticket, runPaths);
 
@@ -588,18 +769,17 @@ export class Orchestrator {
       this.#emitLog(runId, "warn", `visible acceptance subset unavailable: ${describeError(error)}`);
     }
 
-    const entry = await this.#deps.catalog.resolve(row.modelId);
+    const entry = await this.#deps.catalog.resolve(row0.modelId);
     if (entry === null || !entry.option.available) {
       throw new BakeoffError(
         "unknown_config",
-        `model ${row.modelId} is not available: ${entry?.option.reason ?? "not in the catalog"}`,
+        `model ${row0.modelId} is not available: ${entry?.option.reason ?? "not in the catalog"}`,
         "Pick an available model, or authenticate its CLI (`claude setup-token` / `codex login`) and " +
           "resume the run. No API key is required or accepted.",
       );
     }
 
-    const builder: SubscriptionBuilder =
-      entry.option.provider === "openai" ? new CodexSubscriptionBuilder() : new ClaudeSubscriptionBuilder();
+    const builder = this.#builderFor(entry.option.provider);
 
     // ONE EXPRESSION, TWO CONSUMERS. This value is both what the prompt names
     // and what the Anthropic driver's `PreToolUse` hook allowlists
@@ -619,149 +799,543 @@ export class Orchestrator {
     // can time out or be refused is not a boundary. An unrecognisable ticket
     // classifies `fullstack`, the widest set, because under-delegation is the
     // failure nobody sees.
-    const delegationShortlist = shortlistFor(classifySurface(ticket.brief));
+    const surface = classifySurface(ticket.brief);
+    const laneMode = await this.#designLaneFor(runId, ticket, runPaths, surface);
+    // NOW WITH THE LANE MODE, AT BOTH CALL SITES. `agent-shortlist.ts` says the
+    // one-argument form defaults to `off` and under-delegates on purpose, which
+    // was a live regression until this line and `#gateFixLoop`'s twin.
+    const fullShortlist = shortlistFor(surface, laneMode);
+    // SEGMENT 1's DELEGATION BOUNDARY. SPEC because `context-manager` "runs this
+    // one first; it owns the context the later lanes read", DESIGN because that
+    // is the lane, and nothing else — a BUILD-lane `subagent_type` is denied by
+    // the hook rather than discouraged by the prompt.
+    const designLanes = new Set<string>([...DELIVERY_LANES.spec, ...DELIVERY_LANES.design]);
 
-    const resuming = row.builderSessionId !== null;
-    const prompt = resuming
-      ? resumeBuilderPrompt(
-          row.rateLimited
-            ? "the provider's rate-limit window was exhausted"
-            : "the dashboard was interrupted",
-        )
-      : dashboardBuilderPrompt({
-          ticketText: ticket.brief,
-          workspaceDir: runPaths.workspace,
-          allowedAgents: delegationShortlist,
-        });
-    // REDACTED ON THE WAY TO DISK. The prompt embeds the ticket text, and here
-    // the ticket text is FREE-FORM OWNER INPUT typed into a web form — not a
-    // frozen, harness-authored brief as in the bake-off. Every other persisted
-    // string in this program goes through this chokepoint (db.ts, the build
-    // log, the run record); these two file writes were the exceptions.
-    // The provider still receives the prompt verbatim, because the ticket IS
-    // the prompt: a secret pasted into a ticket has already left the machine by
-    // the time this line runs. Not masking it here as well would simply leave a
-    // second copy lying in the run directory.
-    writeFileSync(runPaths.promptFile, redactForPersistence(prompt), "utf8");
+    let last: BuildOutcome | null = null;
+    // AT MOST TWO PASSES, and the bound is structural rather than defensive:
+    // `nextBuildSegment` returns a design segment only while the design is
+    // unfinished, and the first pass sets `designSegmentDone`.
+    for (let pass = 0; pass < 2; pass += 1) {
+      // RE-READ, because the previous pass wrote `builderSessionId` and
+      // `designSegmentDone`, and those two are exactly what decides this one.
+      const row = store.getRun(runId);
+      if (row === null) return { kind: "cancelled" };
+      const manifest = readDesignManifest(runPaths.workspace);
+      const segment = nextBuildSegment({
+        laneMode,
+        manifestExists: manifest !== null,
+        manifestLocked: manifest?.lockedMockup != null,
+        sessionId: row.builderSessionId,
+        designSegmentDone: row.designSegmentDone,
+      });
+      const designSegment = segment === "design" || segment === "design-resume";
+      const allowedAgents = designSegment
+        ? fullShortlist.filter((agent) => designLanes.has(agent))
+        : fullShortlist;
+      const policy = designLockPolicy(row.designLock, row.interactive);
 
-    let tokens: TokenTotals = zeroTokens(entry.option.provider === "openai" ? "openai" : "anthropic");
-    // WHY CONTEXT EVENTS APPEND WHERE THE ENVIRONMENT OVERWRITES. The environment
-    // is one statement made once, at init; context usage and compaction are a
-    // SERIES — a long build samples at every lane boundary and may compact more
-    // than once, and each occurrence is separate evidence about a run that got
-    // quietly worse. Overwriting would leave a file saying a four-hour build
-    // measured its context exactly once.
-    //
-    // A failure here must NOT take the build down, for the same reason the
-    // environment write must not: this is the record of the build, not the build.
-    const recordContextEvent = (event: ContextEvent): void => {
-      try {
-        appendContextEvent(runPaths.results, event);
-      } catch (error) {
-        this.#emitLog(runId, "warn", `a context event could not be recorded: ${describeError(error)}`);
-      }
-    };
-    const sink: BuildEventSink = {
-      log: (level, text) => this.#emitLog(runId, level, text),
-      tool: (name, summary) => this.#emit(runId, { type: "tool", name, summary }),
-      tokens: (totals) => {
-        tokens = totals;
-        store.updateRun(runId, { tokens: toApiTokens(totals) });
-        this.#emit(runId, { type: "tokens", ...toApiTokens(totals) });
-      },
-      rateLimit: (state) => this.#noteRateLimit(runId, state),
-      session: (id) => {
-        store.updateRun(runId, { builderSessionId: id });
-      },
-      // THE RUN'S ENVIRONMENT, ONTO DISK BESIDE ITS RECORD.
+      const prompt = designSegment
+        ? designSegmentPrompt({
+            ticketText: ticket.brief,
+            workspace: runPaths.workspace,
+            mode: laneMode,
+            capability: this.#capability(),
+            autoChoose: policy === "auto",
+          })
+        : this.#buildSegmentPrompt(row, ticket, runPaths, manifest, laneMode, fullShortlist);
+      // REDACTED ON THE WAY TO DISK. The prompt embeds the ticket text, and here
+      // the ticket text is FREE-FORM OWNER INPUT typed into a web form — not a
+      // frozen, harness-authored brief as in the bake-off. Every other persisted
+      // string in this program goes through this chokepoint (db.ts, the build
+      // log, the run record); these two file writes were the exceptions.
+      // The provider still receives the prompt verbatim, because the ticket IS
+      // the prompt: a secret pasted into a ticket has already left the machine by
+      // the time this line runs. Not masking it here as well would simply leave a
+      // second copy lying in the run directory.
+      writeFileSync(runPaths.promptFile, redactForPersistence(prompt), "utf8");
+
+      let tokens: TokenTotals = zeroTokens(entry.option.provider === "openai" ? "openai" : "anthropic");
+      // WHAT THE ROW ALREADY HELD, CAPTURED BEFORE THIS SEGMENT WRITES TO IT.
       //
-      // `run.json` cannot carry this: `RunRecord` is a bake-off contract type and
-      // `bakeoff/` is not ours to modify, so the inventory goes in its own file in
-      // the same directory rather than being dropped for want of a field. The two
-      // are read together; `environmentHash` is what tells two runs of the same
-      // ticket apart when their output differs and the brief did not.
+      // CAPTURED, NOT RE-READ, AND THAT IS LOAD-BEARING IN TWO DIRECTIONS. The
+      // `tokens` sink below ASSIGNS the row on every token event, and the value
+      // it is handed is cumulative WITHIN this segment (`claude-builder.ts`
+      // builds it with `addTokens(running, …)`). So `carried + totals` is the
+      // run's spend at every point in the stream, while `row.tokens + totals`
+      // read live would add this segment's growing total to itself once per
+      // event. `design-segment-probe.mjs` measured that totals are PER-CALL
+      // across segments, which is why the merge is a sum at all.
+      const carried = row.tokens;
+      let imageCalls = 0;
+      const imageScript = this.#capability().imageScript;
+      const imageScriptName = imageScript === null ? null : basename(imageScript);
+      // WHY CONTEXT EVENTS APPEND WHERE THE ENVIRONMENT OVERWRITES. The environment
+      // is one statement made once, at init; context usage and compaction are a
+      // SERIES — a long build samples at every lane boundary and may compact more
+      // than once, and each occurrence is separate evidence about a run that got
+      // quietly worse. Overwriting would leave a file saying a four-hour build
+      // measured its context exactly once.
       //
-      // A failure here must NOT take the build down. This is the record of the
-      // build, not the build, and losing the record of a run that otherwise
-      // succeeded to an EACCES on one file would be the tail wagging the dog. It
-      // is logged as a warning instead, which is itself a record.
-      environment: (environment) => {
+      // A failure here must NOT take the build down, for the same reason the
+      // environment write must not: this is the record of the build, not the build.
+      const recordContextEvent = (event: ContextEvent): void => {
         try {
-          writeEnvironmentRecord(runPaths.results, environment);
+          appendContextEvent(runPaths.results, event);
         } catch (error) {
-          this.#emitLog(runId, "warn", `the run environment could not be recorded: ${describeError(error)}`);
+          this.#emitLog(runId, "warn", `a context event could not be recorded: ${describeError(error)}`);
         }
-      },
-      // THE CANVAS, STRAIGHT ONTO THE EXISTING EVENT STREAM. No parallel
-      // channel, no second table: a graph event is persisted, sequenced and
-      // replayed by exactly the code that carries `status` and `phase`, which is
-      // what makes "this agent was running inside a cancelled run" impossible to
-      // render rather than merely unlikely.
-      graph: (event) => this.#emit(runId, event),
-      contextUsage: (sample) => {
-        recordContextEvent(sample);
-      },
-      compaction: (record) => {
-        recordContextEvent(record);
-      },
-      raw: (text) => log.write(text),
-    };
+      };
+      // THE NODE-ID REMAP, AT THE SEAM IT PROTECTS. `GraphProjection` mints from
+      // `n1` PER BUILD CALL and `foldGraph` IGNORES a repeated node id rather
+      // than overwriting, so without this segment 2's `graph_agent` for `n2` is
+      // dropped and every later `graph_tool{node:"n2"}` attaches to segment 1's
+      // `n2` — the canvas renders perfectly and attributes the build's work to
+      // the designer.
+      //
+      // FOLDED FROM THE DURABLE ROWS, not from memory, for the same reason
+      // `graphSnapshot` is: a park can outlive the process, so there is no
+      // in-memory segment-1 state to read on the second segment.
+      const priorGraph = store
+        .eventsSince(runId, 0)
+        .map((stored) => stored.event)
+        .filter((event): event is GraphSseEvent => event.type.startsWith("graph_"));
+      const remap =
+        priorGraph.length === 0
+          ? (event: GraphSseEvent): GraphSseEvent => event
+          : makeSegmentRemap(graphResumeState(priorGraph));
 
+      const sink: BuildEventSink = {
+        log: (level, text) => this.#emitLog(runId, level, text),
+        tool: (name, summary) => {
+          // THE DESIGN LANE'S SPEND, AS A COUNT. Attempts INCLUDING retries,
+          // which is what makes a zero-image failure say "after 3 generation
+          // attempts" rather than "after 0" — two sentences pointing at
+          // completely different faults. Never a dollar figure: `gemini-image.sh`
+          // prints an output path and the API response carries no price.
+          if (designSegment && imageScriptName !== null && summary.includes(imageScriptName)) {
+            imageCalls += 1;
+          }
+          this.#emit(runId, { type: "tool", name, summary });
+        },
+        tokens: (totals) => {
+          tokens = totals;
+          const merged = mergeTokenTotals(carried, toApiTokens(totals));
+          store.updateRun(runId, { tokens: merged });
+          this.#emit(runId, { type: "tokens", ...merged });
+        },
+        rateLimit: (state) => this.#noteRateLimit(runId, state),
+        session: (id) => {
+          store.updateRun(runId, { builderSessionId: id });
+        },
+        // THE RUN'S ENVIRONMENT, ONTO DISK BESIDE ITS RECORD.
+        //
+        // `run.json` cannot carry this: `RunRecord` is a bake-off contract type and
+        // `bakeoff/` is not ours to modify, so the inventory goes in its own file in
+        // the same directory rather than being dropped for want of a field. The two
+        // are read together; `environmentHash` is what tells two runs of the same
+        // ticket apart when their output differs and the brief did not.
+        //
+        // A failure here must NOT take the build down. This is the record of the
+        // build, not the build, and losing the record of a run that otherwise
+        // succeeded to an EACCES on one file would be the tail wagging the dog. It
+        // is logged as a warning instead, which is itself a record.
+        environment: (environment) => {
+          try {
+            writeEnvironmentRecord(runPaths.results, environment);
+          } catch (error) {
+            this.#emitLog(runId, "warn", `the run environment could not be recorded: ${describeError(error)}`);
+          }
+        },
+        // THE CANVAS, STRAIGHT ONTO THE EXISTING EVENT STREAM. No parallel
+        // channel, no second table: a graph event is persisted, sequenced and
+        // replayed by exactly the code that carries `status` and `phase`, which is
+        // what makes "this agent was running inside a cancelled run" impossible to
+        // render rather than merely unlikely.
+        graph: (event) => this.#emit(runId, remap(event)),
+        contextUsage: (sample) => {
+          recordContextEvent(sample);
+        },
+        compaction: (record) => {
+          recordContextEvent(record);
+        },
+        raw: (text) => log.write(text),
+      };
+
+      this.#emitLog(
+        runId,
+        "info",
+        `${row.builderSessionId === null ? "starting" : "resuming"} the ${designSegment ? "DESIGN" : "BUILD"} ` +
+          `segment with ${entry.option.label}` +
+          `${entry.effort === null ? "" : ` at effort ${entry.effort}`}`,
+      );
+
+      const outcome = await builder.build({
+        runId,
+        prompt,
+        workspace: runPaths.workspace,
+        // The sealed suite store, named so each driver can deny reads of it.
+        // See builders/claude-builder.ts and builders/codex-builder.ts: the two
+        // drivers do NOT enforce this equally, and neither enforces it as
+        // strongly as the bake-off's container does.
+        sealedRoots: [
+          this.#deps.paths.acceptance,
+          // ONE definition, shared with the attempt archive that lives inside it
+          // (gate-attempts.ts). Spelling the path a second time here is how a
+          // later attempt directory ends up outside the deny it was supposed to
+          // inherit.
+          scorerOutRoot(this.#deps.paths),
+        ],
+        // THE DELEGATION BOUNDARY. `settingSources: ["user"]` makes 144 agents
+        // visible to the builder; this is the far smaller set it may actually
+        // reach, enforced in the Anthropic driver's `PreToolUse` hook (NOT in
+        // `canUseTool`, which is asked about no tool at all when it delegates).
+        // Visibility is not permission, and widening one never substitutes for
+        // the other.
+        //
+        // NARROWED FURTHER ON SEGMENT 1, which is the whole two-segment design:
+        // the design lock is enforced by what the hook denies, not by the model
+        // agreeing to stop.
+        allowedAgents,
+        modelId: row.modelId,
+        effort: entry.effort,
+        resumeSessionId: row.builderSessionId,
+        signal,
+        sink,
+        // TMPDIR INSIDE THE WORKSPACE AND THE MOTION-BAR FLIP (design-env.ts).
+        // The motion bar is armed for the BUILD segment only: it is a Stop hook
+        // that holds a session open until the page satisfies the Layer-2 motion
+        // bar, and the DESIGN segment writes stills and prose rather than markup —
+        // arming it there would hold the design lane open against a criterion it
+        // was never going to meet.
+        env: designSubprocessEnv(this.#deps.env, {
+          workspace: runPaths.workspace,
+          motionBar: !designSegment && laneMode !== "off",
+        }),
+      });
+
+      last = outcome;
+      if (outcome.sessionId !== null) store.updateRun(runId, { builderSessionId: outcome.sessionId });
+      if (outcome.tokens.callCount > 0) {
+        store.updateRun(runId, { tokens: mergeTokenTotals(carried, toApiTokens(outcome.tokens)) });
+        this.#emitLog(runId, "info", `builder — ${describeTokens(outcome.tokens)}`);
+      } else if (tokens.callCount > 0) {
+        this.#emitLog(runId, "info", `builder — ${describeTokens(tokens)}`);
+      }
+      if (outcome.cancelled) return { kind: "cancelled" };
+      if (outcome.failure !== null) {
+        this.#emitLog(runId, "warn", `the build did not complete cleanly: ${outcome.failure}`);
+        store.updateRun(runId, { failureReason: outcome.failure });
+      }
+      // A rate-limited segment stops here with its session intact; `resume`
+      // re-enters this loop and `nextBuildSegment` picks the same segment up.
+      if (outcome.rateLimit.limited) return { kind: "outcome", outcome, laneMode };
+      if (!designSegment) return { kind: "outcome", outcome, laneMode };
+
+      /* ---- the design segment came back; say what it produced ---------- */
+      store.updateRun(runId, { designSegmentDone: true });
+      const after = readDesignManifest(runPaths.workspace);
+      const record = classifyDesignLane({
+        mode: laneMode,
+        manifest: after,
+        // FROM DISK, never from the manifest's claims: `classifyDesignLane`
+        // compares the two, and a count taken from the manifest would make "five
+        // refs over three files" undetectable by construction.
+        pngCount: countDesignPngs(refsDirFor(runPaths.workspace)),
+        imageCalls,
+        keySource: this.#capability().key.source,
+        preflight: this.#preflight.checks,
+      });
+      writeDesignLaneRecord(runPaths.results, record);
+      // THE TRAP. A DESIGN lane that produced zero images must never look
+      // successful, so this is an error-level line and a `failureReason` rather
+      // than an absence of PNGs nobody counted.
+      const designFailure = designLaneFailureMessage(record);
+      if (designFailure !== null) {
+        this.#emitLog(runId, "error", designFailure);
+        store.updateRun(runId, { failureReason: designFailure });
+      }
+      this.#recordDesignMockups(runId, after);
+
+      if (after !== null && after.lockedMockup === null) {
+        if (policy === "ask") {
+          this.#parkForDesignLock(runId, runPaths);
+          return { kind: "parked" };
+        }
+        const at = new Date().toISOString();
+        const attempt =
+          readChoiceFile(refsDirFor(runPaths.workspace), after, at) ??
+          fallbackChoice(after, at, "ui-designer wrote no choice.json");
+        this.#applyDesignLock(runId, runPaths, after, attempt);
+      }
+      // …and round again, into the BUILD segment, on the same session.
+    }
+    return last === null ? { kind: "cancelled" } : { kind: "outcome", outcome: last, laneMode };
+  }
+
+  /**
+   * The driver for a provider. One factory, both call sites.
+   *
+   * `makeBuilder` is optional on {@link OrchestratorDeps}, so a host that does
+   * not pass one gets exactly the two real drivers this file constructed inline
+   * until Phase 2b.
+   */
+  #builderFor(provider: ApiProvider): SubscriptionBuilder {
+    const make = this.#deps.makeBuilder;
+    if (make !== undefined) return make(provider);
+    return provider === "openai" ? new CodexSubscriptionBuilder() : new ClaudeSubscriptionBuilder();
+  }
+
+  /**
+   * The DESIGN capability of this machine — which script, which key SOURCE.
+   *
+   * NEVER THE KEY VALUE. `GeminiKeyResolution` carries which of
+   * `$GEMINI_API_KEY` / `$NANOBANANA_API_KEY` / `~/.gemini/api_key` resolved and
+   * nothing else, and the two variables are deliberately absent from
+   * `STRIPPED_ENV_NAMES` so they reach the subprocess — which is exactly why
+   * nothing here may print one.
+   */
+  #capability(): ReturnType<typeof detectDesignCapability> {
+    const homeDir = this.#deps.env["HOME"] ?? homedir();
+    return detectDesignCapability({
+      env: this.#deps.env,
+      homeDir,
+      imageScript: designScriptPath(this.#deps.env, homeDir),
+    });
+  }
+
+  /**
+   * The preflight this run computed. Set once by `#designLaneFor`, read by the
+   * lane record so `degradeReasonFrom` can name the check that actually failed
+   * instead of inventing a cause.
+   *
+   * ONE ACTIVE RUN, so one field is one run's — `#active` is the invariant this
+   * leans on, and it is the same invariant the whole queue rests on.
+   */
+  #preflight: DesignPreflight = NO_PREFLIGHT;
+
+  /**
+   * Which of the DESIGN lane's three states this run is in.
+   *
+   * THE PURE GATE RUNS FIRST, AND THAT ORDER IS NOT A MICRO-OPTIMISATION.
+   * `designSurfaceGate` is the only term that can answer "off", and the preflight
+   * spawns `npx` — so a cli/api/library ticket would otherwise pay a registry
+   * probe to be told it has no design lane.
+   *
+   * DEGRADE IS A STATE, NOT AN ABSENCE. A failing preflight moves the lane to
+   * `degraded`, where `taste-frontend-expert` still art-directs and writes
+   * `direction.md`; it never turns the lane off. Blocking a build on an absent
+   * image key is a worse failure than shipping without mockups.
+   */
+  async #designLaneFor(
+    runId: string,
+    ticket: Ticket,
+    runPaths: RunPaths,
+    surface: ReturnType<typeof classifySurface>,
+  ): Promise<DesignLaneMode> {
+    const capability = this.#capability();
+    this.#preflight = designSurfaceGate(surface, ticket.brief)
+      ? await designPreflight({
+          env: this.#deps.env,
+          homeDir: this.#deps.env["HOME"] ?? homedir(),
+          workspace: runPaths.workspace,
+          capability,
+          run: this.#deps.designRun ?? execCommandRunner,
+          canWrite: this.#deps.designCanWrite ?? canWriteDir,
+        })
+      : NO_PREFLIGHT;
+    for (const check of this.#preflight.checks) {
+      if (!check.ok) {
+        this.#emitLog(runId, check.blocking ? "warn" : "info", `design preflight — ${check.detail}`);
+      }
+    }
+    const mode = designLaneMode({
+      surface,
+      ticketText: ticket.brief,
+      capability,
+      preflightOk: this.#preflight.ok,
+    });
+    if (mode !== "off") {
+      this.#emitLog(
+        runId,
+        mode === "full" ? "info" : "warn",
+        mode === "full"
+          ? "the DESIGN lane runs in FULL mode: stills, a manifest, and a locked reference for the gate"
+          : "the DESIGN lane is DEGRADED: written art direction, no stills, and the visual gate falls " +
+              "back to rule-based scoring with no reference image",
+      );
+    }
+    return mode;
+  }
+
+  /**
+   * Segment 2's prompt: the existing build prompt PLUS §7.3's handoff block.
+   *
+   * THE ONLY PLACE THE TWO ARE JOINED, so a resumed build cannot lose the design
+   * by taking a different branch — which is exactly what
+   * `resumeBuilderPrompt("the dashboard was interrupted")` would do after a lock:
+   * a sentence that is false and that names no mockup.
+   *
+   * THE HANDOFF GOES LAST, closest to the work, and an empty one appends nothing —
+   * so a non-design run's prompt is byte-identical to what it was before this
+   * phase.
+   */
+  #buildSegmentPrompt(
+    row: RunRow,
+    ticket: Ticket,
+    runPaths: RunPaths,
+    manifest: DesignManifest | null,
+    laneMode: DesignLaneMode,
+    shortlist: readonly string[],
+  ): string {
+    const base =
+      row.builderSessionId === null
+        ? dashboardBuilderPrompt({
+            ticketText: ticket.brief,
+            workspaceDir: runPaths.workspace,
+            allowedAgents: shortlist,
+          })
+        : resumeBuilderPrompt(
+            manifest?.lockedMockup != null
+              ? "the design was locked and the build continues from there"
+              : row.rateLimited
+                ? "the provider's rate-limit window was exhausted"
+                : "the dashboard was interrupted",
+          );
+    const handoff = designHandoffSection({
+      // PRUNED, NOT RAW. `classifyDesignLane` has already recorded the
+      // discrepancy for the report; the PROMPT must carry only paths that
+      // resolve, or a partial lane becomes a `Read` failure inside every build
+      // agent, several turns deep, reported as the agent's confusion rather than
+      // as a design fault.
+      manifest: manifest === null ? null : pruneMissingRefs(manifest),
+      mode: laneMode,
+      workspace: runPaths.workspace,
+      dials: readDesignDirection(runPaths.workspace),
+    });
+    return handoff.length === 0 ? base : `${base}\n\n${handoff}`;
+  }
+
+  /**
+   * Every mockup, as a screenshot the EXISTING route already serves (§17.1).
+   *
+   * COPIED rather than referenced: `serveScreenshot` resolves under
+   * `results/screenshots/<runId>/` and the workspace is the artefact, not a
+   * served directory. Prefixed with `design-` so a mockup can never collide with
+   * a gate screenshot's basename.
+   *
+   * A REF THAT CANNOT BE COPIED IS A WARNING, NEVER A THROW. `parseDesignManifest`
+   * validates a ref's PATH, not its existence, so a `manifest-invalid` lane
+   * (five refs over three files) reaches here with a path to nothing — and an
+   * ENOENT escaping this method would surface as a harness fault and REPLACE the
+   * loud-but-non-blocking design failure that was just recorded. This is the
+   * record of the run, not the run.
+   */
+  #recordDesignMockups(runId: string, manifest: DesignManifest | null): void {
+    if (manifest === null || manifest.refs.length === 0) return;
+    const dir = join(this.#deps.paths.results, "screenshots", safeSegment(runId));
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the mockups could not be published: ${describeError(error)}`);
+      return;
+    }
+    for (const ref of manifest.refs) {
+      const target = join(dir, `design-${basename(ref.path)}`);
+      try {
+        copyFileSync(ref.path, target);
+      } catch (error) {
+        this.#emitLog(runId, "warn", `the mockup ${ref.path} could not be published: ${describeError(error)}`);
+        continue;
+      }
+      const label = `${DESIGN_MOCKUP_LABEL}${ref.section}`;
+      this.#deps.store.addScreenshot(runId, { path: target, label, capturedAt: new Date().toISOString() });
+      this.#emit(runId, { type: "screenshot", path: target, label });
+    }
+  }
+
+  /**
+   * Validate the attempt, write it into BOTH places, and say whether it took.
+   *
+   * TWO PLACES ON PURPOSE: `manifest.json` inside the workspace, because that is
+   * what the build agents and the visual gate read; and `design-lock.json` beside
+   * the run record, because §17.3 rule 5 makes a locked design a recorded INPUT
+   * to the gate and the workspace is the artefact, not the record.
+   *
+   * FALSE MEANS THE RUN STAYS PARKED. A refused choice that resumed anyway would
+   * build to no design at all while the API had just answered 200.
+   */
+  #applyDesignLock(
+    runId: string,
+    runPaths: RunPaths,
+    manifest: DesignManifest,
+    attempt: LockAttempt | null,
+  ): boolean {
+    if (attempt === null) {
+      this.#emitLog(runId, "warn", "there is nothing to lock: the DESIGN lane produced no mockups");
+      return false;
+    }
+    const result = lockManifest(manifest, attempt);
+    if (!result.ok) {
+      this.#emitLog(runId, "warn", `the design lock was refused: ${result.error}`);
+      return false;
+    }
+    writeDesignManifest(runPaths.workspace, result.manifest);
+    writeDesignLock(runPaths.results, {
+      awaiting: false,
+      parkedAt: attempt.at,
+      locked: attempt.path,
+      lockedBy: attempt.by,
+      reason: attempt.reason,
+    });
+    this.#emitLog(runId, "info", `design locked by ${attempt.by}: ${attempt.path} — ${attempt.reason}`);
+    return true;
+  }
+
+  /**
+   * The park: `awaiting_input`, the record on disk, and the timer that ends it.
+   *
+   * `parkedAt` IS AN ARGUMENT so `reconcileOnBoot` can re-arm for the REMAINDER
+   * of the original window rather than starting a fresh one — a dashboard that
+   * restarts every few minutes would otherwise push the deadline forward each
+   * time and rule 1's "never blocks indefinitely" would hold only on paper.
+   */
+  #parkForDesignLock(runId: string, runPaths: RunPaths, parkedAt = new Date().toISOString()): void {
+    writeDesignLock(runPaths.results, {
+      awaiting: true,
+      parkedAt,
+      locked: null,
+      lockedBy: null,
+      reason: null,
+    });
+    this.#deps.store.updateRun(runId, { status: "awaiting_input", queuePosition: null });
+    this.#emit(runId, { type: "status", status: "awaiting_input" });
+    const timeoutMin = designLockTimeoutMin(this.#deps.env);
     this.#emitLog(
       runId,
       "info",
-      `${resuming ? "resuming" : "starting"} the build with ${entry.option.label}` +
-        `${entry.effort === null ? "" : ` at effort ${entry.effort}`}`,
+      `the DESIGN lane produced its mockups and the run is waiting for one to be chosen. ` +
+        `POST /api/runs/${runId}/resume {"chosenMockup":"<path>"} locks it; with no choice inside ` +
+        `${String(timeoutMin)} minutes, ui-designer picks and the choice is recorded as automatic.`,
     );
+    const remaining = Math.max(0, timeoutMin * 60_000 - Math.max(0, Date.now() - Date.parse(parkedAt)));
+    this.#clearDesignLockTimer(runId);
+    const timer = setTimeout(() => {
+      this.#designLockTimers.delete(runId);
+      this.#emitLog(runId, "warn", "no design choice arrived before the timeout; selecting automatically");
+      this.resume(runId, null);
+    }, remaining);
+    // §17.3 rule 1: never blocks indefinitely. `unref` so a park never holds the
+    // process open on shutdown — which is NOT the same as cancelling it, hence
+    // `shutdown()` clearing the map as well.
+    timer.unref();
+    this.#designLockTimers.set(runId, timer);
+  }
 
-    const outcome = await builder.build({
-      runId,
-      prompt,
-      workspace: runPaths.workspace,
-      // The sealed suite store, named so each driver can deny reads of it.
-      // See builders/claude-builder.ts and builders/codex-builder.ts: the two
-      // drivers do NOT enforce this equally, and neither enforces it as
-      // strongly as the bake-off's container does.
-      sealedRoots: [
-        this.#deps.paths.acceptance,
-        // ONE definition, shared with the attempt archive that lives inside it
-        // (gate-attempts.ts). Spelling the path a second time here is how a
-        // later attempt directory ends up outside the deny it was supposed to
-        // inherit.
-        scorerOutRoot(this.#deps.paths),
-      ],
-      // THE DELEGATION BOUNDARY. `settingSources: ["user"]` makes 144 agents
-      // visible to the builder; this is the far smaller set it may actually
-      // reach, enforced in the Anthropic driver's `PreToolUse` hook (NOT in
-      // `canUseTool`, which is asked about no tool at all when it delegates).
-      // Visibility is not permission, and widening one never substitutes for
-      // the other.
-      //
-      // Now derived from the ticket's surface rather than pinned to the widest
-      // set. Computed ONCE, above, so this boundary and the prompt that names
-      // these agents cannot disagree.
-      allowedAgents: delegationShortlist,
-      modelId: row.modelId,
-      effort: entry.effort,
-      resumeSessionId: row.builderSessionId,
-      signal,
-      sink,
-      env: this.#deps.env,
-    });
-
-    if (outcome.sessionId !== null) store.updateRun(runId, { builderSessionId: outcome.sessionId });
-    if (outcome.tokens.callCount > 0) {
-      store.updateRun(runId, { tokens: toApiTokens(outcome.tokens) });
-      this.#emitLog(runId, "info", `builder — ${describeTokens(outcome.tokens)}`);
-    } else if (tokens.callCount > 0) {
-      this.#emitLog(runId, "info", `builder — ${describeTokens(tokens)}`);
-    }
-    if (outcome.cancelled) return null;
-    if (outcome.failure !== null) {
-      this.#emitLog(runId, "warn", `the build did not complete cleanly: ${outcome.failure}`);
-      store.updateRun(runId, { failureReason: outcome.failure });
-    }
-    return outcome;
+  #clearDesignLockTimer(runId: string): void {
+    const timer = this.#designLockTimers.get(runId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.#designLockTimers.delete(runId);
   }
 
   /**
@@ -774,6 +1348,15 @@ export class Orchestrator {
    */
   async #prepareWorkspace(ticket: Ticket, runPaths: RunPaths): Promise<void> {
     mkdirSync(runPaths.workspace, { recursive: true });
+    // TWO CALLERS ARE REQUIRED AND ONE WITHOUT THE OTHER PRODUCES ZERO PNGs
+    // SILENTLY (design-env.ts says so in its own words). `designSubprocessEnv`
+    // only NAMES this directory; `mktemp -d` against a TMPDIR that does not
+    // exist fails exactly as loudly as a sandbox denial — which is to say, not
+    // at all, on a stream `autoAllowBashIfSandboxed: true` keeps the permission
+    // layer away from. It is created here, unconditionally: a non-design run
+    // gets one empty dot-directory, and a design run gets a temp dir inside the
+    // one tree `sandbox.filesystem.allowWrite` permits.
+    mkdirSync(designTmpDirFor(runPaths.workspace), { recursive: true });
     // Redacted for the same reason as the prompt file: this is owner-typed
     // text landing on disk, and it is also committed into the workspace repo,
     // where `deploy` may later serve the directory over loopback.
@@ -812,6 +1395,7 @@ export class Orchestrator {
     runPaths: RunPaths,
     log: BuildLog,
     declaredDone: boolean,
+    laneMode: DesignLaneMode,
     signal: AbortSignal,
   ): Promise<{ scored: GateOutcome; result: GateFixLoopResult; rateLimit: RateLimitState | null }> {
     let scored: GateOutcome = { record: null, container: null, failure: null };
@@ -838,9 +1422,13 @@ export class Orchestrator {
       maxAttempts: maxAttemptsFrom(this.#deps.env),
       workspace: runPaths.workspace,
       // The same shortlist the build ran behind, from the same classification of
-      // the same string. A fix round is bounded further, to one agent, in
-      // `fixAllowedAgents` — this is the outer set triage is checked against.
-      allowedAgents: shortlistFor(classifySurface(ticket.brief)),
+      // the same string AND the same lane mode — `agent-shortlist.ts`'s
+      // one-argument form defaults to `off`, so passing `laneMode` at only one of
+      // the two call sites would let triage route work to a DESIGN agent the
+      // build was allowed and the fix loop was not. A fix round is bounded
+      // further, to one agent, in `fixAllowedAgents`; this is the outer set
+      // triage is checked against.
+      allowedAgents: shortlistFor(classifySurface(ticket.brief), laneMode),
       signal: loopAbort.signal,
       log: (level, text) => this.#emitLog(runId, level, text),
     });
@@ -899,8 +1487,7 @@ export class Orchestrator {
       return null;
     }
 
-    const builder: SubscriptionBuilder =
-      entry.option.provider === "openai" ? new CodexSubscriptionBuilder() : new ClaudeSubscriptionBuilder();
+    const builder = this.#builderFor(entry.option.provider);
 
     const outcome = await builder.build({
       runId,
@@ -1441,6 +2028,14 @@ async function git(cwd: string, args: readonly string[]): Promise<string> {
  * out of the judge's reading material.
  */
 const VENDOR_EXCLUDES: readonly string[] = Object.freeze([
+  // The DESIGN lane's TMPDIR (design-env.ts). It is inside the workspace
+  // because `sandbox.filesystem.allowWrite` is `[workspace]` and `mktemp -d`
+  // has to land somewhere writable — it is harness state, not artefact, and
+  // `git add -A` would otherwise put a request body in the judge's reading
+  // material. The sealed gate still sees the real workspace; this is a
+  // pathspec exclude on the DIFF only.
+  ":(exclude).design-tmp",
+  ":(exclude).design-tmp/**",
   ":(exclude)node_modules",
   ":(exclude)**/node_modules/**",
   ":(exclude)package-lock.json",

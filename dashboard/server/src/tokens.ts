@@ -143,6 +143,47 @@ export function addTokens(a: TokenTotals, b: TokenTotals): TokenTotals {
   };
 }
 
+/**
+ * The run's totals after one more build SEGMENT reported its own.
+ *
+ * THE DEFECT IT FIXES. The build phase is two `builder.build()` calls against ONE
+ * session (build-segment.ts), and `orchestrator.ts` wrote
+ * `toApiTokens(outcome.tokens)` onto the row after each call — so a design
+ * segment that spent 1000 followed by a build segment that reported 10 left the
+ * run claiming 10, a number smaller than what the owner had already been shown.
+ *
+ * A FIELD-WISE SUM, AND THAT IS MEASURED RATHER THAN CHOSEN. Whether a RESUMED
+ * session's `outcome.tokens` is per-call or already cumulative was not knowable
+ * from this repo — nothing in it had ever run two segments against one session —
+ * and the two readings need opposite arithmetic: summing a cumulative stream
+ * double-counts segment 1, maxing a per-call one drops segment 2's share of every
+ * field segment 1 led on. `design-segment-probe.mjs` settled it against the live
+ * SDK on 2026-07-29, twice:
+ *
+ *   segment 1 (fresh)   input 10, output 61, cacheRead 15232, cacheWrite 2469
+ *   segment 2 (resumed) input 10, output 71, cacheRead 17701, cacheWrite   91
+ *
+ * `cacheWrite` FELL, from 2469 to 91, and a running total cannot go down. Totals
+ * are PER-CALL, so the run's spend is their sum. (`sink.tokens` is cumulative
+ * WITHIN one call — `claude-builder.ts` builds it with `addTokens(running, …)` —
+ * which is why the orchestrator adds each segment's growing total to what the row
+ * held BEFORE that segment rather than to the row as it stands.)
+ *
+ * NO PROVIDER FIELD, DELIBERATELY. This merges the run ROW's `ApiTokens`, which
+ * is one vendor's by construction (`RunDetail.tokens` reports the builder's
+ * vendor only — see this file's header). A `TokenTotals`-shaped merge would need
+ * a vendor check it cannot fail, which is a guard with no reachable branch.
+ */
+export function mergeTokenTotals(previous: ApiTokens | null, incoming: ApiTokens): ApiTokens {
+  if (previous === null) return incoming;
+  return {
+    inputTokens: previous.inputTokens + incoming.inputTokens,
+    outputTokens: previous.outputTokens + incoming.outputTokens,
+    cacheReadTokens: previous.cacheReadTokens + incoming.cacheReadTokens,
+    cacheWriteTokens: previous.cacheWriteTokens + incoming.cacheWriteTokens,
+  };
+}
+
 export function toApiTokens(totals: TokenTotals): ApiTokens {
   return {
     inputTokens: totals.inputTokens,
