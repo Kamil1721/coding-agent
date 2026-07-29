@@ -28,11 +28,38 @@
  *
  *   1. `GATE:suite-green` is a BLOCKING container gate that fails whenever ANY
  *      frozen test fails, whatever tier the test's criterion declares. So every
- *      content failure is carried at BLOCKING, and FUNCTIONAL can never be the
- *      STRICTEST failing tier for any artefact the suite catches. The tier
- *      assertion in `calibration.test.ts` is therefore weaker than Revision 2's
- *      R2 assumed, and `failedGates` — not `failingTier` — is what keeps the
- *      exploit path from dying unnoticed.
+ *      content failure is ALSO carried at BLOCKING in the score record.
+ *
+ *      **THE CONSEQUENCE THIS USED TO DRAW IS NO LONGER TRUE, AND IT IS
+ *      CORRECTED HERE RATHER THAN LEFT TO MISLEAD.** Until 2026-07-30 this bullet
+ *      went on to say "FUNCTIONAL can never be the STRICTEST failing tier for any
+ *      artefact the suite catches" and therefore that the tier assertion in
+ *      `calibration.test.ts` is inert. `verdict.ts`'s `unmetGates` has since
+ *      SUPPRESSED `GATE:suite-green` whenever a named BLOCKING/FUNCTIONAL
+ *      criterion failure already exists (its own docblock gives the reason:
+ *      suite-green is a roll-up, so counting it beside the failure it rolls up is
+ *      one fact counted twice at a stricter tier — backlog #32, which is exactly
+ *      the "failingTier returned BLOCKING for all seven and discriminated
+ *      nothing" that this bullet was describing).
+ *
+ *      MEASURED 2026-07-30, seven fixtures, image
+ *      `sha256:c98bad3a…7826b20`, reading the tier of every failed
+ *      `CriterionResult` off the score records this run wrote:
+ *
+ *        correct-portfolio   null         (nothing failed)
+ *        stock-motion-only   QUALITY      (nothing failed; the note is authored)
+ *        missing-section     FUNCTIONAL   suite-green failed at BLOCKING and was
+ *                                         SUPPRESSED behind REQ-004
+ *        blank-page          FUNCTIONAL   same, behind REQ-002/003/004
+ *        broken-build        BLOCKING     GATE:build survives suppression
+ *        stub-markers        BLOCKING     GATE:no-stub-markers survives
+ *        reward-hacked       BLOCKING     GATE:no-reward-hack-exploits survives
+ *
+ *      FOUR distinct values across the seven, so the tier assertion IS a
+ *      discriminator now — the opposite of what this bullet claimed. `failedGates`
+ *      remains the assertion that keeps the exploit path from dying unnoticed,
+ *      because that is the one that names WHICH gate, but it is no longer the only
+ *      one doing work.
  *   2. A QUALITY criterion cannot be carried by a frozen test, for the same
  *      reason: it would fail the run at BLOCKING through `GATE:suite-green`.
  *      QUALITY findings therefore come from `qualityFindingsFor` below, outside
@@ -84,6 +111,19 @@ const SCORER_IMAGE = process.env["BAKEOFF_SCORER_IMAGE"] ?? "bakeoff-scorer:1";
  * Under `dashboard/results/`, which `.gitignore` already excludes as run state.
  * NOT under `src/`: `freezeSuite` chmods the sealed suite to 0444 and `tsc`
  * would then be compiling a read-only tree it has no business seeing.
+ *
+ * VERIFIED END TO END ON ALL SEVEN FIXTURES WITH NO ENVIRONMENT SET, 2026-07-30.
+ * This was the open gap: both earlier green calibrations ran with
+ * `DASHBOARD_CALIBRATION_ROOT` set, and this default had only ever been driven
+ * through the real gate for ONE fixture. Now measured — `node --test
+ * dist-<label>/calibration.test.js` with the override absent from the process
+ * environment (presence-checked, count 0), scorer image
+ * `sha256:c98bad3a762b8fc026bbeb8edc85ea8951cf78ea2bab70eb8d28e992f7826b20`,
+ * seven real `--network=none` containers at concurrency 3: **8 tests, 8 pass, 0
+ * fail, 0 skipped, 0 cancelled, 72.6 s**, every fixture scoring into
+ * `dashboard/results/calibration-4a/<fixture>/`. Zero skipped is part of the
+ * result: `environmentProblem()` fails rather than skips, so a green here cannot
+ * be a calibration that declined to run.
  */
 export const DEFAULT_CALIBRATION_RUN_ROOT = fileURLToPath(
   new URL("../../../results/calibration-4a/", import.meta.url),
@@ -106,6 +146,35 @@ export const DEFAULT_CALIBRATION_RUN_ROOT = fileURLToPath(
  * `BAKEOFF_ACCEPTANCE_ROOT`, empty-or-blank means the default, and a relative
  * value resolves against the cwd exactly as `DASHBOARD_HOME` does.
  *
+ * IT IS A KNOB NOBODY TURNS, AND THAT WAS MEASURED RATHER THAN FEARED —
+ * 2026-07-30. This variable is set by NOTHING: `grep -rn
+ * DASHBOARD_CALIBRATION_ROOT` over the whole repository outside `dist/` and
+ * `node_modules/` returns six hits and every one is this file, `run-root.test.ts`
+ * or a comment in `calibration.test.ts`. `package.json`'s `test` script is
+ * `npm run build --silent && node --test "dist/**\/*.test.js"` with no
+ * environment at all. So the documented way to run this — `npm test` — puts
+ * EVERY caller on the DEFAULT root, and the fix above only helps a caller who
+ * knows to opt out.
+ *
+ * WHAT THAT COSTS, OBSERVED THE SAME DAY IN THIS REPOSITORY. Four seven-fixture
+ * calibrations ran at the default root inside thirteen minutes (00:02, 00:10,
+ * 00:13, 00:14), started by different agents, none with this variable set —
+ * confirmed by a presence-only check of each `calibration.test.js` process
+ * environment, which returned 0 every time. Three ran back-to-back with seconds
+ * between them, and the 00:13 one DELETED two of the 00:11 run's score records
+ * while that run's reader was still using them (`ENOENT` on
+ * `cal-blank-page.json`, from a run that had reported 8/8 pass ~30 s earlier).
+ * The failures did not overlap only by luck; the fix removes no hazard from the
+ * path everyone uses.
+ *
+ * THE NARROWING THAT WOULD ACTUALLY CLOSE IT is recorded rather than shipped,
+ * because it changes a destructive path and wants its own red test: either give
+ * the default root a per-process segment, or have `prepareFixtureDirs` take an
+ * exclusive lock on the run root and FAIL — loudly, naming the other holder —
+ * instead of deleting a live run's tree. A lock is the better half: a per-process
+ * default makes seven fresh trees per run and never cleans them up, and it hides
+ * the collision rather than reporting it.
+ *
  * GUARDED, 2026-07-29, and the guard was RED FIRST. e6176eb shipped this
  * override with no `assertOutsideBakeoff` and said so in its own message, on the
  * grounds that an unverified guard is the defect that commit was fixing wearing
@@ -124,12 +193,29 @@ export const DEFAULT_CALIBRATION_RUN_ROOT = fileURLToPath(
  * bake-off tree cannot pass unnoticed.
  *
  * WHAT IT DOES NOT COVER, MEASURED AND LEFT OPEN ON PURPOSE. It constrains one
- * tree, not the whole filesystem. PROBED 2026-07-29, read-only, nothing deleted:
- * `$HOME`, `/`, `/Users`, `$HOME/Documents` and the repository root itself are
- * ALL ACCEPTED; only a root inside `bakeoff/` is refused. `$HOME` accepted means
- * `prepareFixtureDirs` would delete `$HOME/blank-page` and its six siblings —
- * `run-root.test.ts` line 91 asserts that deletion really happens against an
- * arbitrary override root, so this is executed evidence rather than a worry.
+ * tree, not the whole filesystem. RE-PROBED 2026-07-30 against the guard as
+ * shipped, read-only, nothing deleted — `calibrationRunRoot` resolves and guards
+ * and creates nothing, so this probe cannot delete even if it is wrong:
+ *
+ *   ACCEPTED   $HOME, /, /Users, $HOME/Documents, $HOME/.ssh, $HOME/Projects,
+ *              the repository root, and `<repo>/dashboard` itself
+ *   REFUSED    `<repo>/bakeoff`, `<repo>/bakeoff/results`, and the relative
+ *              `../../bakeoff/results` from `dashboard/server/`
+ *
+ * THE DESTRUCTIVE HALF OF THAT CLAIM IS NOW EXECUTED TOO, and it was two
+ * inference steps before. The old wording rested on `run-root.test.ts` line 91,
+ * which deletes `<root>/__run-root-probe__` — a name no fixture uses — so "it
+ * would delete `$HOME/blank-page`" was a composition of two separately measured
+ * facts. Closed 2026-07-30 against a `mkdtempSync` scratch root, never `$HOME`:
+ * seven directories were seeded, one per name in `FIXTURES`, each holding
+ * `<name>/nested/precious.txt` — a pre-existing file that is not calibration
+ * output. `prepareFixtureDirs("correct-portfolio")` destroyed
+ * `correct-portfolio/nested/precious.txt` and left the other six standing. One
+ * call takes one fixture; `gradeFixture` is invoked once per fixture, so a full
+ * calibration makes that call seven times. `$HOME` ACCEPTED therefore means a
+ * full run deletes `$HOME/{correct-portfolio,missing-section,broken-build,
+ * blank-page,stub-markers,reward-hacked,stock-motion-only}` — every step of that
+ * sentence now measured rather than reasoned.
  * Nothing narrower was shipped because every candidate either failed to
  * characterise its own coverage (blocking `$HOME` while allowing
  * `$HOME/Documents`) or broke the two legitimate uses — `mkdtempSync(tmpdir())`

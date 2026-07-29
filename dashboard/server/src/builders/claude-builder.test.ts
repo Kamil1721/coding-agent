@@ -35,6 +35,7 @@ import { modelRows, zeroTokens } from "../tokens.js";
 import type { TokenTotals } from "../tokens.js";
 import {
   ClaudeSubscriptionBuilder,
+  MOTION_BAR_ENV,
   announceEnvironment,
   buildOptions,
   canonicaliseForDecision,
@@ -809,6 +810,81 @@ test("WIRING: the sandbox is enabled, and fails closed unless opted out", () => 
   assert.equal(buildOptions(req(), false).sandbox?.enabled, true);
   assert.equal(buildOptions(req(), false).sandbox?.failIfUnavailable, true);
   assert.equal(buildOptions(req(), true).sandbox?.failIfUnavailable, false);
+});
+
+/**
+ * `permissionMode` IS PINNED, AND THIS TEST CLOSES A RESIDUAL BY REMOVING ITS
+ * REACH RATHER THAN BY MEASURING IT.
+ *
+ * WHAT THE RESIDUAL SAID. `delegation-hook.ts`'s own header (and STATUS §3's
+ * UNMEASURED list) records "permission modes other than `acceptEdits` are
+ * untested" for the `PreToolUse` delegation hook: probe A covered `default` and
+ * `dontAsk` for the CALLBACK, the hook itself was only ever exercised under
+ * `acceptEdits`. That residual is only a risk if a build can run under some
+ * other mode.
+ *
+ * WHAT IS ASSERTED, AND WHY THAT IS THE HONEST FORM OF THE CLOSE. It does NOT
+ * measure the hook under `default`, `dontAsk`, `plan`, `auto` or
+ * `bypassPermissions` — a unit test cannot, that needs a live session. It
+ * asserts that no such run is REACHABLE from this program: `buildOptions` is the
+ * single constructor of the SDK `Options` every build uses, `permissionMode` is
+ * a literal there taking nothing from `BuildRequest` and nothing from the
+ * environment, and `build()` hands the SDK `{ ...options, abortController }` —
+ * the one field it adds. So the unmeasured modes move from "untested risk" to
+ * "out of scope by construction", and if anyone parameterises the field or
+ * changes the literal, THIS goes red and the residual has to be re-argued.
+ *
+ * THE OTHER TWO `permissionMode` SITES ARE NOT BUILDS, and are deliberately not
+ * covered: `models.ts` sets `"plan"` for the model-catalog probe (no delegation
+ * hook, no workspace) and `design-segment-probe.mjs` is a probe script.
+ *
+ * ONE CHANNEL THIS DOES NOT CLOSE, AND IT IS NOT A UNIT-TESTABLE ONE.
+ * `settingSources: ["user"]` is set two fields down, and `Settings.permissions.
+ * defaultMode` (sdk.d.ts:5059) is a settings-tier spelling of the same knob —
+ * `acceptEdits` among its values, plus `bypassPermissions` and `auto`. Which
+ * tier wins when both are present is NOT stated in the installed 0.3.220
+ * typings, and the SDK ships `filterEscalatingDefaultMode` precisely because
+ * escalating settings-tier modes are a live concern. So "no other mode is
+ * reachable" is a statement about THIS PROGRAM'S code, not about the effective
+ * mode of the CLI it spawns. The measurement that would settle it is cheap and
+ * is written down rather than performed here: `SDKSystemMessage` for
+ * `subtype:"init"` carries `permissionMode` (sdk.d.ts:4429), and
+ * `build-environment.ts` already starts a real `query()` through this very
+ * `buildOptions()` and aborts on the first `system/init` — five such probes were
+ * run on 2026-07-28 for the agent/skill inventory. Reading one more field off
+ * that message answers it with no model turn.
+ *
+ * TWO MUTATIONS, 2026-07-30, and the second one's result is reported rather than
+ * spun:
+ *   A. the literal changed to `"dontAsk"` in the compiled `buildOptions`. RED on
+ *      the first clause — `+ 'dontAsk' - 'acceptEdits'`. So the pin is live.
+ *   B. the `permissionMode` key DELETED from the returned object. Also red, but
+ *      red on the SAME first clause (`+ undefined - 'acceptEdits'`). The
+ *      `"permissionMode" in …` assertion at the bottom therefore CANNOT go red
+ *      on its own: absence already fails equality one line up. It is kept as a
+ *      statement of intent, NOT as a second check — this repo's rule is that a
+ *      clause whose failure mode is a subset of a louder one's is not a second
+ *      check, and saying so beats letting it look like one.
+ */
+test("WIRING: permissionMode is acceptEdits and nothing parameterises it", () => {
+  assert.equal(buildOptions(req(), false).permissionMode, "acceptEdits");
+  // Every axis a caller CAN vary, so "unconditional" is executed rather than
+  // read off the source: the unsandboxed opt-out, both observer arguments, and
+  // an env carrying the one flag `buildOptions` is known to read.
+  assert.equal(buildOptions(req(), true).permissionMode, "acceptEdits");
+  assert.equal(
+    buildOptions(req(), false, () => undefined, () => undefined).permissionMode,
+    "acceptEdits",
+  );
+  assert.equal(
+    buildOptions(req({ env: { ...process.env, [MOTION_BAR_ENV]: "1" } }), false).permissionMode,
+    "acceptEdits",
+  );
+  // REDUNDANT BY MEASUREMENT (mutation B above), KEPT AS A STATEMENT OF INTENT:
+  // the key must be set EXPLICITLY, because relying on the CLI's own default
+  // reopens the same unmeasured space by omission. Deleting the key fails the
+  // equality assertions above with `undefined`, so this line cannot go red alone.
+  assert.ok("permissionMode" in buildOptions(req(), false));
 });
 
 /**
