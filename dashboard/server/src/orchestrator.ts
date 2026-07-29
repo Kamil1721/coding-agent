@@ -72,7 +72,12 @@ import {
 } from "bakeoff/dist/spec-agent.js";
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
 import { shortlistFor } from "./agent-shortlist.js";
+import { writeBacklog } from "./backlog.js";
+import { fixAllowedAgents } from "./fix-prompt.js";
+import type { FixTask } from "./fix-triage.js";
 import { archiveAttempt, readAttempt, scorerOutRoot } from "./gate-attempts.js";
+import { maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
+import type { GateFixLoopResult } from "./gate-fix-loop.js";
 import type { ApiCriterion, ApiPhase, ApiRunStatus } from "./api-types.js";
 import { appendContextEvent } from "./build-context.js";
 import type { ContextEvent } from "./build-context.js";
@@ -148,6 +153,20 @@ export interface OrchestratorDeps {
 interface ActiveRun {
   readonly runId: string;
   readonly abort: AbortController;
+}
+
+/**
+ * What one gate attempt produced.
+ *
+ * Three states, kept apart on purpose: a `record` with a verdict, a `container`
+ * with the machine-readable detail behind it, and a `failure` explaining a gate
+ * that could not run at all. A gate that could not run must never be
+ * indistinguishable from a gate that passed.
+ */
+interface GateOutcome {
+  readonly record: ScoreRecord | null;
+  readonly container: ContainerResult | null;
+  readonly failure: string | null;
 }
 
 export class Orchestrator {
@@ -354,9 +373,19 @@ export class Orchestrator {
           : `builder self-report: ${selfReport.status} — ${truncate(selfReport.reason, 200)}`,
       );
 
-      // ---- PHASE 3: the sealed gate -----------------------------------
+      // ---- PHASE 3: the sealed gate, then the bounded fix loop ---------
       this.#setPhase(runId, "gate");
-      const scored = await this.#gatePhase(runId, ticket, suite, runPaths, declaredDone, signal, 1);
+      const loop = await this.#gateFixLoop(runId, ticket, suite, runPaths, log, declaredDone, signal);
+      const scored = loop.scored;
+
+      // A fix round that ran into the provider's window is not a failed run.
+      // The workspace, the session and the frozen suite are intact, exactly as
+      // when the BUILD hits it, so it takes the same exit.
+      if (loop.rateLimit !== null) {
+        log.close();
+        this.#rateLimited(runId, loop.rateLimit, this.#deps.store.getRun(runId)?.builderSessionId ?? null);
+        return;
+      }
 
       // ---- PHASE 4: the code-reading judge ----------------------------
       this.#setPhase(runId, "judge");
@@ -754,7 +783,182 @@ export class Orchestrator {
     await git(runPaths.workspace, ["commit", "--allow-empty", "--quiet", "-m", "workspace created"]);
   }
 
-  /* ---- phase 3: the sealed gate --------------------------------------- */
+  /* ---- phase 3: the sealed gate, and the loop around it ---------------- */
+
+  /**
+   * Gate, triage, fix, re-gate — bounded, and honest when it stops.
+   *
+   * THE ADAPTER, NOT THE POLICY. Every decision (when to stop, what a fixing
+   * agent may see, how work is routed) lives in `gate-fix-loop.ts`,
+   * `gate-report.ts` and `fix-triage.ts`, which are tested without spending a
+   * subscription. What is here is the two things only the orchestrator can
+   * supply: the real sealed gate, and a real agent to run a fix with.
+   *
+   * `scored` IS THE LAST ATTEMPT'S SCORE RECORD and that is deliberate.
+   * `heldOutPass` means exactly what it meant before this phase existed — the
+   * verdict of the frozen suite on the artefact as it finally stands. The loop
+   * re-gates; it does not re-define the verdict.
+   *
+   * THE BACKLOG IS WRITTEN ON EVERY EXIT, including green. A run that stops
+   * without saying what is left is unactionable, and a missing file cannot be
+   * told apart from a step that never ran.
+   */
+  async #gateFixLoop(
+    runId: string,
+    ticket: Ticket,
+    suite: AcceptanceSuite,
+    runPaths: RunPaths,
+    log: BuildLog,
+    declaredDone: boolean,
+    signal: AbortSignal,
+  ): Promise<{ scored: GateOutcome; result: GateFixLoopResult; rateLimit: RateLimitState | null }> {
+    let scored: GateOutcome = { record: null, container: null, failure: null };
+    let rateLimit: RateLimitState | null = null;
+
+    // A fix round that hits the provider's rate-limit window must stop the loop
+    // rather than let it re-gate an unchanged artefact and call that
+    // non-convergence. A child controller aborts the loop without touching the
+    // run's own signal, which the caller still owns.
+    const loopAbort = childAbort(signal);
+
+    const result = await runGateFixLoop({
+      gate: async (attempt) => {
+        scored = await this.#gatePhase(runId, ticket, suite, runPaths, declaredDone, signal, attempt);
+        return scored.container;
+      },
+      runFix: async (task, prompt) => {
+        const state = await this.#runFixTask(runId, task, prompt, runPaths, log, signal);
+        if (state !== null && state.limited) {
+          rateLimit = state;
+          loopAbort.abort();
+        }
+      },
+      maxAttempts: maxAttemptsFrom(this.#deps.env),
+      workspace: runPaths.workspace,
+      // The same shortlist the build ran behind, from the same classification of
+      // the same string. A fix round is bounded further, to one agent, in
+      // `fixAllowedAgents` — this is the outer set triage is checked against.
+      allowedAgents: shortlistFor(classifySurface(ticket.brief)),
+      signal: loopAbort.signal,
+      log: (level, text) => this.#emitLog(runId, level, text),
+    });
+
+    this.#emitLog(
+      runId,
+      result.passed ? "info" : "warn",
+      `the gate/fix loop stopped after ${String(result.attempts)} attempt(s): ${result.reason}`,
+    );
+    this.#recordBacklog(runId, runPaths, result);
+    return { scored, result, rateLimit };
+  }
+
+  /**
+   * Run one fix task: the same subscription builder, resuming the same session,
+   * bounded to the one agent triage routed the work to.
+   *
+   * WHY THE SAME SESSION. The fixer needs what the builder already knows about
+   * this tree. Resuming keeps that; a fresh session would re-derive it, at the
+   * cost of the context budget the loop is trying to spend on fixing.
+   *
+   * WHY THE SAME `sealedRoots`. A fixing agent is subject to every Phase 0/0.1/
+   * 0.2 protection the builder is. It is the agent with the strongest motive to
+   * read `results/scorer-out` — that directory holds the held-out test titles
+   * that would tell it exactly what to write.
+   *
+   * Returns the rate-limit state so the caller can stop the loop, or null when
+   * the fix could not be attempted at all.
+   */
+  async #runFixTask(
+    runId: string,
+    task: FixTask,
+    prompt: string,
+    runPaths: RunPaths,
+    log: BuildLog,
+    signal: AbortSignal,
+  ): Promise<RateLimitState | null> {
+    const row = this.#deps.store.getRun(runId);
+    if (row === null) return null;
+    const entry = await this.#deps.catalog.resolve(row.modelId);
+    if (entry === null || !entry.option.available) {
+      this.#emitLog(runId, "warn", `no model is available to run the ${task.agent} fix round; skipping it`);
+      return null;
+    }
+
+    const builder: SubscriptionBuilder =
+      entry.option.provider === "openai" ? new CodexSubscriptionBuilder() : new ClaudeSubscriptionBuilder();
+
+    const outcome = await builder.build({
+      runId,
+      prompt,
+      workspace: runPaths.workspace,
+      sealedRoots: [this.#deps.paths.acceptance, scorerOutRoot(this.#deps.paths)],
+      allowedAgents: fixAllowedAgents(task),
+      modelId: row.modelId,
+      effort: entry.effort,
+      resumeSessionId: row.builderSessionId,
+      signal,
+      sink: this.#sink(runId, log),
+      env: this.#deps.env,
+    });
+
+    if (outcome.sessionId !== null) this.#deps.store.updateRun(runId, { builderSessionId: outcome.sessionId });
+    if (outcome.tokens.callCount > 0) this.#emitLog(runId, "info", `${task.agent} — ${describeTokens(outcome.tokens)}`);
+    if (outcome.failure !== null) {
+      this.#emitLog(runId, "warn", `the ${task.agent} fix round did not complete cleanly: ${outcome.failure}`);
+    }
+    return outcome.rateLimit;
+  }
+
+  /**
+   * The event sink for a fix round.
+   *
+   * Deliberately thinner than the build's: no environment record (the run's
+   * inventory was written at init and a fix round does not change it) and no
+   * context events (they are sampled at lane boundaries in a build, and a fix
+   * round is one lane). Everything the UI already renders — logs, tools, tokens,
+   * the canvas graph — still flows.
+   */
+  #sink(runId: string, log: BuildLog): BuildEventSink {
+    return {
+      log: (level, text) => this.#emitLog(runId, level, text),
+      tool: (name, summary) => this.#emit(runId, { type: "tool", name, summary }),
+      tokens: (totals) => {
+        this.#deps.store.updateRun(runId, { tokens: toApiTokens(totals) });
+        this.#emit(runId, { type: "tokens", ...toApiTokens(totals) });
+      },
+      rateLimit: (state) => this.#noteRateLimit(runId, state),
+      session: (id) => {
+        this.#deps.store.updateRun(runId, { builderSessionId: id });
+      },
+      environment: () => undefined,
+      contextUsage: () => undefined,
+      compaction: () => undefined,
+      graph: (event) => this.#emit(runId, event),
+      raw: (text) => log.write(text),
+    };
+  }
+
+  /**
+   * `backlog.md`, on every terminal outcome.
+   *
+   * A failure to write it must NOT take the run down — this is the record of the
+   * run, not the run — so it is logged as a warning, which is itself a record.
+   */
+  #recordBacklog(runId: string, runPaths: RunPaths, result: GateFixLoopResult): void {
+    try {
+      const path = writeBacklog(runPaths.results, {
+        reason: result.reason,
+        attempts: result.attempts,
+        remaining: result.report.failures,
+        heldOutUnmet: result.report.heldOutUnmet,
+        denied: result.deniedTasks,
+        infraFailure: result.report.infraFailure,
+      });
+      this.#emitLog(runId, "info", `what this run did not close is recorded in ${path}`);
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the backlog could not be written: ${describeError(error)}`);
+    }
+  }
 
   /**
    * One gate attempt.

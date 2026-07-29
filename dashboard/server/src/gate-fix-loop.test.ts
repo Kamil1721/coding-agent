@@ -14,7 +14,7 @@ import { GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { shortlistFor } from "./agent-shortlist.js";
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
-import { runGateFixLoop } from "./gate-fix-loop.js";
+import { DEFAULT_MAX_ATTEMPTS, maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
 import type { FixTask } from "./fix-triage.js";
 
 const HELD_OUT_TITLE = "renders the hero heading";
@@ -237,6 +237,34 @@ test("an aborted run stops as cancelled, not as a verdict", async () => {
   });
   assert.equal(r.reason, "cancelled");
   assert.equal(r.passed, false, "cancelled is never a pass");
+});
+
+test("a gate interrupted by a cancel is cancelled, not an infrastructure fault", async () => {
+  // An aborted gate produces no result, which looks exactly like a scorer that
+  // broke. Reporting it as infra blames the machine for something the owner did.
+  const controller = new AbortController();
+  const r = await runLoop({
+    gate: () => {
+      controller.abort();
+      return Promise.resolve(null);
+    },
+    maxAttempts: 3,
+    signal: controller.signal,
+  });
+  assert.equal(r.reason, "cancelled");
+});
+
+test("the attempt cap comes from the environment, and refuses nonsense", () => {
+  assert.equal(maxAttemptsFrom({}), DEFAULT_MAX_ATTEMPTS);
+  assert.equal(maxAttemptsFrom({ DASHBOARD_GATE_MAX_ATTEMPTS: "5" }), 5);
+  assert.equal(maxAttemptsFrom({ DASHBOARD_GATE_MAX_ATTEMPTS: "1" }), 1);
+  // Not clamped: a clamp would run "100" as 10 and read in the log as if the
+  // owner's number had been honoured.
+  assert.equal(maxAttemptsFrom({ DASHBOARD_GATE_MAX_ATTEMPTS: "100" }), DEFAULT_MAX_ATTEMPTS);
+  assert.equal(maxAttemptsFrom({ DASHBOARD_GATE_MAX_ATTEMPTS: "0" }), DEFAULT_MAX_ATTEMPTS);
+  assert.equal(maxAttemptsFrom({ DASHBOARD_GATE_MAX_ATTEMPTS: "-1" }), DEFAULT_MAX_ATTEMPTS);
+  assert.equal(maxAttemptsFrom({ DASHBOARD_GATE_MAX_ATTEMPTS: "2.5" }), DEFAULT_MAX_ATTEMPTS);
+  assert.equal(maxAttemptsFrom({ DASHBOARD_GATE_MAX_ATTEMPTS: "many" }), DEFAULT_MAX_ATTEMPTS);
 });
 
 test("work routed to an agent this run may not use stops the loop instead of spinning", async () => {

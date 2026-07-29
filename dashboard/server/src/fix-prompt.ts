@@ -27,6 +27,23 @@ import { WORKSPACE } from "bakeoff/dist/runner.js";
 import type { AgentVisibleReport } from "./gate-report.js";
 import type { FixTask } from "./fix-triage.js";
 
+/**
+ * The delegation bound for ONE fix round: exactly the agent this work was routed
+ * to, and nothing else.
+ *
+ * NARROWER THAN THE BUILD'S OWN SHORTLIST, ON PURPOSE. The build may reach ~26
+ * agents because it is doing open-ended work. A fix round has one job that
+ * triage already decided; handing it the full shortlist invites a second
+ * exploratory build inside a loop whose whole value is that it is bounded.
+ *
+ * An empty array would deny all delegation (builders/types.ts), so a caller that
+ * forgot this would get a fixer that silently does everything itself. This
+ * returns a one-element array rather than letting that be the default.
+ */
+export function fixAllowedAgents(task: FixTask): readonly string[] {
+  return [task.agent];
+}
+
 export interface FixPromptRequest {
   readonly task: FixTask;
   readonly report: AgentVisibleReport;
@@ -85,6 +102,8 @@ export function buildFixPrompt(request: FixPromptRequest): string {
       "scores this run is a separate frozen copy outside the workspace.",
     "",
     "WHAT TO DO:",
+    `- ${task.agent} is the specialist this work was routed to, and the only agent you may delegate to ` +
+      "this round. Use it, or do the work yourself; anything else is denied.",
     "- Fix the cause in the application code, then re-run the failing command yourself to check it.",
     "- If a failure is not real — the gate is wrong about the artefact — say so and say why, and change " +
       "nothing. A wrong fix costs a whole round.",
