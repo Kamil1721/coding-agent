@@ -938,10 +938,21 @@ export async function auditSuite(
   ticket: Ticket,
   options: SpecAgentOptions = {},
 ): Promise<SuiteAuditResult> {
+  // `ticketBrief` is what lets the prose-floor rule say ", and the ticket never
+  // states 200" instead of only the generic sentence — and that clause is the
+  // whole argument for the rule being BLOCKING, since `mustRegenerate` buys
+  // another authoring call and is worth it only if the re-author is told
+  // something the previous attempt was not. It also suppresses the finding
+  // outright when the ticket DID state the number. Unwired until 2026-07-29,
+  // which was invisible because the rule fires with or without it by design.
   const deterministicOptions =
     options.nodeExecPath === undefined
-      ? { syntaxCheck: options.syntaxCheck ?? true }
-      : { syntaxCheck: options.syntaxCheck ?? true, nodeExecPath: options.nodeExecPath };
+      ? { syntaxCheck: options.syntaxCheck ?? true, ticketBrief: ticket.brief }
+      : {
+          syntaxCheck: options.syntaxCheck ?? true,
+          nodeExecPath: options.nodeExecPath,
+          ticketBrief: ticket.brief,
+        };
   const deterministicFindings = deterministicAudit(draft, deterministicOptions);
 
   const deterministicBlocks = requiresRegeneration(deterministicFindings);
