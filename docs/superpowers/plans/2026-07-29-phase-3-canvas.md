@@ -264,6 +264,15 @@ which self-guards behind `DASHBOARD_LIVE_SMOKE=1` and spends quota.
 | F | a terminal `status` marks a running agent `failed` | RED, 2 tests. |
 | G | the delegation hook stops reporting its decisions | RED, 1 test. |
 | H | the observer's `try`/`catch` removed | RED, 1 test — a throwing observer takes the guard down with it. |
+| A′ (again) | same, against the REAL-redactor round-trip test added in the follow-up commit | RED, 1 test. |
+| I | drop the `?lastEventId=` query branch, leaving the header only | RED, 1 test. |
+
+Follow-up commit (`57a3965`) closes two holes found in review: nothing had run
+the actual `redactForPersistence` over a graph row (the collision was simulated
+by a typed literal), and `?lastEventId=` — the ONLY resume path `EventSource`
+can use, since it cannot set headers — was untested. Final: **298 / 296 / 0 / 2**.
+`npm run lint` in `dashboard/` exits 0; its 14 warnings are all pre-existing in
+`server/probes/`.
 
 **The two that did not go red, and what was done about them.**
 
@@ -297,7 +306,14 @@ wrong reason is evidence about the checks nobody re-ran.
    top risk; unchanged by this phase, and the graph events raise the fan-out volume.
 5. **`PRAGMA synchronous = NORMAL`** and wrapping `appendEvent`'s two statements in one transaction
    (spec §9.4 item 3) — untouched here.
-6. **Retention.** No `DELETE FROM events` exists anywhere. Still undecided.
+6. **Retention, and it just got more urgent.** No `DELETE FROM events` exists anywhere, and this
+   phase materially raised the row rate: a tool call now writes 2 rows (`tool` + `graph_tool`), 3
+   when it is a `Skill`. Spec §9.4 item 4 was written before that. Not fixed here; the volume
+   changed and the decision is still owed.
+9. **A Codex-provider run emits ZERO graph events.** `BuildEventSink.graph` is required, and the
+   Codex driver never calls it — the same shape as `environment`, and honest: that driver
+   delegates to nothing and has no equivalent messages. A reader must not assume the canvas
+   works for both providers.
 7. **`graph_skill.source: "preloaded"` is unreachable** — `Options.agents` was deleted, so
    `AgentDefinition.skills` preloads nothing. The discriminator stays because spec §10 keeps the
    blast radius contained either way.
