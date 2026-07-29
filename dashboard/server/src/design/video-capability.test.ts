@@ -109,5 +109,11 @@ test("the default deps read the real filesystem and answer null for a file that 
   const real = defaultVideoCapabilityDeps();
   assert.equal(real.home, process.env["HOME"] ?? "");
   assert.equal(real.readFile("/nonexistent/gemini-video.sh"), null);
-  assert.equal(real.env, process.env);
+  // `assert.ok(a === b)` AND NOT `assert.equal(a, b)`, deliberately. A failing
+  // strict equality between two objects inspects BOTH operands into the
+  // assertion message — and one of them is `process.env`, which on this host
+  // carries a live key. The one assertion here whose failure output would be
+  // unbounded is the one that must not print. CLAUDE.md:18: no key value into a
+  // log line, a fixture, OR AN ERROR PATH.
+  assert.ok(real.env === process.env, "the real env object, not a copy");
 });

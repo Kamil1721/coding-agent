@@ -38,6 +38,14 @@
  * one argument, and it is what turns a verdict into `{ decision: "block" }`.
  * (Its failure mode is NOT a subset of `antislop-hook.test.ts`'s
  * allows-authored-motion test, which uses a rAF fixture with no video in it.)
+ *
+ * AND IT HAS BEEN SEEN FAILING ALONE, which is the only thing that makes that
+ * paragraph a fact. Mutating the CALL SITE in the compiled hook —
+ * `decideMotion(files.filter((f) => !/\.currentTime/.test(f.text)))`, leaving
+ * `decideMotion` itself untouched — left all four assertions above green and
+ * turned this one red with `not blocked: + undefined - true`. That is what "a
+ * later author wired the flag in at the caller" looks like from a unit test's
+ * point of view: nothing a direct call to `decideMotion` can observe.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
