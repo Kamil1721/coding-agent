@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/*
+ * Dark by default and dark only. There is no light theme and no `dark:`
+ * variant anywhere in this app: a single palette removes a whole class of
+ * contrast bugs in the states that matter (rate-limited, false finish), and
+ * removes the light-mode flash on first paint.
+ *
+ * Fonts are the platform stack. `next/font/google` would fetch at BUILD time,
+ * which would make `next build` depend on network access for a tool that runs
+ * entirely on loopback.
+ */
+@theme {
+  --color-canvas: #0b0d11;
+  --color-surface: #11141a;
+  --color-surface-raised: #161a21;
+  --color-line: #232833;
+  --color-line-strong: #333a48;
+
+  --color-ink: #e7eaf0;
+  --color-ink-dim: #a2abbb;
+  --color-ink-faint: #6f7887;
+
+  --color-accent: #6ea8fe;
+  --color-accent-dim: #2b4a7d;
+
+  --color-pass: #4ade80;
+  --color-pass-dim: #14351f;
+  --color-fail: #f87171;
+  --color-fail-dim: #3d1717;
+  --color-warn: #fbbf24;
+  --color-warn-dim: #3a2c0c;
+  --color-info: #7dd3fc;
+  --color-info-dim: #12313f;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Keyboard focus stays visible everywhere; this is a keyboard-driven tool. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+::selection {
+  background-color: var(--color-accent-dim);
+  color: var(--color-ink);
+}
+
+/* Scrollbars, tuned for the dense log panes. */
+* {
+  scrollbar-color: var(--color-line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+/* Tabular figures for every number that changes while you are looking at it. */
+.numeric {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
