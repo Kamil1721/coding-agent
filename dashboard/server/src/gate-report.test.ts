@@ -14,7 +14,9 @@ import test from "node:test";
 import { GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import {
   ALL_FAILURE_CLASSES,
+  WITHHELD_DETAIL,
   classify,
+  isGreen,
   toAgentVisible,
 } from "./gate-report.js";
 import {
@@ -129,6 +131,83 @@ test("tier0 failures survive in full — they are objective, not test-derived", 
   assert.equal(r.failures[0]!.command, "npm run build");
   assert.equal(r.failures[0]!.exitCode, 2);
   assert.equal(r.failures[0]!.klass, "build");
+});
+
+/** The `unknown` build detail, in the shape `absentBuildVerdict` really emits it. */
+const NEVER_EVALUATED_BUILD =
+  "THE BUILD GATE WAS NEVER EVALUATED, and this is not a pass. The frozen manifest declares no build " +
+  'step, but the artefact contradicts that declaration: package.json declares scripts.build = "npm install && vite build"; ' +
+  "vite.config.ts is a bundler/framework configuration. Nothing was compiled, so nothing here says the artefact builds.";
+
+test("an UNKNOWN tier-0 gate is fix work — 'never evaluated' is not a pass, and not a silence either", () => {
+  // `GATE:build` gained an `unknown` outcome in bakeoff/src/tier0.ts +
+  // scorer-container.ts (defect #35): the frozen manifest declared no build step
+  // and the ARTEFACT contradicts it, so the gate ran nothing and established
+  // nothing. `gateToCriterion` maps it to `passed: false`, so the RUN fails —
+  // but a loop that only forwards `fail` never tells the fixing agent WHY, and
+  // an agent that is not told cannot act. The gate that was never evaluated then
+  // looks, from inside the loop, exactly like a gate that passed.
+  const c = containerFixture({
+    tier0: [
+      tier0Fixture({
+        id: GATE_IDS.build,
+        name: "build succeeds",
+        outcome: "unknown",
+        detail: NEVER_EVALUATED_BUILD,
+        // An absent command is emitted as gate(id, name, outcome, detail, 0, null, null).
+        durationMs: 0,
+        command: null,
+        exitCode: null,
+      }),
+      tier0Fixture({ id: GATE_IDS.boot, outcome: "pass", detail: "200 in 40ms" }),
+    ],
+  });
+
+  const r = toAgentVisible(c);
+  assert.equal(r.failures.length, 1, "the unknown gate is fix work; the passing one is not");
+  const build = r.failures[0]!;
+  assert.equal(build.id, GATE_IDS.build);
+  assert.match(build.detail, /NEVER EVALUATED/, "and it says what happened, in the gate's own words");
+  assert.match(build.detail, /scripts\.build/, "GATE:build is on DETAIL_ALLOWLIST, so its artefact-derived detail crosses");
+
+  // NOT `install`. The install markers exist to read a FAILED command's output;
+  // this gate ran no command, and the only reason "npm install" appears at all
+  // is that the artefact's own build script is quoted back. Routing a
+  // never-evaluated gate to the dependency specialist spends a round on a
+  // dependency tree nobody has touched.
+  assert.equal(build.klass, "build", "an unrun gate is not evidence of a dependency failure");
+
+  assert.ok(isGreen(toAgentVisible(containerFixture({}))), "control: an empty report is still green");
+  assert.equal(isGreen(r), false, "so the loop does not stop believing there is nothing left to do");
+});
+
+test("an UNKNOWN gate that is NOT on the detail allowlist crosses with its detail withheld", () => {
+  // Admitting `unknown` must not widen the boundary by one gate. The allowlist
+  // is keyed on the gate ID and nothing else, so an unknown-outcome
+  // GATE:suite-green — whose detail quotes the held-out runner verbatim — has to
+  // fail closed exactly as a failing one does.
+  const c = containerFixture({
+    tier0: [
+      tier0Fixture({
+        id: GATE_IDS.suiteGreen,
+        name: "the frozen held-out suite goes green",
+        outcome: "unknown",
+        detail: `never ran; last known output: held/hero.spec.mjs › ${HELD_OUT_TITLE} — ${HELD_OUT_ASSERTION}`,
+        command: "npx playwright test",
+      }),
+    ],
+  });
+
+  const r = toAgentVisible(c);
+  const json = JSON.stringify(r);
+  assert.doesNotMatch(json, /renders the hero heading/);
+  assert.doesNotMatch(json, /expected h1 to contain/);
+  assert.doesNotMatch(json, /hero\.spec\.mjs/);
+
+  const suite = r.failures.find((f) => f.id === GATE_IDS.suiteGreen);
+  assert.ok(suite !== undefined, "reported, so the loop knows it is not green");
+  assert.equal(suite.detail, WITHHELD_DETAIL, "and withheld, so the boundary is where it was");
+  assert.equal(suite.command, null);
 });
 
 test("a gate that passed is not fix work", () => {

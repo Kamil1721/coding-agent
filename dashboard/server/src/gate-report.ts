@@ -17,7 +17,8 @@
  *
  *   VISIBLE to a fixing agent                 HELD OUT from a fixing agent
  *   ─────────────────────────────────         ─────────────────────────────────
- *   tier0 gate failures, allowlisted          criterionCoverage[].testRefs
+ *   tier0 gates that FAILED or were           criterionCoverage[].testRefs
+ *     NEVER EVALUATED, allowlisted
  *     build / typecheck / lint / boot           (test TITLES — never)
  *     routes / stub markers / exploits        criterionCoverage[].detail
  *     data / screenshots                      suiteExecution.reportProblem
@@ -196,7 +197,13 @@ function tier0Failure(gate: Tier0GateResult): FixableFailure {
   const allowed = DETAIL_ALLOWLIST.has(gate.id);
   return {
     id: gate.id,
-    klass: classify({ id: gate.id, detail: allowed ? gate.detail : "" }),
+    // THE MARKER SCAN READS A FAILED COMMAND'S OUTPUT, so an `unknown` gate —
+    // which ran no command — hands it nothing. It is not merely uninformative
+    // there: `GATE:build`'s unknown detail quotes the artefact's own
+    // `scripts.build` back verbatim, so an artefact whose build script begins
+    // `npm install &&` would route a never-evaluated gate to the dependency
+    // specialist, on a dependency tree the gate never resolved.
+    klass: classify({ id: gate.id, detail: allowed && gate.outcome === "fail" ? gate.detail : "" }),
     // `name` is a source literal in scorer-container.ts, unlike `detail`, which
     // is assembled at run time from whatever the gate observed.
     summary: gate.name.length > 0 ? gate.name : gate.id,
@@ -237,7 +244,19 @@ export function toAgentVisible(container: ContainerResult | null): AgentVisibleR
 
   const failures: FixableFailure[] = [];
   for (const gate of container.tier0) {
-    if (gate.outcome !== "fail") continue;
+    // `unknown` IS FIX WORK, and leaving it out was the same defect one module
+    // down from where it was fixed. It means "this gate was never evaluated, and
+    // that is not a pass" (`GateOutcome` in scorer-protocol.ts): the frozen
+    // manifest declared the step absent and the ARTEFACT contradicted the
+    // declaration. `gateToCriterion` already maps it to `passed: false`, so the
+    // RUN fails correctly — but a loop that forwards only `fail` never tells the
+    // fixing agent it happened, and from inside the loop a gate that was never
+    // evaluated is then indistinguishable from one that passed.
+    //
+    // `pass` and `not_applicable` stay out: those are the two outcomes
+    // `gateToCriterion` maps to `passed: true`, and proposing fix work for them
+    // spends a round on a gate that has nothing to say.
+    if (gate.outcome !== "fail" && gate.outcome !== "unknown") continue;
     failures.push(tier0Failure(gate));
   }
 
