@@ -2238,6 +2238,51 @@ MSG
 | §7.5 — `costUsd` null, metered spend on its own line | Task 7 (`renderVideoSpend`), Task 8 (`results/video.json`) |
 | §6.2 — no *unrecorded* input | Task 6 (script sha256), Task 8 (model, resolution, duration, cap, cap source, timeout all in the record) |
 
+## REVISION 1 — 2026-07-29, settled by a LIVE call. Read before Task 1.
+
+The owner approved one live Veo call to settle CONCERN 1. It settled that and found
+**two errors in §7.6.1's request body**, which this plan described as "verified from
+Google's docs, not assumed". Neither form reaches generation. Three requests were
+made; the first two were rejected before any video was produced, so they cost nothing.
+
+| § claim | what the API returned |
+|---|---|
+| `"image": {"inlineData": {"mimeType": …, "data": …}}` | **HTTP 400** — "`inlineData` isn't supported by this model. Please remove it or refer to the Gemini API documentation for supported usage." |
+| `"durationSeconds": "4"` (string, as the table shows it) | **HTTP 400** — "The value type for `durationSeconds` needs to be a number." |
+| **CONCERN 1** — 8 s required because every call carries an image | **FALSE.** `durationSeconds: 4` + `resolution: "720p"` + an image returned **HTTP 200** and produced a real clip. |
+
+**The working body, measured:**
+
+```jsonc
+{ "instances": [{ "prompt": "<motion direction>",
+                  "image": { "bytesBase64Encoded": "<base64>", "mimeType": "image/png" }}],
+  "parameters": { "aspectRatio": "16:9", "resolution": "720p", "durationSeconds": 4 }}
+```
+
+**The output, verified with `ffprobe`:** `h264, 1280x720, duration=4.000000`, 2.1 MB,
+**plus an `aac` audio stream** — which independently confirms §7.6.3.3's "audio is
+generated and ignored". 1280x720 at 4.000 s is exactly the reference site's
+4.04 s / 1280x720, so §7.6's corroboration was right and only the parameter *type* was
+wrong.
+
+**Why CONCERN 1 was a false alarm, and it is worth understanding rather than deleting.**
+The Gen AI SDK's `GenerateVideosConfig` carries **two distinct image inputs**:
+`source.image` — "the input image for generating the videos" — and a separate
+`config.referenceImages`, "the images to use as the references", documented as "up to 3
+asset images _or_ 1 style image". The "8 s required for … reference images" note attaches
+to the **second**. This script uses the first. They are different features that share a
+word, and the plan read the constraint onto the wrong one. **Cost does not double.**
+
+**`~/.claude/scripts/gemini-video.sh` has been corrected** with both fixes and the
+measured errors quoted in a comment above them, so the next reader does not "simplify"
+the working shape back into a 400.
+
+**Still not measured:** whether 6 s and 8 s also work with an image; whether `1080p`
+imposes the 8 s floor as the table claims; and the per-call price, which no response
+carries. `costUsd` stays `null` — see §7.5's metered-call note.
+
+---
+
 ## NOT COVERED — stated rather than left silent
 
 1. **A distinct long-running canvas node state.** §7.6.3.4 asks for one. `GraphAgentState` is
