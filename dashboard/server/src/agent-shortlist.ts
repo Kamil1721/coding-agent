@@ -42,7 +42,7 @@ export type Lane = "spec" | "design" | "build" | "review" | "gate";
 export type Surface = "web-ui" | "fullstack" | "api" | "cli" | "library" | "background-jobs";
 
 /**
- * Lane membership. 26 agents shortlisted from 144.
+ * Lane membership. 27 agents shortlisted from 144.
  *
  * Dropped wholesale (spec 6.4): PowerShell/Windows/M365, vertical markets,
  * mobile/native, non-JS backends, infra/SRE, ML/data, business/GTM, and all seven
@@ -83,6 +83,14 @@ export const DELIVERY_LANES = {
     "security-auditor",
     "ai-writing-auditor",
     "ui-designer",
+    // THE ADVERSARY IS A REVIEW LENS, AND IT IS FILTERED BY SURFACE below. It
+    // judges a tree it has stopped editing (it cannot edit at all — the disk
+    // frontmatter denies Write/Edit/MultiEdit/NotebookEdit/Agent), and its
+    // findings become ordinary fix work through `withAdversaryFindings`, never a
+    // verdict. `adversary.ts` owns the module; `ADVERSARY_AGENT` there is the
+    // single spelling this literal is joined to by a test that imports BOTH as
+    // values, so this file keeps its property of importing nothing at runtime.
+    "human-factors-adversary",
   ],
   gate: ["debugger", "test-automator", "refactoring-specialist", "dependency-manager"],
 } as const satisfies Record<Lane, readonly string[]>;
@@ -96,6 +104,26 @@ const FRONTEND_BUILD: readonly string[] = ["nextjs-developer", "react-specialist
 
 /** Build-lane agents that only make sense when the deliverable is a terminal program. */
 const TERMINAL_BUILD: readonly string[] = ["cli-developer"];
+
+/**
+ * REVIEW-lane lenses that need a RUNNING, BROWSABLE surface to say anything.
+ *
+ * `human-factors-adversary` attacks a live URL through its UI; a static read of
+ * the source is explicitly not that pass (`adversary.ts`). On a CLI or a library
+ * there is no URL, `shouldRunAdversary` returns false, and shortlisting it anyway
+ * would grant a permission nothing intends to use — the exact asymmetry the file
+ * header warns about, in the direction that is merely wasteful rather than
+ * silent.
+ *
+ * THE SURFACE PREDICATE IS SPELLED TWICE, AND A TEST JOINS THE TWO. `WEB_SURFACES`
+ * in `adversary.ts` is the other spelling. Importing it would make this module —
+ * which compiles a permission boundary and imports nothing at runtime — depend on
+ * a feature module that already depends on it for `Surface`. So the join is a
+ * check instead: `adversary.test.ts` asserts `shortlistFor(surface).includes(
+ * ADVERSARY_AGENT)` EQUALS `shouldRunAdversary({surface, previewUrl})` for every
+ * surface, which cannot pass if the two predicates disagree in either direction.
+ */
+const WEB_REVIEW: readonly string[] = ["human-factors-adversary"];
 
 /**
  * DESIGN is the only conditional lane (spec 6.5). Phase 2b replaces the
@@ -142,6 +170,32 @@ function buildLaneFor(surface: Surface): readonly string[] {
 }
 
 /**
+ * The REVIEW lane, filtered by surface on the same terms the build lane is.
+ *
+ * Only {@link WEB_REVIEW} is conditional; the four other lenses read a tree and
+ * need no running anything.
+ */
+function reviewLaneFor(surface: Surface): readonly string[] {
+  const all: readonly string[] = DELIVERY_LANES.review;
+  switch (surface) {
+    case "web-ui":
+    case "fullstack":
+      return all;
+    case "api":
+    case "cli":
+    case "library":
+    case "background-jobs":
+      return all.filter((a) => !WEB_REVIEW.includes(a));
+    default:
+      // A surface this function has not been taught about gets the SMALLER set.
+      // Fail-closed is the whole posture of this module: an unrecognised surface
+      // must not be handed a lens that drives a browser at a URL nobody has said
+      // exists.
+      return all.filter((a) => !WEB_REVIEW.includes(a));
+  }
+}
+
+/**
  * The agents a build for `surface` may delegate to, in pipeline order.
  *
  * SPEC, BUILD, REVIEW and GATE always run; DESIGN is conditional. The result is
@@ -170,7 +224,7 @@ export function shortlistFor(surface: Surface, designMode: DesignLaneMode = "off
     ...DELIVERY_LANES.spec,
     ...design,
     ...buildLaneFor(surface),
-    ...DELIVERY_LANES.review,
+    ...reviewLaneFor(surface),
     ...DELIVERY_LANES.gate,
   ];
   return [...new Set(ordered)];
@@ -258,8 +312,15 @@ export interface AgentBounds {
  *               ~20-25 turns; 30 leaves room for the manifest and the direction.
  *   build   40  the agents that actually write the implementation, iterate against
  *               `visible-acceptance/`, and install dependencies.
- *   review  15  read-mostly lenses. Three of them (spec 6.4) have no Write or Edit
+ *   review  15  read-mostly lenses. Most of them (spec 6.4) have no Write or Edit
  *               tool at all and hand back prose.
+ *               `human-factors-adversary` is the one this number is least sure
+ *               about and it carries NO override, deliberately: it drives a
+ *               browser, so each click is a round-trip and 15 may well be short —
+ *               but nothing has measured it, `boundsFor` has no production caller
+ *               to make an invented number bind, and a figure nobody measured is
+ *               not improved by being written down confidently. Measure it when a
+ *               route exists to apply it.
  *   gate    30  NOT lenses — `debugger`, `test-automator` and
  *               `refactoring-specialist` change the tree to close what REVIEW
  *               found, so they need write-shaped room, if less than a lane that

@@ -141,6 +141,42 @@ export interface BuildRequest {
    * that tool is denied outright in the same hook.
    */
   readonly allowedAgents: readonly string[];
+  /**
+   * Tool names this build may not use AT ALL, for a session whose entire job is
+   * read-only. Absent means "deny nothing beyond what the driver already denies".
+   *
+   * IT IS SESSION-SCOPED, WHICH IS THE WHOLE REASON IT IS NOT ALWAYS SET. A build
+   * that has to write the implementation cannot carry a denylist containing
+   * `Write`; setting this on an ordinary build would disarm the builder. Its only
+   * sensible caller is a session that IS one read-only agent from end to end —
+   * the top-level adversary pass (`adversary.ts`, {@link
+   * ADVERSARY_DISALLOWED_TOOLS}).
+   *
+   * IT IS THE ALTERNATIVE TO THE SHORTLIST ROUTE, NOT ITS COMPANION. There are
+   * two ways to run `human-factors-adversary` and they carry the denylist
+   * differently:
+   *
+   *   DELEGATED  its name is on `allowedAgents` (it is, for a web surface, since
+   *              the Phase 2d follow-up put it in `DELIVERY_LANES.review`), the
+   *              orchestrator spawns it through the Agent tool, and the denylist
+   *              comes from the `disallowedTools:` frontmatter of
+   *              ~/.claude/agents/human-factors-adversary.md — the channel probe I
+   *              measured DOES bind for a name that exists on disk. This field is
+   *              not involved.
+   *   TOP-LEVEL  a whole `builder.build()` whose prompt is the adversary's. There
+   *              is no agent file in play, so the denial has to ride on the
+   *              request. That is this field.
+   *
+   * NO DRIVER READS IT YET, AND NO CALLER SETS IT. Said here rather than left to
+   * be discovered. The Anthropic route would be session-level
+   * `Options.disallowedTools` (it exists in the SDK typings); whether it binds is
+   * UNMEASURED — probe G2 measured only the PER-AGENT `disallowedTools`, which did
+   * not narrow anything — and measuring it costs a live subscription call. So the
+   * carrier is declared and the mechanism is not claimed. Optional for the same
+   * reason `NewRun.designLock` is: it lets the field land without every existing
+   * caller changing in a file this wave does not own.
+   */
+  readonly disallowedTools?: readonly string[];
   /** Catalog model id, as chosen in the UI. */
   readonly modelId: string;
   /** Effort rung, or null when the model has no effort parameter. */

@@ -140,6 +140,26 @@ test("ui-designer is BOTH the token author and the visual gate — never the sam
   assert.ok(!review.includes("taste-frontend-expert"), "the author must not grade its own art");
 });
 
+test("the REVIEW lane really is filtered — a dead filter would pass every count bound", () => {
+  // The mirror of "the build lane really is filtered", and it exists for the
+  // same reason: `WEB_REVIEW` keys off a NAME. Rename the agent and the filter
+  // silently matches nothing, every surface gets the whole review lane, and the
+  // shortlist starts permitting a browser-driving lens on a run with no browser.
+  // The count bounds and the widest-surface test both stay green through that.
+  assert.ok(shortlistFor("web-ui").includes("human-factors-adversary"), "a web UI can be attacked");
+  assert.ok(shortlistFor("fullstack").includes("human-factors-adversary"));
+  assert.ok(!shortlistFor("cli").includes("human-factors-adversary"), "a CLI has no URL to attack");
+  assert.ok(!shortlistFor("api").includes("human-factors-adversary"));
+  assert.ok(!shortlistFor("library").includes("human-factors-adversary"));
+  assert.ok(!shortlistFor("background-jobs").includes("human-factors-adversary"));
+  // The four unconditional lenses must NOT have moved with it. A filter that
+  // dropped the whole lane for a CLI would satisfy every negative above.
+  for (const surface of SURFACES) {
+    assert.ok(shortlistFor(surface).includes("code-reviewer"), `${surface} lost code-reviewer`);
+    assert.ok(shortlistFor(surface).includes("security-auditor"), `${surface} lost security-auditor`);
+  }
+});
+
 test("the shortlist is bounded — 144 agents is a noisy search space", () => {
   for (const surface of SURFACES) {
     const n = shortlistFor(surface).length;

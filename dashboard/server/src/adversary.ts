@@ -30,13 +30,37 @@
  * normally moot — which is exactly why it is asserted rather than assumed. The
  * unlock is an explicit argument no current caller passes.
  *
- * NOT WIRED INTO A RUN AS OF THIS COMMIT, and that is stated rather than left to
- * be discovered. Two things this lane does not own are missing: `ADVERSARY_AGENT`
- * is not in `DELIVERY_LANES` (agent-shortlist.ts), so a delegated call would be
- * denied by the PreToolUse hook and produce nothing distinguishable from an
- * agent with nothing to do; and `BuildRequest` (builders/types.ts) has no
- * `disallowedTools` field to carry the denylist to a driver. Both are asserted
- * by tests here so the gap cannot be mistaken for wiring that works.
+ * WHAT IS WIRED, AND WHAT STILL IS NOT — REVISED IN THE PHASE 2d FOLLOW-UP,
+ * because the paragraph that stood here ("NOT WIRED INTO A RUN AS OF THIS
+ * COMMIT… Both are asserted by tests here") became false in one half and was
+ * never true in the other.
+ *
+ *   WIRED. {@link ADVERSARY_AGENT} is in `DELIVERY_LANES.review`
+ *   (agent-shortlist.ts) and `shortlistFor` returns it for `web-ui` and
+ *   `fullstack` and for no other surface. The orchestrator already feeds
+ *   `shortlistFor(...)` to `BuildRequest.allowedAgents` at both of its call
+ *   sites, so a delegated Agent call to this name is now PERMITTED by the
+ *   PreToolUse hook rather than denied — and a denied agent produces nothing
+ *   distinguishable from an agent with nothing to do, which is why the gap
+ *   mattered. The test in adversary.test.ts is now a JOIN: the shortlist permits
+ *   this agent on exactly the surfaces {@link shouldRunAdversary} would run it
+ *   on, so permission can drift from intent in neither direction.
+ *
+ *   NOT WIRED. Nothing calls this module. `shouldRunAdversary`,
+ *   `adversaryOptions` and `withAdversaryFindings` have no production caller: the
+ *   place that holds a preview URL, a surface and a fixable report at the same
+ *   time is `orchestrator.ts`'s gate/fix loop, which belongs to another wave.
+ *   Being on the shortlist makes the pass POSSIBLE; it does not make it happen.
+ *
+ *   THE OTHER HALF WAS NEVER A TEST. `BuildRequest.disallowedTools`
+ *   (builders/types.ts) now exists, and it is a CARRIER with no reader: no driver
+ *   consumes it and no caller sets it. It is also not the route a DELEGATED
+ *   adversary takes — that denylist comes from the agent file's own frontmatter
+ *   on disk, which is the channel probe I measured binding for a name that exists
+ *   there. It is for a TOP-LEVEL adversary session, where no agent file is in
+ *   play. Read the docblock on that field before setting it: it is
+ *   SESSION-scoped, so on an ordinary build it would deny the builder its own
+ *   Write tool.
  */
 
 import type { Surface } from "./agent-shortlist.js";

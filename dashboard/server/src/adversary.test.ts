@@ -114,18 +114,54 @@ test("no findings means no change at all", () => {
   assert.equal(withAdversaryFindings(EMPTY, []).failures.length, 0);
 });
 
-test("the adversary is NOT on any delegation shortlist — wiring it needs agent-shortlist.ts", () => {
-  // MEASURED, NOT ASSUMED. If the adversary were spawned through the Agent tool
-  // it would be denied by the PreToolUse hook, and a denied agent produces
-  // nothing that looks different from an agent with nothing to do. It has to be
-  // a top-level call, or its name has to be added to DELIVERY_LANES — which is
-  // not this lane's file.
-  const surfaces: readonly Surface[] = ["web-ui", "fullstack", "api", "cli", "library", "background-jobs"];
-  for (const surface of surfaces) {
+const SURFACES: readonly Surface[] = ["web-ui", "fullstack", "api", "cli", "library", "background-jobs"];
+
+test("the shortlist permits the adversary on exactly the surfaces it would run on", () => {
+  // THIS TEST REPLACED ITS OWN NEGATION. It used to assert the adversary was on
+  // NO shortlist, which was true and was the gap: a delegated call to an agent
+  // off `allowedAgents` is denied by the PreToolUse hook, and a denied agent
+  // produces nothing distinguishable from an agent with nothing to do. The name
+  // is now in `DELIVERY_LANES.review`.
+  //
+  // THE ORACLE IS THE OTHER PREDICATE, NOT A SECOND LIST OF SURFACES. "Which
+  // surfaces have a browsable UI" is spelled in two modules — `WEB_SURFACES`
+  // here and `WEB_REVIEW` plus the switch in `agent-shortlist.ts` — because a
+  // permission boundary must not import a feature module that already imports
+  // it. Comparing the two spellings against EACH OTHER is what makes them one
+  // decision: a permission wider than the intent (shortlisted where the pass
+  // will never run) and a permission narrower than it (the pass runs and every
+  // delegated call is denied) both fail, and neither could be caught by a list
+  // of surfaces written a third time inside this test.
+  for (const surface of SURFACES) {
+    const permitted = shortlistFor(surface).includes(ADVERSARY_AGENT);
+    const intended = shouldRunAdversary({ surface, previewUrl: "http://127.0.0.1:4180" });
     assert.equal(
-      shortlistFor(surface).includes(ADVERSARY_AGENT),
-      false,
-      `${surface} shortlists ${ADVERSARY_AGENT}; if that changed, this module's comment is now wrong`,
+      permitted,
+      intended,
+      `${surface}: the shortlist ${permitted ? "permits" : "denies"} ${ADVERSARY_AGENT} and ` +
+        `shouldRunAdversary ${intended ? "would run it" : "refuses to"}`,
+    );
+  }
+  // The oracle must not be vacuous: if `shouldRunAdversary` answered the same
+  // way for every surface, the loop above would pass against a shortlist that
+  // ignored the surface entirely.
+  assert.ok(
+    SURFACES.some((s) => shouldRunAdversary({ surface: s, previewUrl: "http://127.0.0.1:4180" })) &&
+      SURFACES.some((s) => !shouldRunAdversary({ surface: s, previewUrl: "http://127.0.0.1:4180" })),
+    "the oracle answers both ways across these surfaces, or the comparison above proves nothing",
+  );
+});
+
+test("the design lane's mode does not decide whether the adversary may run", () => {
+  // `shortlistFor` has a second argument and its DEFAULT is `off`. The adversary
+  // sits in REVIEW, not DESIGN, so it must survive a shortlist built with no
+  // design lane at all — a web-ui run whose caller has not classified the lane
+  // still gets its human-factors pass. Asserted because the two conditionals now
+  // live in the same function and one could easily be made to gate the other.
+  for (const mode of ["off", "degraded", "full"] as const) {
+    assert.ok(
+      shortlistFor("web-ui", mode).includes(ADVERSARY_AGENT),
+      `a web-ui run with the design lane ${mode} still gets the adversary`,
     );
   }
 });
