@@ -168,6 +168,10 @@ A JSON object with exactly two keys, "criteria" and "testFiles". No prose outsid
     BAD:  "It works"
   A criterion that names no artefact is how a grader passes a stub. If you cannot name an executable
   artefact for a criterion, the criterion is wrong — delete it or rewrite it until you can.
+  "evidenceRequired" describes how the statement is checked. It must NOT introduce a requirement the
+  statement does not already make. If the evidence line mentions a threshold, a field or a condition
+  that the statement omits, the statement is the thing that is wrong: put it in the statement, or
+  take it out of both.
 
 ## The split: holdout and visible
 
@@ -243,10 +247,26 @@ Do not write any of these. Each one is a way a suite passes work that was never 
 - A test that specifies HOW the ticket should be implemented (a class name, a file layout, an
   internal function) rather than WHAT must be observably true. The ticket may be built in any
   reasonable way; the suite tests behaviour.
+- A CHARACTER OR WORD COUNT FLOOR ON PROSE THE BUILD AGENT HAD TO WRITE. Never assert that rendered
+  body text is at least N characters, that each item's description is at least N characters, or that
+  a meta description is at least N characters, unless the ticket itself states that number. How much
+  copy an implementation writes is not an observable the ticket defined, so such a bar fails correct
+  work: a measured run asserted "> 200 characters of rendered text" against a correct portfolio that
+  rendered 189, and the criterion failed on every artefact, correct and blank alike. It gates
+  nothing, because it fails everything. Assert the THING instead — the section is present, the three
+  entries have distinct titles, the name renders as the largest text, the confirmation appears.
+  A character count on an HTTP RESPONSE BODY ("the server did not serve an empty document") is fine;
+  a character count on authored copy is not.
+- A test that demands more than its criterion's own statement claims. If the test asserts a number,
+  a field or a behaviour, the statement must say so. A statement that reads "shall raise no uncaught
+  page errors" whose test ALSO requires 200 characters of body text is a hidden second requirement:
+  nobody reading the criterion can see what actually failed.
 
 Every test you write must be able to fail. Before you emit a test, ask: what implementation would
 make this test pass while leaving the user's problem unsolved? If such an implementation exists,
-tighten the test.
+tighten the test. Then ask the other question, which is where suites more often go wrong: what would
+a CORRECT implementation have to do, that the ticket never asked for, to pass this test? If there is
+such a thing, the test is over-specified and it will fail correct work — delete that assertion.
 
 ## Setup you may assume, and what to do when you cannot
 
@@ -361,6 +381,14 @@ Read the ticket, then read every criterion and every test file, and hunt for:
 - MIS_SPECIFIED: a criterion that contradicts the ticket; a criterion for a user story the ticket
   never asked for; a criterion whose named evidence does not actually decide it; a test that asserts
   something the ticket did not ask for and would fail a correct build.
+  Two shapes of this are measured and recurrent, so look for them by name. First, an INVENTED BAR:
+  a character or word count floor on prose the build agent had to write ("rendered text is at least
+  200 characters", "each description is at least 40 characters", "the meta description is at least
+  40 characters") where the ticket states no such number. It fails correct work and therefore gates
+  nothing. Second, a HIDDEN ASSERTION: read each criterion's statement, then read its test, and list
+  every thing the test would fail on. Anything on that list the statement does not mention is a
+  requirement nobody can see — and when it fails, the report blames the criterion's stated purpose.
+  Report each one, with the assertion and the words in the statement that are supposed to cover it.
 - AMBIGUOUS: a criterion two competent engineers would resolve differently; a statement that is not
   binary; a threshold with no units.
 - LEAKS_IMPLEMENTATION: a criterion or test that dictates HOW rather than WHAT — a specific class

@@ -632,6 +632,380 @@ export function criterionTokenIn(title: string, criterionId: string): boolean {
 }
 
 /* -------------------------------------------------------------------------
+ * 6c. Bars the ticket never asked for
+ *
+ * MEASURED, NOT THEORISED. Authoring-calibration run 4B
+ * (dashboard/results/calibration-4b/2026-07-29T05-37-40-117Z) had the real spec
+ * seat author 12 criteria from a three-sentence portfolio ticket, with no
+ * knowledge of any fixture, and ran them against seven artefacts. Zero false
+ * passes: the blank page failed correctly. But SEVEN of the twelve criteria
+ * failed on EVERY artefact including the correct one, so a correct portfolio
+ * graded `fail`. The container's own words on the correct artefact:
+ *
+ *     the page renders only 189 characters of text   Expected: > 200
+ *     project "Note G" carries only 26 characters of description
+ *
+ * Neither number is in the ticket. Two inventions recurred VERBATIM across three
+ * independent authoring runs — a per-description character floor and a
+ * contact-form field set — which is what makes this worth a deterministic rule
+ * rather than a prompt line. The prompt already says "Do not invent user stories
+ * the ticket did not ask for" and the seat invented them anyway.
+ *
+ * THE OBVIOUS RULE IS WRONG. "A number the ticket does not state" destroys the
+ * criteria that did the discriminating: the same run separated the blank page
+ * from the correct portfolio with an HTTP 200, a 28px font size, a 900px fold
+ * and a 375px viewport — none of them in the ticket, all of them legitimate.
+ * And REQ-005's `>= 3` IS ticket-sourced, but the ticket spells it "three", so a
+ * digit scan false-positives on the one bar that is justified.
+ *
+ * The line that separates them is not the number, it is what the number is
+ * counting: a CHARACTER COUNT OF AUTHORED PROSE (200 characters of body text,
+ * 40 characters per project description, 40 characters of meta description)
+ * versus a STRUCTURAL OR DIMENSIONAL CONSTANT (a status code, a CSS pixel size,
+ * a viewport width, a count of required entities). Nobody can satisfy the first
+ * kind by doing the work correctly — the correct portfolio rendered 189
+ * characters — because "enough prose" is not an observable the ticket defined.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * A `.length` floor at or above this many characters is read as a PROSE bar;
+ * below it, as a count of things.
+ *
+ * HARNESS CHOICE. In the calibration suite every non-prose `.length` floor is 0,
+ * 1 or 3 (an element exists; a lang attribute is non-trivial; three projects)
+ * and every prose bar is 40, 150 or 200. Any cut in (5, 40] gives the same
+ * verdict on every one of the twelve criteria, so this constant is not fitted to
+ * the observation. 20 is chosen because a floor below twenty characters is not a
+ * demand for prose in any case — it is a demand that a string be non-trivial.
+ */
+export const PROSE_LENGTH_FLOOR_MIN = 20;
+
+/**
+ * Expressions that read text a PERSON WROTE AND A BROWSER RENDERED.
+ *
+ * Closed list, deliberately. Each entry is a Playwright or DOM accessor whose
+ * value is authored copy: `innerText`/`textContent` for rendered body text,
+ * `getAttribute("content")` for a meta description, `inputValue` for a field's
+ * displayed value. `innerHTML` is NOT here — markup is not prose.
+ */
+const RENDERED_TEXT_PATTERN =
+  /\binnerText\b|\btextContent\b|\ballInnerTexts\s*\(|\ballTextContents\s*\(|getAttribute\s*\(\s*['"`]content['"`]\s*\)|\binputValue\s*\(/;
+
+/**
+ * Expressions that read MARKUP OR A TRANSPORT PAYLOAD rather than prose.
+ *
+ * `assert.ok(body.length >= 200)` on `await response.text()` is a legitimate
+ * "the server did not serve an empty document" check and must not be flagged.
+ * This is what keeps REQ-001 quiet even in the one file where it shares an
+ * import block with a rendered-text bar (visible/site-basics.spec.mjs holds
+ * REQ-001's `page.content()` 300-char floor and REQ-002's `innerText` 150-char
+ * floor together).
+ */
+const HTML_SOURCE_PATTERN = /\.\s*content\s*\(\s*\)|\.\s*text\s*\(\s*\)|\binnerHTML\b|\bouterHTML\b/;
+
+/** A member chain with no NESTED call parentheses, e.g. `a.b(x, y).c[0]`. */
+const MEMBER_CHAIN_SOURCE = String.raw`[A-Za-z_$][\w$]*(?:\s*\([^()]*\))?(?:\s*(?:\.\s*[A-Za-z_$][\w$]*(?:\s*\([^()]*\))?|\[[^\]]*\]))*`;
+
+/** `<chain>.length`, capturing the chain. */
+const LENGTH_RECEIVER_PATTERN = new RegExp(`(${MEMBER_CHAIN_SOURCE})\\s*\\.\\s*length\\b`, "g");
+
+/** A Playwright/Jest lower-bound matcher with a bare integer argument. */
+const FLOOR_MATCHER_PATTERN = /\.\s*toBeGreaterThan(?:OrEqual)?\s*\(\s*(\d+)\s*\)/g;
+
+/** `>= 200` / `> 200` written directly after the `.length`, the node:test form. */
+const INLINE_FLOOR_PATTERN = /^\s*>=?\s*(\d+)/;
+
+/**
+ * The start of an assertion call. Used to cut a test body into WINDOWS, one per
+ * assertion, so a `.length` in one statement is never paired with a threshold
+ * from the next. Everything before the first assertion in a test — fixture
+ * setup, a `page.evaluate` block, a helper call — falls outside every window and
+ * is not scanned, which is why `if (entries.length < 3)` inside an extraction
+ * routine is not mistaken for an assertion.
+ */
+const ASSERTION_CALL_PATTERN = /\b(?:expect|assert(?:\s*\.\s*[A-Za-z_$][\w$]*)?)\s*\(/g;
+
+/** English number words, for a ticket or statement that spells its bar out. */
+const NUMBER_WORDS: Readonly<Record<string, number>> = Object.freeze({
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8,
+  nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+  sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+});
+
+/** Does `text` state `value`, as a digit run or as an English word? */
+export function statesNumber(text: string, value: number): boolean {
+  if (new RegExp(`(?<![\\d.])${String(value)}(?![\\d])`).test(text)) return true;
+  for (const [word, n] of Object.entries(NUMBER_WORDS)) {
+    if (n === value && new RegExp(`\\b${word}\\b`, "i").test(text)) return true;
+  }
+  return false;
+}
+
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** One test's slice of a file, from its declared id to the next one's. */
+interface TestSegment {
+  readonly testId: string;
+  readonly text: string;
+}
+
+/**
+ * Cut a file into one segment per declared test id.
+ *
+ * Boundary-aware, unlike a bare `indexOf`: in a file holding both `T-1` and
+ * `T-13`, `indexOf("T-1")` can land inside `T-13` and mis-attribute every
+ * assertion after it.
+ */
+function testSegments(file: DraftTestFile): readonly TestSegment[] {
+  const positions = file.expectedTestIds
+    .map((id) => ({
+      id,
+      at: file.source.search(new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(id)}(?![A-Za-z0-9_])`)),
+    }))
+    .filter((p) => p.at >= 0)
+    .sort((a, b) => a.at - b.at);
+
+  const out: TestSegment[] = [];
+  for (let i = 0; i < positions.length; i += 1) {
+    const current = positions[i];
+    if (current === undefined) continue;
+    out.push({ testId: current.id, text: file.source.slice(current.at, positions[i + 1]?.at) });
+  }
+  return out;
+}
+
+/** One window per assertion call in `text`. */
+function assertionWindows(text: string): readonly string[] {
+  const starts: number[] = [];
+  const pattern = new RegExp(ASSERTION_CALL_PATTERN.source, ASSERTION_CALL_PATTERN.flags);
+  let match: RegExpExecArray | null = pattern.exec(text);
+  while (match !== null) {
+    starts.push(match.index);
+    match = pattern.exec(text);
+  }
+  return starts.map((start, i) => text.slice(start, starts[i + 1]));
+}
+
+interface LengthFloor {
+  /** The expression whose `.length` is bounded, e.g. `entry.description`. */
+  readonly receiver: string;
+  readonly threshold: number;
+}
+
+/** Every `<expr>.length >= N` / `expect(<expr>.length, ...).toBeGreaterThan(N)`. */
+function lengthFloorsIn(window: string): readonly LengthFloor[] {
+  const out: LengthFloor[] = [];
+  const receivers = new RegExp(LENGTH_RECEIVER_PATTERN.source, LENGTH_RECEIVER_PATTERN.flags);
+  let match: RegExpExecArray | null = receivers.exec(window);
+  while (match !== null) {
+    const receiver = (match[1] ?? "").trim();
+    const after = match.index + match[0].length;
+    const inline = INLINE_FLOOR_PATTERN.exec(window.slice(after));
+    if (inline !== null) {
+      out.push({ receiver, threshold: Number(inline[1]) });
+    } else {
+      // The matcher must come AFTER the `.length`, so trailing non-assertion
+      // code in the window can never lend its `.length` to this threshold.
+      const matchers = new RegExp(FLOOR_MATCHER_PATTERN.source, FLOOR_MATCHER_PATTERN.flags);
+      matchers.lastIndex = after;
+      const floor = matchers.exec(window);
+      if (floor !== null) out.push({ receiver, threshold: Number(floor[1]) });
+    }
+    match = receivers.exec(window);
+  }
+  return out;
+}
+
+/** The single-line `const|let|var <ident> = ...` that introduced `ident`. */
+function declarationInitialiser(source: string, ident: string): string | null {
+  const match = new RegExp(
+    `(?:^|[;{}\\n])\\s*(?:const|let|var)\\s+${escapeRegExp(ident)}\\s*=([^\\n]*)`,
+  ).exec(source);
+  return match === null ? null : (match[1] ?? null);
+}
+
+/**
+ * True when the bounded value demonstrably came from markup or a transport
+ * payload rather than from rendered prose.
+ *
+ * Deliberately a single-line lookup and not a taint analysis: it resolves the
+ * root identifier's own declaration and nothing else. A chain that only becomes
+ * markup inside a helper function's body is NOT resolved, and the file-level
+ * producer gate is what covers that case (a file that reads no rendered text at
+ * all is never scanned).
+ */
+function isMarkupLengthFloor(source: string, receiver: string): boolean {
+  const root = /^[A-Za-z_$][\w$]*/.exec(receiver)?.[0];
+  if (root === undefined) return false;
+  const initialiser = declarationInitialiser(source, root);
+  if (initialiser === null) return false;
+  return HTML_SOURCE_PATTERN.test(initialiser) && !RENDERED_TEXT_PATTERN.test(initialiser);
+}
+
+/** Criteria that named `testId` as evidence, in either half. */
+function criteriaOwning(draft: SuiteDraft, testId: string): readonly DraftCriterion[] {
+  return draft.criteria.filter(
+    (c) => c.holdoutTestIds.includes(testId) || c.visibleTestIds.includes(testId),
+  );
+}
+
+/**
+ * RULE 1 — a character-count floor asserted against rendered prose.
+ *
+ * BLOCKING, and that is a deliberate, expensive choice. `mustRegenerate` throws
+ * the suite away and spends another Opus 5 `xhigh` authoring call, and this
+ * module's own policy reserves that for checks that cannot be wrong about what
+ * they saw. The justification is the measurement: a prose bar does not merely
+ * add noise, it makes the criterion UNPASSABLE BY CORRECT WORK — it failed on
+ * every one of the seven artefacts — and because the criterion still produces a
+ * complete, plausible ScoreRecord, the defect is invisible downstream and reads
+ * as "the model shipped a broken app". That is the same harm profile as the
+ * REQ-id-in-title defect above, which is blocking for the same reason. An
+ * advisory finding that nothing consumes would leave the measurement corrupt.
+ *
+ * `ticketBrief` is a PRECISION IMPROVEMENT, NOT A PRECONDITION. When it is
+ * supplied and it states the number, the bar is ticket-sourced and the finding
+ * is suppressed. When it is absent the rule still fires: a suite is far more
+ * likely to have invented a prose bar than a caller is to have wired the ticket
+ * through, and a rule that quietly disarms itself when an optional input is
+ * missing is the exact shape of defect this tree keeps shipping.
+ */
+export function proseLengthFloorFindings(
+  draft: SuiteDraft,
+  ticketBrief?: string,
+): readonly AuditFinding[] {
+  const findings: AuditFinding[] = [];
+  for (const file of draft.files) {
+    if (isSuiteManifestPath(file.path)) continue;
+    // FILE-LEVEL GATE. A file that never reads rendered text cannot be asserting
+    // a floor on rendered text, whatever its numbers say. This is what keeps
+    // REQ-001's `assert.ok(body.length >= 200)` on `await response.text()`
+    // quiet: holdout/site-delivery.test.mjs contains no producer at all.
+    if (!RENDERED_TEXT_PATTERN.test(file.source)) continue;
+
+    for (const segment of testSegments(file)) {
+      const seen = new Set<string>();
+      for (const window of assertionWindows(segment.text)) {
+        for (const floor of lengthFloorsIn(window)) {
+          if (floor.threshold < PROSE_LENGTH_FLOOR_MIN) continue;
+          if (isMarkupLengthFloor(file.source, floor.receiver)) continue;
+          if (ticketBrief !== undefined && statesNumber(ticketBrief, floor.threshold)) continue;
+          const key = `${floor.receiver}|${String(floor.threshold)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const detail =
+            `test "${safe(segment.testId)}" in "${safe(file.path)}" asserts a character-count floor ` +
+            `of ${String(floor.threshold)} on rendered text (\`${safe(floor.receiver)}.length\`)` +
+            (ticketBrief === undefined
+              ? ". "
+              : `, and the ticket never states ${String(floor.threshold)}. `) +
+            "How much prose an implementation writes is not an observable the ticket defined, so this " +
+            "bar fails correct work: in calibration run 4B a correct portfolio rendered 189 characters " +
+            "and this exact assertion failed it, on every artefact, alongside a 40-character " +
+            "per-description floor. Assert the THING the ticket asked for — that the section exists, " +
+            "that the entries are distinct, that the name renders — not that its copy is long enough.";
+          const owners = criteriaOwning(draft, segment.testId);
+          if (owners.length === 0) {
+            findings.push(blocking("mis_specified", null, detail));
+          } else {
+            for (const owner of owners) findings.push(blocking("mis_specified", owner.id, detail));
+          }
+        }
+      }
+    }
+  }
+  return findings;
+}
+
+/**
+ * RULE 3 — an assertion the criterion's own statement never mentions.
+ *
+ * Backlog #37. REQ-012's statement is "shall raise no uncaught JavaScript page
+ * errors"; its test T-13 also demanded 200 characters of settled body text, and
+ * THAT hidden second assertion is what failed the correct artefact. The
+ * adversarial judge pass did not catch it. A criterion-level verdict cannot: the
+ * statement is clean, the test is not.
+ *
+ * Scope, stated honestly: this is the NUMERIC slice of #37, not all of it. It
+ * compares every bare integer threshold a held-out test asserts against the
+ * numbers its criterion's statement states. A non-numeric hidden assertion — the
+ * contact-form field set, say — is not reachable this way.
+ *
+ * TWO DELIBERATE NARROWINGS:
+ *
+ *   1. Against the STATEMENT ONLY, never `evidenceRequired`. The seat launders
+ *      the invention into the evidence prose in the same breath it writes the
+ *      test: REQ-012's evidence reads "...and the settled page still renders
+ *      more than 200 characters of text". Consulting it would silence the one
+ *      case this rule exists to catch.
+ *   2. HELD-OUT tests only. The authoring prompt REQUIRES the visible twin to
+ *      use different fixtures, values and seeds, so numeric divergence there is
+ *      by design; and the held-out half is what decides `heldOutPass`.
+ *
+ * ADVISORY. 0 and 1 are skipped as existence quantifiers ("no images without
+ * alt", "exactly one h1") which EARS states in words, and the residual fire rate
+ * on the calibration suite is four criteria in twelve — two of them the real
+ * defect, two of them defensible-but-noisy. That is a heuristic rate, and this
+ * module does not spend an authoring call on a heuristic.
+ */
+export function numericAssertionDriftFindings(draft: SuiteDraft): readonly AuditFinding[] {
+  const patterns: readonly RegExp[] = [
+    /\.\s*(?:toBe|toEqual|toStrictEqual|toBeGreaterThan|toBeGreaterThanOrEqual|toBeLessThan|toBeLessThanOrEqual|toHaveLength|toBeCloseTo)\s*\(\s*(-?\d+)\s*\)/g,
+    /(?:>=|<=|===|!==|==|!=|(?<![=<>!])[<>])\s*(-?\d+)(?![\d.])/g,
+    /\bassert\s*\.\s*(?:equal|strictEqual|deepEqual|deepStrictEqual)\s*\(\s*[^,()]*,\s*(-?\d+)\s*[,)]/g,
+  ];
+
+  const findings: AuditFinding[] = [];
+  for (const file of draft.files) {
+    if (isSuiteManifestPath(file.path) || file.visibility !== "holdout") continue;
+    for (const segment of testSegments(file)) {
+      const owners = criteriaOwning(draft, segment.testId).filter((c) =>
+        c.holdoutTestIds.includes(segment.testId),
+      );
+      if (owners.length === 0) continue;
+
+      const asserted = new Set<number>();
+      for (const window of assertionWindows(segment.text)) {
+        for (const source of patterns) {
+          const pattern = new RegExp(source.source, source.flags);
+          let match: RegExpExecArray | null = pattern.exec(window);
+          while (match !== null) {
+            const value = Number(match[1]);
+            if (Number.isInteger(value) && Math.abs(value) > 1) asserted.add(value);
+            match = pattern.exec(window);
+          }
+        }
+      }
+
+      for (const owner of owners) {
+        for (const value of [...asserted].sort((a, b) => a - b)) {
+          if (statesNumber(owner.statement, value)) continue;
+          findings.push(
+            advisory(
+              "mis_specified",
+              owner.id,
+              `held-out test "${safe(segment.testId)}" in "${safe(file.path)}" asserts the numeric ` +
+                `threshold ${String(value)}, which the criterion's own statement does not mention. ` +
+                "A test that demands more than its statement claims fails a correct implementation " +
+                "for a reason the statement never declared, and neither the statement nor the audit " +
+                "report shows it — REQ-012 in calibration run 4B said only \"shall raise no uncaught " +
+                "JavaScript page errors\" while its test also required 200 characters of body text, " +
+                "and that hidden bar is what failed the correct artefact. Either state the threshold " +
+                "in the statement or drop it from the test. Advisory: the numeric check cannot tell a " +
+                "laundered invention from a genuine implied constant, so read the test.",
+            ),
+          );
+        }
+      }
+    }
+  }
+  return findings;
+}
+
+/* -------------------------------------------------------------------------
  * 7. The deterministic audit
  * ---------------------------------------------------------------------- */
 
@@ -640,6 +1014,15 @@ export interface DeterministicAuditOptions {
   readonly syntaxCheck?: boolean;
   /** Node executable used for the syntax check. Default `process.execPath`. */
   readonly nodeExecPath?: string;
+  /**
+   * The ticket's verbatim brief, when the caller has it.
+   *
+   * Used ONLY to suppress {@link proseLengthFloorFindings} when the ticket
+   * itself states the character floor. Absent, the rule still fires — see its
+   * doc comment. `auditSuite` in spec-agent.ts already holds the `Ticket` and
+   * should pass `ticketBrief: ticket.brief` when it builds these options.
+   */
+  readonly ticketBrief?: string;
 }
 
 /**
@@ -1108,6 +1491,11 @@ export function deterministicAudit(
       }
     }
   }
+
+  /* ---- bars the ticket never asked for ------------------------------ */
+
+  findings.push(...proseLengthFloorFindings(draft, options.ticketBrief));
+  findings.push(...numericAssertionDriftFindings(draft));
 
   /* ---- syntax ------------------------------------------------------- */
 
