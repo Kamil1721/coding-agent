@@ -124,3 +124,64 @@ test("the loopback guard runs BEFORE key resolution — proven by which error fi
   assert.match(r.stderr, /non-loopback/, "the base was refused first");
   assert.doesNotMatch(r.stderr, /no API key/, "the key was never even looked for");
 });
+
+test("Veo takes 16:9 and 9:16 ONLY — anything else dies before the POST", async (t) => {
+  const fake = await fakeFor(t, {});
+  const f = fixture();
+  for (const bad of ["1:1", "21:9", "4:5"]) {
+    const r = await runScript(["x", "-i", f.still, "-a", bad, "-o", f.out], { base: fake.url });
+    assert.equal(r.code, 1, `aspect ${bad} must be refused`);
+    assert.match(r.stderr, /16:9|9:16/);
+  }
+  const ok = await runScript(["x", "-i", f.still, "-a", "9:16", "-o", f.out], { base: fake.url });
+  assert.notEqual(ok.code, 1, "9:16 is legal and must NOT be refused");
+  assert.equal(fake.requests.filter((q) => q.method === "POST").length, 1, "only the legal aspect spent a call");
+  await fake.close();
+});
+
+test("duration is 4|6|8, and 1080p/4k require 8", async (t) => {
+  const fake = await fakeFor(t, {});
+  const f = fixture();
+  const five = await runScript(["x", "-i", f.still, "-d", "5", "-o", f.out], { base: fake.url });
+  assert.equal(five.code, 1);
+  const hd4 = await runScript(["x", "-i", f.still, "-r", "1080p", "-d", "4", "-o", f.out], { base: fake.url });
+  assert.equal(hd4.code, 1, "1080p at 4s is not a documented combination");
+  assert.match(hd4.stderr, /8/);
+  const hd8 = await runScript(["x", "-i", f.still, "-r", "1080p", "-d", "8", "-o", f.out], { base: fake.url });
+  assert.notEqual(hd8.code, 1, "1080p at 8s is legal");
+  assert.equal(fake.requests.filter((q) => q.method === "POST").length, 1, "the two refusals spent nothing");
+  await fake.close();
+});
+
+test("the Lite model is 1080p only", async (t) => {
+  const fake = await fakeFor(t, {});
+  const f = fixture();
+  const r = await runScript(
+    ["x", "-i", f.still, "-m", "veo-3.1-lite-generate-preview", "-r", "720p", "-o", f.out],
+    { base: fake.url },
+  );
+  assert.equal(r.code, 1);
+  assert.equal(fake.requests.length, 0, "refused before any request");
+  await fake.close();
+});
+
+test("NO CONVERTER, NO CALL — a missing webp converter costs zero", async (t) => {
+  // The negative control that matters most in this task: the preflight must fire
+  // BEFORE the metered POST, so the observation is the EMPTY request log.
+  //
+  // The PATH is built from symlinks rather than trimmed to /usr/bin, so this is
+  // deterministic on a host whose sips CAN make webp: the script needs python3,
+  // curl and the coreutils it calls, and gets exactly those and no converter.
+  const fake = await fakeFor(t, {});
+  const f = fixture();
+  const bareBin = mkdtempSync(join(tmpdir(), "nobin-"));
+  for (const tool of ["bash", "python3", "curl", "mktemp", "head", "wc", "cut", "tr", "rm", "mv", "mkdir", "date", "sleep"]) {
+    const real = execFileSync("/usr/bin/which", [tool], { encoding: "utf8" }).trim();
+    if (real !== "") symlinkSync(real, join(bareBin, tool));
+  }
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url, env: { PATH: bareBin } });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /webp/i);
+  assert.equal(fake.requests.length, 0, "THE POINT: not one request was made");
+  await fake.close();
+});
