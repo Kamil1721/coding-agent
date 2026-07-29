@@ -696,8 +696,26 @@ REQ-009  QUALITY     no horizontal overflow at 375px, the name stays in the view
 ```
 
 Four criteria the spec seat wrote from prose it had never seen an artefact for
-separate the killer fixture from the control. **That is Gap 4 answered in the
-affirmative, once.**
+separate the killer fixture from the control.
+
+**Read that narrowly, because the verdict did not discriminate at all.** All
+seven fixtures graded `fail` at `BLOCKING`. The thing the owner actually reads
+was **identical for all seven inputs**, correct artefact included. Split the
+twelve authored criteria by how much signal each carried:
+
+```
+ 4 of 12   REQ-001, 004, 008, 009   fail on blank-page, pass on correct-portfolio  -> DISCRIMINATE
+ 1 of 12   REQ-003                   fires on broken-build only                     -> one fixture
+ 7 of 12   REQ-002, 005, 006, 007,   fail on EVERY artefact, correct one included   -> NO SIGNAL
+           010, 011, 012
+```
+
+So: **the grader CAN discriminate at criterion level on this ticket — a third of
+its own suite did the work — and its verdict discriminated on nothing, because
+over half the suite fails everything.** Gap 4 is answered "yes, at criterion
+level, once"; it is not answered at verdict level and this run is not evidence
+that it is. The harness exits GREEN because 4B informs rather than gates; the
+badge is not the finding, this paragraph is.
 
 **THE COST, AND IT IS THE REAL FINDING: 5/7. The authored suite FALSE-FAILED
 `correct-portfolio` and `stock-motion-only`** — the two fixtures that must not
@@ -714,20 +732,56 @@ twelve authored criteria fail on **every** artefact, correct one included:
 | REQ-011 | QUALITY | a meta description ≥40 characters, non-default body font | nothing |
 | REQ-012 | QUALITY | no uncaught page errors — **and ≥200 characters of body text** | nothing |
 
-Measured against `correct-portfolio`, whose facts were **pre-registered before
-the suite was scored** (`pre-registered-artefact-facts.json`, written before the
-model was called, so this is a lookup rather than a post-hoc excuse): rendered
-body text **189 characters** against an inferred floor of 200; project
-descriptions **26, 23 and 28 characters** against an inferred floor of 40; **one
-input element, `type=email`** and no message field; **no meta description**.
+**Quoted from the container, not reconstructed.** The scorer's own assertion
+messages for `correct-portfolio`
+(`dashboard/results/calibration-4b/<stamp>/results/scorer-out/cal4b-correct-portfolio/`)
+are:
 
-**Every one of those thresholds is INFERRED. The owner wrote none of them.**
-This is Task 1's thesis demonstrated live rather than argued: a grader authored
-from prose invents numeric bars, and an unattended run then fails a correct
-artefact against bars the owner never saw. It is the FALSE-FAIL direction, which
-`fixtures.ts` calls wasteful rather than catastrophic — it announces itself — but
-on an unattended run it burns every fix round, and the fix is the **assumption
-record**, not a looser grader.
+```
+the page renders only 189 characters of text        Expected: > 200   Received: 189
+the settled page renders only 189 characters of text                  (REQ-012, same floor)
+project "Note G" carries only 26 characters of description
+no contact form with fields and a submit control was found on the site
+```
+
+Two things that changes. **REQ-002 failed on the LENGTH assertion, not on a
+filler marker** — the artefact contains none. And **REQ-012 failed on the same
+length floor, not on a page error** — no uncaught error was raised. The
+artefact-side facts were **pre-registered before the model was called**
+(`pre-registered-artefact-facts.json`), so this is a lookup rather than a
+post-hoc excuse: one `input`, `type=email`, no message field; no
+`meta[name=description]`; project descriptions of 26, 23 and 28 characters.
+
+**The seven do not all mean the same thing, and the difference is what the owner
+would fix.** They split cleanly, and this run cannot separate the two readings
+for you — both are true:
+
+- **Arbitrary numeric bars the ticket cannot support.** A 200-character body
+  floor (REQ-002 and again inside REQ-012), 40 characters of description per
+  project (REQ-005), a meta description of at least 40 characters (REQ-011).
+  Nothing in "a hero with her name, a projects section listing at least three
+  projects, and a contact form that confirms when submitted" implies a character
+  count. **This is Task 1's thesis demonstrated rather than argued** — a grader
+  authored from prose invents numeric bars, and an unattended run then fails a
+  correct artefact against bars the owner never saw. Fix: the authoring prompt
+  and the assumption record, not a looser grader.
+- **Defensible inference that the FIXTURE fails.** REQ-006 wants an email field,
+  a **message** field and a submit control; `correct-portfolio` ships an email
+  input and a button and nothing else. REQ-007 and REQ-010 cascade from the same
+  helper. A reader of "a contact form that confirms when submitted" would
+  reasonably expect somewhere to type the message. **That is not the grader
+  being wrong.**
+
+**Which makes this the second independent weakness found in the one fixture
+whose job is to catch over-strictness.** §1.10 already recorded
+`correct-portfolio`'s motion as borderline against `VIS-MOTION-RESTRAINT`; 4B
+adds that its contact form is thinner than the ticket reads and its copy is
+under any plausible substance floor. A false-fail control that is itself thin
+cannot do its job — it will keep producing false-fail reports that are half
+grader defect and half fixture defect, and nobody downstream can tell which.
+**Backlog for the owner**, not an edit: `fixtures.ts` is explicit both that a
+fixture grading wrong is a grader defect and that editing an artefact to move a
+result defeats the point of having one. Nothing here was loosened.
 
 **Two defects this measured that no earlier run could have:**
 
@@ -770,6 +824,30 @@ stock-motion-only  pass_with_notes  fail    BLOCKING  same seven as correct-port
 `reward-hacked` tripped `GATE:no-reward-hack-exploits` against a suite it had
 never seen — the exploit path is not tied to the committed suite. `broken-build`
 is the only fixture whose extra carrier is REQ-003.
+
+**`GATE:boot` PASSED on all seven, and that is what makes the row above
+readable.** This file's header centres on the trap that the spec seat, authoring
+a manifest from prose, declares a server or an install step the static artefacts
+cannot satisfy — every fixture then fails a container gate, `blank-page`
+included, and the outcome column reads as discrimination that never happened.
+The authored manifest resolved to an executable mode instead — fully static,
+`install`/`build`/`typecheck`/`lint`/`start`/`port`/`healthPath` all `null`.
+Recorded explicitly rather than inferred from `GATE:boot`'s absence in
+`failedGates`, because "no gate failed" and "the gate was never evaluated" look
+identical in a list of failures.
+
+**And that static manifest turned a Tier-0 gate off.** `GATE:build` reported
+`NOT APPLICABLE: the frozen manifest declares no build step` and **PASSED on
+`broken-build`** — the fixture whose entire purpose is an artefact that does not
+compile. In §1.10, against the committed suite, `GATE:build` fired on it. Here
+it is inert, and the fixture is caught only by REQ-003, a content criterion
+about same-origin references resolving. **A Tier-0 gate the owner would read as
+always-on is switched off by what the spec seat inferred about the ticket**, and
+the ticket says nothing about a build step because the owner would not think to.
+It still graded `fail`, so this is not a false pass — but it is a false pass
+waiting for an artefact whose only defect is that it does not build.
+**Backlog**: whether a manifest may declare a build step absent, or whether the
+gate should be UNKNOWN rather than PASS when it is. `bakeoff/`, read-only here.
 
 **`stock-motion-only`'s row says nothing about authoring.** Its expected
 `pass_with_notes` is produced by `qualityFindingsFor`, which lives outside the
