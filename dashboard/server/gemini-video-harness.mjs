@@ -214,3 +214,67 @@ test("a pending operation is waited out, not abandoned", async (t) => {
   assert.equal(polls.length, 3, "polled until done:true, then stopped polling");
   await fake.close();
 });
+
+test("A TRUNCATED DOWNLOAD LEAVES NOTHING BEHIND", async (t) => {
+  // Trap 3. The download is a separate curl after the poll returns. An
+  // interrupted write leaves an mp4 that looks like a success to existsSync, to
+  // the build agent, to the visual gate and to the scorer.
+  const fake = await fakeFor(t, { pollsBeforeDone: 1, declaredLength: 5_000_000, truncateDownloadTo: 1_000 });
+  const f = fixture();
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url });
+  assert.notEqual(r.code, 0);
+  assert.equal(r.code, 4, "exit 4 is the download code");
+  assert.equal(existsSync(f.out), false, "no leg-1.mp4 — a partial file is worse than none");
+  assert.equal(existsSync(`${f.out}.part`), false, "and no .part left behind either");
+  await fake.close();
+});
+
+test("THE SIZE FLOOR FIRES ON ITS OWN — a short body that curl calls a clean success", async (t) => {
+  // ADDED, and the plan's own prose is the instruction: "if removing both
+  // guards does not turn the test red, the fixture is wrong, not the guard".
+  //
+  // MEASURED on the fixture above: the destroyed socket makes curl exit 18, the
+  // `|| METRICS="000 0 0"` fallback discards the real numbers, DL_CODE is 000
+  // and the script short-circuits on the HTTP check. The byte-count comparison
+  // and the 4096 floor NEVER EXECUTE there. So they are two guards nothing has
+  // watched fail -- decoration, in this project's vocabulary.
+  //
+  // Here Content-Length AGREES with the body, so curl exits 0 and reports 1,000
+  // bytes, `wc -c` reports 1,000, the two agree, the ftyp box at offset 4 is
+  // present and valid -- and the floor is the only thing left to fail.
+  const fake = await fakeFor(t, { pollsBeforeDone: 1, declaredLength: 1_000, truncateDownloadTo: 1_000 });
+  const f = fixture();
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url });
+  assert.equal(r.code, 4, `exit 4, from the floor rather than from the transport: ${r.stderr}`);
+  assert.match(r.stderr, /1000 bytes/, "the floor is what reported, naming the byte count it rejected");
+  assert.equal(existsSync(f.out), false);
+  assert.equal(existsSync(`${f.out}.part`), false);
+  await fake.close();
+});
+
+test("a complete download is renamed into place and its path printed", async (t) => {
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(existsSync(f.out), true);
+  assert.match(r.stdout, new RegExp(f.out.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(readFileSync(f.out).subarray(4, 8).toString(), "ftyp", "it is an mp4, checked here too");
+  await fake.close();
+});
+
+test("THE KEY IS NEVER PRINTED, even when the server echoes it back at us", async (t) => {
+  // The fake server puts the received key straight into its error body. That is
+  // what makes this a test of OUR redaction rather than of Google's manners.
+  // gemini-image.sh:92 does `cat "$RESP" >&2` on failure -- a sibling that
+  // mirrors that shape inherits exactly this leak.
+  const fake = await fakeFor(t, { postStatus: 400, echoKeyInError: true });
+  const f = fixture();
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url });
+  assert.equal(r.code, 3);
+  const all = `${r.stdout}\n${r.stderr}`;
+  assert.ok(!all.includes(SENTINEL_KEY), "the key must appear in no line of output");
+  assert.match(all, /\[REDACTED\]/, "and the redaction must be visible, so a reader knows something was removed");
+  assert.match(all, /INVALID_ARGUMENT|400/, "while the diagnosis still survives");
+  await fake.close();
+});
