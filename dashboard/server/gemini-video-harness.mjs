@@ -437,7 +437,9 @@ test("THE POSTER IS MADE BEFORE THE POST — proven by a converter that only fai
  * ------------------------------------------------------------------------- */
 const VIDEO_DIST = process.env.VIDEO_DIST ?? "./dist";
 const { planVideoLegs, resolveLegCap } = await import(`${VIDEO_DIST}/design/video-legs.js`);
-const { legPlannerInput, workspaceTmpDir } = await import(`${VIDEO_DIST}/design/video-lane.js`);
+const { defaultSpawnLeg, legPlannerInput, videoLaneEnv, workspaceTmpDir } = await import(
+  `${VIDEO_DIST}/design/video-lane.js`
+);
 
 test("TMPDIR POINTING AT A DIRECTORY THAT DOES NOT EXIST BREAKS THE SCRIPT", async (t) => {
   // The behaviour the lane's string assertion cannot see. The script's
@@ -503,4 +505,91 @@ test("THE POSTER PATH THE PROMPT ADVERTISES IS THE POSTER PATH THE SCRIPT WRITES
   assert.equal(r.code, 0, r.stderr);
   assert.equal(existsSync(leg.out), true);
   assert.equal(existsSync(leg.poster), true, "the path planVideoLegs put in the prompt is the one on disk");
+});
+
+test("THE LANE'S OWN ARGV IS WHAT THE SCRIPT IS RUN WITH — and it survives into the request body", async (t) => {
+  // THE THIRD SEAM, AND THE ONE NOTHING WATCHED. Every test above builds its
+  // argv by hand; `defaultSpawnLeg` -- the only thing the orchestrator actually
+  // calls -- was covered by exactly one flag. MEASURED: replacing its whole
+  // argument list with `["-o", leg.out]`, dropping the motion prompt, `-i`,
+  // `-a`, `-d`, `-r` and `-m`, left all 12 tests in video-lane.test.ts, all 35
+  // in orchestrator.test.ts and all 20 here GREEN. Against the real script that
+  // is `-i is required` and exit 1 on every leg, forever, with a full suite
+  // green -- and the orchestrator's stub cannot see it because a stub written to
+  // consume `-o` ignores the rest by construction.
+  //
+  // The second measured mutation is the expensive one: `RESOLUTION = "1080p"`
+  // with `DURATION_SECONDS = 4` also left all 67 green, and that pair is one the
+  // script REFUSES ("resolution 1080p requires -d 8", exit 1 before the POST).
+  // The lane could ship a combination the validator it was written against
+  // rejects. Nothing here re-declares that rule -- the SCRIPT is the oracle, so
+  // the pair cannot drift out of agreement with it.
+  //
+  // NO METERED CALL: the base override sends the real script at the loopback
+  // fake, and the sentinel key is asserted absent from everything the lane
+  // returns.
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const manifest = {
+    version: 1,
+    refs: [{ path: f.still, section: "descent", aspect: "16:9", intent: "x", animate: true }],
+    lockedMockup: null,
+    lockedBy: null,
+    lockedReason: null,
+    lockedAt: null,
+  };
+  const plan = planVideoLegs(legPlannerInput(manifest), f.dir, resolveLegCap({}));
+  const leg = plan.legs[0];
+
+  // The lane's env builder, not a hand-made one, and the tmpdir it names is
+  // created first -- which is `runVideoLane`'s `ensureDir`, done here by hand
+  // because this test drives the spawn seam and not the lane.
+  const env = videoLaneEnv(
+    {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      GEMINI_API_KEY: SENTINEL_KEY,
+      GEMINI_VIDEO_API_BASE: fake.url,
+      GEMINI_VIDEO_POLL_SEC: "0.2",
+      GEMINI_VIDEO_TIMEOUT_SEC: "5",
+    },
+    f.dir,
+  );
+  mkdirSync(workspaceTmpDir(f.dir), { recursive: true });
+
+  const result = await defaultSpawnLeg(SCRIPT)(leg, env);
+  assert.equal(result.ok, true, result.detail);
+  assert.ok(!JSON.stringify(result).includes(SENTINEL_KEY), "no key on the way back out");
+
+  const posts = fake.requests.filter((q) => q.method === "POST");
+  assert.equal(posts.length, 1, "one leg, one metered POST");
+  // -m: the model is in the PATH, so a lane that names Lite or Fast shows up here.
+  assert.equal(
+    posts[0].path,
+    "/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+    "the model the lane chose is the model that was called",
+  );
+  // -a, -r, -d: the three parameters the whole spend argument rests on, in the
+  // types REVISION 1 measured -- durationSeconds a NUMBER, 4 s at 720p, which a
+  // live call returned HTTP 200 for and produced h264 1280x720 duration=4.000000.
+  assert.deepEqual(
+    posts[0].body.parameters,
+    { aspectRatio: "16:9", resolution: "720p", durationSeconds: 4 },
+    "the lane's -a/-r/-d reached the body unchanged",
+  );
+  // -i: byte-for-byte, because the still IS the first frame (§7.6.2). A wrong
+  // path is exit 1; a right path that never reaches the body is a leg animating
+  // nothing.
+  assert.ok(
+    Buffer.from(posts[0].body.instances[0].image.bytesBase64Encoded, "base64").equals(readFileSync(leg.still)),
+    "the leg's own still is what was attached",
+  );
+  // The motion prompt. It is the only instruction Veo gets, and an empty one is
+  // a paid call for whatever the model felt like.
+  assert.match(posts[0].body.instances[0].prompt, /slow, continuous camera move/u);
+  assert.match(posts[0].body.instances[0].prompt, /descent/u, "the section reached the prompt");
+  // -o, and the poster derived from it.
+  assert.equal(existsSync(leg.out), true, "the mp4 landed where the prompt says it did");
+  assert.equal(existsSync(leg.poster), true, "and so did the poster");
+  rmSync(workspaceTmpDir(f.dir), { recursive: true, force: true });
 });
