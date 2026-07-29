@@ -98,14 +98,15 @@ the one entry that is not shadow-locked.**
 | 04 single-line page | yes | clear | clear | clear | 0 |
 | 05 webfont FOIT | yes | clear | clear | clear | 0 |
 | **06 vertical Japanese** | **yes** | **fires 375** (clear 768, 1280) | clear | clear | **1** |
-| 07 compositional block | yes | clear | clear | **clear** | 0 |
+| 07 compositional block | yes | clear | clear | clear — the near miss, see §10 | 0 |
 | 08 night contact sheet | yes | clear | clear | clear | 0 |
 | `_comparator-hollow-section` | no, hollow by construction | clear 3/3 | **fires 3/3** | clear | 0 (entry locked) |
 | `hollow-section` (design note's) | no, hollow by construction | clear 3/3 | **fires 3/3** | clear | 0 (entry locked) |
 | `_control-01-fold-restored` | yes | clear 3/3 | clear 3/3 | clear | 0 |
 | `_control-06-horizontal` | yes | clear 3/3 | clear 3/3 | clear | 0 |
 
-One FUNCTIONAL finding fails a run (`verdict.ts:210`). Case 06 is correct at two breakpoints out of
+One FUNCTIONAL finding fails a run — `verdict.ts:210`, `computeOutcome`'s first branch, line number
+checked against the file this session. Case 06 is correct at two breakpoints out of
 three and fails on the third; a per-frame finding means one bad breakpoint is enough.
 
 **The mechanism, measured.** My blind answers correlate perfectly with a pixel statistic I had not
@@ -183,10 +184,19 @@ outright. Those are different pictures, and the distinguishing evidence is *how 
 the layout put under the heading before the crop*, which is in the capture. The byte count and the
 luminance stddev cannot see it because neither is positional.
 
+**How much of that 3/3 is evidence, stated exactly, because "three separations" reads stronger than
+it is. ONE of the three breakpoints separated on visible evidence; TWO separated on a magnitude I
+picked while answering.** At 768 the comparator's empty band is bounded below by the next section
+heading inside the frame — that settles it outright and needs no threshold. At 375 and 1280 the band
+runs to the frame edge in both members of the pair, and the only thing distinguishing them is how
+much of it there is: 341px against 50px, and 185px against 48px. At 1280 the hollow region ends 22
+pixels short of the crop, which is not a boundary a reader can see. So two thirds of the result rests
+on a quantity I chose mid-adjudication and that no wording in the entry supplies.
+
 **What this changes, and what it does not.** It does not make `VIS-F-EMPTY-REGION` gateable. The
 separation rests on a judgement of degree that I applied consistently and can state — an empty band
 running to the frame edge is the crop ending, an empty band bounded on both sides is a hollow region
-— but which no wording in the entry supplies, and I set the threshold myself while adjudicating. At
+— but which no wording in the entry supplies, and which decided two of the three frames by itself. At
 768 case 01's next item is partly in frame, so the pair is not even a hard case there. It does mean
 that the note's §7.2 conclusion ("cannot gate while the capture is a viewport crop") is stronger
 than its evidence: the correct claim is that the entry needs the region's geometry carried alongside
@@ -340,9 +350,10 @@ duplicate is not yet earning the risk it carries.
   measurement, which is stronger than the false-fail note's own adjudication, but still not a rate.
   Shadow mode is what turns it into one, and that is an argument for leaving it in shadow rather
   than for removing it.
-- **The threshold in section 5 is mine.** I decided that an empty band running to the frame edge is
-  the crop ending and an empty band bounded on both sides is a hollow region. It is stated so it can
-  be disagreed with. Nothing in the enumerated wording supplies it.
+- **The threshold in section 5 is mine, and it carried two of the three frames.** Only the 768 pair
+  separated on visible evidence (a bounding heading inside the frame); 375 and 1280 separated on
+  341px-against-50px and 185px-against-48px, a magnitude I chose while answering. Nothing in the
+  enumerated wording supplies it. Section 5 states this in place rather than only here.
 - **The pool was not re-captured.** These are the captures the two sibling tasks took in the sealed
   image, re-used deliberately: `blank-page` reads 2541 / 4468 / 4718 bytes in that record, which
   reproduces the design note to the byte, and the geometry probes carry real numbers rather than the
