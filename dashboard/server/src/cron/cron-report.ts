@@ -321,7 +321,13 @@ if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
     env: process.env,
     now: () => new Date().toISOString(),
     http: async (url, init) => await fetch(url, init as RequestInit | undefined),
-  }).then((code) => {
-    process.exit(code);
-  });
+  })
+    .then((code) => {
+      process.exit(code);
+    })
+    .catch((error: unknown) => {
+      // A report that crashed must not exit 0 and must not print a bare stack.
+      process.stderr.write(`the cron report itself failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(2);
+    });
 }

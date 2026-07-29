@@ -19,15 +19,29 @@
  * `StandardErrorPath` carries what the journal carries. One line also goes to
  * stdout, because that surface costs nothing.
  *
- * THE ONE FAILURE THIS DESIGN CANNOT RECORD DURABLY, said here rather than
- * pretended away: an unusable cron root. If `readCronConfig` refuses — including
- * because the root is unwritable or inside the bake-off tree — there is nowhere
- * to append a row. The tick tries anyway (a config can fail for reasons that
- * leave the directory perfectly writable) and always writes stderr, but a machine
- * whose cron root cannot be created reports only through the OS scheduler's own
- * log. The other failure with no observer inside a tick is the schedule never
- * firing, which no running tick can see; the report's OVERDUE line is its
- * detector and it computes staleness at READ time.
+ * THE ONE FAILURE THIS DESIGN CANNOT RECORD DURABLY, stated precisely rather than
+ * approximately, because the approximate version of this sentence was false and a
+ * measurement caught it: **an unusable cron root**. It arrives two ways.
+ *
+ *   `readCronConfig` REFUSES — the root is inside the bake-off tree, a bound is
+ *   nonsense, the model is unset. A journal append is attempted (a config can fail
+ *   for reasons that leave the directory perfectly writable) and usually succeeds.
+ *
+ *   `readCronConfig` ACCEPTS and the directory still cannot be used. `cronRoot`
+ *   does path arithmetic and `assertOutsideBakeoff` and TOUCHES NO FILESYSTEM, so
+ *   an unwritable root passes it. MEASURED with the parent at `0o555`:
+ *   `readCronConfig` answers `ok: true` and `ensureCronDirs` throws EACCES. Before
+ *   the guard below that rejection escaped `runTick` entirely, `void main()` turned
+ *   it into an unhandled rejection, and Node exited **1** — a code in no decision's
+ *   table, with no journal row and no stderr line from the tick. A failed
+ *   scheduled run indistinguishable from one that never started, inside the file
+ *   written to prevent exactly that.
+ *
+ * In BOTH cases the decision is `misconfigured`, `main()` writes the reason to
+ * stderr, and the exit code is 2 — so the OS scheduler's own log carries it even
+ * when nothing durable can. The other failure with no observer inside a tick is
+ * the schedule never firing, which no running tick can see; the report's OVERDUE
+ * line is its detector and it computes staleness at READ time.
  *
  * ORDER IS THE SAFETY PROPERTY. Health and model availability are checked BEFORE
  * a ticket is claimed: claiming first would strand a ticket on a fault that has
@@ -42,6 +56,7 @@ import { appendIntent, appendOutcome, intentsInWindow, readJournal } from "./cro
 import { readCronConfig, cronRoot } from "./cron-config.js";
 import type { CronConfig } from "./cron-config.js";
 import { acquireLease, releaseLease } from "./cron-lease.js";
+import type { LeaseHolder } from "./cron-lease.js";
 import { decideTick } from "./cron-policy.js";
 import { claim, ensureCronDirs, listQueue, settleFailed, settleSubmitted, strandedClaims } from "./cron-queue.js";
 // A RUNTIME import, and cron-report.ts imports only TYPES back, so there is no
@@ -100,6 +115,18 @@ export const EXIT: Readonly<Record<CronDecision, number>> = Object.freeze({
   rejected: 6,
   refused: 7,
 });
+
+/**
+ * The tick's own process failed in a way none of the eight decisions describes.
+ *
+ * DISTINCT FROM ALL OF THEM ON PURPOSE, and not 1: an unhandled rejection already
+ * exits 1, so reusing it would make "a bug in the scheduler" and "Node gave up"
+ * the same line in `launchd`'s log. Nothing should reach this — `runTick` returns
+ * a `TickResult` on every path it knows about — and it exists because "nothing
+ * should reach this" is a claim, and the whole subject of this file is claims
+ * whose failure is silent.
+ */
+export const EXIT_INTERNAL = 8;
 
 async function getJson<T>(deps: TickDeps, url: string): Promise<{ ok: true; value: T } | { ok: false; why: string }> {
   let response: TickResponse;
@@ -172,26 +199,46 @@ export async function runTick(deps: TickDeps): Promise<TickResult> {
     return { decision, reason, runId, exitCode };
   };
 
-  ensureCronDirs(config.root);
-
-  // 2. THE LEASE. Two ticks in one minute would both claim and both spend.
-  const holder = { tickId: deps.tickId, pid: process.pid, at };
-  const lease = acquireLease(config.root, holder, config.leaseTtlMin, deps.isAlive);
-  if (!lease.ok) {
-    // NO REPORT ON THIS PATH, a deliberate deviation from the plan's step 10: the
-    // lease holder is writing `report.md` right now, and a second writer buys
-    // nothing — the journal row this tick just appended is what makes the refusal
-    // visible, and the reader computes staleness from the journal, not from
-    // report.md's mtime.
-    return journal("lease-held", lease.why, null, null);
-  }
+  // 1b / 2. THE ROOT HAS TO BE USABLE, AND THE LEASE HAS TO BE TAKEN, and every
+  // call in here touches the filesystem and can therefore throw. See the header:
+  // an unwritable root reaches this point with `ok: true`.
+  type Start =
+    | { readonly kind: "go"; readonly brokeStale: LeaseHolder | null }
+    | { readonly kind: "stop"; readonly result: TickResult };
+  const start: Start = ((): Start => {
+    try {
+      ensureCronDirs(config.root);
+      const holder: LeaseHolder = { tickId: deps.tickId, pid: process.pid, at };
+      const lease = acquireLease(config.root, holder, config.leaseTtlMin, deps.isAlive);
+      if (!lease.ok) {
+        // NO REPORT ON THIS PATH, a deliberate deviation from the plan's step 10:
+        // the lease holder is writing `report.md` right now, and a second writer
+        // buys nothing — the journal row this tick just appended is what makes the
+        // refusal visible, and the reader computes staleness from the journal, not
+        // from report.md's mtime.
+        return { kind: "stop", result: journal("lease-held", lease.why, null, null) };
+      }
+      return { kind: "go", brokeStale: lease.brokeStale };
+    } catch (error) {
+      const why =
+        `the cron directory ${config.root} cannot be used: ` +
+        `${error instanceof Error ? error.message : String(error)}. Nothing could be journalled, so this ` +
+        `tick is visible ONLY here and in the scheduler's own log.`;
+      process.stderr.write(`${why}\n`);
+      return {
+        kind: "stop",
+        result: { decision: "misconfigured", reason: why, runId: null, exitCode: EXIT.misconfigured },
+      };
+    }
+  })();
+  if (start.kind === "stop") return start.result;
 
   try {
-    if (lease.brokeStale !== null) {
+    if (start.brokeStale !== null) {
       // NOT a decision — the tick continues — but it must never be silent.
       process.stdout.write(
-        `broke the stale lease of tick ${lease.brokeStale.tickId} (pid ${String(lease.brokeStale.pid)}) ` +
-          `from ${lease.brokeStale.at}\n`,
+        `broke the stale lease of tick ${start.brokeStale.tickId} (pid ${String(start.brokeStale.pid)}) ` +
+          `from ${start.brokeStale.at}\n`,
       );
     }
 
@@ -355,6 +402,25 @@ export function newTickId(now: string, random: () => number = Math.random): stri
   return `${stamp}-${random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * The entrypoint the OS scheduler invokes.
+ *
+ * OPERATOR NOTE, AND IT IS THE PHASE'S OWN TRAP IN THE RUNBOOK. The plan's plist
+ * and crontab both hardcode `/usr/local/bin/node`. **MEASURED on this machine:
+ * that path does not exist** — `which -a node` answers `/opt/homebrew/bin/node`
+ * only. A `launchd` job whose `ProgramArguments[0]` is missing never runs
+ * anything, and the symptom is precisely trap row 6: no new run appeared, no
+ * journal row, and nothing in the report except an eventual OVERDUE. So the
+ * interpreter path in the schedule must come from `command -v node` on the
+ * machine the schedule is installed on, not from a document.
+ *
+ * The two zero-cost checks to run ONCE after installing, and to record:
+ *   curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:${DASHBOARD_PORT:-4176}/api/health
+ *   npm run cron:tick        # against an empty queue: must print `skipped: …` and exit 0
+ * Neither is exercised by any test here, because `http` is injected everywhere —
+ * "a real fetch to the resolved port answers" is untested BY CONSTRUCTION, and
+ * that is trap rows 1 and 2.
+ */
 async function main(): Promise<void> {
   const now = new Date().toISOString();
   const result = await runTick({
@@ -371,5 +437,14 @@ async function main(): Promise<void> {
 
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
-  void main();
+  // THE SAME SHAPE `index.ts` USES, and for the same reason: `void main()` turns
+  // any escaped rejection into Node's own exit 1 with a stack trace and no
+  // sentence. A scheduler whose failure mode is a stack trace in a log nobody
+  // opens is the failure this whole file is about.
+  main().catch((error: unknown) => {
+    process.stderr.write(
+      `the cron tick itself failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exit(EXIT_INTERNAL);
+  });
 }

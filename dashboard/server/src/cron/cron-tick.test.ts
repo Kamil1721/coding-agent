@@ -8,18 +8,19 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ModelOption, RunSummary } from "../api-types.js";
 import type { CronConfig } from "./cron-config.js";
+import { readCronConfig } from "./cron-config.js";
 import type { CronDecision } from "./cron-journal.js";
 import { appendIntent, appendOutcome, orphanIntents, readJournal } from "./cron-journal.js";
 import { CRON_LEASE_FILE, acquireLease } from "./cron-lease.js";
 import { CRON_DIRS, listQueue, strandedClaims } from "./cron-queue.js";
 import { CRON_REPORT_FILE, refreshCronReport } from "./cron-report.js";
-import { EXIT, newTickId, runTick } from "./cron-tick.js";
+import { EXIT, EXIT_INTERNAL, newTickId, runTick } from "./cron-tick.js";
 import type { TickDeps, TickResponse, TickResult } from "./cron-tick.js";
 
 const NOW = "2026-07-30T02:00:00.000Z";
@@ -502,4 +503,45 @@ test("THREE-WAY: failed, succeeded and never-started differ in the exit code, th
   // report that says everything at once.
   const texts = Object.values(reports);
   assert.equal(new Set(texts).size, 3, "two of the three states rendered the same document");
+});
+
+test("AN UNWRITABLE CRON ROOT IS A DECISION, NOT A REJECTION — the config gate cannot see it", async () => {
+  // MEASURED BEFORE THIS GUARD EXISTED. `cronRoot` does path arithmetic and
+  // `assertOutsideBakeoff` and touches no filesystem, so `readCronConfig` answers
+  // `ok: true` for a root it cannot create — and `ensureCronDirs` then threw
+  // EACCES straight out of `runTick`. With `void main()`, that was an unhandled
+  // rejection: Node exit 1, no journal row, no stderr line from the tick, and 1 in
+  // no decision's exit table. A failed scheduled run indistinguishable from one
+  // that never started.
+  const parent = mkdtempSync(join(tmpdir(), "cron-unwritable-"));
+  const root = join(parent, "cron");
+  chmodSync(parent, 0o555);
+  try {
+    const env = { DASHBOARD_CRON_DIR: root, DASHBOARD_CRON_MODEL: MODEL };
+    assert.equal(readCronConfig(env).ok, true, "the config gate genuinely cannot see this — that is the point");
+    const result = await runTick({
+      env,
+      now: () => NOW,
+      tickId: "unwritable",
+      isAlive: () => true,
+      http: async () => {
+        throw new Error("no request should be made once the root is known to be unusable");
+      },
+    });
+    assert.equal(result.decision, "misconfigured");
+    assert.equal(result.exitCode, EXIT.misconfigured);
+    assert.notEqual(result.exitCode, 0, "it must not read as a deliberate no-op");
+    assert.match(result.reason, /cannot be used/);
+    assert.match(result.reason, /ONLY here and in the scheduler/, "and it must say that nothing durable exists");
+  } finally {
+    chmodSync(parent, 0o755);
+  }
+});
+
+test("EXIT_INTERNAL is distinct from every decision AND from Node's own 1", () => {
+  // The last-resort code in main().catch. Reusing 1 would make "a bug in the
+  // scheduler" and "Node gave up on an unhandled rejection" the same log line.
+  assert.equal(Object.values(EXIT).includes(EXIT_INTERNAL), false);
+  assert.notEqual(EXIT_INTERNAL, 0);
+  assert.notEqual(EXIT_INTERNAL, 1);
 });
