@@ -291,3 +291,30 @@ test("with no preview URL the gate says what it cannot do rather than pretending
   const p = visualGatePrompt({ manifest: LOCKED, workspace: WS, previewUrl: null });
   assert.match(p, /no preview/i);
 });
+
+/* ---- THE TRAP, at the handoff seam ------------------------------------ */
+
+test("a FULL lane that produced ZERO images does not get the DEGRADED lane's sentence", () => {
+  // THE TRAP, in the plan's own words: "`degraded` and `full`-with-zero produce
+  // the same file count and must never produce the same report." This function
+  // IS one of the two reports a build agent reads, and the plan's draft keyed the
+  // whole branch on `manifest === null` — so a full lane whose image chain died
+  // was told image generation had been unavailable, which is false.
+  const degraded = handoff({ manifest: null, mode: "degraded" });
+  const fullWithZero = handoff({ manifest: null, mode: "full" });
+  assert.notEqual(fullWithZero, degraded, "a full lane with no images is not a degraded lane");
+  assert.doesNotMatch(fullWithZero, /unavailable/i, "generation was AVAILABLE on a full lane; it failed");
+  assert.match(fullWithZero, /EXPECTED TO/);
+  assert.match(degraded, /unavailable/i);
+});
+
+test("with no written direction either, the handoff points at nothing rather than at a missing file", () => {
+  // `dials` is this function's signal that direction.md exists ("the text of
+  // direction.md, or "" when absent"). A `Read` on a file nobody wrote surfaces
+  // turns deep inside a build agent as its own confusion, not as a design fault.
+  for (const mode of ["degraded", "full"] as const) {
+    const p = handoff({ manifest: null, mode, dials: "" });
+    assert.doesNotMatch(p, /direction\.md/, `${mode}: pointed at a file the lane never wrote`);
+    assert.match(p, /no design input/i);
+  }
+});

@@ -219,17 +219,52 @@ export function designHandoffSection(input: {
   const refsDir = refsDirFor(input.workspace);
 
   if (input.mode === "degraded" || input.manifest === null || input.manifest.refs.length === 0) {
-    const degraded: string[] = [
-      "THE DESIGN LANE PRODUCED NO STILLS on this run — image generation was",
-      "unavailable. It produced written art direction instead:",
-      "",
-      `  Read ${join(refsDir, "direction.md")}`,
-      "",
-      "Build to that document. It is the only design input this run has, so it is the",
-      "one the visual gate will read your work against.",
-    ];
-    if (input.dials.length > 0) degraded.push("", input.dials);
-    return degraded.join("\n");
+    // TWO REASONS FOR ZERO STILLS, AND THEY MUST NOT READ THE SAME. THE TRAP:
+    // "`degraded` and `full`-with-zero produce the same file count and must never
+    // produce the same report." This function is one of the two reports a build
+    // agent actually reads, and the plan's draft keyed the whole branch on
+    // `manifest === null` — so a `full` lane whose image chain died was told
+    // "image generation was unavailable", which is false about the one thing the
+    // phase exists to keep honest.
+    //
+    // `dials` IS THE PRESENCE OF direction.md, per this function's own contract
+    // ("the text of direction.md, or \"\" when absent"), so it is also what decides
+    // whether pointing a child at that file is a Read it can satisfy. A `Read` on
+    // a file nobody wrote surfaces several turns deep as an agent's confusion
+    // rather than as a design fault — the same reason `pruneMissingRefs` exists.
+    const wroteDirection = input.dials.length > 0;
+    const zero: string[] =
+      input.mode === "degraded"
+        ? [
+            "THE DESIGN LANE PRODUCED NO STILLS on this run — image generation was",
+            "unavailable on this machine, which is expected rather than a fault.",
+          ]
+        : [
+            "THE DESIGN LANE PRODUCED NO STILLS on this run, and it was EXPECTED TO.",
+            "Image generation was available and the lane came back with nothing, so this",
+            "run has no chosen design and no reference to build against. Build the ticket",
+            "on your own judgement, and do not describe the result as matching a design.",
+          ];
+    if (wroteDirection) {
+      zero.push(
+        "",
+        "What the lane did leave is written art direction:",
+        "",
+        `  Read ${join(refsDir, "direction.md")}`,
+        "",
+        "Build to that document. It is the only design input this run has, so it is the",
+        "one the visual gate will read your work against.",
+        "",
+        input.dials,
+      );
+    } else {
+      zero.push(
+        "",
+        "There is no written art direction either, so this run has no design input at",
+        "all. Do not go looking for one.",
+      );
+    }
+    return zero.join("\n");
   }
 
   const lines: string[] = [
