@@ -586,3 +586,118 @@ test("GRAPH: a run with no events at all answers atSeq 0, and an unknown run is 
     await harness.close();
   }
 });
+
+test("GRAPH: the REAL redactor runs over graph rows, and node identity survives it", async () => {
+  // THE DESIGN RULE OF THIS WHOLE PHASE, AGAINST THE ACTUAL FUNCTION THAT FORCED
+  // IT. Everywhere else the collision is SIMULATED by typing the literal
+  // `[REDACTED:HIGH_ENTROPY_TOKEN]` into a fixture; here two genuinely distinct
+  // 40+ char mixed-case-and-digit task ids go through
+  // `bus.emit` -> `store.appendEvent` -> `redactForPersistence` and come back
+  // from the table. If they come back identical — and they do — then a canvas
+  // keyed on `sdk.taskId` merges two agents into one node, with every short-id
+  // fixture in the suite still green. That is why ids are minted `n1`, `n2`.
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-graph-redaction";
+    seedRun(harness, runId);
+    const taskA = "TaskId7f3aB9c2D4e6F8a0B1c3D5e7F9a1B3c5D7e9F1a3B5c7";
+    const taskB = "TaskIdQ2w3E4r5T6y7U8i9O0p1A2s3D4f5G6h7J8k9L0z1X2c";
+    assert.notEqual(taskA, taskB, "the fixture ids must differ before persistence");
+
+    harness.bus.emit(runId, { ...ROOT, sdk: { taskId: taskA, toolUseId: null } });
+    harness.bus.emit(runId, { ...REVIEWER, sdk: { taskId: taskB, toolUseId: null } });
+    // A real sha256 of the environment. It must SURVIVE: a fingerprint that is
+    // byte-identical on every run looks exactly like a working hash and
+    // distinguishes nothing, which is the failure build-environment.ts's header
+    // was written about.
+    const hash = "9f2b7c1e5a08d4f36b9e0c7a1d8f2e5b4c6a9d0e3f7b1c5a8d2e6f0b4c7a9d13";
+    harness.bus.emit(runId, {
+      type: "graph_inventory",
+      agents: 154,
+      skills: 162,
+      tools: 42,
+      allowedAgents: ["code-reviewer"],
+      mcpServers: [{ name: "context7", status: "connected" }],
+      plugins: ["railway"],
+      model: "claude-opus-5",
+      claudeCodeVersion: "2.1.220",
+      environmentHash: hash,
+    });
+
+    const persisted = harness.store.eventsSince(runId, 0).map((row) => row.event);
+    const agents = persisted.filter((event) => event.type === "graph_agent");
+    assert.equal(agents.length, 2);
+    const [first, second] = agents;
+    assert.ok(first?.type === "graph_agent" && second?.type === "graph_agent");
+
+    // THE COLLISION IS REAL, NOT SIMULATED.
+    assert.equal(
+      first.sdk?.taskId,
+      second.sdk?.taskId,
+      "the redactor no longer collapses long task ids — re-read the rationale before relying on it",
+    );
+    assert.notEqual(first.sdk?.taskId, taskA, "the raw id was persisted unredacted");
+    // AND THE NODE IDS DO NOT COLLIDE, because nothing rewrites `n1`/`n2`.
+    assert.deepEqual([first.node, second.node], ["n1", "n2"]);
+
+    const folded = foldGraphAll(persisted);
+    assert.deepEqual(
+      folded.nodes.map((node) => node.agent),
+      ["orchestrator", "code-reviewer"],
+      "two agents were merged into one node after a round-trip through the real redactor",
+    );
+
+    const inventory = persisted.find((event) => event.type === "graph_inventory");
+    assert.ok(inventory?.type === "graph_inventory");
+    assert.equal(
+      inventory.environmentHash,
+      hash,
+      "the environment fingerprint was scrubbed, which makes every run's hash identical",
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("GRAPH: ?lastEventId= resumes, because EventSource cannot send a header", async () => {
+  // THE HANDOFF THE SNAPSHOT EXISTS FOR RIDES ON THIS BRANCH AND ONLY THIS ONE.
+  // The client opens `EventSource(/api/runs/:id/events?lastEventId=atSeq)`, and
+  // `EventSource` cannot set request headers — so the `Last-Event-ID` path that
+  // the existing resume test covers is NOT the path the canvas uses. If the query
+  // branch is wrong the client silently replays from zero and pulls the 7.01 MB
+  // this endpoint exists to avoid, which reads as a slow first paint rather than
+  // as a bug.
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-graph-resume";
+    seedRun(harness, runId);
+    harness.bus.emit(runId, ROOT);
+    harness.bus.emit(runId, REVIEWER);
+    const atSeq = harness.store.latestSeq(runId);
+    harness.bus.emit(runId, {
+      type: "graph_agent_status",
+      node: "n2",
+      state: "completed",
+      attribution: "exact",
+    });
+
+    const response = await fetch(
+      `${harness.base}/api/runs/${runId}/events?lastEventId=${String(atSeq)}`,
+    );
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const ids: number[] = [];
+    while (ids.length < 1) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      for (const match of buffer.matchAll(/^id: (\d+)$/gm)) ids.push(Number(match[1]));
+    }
+    await reader.cancel();
+    assert.deepEqual(ids, [3], "the snapshot's watermark did not resume the stream");
+    assert.match(buffer, /event: graph_agent_status/, "named events are what the client listens for");
+  } finally {
+    await harness.close();
+  }
+});
