@@ -570,14 +570,37 @@ test("GRAPH: a run recorded before the canvas existed returns an EMPTY canvas, n
   }
 });
 
-test("GRAPH: a run with no events at all answers atSeq 0, and an unknown run is still a 404", async () => {
+test("GRAPH: a run that exists but has said nothing is 200-and-empty, and an unknown run is 404", async () => {
+  // WHAT THIS TEST CARRIES: EXISTENCE, NOT THE WATERMARK.
+  //
+  // A run that has emitted nothing yet — queued, or a builder that has not
+  // spoken — must be answerable and empty, while a run id that was never issued
+  // must be a 404. Collapsing those two is how an additive read route turns into
+  // an id oracle in one direction, and how a freshly created run's canvas turns
+  // into an error page in the other. Proved able to fail on 2026-07-29 by making
+  // `graphSnapshot` 404 a run with zero rows: THIS test went red on the 200 below
+  // and the race test below stayed green.
+  //
+  // WHAT IT DOES NOT CARRY, MEASURED: the `atSeq` line below is NOT coverage of
+  // the watermark invariant. Under the mutation `atSeq := store.latestSeq(runId)`
+  // — the exact defect the watermark exists to prevent — this test stays GREEN,
+  // because `latestSeq` of a run with no rows is also 0. Its failure mode there
+  // is a strict subset of another check's, which makes it not a second check.
+  // The test that carries that invariant is "GRAPH: the snapshot plus the tail
+  // from atSeq equals folding from zero", which forces an append INTO the read so
+  // that the two implementations can differ at all.
   const harness = await startHarness(true);
   try {
     seedRun(harness, "run-graph-silent");
-    const body = (await (
-      await fetch(`${harness.base}/api/runs/run-graph-silent/graph`)
-    ).json()) as RunGraphResponse;
-    assert.equal(body.atSeq, 0, "a client must replay from zero, not from a guessed watermark");
+    const response = await fetch(`${harness.base}/api/runs/run-graph-silent/graph`);
+    assert.equal(
+      response.status,
+      200,
+      "a run that exists and has emitted nothing is not a missing run",
+    );
+    const body = (await response.json()) as RunGraphResponse;
+    // Spelling, not the invariant: read the note above before trusting this line.
+    assert.equal(body.atSeq, 0, "an empty run must hand the client a replay-from-zero watermark");
     assert.deepEqual(body.nodes, []);
 
     const missing = await fetch(`${harness.base}/api/runs/no-such-run/graph`);

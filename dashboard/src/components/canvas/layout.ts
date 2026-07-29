@@ -120,9 +120,30 @@ export interface Placement {
  * and it costs about 50px of extra whitespace on a busy card — the direction
  * this canvas was asked to err in anyway.
  *
- * The browser harness asserts no two cards overlap. That check was proved able
- * to fail on 2026-07-29 by halving this function's return: 3 overlapping pairs.
- * It does NOT go red on the two-per-row variant, for the reason measured above.
+ * NOTHING IN THIS REPOSITORY CHECKS THE NO-OVERLAP PROPERTY TODAY, AND THE
+ * EARLIER CLAIM THAT SOMETHING DID IS RETRACTED HERE.
+ *
+ * What existed was a scratchpad `verify.mjs` driving headless Chromium. It ran
+ * once, on 2026-07-29; it was never added to the repository; it cannot be re-run,
+ * and 66499b8's message already recorded that it did not go red on the estimate
+ * this function replaced. A check that cannot fail AND cannot run is not
+ * coverage, and a comment asserting one is worse than no comment: it is the
+ * defect that commit fixed twice and re-introduced here.
+ *
+ * The measurements above are facts about a session that happened and they stand.
+ * What is left is an ARGUMENT, and only part of it is airtight: one pill per row
+ * is a true upper bound on the PILL BLOCK for any pill name, with no dependence
+ * on `ROW_GAP` exceeding an error. The rest of the card — fixed header rows, a
+ * two-line clamp on the description — is an assumption about the CSS, and a
+ * title that ever wrapped to three lines would break it silently.
+ *
+ * The property is "this number is >= what the browser renders", and only a
+ * browser can measure the right-hand side. Making it durable means a COMMITTED
+ * harness that seeds the widest `mcp__*` names, reads back every card's box and
+ * compares — and mutation-proving it, which the scratchpad run did by halving
+ * this function. No such harness is in the repository. Until one is, this
+ * paragraph is the whole of what is known, and the paragraph it replaced was a
+ * check nobody could run.
  */
 export function estimateHeight(node: GraphNode): number {
   // padding 16 top + 16 bottom, lane/status header row, title row.

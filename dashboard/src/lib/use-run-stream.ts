@@ -136,11 +136,25 @@ const EVENT_TYPES = [
  * guard.
  *
  * WHAT IT DOES NOT COVER, IN THESE WORDS: it ties THIS package's `RunEventType`
- * to THIS array. Drift between the SERVER's union and this one stays unenforced —
- * the two files cannot import each other — and remains the co-change rule stated
- * at the top of `api-types.ts`. It also says nothing about `parseRunEvent`
- * below, which drops an unhandled type at its `default` with no type error
- * available, because `type` there is `string | null`.
+ * to THIS array, and it is ONE-DIRECTIONAL. A member ADDED to the server's
+ * `SseEvent` union and to nothing else leaves this guard green — a mirror that
+ * has never heard of an event type is a perfectly valid mirror — and the UI then
+ * drops those events silently, which is this guard's own failure mode reached
+ * from the side it cannot see. It also says nothing about `parseRunEvent` below,
+ * which drops an unhandled type at its `default` with no type error available,
+ * because `type` there is `string | null`.
+ *
+ * WHAT COVERS THOSE TWO, BY NAME: `dashboard/server/src/contract-parity.test.ts`,
+ * which imports the server's `SSE_EVENT_TYPES` — a real value, proven complete
+ * against `SseEvent` by an `Exclude` guard next to it — and reads THIS FILE and
+ * this package's `api-types.ts` as text. Its three checks are "the client's
+ * RunEvent union names exactly the server's SseEvent members", "the client
+ * registers an SSE listener for every server event type" and "parseRunEvent has a
+ * case for every server event type". Adding a member to the server union and to
+ * `SSE_EVENT_TYPES`, with this file untouched, turned all three red on
+ * 2026-07-29; misnaming `case "graph_inventory"` below turned the third red while
+ * `npm run typecheck` here stayed clean. If `EVENT_TYPES` is renamed or moved,
+ * that test fails loudly on a missing anchor — re-point it, do not delete it.
  */
 type Missing = Exclude<RunEventType, (typeof EVENT_TYPES)[number]>;
 const _noneMissing: Missing extends never ? true : never = true;
@@ -323,13 +337,19 @@ export function parseRunEvent(
 
     /* ---- the canvas, spec §9.1 -------------------------------------- */
     //
-    // THESE CASES ARE LOAD-BEARING AND NOTHING TYPE-CHECKS THEIR ABSENCE. The
-    // guard at `EVENT_TYPES` proves a LISTENER is registered for every union
-    // member; it says nothing about this switch, whose `default` returns null
-    // and whose `type` is `string | null`, so no exhaustiveness check is
-    // available. A `graph_*` event with no case here arrives, is dropped, and
-    // the canvas renders empty with a clean compile — the exact failure the
-    // guard exists for, one function further down.
+    // THESE CASES ARE LOAD-BEARING AND NO TYPE CATCHES THEIR ABSENCE. The guard
+    // at `EVENT_TYPES` proves a LISTENER is registered for every union member;
+    // it says nothing about this switch, whose `default` returns null and whose
+    // `type` is `string | null`, so no exhaustiveness check is available. A
+    // `graph_*` event with no case here arrives, is dropped, and the canvas
+    // renders empty with a clean compile — measured on 2026-07-29 by misnaming
+    // `case "graph_inventory"`, after which `npm run typecheck` exited 0.
+    //
+    // WHAT DOES CATCH IT, since no type can: the third check in
+    // `dashboard/server/src/contract-parity.test.ts`, "parseRunEvent has a case
+    // for every server event type", which reads these labels out of this file
+    // and compares them to the server's `SSE_EVENT_TYPES`. It was the only thing
+    // red under that mutation. It sees a LABEL, not a correct body.
     case "graph_agent": {
       const node = asNode(record["node"]);
       const attribution = asAttribution(record["attribution"]);

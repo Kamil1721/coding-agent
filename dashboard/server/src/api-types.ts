@@ -368,6 +368,66 @@ export type SseEvent =
 export type SseEventType = SseEvent["type"];
 
 /**
+ * EVERY MEMBER OF `SseEvent`, AS A VALUE — the only runtime export in this file,
+ * and it exists so that the CLIENT can be checked against it.
+ *
+ * A type cannot be read from another package's test: `SseEvent` is erased, and
+ * `dashboard/src` and `dashboard/server` cannot import each other. So the union's
+ * membership is projected onto an array that survives compilation, and
+ * `contract-parity.test.ts` compares THIS ARRAY — imported, not scraped — against
+ * the three hand-maintained client declaration sites.
+ *
+ * THE GUARD BELOW IS WHAT MAKES THE ARRAY TRUSTWORTHY IN BOTH DIRECTIONS.
+ * `satisfies` rejects a name that is not a real event type; `Unlisted` rejects a
+ * union member that is not in the array. Adding a member to `SseEvent` and
+ * nothing else therefore FAILS `tsc`, which is the drift this closes: before it,
+ * the server could grow an event type that the client mirror, its listener list
+ * and its parser knew nothing about, with a clean compile on both sides and a
+ * canvas that silently rendered empty.
+ *
+ * MUTATION-PROVEN, NOT ASSERTED. On 2026-07-29, adding
+ * `| { readonly type: "graph_probe_mutation"; readonly node: string }` to
+ * `SseEvent` alone failed `npm run build` with, verbatim:
+ * `src/api-types.ts(419,7): error TS2322: Type 'true' is not assignable to type
+ * 'never'.` — the coordinates are wherever `_sseEventTypesComplete` sat that
+ * afternoon and they move whenever this comment does; the error does not.
+ * Restored, and clean again.
+ *
+ * AND THE GUARD ALONE IS NOT THE FIX. It forces the author to touch this array;
+ * an author who does exactly what tsc asks still leaves the client ignorant. The
+ * same member added to BOTH the union and this array compiled clean and turned
+ * all three checks in `contract-parity.test.ts` red — `the server sends
+ * graph_probe_mutation and the client's EVENT_TYPES does not name it` — which is
+ * the check that actually closes the drift.
+ *
+ * WHAT IT DOES NOT COVER: it proves the array names the union. It says nothing
+ * about the client — that is `contract-parity.test.ts`'s job, and the array is
+ * only the ground truth it reads.
+ */
+export const SSE_EVENT_TYPES = [
+  "phase",
+  "log",
+  "tool",
+  "criterion",
+  "screenshot",
+  "tokens",
+  "rate_limit",
+  "verdict",
+  "status",
+  "graph_agent",
+  "graph_agent_status",
+  "graph_tool",
+  "graph_skill",
+  "graph_hook",
+  "graph_result",
+  "graph_inventory",
+] as const satisfies readonly SseEventType[];
+
+type UnlistedSseEvent = Exclude<SseEventType, (typeof SSE_EVENT_TYPES)[number]>;
+const _sseEventTypesComplete: UnlistedSseEvent extends never ? true : never = true;
+void _sseEventTypesComplete;
+
+/**
  * The canvas half of the union, by construction rather than by hand.
  *
  * `BuildEventSink.graph` takes this, so a driver cannot post a `status` or a
