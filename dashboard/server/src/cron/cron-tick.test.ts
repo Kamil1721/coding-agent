@@ -13,11 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ModelOption, RunSummary } from "../api-types.js";
+import type { CronConfig } from "./cron-config.js";
 import type { CronDecision } from "./cron-journal.js";
 import { appendIntent, appendOutcome, orphanIntents, readJournal } from "./cron-journal.js";
 import { CRON_LEASE_FILE, acquireLease } from "./cron-lease.js";
 import { CRON_DIRS, listQueue, strandedClaims } from "./cron-queue.js";
-import { CRON_REPORT_FILE } from "./cron-report.js";
+import { CRON_REPORT_FILE, refreshCronReport } from "./cron-report.js";
 import { EXIT, newTickId, runTick } from "./cron-tick.js";
 import type { TickDeps, TickResponse, TickResult } from "./cron-tick.js";
 
@@ -149,6 +150,18 @@ async function runScenario(
   };
   return { root, result: await runTick(deps), requests };
 }
+
+/** The config a tick built for `root`, reconstructed so the READER can re-render. */
+const CONFIG_FOR_ROOT = (root: string): CronConfig => ({
+  root,
+  baseUrl: "http://127.0.0.1:4176",
+  modelId: MODEL,
+  deploy: false,
+  maxRunsPerWindow: 4,
+  windowHours: 24,
+  leaseTtlMin: 15,
+  expectEveryMin: 60,
+});
 
 /** ONE PER DECISION. The trap test below asserts all eight leave exactly one row. */
 const ALL_SCENARIOS: readonly Scenario[] = [
@@ -421,4 +434,72 @@ test("a report that cannot be written does not turn a recorded decision into a c
   });
   assert.equal(result.decision, "submitted", "the journal row is already durable");
   assert.equal(readJournal(root).rows.filter((row) => row.phase === "outcome").length, 1);
+});
+
+/* -------------------------------------------------------------------------
+ * THE REASON THIS PHASE EXISTS, in one test rather than inferred across two
+ * files.
+ *
+ * A scheduled run that FAILED must be impossible to mistake for one that
+ * SUCCEEDED or for one that NEVER STARTED. The plan proves the first pair in the
+ * trap test and the third state in the report's OVERDUE arm — in different files,
+ * against different fixtures. Joining them is left to a reader, and "the reader
+ * will join it" is how the three states became one observable in the first place:
+ * all three produce "no new run appeared" plus, at most, a file nobody diffed.
+ *
+ * So the three are compared here, pairwise, on three axes each: the exit code the
+ * OS scheduler logs, the journal decision, and the report the owner opens.
+ * ---------------------------------------------------------------------- */
+
+test("THREE-WAY: failed, succeeded and never-started differ in the exit code, the journal AND the report", async () => {
+  const succeeded = await runScenario({ name: "three/succeeded", tickId: "three-ok", expect: "submitted" });
+  const failed = await runScenario({
+    name: "three/failed",
+    tickId: "three-bad",
+    create: { status: 500, body: { error: "internal", message: "the dashboard fell over", remediation: null } },
+    expect: "rejected",
+  });
+  // NEVER STARTED is not a tick — there is nothing to run. It is the SAME root as
+  // the successful tick, read three hours later by the owner. Nothing inside a
+  // tick can produce this state, which is the whole reason the renderer takes
+  // `now` as an argument.
+  // READ FIRST. Re-rendering into the same root would overwrite the very document
+  // being compared — which is how the first run of this test failed, and is worth
+  // keeping in the comment: the three states must be compared as three artefacts,
+  // not as one file read twice.
+  const succeededReport = readFileSync(join(succeeded.root, CRON_REPORT_FILE), "utf8");
+  const later = "2026-07-30T05:30:00.000Z";
+  const neverStartedSince = await refreshCronReport(
+    { ...CONFIG_FOR_ROOT(succeeded.root), root: succeeded.root },
+    later,
+    async () => ({ status: 404, text: async () => "" }),
+  );
+  const reports = {
+    succeeded: succeededReport,
+    failed: readFileSync(join(failed.root, CRON_REPORT_FILE), "utf8"),
+    neverStartedSince: readFileSync(neverStartedSince, "utf8"),
+  };
+
+  // AXIS 1 — the exit code, which is all `launchd`'s log carries.
+  assert.equal(succeeded.result.exitCode, 0);
+  assert.notEqual(failed.result.exitCode, 0, "a failed scheduled run must not exit 0");
+  assert.notEqual(succeeded.result.exitCode, failed.result.exitCode);
+
+  // AXIS 2 — the journal's decision, which is the durable record.
+  assert.equal(readJournal(succeeded.root).rows.at(-1)?.decision, "submitted");
+  assert.equal(readJournal(failed.root).rows.at(-1)?.decision, "rejected");
+
+  // AXIS 3 — the report, which is the file the owner actually reads.
+  assert.match(reports.succeeded, /201 Created/);
+  assert.doesNotMatch(reports.succeeded, /OVERDUE/);
+  assert.match(reports.failed, /the dashboard fell over/);
+  assert.doesNotMatch(reports.failed, /201 Created/, "a rejected submission must not read like a created run");
+  assert.doesNotMatch(reports.failed, /OVERDUE/);
+  assert.match(reports.neverStartedSince, /OVERDUE/, "three hours of silence on an hourly schedule");
+  assert.match(reports.neverStartedSince, /schedule/i);
+
+  // AND PAIRWISE DISTINCT AS TEXT, so none of the above can be satisfied by a
+  // report that says everything at once.
+  const texts = Object.values(reports);
+  assert.equal(new Set(texts).size, 3, "two of the three states rendered the same document");
 });

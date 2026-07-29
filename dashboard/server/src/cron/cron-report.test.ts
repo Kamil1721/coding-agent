@@ -89,6 +89,7 @@ interface InputOver {
   readonly queueDepth?: number;
   readonly stranded?: readonly string[];
   readonly failedCount?: number;
+  readonly runIds?: readonly string[];
   readonly runs?: readonly RunDetail[];
 }
 
@@ -103,6 +104,7 @@ const input = (over: InputOver = {}): Parameters<typeof renderCronReport>[0] => 
   queueDepth: over.queueDepth ?? 0,
   stranded: over.stranded ?? [],
   failedCount: over.failedCount ?? 0,
+  runIds: over.runIds ?? (over.runs ?? []).map((run) => run.runId),
   runs: over.runs ?? [],
 });
 
@@ -226,6 +228,24 @@ test("the design lock's provenance is reported — automatic is not the same as 
   const owned = renderCronReport(input({ runs: [detail({ designLock: { ...lock, lockedBy: "owner" } })] }));
   assert.doesNotMatch(owned, /automatic/i, "an owner's pick must not read as an automatic one");
   assert.match(owned, /chosen by the owner/);
+});
+
+test("A RUN THE REPORT COULD NOT FETCH IS NAMED AS UNREADABLE, never as absent", () => {
+  // FOUND BY EXECUTION, not by review. With a single `runs` field, a report whose
+  // detail fetches all failed printed "No run was submitted in this window" three
+  // lines below "submitted: 201 Created" — an absence claim standing in for a
+  // failed lookup, which is the defect shape this whole phase is written against.
+  const md = renderCronReport(input({ runIds: ["run-1"], runs: [] }));
+  assert.match(md, /COULD NOT BE READ/);
+  assert.match(md, /run-1/);
+  assert.doesNotMatch(md, /No run id appears/, "a run that exists must not be reported as no run at all");
+});
+
+test("no run id in the window says so, and does not read as an all-clear", () => {
+  const md = renderCronReport(input({ runIds: [], runs: [] }));
+  assert.match(md, /No run id appears/);
+  assert.doesNotMatch(md, /COULD NOT BE READ/);
+  assert.doesNotMatch(md, /\bnothing to report\b/i);
 });
 
 test("no dollar figure appears anywhere in a report", () => {

@@ -58,7 +58,18 @@ export interface CronReportInput {
   readonly queueDepth: number;
   readonly stranded: readonly string[];
   readonly failedCount: number;
-  /** One per run id that appears in the window's outcome rows. */
+  /**
+   * Every run id the window's rows name — INDEPENDENT of what could be fetched.
+   *
+   * Two fields rather than one, because "no run was submitted" and "I could not
+   * read the run that was submitted" are different facts and a report that
+   * conflated them would be making exactly the claim this phase exists to
+   * refuse. MEASURED as a defect during execution: with only `runs`, a report
+   * whose detail fetches all failed printed "No run was submitted in this
+   * window" three lines under "submitted: 201 Created".
+   */
+  readonly runIds: readonly string[];
+  /** The details that could actually be fetched. A subset of {@link runIds}. */
   readonly runs: readonly RunDetail[];
 }
 
@@ -180,8 +191,19 @@ export function renderCronReport(input: CronReportInput): string {
 
   // 4. PER RUN. Every field here already exists on the frozen contract.
   lines.push("", "## runs cron submitted in this window", "");
-  if (input.runs.length === 0) {
-    lines.push("No run was submitted in this window. That is a fact, not an all-clear: see the ceiling above.");
+  const unreadable = input.runIds.filter((runId) => !input.runs.some((run) => run.runId === runId));
+  if (input.runIds.length === 0) {
+    lines.push(
+      "No run id appears in this window's journal rows. That is a fact, not an all-clear: see the ceiling and " +
+        "the last-tick line above.",
+    );
+  }
+  if (unreadable.length > 0) {
+    lines.push(
+      `- **${String(unreadable.length)} of ${String(input.runIds.length)} run(s) COULD NOT BE READ** from ` +
+        `GET /api/runs/:id, which is "could not look" and not "nothing there": ${unreadable.join(", ")}`,
+      "",
+    );
   }
   for (const run of input.runs) {
     lines.push(`### ${run.runId} — ${run.status}`);
@@ -248,6 +270,7 @@ export async function gatherCronReport(config: CronConfig, now: string, http: Re
     queueDepth: listQueue(config.root).length,
     stranded: strandedClaims(config.root),
     failedCount: countFiles(join(config.root, CRON_DIRS.failed)),
+    runIds,
     runs: await runDetails(config, http, runIds),
   };
 }
