@@ -98,8 +98,9 @@ const EVENT_TYPES = [
   "verdict",
   "status",
   // The orchestration canvas, spec §9.1. These seven are the reason the guard
-  // below exists: they were added to three hand-maintained declaration sites in
-  // one commit, and forgetting THIS one compiles clean on both sides.
+  // below exists: they were added to four hand-maintained declaration sites in
+  // one commit, and forgetting THIS one still compiles clean on both sides —
+  // only `contract-parity.test.ts` says so.
   "graph_agent",
   "graph_agent_status",
   "graph_tool",
@@ -110,12 +111,14 @@ const EVENT_TYPES = [
 ] as const satisfies readonly RunEventType[];
 
 /**
- * THE GUARD. The SSE union is declared in THREE hand-maintained places — the
- * server's `api-types.ts`, this package's `api-types.ts`, and the runtime array
- * above — with nothing enforcing agreement. Widening one and forgetting another
- * COMPILES CLEAN ON BOTH SIDES AND SILENTLY RENDERS AN EMPTY CANVAS, because a
- * backend using NAMED SSE events only delivers what a listener is registered
- * for, and `readonly RunEventType[]` is just as valid when it is short.
+ * THE GUARD. The SSE union is declared in FOUR hand-maintained places — the
+ * server's `api-types.ts`, this package's `api-types.ts`, the runtime array
+ * above, and `parseRunEvent`'s switch below. NO COMPILER ENFORCES AGREEMENT
+ * ACROSS THEM: widening one and forgetting another COMPILES CLEAN ON BOTH SIDES
+ * AND SILENTLY RENDERS AN EMPTY CANVAS, because a backend using NAMED SSE events
+ * only delivers what a listener is registered for, and `readonly RunEventType[]`
+ * is just as valid when it is short. What does enforce it is a TEST, named at the
+ * bottom of this comment; this guard covers one edge of the four.
  *
  * `as const satisfies` above is what makes this checkable: it pins the array to
  * its literal members while still requiring every one of them to be a real
@@ -348,8 +351,10 @@ export function parseRunEvent(
     // WHAT DOES CATCH IT, since no type can: the third check in
     // `dashboard/server/src/contract-parity.test.ts`, "parseRunEvent has a case
     // for every server event type", which reads these labels out of this file
-    // and compares them to the server's `SSE_EVENT_TYPES`. It was the only thing
-    // red under that mutation. It sees a LABEL, not a correct body.
+    // and compares them to the server's `SSE_EVENT_TYPES`. Under that mutation it
+    // was red while this package's `tsc` exited 0, and it is the only check in
+    // either package with a path into this file — which is why it is the only one
+    // that could have seen it. It sees a LABEL, not a correct body.
     case "graph_agent": {
       const node = asNode(record["node"]);
       const attribution = asAttribution(record["attribution"]);
