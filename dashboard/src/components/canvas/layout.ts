@@ -99,11 +99,30 @@ export interface Placement {
 }
 
 /**
- * A card's height, over-estimated.
+ * A card's height, over-estimated — and the estimate is WORST CASE, not typical.
  *
- * Every constant is the CSS box it names, rounded up. Under-estimating would
- * overlap two cards; over-estimating adds air, which is the direction this
- * canvas is supposed to err in.
+ * Every constant is the CSS box it names, rounded up. The direction of the error
+ * is the whole point: under-estimating overlaps two cards, over-estimating adds
+ * air, and air is what this canvas was asked for.
+ *
+ * PILLS ARE COUNTED ONE PER ROW, WHICH IS THE ONLY TRUE UPPER BOUND. An earlier
+ * version assumed two fit on a line. That holds for `Read` and `Bash` and stops
+ * holding the moment a node calls `mcp__context7__get-library-docs`, because one
+ * MCP tool name fills the 236px of inner width by itself.
+ *
+ * MEASURED, NOT ARGUED, AND THE MEASUREMENT IS LESS DRAMATIC THAN THE ARGUMENT.
+ * A card seeded with six long `mcp__*` names renders 352px tall. The two-per-row
+ * estimate called it 294px — a 58px under-shoot, which `ROW_GAP` (64px) absorbed
+ * with SIX PIXELS to spare. So the old estimate never actually overlapped
+ * anything on screen; it had spent all but 6px of the gap, and one more wrapped
+ * row would have collided. This change removes the dependence on `ROW_GAP`
+ * happening to be larger than the error, rather than fixing a visible defect,
+ * and it costs about 50px of extra whitespace on a busy card — the direction
+ * this canvas was asked to err in anyway.
+ *
+ * The browser harness asserts no two cards overlap. That check was proved able
+ * to fail on 2026-07-29 by halving this function's return: 3 overlapping pairs.
+ * It does NOT go red on the two-per-row variant, for the reason measured above.
  */
 export function estimateHeight(node: GraphNode): number {
   // padding 16 top + 16 bottom, lane/status header row, title row.
@@ -113,12 +132,19 @@ export function estimateHeight(node: GraphNode): number {
   // cards in a column keep a shared baseline instead of jittering by a line.
   height += 36;
 
-  const rows = (count: number, cap: number, perRow: number): number =>
-    count === 0 ? 0 : Math.ceil(Math.min(count, cap + 1) / perRow) * 26 + 6;
+  // The `inferred` chip is its own row when the attribution was a guess.
+  if (node.attribution === "inferred") height += 26;
 
-  height += rows(node.skills.length, PILL_CAP.skills, 2);
-  height += rows(node.tools.length, PILL_CAP.tools, 2);
-  height += rows(node.hooks.length, PILL_CAP.hooks, 2);
+  // `cap + 1` because the group renders `cap` pills plus one `+N` overflow chip.
+  const rows = (count: number, cap: number): number =>
+    count === 0 ? 0 : Math.min(count, cap + 1) * 26 + 6;
+
+  const groups =
+    rows(node.skills.length, PILL_CAP.skills) +
+    rows(node.tools.length, PILL_CAP.tools) +
+    rows(node.hooks.length, PILL_CAP.hooks);
+  // The divider above the pill block, present only when there is one.
+  if (groups > 0) height += groups + 12;
 
   // The counters strip along the bottom.
   if (node.toolCalls > 0 || node.result !== null) height += 28;

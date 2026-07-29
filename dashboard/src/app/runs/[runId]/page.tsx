@@ -166,9 +166,22 @@ export default function RunPage(): ReactNode {
       <DeliveryNotice run={run} />
 
       {/*
-       * The orchestration row. Below `lg` the three rails stack: ticket and
-       * roster first, then the canvas at a fixed height, then the inspector —
-       * reading order matches the visual order at every width.
+       * The orchestration row, at three widths.
+       *
+       *   < lg   one column. The canvas leads (`order-1`), then the ticket and
+       *          roster, then the inspector.
+       *   lg     two columns, [1fr, 324px]. The canvas keeps `order-1` and so
+       *          takes the WIDE track; the ticket/roster rail sits beside it and
+       *          the inspector wraps underneath.
+       *   xl     three columns, [264px, 1fr, 324px], every `order` reset so the
+       *          rails flank the canvas in source order.
+       *
+       * THE `lg:order-*` OVERRIDES THIS BLOCK USED TO CARRY WERE A BUG. They
+       * swapped the rail ahead of the canvas at `lg`, which handed the canvas
+       * the 324px track — a 324px-wide, 520px-tall graph pane. Every screenshot
+       * was taken at 1440px, which is `xl`, so nothing that was measured could
+       * see it. Grid order decides which track a child lands in; there is no
+       * separate placement to check.
        */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_324px] xl:grid-cols-[264px_minmax(0,1fr)_324px]">
         {/*
@@ -178,7 +191,7 @@ export default function RunPage(): ReactNode {
          * of its row, which reads as a rendering fault rather than as a list
          * that continues.
          */}
-        <div className="order-2 flex min-h-0 min-w-0 flex-col gap-3 lg:order-1 xl:order-none">
+        <div className="order-2 flex min-h-0 min-w-0 flex-col gap-3 xl:order-none">
           <Panel title="Ticket" bodyClassName="p-0" className="shrink-0">
             <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-sans text-[12.5px] leading-relaxed text-ink-dim">
               {run.ticketText}
@@ -205,7 +218,7 @@ export default function RunPage(): ReactNode {
          * are overlays inside the canvas component; wrapping this element in a
          * ternary is what resets pan and zoom the moment the first agent lands.
          */}
-        <section className="order-1 min-w-0 overflow-hidden rounded border border-line bg-canvas lg:order-2 xl:order-none">
+        <section className="order-1 min-w-0 overflow-hidden rounded border border-line bg-canvas xl:order-none">
           <div className="h-[clamp(520px,66vh,820px)] w-full">
             <OrchestrationCanvas
               graph={graph}

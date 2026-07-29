@@ -51,10 +51,18 @@ import { emptyGraph, foldGraph } from "./graph";
 /**
  * A seq the browser could not give us.
  *
- * `bus.ts` writes `id:` before EVERY frame, so this should be unreachable, and
- * the browser harness asserts it never fires. It is handled anyway because the
- * alternative to a total function here is a canvas that silently stops updating
- * if a future server ever drops the id line.
+ * `bus.ts` writes `id:` before EVERY frame, so this should be unreachable. It is
+ * handled anyway because the alternative to a total function here is a canvas
+ * that silently stops updating if a future server ever drops the id line.
+ *
+ * WHAT ACTUALLY BACKS THAT, NAMED RATHER THAN ASSERTED. Nothing checks
+ * `lastEventId` directly — but the browser harness asserts the orchestrator's
+ * `Read` pill reads `×2` after the tail has streamed, and if ids stopped
+ * arriving EVERY event would take the fold-anyway branch below and that pill
+ * would read `×4`. Executed as a mutation on 2026-07-29 by deleting the dedup
+ * guard: the check went red with exactly `Read, called 4×`. So the id line is
+ * covered transitively, and this sentence says which check does it instead of
+ * claiming one that does not exist.
  */
 export const UNKNOWN_SEQ = -1;
 
@@ -153,8 +161,8 @@ export function graphReducer(state: Accumulator, action: Action): Accumulator {
  * `EventSource` keeps a "last event ID buffer" that PERSISTS across frames
  * which omit `id:`, so a missing id does not read as empty — it reads as the
  * previous frame's id, which would look like a duplicate and be dropped. That
- * is the failure this function cannot detect and the harness asserts against
- * instead: every frame carries a strictly rising id today.
+ * is a failure this function cannot detect from the inside; see `UNKNOWN_SEQ`
+ * above for the check that would catch it and how it was proved.
  */
 export function seqOf(message: MessageEvent<string>): number {
   const raw = message.lastEventId;
