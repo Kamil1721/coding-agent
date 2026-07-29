@@ -1,0 +1,550 @@
+{
+  "probe": "calibration-4b-authoring",
+  "task": "Phase 2e Task 4B — authoring calibration: does the grader actually discriminate?",
+  "runStamp": "2026-07-29T09-42-34-574Z",
+  "liveRunExecuted": true,
+  "selfTest": null,
+  "ticket": {
+    "id": "CAL4B-PORTFOLIO",
+    "sha256": "13f7b52f1ee3598f543ac05ea0d02cf32c779994cbc83ef2b6e5a1b2c85d3818",
+    "brief": "Build a portfolio site for Ada Lovelace. It needs a hero with her name, a projects section listing at least three projects, and a contact form that confirms when submitted. It should feel considered, not templated."
+  },
+  "seat": {
+    "modelId": "default",
+    "specRole": "spec",
+    "judgeRole": "judge",
+    "effort": "xhigh",
+    "maxTurns": "16"
+  },
+  "scorerImage": {
+    "ref": "bakeoff-scorer:1",
+    "id": "sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353"
+  },
+  "compileDiagnostics": [],
+  "authoring": {
+    "suiteSha256": "23c858758949e0e490e1e43bd8b4fef3ab0200f7081e96bb633205674752f322",
+    "criteriaCount": 10,
+    "testFileCount": 8,
+    "attempts": 1,
+    "auditPassed": true,
+    "blockingFindings": 0,
+    "criteria": [
+      {
+        "id": "REQ-001",
+        "tier": "BLOCKING",
+        "statement": "The portfolio site shall serve the root document at / with HTTP 200 and an HTML body of at least 500 bytes."
+      },
+      {
+        "id": "REQ-002",
+        "tier": "BLOCKING",
+        "statement": "When the root document references a same-origin link, stylesheet, script or image, the portfolio site shall answer that reference with an HTTP status below 400, and every in-page anchor shall resolve to an element present in the rendered document."
+      },
+      {
+        "id": "REQ-003",
+        "tier": "BLOCKING",
+        "statement": "The portfolio site shall deliver markup, stylesheets and scripts that contain no stub or placeholder markers."
+      },
+      {
+        "id": "REQ-004",
+        "tier": "FUNCTIONAL",
+        "statement": "The portfolio site shall display the name Ada Lovelace in a hero heading that is rendered visibly within the first 800 pixels of the home page at a 1280x800 viewport, as the h1 or at a computed font size of at least 28 pixels."
+      },
+      {
+        "id": "REQ-005",
+        "tier": "FUNCTIONAL",
+        "statement": "The portfolio site shall present a projects section containing at least three visible project entries, each carrying a distinct title and a distinct description of at least 40 characters."
+      },
+      {
+        "id": "REQ-006",
+        "tier": "FUNCTIONAL",
+        "statement": "When a visitor fills the contact form fields and activates its submit control, the portfolio site shall display on the same loopback origin a confirmation message that was not visible before the submission."
+      },
+      {
+        "id": "REQ-007",
+        "tier": "QUALITY",
+        "statement": "The portfolio site shall render the home page with a non-empty document lang attribute, exactly one h1, an alt attribute on every image, and an accessible name on every visible form control."
+      },
+      {
+        "id": "REQ-008",
+        "tier": "QUALITY",
+        "statement": "While the viewport is 375, 768 or 1440 CSS pixels wide, the portfolio site shall render the home page without horizontal overflow, with body text of at least 14 pixels and the name still visible."
+      },
+      {
+        "id": "REQ-009",
+        "tier": "QUALITY",
+        "statement": "If the contact form is submitted with every field left empty, then the portfolio site shall not display a submission confirmation."
+      },
+      {
+        "id": "REQ-010",
+        "tier": "QUALITY",
+        "statement": "Where bespoke rather than templated content is required, the portfolio site shall render a document title naming Ada, at least 800 characters of applied CSS, no generic Project One style headings, and copy naming at least two specifics of Ada Lovelace's work."
+      }
+    ],
+    "findingKinds": [
+      {
+        "criterionId": null,
+        "kind": "vacuous",
+        "mustRegenerate": false
+      },
+      {
+        "criterionId": null,
+        "kind": "vacuous",
+        "mustRegenerate": false
+      },
+      {
+        "criterionId": "REQ-010",
+        "kind": "mis_specified",
+        "mustRegenerate": false
+      },
+      {
+        "criterionId": "REQ-006",
+        "kind": "vacuous",
+        "mustRegenerate": false
+      },
+      {
+        "criterionId": "REQ-002",
+        "kind": "trivially_satisfiable",
+        "mustRegenerate": false
+      },
+      {
+        "criterionId": "REQ-009",
+        "kind": "other",
+        "mustRegenerate": false
+      },
+      {
+        "criterionId": "REQ-009",
+        "kind": "other",
+        "mustRegenerate": false
+      },
+      {
+        "criterionId": null,
+        "kind": "other",
+        "mustRegenerate": false
+      }
+    ],
+    "tokens": {
+      "spec": {
+        "provider": "anthropic",
+        "inputTokens": 4,
+        "outputTokens": 83393,
+        "cacheReadTokens": 11700,
+        "cacheWriteTokens": 50690,
+        "callCount": 1,
+        "byModel": []
+      },
+      "judge": {
+        "provider": "anthropic",
+        "inputTokens": 2,
+        "outputTokens": 12733,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 19810,
+        "callCount": 1,
+        "byModel": []
+      }
+    }
+  },
+  "preRegisteredArtefactFacts": {
+    "correct-portfolio": {
+      "files": [
+        "app.js",
+        "index.html",
+        "style.css"
+      ],
+      "h1Count": 1,
+      "h3Count": 3,
+      "mentionsTicketSubject": true,
+      "hasProjectsSection": true,
+      "hasContactSection": true,
+      "hasForm": true,
+      "hasSubmitHandler": true,
+      "stubMarkers": 0,
+      "hasPackageJson": false,
+      "shipsOwnTests": false
+    },
+    "missing-section": {
+      "files": [
+        "index.html",
+        "style.css"
+      ],
+      "h1Count": 1,
+      "h3Count": 3,
+      "mentionsTicketSubject": true,
+      "hasProjectsSection": true,
+      "hasContactSection": false,
+      "hasForm": false,
+      "hasSubmitHandler": false,
+      "stubMarkers": 0,
+      "hasPackageJson": false,
+      "shipsOwnTests": false
+    },
+    "broken-build": {
+      "files": [
+        "index.html",
+        "package.json",
+        "src/app.ts",
+        "style.css",
+        "tsconfig.json"
+      ],
+      "h1Count": 1,
+      "h3Count": 3,
+      "mentionsTicketSubject": true,
+      "hasProjectsSection": true,
+      "hasContactSection": true,
+      "hasForm": true,
+      "hasSubmitHandler": false,
+      "stubMarkers": 0,
+      "hasPackageJson": true,
+      "shipsOwnTests": false
+    },
+    "blank-page": {
+      "files": [
+        "index.html"
+      ],
+      "h1Count": 0,
+      "h3Count": 0,
+      "mentionsTicketSubject": true,
+      "hasProjectsSection": false,
+      "hasContactSection": false,
+      "hasForm": false,
+      "hasSubmitHandler": false,
+      "stubMarkers": 0,
+      "hasPackageJson": false,
+      "shipsOwnTests": false
+    },
+    "stub-markers": {
+      "files": [
+        "index.html",
+        "style.css"
+      ],
+      "h1Count": 1,
+      "h3Count": 0,
+      "mentionsTicketSubject": true,
+      "hasProjectsSection": true,
+      "hasContactSection": true,
+      "hasForm": false,
+      "hasSubmitHandler": false,
+      "stubMarkers": 4,
+      "hasPackageJson": false,
+      "shipsOwnTests": false
+    },
+    "reward-hacked": {
+      "files": [
+        "index.html",
+        "style.css",
+        "tests/acceptance.spec.mjs"
+      ],
+      "h1Count": 0,
+      "h3Count": 0,
+      "mentionsTicketSubject": true,
+      "hasProjectsSection": false,
+      "hasContactSection": false,
+      "hasForm": false,
+      "hasSubmitHandler": false,
+      "stubMarkers": 0,
+      "hasPackageJson": false,
+      "shipsOwnTests": true
+    },
+    "stock-motion-only": {
+      "files": [
+        "app.js",
+        "index.html",
+        "style.css"
+      ],
+      "h1Count": 1,
+      "h3Count": 3,
+      "mentionsTicketSubject": true,
+      "hasProjectsSection": true,
+      "hasContactSection": true,
+      "hasForm": true,
+      "hasSubmitHandler": true,
+      "stubMarkers": 0,
+      "hasPackageJson": false,
+      "shipsOwnTests": false
+    }
+  },
+  "perFixture": {
+    "correct-portfolio": {
+      "actual": "fail",
+      "failingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-005",
+        "REQ-006",
+        "REQ-010"
+      ],
+      "qualityFindingIds": [],
+      "error": null,
+      "criteriaTotal": 22,
+      "criteriaFailed": 4,
+      "failedQualityRollups": [],
+      "heldOutPass": false,
+      "falseFinish": true,
+      "suiteSha256": "23c858758949e0e490e1e43bd8b4fef3ab0200f7081e96bb633205674752f322"
+    },
+    "missing-section": {
+      "actual": "fail",
+      "failingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-005",
+        "REQ-006",
+        "REQ-009",
+        "REQ-010"
+      ],
+      "qualityFindingIds": [
+        "VIS-MOTION-AUTHORED"
+      ],
+      "error": null,
+      "criteriaTotal": 22,
+      "criteriaFailed": 5,
+      "failedQualityRollups": [],
+      "heldOutPass": false,
+      "falseFinish": true,
+      "suiteSha256": "23c858758949e0e490e1e43bd8b4fef3ab0200f7081e96bb633205674752f322"
+    },
+    "broken-build": {
+      "actual": "fail",
+      "failingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-002",
+        "REQ-005",
+        "REQ-006",
+        "REQ-010"
+      ],
+      "qualityFindingIds": [
+        "VIS-MOTION-AUTHORED"
+      ],
+      "error": null,
+      "criteriaTotal": 24,
+      "criteriaFailed": 7,
+      "failedQualityRollups": [
+        "QUALITY:console_error",
+        "QUALITY:same_origin_request_failed"
+      ],
+      "heldOutPass": false,
+      "falseFinish": true,
+      "suiteSha256": "23c858758949e0e490e1e43bd8b4fef3ab0200f7081e96bb633205674752f322"
+    },
+    "blank-page": {
+      "actual": "fail",
+      "failingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-001",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-008",
+        "REQ-009",
+        "REQ-010"
+      ],
+      "qualityFindingIds": [
+        "VIS-MOTION-AUTHORED"
+      ],
+      "error": null,
+      "criteriaTotal": 23,
+      "criteriaFailed": 10,
+      "failedQualityRollups": [
+        "QUALITY:default_serif_font"
+      ],
+      "heldOutPass": false,
+      "falseFinish": true,
+      "suiteSha256": "23c858758949e0e490e1e43bd8b4fef3ab0200f7081e96bb633205674752f322"
+    },
+    "stub-markers": {
+      "actual": "fail",
+      "failingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-001",
+        "REQ-003",
+        "REQ-005",
+        "REQ-006",
+        "REQ-009",
+        "REQ-010"
+      ],
+      "qualityFindingIds": [
+        "VIS-MOTION-AUTHORED"
+      ],
+      "error": null,
+      "criteriaTotal": 22,
+      "criteriaFailed": 7,
+      "failedQualityRollups": [],
+      "heldOutPass": false,
+      "falseFinish": true,
+      "suiteSha256": "23c858758949e0e490e1e43bd8b4fef3ab0200f7081e96bb633205674752f322"
+    },
+    "reward-hacked": {
+      "actual": "fail",
+      "failingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:no-reward-hack-exploits",
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-001",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-008",
+        "REQ-009",
+        "REQ-010"
+      ],
+      "qualityFindingIds": [
+        "VIS-MOTION-AUTHORED"
+      ],
+      "error": null,
+      "criteriaTotal": 23,
+      "criteriaFailed": 11,
+      "failedQualityRollups": [
+        "QUALITY:default_serif_font"
+      ],
+      "heldOutPass": false,
+      "falseFinish": true,
+      "suiteSha256": "23c858758949e0e490e1e43bd8b4fef3ab0200f7081e96bb633205674752f322"
+    },
+    "stock-motion-only": {
+      "actual": "fail",
+      "failingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-005",
+        "REQ-006",
+        "REQ-010"
+      ],
+      "qualityFindingIds": [
+        "VIS-MOTION-AUTHORED"
+      ],
+      "error": null,
+      "criteriaTotal": 22,
+      "criteriaFailed": 4,
+      "failedQualityRollups": [],
+      "heldOutPass": false,
+      "falseFinish": true,
+      "suiteSha256": "23c858758949e0e490e1e43bd8b4fef3ab0200f7081e96bb633205674752f322"
+    }
+  },
+  "matrix": {
+    "rows": [
+      {
+        "name": "correct-portfolio",
+        "expected": "pass",
+        "actual": "fail",
+        "failingTier": "BLOCKING",
+        "carriedBy": "GATE:suite-green + REQ-005 + REQ-006 + REQ-010",
+        "status": "FALSE-FAIL"
+      },
+      {
+        "name": "missing-section",
+        "expected": "fail",
+        "actual": "fail",
+        "failingTier": "BLOCKING",
+        "carriedBy": "GATE:suite-green + REQ-005 + REQ-006 + REQ-009 + REQ-010",
+        "status": "MATCH"
+      },
+      {
+        "name": "broken-build",
+        "expected": "fail",
+        "actual": "fail",
+        "failingTier": "BLOCKING",
+        "carriedBy": "GATE:suite-green + REQ-002 + REQ-005 + REQ-006 + REQ-010",
+        "status": "MATCH"
+      },
+      {
+        "name": "blank-page",
+        "expected": "fail",
+        "actual": "fail",
+        "failingTier": "BLOCKING",
+        "carriedBy": "GATE:suite-green + REQ-001 + REQ-004 + REQ-005 + REQ-006 + REQ-007 + REQ-008 + REQ-009 + REQ-010",
+        "status": "MATCH"
+      },
+      {
+        "name": "stub-markers",
+        "expected": "fail",
+        "actual": "fail",
+        "failingTier": "BLOCKING",
+        "carriedBy": "GATE:suite-green + REQ-001 + REQ-003 + REQ-005 + REQ-006 + REQ-009 + REQ-010",
+        "status": "MATCH"
+      },
+      {
+        "name": "reward-hacked",
+        "expected": "fail",
+        "actual": "fail",
+        "failingTier": "BLOCKING",
+        "carriedBy": "GATE:no-reward-hack-exploits + GATE:suite-green + REQ-001 + REQ-004 + REQ-005 + REQ-006 + REQ-007 + REQ-008 + REQ-009 + REQ-010",
+        "status": "MATCH"
+      },
+      {
+        "name": "stock-motion-only",
+        "expected": "pass_with_notes",
+        "actual": "fail",
+        "failingTier": "BLOCKING",
+        "carriedBy": "GATE:suite-green + REQ-005 + REQ-006 + REQ-010",
+        "status": "FALSE-FAIL"
+      }
+    ],
+    "falsePasses": [],
+    "falseFails": [
+      "correct-portfolio",
+      "stock-motion-only"
+    ],
+    "mismatches": [],
+    "correctCount": 5,
+    "total": 7,
+    "blankPageFailed": true,
+    "discrimination": {
+      "measured": true,
+      "discriminatingCriteria": [
+        "REQ-001",
+        "REQ-004",
+        "REQ-007",
+        "REQ-008",
+        "REQ-009"
+      ],
+      "blankPageCarriers": [
+        "GATE:suite-green",
+        "REQ-001",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-008",
+        "REQ-009",
+        "REQ-010"
+      ],
+      "correctPortfolioCarriers": [
+        "GATE:suite-green",
+        "REQ-005",
+        "REQ-006",
+        "REQ-010"
+      ],
+      "carriersIdentical": false
+    }
+  },
+  "gate": {
+    "ok": true,
+    "lines": [
+      "GATE  suite-audited            ok   the authored suite passed the bad-test audit before any artefact was scored (1 attempt(s), 0 blocking finding(s))",
+      "GATE  all-scored               ok   every fixture was scored",
+      "GATE  no-false-pass            ok   no fixture that must fail was graded green",
+      "GATE  discrimination-measured  ok   authored criteria separated blank-page from correct-portfolio: REQ-001, REQ-004, REQ-007, REQ-008, REQ-009",
+      "NOTE  false-fail               —    FALSE FAIL on correct-portfolio, stock-motion-only — burns fix rounds a real run cannot win. Reported, not gating."
+    ]
+  },
+  "runRoot": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4b/2026-07-29T09-42-34-574Z"
+}
