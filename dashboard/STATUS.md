@@ -239,7 +239,16 @@ nothing: it proves only that somebody copied a string.
 |---|---|---|
 | before 2026-07-27 | `sha256:c7f5e1a4…` | superseded by the two D1/D2 fixes |
 | 2026-07-27 | `sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353` | the `node --test` second pass and the D2 fix |
-| **2026-07-29** | **`sha256:bcd017714ba73e07d3222fb83dda350081edba88e60abf607d469641a2974874`** | **the QUALITY-gate fix in `scorer-container.ts` / `scorer-protocol.ts` — `GATE:suite-green` now ignores a failing test whose title names only QUALITY criteria** |
+| 2026-07-29 (am) | `sha256:bcd017714ba73e07d3222fb83dda350081edba88e60abf607d469641a2974874` | the QUALITY-gate fix in `scorer-container.ts` / `scorer-protocol.ts` — `GATE:suite-green` now ignores a failing test whose title names only QUALITY criteria |
+| **2026-07-29 (pm)** | **`sha256:c98bad3a762b8fc026bbeb8edc85ea8951cf78ea2bab70eb8d28e992f7826b20`** | **the three tier-0 fixes: `.html` in the stub scan, two more reward-hack families, and `GATE:build` reporting `unknown` rather than passing when a manifest declares no build step the artefact contradicts** |
+
+**THE PREVIOUS IMAGE IS STILL ON DISK as `bakeoff-scorer:pre-lane4`**, verified to
+resolve to `sha256:bcd0177…974874`. That is what makes the 2026-07-29 (pm) row
+auditable rather than merely asserted: every before/after pair behind those three
+fixes is reproducible with `BAKEOFF_SCORER_IMAGE=bakeoff-scorer:pre-lane4`. Do
+not delete it while any measurement in §1.10 or §1.11 is still being compared.
+A second build from an identical context reproduced `c98bad3a…` exactly, so
+`--provenance=false --sbom=false` does pin the digest as §5 claims.
 
 **What that means for the calibration records already committed.**
 `dashboard/server/probes/results/calibration-4b.json` records
@@ -1081,6 +1090,151 @@ container.
 
 ---
 
+### 1.12 The 2026-07-29 afternoon lanes — what each one MEASURED
+
+Six agents on disjoint file sets, plus two fixes taken directly. Every claim
+below carries the command output that produced it; where a lane could not
+execute something, it says so rather than reasoning about it.
+
+#### The verdict now discriminates by TIER. It still does not discriminate by HEADLINE.
+
+`GATE:suite-green` no longer renders as an owner-facing requirement, no longer
+draws fabricated provenance from `spec-assumptions.ts`, and no longer double-
+counts: it is suppressed when a non-gate BLOCKING or FUNCTIONAL criterion already
+failed, because the failures it rolls up are already named. **It still reports
+when it is the ONLY failure** — the suite went red and nothing else said so — and
+both directions carry a test.
+
+Measured by re-rendering the seven live 4B score records off disk through the new
+code, with the harness anchored BEFORE any edit so it reproduced the committed
+`*.verdict.md` byte-for-byte first (`ANCHOR OK`). No quota, no container:
+
+```
+failingTier   BLOCKING x7      ->   BLOCKING x4 / FUNCTIONAL x3
+correct-portfolio    3 things, 1 BLOCKING 2 FUNCTIONAL  ->  2 things, 0 BLOCKING 2 FUNCTIONAL
+missing-section      3 things, 1 BLOCKING 2 FUNCTIONAL  ->  2 things, 0 BLOCKING 2 FUNCTIONAL
+blank-page           5 things, 2 BLOCKING 3 FUNCTIONAL  ->  4 things, 1 BLOCKING 3 FUNCTIONAL
+reward-hacked        6 things, 3 BLOCKING 3 FUNCTIONAL  ->  4 things, 1 BLOCKING 3 FUNCTIONAL
+                                              + "1 check every artefact must clear did not pass"
+```
+
+Seven mutations, each red then restored green: deleting a gate from the label
+table, returning the bare id, routing a gate through the old assumption join,
+removing the suppression, making it unconditional, and two count-consistency
+breaks. The gate-label table is sourced from `bakeoff`'s `GATE_IDS` constant
+imported **as a value**, so a new gate cannot silently render as a machine id.
+
+**What it did not fix, stated plainly: all seven 4B fixtures still read `DID NOT
+PASS`.** `correct-portfolio` genuinely fails REQ-005 and REQ-006 in the score
+record. This change moved the tier and the count, not the verdict. Backlog #36
+is **partly** closed — the mechanism is gone, the false-fail is not.
+
+#### The authoring rules catch 4 of the 7 no-signal criteria, and 3 are out of reach
+
+Two deterministic rules in `spec-validate.ts`: a BLOCKING one for a character-
+count floor asserted on rendered text, and an advisory one for a numeric
+threshold a test asserts that its criterion's statement never states (#37's
+numeric slice). Measured against the real frozen suite, per criterion:
+
+```
+fires on   REQ-002 (200)  REQ-005 (40)  REQ-011 (40)  REQ-012 (200)
+silent on  REQ-001  REQ-004  REQ-009        separation violations: 0
+```
+
+REQ-001 is the hard one and the separation is NOT free: it carries a legitimate
+HTTP `200` and an illegitimate 200-character body floor in one criterion. What
+achieves it is the markup exclusion — disabling that alone makes REQ-001 fire.
+The file-level producer gate was measured to be a **second** line of defence
+rather than redundant: disabling both together lets the bar through.
+
+**The remaining three are not prose bars and neither rule reaches them.** REQ-006
+(an email field AND a message field AND a submit control), REQ-007 and REQ-010
+cascade from the same invention — the contact-form field set, which recurred
+verbatim across all three authoring runs exactly as the character floors did.
+**Re-authored with these rules in place, a correct portfolio would still grade
+`fail` on three criteria.** That is the honest expectation to hold before the
+next live measurement, not a hope that the matrix comes back clean.
+
+#### Three tier-0 gates that could not see what they were built to see
+
+Each reproduced on the pre-fix image, which is preserved as
+`bakeoff-scorer:pre-lane4`:
+
+```
+#33  no-stub-markers  PASS "scanned 0 source file(s) of 2 walked"   -> FAIL "index.html:6 TODO_COMMENT; index.html:9 FIXME_COMMENT"
+#34  no-reward-hack-exploits  1 of 3 planted families               -> 3 of 3, 4 blocking findings
+#35  build  NOT_APPLICABLE (a pass) on the broken-build fixture     -> UNKNOWN "THE BUILD GATE WAS NEVER EVALUATED, and this is not a pass"
+```
+
+`#33` forced a second, load-bearing fix: `\bfit\b` matches inside `object-fit`,
+so widening the scan to `.html` would have failed nearly every real static site
+at BLOCKING for shipping a cover image. Measured: 2 false `FOCUSED_TEST` findings
+before the anchor was tightened, 0 after, with `fit(`, `xit(`, `test.only(` all
+still caught. **False-positive counts for every new rule: 0** across 32 real
+application files, 8 real Playwright specs, and all seven fixtures.
+
+`#35`'s decision is worth stating because it is a judgement, not a bug fix: a
+manifest MAY declare a build step absent, but the absence must be corroborated
+by the artefact. Refusing the declaration outright would fire on every genuine
+static site — this tool's common case — and a gate that fails correct work gets
+switched off. `unknown` is not `fail`: nothing was compiled, so "this artefact
+does not build" is a claim the gate has not earned.
+
+**A standing calibration control was run against the OLD image and went red at
+3 of 7, naming exactly the two defects.** Against the new image, 7 of 7. The
+false-fail control stayed green on BOTH, so the new assertions are not fitted to
+the correct case.
+
+#### Phase 2d exists and is bounded, and two seams are not wired
+
+The loop, the redactor, the triage, the fix prompt and the backlog are built and
+carry 60 tests. Four negative controls were executed, and the one that matters
+put a **held-out test title into the actual fix prompt** when `GATE:suite-green`
+was added to the detail allowlist, then went green when it was removed. The plan
+was wrong about three substantive things and the deviations are recorded in the
+commits: `harnessErrors` does not exist (it is `infrastructureErrors`),
+`CoverageOutcome` has no `unmet` member, and "tier0 detail is objective, not
+test-derived" is **false** for `GATE:suite-green`, whose detail is assembled from
+the held-out runner's output tail. Detail therefore crosses by **allowlist**, so
+an unknown gate id fails closed.
+
+A real bug was caught by review before it shipped: `isGreen` summed all three
+tiers while `computeHeldOutPass` filters to BLOCKING+FUNCTIONAL, so a build with
+one unmet QUALITY criterion burned two container runs and a fix round while
+`heldOutPass` was already true.
+
+**NOT wired, and neither is disguised as working:** the `RunDetail` widening
+(`gateAttempts`, `gateStopReason`) stopped at a four-file contract boundary
+another lane held, so the loop surfaces its stop reason through the run log and
+`backlog.md` instead; and the adversary module is pure code with no shortlist
+entry, which a test asserts so the gap cannot be mistaken for wiring.
+
+#### Two defects found by running things the suites do not run
+
+- **`scorer-modes.e2e.mjs` went red at 14/16 and no `npm test` would have said
+  so.** The new prose-floor rule fired on the e2e's own throwaway suite, which
+  did carry a gratuitous 20-character bar — so the rule was right. But removing
+  the bar did not clear the finding: **the rule matched the COMMENT explaining
+  the removal.** A comment can only ever be a false positive, and the rule is
+  BLOCKING. Now masked, offsets preserved because `testSegments` slices by index.
+- **`auditSuite` never passed the ticket brief it was already holding**, though
+  the option's own docblock named the caller and the line. Nothing was red,
+  because the rule fires with or without it by design. See §6 instance 11.
+
+#### Open, carried forward
+
+| | |
+|---|---|
+| `renderEvidence` leaks the same data Task 2 redacts | judge-side only; the judge gates nothing and its output never re-enters the loop, so no `heldOutPass` depends on it. Close deliberately. |
+| Attempt archives collide across a `resume` | numbering restarts at 1, so a resumed run overwrites `attempt-1/` — the history loss Task 1 exists to prevent, one level up |
+| `QUALITY:default_serif_font` renders as a bare machine id | same defect class as the gate ids, but it is host-rolled-up rather than tier-0, so there is no constant to source a label from without inventing one |
+| `GATE:typecheck` / `GATE:lint` still treat declared-absent as absent | #35 one door down; left open because no false-positive measurement was taken |
+| `broken-build` still does not prove "a type error is caught" | `tsc` is an uninstalled devDependency and the container has no network, so the gate fires on `exit 127` |
+| `assertionFreeTestIds` mis-segments on `T-1` vs `T-13` | pre-existing, advisory-only so it cannot mis-gate |
+
+---
+
+
 ## 2. What I FIXED, and what each defect actually was
 
 ### 2.1 `/api/health` reported "logged in" for a machine with only an API key
@@ -1528,12 +1682,12 @@ Recorded as their word. Where it matters, it is worth re-running yourself.
 
 ---
 
-## 6. The defect this repo keeps shipping — TEN instances, and counting
+## 6. The defect this repo keeps shipping — ELEVEN instances, and counting
 
 **New 2026-07-29.** One shape accounts for every false green this project has
 produced: **a check that can only observe success.** It is worth the space
-because the next author will not be caught by the ten below — they will be
-caught by the eleventh, and the only defence is knowing the shape.
+because the next author will not be caught by the eleven below — they will be
+caught by the twelfth, and the only defence is knowing the shape.
 
 **Instances 8 and 9 were added the same day the table was written, by an
 adversarial pass over the phase that wrote it.** That is the most useful fact in
@@ -1553,6 +1707,7 @@ running the mutation is.
 | 8 | **The calibration FALSE-PASS test** — `calibration.test.ts`, "no fixture produces a FALSE PASS" | It looped `MUST_FAIL` asserting `outcome === "fail"`. Every `MUST_FAIL` fixture has `expected: "fail"`, which the test ABOVE it already asserts for every fixture — so it was **logically implied and could not fail unless that one already had**. Emptying `MUST_FAIL` (`.slice(0, 0)`, fixtures untouched) left the whole gate **green at 7/7, exit 0**. It survived an adversarial pass of 28 mutations in which 26 went red. Worse: `fixtures.ts` claimed in its header that the false-pass direction was asserted "SEPARATELY and more loudly than overall accuracy" — **a false claim sitting inside the file that documents this very defect.** Closed 2026-07-29: the test now asserts its own derivation and `heldOutPass === false`; re-run under the same mutation it fails ALONE, 1 of 7. **Both new clauses were mutated separately** — M4 empties `MUST_FAIL`, M5 hardcodes `heldOutPass: true` — because a fix proved by one mutation leaves the other clause exactly as unproven as the thing being fixed. |
 | 9 | **Two held-out-leak assertions in `run-report.test.ts`** | `assert.doesNotMatch(verdict, HELD_OUT_TITLE)` and the `holdout test T-2` twin, over `verdict.md`. That run never reaches the gate, so the file is the **no-verdict page, which prints no criterion prose at all** — there is nothing for a criterion-borne leak to ride in on. MEASURED: rendering that page from criteria whose statements carried both markers gives 807 bytes containing neither; the same criteria marked scored give 1879 bytes containing both. The `forAssumptions` blanking of `evidenceRequired` is the same shape — passing the field through leaves all ten tests green, because `ApiCriterion` **has no such field**. Milder than the others and said so: the boundary IS proven, by the `assumptions.md` twins (red under a `#recordCriteria` mutation) and by `verdict.test.ts` against `detail`/`evidenceRef`. Relabelled at the assertion site 2026-07-29, not deleted — they go live the day the run reaches the gate. |
 | 10 | **The reduced-motion specs written to PREVENT instance ten** — `dashboard/tests/canvas-edges.browser.spec.ts` | They declared `test.use({ reducedMotion: "reduce" })`. **Playwright 1.62 dropped `reducedMotion` as a top-level fixture; it belongs inside `contextOptions`.** The bare key is accepted at runtime and **emulates nothing**, so every spec below it ran the browser in its DEFAULT motion state while asserting the reduced-motion rule — a suite that would have gone green whether or not the rule existed. Caught by `npm run typecheck`, not by the tests, and caught *inside the file written to keep the canvas honest about motion*. Fixed at `canvas-edges.browser.spec.ts:154`; the paired negative control at :122 proves the dash disappears only under emulation. **The lesson is the flag's, not the author's: a runtime that silently accepts an option it no longer honours turns a real check into decoration with no error anywhere.** |
+| 11 | **`auditSuite`'s `ticketBrief` argument** — `bakeoff/src/spec-agent.ts` | The option existed, the rule read it, and **the caller never passed it** — though `DeterministicAuditOptions`' own docblock named the caller, the file and the exact line to write: "`auditSuite` in spec-agent.ts already holds the `Ticket` and should pass `ticketBrief: ticket.brief`." Nothing was red, because the prose-floor rule fires with or without the brief **by design** — a rule that disarms itself on a missing optional input is instances 1-10 pointing the other way. So the safe default hid the dead seam. What was lost was not detection but FEEDBACK: with the brief the seat is told ", and the ticket never states 200"; without it, only the generic sentence — and that clause is the entire argument for the rule being BLOCKING, since `mustRegenerate` buys another authoring call and is worth it only if the re-author is told something the last one was not. **The expensive half of the rule was paying for the cheap half's message.** Sub-shape of 2/3/6/7 with a twist: there was no wrong assertion, there was NO assertion. Closed by testing the SEAM through `auditSuite`, not the rule. |
 
 Instances 2, 3, 6 and 7 share a sharper sub-shape worth naming on its own: **the
 assertion and the production path were never connected.** A test that calls a
@@ -1566,12 +1721,12 @@ delete the layer, watch the boundary fail, put it back. Every 2026-07-29 claim
 in §0 carries one; the older EXECUTED rows mostly do not, and that is a real
 difference in strength between them.
 
-**Ten is a running tally, not a final count.** Two docblocks lag it by
+**Eleven is a running tally, not a final count.** Two docblocks lag it by
 construction, and are left rather than swept so the drift stays visible:
 `claude-builder.test.ts:1753` says "six times" (written before instance 7), and
 `calibration.test.ts:19` says "five times" of the narrower *skipped-and-reported-
-green* sub-shape, which is its own count and not this one. If you find an
-eleventh, increment it here and say what it could not see.
+green* sub-shape, which is its own count and not this one. If you find a
+twelfth, increment it here and say what it could not see.
 
 **Instance 10 adds the one thing the other nine could not show.** Every earlier
 instance was a check whose author had written it wrong. Instance 10 was written
