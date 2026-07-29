@@ -29,6 +29,7 @@ import type { SuiteDraft } from "bakeoff/dist/spec-types.js";
 import type { ApiScreenshot, ApiTokens, GraphSseEvent } from "./api-types.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
+import { MOTION_BAR_ENV } from "./builders/claude-builder.js";
 import type { BuildOutcome, BuildRequest, SubscriptionBuilder } from "./builders/types.js";
 import { NOT_RATE_LIMITED } from "./claude-common.js";
 import { RunStore, isTerminal } from "./db.js";
@@ -376,9 +377,12 @@ class FakeBuilder implements SubscriptionBuilder {
       const path = join(refsDir, `0${String(n + 1)}-section.png`);
       writeFileSync(path, `not really a png ${String(n)}`, "utf8");
       refs.push({ path, section: `section-${String(n + 1)}`, aspect: "16:9" as const, intent: "x" });
-      // The tool events the image-call counter reads. `summary` is the command,
-      // which names the script by its absolute path.
-      request.sink.tool("Bash", `${GEMINI_STUB_NAME} "a prompt" -a 16:9 -o ${path}`);
+      // The tool events the image-call counter reads, IN THE DRIVER'S OWN SHAPE.
+      // `summariseToolInput` (claude-common.ts:291) walks `file_path, path,
+      // command, …` and returns `"<key>: <value>"` truncated to 160 chars, so a
+      // Bash call arrives as `command: <the command line>`. Inventing a tidier
+      // string here would test a format nothing produces.
+      request.sink.tool("Bash", `command: ${join(workspace, "..", "..", "..", GEMINI_STUB_NAME)} "a prompt" -a 16:9 -o ${path}`);
     }
     writeFileSync(join(refsDir, "direction.md"), "DESIGN_VARIANCE: 3\n", "utf8");
     if (!this.#options.writeManifest || refs.length === 0) return;
@@ -988,7 +992,76 @@ test("the DESIGN subprocess environment names a TMPDIR that EXISTS inside the wo
     const tmp = h.builderCalls[0]?.env["TMPDIR"] ?? "";
     assert.equal(tmp, join(workspace, ".design-tmp"));
     assert.ok(existsSync(tmp), "the variable names a directory nothing created");
-    assert.notEqual(h.builderCalls[0]?.env["MOTION_BAR"], "1");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("the motion bar is armed for the BUILD segment and NOT for the DESIGN one", async () => {
+  // A DEPARTURE FROM THE PLAN, AND THIS IS WHAT WATCHES IT. `design-env.ts` hands
+  // the flip to this task as a per-RUN decision from the lane mode. It is applied
+  // per-SEGMENT instead, because `MOTION_BAR_ENV` registers Layer-2 Stop hooks —
+  // a completion gate that holds a session open until the PAGE satisfies the
+  // motion bar — and the DESIGN segment writes stills and prose, never markup.
+  // Armed there it would hold the design lane open against a criterion it was
+  // never going to meet, which is a block dressed as a quality gate.
+  //
+  // BOTH ARMS ON ONE RUN. An `ask` harness has a single build call and therefore
+  // structurally cannot check the arm that must be PRESENT.
+  const h = await designRun({ designLock: "auto" });
+  try {
+    assert.equal(h.builderCalls.length, 2);
+    assert.equal(h.builderCalls[0]?.env[MOTION_BAR_ENV], undefined, "the design segment writes no markup");
+    assert.equal(h.builderCalls[1]?.env[MOTION_BAR_ENV], "1", "and the build segment is held to the bar");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("an operator's inherited DASHBOARD_MOTION_BAR does NOT arm a completion gate on a CLI ticket", async () => {
+  // design-env.ts REMOVES an inherited value rather than respecting it, and that
+  // `delete` branch had no reader. Phase 2a measured always-on blocking a
+  // legitimate build of this repo's own client, so a variable left in a shell
+  // must not decide whether a cli run can ever finish.
+  const h = await designRun({
+    ticket: "a cli that renames files in place",
+    designLock: "auto",
+    env: { [MOTION_BAR_ENV]: "1" },
+  });
+  try {
+    assert.equal(h.builderCalls.length, 1);
+    assert.equal(h.builderCalls[0]?.env[MOTION_BAR_ENV], undefined, "no design lane, no motion bar");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("resume only applies a lock to a run that is PARKED for one", async () => {
+  // `reconcileOnBoot` sets `awaiting_input` for ANY run whose builder died with
+  // the server — including one interrupted halfway through the DESIGN segment,
+  // which has a manifest and no lock. The plan gated the lock branch on that
+  // status alone; locking a half-finished manifest would skip the rest of the
+  // lane and record it as the owner's choice. The gate is the park RECORD, which
+  // `#parkForDesignLock` writes and nothing else does.
+  const h = await designRun({ designLock: "auto" });
+  try {
+    const workspace = runPathsFor(h.paths, h.runId).workspace;
+    const results = runPathsFor(h.paths, h.runId).results;
+    // Rebuild the mid-design-segment state: a manifest with refs and no lock,
+    // `awaiting_input`, and NO park record.
+    const manifest = readDesignManifest(workspace);
+    assert.ok(manifest !== null && manifest.refs.length > 0);
+    writeDesignManifest(workspace, { ...manifest, lockedMockup: null, lockedBy: null, lockedReason: null, lockedAt: null });
+    rmSync(join(results, "design-lock.json"), { force: true });
+    h.store.updateRun(h.runId, { status: "awaiting_input", endedAt: null, heldOutPass: null });
+    await h.orchestrator.shutdown();
+
+    h.orchestrator.resume(h.runId, manifest.refs[0]?.path ?? "");
+    assert.equal(
+      readDesignManifest(workspace)?.lockedMockup,
+      null,
+      "an interrupted design segment was locked as though the owner had chosen",
+    );
   } finally {
     await h.cleanup();
   }
