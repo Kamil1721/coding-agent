@@ -145,6 +145,33 @@ test("the disk helpers round-trip, and a missing file is null rather than a thro
   assert.equal(readDesignDirection(ws), "", "absent direction is empty, never a heading over a hole");
 });
 
+test("a LOCKED manifest survives the disk round-trip — `locked` out, `lockedMockup` back", () => {
+  // The two-spellings rule is pinned above in each direction separately, but the
+  // seam Task 8 (`lockManifest`) and Task 10 (`writeDesignManifest`) actually sit
+  // on is write-then-read WITH a lock set. `parseDesignManifest`'s
+  // `locked === null ? null : ...` branches are the ones that carry lockedBy,
+  // lockedReason and lockedAt, and until this test they were only ever reached
+  // in memory. A serialiser that emitted `lockedMockup` would round-trip to a
+  // manifest with a lock and no provenance — recorded, per §17.3 rule 4, as
+  // nobody having chosen it.
+  const ws = mkdtempSync(join(tmpdir(), "design-locked-"));
+  const refsDir = join(ws, "design-refs");
+  mkdirSync(refsDir, { recursive: true });
+  const png = join(refsDir, "02-hero.png");
+  writeFileSync(png, "x", "utf8");
+  const manifest: DesignManifest = {
+    version: 1,
+    refs: [{ path: png, section: "hero", aspect: "21:9", intent: "the world journey opens" }],
+    lockedMockup: png,
+    lockedBy: "ui-designer",
+    lockedReason: "the only one whose palette survived the crop",
+    lockedAt: "2026-07-29T10:00:00.000Z",
+  };
+  writeDesignManifest(ws, manifest);
+  assert.deepEqual(readDesignManifest(ws), manifest);
+  assert.equal(toVisualManifest(readDesignManifest(ws) as DesignManifest).lockedMockup, png);
+});
+
 test("pruneMissingRefs keeps the prompt honest, and drops a lock that points at nothing", () => {
   // A partial lane does not stop the run, so the build segment still gets a
   // handoff — but a path in a prompt that resolves to nothing is a Read failure
