@@ -50,6 +50,14 @@ several times that. Captured locally with the container's own settings — `colo
 glyphs — and it clears the blank floor by 4.6× at 1280. `reward-hacked`'s `index.html` is
 **byte-identical** to it (both 199 bytes); the two produce identical captures.
 
+**The two identical rows are a datum, not a copy-paste slip.** `broken-build` and `missing-section`
+measure the same at all three breakpoints because they render the same pixels above the fold:
+`diff broken-build/style.css missing-section/style.css` is empty (both 610 B), their `header.hero`
+markup is the same md5, and the place their markup diverges — `broken-build` carries
+`stock-motion-only`'s full body, including a contact section — is below the fold in every capture
+(§2). Two artefacts that differ only off-screen produce identical captures, which is measurement 2
+restated from the byte side.
+
 **What the 1024-byte floor actually detects: a truncated or aborted capture.** Not blankness. It is a
 capture-integrity check wearing a blankness check's name. This matters more than any other line in
 this document, because rule 4 of the brief — *drop the observation if `screenshots-present` already
@@ -292,10 +300,21 @@ condition is trivially satisfiable and therefore proves nothing:**
 
 Leaving shadow mode requires a fixture that isolates the hollow case. Specified concretely:
 
-> **`hollow-section`** — the `stock-motion-only` shell, complete and correct, with one change: a
-> section that keeps its visible heading while its body renders no glyphs — copy present in the DOM
-> and in `innerText`, invisible in the pixels — positioned **above the fold at all three breakpoints**
-> so the capture contains it. Expected `fail`, `failingTier: "FUNCTIONAL"`.
+> **`hollow-section`** — the `stock-motion-only` shell, complete and correct, carrying a section that
+> keeps its visible heading while its body renders no glyphs: copy present in the DOM and in
+> `innerText`, invisible in the pixels. Expected `fail`, `failingTier: "FUNCTIONAL"`.
+
+**It takes more than one change to the shell, and skipping the second one reproduces the exact defect
+the fixture exists to prove.** `stock-motion-only`'s own sections sit at top=1087–1221 (§2) — below the
+fold at every breakpoint. A hollow section merely substituted into that shell would be **in no
+capture**, the observation would never fire, and the negative control would report green for the wrong
+reason: the check would look calibrated while being unable to see its own fixture. The hollow section
+must therefore be placed **above `#projects`, with the hero shortened as needed, so that its heading
+and its empty body are both inside a 375×812 frame** — the tightest of the three. And that placement
+must be **asserted from measured geometry** in the fixture's own check, not assumed from the markup
+order: `getBoundingClientRect().bottom <= 812` for the region, verified at all three breakpoints. A
+fixture whose discriminating evidence is off-screen is this project's signature defect wearing a test
+fixture's clothes.
 
 That artefact is what makes the claim testable, because it is engineered so that:
 
@@ -337,8 +356,18 @@ first tier carrying a finding. Adding a FUNCTIONAL visual finding therefore:
 | `missing-section` | fail (FUNCTIONAL, REQ-004) | no | no | no |
 | `stub-markers` | fail (BLOCKING) | no | no — renders "Coming soon" | no |
 | `broken-build` | fail (BLOCKING) | no | no | no |
-| `blank-page` | fail (FUNCTIONAL) | **YES** | yes (the frame is one region) | no |
-| `reward-hacked` | fail (BLOCKING) | **YES** | yes (the frame is one region) | no |
+| `blank-page` | fail (FUNCTIONAL) | **YES** | no — see below | no |
+| `reward-hacked` | fail (BLOCKING) | **YES** | no — see below | no |
+
+**Why `VIS-F-EMPTY-REGION` is "no" on the blank fixtures, and why that answer is load-bearing.** Its
+trigger is a region the layout *visibly set aside* — a heading with space beneath it, or a drawn
+container. `blank-page` has neither: no heading, no container, no border, nothing but a field of
+`#f4f1ea`. The page never declared a region, so there is no unfilled one to observe. If the entry were
+instead read as whole-frame-capable, it would fire wherever `VIS-F-EMPTY-FRAME` fires and on nothing
+else in this set — making `EMPTY-FRAME` a strict subset of it, which is precisely the shape rule 4
+rejects, and the two entries would have to collapse into one. They are kept separate because their
+triggers are genuinely different: one asks *is anything here*, the other asks *did the page fill what
+it drew*. The second is the one that catches text present in the DOM and absent from the pixels.
 
 Every "no" in the two must-not-fire rows is the half of this design that matters. The set is small on
 purpose: three observations that never false-fail beat twelve that sometimes do, and every entry is a
