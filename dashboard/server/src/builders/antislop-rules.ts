@@ -627,6 +627,14 @@ export type MotionVerdict =
   | { readonly kind: "satisfied"; readonly satisfier: string }
   | { readonly kind: "unsatisfied"; readonly reason: string };
 
+/**
+ * A PAGE OR A COMPONENT — NOT A STYLESHEET, and that is a correction with a
+ * measurement behind it. `.css`/`.scss` were in this set until a constructed
+ * near-miss was run: a CLI workspace of `src/index.ts` + `report.css` +
+ * `README.md` came back `unsatisfied` and would have been told to add a
+ * scroll-scrubbed video to a printed report. A stylesheet is evidence that
+ * something is styled, never that something is a page.
+ */
 const WEB_SURFACE_EXTENSIONS: ReadonlySet<string> = new Set([
   ".html",
   ".htm",
@@ -635,8 +643,6 @@ const WEB_SURFACE_EXTENSIONS: ReadonlySet<string> = new Set([
   ".vue",
   ".svelte",
   ".astro",
-  ".css",
-  ".scss",
 ]);
 
 function extensionOf(filePath: string): string {

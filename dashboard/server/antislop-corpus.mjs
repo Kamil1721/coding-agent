@@ -26,10 +26,18 @@
  *                   make the hook right: the keys differ per tool and a wrong
  *                   one is invisible to a text-level test.
  *
- * SELF-REFERENCE HITS ARE EXPECTED AND ARE NEVER A REASON TO LOOSEN AN ANCHOR.
- * `antislop-rules.ts` and `visual-criteria.ts` necessarily contain `picsum`,
- * `placehold.co`, `unsplash.com/random` and lorem ipsum — they are the files
- * that define and grade the rules. They are reported under their own heading.
+ *   MOTION       `decideMotion` is a NINTH rule, and the one that gates
+ *                COMPLETION rather than one write, so it gets the same corpus
+ *                treatment. Exercising it only against the two fixtures it was
+ *                written for is how a completion gate ships that blocks
+ *                legitimate builds — which is exactly what the `dashboard/src`
+ *                row caught.
+ *
+ * HITS IN OUR OWN FILES ARE EXPECTED AND ARE NEVER A REASON TO LOOSEN AN ANCHOR.
+ * `antislop-rules.ts`, its tests and `visual-criteria.ts` necessarily contain
+ * `picsum`, `placehold.co`, `unsplash.com/random` and lorem ipsum — they define
+ * and grade the rules. They are split into `[own-source]` (written by this
+ * phase, so NOT independent evidence) and `[self-reference]` (pre-existing).
  * The rule this replaces is the one that matched the English word "fit" inside
  * CSS `object-fit`, and the fix for that was a better anchor, not a shorter
  * corpus.
@@ -47,7 +55,7 @@ const SERVER = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(SERVER, "..", "..");
 const DIST = process.env.ANTISLOP_DIST ?? "dist";
 
-const { ANTISLOP_RULES, scanForSlop, isArtefactPath } = await import(
+const { ANTISLOP_RULES, decideMotion, scanForSlop, isArtefactPath } = await import(
   join(SERVER, DIST, "builders", "antislop-rules.js")
 );
 const { makeAntiSlopHook } = await import(join(SERVER, DIST, "builders", "antislop-hook.js"));
@@ -75,12 +83,20 @@ const REAL_CORPUS = [
   { label: "client source", root: "dashboard/src", kind: "neutral" },
 ];
 
-/** The files that DEFINE or GRADE the rules. Hits here are self-reference. */
-const SELF_REFERENCE = new Set([
+/**
+ * Files this PHASE authored. Hits here prove the rule fires, but against text
+ * written by the same hand that wrote the rule — so they are labelled
+ * `[own-source]` and do NOT count as independent evidence.
+ */
+const OWN_SOURCE = new Set([
   "dashboard/server/src/builders/antislop-rules.ts",
   "dashboard/server/src/builders/antislop-rules.test.ts",
   "dashboard/server/src/builders/antislop-hook.ts",
   "dashboard/server/src/builders/antislop-hook.test.ts",
+]);
+
+/** Pre-existing files that GRADE the same material. Not written for these rules. */
+const SELF_REFERENCE = new Set([
   "dashboard/server/src/visual-criteria.ts",
   "dashboard/server/src/visual-criteria.test.ts",
 ]);
@@ -191,6 +207,9 @@ for (const source of REAL_CORPUS) {
         falsePositives.get(finding.ruleId).push(line);
       } else if (source.kind === "bad") {
         truePositives.get(finding.ruleId).push(`[bad fixture] ${line}`);
+      } else if (OWN_SOURCE.has(rel)) {
+        selfReferences.get(finding.ruleId).push(line);
+        truePositives.get(finding.ruleId).push(`[own-source] ${line}`);
       } else if (SELF_REFERENCE.has(rel)) {
         selfReferences.get(finding.ruleId).push(line);
         truePositives.get(finding.ruleId).push(`[self-reference] ${line}`);
@@ -232,6 +251,53 @@ for (const [ruleId, sample] of Object.entries(CONSTRUCTED)) {
   }
 }
 
+/* ────────────── Layer 2: the motion bar gets the same treatment ────────────── */
+
+/**
+ * `decideMotion` IS A NINTH RULE, and the one that blocks COMPLETION rather than
+ * one write — so it gets a false-positive corpus too. Exercising it only against
+ * the two fixtures it was written for is how a completion gate ships that
+ * blocks legitimate builds.
+ *
+ * `expected: null` means REPORT, DO NOT FAIL. `dashboard/src` is the entry that
+ * matters: it is this repo's own client, it comes back `unsatisfied`, and that
+ * measurement is why the Layer-2 hook is opt-in rather than always-on
+ * (`MOTION_BAR_ENV` in claude-builder.ts). It is recorded here so the next
+ * reader does not have to re-derive it — or, worse, arm the gate without it.
+ */
+const MOTION_CASES = [
+  { label: "calibration/correct-portfolio (GOOD)", root: "dashboard/server/calibration/correct-portfolio", expected: "satisfied" },
+  { label: "calibration/stock-motion-only (BAD)", root: "dashboard/server/calibration/stock-motion-only", expected: "unsatisfied" },
+  { label: "calibration/missing-section", root: "dashboard/server/calibration/missing-section", expected: "unsatisfied" },
+  { label: "calibration/reward-hacked", root: "dashboard/server/calibration/reward-hacked", expected: "unsatisfied" },
+  { label: "calibration/broken-build", root: "dashboard/server/calibration/broken-build", expected: "unsatisfied" },
+  { label: "calibration/stub-markers", root: "dashboard/server/calibration/stub-markers", expected: "unsatisfied" },
+  { label: "calibration/blank-page", root: "dashboard/server/calibration/blank-page", expected: "unsatisfied" },
+  { label: "dashboard/server/src (non-web node package)", root: "dashboard/server/src", expected: "abstain" },
+  { label: "dashboard/src (THIS REPO'S CLIENT)", root: "dashboard/src", expected: null },
+];
+
+const motionRows = [];
+const motionFailures = [];
+for (const c of MOTION_CASES) {
+  const files = await walk(join(REPO, c.root));
+  const verdict = decideMotion(files);
+  motionRows.push({ label: c.label, files: files.length, kind: verdict.kind, expected: c.expected });
+  if (c.expected !== null && verdict.kind !== c.expected) {
+    motionFailures.push(`${c.label}: expected ${c.expected}, got ${verdict.kind}`);
+  }
+}
+
+// A constructed near-miss that already changed the code once: `.css`/`.scss`
+// were in the web-surface set until this workspace came back `unsatisfied`.
+const cliWithStylesheet = decideMotion([
+  { path: "/ws/src/index.ts", text: "export function main(): void {}" },
+  { path: "/ws/report.css", text: "body{font:14px/1.5 Georgia,serif}" },
+]);
+if (cliWithStylesheet.kind !== "abstain") {
+  motionFailures.push(`a CLI that ships a stylesheet got "${cliWithStylesheet.kind}" — a stylesheet is not a page`);
+}
+
 /* ───────────────────────────────── report ───────────────────────────────── */
 
 const rows = ANTISLOP_RULES.map((rule) => ({
@@ -248,13 +314,18 @@ const rows = ANTISLOP_RULES.map((rule) => ({
 const deadRules = rows.filter((r) => r.truePositives === 0).map((r) => r.id);
 const firesOnGood = rows.filter((r) => r.onCorrectPortfolio > 0).map((r) => r.id);
 /** Rules whose ONLY evidence is text this phase authored. Reported, not failed. */
-const constructedOnly = rows
-  .filter((r) => r.truePositiveKinds.length === 1 && r.truePositiveKinds[0] === "[constructed]")
-  .map((r) => r.id);
+const AUTHORED_HERE = new Set(["[constructed]", "[own-source]"]);
+const constructedOnly = rows.filter((r) => r.truePositiveKinds.every((k) => AUTHORED_HERE.has(k))).map((r) => r.id);
+
+const failures = hookFailures.length + motionFailures.length + deadRules.length + firesOnGood.length;
 
 if (process.argv.includes("--json")) {
   console.log(
-    JSON.stringify({ scanned, perCorpus, rows, hookFailures, deadRules, firesOnGood, constructedOnly }, null, 2),
+    JSON.stringify(
+      { scanned, perCorpus, rows, motionRows, hookFailures, motionFailures, deadRules, firesOnGood, constructedOnly },
+      null,
+      2,
+    ),
   );
 } else {
   console.log(`scanned ${scanned} artefact files (bakeoff/ excluded — another agent is rebuilding it)\n`);
@@ -276,20 +347,27 @@ if (process.argv.includes("--json")) {
   }
   if (constructedOnly.length > 0) {
     console.log(
-      `\nNOTE — evidence is constructed-only for: ${constructedOnly.join(", ")}. ` +
-        "These fire, and their near-misses are allowed, but no file in the corpus violates them. " +
-        "Stated rather than rounded up: they are unproven against text this phase did not author.",
+      `\nNOTE — every hit is text THIS PHASE AUTHORED for: ${constructedOnly.join(", ")}. ` +
+        "They fire, and their near-misses are allowed, but no pre-existing file in the corpus " +
+        "violates them. Stated rather than rounded up: unproven against text written by another hand.",
     );
+  }
+  console.log("\nLAYER 2 — the motion bar over the same kind of corpus:");
+  for (const r of motionRows) {
+    const verdictNote = r.expected === null ? "  <- REPORTED, not gated (see MOTION_BAR_ENV)" : "";
+    console.log(`  ${String(r.files).padStart(3)} files  ${r.kind.padEnd(12)} ${r.label}${verdictNote}`);
   }
   console.log("");
   for (const f of hookFailures) console.log(`WIRING FAILURE  ${f}`);
+  for (const f of motionFailures) console.log(`MOTION FAILURE  ${f}`);
   for (const d of deadRules) console.log(`DEAD RULE       ${d} — zero hits anywhere. A rule that cannot fire is not a rule.`);
   for (const g of firesOnGood) console.log(`FALSE POSITIVE  ${g} — fires on correct-portfolio, a GOOD artefact.`);
   console.log(
-    hookFailures.length + deadRules.length + firesOnGood.length === 0
-      ? "\nOK — every rule fires somewhere, none fires on the GOOD artefact, every near-miss allowed."
+    failures === 0
+      ? "\nOK — every rule fires somewhere, none fires on the GOOD artefact, every near-miss allowed,\n" +
+          "     and the motion bar grades the GOOD artefact satisfied and the bad ones not."
       : "\nFAILED",
   );
 }
 
-process.exit(hookFailures.length + deadRules.length + firesOnGood.length === 0 ? 0 : 1);
+process.exit(failures === 0 ? 0 : 1);

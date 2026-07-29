@@ -33,7 +33,7 @@ import type {
 
 import { makeAntiSlopHook, makeMotionStopHook, writeTargetOf } from "./antislop-hook.js";
 import type { AntiSlopObservation } from "./antislop-hook.js";
-import { buildOptions } from "./claude-builder.js";
+import { buildOptions, MOTION_BAR_ENV } from "./claude-builder.js";
 import type { BuildRequest } from "./types.js";
 
 const WORKSPACE = "/tmp/dash/runs/r1/workspace";
@@ -134,10 +134,31 @@ test("WIRING: the anti-slop gate is in the slot the SDK is handed, for all three
   }
 });
 
-test("WIRING: the Stop and SubagentStop slots are handed over too", () => {
-  const options = buildOptions(req(), false);
-  assert.equal(options.hooks?.Stop?.length, 1, "no Stop hook — Layer 2 does not run");
-  assert.equal(options.hooks?.SubagentStop?.length, 1, "no SubagentStop hook — subagents are ungated");
+test("WIRING: the motion bar is OFF by default and ARMED by the env flag — both directions", () => {
+  // OFF BY DEFAULT ON A MEASUREMENT, not out of timidity. `decideMotion` over
+  // `dashboard/src` — this repo's own client, the surface spec decision #6
+  // dogfoods — returns `unsatisfied`, so an always-on completion gate would
+  // block a legitimate build of a working internal UI. Spec §8 Layer 2 scopes
+  // itself to "a FRONTEND agent" and to motion "derived from the design
+  // stills", and §6.5 carves out the internal admin CRUD screen explicitly.
+  //
+  // BOTH DIRECTIONS ARE ASSERTED. "Absent" alone would stay green if the flag
+  // were never readable at all — which is exactly a gate that can never arm.
+  const off = buildOptions(req(), false);
+  assert.equal(off.hooks?.Stop, undefined, "the motion bar must not arm itself");
+  assert.equal(off.hooks?.SubagentStop, undefined);
+
+  const on = buildOptions(req({ env: { [MOTION_BAR_ENV]: "1" } }), false);
+  assert.equal(on.hooks?.Stop?.length, 1, "the flag did not arm the Stop slot — the gate is unreachable");
+  assert.equal(on.hooks?.SubagentStop?.length, 1, "subagents would be ungated");
+  // ONE INSTANCE, TWO SLOTS: the escalate-after budget lives in the hook's
+  // closure, so two instances would give Stop and SubagentStop independent
+  // budgets and a run could be blocked twice as often as designed.
+  assert.equal(
+    on.hooks?.Stop?.[0],
+    on.hooks?.SubagentStop?.[0],
+    "the two slots must share ONE hook, or they share no budget",
+  );
 });
 
 test("NEGATIVE CONTROL: a clean write is ALLOWED", async () => {

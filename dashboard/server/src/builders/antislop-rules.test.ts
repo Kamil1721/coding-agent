@@ -274,6 +274,19 @@ test("a workspace with no web surface ABSTAINS — a CLI has no page to animate"
   assert.equal(verdict.kind, "abstain");
 });
 
+test("a CLI that ships a STYLESHEET still abstains — a stylesheet is not a page", () => {
+  // MEASURED NEAR-MISS, and it changed the code. `.css`/`.scss` were in the
+  // web-surface set until this exact workspace came back `unsatisfied` — a CLI
+  // that prints a styled report, told to add a scroll-scrubbed video. Something
+  // being styled is never evidence that something is a page.
+  const verdict = decideMotion([
+    { path: "/ws/src/index.ts", text: "export function main(): void {}" },
+    { path: "/ws/report.css", text: "body{font:14px/1.5 Georgia,serif}table{border-collapse:collapse}" },
+    { path: "/ws/README.md", text: "# a CLI that prints a styled report" },
+  ]);
+  assert.equal(verdict.kind, "abstain");
+});
+
 test("each satisfier stands ALONE — no single library may be mandated", () => {
   const page: WorkspaceFile = { path: "/ws/index.html", text: "<main></main>" };
   const scrub: WorkspaceFile = {

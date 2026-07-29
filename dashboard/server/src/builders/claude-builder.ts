@@ -186,6 +186,17 @@ import type { GraphSseEvent } from "../api-types.js";
 export const ALLOW_UNSANDBOXED_ENV = "DASHBOARD_ALLOW_UNSANDBOXED_BUILDER";
 
 /**
+ * Set to "1" to arm Phase 2a's Layer-2 motion bar (spec §8) for this run.
+ *
+ * OFF BY DEFAULT, ON A MEASUREMENT: `decideMotion` over `dashboard/src` — this
+ * repo's own client, and the surface spec decision #6 dogfoods — returns
+ * `unsatisfied`, so an always-on gate would block a legitimate build of a
+ * working internal UI. See `buildOptions` for the spec text that already scopes
+ * the bar to visual runs, and for who is expected to flip this.
+ */
+export const MOTION_BAR_ENV = "DASHBOARD_MOTION_BAR";
+
+/**
  * Turn caps.
  *
  * NOT a stuck-detector. doc 03 section 7.8 is explicit: 79% of unresolved
@@ -736,6 +747,11 @@ export function buildOptions(
 ): Options {
   const workspace = canonicaliseForDecision(request.workspace);
   const sealedRoots = request.sealedRoots.map((root) => canonicaliseForDecision(root));
+  // ONE instance, shared by both Stop slots below so they share one budget.
+  const motionBar =
+    (request.env[MOTION_BAR_ENV] ?? "").trim() === "1"
+      ? makeMotionStopHook(makeWorkspaceReader(workspace), { observe: observeAntiSlop })
+      : null;
 
   return {
     cwd: workspace,
@@ -790,13 +806,36 @@ export function buildOptions(
           makeAntiSlopHook({ observe: observeAntiSlop }),
         ),
       ],
-      // LAYER 2, THE COMPLETION GATE (spec §8). It abstains on a workspace with
-      // no web surface, abstains when `stop_hook_active` says it already blocked
-      // once, and escalates after two blocks — a completion gate that can loop
-      // is a build that never finishes for a reason nothing in the ticket
-      // predicts.
-      Stop: [makeMotionStopHook(makeWorkspaceReader(workspace), { observe: observeAntiSlop })],
-      SubagentStop: [makeMotionStopHook(makeWorkspaceReader(workspace), { observe: observeAntiSlop })],
+      // LAYER 2, THE COMPLETION GATE (spec §8) — OPT-IN, AND THE MEASUREMENT IS
+      // WHY.
+      //
+      // It shipped registered-unconditionally for one commit. Then `decideMotion`
+      // was run over `dashboard/src` — THIS REPO'S OWN CLIENT, the surface spec
+      // decision #6 dogfoods — and returned `unsatisfied`. Unconditional
+      // registration would therefore block a legitimate build of an existing,
+      // working internal UI. That is a rule firing on correct work, one layer up
+      // from the false positives the Layer-1 corpus measures.
+      //
+      // THE SPEC ALREADY SAYS WHEN IT APPLIES, and it is not "always". §8 Layer 2
+      // scopes it to "a FRONTEND agent" and to motion "DERIVED FROM THE DESIGN
+      // STILLS" — and there are no stills before the DESIGN lane (Phase 2b).
+      // §6.5 makes the same carve-out in the other direction: `fullstack`
+      // requires explicit visual intent "so an internal admin CRUD screen does
+      // not pay for five mockups". An internal admin CRUD screen is exactly what
+      // `dashboard/src` is.
+      //
+      // So the gate is built, measured and wired, and the ORCHESTRATOR turns it
+      // on for the runs the lane routing says are visual. Phase 2b owns that
+      // flip; until then this is degrade-don't-block, the same posture §6.5 and
+      // §7.1a take everywhere else. Recorded rather than rounded up: shipping it
+      // always-on would have been a build failure wearing a quality rule's
+      // clothes.
+      //
+      // ONE HOOK, TWO SLOTS — deliberately the same instance. The escalate-after
+      // budget lives in the closure, so two instances would give `Stop` and
+      // `SubagentStop` independent budgets and a run could be blocked four times
+      // instead of two.
+      ...(motionBar === null ? {} : { Stop: [motionBar], SubagentStop: [motionBar] }),
     },
     // NO `agents:` KEY, AND ITS ABSENCE IS THE MEASUREMENT — NOT AN OVERSIGHT.
     //
@@ -1298,8 +1337,17 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
         graph.hookDecision({
           event: observation.layer === "write" ? "PreToolUse" : "Stop",
           tool: observation.ruleId,
+          // `GraphHookDecision.decision` is `"allow" | "deny"`, so an escalation
+          // has to ride on one of them — and it is an ALLOW, because the write
+          // went through. THE REASON IS WHAT KEEPS IT DISTINGUISHABLE: an empty
+          // reason here would make "the gate gave up after three fires" render
+          // identically to a clean pass-through, which is the one event on this
+          // whole layer the orchestrator most needs to see.
           decision: observation.decision === "deny" ? "deny" : "allow",
-          reason: observation.decision === "deny" ? observation.evidence : "",
+          reason:
+            observation.decision === "deny"
+              ? observation.evidence
+              : `ESCALATED after repeated fires — the write was ALLOWED. ${observation.evidence}`,
         }),
       );
     });

@@ -139,6 +139,17 @@ Recorded as findings, not omissions.
   staggered); rAF-driven element scrubbing; a Framer `useScroll`/`useTransform` drive.
 - **Failed by** hover/fade/`transition-all` alone, or an animation library imported and never driven.
 - **Bounded**: after 2 blocks it escalates and allows, same reason as Layer 1.
+- **OPT-IN (`DASHBOARD_MOTION_BAR=1`), off by default — REVISED after measurement.** It shipped
+  always-on for one commit. Then `decideMotion` was run over `dashboard/src` — *this repo's own
+  client*, the surface spec decision #6 dogfoods — and returned `unsatisfied`. Always-on would
+  therefore block a legitimate build of a working internal UI: a rule firing on correct work, one
+  layer up from Layer 1's corpus. The spec already scopes the bar: §8 Layer 2 says "a **frontend
+  agent**" and "derived from the **design stills**" (there are none before Phase 2b), and §6.5
+  carves out the internal admin CRUD screen by name. Phase 2b's lane routing is what flips it on.
+  **This is degrade-don't-block, not a disabled feature — but it is stated plainly rather than
+  rounded up to "Layer 2 ships enforcing."**
+- **One hook instance, two slots.** The escalate-after budget lives in the closure, so two
+  instances would give `Stop` and `SubagentStop` independent budgets.
 
 Both directions come from fixtures this phase did not author: `calibration/correct-portfolio`
 (Georgia, warm palette, IntersectionObserver + `requestAnimationFrame` + stagger) must PASS;
@@ -282,7 +293,41 @@ Restored after each; harness green and 340/340 tests green at the end.
 
 `layer1: PASS` (positive **and** negative control). Both layers observed firing in a live session.
 
-### 10.5 What is NOT measured
+### 10.5 Layer 2 got the same corpus treatment — and it changed the code twice
+
+`decideMotion` is a ninth rule, and the one that gates *completion*, so it is measured over real
+corpora rather than only the two fixtures it was written for:
+
+```
+  3 files  satisfied    calibration/correct-portfolio (GOOD)
+  3 files  unsatisfied  calibration/stock-motion-only (BAD)
+  2 files  unsatisfied  calibration/missing-section
+  3 files  unsatisfied  calibration/reward-hacked
+  3 files  unsatisfied  calibration/broken-build
+  2 files  unsatisfied  calibration/stub-markers
+  1 files  unsatisfied  calibration/blank-page
+ 60 files  abstain      dashboard/server/src (non-web node package)
+ 22 files  unsatisfied  dashboard/src (THIS REPO'S CLIENT)  <- reported, not gated
+```
+
+**Two corrections came out of this, both from the measurement rather than from review:**
+
+1. `.css`/`.scss` were in the web-surface set. A constructed near-miss — a CLI of `src/index.ts` +
+   `report.css` + `README.md` — came back `unsatisfied`, i.e. a program that prints a styled report
+   told to add a scroll-scrubbed video. **A stylesheet is evidence something is styled, never that
+   something is a page.** Removed; the harness now fails if it creeps back (mutation G).
+2. `dashboard/src` came back `unsatisfied`, which is why the hook is opt-in. See §6.
+
+### 10.6 Mutations on the second pass
+
+| # | Mutation | Observed |
+|---|---|---|
+| G | put `.css` back in the web-surface set | `MOTION FAILURE — a CLI that ships a stylesheet got "unsatisfied"`, exit 1 |
+| H | motion bar always-on, flag ignored | the OFF-by-default half of the WIRING test fails |
+| I | motion bar never arms | the ARMED half of the same test fails |
+| J | two motion-hook instances instead of one shared | the shared-budget assertion fails |
+
+### 10.7 What is NOT measured
 
 - **Bash heredoc writes are not scanned.** `cat > index.html <<EOF` carries none of the three text
   keys. Layer 2 and grading still see the result; Layer 1 does not.
@@ -292,5 +337,17 @@ Restored after each; harness green and 340/340 tests green at the end.
   eyebrows across three files passes it.
 - **Layer 2 has no live end-to-end arm** — the block/continue behaviour of the return value is
   measured, but no live session was run in which a real motion-poor build was blocked and then
-  fixed. The decision itself is exercised against `correct-portfolio` and `stock-motion-only`.
+  fixed. The decision itself is exercised against nine corpora (§10.5).
+- **Six of the eight rules have no independent true positive.** `AS-PLACEHOLDER-IMAGE`,
+  `AS-PURPLE-PINK-GRADIENT`, `AS-GRADIENT-TEXT`, `AS-COLORED-BORDER-SIDE`, `AS-TIGHT-TRACKING` and
+  `AS-EYEBROW-EVERYWHERE` fire only on text **this phase authored** (`[constructed]` and
+  `[own-source]`). They fire, their near-misses are allowed, and the wiring is proven — but no
+  pre-existing file in the corpus violates them. Only `AS-LOREM-IPSUM` (`visual-criteria.ts`) and
+  `AS-INTER-SLATE-DEFAULT` (`stock-motion-only`) have evidence from another hand. The harness
+  prints this every run.
+- **`AS-INTER-SLATE-DEFAULT`'s third conjunct is per-file, and that is its residual risk.** A real
+  Tailwind project with `--font-sans: Inter` plus slate in `globals.css` and its type scale in
+  `tailwind.config.ts` would be denied twice before escalating, because the hook only ever sees the
+  file being written. Zero hits on `dashboard/src` is real evidence it is not firing here, but it is
+  the one shipped rule whose false-positive risk lives *outside* the file the hook can see.
 - **`calibration.test.js` was not run** (Docker plus fixtures this task does not own).
