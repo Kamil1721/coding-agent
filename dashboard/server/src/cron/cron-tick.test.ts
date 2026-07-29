@@ -8,7 +8,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -17,6 +17,7 @@ import type { CronDecision } from "./cron-journal.js";
 import { appendIntent, appendOutcome, orphanIntents, readJournal } from "./cron-journal.js";
 import { CRON_LEASE_FILE, acquireLease } from "./cron-lease.js";
 import { CRON_DIRS, listQueue, strandedClaims } from "./cron-queue.js";
+import { CRON_REPORT_FILE } from "./cron-report.js";
 import { EXIT, newTickId, runTick } from "./cron-tick.js";
 import type { TickDeps, TickResponse, TickResult } from "./cron-tick.js";
 
@@ -35,6 +36,32 @@ const OK_MODEL: ModelOption = {
   reason: null,
 };
 
+/** What `GET /api/runs/:id` answers, so the tick's own report pass is exercised. */
+const DETAIL = {
+  runId: "run-x",
+  ticketTitle: "a portfolio",
+  modelId: MODEL,
+  status: "failed",
+  startedAt: NOW,
+  endedAt: NOW,
+  heldOutPass: null,
+  falseFinish: null,
+  ticketText: TICKET,
+  phase: "done",
+  criteria: [],
+  tokens: null,
+  costUsd: null,
+  rateLimit: null,
+  screenshots: [],
+  artifactPath: null,
+  previewUrl: null,
+  inferredCriteria: 0,
+  verdictPath: "/runs/run-x/results/verdict.md",
+  gateAttempts: 1,
+  gateStopReason: "infra",
+  designLock: null,
+};
+
 interface Scenario {
   readonly name: string;
   readonly tickId?: string;
@@ -47,6 +74,7 @@ interface Scenario {
   readonly models?: Spec;
   readonly runs?: Spec;
   readonly create?: Spec;
+  readonly writeReport?: () => void;
   readonly expect: CronDecision;
 }
 
@@ -100,6 +128,7 @@ async function runScenario(
     now: () => NOW,
     tickId: scenario.tickId ?? "t1",
     isAlive: () => true,
+    ...(scenario.writeReport === undefined ? {} : { writeReport: scenario.writeReport }),
     http: async (url, init) => {
       const method = init?.method ?? "GET";
       requests.push({ url, method, headers: init?.headers, body: init?.body });
@@ -109,6 +138,10 @@ async function runScenario(
       if (url.endsWith("/api/models")) return route(scenario.models ?? { status: 200, body: [OK_MODEL] });
       if (url.endsWith("/api/runs") && method === "GET") {
         return route(scenario.runs ?? { status: 200, body: [] as readonly RunSummary[] });
+      }
+      // The report the tick refreshes on its way out asks for each run it named.
+      if (/\/api\/runs\/[^/]+$/.test(url) && method === "GET") {
+        return route({ status: 200, body: { ...DETAIL, runId: url.split("/").at(-1) } });
       }
       if (url.endsWith("/api/runs")) return route(scenario.create ?? { status: 201, body: { runId: "run-x" } });
       throw new Error(`unscripted request: ${method} ${url}`);
@@ -358,4 +391,34 @@ test("a tick id is sortable and unique per process", () => {
   const b = newTickId(NOW, () => 0.222);
   assert.notEqual(a, b);
   assert.match(a, /^2026-07-30T02-00-00-000Z-/);
+});
+
+test("EVERY TICK REFRESHES report.md, and it names what the tick decided", async () => {
+  // A journal nobody renders is a journal nobody reads. The default writer is the
+  // real one, so this exercises the file the owner actually opens.
+  const { root, result } = await runScenario({ name: "report", expect: "submitted" });
+  const md = readFileSync(join(root, CRON_REPORT_FILE), "utf8");
+  assert.equal(result.decision, "submitted");
+  assert.match(md, /201 Created/, "the last row's reason is on the front page");
+  assert.match(md, /run-x/);
+  assert.match(md, /NO VERDICT/, "heldOutPass null must never read as a pass");
+  assert.match(md, /1 of 4/);
+  assert.doesNotMatch(md, /\$|costUsd|USD/);
+});
+
+test("a tick that did NOTHING still refreshes the report", async () => {
+  const { root } = await runScenario({ name: "report skip", queue: [], expect: "skipped" });
+  assert.match(readFileSync(join(root, CRON_REPORT_FILE), "utf8"), /no ticket in the queue/);
+});
+
+test("a report that cannot be written does not turn a recorded decision into a crash", async () => {
+  const { root, result } = await runScenario({
+    name: "report throws",
+    expect: "submitted",
+    writeReport: () => {
+      throw new Error("disk full");
+    },
+  });
+  assert.equal(result.decision, "submitted", "the journal row is already durable");
+  assert.equal(readJournal(root).rows.filter((row) => row.phase === "outcome").length, 1);
 });

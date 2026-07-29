@@ -13,6 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "npm run build --silent && node dist/index.js",
     "test": "npm run build --silent && node --test \"dist/**/*.test.js\"",
+    "cron:tick": "node dist/cron/cron-tick.js",
+    "cron:report": "node dist/cron/cron-report.js",
     "test:harness": "npm run build --silent && node --test gemini-video-harness.mjs",
     "test:all": "npm run test && npm run test:harness",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""

@@ -44,6 +44,10 @@ import type { CronConfig } from "./cron-config.js";
 import { acquireLease, releaseLease } from "./cron-lease.js";
 import { decideTick } from "./cron-policy.js";
 import { claim, ensureCronDirs, listQueue, settleFailed, settleSubmitted, strandedClaims } from "./cron-queue.js";
+// A RUNTIME import, and cron-report.ts imports only TYPES back, so there is no
+// module cycle at run time. The tick refreshing the report is not optional: a
+// journal nobody renders is a journal nobody reads.
+import { refreshCronReport } from "./cron-report.js";
 
 /** A `fetch`-shaped response, narrowed to what a tick reads. Real `fetch` satisfies it. */
 export interface TickResponse {
@@ -64,8 +68,12 @@ export interface TickDeps {
   /** The ONLY channel to the run pipeline. `fetch`-shaped, injected in every test. */
   readonly http: (url: string, init?: TickRequestInit) => Promise<TickResponse>;
   readonly isAlive?: (pid: number) => boolean;
-  /** Refresh `report.md`. Injected so Task 9's renderer is not a hard dependency of the sequence. */
-  readonly writeReport?: (config: CronConfig, now: string) => void;
+  /**
+   * Refresh `report.md`. DEFAULTS TO THE REAL RENDERER, so every test of this
+   * sequence also exercises the report the owner actually reads; overridable only
+   * to observe that it was called.
+   */
+  readonly writeReport?: (config: CronConfig, now: string) => Promise<void> | void;
 }
 
 export interface TickResult {
@@ -329,14 +337,13 @@ export async function runTick(deps: TickDeps): Promise<TickResult> {
       runId,
     );
   } finally {
-    if (deps.writeReport !== undefined) {
-      // BEFORE THE RELEASE, so a reader who catches the lease file mid-tick sees a
-      // report that matches it.
-      try {
-        deps.writeReport(config, deps.now());
-      } catch (error) {
-        process.stderr.write(`the cron report could not be refreshed: ${String(error)}\n`);
-      }
+    // BEFORE THE RELEASE, so a reader who catches the lease file mid-tick sees a
+    // report that matches it. A report that could not be written must not turn a
+    // recorded decision into a crash — the journal row is already durable.
+    try {
+      await (deps.writeReport ?? ((c, n) => refreshCronReport(c, n, deps.http)))(config, deps.now());
+    } catch (error) {
+      process.stderr.write(`the cron report could not be refreshed: ${String(error)}\n`);
     }
     releaseLease(config.root, deps.tickId);
   }
