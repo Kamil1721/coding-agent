@@ -701,7 +701,10 @@ PY
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `node --test /Users/kamilborzecki/Projects/coding-agent/dashboard/server/gemini-video-harness.mjs`
-Expected: PASS — eight tests. (The "a pending operation is waited out" test now reaches the download step and exits non-zero there until Task 4; assert `r.code === 0` only after Task 4 lands, or accept the two-step: run it now expecting `polls.length === 3` to pass and the exit-code assertion to fail, and finish it in Task 4. **Take the two-step and note it in the commit** — a test written to the finished behaviour is more honest than one loosened to the half-built one.)
+Expected: PASS — eight tests. Both assertions in "a pending operation is waited out" pass now: at the
+end of this task the script's last act is extracting `VIDEO_URI` and it exits 0, because the download
+does not exist yet and so has nothing to fail at. Do **not** loosen `r.code === 0` here — Task 4 adds
+work after this point and the same assertion goes on meaning the same thing.
 
 - [ ] **Step 5: Commit**
 
@@ -982,11 +985,21 @@ make_poster() {
 make_poster "$REF" "$POSTER"
 ```
 
-and, at the very end of the script, replacing Task 1's `echo … operation` as the success output:
+and, as the **last line of the whole script**, the success output. This **adds** a line; Task 1's
+`echo "gemini-video: operation $OPERATION" >&2` stays exactly where it is, since after Task 3 it is a
+mid-script progress log on stderr rather than the final word — and the sentinel test in Task 1 reads
+it:
 
 ```bash
 printf '%s\n%s\n' "$OUT" "$POSTER"
 ```
+
+**Assembly order of the finished script, since it was built across five tasks:** usage → flags
+(T1) → loopback guard (T1) → key resolution (T1) → argument validation (T2) → `python3` assert
+(T2) → `mktemp -d` + trap (T1) → converter probe (T2) → `make_poster` (T5) → request body (T1) →
+POST (T1) → operation name (T1) → poll loop (T3) → `VIDEO_URI` (T3) → download + verify + rename
+(T4) → `printf` (T5). `api_error` (T4) is a function defined near the top and called from three
+places.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -1723,6 +1736,7 @@ MSG
 **Files:**
 - Create: `dashboard/server/src/design/video-lane.ts`
 - Test: `dashboard/server/src/design/video-lane.test.ts`
+- Test: `dashboard/server/gemini-video-harness.mjs` (append the three TS↔bash seam tests below)
 - Modify: `dashboard/server/src/paths.ts:115-140` (add `videoRecord` to `RunPaths` and `runPathsFor`)
 - Modify: `dashboard/server/src/orchestrator.ts` — **one call site**, located with
   `grep -n 'async #buildPhase(' dashboard/server/src/orchestrator.ts`. **Do not trust a line number
@@ -1743,9 +1757,13 @@ export interface VideoLaneDeps {
   readonly spawnLeg: (leg: VideoLeg, env: NodeJS.ProcessEnv) => Promise<{ ok: boolean; detail: string }>;
   readonly emitGraph: (event: GraphSseEvent) => void;
   readonly writeRecord: (path: string, json: string) => void;
+  /** `mkdir -p`. Injected so the TMPDIR it creates is OBSERVABLE in a test. */
+  readonly ensureDir: (path: string) => void;
 }
 export function defaultSpawnLeg(scriptPath: string): VideoLaneDeps["spawnLeg"];
 export function videoLaneEnv(env: NodeJS.ProcessEnv, workspace: string): NodeJS.ProcessEnv;
+/** The one path `videoLaneEnv` points TMPDIR at, exported so nothing derives it twice. */
+export function workspaceTmpDir(workspace: string): string;
 export function videoConsumptionPrompt(legs: readonly VideoLeg[]): string;
 export function runVideoLane(deps: VideoLaneDeps): Promise<{ record: VideoSpendRecord; prompt: string }>;
 ```
@@ -1758,7 +1776,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { GraphSseEvent } from "../api-types.js";
 import type { VideoCapability } from "./video-capability.js";
-import { runVideoLane, videoConsumptionPrompt, videoLaneEnv, type VideoLaneDeps } from "./video-lane.js";
+import {
+  runVideoLane, videoConsumptionPrompt, videoLaneEnv, workspaceTmpDir, type VideoLaneDeps,
+} from "./video-lane.js";
 
 const KEY = "AIza-SENTINEL-NEVER-PRINT-1234567890";
 const AVAILABLE: VideoCapability = {
@@ -1784,6 +1804,7 @@ function deps(over: Partial<VideoLaneDeps> = {}): { d: VideoLaneDeps; events: Gr
     spawnLeg: async (leg) => { spawned.push(leg.out); return { ok: true, detail: "" }; },
     emitGraph: (e) => events.push(e),
     writeRecord: (_p, json) => written.push(json),
+    ensureDir: () => {},
     ...over,
   };
   return { d, events, written, spawned };
@@ -1835,9 +1856,26 @@ test("TMPDIR IS MOVED INSIDE THE WORKSPACE, and the key is NOT stripped", () => 
   // Spec §7.5 row 1: the script does `mktemp -d` in the SYSTEM temp dir while
   // sandbox allowWrite is [workspace]. "Most likely silent breakage."
   const env = videoLaneEnv({ GEMINI_API_KEY: KEY, ANTHROPIC_API_KEY: "nope", TMPDIR: "/var/folders/x" }, "/ws");
-  assert.match(String(env["TMPDIR"]), /^\/ws\//);
+  assert.equal(env["TMPDIR"], workspaceTmpDir("/ws"));
   assert.equal(env["GEMINI_API_KEY"], KEY, "deliberately NOT in STRIPPED_ENV_NAMES — spec §7.5");
   assert.equal(env["ANTHROPIC_API_KEY"], undefined, "the subscription invariant still holds");
+});
+
+test("THE TMPDIR IS CREATED BEFORE THE FIRST LEG, not merely named", () => {
+  // A string assertion on TMPDIR is NOT a test of TMPDIR. `mktemp -d` against a
+  // directory that does not exist fails with "mkdtemp failed on /ws/.tmp/…: No
+  // such file or directory", the script dies at exit 1, and nobody connects
+  // that message to this env var. The pointing and the existing are two facts.
+  const order: string[] = [];
+  const { d } = deps();
+  return runVideoLane({
+    ...d,
+    ensureDir: (p) => order.push(`mkdir ${p}`),
+    spawnLeg: async (leg) => { order.push(`spawn leg-${leg.index}`); return { ok: true, detail: "" }; },
+  }).then(() => {
+    assert.equal(order[0], `mkdir ${workspaceTmpDir("/ws")}`, "created FIRST");
+    assert.equal(order[1], "spawn leg-1");
+  });
 });
 
 test("the consumption prompt is §7.6.4's pattern, with the real paths in it", () => {
@@ -1861,6 +1899,67 @@ test("the consumption prompt is §7.6.4's pattern, with the real paths in it", (
   assert.ok(!p.includes(KEY));
 });
 ```
+
+**And three more in `dashboard/server/gemini-video-harness.mjs`, because the two seams below are
+between TypeScript and bash and neither side's own tests can see them.**
+
+```js
+// dashboard/server/gemini-video-harness.mjs — appended
+import { mkdirSync, rmSync } from "node:fs";
+import { planVideoLegs, resolveLegCap } from "./dist-video/design/video-legs.js";
+import { workspaceTmpDir } from "./dist-video/design/video-lane.js";
+
+test("TMPDIR POINTING AT A DIRECTORY THAT DOES NOT EXIST BREAKS THE SCRIPT", async () => {
+  // The behaviour the lane's string assertion cannot see. `mktemp -d` fails with
+  // "mkdtemp failed on <dir>/tmp.XXXXXXXX: No such file or directory" and, under
+  // `set -e`, the script is dead at exit 1 for a reason nothing in the ticket
+  // predicts. This is the negative half; the next test is the positive half,
+  // and neither means anything without the other.
+  const fake = await startFakeVeo({ pollsBeforeDone: 1 });
+  const f = fixture();
+  const absent = join(f.dir, "does-not-exist");
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url, env: { TMPDIR: absent } });
+  assert.notEqual(r.code, 0);
+  assert.equal(fake.requests.length, 0, "it died before spending anything, at least");
+  await fake.close();
+});
+
+test("…and the same TMPDIR, created first, works", async () => {
+  const fake = await startFakeVeo({ pollsBeforeDone: 1 });
+  const f = fixture();
+  const tmp = workspaceTmpDir(f.dir);
+  mkdirSync(tmp, { recursive: true });
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url, env: { TMPDIR: tmp } });
+  assert.equal(r.code, 0, r.stderr);
+  rmSync(tmp, { recursive: true, force: true });
+  await fake.close();
+});
+
+test("THE POSTER PATH THE PROMPT ADVERTISES IS THE POSTER PATH THE SCRIPT WRITES", async () => {
+  // Two independent derivations of one path: planVideoLegs computes
+  // `<workspace>/assets/world/leg-N-poster.webp` and the script computes
+  // `${OUT%.*}-poster.webp`, having never been told the first. They agree
+  // today. If either drifts, the build agent gets a poster= that 404s, "instant
+  // first paint" silently stops being true, and every unit test on both sides
+  // stays green because neither knows the other exists.
+  const fake = await startFakeVeo({ pollsBeforeDone: 1 });
+  const f = fixture();
+  const plan = planVideoLegs(
+    { sections: [{ path: f.still, section: "descent", aspect: "16:9", animate: true }] },
+    f.dir,
+    resolveLegCap({}),
+  );
+  const leg = plan.legs[0];
+  const r = await runScript(["x", "-i", leg.still, "-a", leg.aspect, "-o", leg.out], { base: fake.url });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(existsSync(leg.out), true);
+  assert.equal(existsSync(leg.poster), true, "the path planVideoLegs put in the prompt is the one on disk");
+  await fake.close();
+});
+```
+
+These three import from `dist-video/`, so run `npx tsc -p tsconfig.json --outDir dist-video` **before**
+the harness in this task.
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -1907,6 +2006,12 @@ export interface VideoLaneDeps {
   readonly spawnLeg: (leg: VideoLeg, env: NodeJS.ProcessEnv) => Promise<{ ok: boolean; detail: string }>;
   readonly emitGraph: (event: GraphSseEvent) => void;
   readonly writeRecord: (path: string, json: string) => void;
+  readonly ensureDir: (path: string) => void;
+}
+
+/** Derived in ONE place. `videoLaneEnv` points at it, `runVideoLane` creates it. */
+export function workspaceTmpDir(workspace: string): string {
+  return join(workspace, ".tmp");
 }
 
 /**
@@ -1915,12 +2020,17 @@ export interface VideoLaneDeps {
  * does `mktemp -d` in the SYSTEM temp dir while `sandbox.filesystem.allowWrite`
  * is `[workspace]`.
  *
+ * POINTING AT IT IS HALF THE JOB. `mktemp -d` against a directory that does not
+ * exist fails outright, so `runVideoLane` creates it before the first leg — via
+ * an injected `ensureDir`, so that the creation is observable in a test rather
+ * than being a side effect nothing can see.
+ *
  * GEMINI_API_KEY SURVIVES, ON PURPOSE. It is absent from STRIPPED_ENV_NAMES
  * (`subprocess-env.ts:39-55`, "a subtraction, never an allowlist") and spec §7.5
  * records that as intended — this lane is the metered spend the note is about.
  */
 export function videoLaneEnv(env: NodeJS.ProcessEnv, workspace: string): NodeJS.ProcessEnv {
-  return { ...subscriptionSubprocessEnv(env), TMPDIR: join(workspace, ".tmp") };
+  return { ...subscriptionSubprocessEnv(env), TMPDIR: workspaceTmpDir(workspace) };
 }
 
 export function defaultSpawnLeg(scriptPath: string): VideoLaneDeps["spawnLeg"] {
@@ -1983,6 +2093,7 @@ export async function runVideoLane(deps: VideoLaneDeps): Promise<{ record: Video
     ? planVideoLegs(deps.readManifest(), deps.workspace, cap)
     : { legs: [], cap: cap.cap, capSource: cap.capSource, droppedByCap: 0, rejected: [] };
   const env = videoLaneEnv(deps.env, deps.workspace);
+  if (plan.legs.length > 0) deps.ensureDir(workspaceTmpDir(deps.workspace));
   const summary = await runVideoLegs(plan, async (leg) => {
     // EMITTED AT LAUNCH, NOT AT COMPLETION (spec §7.6.3.4). A leg takes minutes;
     // an event that only arrives at the end is the silence being fixed.
@@ -2044,6 +2155,7 @@ prompted:
       // `BuildEventSink.graph` takes exactly `GraphSseEvent` (api-types.ts:430-438).
       emitGraph: (event) => sink.graph(event),
       writeRecord: (path, json) => writeFileSync(path, json, "utf8"),
+      ensureDir: (path) => mkdirSync(path, { recursive: true }),
     });
 ```
 
@@ -2054,11 +2166,13 @@ in the degraded case.
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `cd /Users/kamilborzecki/Projects/coding-agent/dashboard/server && npx tsc -p tsconfig.json --outDir dist-video && node --test "dist-video/design/*.test.js" && npm test 2>&1 | tail -20`
-Expected: PASS — twenty-one design tests, and the existing suite unchanged. Then `rm -rf dist-video`.
+Run: `cd /Users/kamilborzecki/Projects/coding-agent/dashboard/server && npx tsc -p tsconfig.json --outDir dist-video && node --test "dist-video/design/*.test.js" && node --test gemini-video-harness.mjs && npm test 2>&1 | tail -20`
+Expected: PASS — twenty-two design tests, sixteen harness tests, and the existing suite unchanged.
+Then `rm -rf dist-video`.
 
-**Three mutations, executed and restored:**
-1. Drop `TMPDIR` from `videoLaneEnv`. Expected: `expected undefined to match /^\/ws\//`.
+**Four mutations, executed and restored:**
+0. Delete the `deps.ensureDir(...)` call in `runVideoLane`. Expected: `created FIRST: expected 'spawn leg-1' to equal 'mkdir /ws/.tmp'` — and, in the harness, the TMPDIR pair still passes, which is the point of having both: the unit test catches the ordering and the harness catches what the ordering is *for*.
+1. Drop `TMPDIR` from `videoLaneEnv`. Expected: `expected undefined to equal '/ws/.tmp'`.
 2. Move the `emitGraph` call after `spawnLeg` returns and assert timing by making `spawnLeg` check
    `events.length`. Expected: the launch-time assertion fails — a completion-only event is the exact
    silence §7.6.3.4 names.
@@ -2078,10 +2192,20 @@ playsInline, paused video with a webp poster, currentTime driven by scroll in a
 rAF loop -- with the real absolute paths in it, because a path in a prompt is
 what makes the fetch actually happen (§7.3).
 
-TMPDIR is moved inside the workspace: the script inherits gemini-image.sh's
-`mktemp -d` in the SYSTEM temp dir, which spec §7.5 calls the most likely silent
-breakage against allowWrite: [workspace]. GEMINI_API_KEY is deliberately NOT
-stripped, and a test pins both directions.
+TMPDIR is moved inside the workspace AND created there before the first leg:
+the script inherits gemini-image.sh's `mktemp -d` in the SYSTEM temp dir, which
+spec §7.5 calls the most likely silent breakage against allowWrite:
+[workspace], and `mktemp -d` against a directory that does not exist dies at
+exit 1 for a reason nothing in the ticket predicts. Pointing at a path and the
+path existing are two facts, so there are two tests: an ordering assertion on
+the injected ensureDir, and a harness pair that runs the real script with the
+directory absent and then present. GEMINI_API_KEY is deliberately NOT stripped,
+and a test pins both directions.
+
+One harness test joins the two independent derivations of the poster path --
+planVideoLegs computes it for the prompt, the script computes it from -o and is
+never told the first -- because if they drift the build agent gets a poster=
+that 404s and both sides stay green.
 
 graph_tool is emitted at LAUNCH, not completion: a leg takes minutes and an
 event that arrives only at the end is the stalled-looking canvas §7.6.3.4 names.
@@ -2202,9 +2326,12 @@ so a run that hit the deadline is explainable rather than mysterious.
 
 ## Definition of done
 
-- [ ] `node --test dashboard/server/gemini-video-harness.mjs` — thirteen tests green, against the fake endpoint only.
+- [ ] `node --test dashboard/server/gemini-video-harness.mjs` — sixteen tests green, against the fake endpoint only.
 - [ ] The sentinel test proves `GEMINI_VIDEO_API_BASE` took effect; nothing else is trusted without it.
-- [ ] `npx tsc -p tsconfig.json --outDir dist-video && node --test "dist-video/design/*.test.js"` — twenty-one tests green. `rm -rf dist-video`; it is never committed.
+- [ ] `npx tsc -p tsconfig.json --outDir dist-video && node --test "dist-video/design/*.test.js"` — twenty-two tests green. `rm -rf dist-video`; it is never committed.
+- [ ] **The TMPDIR pair has been run both ways:** the script fails against a TMPDIR that does not exist, and succeeds against the same path once created. Pointing at a directory is not the same fact as the directory existing, and only the pair distinguishes them.
+- [ ] **The poster path the prompt advertises has been observed on disk**, from the harness test that imports `planVideoLegs` and invokes the real script. Two independent derivations of one path, joined by one assertion.
+- [ ] **CONCERN 1 is settled before the lane is wired into a real run.** One live call at `-d 4 -r 720p -a 16:9` on a real still, made with the owner's explicit go-ahead, with the exit code and any redacted `error.status`/`error.message` recorded. If it 400s on the duration, change `DURATION_SECONDS` in `video-lane.ts` and the resolution guard in the script, and re-run Task 2's tests. **Every leg fails if the literal reading of "8 s required for … reference images" is the right one, and no test in this plan can tell** — the fake server accepts `durationSeconds: "4"` cheerfully.
 - [ ] `npm test` in `dashboard/server` is no worse than it was before this phase (`calibration.test.js` needs Docker and fixtures this plan does not own; if it is excluded, say so rather than rounding up to a pass).
 - [ ] **Every mutation listed in Tasks 3, 4, 5, 6, 7 and 8 has been executed, observed red, and restored.** A check never seen failing is decoration; this project has ten recorded instances.
 - [ ] The cap is proven by counting invocations, at both enforcement points, each failing on its own.
