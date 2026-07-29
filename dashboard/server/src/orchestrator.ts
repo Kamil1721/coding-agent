@@ -42,7 +42,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -62,7 +62,6 @@ import type {
 import { JUDGE_SEAT, SPEC_SEAT } from "bakeoff/dist/config.js";
 import { createGate } from "bakeoff/dist/gate.js";
 import { readSelfReport, WORKSPACE } from "bakeoff/dist/runner.js";
-import { parseContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import {
   assertSuiteIntact,
@@ -73,6 +72,7 @@ import {
 } from "bakeoff/dist/spec-agent.js";
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
 import { shortlistFor } from "./agent-shortlist.js";
+import { archiveAttempt, readAttempt, scorerOutRoot } from "./gate-attempts.js";
 import type { ApiCriterion, ApiPhase, ApiRunStatus } from "./api-types.js";
 import { appendContextEvent } from "./build-context.js";
 import type { ContextEvent } from "./build-context.js";
@@ -356,7 +356,7 @@ export class Orchestrator {
 
       // ---- PHASE 3: the sealed gate -----------------------------------
       this.#setPhase(runId, "gate");
-      const scored = await this.#gatePhase(runId, ticket, suite, runPaths, declaredDone, signal);
+      const scored = await this.#gatePhase(runId, ticket, suite, runPaths, declaredDone, signal, 1);
 
       // ---- PHASE 4: the code-reading judge ----------------------------
       this.#setPhase(runId, "judge");
@@ -693,7 +693,11 @@ export class Orchestrator {
       // strongly as the bake-off's container does.
       sealedRoots: [
         this.#deps.paths.acceptance,
-        join(this.#deps.paths.results, "scorer-out"),
+        // ONE definition, shared with the attempt archive that lives inside it
+        // (gate-attempts.ts). Spelling the path a second time here is how a
+        // later attempt directory ends up outside the deny it was supposed to
+        // inherit.
+        scorerOutRoot(this.#deps.paths),
       ],
       // THE DELEGATION BOUNDARY. `settingSources: ["user"]` makes 144 agents
       // visible to the builder; this is the far smaller set it may actually
@@ -752,6 +756,17 @@ export class Orchestrator {
 
   /* ---- phase 3: the sealed gate --------------------------------------- */
 
+  /**
+   * One gate attempt.
+   *
+   * `attempt` is 1-based and is NOT decoration: the sealed scorer writes to a
+   * fixed path per run id (`gate-attempts.ts` explains why that cannot be
+   * changed from here), so attempt 2 clobbers attempt 1's `result.json` in
+   * place. The result is archived under `attempt-<n>/` the moment the scorer
+   * returns, and everything downstream reads the archive. Without that, a
+   * three-round run would end holding one result and no record of why it took
+   * three rounds.
+   */
   async #gatePhase(
     runId: string,
     ticket: Ticket,
@@ -759,6 +774,7 @@ export class Orchestrator {
     runPaths: RunPaths,
     declaredDone: boolean,
     signal: AbortSignal,
+    attempt: number,
   ): Promise<{ record: ScoreRecord | null; container: ContainerResult | null; failure: string | null }> {
     if (signal.aborted) return { record: null, container: null, failure: "cancelled" };
 
@@ -780,7 +796,12 @@ export class Orchestrator {
     try {
       const gate = await createGate(gateEnv(this.#deps.paths, this.#deps.env));
       record = await gate.score(runRecord, suite);
+      archiveAttempt(this.#deps.paths, runId, attempt);
     } catch (error) {
+      // Archive whatever the scorer managed to write before it threw: a
+      // container that failed halfway still produced evidence about this
+      // attempt, and the next attempt is about to overwrite it.
+      archiveAttempt(this.#deps.paths, runId, attempt);
       // heldOutPass stays NULL. "The gate could not run" is not "the gate said
       // no", and the two must not look alike in the run list.
       const failure = describeError(error);
@@ -806,7 +827,7 @@ export class Orchestrator {
       });
     }
 
-    const container = this.#readContainerResult(runId);
+    const container = this.#readContainerResult(runId, attempt);
     if (container !== null) this.#recordScreenshots(runId, container);
 
     for (const violation of record.protectedPathViolations) {
@@ -898,14 +919,15 @@ export class Orchestrator {
     };
   }
 
-  #readContainerResult(runId: string): ContainerResult | null {
-    const path = join(this.#deps.paths.results, "scorer-out", runId, "result.json");
-    if (!existsSync(path)) return null;
-    try {
-      return parseContainerResult(JSON.parse(readFileSync(path, "utf8")) as unknown);
-    } catch {
-      return null;
-    }
+  /**
+   * The archived result for one attempt.
+   *
+   * Reads the ARCHIVE, not the scorer's live output path. A later attempt has
+   * already overwritten the latter by the time anyone asks, and reading it would
+   * answer a question about attempt 1 with attempt 3's numbers.
+   */
+  #readContainerResult(runId: string, attempt: number): ContainerResult | null {
+    return readAttempt(this.#deps.paths, runId, attempt);
   }
 
   #recordScreenshots(runId: string, container: ContainerResult): void {
