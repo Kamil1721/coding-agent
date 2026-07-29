@@ -802,22 +802,54 @@ separate the killer fixture from the control.
 **Read that narrowly, because the verdict did not discriminate where it counts.**
 All seven fixtures graded `fail` at `BLOCKING`.
 
-> **CORRECTION, 2026-07-29.** This paragraph originally said the page the owner
-> reads was "identical for all seven inputs". **That is wrong, and it was wrong
-> when written — it was inferred from the outcome column rather than read off the
-> pages.** The seven rendered verdicts are on disk under
-> `dashboard/results/calibration-4b/<stamp>/run/*.verdict.md` and all seven are
-> byte-different: `blank-page` names five unmet requirements and `correct-portfolio`
-> names three, with different summary lines and different bodies. What is
-> identical is the **headline and the outcome** — every one says `DID NOT PASS`
-> at `BLOCKING` — which is the part the owner reads first and the part that
-> decides whether a fix loop fires. The body already discriminates. Stating it as
-> total made the defect sound larger and, worse, pointed the fix at the wrong
-> module: the page does not need to be taught to discriminate, it needs to stop
-> counting a roll-up gate as a requirement. See the `GATE:suite-green` finding
-> below, which is the actual mechanism. The correction is recorded rather than
-> silently edited because a claim this file got wrong by not looking is exactly
-> the failure mode §6 exists to count.
+> **CORRECTION, 2026-07-29 — and the first attempt at this correction was also
+> wrong, so both are recorded.** The paragraph originally said the page the owner
+> reads was "identical for all seven inputs". That was inferred from the outcome
+> column rather than read off the pages. **The first correction then over-swung
+> and claimed all seven pages are byte-different. They are not.** Here is the
+> measurement, `md5` over
+> `dashboard/results/calibration-4b/2026-07-29T05-37-40-117Z/run/*.verdict.md`,
+> which is run 1 — the run this section documents:
+>
+> ```
+> blank-page         11632 B  571557bb…      7 named requirements
+> reward-hacked      11890 B  c8674e49…      8
+> broken-build       11242 B  677fc843…      6
+> missing-section     9894 B  6ab86d56…      5   <-- IDENTICAL
+> stub-markers        9894 B  6ab86d56…      5   <-- IDENTICAL
+> stock-motion-only   9509 B  2a514c9a…      5
+> correct-portfolio   8850 B  ab47ec71…      5
+> ```
+>
+> So: **7 of 7 share a headline and a failing tier. 4 of 7 share a summary line
+> verbatim** — `correct-portfolio`, `missing-section`, `stock-motion-only` and
+> `stub-markers` all read *"5 things the ticket asked for are not there — 2
+> BLOCKING, 3 FUNCTIONAL"*. **2 of 7 are the same document to the byte.** Six
+> distinct pages out of seven.
+>
+> **Why `missing-section` and `stub-markers` collapse into one page is the whole
+> thesis of this section in miniature.** Their `carriedBy` sets are character-for-
+> character identical, so the renderer had nothing to tell them apart — and the
+> one signal that WOULD have, `GATE:no-stub-markers`, **passed on the stub-markers
+> artefact**, which `fixtures.ts:147` already records as a known defect (backlog
+> #33: the marker scan cannot see `.html`). An inert gate and a page that never
+> names a gate compound: two artefacts with different defects get the same
+> verdict, and nothing in the document hints that a check was skipped rather than
+> satisfied.
+>
+> The residual claim, stated at the strength the evidence supports: **the page
+> discriminates in its body and does not discriminate where the owner and the fix
+> loop read it** — the headline, the outcome and the failing tier. That is enough
+> to matter and it is not "identical for all seven". The fix is not to teach the
+> page to discriminate; it is to stop counting a roll-up gate as a requirement and
+> to start naming the gate that actually failed. See the `GATE:suite-green`
+> finding below.
+>
+> *(Runs 2 and 3 — the `09-41-54` and `09-42-34` trees — authored a different
+> 10-criterion suite and produce different counts. They are real live runs, not
+> self-tests: self-tests write only to an OS temp path and set
+> `liveRunExecuted: false` by construction. Do not mix their numbers with run 1's,
+> as the first version of this correction did.)*
 
 Split the twelve authored criteria by how much signal each carried:
 
