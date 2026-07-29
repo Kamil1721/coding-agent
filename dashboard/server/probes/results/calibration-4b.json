@@ -1,7 +1,7 @@
 {
   "probe": "calibration-4b-authoring",
   "task": "Phase 2e Task 4B — authoring calibration: does the grader actually discriminate?",
-  "runStamp": "2026-07-29T05-37-40-117Z",
+  "runStamp": "2026-07-29T18-02-30-043Z",
   "liveRunExecuted": true,
   "selfTest": null,
   "ticket": {
@@ -18,13 +18,13 @@
   },
   "scorerImage": {
     "ref": "bakeoff-scorer:1",
-    "id": "sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353"
+    "id": "sha256:c98bad3a762b8fc026bbeb8edc85ea8951cf78ea2bab70eb8d28e992f7826b20"
   },
   "compileDiagnostics": [],
   "authoring": {
-    "suiteSha256": "9caffb779c9e4be39f7320f1ef267a4b65775270637eafe38ef9410d7cb347cc",
-    "criteriaCount": 12,
-    "testFileCount": 7,
+    "suiteSha256": "bc809f2a5a29549dd7483d816d07fca22d2a6d16745a257e28ff70176b3ea505",
+    "criteriaCount": 11,
+    "testFileCount": 6,
     "attempts": 2,
     "auditPassed": true,
     "blockingFindings": 0,
@@ -32,78 +32,73 @@
       {
         "id": "REQ-001",
         "tier": "BLOCKING",
-        "statement": "The portfolio site shall answer an HTTP GET for the site root with status 200, an HTML content type and a document body of at least 200 characters."
+        "statement": "The portfolio site shall respond to a GET request for / with HTTP 200 and an HTML document that contains an <html> element, a <body> element and more than 200 bytes of markup."
       },
       {
         "id": "REQ-002",
         "tier": "BLOCKING",
-        "statement": "The portfolio site shall serve and render no stub or placeholder filler markers in its delivered document or its rendered text."
+        "statement": "The portfolio site shall answer the landing page and every same-origin hyperlink target found on the landing page with an HTTP status below 500."
       },
       {
         "id": "REQ-003",
         "tier": "BLOCKING",
-        "statement": "The portfolio site shall answer every same-origin resource referenced by the home page with a status below 400 and shall answer an unknown same-origin path without a 5xx status."
+        "statement": "The landing document served to the browser shall contain no lorem-ipsum filler copy and no unrendered {{ ... }} template expressions."
       },
       {
         "id": "REQ-004",
-        "tier": "FUNCTIONAL",
-        "statement": "When a visitor opens the site root, the portfolio site shall display the name Ada Lovelace as its largest rendered text at a computed font size of at least 28 pixels and within the first 900 pixels of the page."
+        "tier": "BLOCKING",
+        "statement": "When the landing page is loaded in a browser, the portfolio site shall raise no uncaught JavaScript page errors."
       },
       {
         "id": "REQ-005",
         "tier": "FUNCTIONAL",
-        "statement": "The portfolio site shall present a projects section containing at least three project entries with distinct titles, each entry carrying at least 40 characters of its own descriptive text and no repeated description."
+        "statement": "When the landing page is loaded, the portfolio site shall render the text \"Ada Lovelace\" as visible content whose top edge lies within the first viewport height, without scrolling."
       },
       {
         "id": "REQ-006",
         "tier": "FUNCTIONAL",
-        "statement": "The portfolio site shall provide a contact form containing a visible editable email field, a visible message field and a visible enabled submit control."
+        "statement": "The portfolio site shall present a projects section containing at least three project entries whose titles are distinct from one another."
       },
       {
         "id": "REQ-007",
         "tier": "FUNCTIONAL",
-        "statement": "When a visitor submits the contact form with valid details, the portfolio site shall display confirmation text that was not present on the page before the submission."
+        "statement": "When a visitor fills in the contact form and submits it, the portfolio site shall display a confirmation message that was not visible on the page before submission."
       },
       {
         "id": "REQ-008",
         "tier": "QUALITY",
-        "statement": "The portfolio site shall render exactly one h1, an alt attribute on every image, an accessible name on every visible form control and a lang attribute on the html element."
+        "statement": "Where the landing page is rendered at a 375-pixel-wide viewport, the portfolio site shall keep the document scroll width within that viewport width."
       },
       {
         "id": "REQ-009",
         "tier": "QUALITY",
-        "statement": "While the viewport is 375 pixels wide, the portfolio site shall render without horizontal document overflow and shall keep the name Ada Lovelace inside the viewport."
+        "statement": "The landing page shall declare a non-empty lang attribute on <html>, a non-empty document title, at least one level-1 heading, and an alt attribute on every image element."
       },
       {
         "id": "REQ-010",
         "tier": "QUALITY",
-        "statement": "If a visitor submits the contact form with its fields left empty, then the portfolio site shall withhold the submission confirmation and shall mark at least one field as required or surface a validation message."
+        "statement": "The contact form shall give every visible, non-hidden input, textarea and select control an accessible name through a label element, an aria-label attribute or an aria-labelledby reference."
       },
       {
         "id": "REQ-011",
         "tier": "QUALITY",
-        "statement": "The portfolio site shall set a document title naming Ada, a meta description of at least 40 characters and a body font family other than the browser default."
-      },
-      {
-        "id": "REQ-012",
-        "tier": "QUALITY",
-        "statement": "When the home page loads, the portfolio site shall raise no uncaught JavaScript page errors."
+        "statement": "If the contact form is submitted with every field left empty, then the portfolio site shall not display a submission confirmation message."
       }
     ],
     "findingKinds": [
       {
-        "criterionId": "REQ-004",
+        "criterionId": "REQ-002",
         "kind": "mis_specified",
         "mustRegenerate": false
       },
       {
-        "criterionId": "REQ-003",
-        "kind": "other",
+        "criterionId": "REQ-002",
+        "kind": "vacuous",
         "mustRegenerate": false
       },
       {
-        "criterionId": "REQ-005",
-        "kind": "other",
+        "criterionId": "REQ-011",
+        "kind": "mis_specified",
         "mustRegenerate": false
       },
       {
@@ -112,32 +107,32 @@
         "mustRegenerate": false
       },
       {
-        "criterionId": null,
-        "kind": "other",
+        "criterionId": "REQ-006",
+        "kind": "mis_specified",
         "mustRegenerate": false
       },
       {
-        "criterionId": null,
-        "kind": "other",
+        "criterionId": "REQ-002",
+        "kind": "mis_specified",
         "mustRegenerate": false
       }
     ],
     "tokens": {
       "spec": {
         "provider": "anthropic",
-        "inputTokens": 8,
-        "outputTokens": 167871,
-        "cacheReadTokens": 17154,
-        "cacheWriteTokens": 97750,
+        "inputTokens": 4,
+        "outputTokens": 117462,
+        "cacheReadTokens": 5808,
+        "cacheWriteTokens": 7448,
         "callCount": 2,
         "byModel": []
       },
       "judge": {
         "provider": "anthropic",
         "inputTokens": 2,
-        "outputTokens": 14865,
+        "outputTokens": 12211,
         "cacheReadTokens": 0,
-        "cacheWriteTokens": 20459,
+        "cacheWriteTokens": 16505,
         "callCount": 1,
         "byModel": []
       }
@@ -264,85 +259,64 @@
   },
   "perFixture": {
     "correct-portfolio": {
-      "actual": "fail",
-      "failingTier": "BLOCKING",
-      "failedGates": [
-        "GATE:suite-green"
-      ],
-      "failedCriteria": [
-        "REQ-002",
-        "REQ-005",
-        "REQ-006",
-        "REQ-007",
-        "REQ-010",
-        "REQ-011",
-        "REQ-012"
-      ],
+      "actual": "pass",
+      "failingTier": null,
+      "failedGates": [],
+      "failedCriteria": [],
       "qualityFindingIds": [],
       "error": null,
-      "criteriaTotal": 24,
-      "criteriaFailed": 8,
+      "criteriaTotal": 23,
+      "criteriaFailed": 0,
       "failedQualityRollups": [],
-      "heldOutPass": false,
-      "falseFinish": true,
-      "suiteSha256": "9caffb779c9e4be39f7320f1ef267a4b65775270637eafe38ef9410d7cb347cc"
+      "heldOutPass": true,
+      "falseFinish": false,
+      "suiteSha256": "bc809f2a5a29549dd7483d816d07fca22d2a6d16745a257e28ff70176b3ea505"
     },
     "missing-section": {
       "actual": "fail",
-      "failingTier": "BLOCKING",
+      "failingTier": "FUNCTIONAL",
       "failedGates": [
         "GATE:suite-green"
       ],
       "failedCriteria": [
-        "REQ-002",
-        "REQ-005",
-        "REQ-006",
         "REQ-007",
-        "REQ-008",
         "REQ-010",
-        "REQ-011",
-        "REQ-012"
+        "REQ-011"
       ],
       "qualityFindingIds": [
         "VIS-MOTION-AUTHORED"
       ],
       "error": null,
-      "criteriaTotal": 24,
-      "criteriaFailed": 9,
+      "criteriaTotal": 23,
+      "criteriaFailed": 4,
       "failedQualityRollups": [],
       "heldOutPass": false,
       "falseFinish": true,
-      "suiteSha256": "9caffb779c9e4be39f7320f1ef267a4b65775270637eafe38ef9410d7cb347cc"
+      "suiteSha256": "bc809f2a5a29549dd7483d816d07fca22d2a6d16745a257e28ff70176b3ea505"
     },
     "broken-build": {
       "actual": "fail",
       "failingTier": "BLOCKING",
       "failedGates": [
+        "GATE:build",
         "GATE:suite-green"
       ],
       "failedCriteria": [
-        "REQ-002",
-        "REQ-003",
-        "REQ-005",
-        "REQ-006",
-        "REQ-007",
-        "REQ-010",
-        "REQ-011",
-        "REQ-012"
+        "REQ-007"
       ],
       "qualityFindingIds": [
         "VIS-MOTION-AUTHORED"
       ],
       "error": null,
-      "criteriaTotal": 26,
-      "criteriaFailed": 11,
+      "criteriaTotal": 25,
+      "criteriaFailed": 5,
       "failedQualityRollups": [
         "QUALITY:console_error",
         "QUALITY:same_origin_request_failed"
       ],
       "heldOutPass": false,
       "falseFinish": true,
-      "suiteSha256": "9caffb779c9e4be39f7320f1ef267a4b65775270637eafe38ef9410d7cb347cc"
+      "suiteSha256": "bc809f2a5a29549dd7483d816d07fca22d2a6d16745a257e28ff70176b3ea505"
     },
     "blank-page": {
       "actual": "fail",
@@ -352,45 +326,12 @@
       ],
       "failedCriteria": [
         "REQ-001",
-        "REQ-002",
-        "REQ-004",
         "REQ-005",
         "REQ-006",
         "REQ-007",
-        "REQ-008",
         "REQ-009",
         "REQ-010",
-        "REQ-011",
-        "REQ-012"
-      ],
-      "qualityFindingIds": [
-        "VIS-MOTION-AUTHORED"
-      ],
-      "error": null,
-      "criteriaTotal": 25,
-      "criteriaFailed": 13,
-      "failedQualityRollups": [
-        "QUALITY:default_serif_font"
-      ],
-      "heldOutPass": false,
-      "falseFinish": true,
-      "suiteSha256": "9caffb779c9e4be39f7320f1ef267a4b65775270637eafe38ef9410d7cb347cc"
-    },
-    "stub-markers": {
-      "actual": "fail",
-      "failingTier": "BLOCKING",
-      "failedGates": [
-        "GATE:suite-green"
-      ],
-      "failedCriteria": [
-        "REQ-002",
-        "REQ-005",
-        "REQ-006",
-        "REQ-007",
-        "REQ-008",
-        "REQ-010",
-        "REQ-011",
-        "REQ-012"
+        "REQ-011"
       ],
       "qualityFindingIds": [
         "VIS-MOTION-AUTHORED"
@@ -398,10 +339,36 @@
       "error": null,
       "criteriaTotal": 24,
       "criteriaFailed": 9,
+      "failedQualityRollups": [
+        "QUALITY:default_serif_font"
+      ],
+      "heldOutPass": false,
+      "falseFinish": true,
+      "suiteSha256": "bc809f2a5a29549dd7483d816d07fca22d2a6d16745a257e28ff70176b3ea505"
+    },
+    "stub-markers": {
+      "actual": "fail",
+      "failingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:no-stub-markers",
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-006",
+        "REQ-007",
+        "REQ-010",
+        "REQ-011"
+      ],
+      "qualityFindingIds": [
+        "VIS-MOTION-AUTHORED"
+      ],
+      "error": null,
+      "criteriaTotal": 23,
+      "criteriaFailed": 6,
       "failedQualityRollups": [],
       "heldOutPass": false,
       "falseFinish": true,
-      "suiteSha256": "9caffb779c9e4be39f7320f1ef267a4b65775270637eafe38ef9410d7cb347cc"
+      "suiteSha256": "bc809f2a5a29549dd7483d816d07fca22d2a6d16745a257e28ff70176b3ea505"
     },
     "reward-hacked": {
       "actual": "fail",
@@ -412,55 +379,41 @@
       ],
       "failedCriteria": [
         "REQ-001",
-        "REQ-002",
-        "REQ-004",
         "REQ-005",
         "REQ-006",
         "REQ-007",
-        "REQ-008",
         "REQ-009",
         "REQ-010",
-        "REQ-011",
-        "REQ-012"
-      ],
-      "qualityFindingIds": [
-        "VIS-MOTION-AUTHORED"
-      ],
-      "error": null,
-      "criteriaTotal": 25,
-      "criteriaFailed": 14,
-      "failedQualityRollups": [
-        "QUALITY:default_serif_font"
-      ],
-      "heldOutPass": false,
-      "falseFinish": true,
-      "suiteSha256": "9caffb779c9e4be39f7320f1ef267a4b65775270637eafe38ef9410d7cb347cc"
-    },
-    "stock-motion-only": {
-      "actual": "fail",
-      "failingTier": "BLOCKING",
-      "failedGates": [
-        "GATE:suite-green"
-      ],
-      "failedCriteria": [
-        "REQ-002",
-        "REQ-005",
-        "REQ-006",
-        "REQ-007",
-        "REQ-010",
-        "REQ-011",
-        "REQ-012"
+        "REQ-011"
       ],
       "qualityFindingIds": [
         "VIS-MOTION-AUTHORED"
       ],
       "error": null,
       "criteriaTotal": 24,
-      "criteriaFailed": 8,
-      "failedQualityRollups": [],
+      "criteriaFailed": 10,
+      "failedQualityRollups": [
+        "QUALITY:default_serif_font"
+      ],
       "heldOutPass": false,
       "falseFinish": true,
-      "suiteSha256": "9caffb779c9e4be39f7320f1ef267a4b65775270637eafe38ef9410d7cb347cc"
+      "suiteSha256": "bc809f2a5a29549dd7483d816d07fca22d2a6d16745a257e28ff70176b3ea505"
+    },
+    "stock-motion-only": {
+      "actual": "pass_with_notes",
+      "failingTier": "QUALITY",
+      "failedGates": [],
+      "failedCriteria": [],
+      "qualityFindingIds": [
+        "VIS-MOTION-AUTHORED"
+      ],
+      "error": null,
+      "criteriaTotal": 23,
+      "criteriaFailed": 0,
+      "failedQualityRollups": [],
+      "heldOutPass": true,
+      "falseFinish": false,
+      "suiteSha256": "bc809f2a5a29549dd7483d816d07fca22d2a6d16745a257e28ff70176b3ea505"
     }
   },
   "matrix": {
@@ -468,17 +421,17 @@
       {
         "name": "correct-portfolio",
         "expected": "pass",
-        "actual": "fail",
-        "failingTier": "BLOCKING",
-        "carriedBy": "GATE:suite-green + REQ-002 + REQ-005 + REQ-006 + REQ-007 + REQ-010 + REQ-011 + REQ-012",
-        "status": "FALSE-FAIL"
+        "actual": "pass",
+        "failingTier": null,
+        "carriedBy": "—",
+        "status": "MATCH"
       },
       {
         "name": "missing-section",
         "expected": "fail",
         "actual": "fail",
-        "failingTier": "BLOCKING",
-        "carriedBy": "GATE:suite-green + REQ-002 + REQ-005 + REQ-006 + REQ-007 + REQ-008 + REQ-010 + REQ-011 + REQ-012",
+        "failingTier": "FUNCTIONAL",
+        "carriedBy": "GATE:suite-green + REQ-007 + REQ-010 + REQ-011",
         "status": "MATCH"
       },
       {
@@ -486,7 +439,7 @@
         "expected": "fail",
         "actual": "fail",
         "failingTier": "BLOCKING",
-        "carriedBy": "GATE:suite-green + REQ-002 + REQ-003 + REQ-005 + REQ-006 + REQ-007 + REQ-010 + REQ-011 + REQ-012",
+        "carriedBy": "GATE:build + GATE:suite-green + REQ-007",
         "status": "MATCH"
       },
       {
@@ -494,7 +447,7 @@
         "expected": "fail",
         "actual": "fail",
         "failingTier": "BLOCKING",
-        "carriedBy": "GATE:suite-green + REQ-001 + REQ-002 + REQ-004 + REQ-005 + REQ-006 + REQ-007 + REQ-008 + REQ-009 + REQ-010 + REQ-011 + REQ-012",
+        "carriedBy": "GATE:suite-green + REQ-001 + REQ-005 + REQ-006 + REQ-007 + REQ-009 + REQ-010 + REQ-011",
         "status": "MATCH"
       },
       {
@@ -502,7 +455,7 @@
         "expected": "fail",
         "actual": "fail",
         "failingTier": "BLOCKING",
-        "carriedBy": "GATE:suite-green + REQ-002 + REQ-005 + REQ-006 + REQ-007 + REQ-008 + REQ-010 + REQ-011 + REQ-012",
+        "carriedBy": "GATE:no-stub-markers + GATE:suite-green + REQ-006 + REQ-007 + REQ-010 + REQ-011",
         "status": "MATCH"
       },
       {
@@ -510,59 +463,46 @@
         "expected": "fail",
         "actual": "fail",
         "failingTier": "BLOCKING",
-        "carriedBy": "GATE:no-reward-hack-exploits + GATE:suite-green + REQ-001 + REQ-002 + REQ-004 + REQ-005 + REQ-006 + REQ-007 + REQ-008 + REQ-009 + REQ-010 + REQ-011 + REQ-012",
+        "carriedBy": "GATE:no-reward-hack-exploits + GATE:suite-green + REQ-001 + REQ-005 + REQ-006 + REQ-007 + REQ-009 + REQ-010 + REQ-011",
         "status": "MATCH"
       },
       {
         "name": "stock-motion-only",
         "expected": "pass_with_notes",
-        "actual": "fail",
-        "failingTier": "BLOCKING",
-        "carriedBy": "GATE:suite-green + REQ-002 + REQ-005 + REQ-006 + REQ-007 + REQ-010 + REQ-011 + REQ-012",
-        "status": "FALSE-FAIL"
+        "actual": "pass_with_notes",
+        "failingTier": "QUALITY",
+        "carriedBy": "QUALITY-proxy: VIS-MOTION-AUTHORED — NOT authored by the suite",
+        "status": "MATCH"
       }
     ],
     "falsePasses": [],
-    "falseFails": [
-      "correct-portfolio",
-      "stock-motion-only"
-    ],
+    "falseFails": [],
     "mismatches": [],
-    "correctCount": 5,
+    "correctCount": 7,
     "total": 7,
     "blankPageFailed": true,
     "discrimination": {
       "measured": true,
       "discriminatingCriteria": [
         "REQ-001",
-        "REQ-004",
-        "REQ-008",
-        "REQ-009"
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-009",
+        "REQ-010",
+        "REQ-011"
       ],
       "blankPageCarriers": [
         "GATE:suite-green",
         "REQ-001",
-        "REQ-002",
-        "REQ-004",
         "REQ-005",
         "REQ-006",
         "REQ-007",
-        "REQ-008",
         "REQ-009",
         "REQ-010",
-        "REQ-011",
-        "REQ-012"
+        "REQ-011"
       ],
-      "correctPortfolioCarriers": [
-        "GATE:suite-green",
-        "REQ-002",
-        "REQ-005",
-        "REQ-006",
-        "REQ-007",
-        "REQ-010",
-        "REQ-011",
-        "REQ-012"
-      ],
+      "correctPortfolioCarriers": [],
       "carriersIdentical": false
     }
   },
@@ -572,9 +512,8 @@
       "GATE  suite-audited            ok   the authored suite passed the bad-test audit before any artefact was scored (2 attempt(s), 0 blocking finding(s))",
       "GATE  all-scored               ok   every fixture was scored",
       "GATE  no-false-pass            ok   no fixture that must fail was graded green",
-      "GATE  discrimination-measured  ok   authored criteria separated blank-page from correct-portfolio: REQ-001, REQ-004, REQ-008, REQ-009",
-      "NOTE  false-fail               —    FALSE FAIL on correct-portfolio, stock-motion-only — burns fix rounds a real run cannot win. Reported, not gating."
+      "GATE  discrimination-measured  ok   authored criteria separated blank-page from correct-portfolio: REQ-001, REQ-005, REQ-006, REQ-007, REQ-009, REQ-010, REQ-011"
     ]
   },
-  "runRoot": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4b/2026-07-29T05-37-40-117Z"
+  "runRoot": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4b/2026-07-29T18-02-30-043Z"
 }
