@@ -136,6 +136,18 @@ export function graphResumeState(events: readonly GraphSseEvent[]): GraphResumeS
  * The resumed session's ROOT is the exception: it is the same session, so it maps
  * onto the existing root rather than minting a second one.
  *
+ * WHICH RESTS ON `parent === null` NAMING EXACTLY ONE NODE PER SEGMENT — read off
+ * `graph-emit.ts`, not assumed, because if two parentless agents could arrive in
+ * one segment they would BOTH map onto `base.rootNode` and merge, which is this
+ * task's own failure by a third road. They cannot: `GraphProjection.rootNode()`
+ * (`graph-emit.ts:207-224`) memoises `#root` and pushes the only `parent: null`
+ * event once per projection, and every task's parent is `spawned ?? root`
+ * (`:277`) — a task whose spawn origin is unknown is parented onto the root with
+ * `attribution: "inferred"`, never left parentless. No guard is written here for
+ * a second parentless agent because no branch could produce one, and a guard
+ * whose branch cannot be reached is a claim with no check behind it. If that
+ * emitter ever changes, this is the line that has to change with it.
+ *
  * ONE REMAP PER SEGMENT. The mapping is closed over, so the same node id seen
  * twice inside one segment resolves to one id; a THIRD segment builds a fresh
  * remap from `graphResumeState` of the already-remapped stream.
