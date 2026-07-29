@@ -278,3 +278,110 @@ test("THE KEY IS NEVER PRINTED, even when the server echoes it back at us", asyn
   assert.match(all, /INVALID_ARGUMENT|400/, "while the diagnosis still survives");
   await fake.close();
 });
+
+test("the poster is emitted beside the mp4, and it is a real webp", async (t) => {
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(existsSync(f.poster), true, "leg-1-poster.webp, the name the reference site uses");
+  const head = readFileSync(f.poster).subarray(0, 12);
+  assert.equal(head.subarray(0, 4).toString(), "RIFF", "magic bytes, not an exit code");
+  assert.equal(head.subarray(8, 12).toString(), "WEBP");
+  assert.match(r.stdout, /-poster\.webp/, "both artefacts are announced");
+  await fake.close(); // ADDED: the plan omits it, and a live handle hangs the file.
+});
+
+test("A BROKEN CONVERTER COSTS NOTHING — the poster is made before the call", async (t) => {
+  // The still is the first frame, so the poster never needed the video. Making
+  // it first means a converter that exits 0 and writes nothing is caught while
+  // the request log is still empty. sips on this host exits 13 and writes
+  // nothing; a converter that lies about success is the same failure, quieter.
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const liar = mkdtempSync(join(tmpdir(), "liar-"));
+  writeFileSync(join(liar, "cwebp"), "#!/bin/sh\nexit 0\n", { mode: 0o755 }); // succeeds, writes nothing
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], {
+    base: fake.url,
+    env: { PATH: `${liar}:${process.env.PATH}` },
+  });
+  assert.notEqual(r.code, 0);
+  assert.equal(existsSync(f.out), false);
+  assert.equal(fake.requests.length, 0, "THE POINT: the metered call never happened");
+  await fake.close();
+});
+
+test("THE PROBE IS FUNCTIONAL, NOT `command -v` — it falls through a candidate that lies", async (t) => {
+  // ADDED, and DEFERRED HERE FROM THE VALIDATION TASK ON PURPOSE. Written where
+  // the plan puts the probe, it could only observe success: nothing read
+  // CONVERTER yet, so degrading the probe to `command -v` changed no outcome
+  // and the test stayed green through its own mutation. It only becomes a check
+  // once make_poster consumes the selection.
+  //
+  // Even here the two forms agree in most shapes: where every candidate is
+  // unusable, both die before the POST and the observation is identical. The
+  // only shape that separates them is a FIRST candidate that reports success
+  // and produces nothing, with a WORKING second one behind it -- `command -v`
+  // commits to the liar and the run dies, a functional probe walks past it.
+  //
+  // sips is stubbed rather than used because sips-316 on Darwin 25.6 cannot
+  // write webp at all (measured: exit 13, no file). That is CONCERN 3, and it
+  // is exactly why a presence check on the spec's own suggested converter is
+  // the wrong preflight.
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const stubs = mkdtempSync(join(tmpdir(), "liar-first-"));
+  writeFileSync(join(stubs, "cwebp"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(
+    join(stubs, "sips"),
+    // A stand-in for a host whose sips CAN write webp: find --out, write RIFF....WEBP.
+    '#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = "--out" ]; then out="$2"; fi\n  shift\ndone\n' +
+      '[ -n "$out" ] || exit 1\nprintf \'RIFF\\74\\0\\0\\0WEBPVP8 \' > "$out"\nexit 0\n',
+    { mode: 0o755 },
+  );
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], {
+    base: fake.url,
+    env: { PATH: `${stubs}:${process.env.PATH}` },
+  });
+  assert.equal(r.code, 0, `the working second candidate must be reached, not the liar: ${r.stderr}`);
+  assert.equal(fake.requests.filter((q) => q.method === "POST").length, 1, "and the run proceeded to spend");
+  await fake.close();
+});
+
+test("THE POSTER IS MADE BEFORE THE POST — proven by a converter that only fails on the REAL still", async (t) => {
+  // ADDED, because the plan's own ordering mutation does not go red and I
+  // watched it not go red: move `make_poster` to after the download and all
+  // sixteen tests stay green. The reason is that the plan's broken-converter
+  // fixture -- a cwebp that exits 0 and writes nothing -- is killed by the
+  // functional PROBE, which already ran before the POST. So "A BROKEN CONVERTER
+  // COSTS NOTHING" passes whatever make_poster's position is, and the cost
+  // control the whole task exists for was untested. Same for make_poster's
+  // "assert the output, not the exit code": with the probe eating the liar
+  // first, that assertion is never reached either.
+  //
+  // The discriminating shape is a converter that PASSES the probe and FAILS on
+  // the real work -- which is also the realistic one: the probe converts a 1x1
+  // with no flags, make_poster adds `-resize 1280 0`. This stub honours the
+  // probe call and reports success while writing nothing for the resize call.
+  //
+  // With the poster first, the run dies with an EMPTY request log. With it
+  // after the download, the leg has already been paid for.
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const realCwebp = execFileSync("/usr/bin/which", ["cwebp"], { encoding: "utf8" }).trim();
+  const stubs = mkdtempSync(join(tmpdir(), "resize-liar-"));
+  writeFileSync(
+    join(stubs, "cwebp"),
+    `#!/bin/sh\nfor a in "$@"; do\n  [ "$a" = "-resize" ] && exit 0\ndone\nexec ${realCwebp} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], {
+    base: fake.url,
+    env: { PATH: `${stubs}:${process.env.PATH}` },
+  });
+  assert.equal(r.code, 1, `the poster failure is a validation-class refusal: ${r.stderr}`);
+  assert.match(r.stderr, /poster conversion produced no file/, "and it is make_poster that reports, not the probe");
+  assert.equal(fake.requests.length, 0, "THE POINT: the poster failed while the request log was still empty");
+  assert.equal(existsSync(f.out), false);
+  await fake.close();
+});
