@@ -172,6 +172,8 @@ import type {
 import { describeEnvironment, environmentFromInit } from "../build-environment.js";
 import type { InitEnvelope, RunEnvironment } from "../build-environment.js";
 import { subscriptionSubprocessEnv } from "../subprocess-env.js";
+import { chainPreToolUse, makeAntiSlopHook, makeMotionStopHook, makeWorkspaceReader } from "./antislop-hook.js";
+import type { AntiSlopObserver } from "./antislop-hook.js";
 import { makeDelegationHook } from "./delegation-hook.js";
 import type { DelegationObserver } from "./delegation-hook.js";
 import { GraphProjection } from "../graph-emit.js";
@@ -725,6 +727,12 @@ export function buildOptions(
    * its return value discarded, and is wrapped in a try/catch.
    */
   observeDelegation: DelegationObserver | null = null,
+  /**
+   * A bystander on the anti-slop gate (Phase 2a). ADDITIVE and defaulted to
+   * null, on the same terms as `observeDelegation`: it is invoked after the
+   * decision, its return value is discarded, and it is wrapped in a try/catch.
+   */
+  observeAntiSlop: AntiSlopObserver | null = null,
 ): Options {
   const workspace = canonicaliseForDecision(request.workspace);
   const sealedRoots = request.sealedRoots.map((root) => canonicaliseForDecision(root));
@@ -765,7 +773,31 @@ export function buildOptions(
     // (the allow control billed 20639), and not one `background_tasks_changed`
     // envelope. See delegation-hook.ts for the rest of what was measured and
     // what was not.
-    hooks: { PreToolUse: [makeDelegationHook(request.allowedAgents, observeDelegation)] },
+    //
+    // PHASE 2a CHAINS THE ANTI-SLOP WRITE GATE INTO THE SAME SLOT rather than
+    // registering a second matcher. Probe E registered three slots and ALL THREE
+    // fired for the same `tool_use_id`, so which one carried the DECISION was
+    // never measured — a second matcher would stack a new craft rule on top of
+    // an unmeasured precedence question, and the failure mode is silent in both
+    // directions. `chainPreToolUse` consults delegation FIRST and returns the
+    // first stopping output, so every delegation denial keeps its exact string
+    // and its exact precedence; two of those strings are pinned by tests and
+    // reach the model verbatim.
+    hooks: {
+      PreToolUse: [
+        chainPreToolUse(
+          makeDelegationHook(request.allowedAgents, observeDelegation),
+          makeAntiSlopHook({ observe: observeAntiSlop }),
+        ),
+      ],
+      // LAYER 2, THE COMPLETION GATE (spec §8). It abstains on a workspace with
+      // no web surface, abstains when `stop_hook_active` says it already blocked
+      // once, and escalates after two blocks — a completion gate that can loop
+      // is a build that never finishes for a reason nothing in the ticket
+      // predicts.
+      Stop: [makeMotionStopHook(makeWorkspaceReader(workspace), { observe: observeAntiSlop })],
+      SubagentStop: [makeMotionStopHook(makeWorkspaceReader(workspace), { observe: observeAntiSlop })],
+    },
     // NO `agents:` KEY, AND ITS ABSENCE IS THE MEASUREMENT — NOT AN OVERSIGHT.
     //
     // This object carried one `AgentDefinition` per shortlisted agent until
@@ -1248,6 +1280,26 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
           tool: observation.tool,
           decision: observation.decision,
           reason: observation.reason,
+        }),
+      );
+    },
+    // PHASE 2a. Every anti-slop fire is logged with rule + agent, so the
+    // false-positive rate is measured from real runs rather than guessed
+    // (spec §8). An ESCALATION is logged at `warn`: it is the case where the
+    // gate gave up and let the write through, and the orchestrator is the one
+    // that has to know.
+    (observation) => {
+      sink.log(
+        observation.decision === "escalated" ? "warn" : "info",
+        `anti-slop ${observation.layer} gate ${observation.decision}: ${observation.ruleId} ` +
+          `(${observation.agent}) — ${observation.evidence}`,
+      );
+      emitGraph(
+        graph.hookDecision({
+          event: observation.layer === "write" ? "PreToolUse" : "Stop",
+          tool: observation.ruleId,
+          decision: observation.decision === "deny" ? "deny" : "allow",
+          reason: observation.decision === "deny" ? observation.evidence : "",
         }),
       );
     });

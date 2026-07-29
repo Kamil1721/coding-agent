@@ -1,0 +1,78 @@
+{
+  "probe": "antislop-2a",
+  "runStamp": "2026-07-29T11:37:06.360Z",
+  "arms": {
+    "armed": {
+      "workspace": "/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/antislop-armed-VhokdZ",
+      "attemptedViolatingWrite": true,
+      "violationOnDisk": false,
+      "violationContainsPicsum": false,
+      "cleanOnDisk": true,
+      "denialReasons": [
+        "Blocked by the craft floor — AS-PLACEHOLDER-IMAGE (spec §8 Layer 1).\nIn /var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/antislop-armed-VhokdZ/hero.html: \"https://picsum.photos\nPlaceholder image services are not shippable content. Use a real asset committed to the workspace, or a design still from `design-refs/`. If no image exists yet, write the section without one rather than reserving space with a generated rectangle. (A specific chosen photograph, e.g. an `images.unsplash.com/photo-...` URL, is fine — it is the random/dimension generators that are not.)\nRewrite the element and write the file again. This is a quality rule, not a permission problem: the same write succeeds once the violation is gone."
+      ],
+      "otherErrors": [],
+      "result": {
+        "subtype": "success",
+        "numTurns": 3
+      },
+      "threw": null
+    },
+    "control": {
+      "workspace": "/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/antislop-control-ym9pcF",
+      "attemptedViolatingWrite": true,
+      "violationOnDisk": true,
+      "violationContainsPicsum": true,
+      "cleanOnDisk": true,
+      "denialReasons": [],
+      "otherErrors": [],
+      "result": {
+        "subtype": "success",
+        "numTurns": 3
+      },
+      "threw": null
+    },
+    "stop-baseline": {
+      "hookFired": 1,
+      "returned": {
+        "continue": true
+      },
+      "assistantTurns": 1,
+      "assistantTexts": [
+        "one"
+      ],
+      "informational": [],
+      "result": {
+        "subtype": "success",
+        "numTurns": 1
+      },
+      "threw": null
+    },
+    "stop-block": {
+      "hookFired": 2,
+      "returned": {
+        "decision": "block",
+        "reason": "MOTION BAR: this build carries no authored motion. Add one focal sequence, then stop."
+      },
+      "assistantTurns": 2,
+      "assistantTexts": [
+        "one",
+        "I appreciate the feedback, but I need more context to help effectively. Could you clarify:\n\n1. **What build are you refe"
+      ],
+      "informational": [],
+      "result": {
+        "subtype": "success",
+        "numTurns": 2
+      },
+      "threw": null
+    }
+  },
+  "verdict": {
+    "layer1": "PASS",
+    "layer1Positive": true,
+    "layer1NegativeControl": true,
+    "layer2StopHookFired": true,
+    "layer2BlockMakesModelContinue": true,
+    "layer2Note": "`decision:'block'` on Stop MADE THE MODEL CONTINUE with the reason — it is a completion gate in the 'keep working' sense, which is exactly what spec §8 Layer 2 asks for."
+  }
+}
