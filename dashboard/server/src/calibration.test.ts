@@ -51,6 +51,14 @@
  *      7/7 green, and the reason the false-pass test below now asserts its own
  *      set before iterating it. An assertion whose scope can be deleted without
  *      anything going red is not a check on the grader; it is a check on nothing.
+ *      Against the fix: RED, 1 of 7, that test alone.
+ *   5. Hardcoding `heldOutPass: true` in `gradeFixture` turns the OTHER half of
+ *      that same fix red — 1 of 7, again alone, while every fixture still grades
+ *      `fail` so mutation 1's test stays green. Two assertions were added there
+ *      and both were mutated, separately: a fix proved by one mutation is half
+ *      proved, and the unproven half would have been the same defect one layer
+ *      down. It is a hardcoded boolean on purpose — that is ledger defect #4's
+ *      own shape, and this is the assertion that would have to catch it.
  *
  * BOTH does-not-skip branches were exercised, not just the convenient one.
  * `environmentProblem()` can fail for a missing daemon or a missing image, and a
@@ -249,6 +257,15 @@ describe("CALIBRATION(scoring-path)", () => {
       // blank-page, missing-section and stub-markers under a gutted suite. The
       // pass direction is asserted below on correct-portfolio; this is the fail
       // direction, and nothing else in this file reads it.
+      //
+      // AND THIS CLAUSE WAS MUTATED ON ITS OWN (M5), not left to inherit M4's
+      // proof. Hardcoding `heldOutPass: true` in gradeFixture fails THIS
+      // assertion, 1 of 7, while every fixture still grades `fail` — so the
+      // outcome-and-tier test stays green and this one is demonstrably not a
+      // second spelling of it. M1 is not evidence of that: `outcome` flipped in
+      // the same run, so M1 alone would leave this clause's failure mode a
+      // strict subset of the assertion above it, which is the defect this whole
+      // test was rewritten to escape.
       assert.equal(
         verdict.heldOutPass,
         false,

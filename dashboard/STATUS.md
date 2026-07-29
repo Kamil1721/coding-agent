@@ -639,6 +639,20 @@ failed — the false-pass test alone, with the other six still green**, which is
 the point: it now has a failure mode of its own rather than one it inherits.
 Restored (`76303356…6cd1b`). Recorded as `M4-empty-the-false-pass-set`.
 
+**And a fifth, because the fix added TWO assertions and M4 proves only one.**
+The `heldOutPass === false` clause was itself a new check nobody had watched
+fail — the same defect one layer down — and the only evidence `heldOutPass` can
+move at all was M1, where `outcome` flipped in the same run, leaving its failure
+mode a *strict subset* of the assertion beside it. So it was given a mutation
+that moves that field and nothing else: `heldOutPass: record.heldOutPass` →
+`heldOutPass: true` in `gradeFixture`. **Exit 1, 1 of 7, the false-pass test
+alone** — every fixture still graded `fail`, so the outcome-and-tier test stayed
+green, and "the correct artefact is not failed" (which wants `heldOutPass ===
+true`) stayed green too. A hardcoded boolean on purpose: that is ledger defect
+#4's own shape, and this assertion is what would have to catch it. Restored
+(`927d1952…1a0379`, `git diff HEAD` empty). Recorded as
+`M5-hardcode-heldoutpass-true`.
+
 **Does-not-skip, verified by negative control on BOTH branches.**
 `environmentProblem()` can fail for a missing daemon or a missing image, and a
 fresh clone hits the second while a laptop with Docker Desktop closed hits the
@@ -1409,7 +1423,7 @@ running the mutation is.
 | 5 | **The probe harness's own exit code** | The gate keyed on `notes.startsWith("INCONCLUSIVE:")` alone, so a plain `FAIL` exited **0**. Run 1 recorded three FAILs — including the probe gating the whole approach — and exited 0. This was the defect the harness was built to prevent, sitting inside the harness. |
 | 6 | **The Task 5 token seam** | The per-model fix was reverted at its SOLE production call site and the suite stayed byte-identical at 200/198/0/2 — every assertion lived where the function was called directly. The arithmetic was then lifted into a seam and pinned by five tests; an auditor reverted the CALL SITE and the suite stayed green at 229/227/0/2. **The seam moved the hole one line; it did not close it.** What closes it is driving `build()` with synthetic envelopes and reading the sink. |
 | 7 | **A test pinning `AgentBounds.effort`** | It asserted a field that was `null` for all 26 agents, whose only reader was a conditional spread into `AgentDefinition.effort` — a route probe I measured does not bind for any name this run can delegate to. Green forever, over a mechanism that does nothing. Deleted 2026-07-29 with the route. |
-| 8 | **The calibration FALSE-PASS test** — `calibration.test.ts`, "no fixture produces a FALSE PASS" | It looped `MUST_FAIL` asserting `outcome === "fail"`. Every `MUST_FAIL` fixture has `expected: "fail"`, which the test ABOVE it already asserts for every fixture — so it was **logically implied and could not fail unless that one already had**. Emptying `MUST_FAIL` (`.slice(0, 0)`, fixtures untouched) left the whole gate **green at 7/7, exit 0**. It survived an adversarial pass of 28 mutations in which 26 went red. Worse: `fixtures.ts` claimed in its header that the false-pass direction was asserted "SEPARATELY and more loudly than overall accuracy" — **a false claim sitting inside the file that documents this very defect.** Closed 2026-07-29: the test now asserts its own derivation and `heldOutPass === false`; re-run under the same mutation it fails ALONE, 1 of 7. |
+| 8 | **The calibration FALSE-PASS test** — `calibration.test.ts`, "no fixture produces a FALSE PASS" | It looped `MUST_FAIL` asserting `outcome === "fail"`. Every `MUST_FAIL` fixture has `expected: "fail"`, which the test ABOVE it already asserts for every fixture — so it was **logically implied and could not fail unless that one already had**. Emptying `MUST_FAIL` (`.slice(0, 0)`, fixtures untouched) left the whole gate **green at 7/7, exit 0**. It survived an adversarial pass of 28 mutations in which 26 went red. Worse: `fixtures.ts` claimed in its header that the false-pass direction was asserted "SEPARATELY and more loudly than overall accuracy" — **a false claim sitting inside the file that documents this very defect.** Closed 2026-07-29: the test now asserts its own derivation and `heldOutPass === false`; re-run under the same mutation it fails ALONE, 1 of 7. **Both new clauses were mutated separately** — M4 empties `MUST_FAIL`, M5 hardcodes `heldOutPass: true` — because a fix proved by one mutation leaves the other clause exactly as unproven as the thing being fixed. |
 | 9 | **Two held-out-leak assertions in `run-report.test.ts`** | `assert.doesNotMatch(verdict, HELD_OUT_TITLE)` and the `holdout test T-2` twin, over `verdict.md`. That run never reaches the gate, so the file is the **no-verdict page, which prints no criterion prose at all** — there is nothing for a criterion-borne leak to ride in on. MEASURED: rendering that page from criteria whose statements carried both markers gives 807 bytes containing neither; the same criteria marked scored give 1879 bytes containing both. The `forAssumptions` blanking of `evidenceRequired` is the same shape — passing the field through leaves all ten tests green, because `ApiCriterion` **has no such field**. Milder than the others and said so: the boundary IS proven, by the `assumptions.md` twins (red under a `#recordCriteria` mutation) and by `verdict.test.ts` against `detail`/`evidenceRef`. Relabelled at the assertion site 2026-07-29, not deleted — they go live the day the run reaches the gate. |
 
 Instances 2, 3, 6 and 7 share a sharper sub-shape worth naming on its own: **the

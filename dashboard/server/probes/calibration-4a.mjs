@@ -202,35 +202,16 @@ const record = {
 
 mkdirSync(RESULTS, { recursive: true });
 const outFile = join(RESULTS, label === "baseline" ? "calibration-4a.json" : `calibration-4a.${label}.json`);
-// The mutation records are the one thing in this file that a re-run cannot
-// reproduce — each took a temporary edit to committed source. Losing them on the
-// next measurement would quietly delete the evidence that calibration can fail,
-// which is the only evidence that it is a test rather than a report.
-try {
-  const previous = JSON.parse(readFileSync(outFile, "utf8"));
-  for (const key of ["mutations", "motionSatisfierSplit"]) {
-    if (previous[key] !== undefined) record[key] = previous[key];
-  }
-} catch {
-  /* no previous record: nothing to carry forward */
-}
-if (record.mutations === undefined) {
-  // Said out loud rather than left as an absent key. A measurement file with no
-  // mutation record is a file nobody has watched fail.
-  record.mutationsMissing =
-    "NO MUTATION RECORD. This measurement has not been shown capable of going red. See " +
-    "docs/superpowers/plans/2026-07-28-phase-2e-grader.md, Revision 2 R4.";
-}
 
 /* -------------------------------------------------------------------------
- * PROVENANCE — STAMPED ON EVERY WRITE, NOT CARRIED FORWARD
+ * PROVENANCE — STAMPED ON EVERY WRITE, NOT HAND-WRITTEN
  *
  * Two kinds of claim live in this file and they do not deserve the same trust.
  * `.fixtures[*]` is DERIVED: every field on it, including outcomeMatches /
  * tierMatches / falsePass, comes from a live gradeFixture() call in the run that
- * wrote the file. `.mutations[*]` is TESTIMONY: every boolean under it is a
- * literal an author typed, carried forward verbatim by the block above, and no
- * run recomputes any of it.
+ * wrote the file. `.mutations[*]` and `.environmentAbsent` are TESTIMONY: every
+ * boolean under them is a literal an author typed, carried forward verbatim by
+ * the block below, and no run recomputes any of it.
  *
  * That is exactly the shape of this repo's ledger defect #4 — a probe that
  * shipped `positive: true` hardcoded — and commit e7f9a1b exists precisely
@@ -239,11 +220,15 @@ if (record.mutations === undefined) {
  * in the artefact itself: a reader scanning `.mutations[*].calibrationWentRed`
  * must be able to see, without leaving the JSON, that they are reading a claim.
  *
- * IT IS STAMPED RATHER THAN HAND-WRITTEN because the carry-forward above copies
- * only `mutations` and `motionSatisfierSplit`. A marker typed once into the JSON
- * would be dropped on the next baseline write and the file would quietly go back
- * to reading as machine-derived — the same drift it exists to prevent. Stamping
- * unconditionally also means it cannot be edited out of a single entry.
+ * IT IS STAMPED RATHER THAN HAND-WRITTEN because the carry-forward below copies
+ * a fixed list of keys. A marker typed once into the JSON would be dropped on the
+ * next baseline write and the file would quietly go back to reading as
+ * machine-derived — the same drift it exists to prevent. Stamping unconditionally
+ * also means it cannot be edited out of a single entry.
+ *
+ * IT IS ASSIGNED HERE, BEFORE THE CARRY-FORWARD, so that it serialises directly
+ * ABOVE the block it describes rather than below it. A label a reader meets after
+ * the thing it labels is a label they have already not read.
  * ---------------------------------------------------------------------- */
 const MUTATION_EVIDENCE_KIND =
   "HAND-RECORDED TESTIMONY, NOT MEASURED BY THIS PROBE. Every boolean in this object — executed, " +
@@ -258,10 +243,13 @@ record.evidenceProvenance = {
     "falsePass verdicts computed from them. All produced by a live gradeFixture() call in the run that " +
     "wrote this file, and .summary is derived from those rows.",
   handRecorded:
-    ".mutations[*] (see .mutations[*].evidenceKind, stamped on every write), .motionSatisfierSplit.perFixture " +
-    "(which declares its own INHERITED provenance) and .caveats (authored prose). A mutation costs a " +
-    "temporary edit to committed source plus a container run per fixture, so recomputing them on every " +
-    "probe invocation is not the trade this file makes — naming them as testimony is.",
+    ".mutations[*] (see .mutations[*].evidenceKind, stamped on every write), .environmentAbsent (the " +
+    "does-not-skip negative control, measured in an environment this run is not in), " +
+    ".motionSatisfierSplit.perFixture (which declares its own INHERITED provenance) and .caveats " +
+    "(authored prose). EVERYTHING NOT NAMED IN `derived` ABOVE IS IN THIS LIST — that is the contract " +
+    "this key makes, and the carry-forward list in calibration-4a.mjs is the same list seen from the " +
+    "other side. A mutation costs a temporary edit to committed source plus a container run per fixture, " +
+    "so recomputing them on every probe invocation is not the trade this file makes — naming them is.",
   whyThisKeyExists:
     "Ledger defect #4: a probe shipped `positive: true` as a hardcoded literal. Commit e7f9a1b exists " +
     "because a wrong literal shipped in .mutations here — M3 recorded a red calibration run that had " +
@@ -269,6 +257,34 @@ record.evidenceProvenance = {
     "with no label between them is how that happens twice.",
   stampedOnEveryWrite: true,
 };
+// The hand-recorded blocks are the one thing in this file that a re-run cannot
+// reproduce — each took a temporary edit to committed source, or an environment
+// this run is not in. Losing them on the next measurement would quietly delete
+// the evidence that calibration can FAIL and that it does not SKIP, which is the
+// only evidence it is a test rather than a report.
+//
+// `environmentAbsent` was added to this list on 2026-07-29 after it was found
+// missing from it: the record of both does-not-skip branches — the negative
+// control for the whole standing gate — was one baseline run away from being
+// deleted, silently, by the probe that is supposed to preserve it. Anything named
+// in `evidenceProvenance.handRecorded` below MUST appear here; the two lists are
+// the same list seen from two sides.
+try {
+  const previous = JSON.parse(readFileSync(outFile, "utf8"));
+  for (const key of ["mutations", "motionSatisfierSplit", "environmentAbsent"]) {
+    if (previous[key] !== undefined) record[key] = previous[key];
+  }
+} catch {
+  /* no previous record: nothing to carry forward */
+}
+if (record.mutations === undefined) {
+  // Said out loud rather than left as an absent key. A measurement file with no
+  // mutation record is a file nobody has watched fail.
+  record.mutationsMissing =
+    "NO MUTATION RECORD. This measurement has not been shown capable of going red. See " +
+    "docs/superpowers/plans/2026-07-28-phase-2e-grader.md, Revision 2 R4.";
+}
+
 for (const mutation of record.mutations ?? []) {
   mutation.evidenceKind = MUTATION_EVIDENCE_KIND;
 }

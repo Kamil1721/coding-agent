@@ -33,6 +33,14 @@
  * could not fail on its own. Emptying `MUST_FAIL` left the entire gate green at
  * 7/7. Recorded as M4 in probes/results/calibration-4a.json.
  *
+ * BOTH CLAUSES ABOVE WERE MUTATED SEPARATELY, because a fix proved by one
+ * mutation is half proved and the second clause was itself a new check nobody
+ * had watched fail. M4 empties `MUST_FAIL` — the derivation assertion fails, 1
+ * of 7. M5 hardcodes `heldOutPass: true` in `gradeFixture` — the heldOutPass
+ * assertion fails, 1 of 7, while every fixture still grades `fail` so the
+ * outcome-and-tier test stays GREEN. Each fails ALONE, which is the property
+ * that distinguishes a second check from a louder copy of the first.
+ *
  * THE DISCRIMINATING FIXTURE IS `blank-page`. It serves valid HTML, throws no
  * console error, and returns 200 on every route. A grader that only checks
  * "did anything explode" passes it. A grader that checks "is the thing the

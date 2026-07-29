@@ -243,7 +243,7 @@
   ],
   "evidenceProvenance": {
     "derived": ".fixtures[*] — outcome, failingTier, failedGates, failedCriteria, qualityCriteria, qualityFindings, exploitFindings, heldOutPass, suiteSha256, verdictHeadline and the outcomeMatches / tierMatches / falsePass verdicts computed from them. All produced by a live gradeFixture() call in the run that wrote this file, and .summary is derived from those rows.",
-    "handRecorded": ".mutations[*] (see .mutations[*].evidenceKind, stamped on every write), .motionSatisfierSplit.perFixture (which declares its own INHERITED provenance) and .caveats (authored prose). A mutation costs a temporary edit to committed source plus a container run per fixture, so recomputing them on every probe invocation is not the trade this file makes — naming them as testimony is.",
+    "handRecorded": ".mutations[*] (see .mutations[*].evidenceKind, stamped on every write), .environmentAbsent (the does-not-skip negative control, measured in an environment this run is not in), .motionSatisfierSplit.perFixture (which declares its own INHERITED provenance) and .caveats (authored prose). EVERYTHING NOT NAMED IN `derived` ABOVE IS IN THIS LIST — that is the contract this key makes, and the carry-forward list in calibration-4a.mjs is the same list seen from the other side. A mutation costs a temporary edit to committed source plus a container run per fixture, so recomputing them on every probe invocation is not the trade this file makes — naming them is.",
     "whyThisKeyExists": "Ledger defect #4: a probe shipped `positive: true` as a hardcoded literal. Commit e7f9a1b exists because a wrong literal shipped in .mutations here — M3 recorded a red calibration run that had never been executed — and nothing caught it. Derived and hand-recorded claims sitting in one JSON with no label between them is how that happens twice.",
     "stampedOnEveryWrite": true
   },
@@ -438,7 +438,37 @@
         "firstFailure": "MUST_FAIL is no longer every fixture declared to fail. Whatever it holds now, the fixtures it dropped are graded by nothing in this test — and the catastrophic direction is the one that must never narrow quietly (deepStrictEqual: actual [], expected the five fixtures whose `expected` is \"fail\")",
         "whyItMatters": "The other six tests stayed GREEN, including 'the committed suites produce the expected outcome AND tier'. That is the whole point of the fix: the false-pass test now has a failure mode of its own rather than one it inherits, so it fails on this mutation ALONE."
       },
+      "companionMutation": "M5 covers the OTHER half of the fix. M4 proves the derivation assertion fails alone; it does not touch the heldOutPass assertion added in the same change. Two assertions, two mutations — a fix proved by one mutation is half proved.",
       "theFix": "calibration.test.ts's false-pass test now asserts its own scope before iterating it — that MUST_FAIL deep-equals the live re-derivation `FIXTURES.filter(f => f.expected === \"fail\")`, and that it holds at least five fixtures — and then asserts `heldOutPass === false` on each, which is the bake-off's own co-primary metric from computeHeldOutPass and is read by nothing else in that file in the fail direction. M1 measured heldOutPass flipping to TRUE on three fixtures under a gutted suite, so it is a metric a false pass really can fool, not a formality. fixtures.ts's header claim was rewritten to state exactly these two things rather than left as prose the implementation did not support."
+    },
+    {
+      "id": "M5-hardcode-heldoutpass-true",
+      "evidenceKind": "HAND-RECORDED TESTIMONY, NOT MEASURED BY THIS PROBE. Every boolean in this object — executed, reExecutedInThisSession, restored, calibrationWentRed, guardThrew, blankPageFlip.*, fixtureFlips[*].* — is a literal typed by the agent named in `attributedTo`. Nothing here is recomputed on a probe run. To verify one, re-apply the edit in `whatWasChanged` and watch it yourself; do not cite this file.",
+      "attributedTo": "The 2026-07-29 closing agent, first and only execution. Nothing here is inherited.",
+      "why": "M4 fixed the false-pass test by adding TWO assertions — the derivation of MUST_FAIL, and `heldOutPass === false` on each of its members — and proved only the first. The second was then a new check nobody had watched fail, which is the defect being closed, one layer down. Worse, the only evidence heldOutPass could move at all was M1, where `outcome` flipped in the same run: as measured, its failure mode was a SUBSET of the outcome assertion's, and STATUS.md §6's own new rule says a check whose failure mode is a strict subset of another's is not a second check. So it was given a mutation that moves heldOutPass and NOTHING ELSE.",
+      "executed": true,
+      "executedAt": "2026-07-29",
+      "reExecutedInThisSession": true,
+      "whatWasChanged": "src/calibration/grade-fixture.ts ONLY, one line inside verdictFrom(): `heldOutPass: record.heldOutPass` became `heldOutPass: true`. Deliberately chosen as a HARDCODED BOOLEAN, because that is ledger defect #4's own shape — the thing .evidenceProvenance.whyThisKeyExists cites — and it is the failure this assertion exists to catch. No suite, no fixture and no artefact was touched, so every fixture still grades exactly as it does at baseline.",
+      "restored": true,
+      "restoredEvidence": "sha256 of grade-fixture.ts: 927d195271222b07f6b9edc0337d15e7d6dcb31e37294cede13320191a1a0379 before the mutation and after the restore (identical); 25143e272a560a3ad45394ac8089e8b0ab3b5f5a8a55b046a50c4fbca767887d while mutated. `git diff HEAD -- dashboard/server/src/calibration/grade-fixture.ts` is empty; the file is tracked, so git verifies this restore independently of the hash.",
+      "calibrationWentRed": true,
+      "calibrationUnderMutation": {
+        "command": "npm run build --silent && node --test dist/calibration.test.js",
+        "exitCode": 1,
+        "tests": 7,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "failedTests": [
+          "no fixture produces a FALSE PASS — the catastrophic direction"
+        ],
+        "firstFailure": "blank-page: the sealed gate reported heldOutPass=true on a fixture that must fail. Even if the outcome above still reads `fail`, the bake-off's own co-primary metric now calls this artefact green"
+      },
+      "failsAlone": true,
+      "failsAloneEvidence": "THE POINT OF THIS MUTATION, AND IT IS TWO CLAIMS, NOT ONE. (a) Only one of seven tests failed: 'the committed suites produce the expected outcome AND tier' stayed GREEN, because every fixture still graded `fail` — the outcome assertion cannot see this defect, so the heldOutPass assertion is not a duplicate of it. (b) Within the failing test the OUTCOME assertion still passed and the HELDOUTPASS assertion is what threw, so the new clause failed on its own terms rather than riding the one beside it. Also green: 'the correct artefact is not failed', which asserts heldOutPass === TRUE on correct-portfolio — the mutation makes that one MORE true, which is what makes this a discriminating mutation rather than a broad one.",
+      "note": "A different mutation from M4 against the same test, and both were needed: M4 fails on the derivation assertion, M5 on the heldOutPass assertion. Neither can stand in for the other."
     }
   ],
   "motionSatisfierSplit": {
