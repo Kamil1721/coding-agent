@@ -1301,6 +1301,71 @@ we have the second. The visual-substance work is the answer being built.
 ---
 
 
+### 1.14 The visual-substance gate — built, calibrated, and deliberately NOT turned on
+
+The answer to §1.13's closing gap: nothing measures whether a build has substance, and
+a character floor is the invented-bar defect. A vision check can see hollow without
+inventing a number. It was enumerated, implemented behind a flag, attacked with a
+purpose-built false-fail set, and calibrated blind. **The recommendation is to leave it
+in shadow, and the reasoning is worth more than the verdict.**
+
+**Two premises the orchestrator supplied were measured FALSE before any code was
+written**, which is the part of this worth keeping:
+
+1. **`GATE:screenshots-present` does not catch a blank page.** See §6 instance 12. The
+   brief said it did, and told everyone to prove their new check was not a subset of it.
+2. **The capture is viewport-only — there is no `fullPage` anywhere in
+   `scorer-container.ts`.** Measured consequence: `#contact` sits below the fold at all
+   three breakpoints on **every fixture that has one**. `correct-portfolio`'s contact
+   form, its message textarea and its confirmation appear in **no capture at any
+   breakpoint**. So `missing-section` and `stock-motion-only` are indistinguishable from
+   their images, and no visual check can be asked about a contact form today.
+
+**The measurement.** 57 captures over 19 artefacts at 3 breakpoints, from the sealed
+image under `--network=none`, with 171 answers written to disk **before the mapping was
+opened** — blind, and scored by passing `mode:"gating"` as an argument rather than
+editing the default.
+
+```
+seven fixtures     sorts all seven, 0 false fails, 2 true positives, 3 misses
+adversarial set    2 of 8 correct builds fire — 4 gating findings
+fires alone?       NEVER. On every artefact it either fires where a louder check
+                   already fires, or fires alone on a correct build.
+contribution to any run outcome over the committed corpus:  ZERO
+```
+
+**That middle line is the decision.** The flip condition as written — "sorts all seven"
+— **is met**, and meeting it proves nothing: no fixture is non-blank-but-hollow, so a
+gate firing on *nothing* also sorts all seven. That is the M4 defect from instance 8,
+recognised in advance by the design agent and stated as a prerequisite rather than
+discovered later.
+
+**And the literal blocker: it is not wired.** `findingCount` in `verdict.ts` sums unmet
+criteria, unmet gates and held-out counts. There is no arithmetic a visual finding could
+enter, and no parser for the grader's answers. **Flipping the flag today would produce a
+report saying GATING beside a run that behaves identically** — which is strictly worse
+than shadow, because it would read as a check that had been turned on.
+
+**What the entry actually is, measured rather than designed:** a flat-field detector.
+Every frame answered `violated` measures luminance stddev <= 0.001 with 1 distinct
+colour; every `satisfied` frame >= 11.6 with >= 78 colours. No overlap. On the two
+adversarial false fires the flat field was the environment, not the page.
+
+**The calibration argued against its own result in two places**, which is why it is
+trusted here: it reported that a rotated-mapping control did NOT turn the must-not-fire
+row red (a rotation by one handed both must-pass fixtures non-firing answers, so a
+targeted swap was added), and that two thirds of one separation result rested on a pixel
+magnitude the adjudicator chose mid-run rather than on the criterion's wording.
+
+**Carried forward, in order:** wire it into `findingCount` with a parser; land the
+`innerText === 0` corroboration (which makes the entry safe but not useful — after it,
+it fires only where the grader already fails); build an 8th fixture that is non-blank but
+hollow, with its geometry ASSERTED to sit above the fold rather than assumed; then
+re-calibrate. Until all four, shadow is the honest setting.
+
+---
+
+
 ## 2. What I FIXED, and what each defect actually was
 
 ### 2.1 `/api/health` reported "logged in" for a machine with only an API key
@@ -1748,12 +1813,12 @@ Recorded as their word. Where it matters, it is worth re-running yourself.
 
 ---
 
-## 6. The defect this repo keeps shipping — ELEVEN instances, and counting
+## 6. The defect this repo keeps shipping — TWELVE instances, and counting
 
 **New 2026-07-29.** One shape accounts for every false green this project has
 produced: **a check that can only observe success.** It is worth the space
-because the next author will not be caught by the eleven below — they will be
-caught by the twelfth, and the only defence is knowing the shape.
+because the next author will not be caught by the twelve below — they will be
+caught by the thirteenth, and the only defence is knowing the shape.
 
 **Instances 8 and 9 were added the same day the table was written, by an
 adversarial pass over the phase that wrote it.** That is the most useful fact in
@@ -1774,6 +1839,7 @@ running the mutation is.
 | 9 | **Two held-out-leak assertions in `run-report.test.ts`** | `assert.doesNotMatch(verdict, HELD_OUT_TITLE)` and the `holdout test T-2` twin, over `verdict.md`. That run never reaches the gate, so the file is the **no-verdict page, which prints no criterion prose at all** — there is nothing for a criterion-borne leak to ride in on. MEASURED: rendering that page from criteria whose statements carried both markers gives 807 bytes containing neither; the same criteria marked scored give 1879 bytes containing both. The `forAssumptions` blanking of `evidenceRequired` is the same shape — passing the field through leaves all ten tests green, because `ApiCriterion` **has no such field**. Milder than the others and said so: the boundary IS proven, by the `assumptions.md` twins (red under a `#recordCriteria` mutation) and by `verdict.test.ts` against `detail`/`evidenceRef`. Relabelled at the assertion site 2026-07-29, not deleted — they go live the day the run reaches the gate. |
 | 10 | **The reduced-motion specs written to PREVENT instance ten** — `dashboard/tests/canvas-edges.browser.spec.ts` | They declared `test.use({ reducedMotion: "reduce" })`. **Playwright 1.62 dropped `reducedMotion` as a top-level fixture; it belongs inside `contextOptions`.** The bare key is accepted at runtime and **emulates nothing**, so every spec below it ran the browser in its DEFAULT motion state while asserting the reduced-motion rule — a suite that would have gone green whether or not the rule existed. Caught by `npm run typecheck`, not by the tests, and caught *inside the file written to keep the canvas honest about motion*. Fixed at `canvas-edges.browser.spec.ts:154`; the paired negative control at :122 proves the dash disappears only under emulation. **The lesson is the flag's, not the author's: a runtime that silently accepts an option it no longer honours turns a real check into decoration with no error anywhere.** |
 | 11 | **`auditSuite`'s `ticketBrief` argument** — `bakeoff/src/spec-agent.ts` | The option existed, the rule read it, and **the caller never passed it** — though `DeterministicAuditOptions`' own docblock named the caller, the file and the exact line to write: "`auditSuite` in spec-agent.ts already holds the `Ticket` and should pass `ticketBrief: ticket.brief`." Nothing was red, because the prose-floor rule fires with or without the brief **by design** — a rule that disarms itself on a missing optional input is instances 1-10 pointing the other way. So the safe default hid the dead seam. What was lost was not detection but FEEDBACK: with the brief the seat is told ", and the ticket never states 200"; without it, only the generic sentence — and that clause is the entire argument for the rule being BLOCKING, since `mustRegenerate` buys another authoring call and is worth it only if the re-author is told something the last one was not. **The expensive half of the rule was paying for the cheap half's message.** Sub-shape of 2/3/6/7 with a twist: there was no wrong assertion, there was NO assertion. Closed by testing the SEAM through `auditSuite`, not the rule. |
+| 12 | **`GATE:screenshots-present`** — `bakeoff/src/scorer-container.ts:694` | Its name and its own detail string say "a masked, **non-blank** screenshot exists for every declared flow". `nonBlank` is `bytes.byteLength >= MIN_SCREENSHOT_BYTES`, and `MIN_SCREENSHOT_BYTES` is **1024**. MEASURED across 57 captures: `blank-page` renders 2541 / 4468 / 4718 bytes at the three breakpoints and records `nonBlank: true` on all three — **a page with zero glyphs clears the floor by 4.6x**, and the smallest capture in the entire 19-artefact pool was 2541 B. The gate detects a **truncated capture**, not a blank page; it can observe a broken capture pipeline and cannot observe an empty one. **This one was found by an agent correcting the orchestrator.** Four agents were briefed that this gate "already fails a blank page" and told to prove any new check was not a subset of it; one measured the premise instead of accepting it and reported it false. The brief was the defect. A BLOCKING gate whose name overstates it is worse than a missing gate, because every later design reasons from the name. |
 
 Instances 2, 3, 6 and 7 share a sharper sub-shape worth naming on its own: **the
 assertion and the production path were never connected.** A test that calls a
@@ -1787,12 +1853,12 @@ delete the layer, watch the boundary fail, put it back. Every 2026-07-29 claim
 in §0 carries one; the older EXECUTED rows mostly do not, and that is a real
 difference in strength between them.
 
-**Eleven is a running tally, not a final count.** Two docblocks lag it by
+**Twelve is a running tally, not a final count.** Two docblocks lag it by
 construction, and are left rather than swept so the drift stays visible:
 `claude-builder.test.ts:1753` says "six times" (written before instance 7), and
 `calibration.test.ts:19` says "five times" of the narrower *skipped-and-reported-
 green* sub-shape, which is its own count and not this one. If you find a
-twelfth, increment it here and say what it could not see.
+thirteenth, increment it here and say what it could not see.
 
 **Instance 10 adds the one thing the other nine could not show.** Every earlier
 instance was a check whose author had written it wrong. Instance 10 was written
