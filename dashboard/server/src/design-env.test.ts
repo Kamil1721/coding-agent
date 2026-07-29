@@ -220,6 +220,15 @@ test("EXECUTED, SEATBELT: a workspace-only allowWrite DENIES the bare mktemp -d 
       "(allow file-read*)",
       "(allow user-preference-read)",
       '(allow mach-lookup (global-name "com.apple.bsd.dirhelper"))',
+      // THE CLI'S OWN DEFAULTS, NOT JUST OURS. Read out of the shipped binary
+      // (claude-code 2.1.220): the write allowlist is `[...defaults, ...allowWrite]`
+      // and the defaults include `/tmp/claude` and `/private/tmp/claude`, because
+      // the CLI also injects `TMPDIR=${CLAUDE_CODE_TMPDIR || CLAUDE_TMPDIR ||
+      // "/tmp/claude"}` into every sandboxed command. Omitting them here would
+      // make this profile STRICTER than production, and the denial below would be
+      // an artefact of the test rather than evidence about the real sandbox.
+      '(allow file-write* (subpath "/tmp/claude"))',
+      '(allow file-write* (subpath "/private/tmp/claude"))',
       `(allow file-write* (subpath ${JSON.stringify(workspace)}))`,
       "",
     ].join("\n"),
@@ -244,6 +253,20 @@ test("EXECUTED, SEATBELT: a workspace-only allowWrite DENIES the bare mktemp -d 
     bare.stderr,
     /not permitted/i,
     `expected a sandbox denial; got status ${String(bare.status)} and stderr ${bare.stderr}`,
+  );
+
+  // AND THE CLI'S OWN TMPDIR DOES NOT SAVE IT EITHER. `/tmp/claude` is write-
+  // allowed above, so a tool that read TMPDIR would succeed here. The bare form
+  // fails anyway, and the path in the error is the proof it never read it.
+  const cliTmp = spawnSync("/usr/bin/sandbox-exec", ["-f", profile, "/bin/sh", "-c", "mktemp -d"], {
+    env: { ...env, TMPDIR: "/tmp/claude" },
+    encoding: "utf8",
+  });
+  assert.notEqual(
+    cliTmp.status,
+    0,
+    `with the CLI's own TMPDIR=/tmp/claude — a path the sandbox permits — the bare mktemp -d SUCCEEDED, ` +
+      `writing ${(cliTmp.stdout ?? "").trim()}. Then darwin's mktemp does read TMPDIR after all.`,
   );
 
   const templated = sandboxed('mktemp -d "$TMPDIR/tmp.XXXXXXXX"');
