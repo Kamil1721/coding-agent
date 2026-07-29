@@ -124,9 +124,11 @@ export const DEFAULT_CALIBRATION_RUN_ROOT = fileURLToPath(
  * bake-off tree cannot pass unnoticed.
  *
  * WHAT IT DOES NOT COVER, MEASURED AND LEFT OPEN ON PURPOSE. It constrains one
- * tree, not the whole filesystem. `DASHBOARD_CALIBRATION_ROOT=$HOME` is accepted
- * and `prepareFixtureDirs` then deletes `$HOME/blank-page` and its six siblings
- * — `run-root.test.ts` line 91 asserts exactly that deletion happens against an
+ * tree, not the whole filesystem. PROBED 2026-07-29, read-only, nothing deleted:
+ * `$HOME`, `/`, `/Users`, `$HOME/Documents` and the repository root itself are
+ * ALL ACCEPTED; only a root inside `bakeoff/` is refused. `$HOME` accepted means
+ * `prepareFixtureDirs` would delete `$HOME/blank-page` and its six siblings —
+ * `run-root.test.ts` line 91 asserts that deletion really happens against an
  * arbitrary override root, so this is executed evidence rather than a worry.
  * Nothing narrower was shipped because every candidate either failed to
  * characterise its own coverage (blocking `$HOME` while allowing
