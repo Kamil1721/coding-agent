@@ -273,6 +273,64 @@ test("the consumption prompt is §7.6.4's pattern, with the real paths in it", (
   assert.ok(!p.includes(KEY));
 });
 
+/**
+ * §7.6.4 AS FOUR EXACT LINES, copied from
+ * `docs/superpowers/specs/2026-07-28-orchestration-canvas-design.md:377-380`.
+ *
+ * The only two departures from the spec's bytes are stated rather than assumed:
+ * the `→` glyph is written `->` (the plan's own rendering of §7.6.4 does the
+ * same), and the block is indented two spaces inside the prompt. Verified
+ * mechanically against the spec file when this test was written: strip the two
+ * spaces, map `->` back to `→`, and all four lines are byte-identical.
+ */
+const PATTERN_BLOCK = [
+  "  fetch(mp4) -> blob: URL -> <video muted playsInline preload paused, no autoplay, no loop>",
+  "  poster=<leg-N-poster.webp>                       instant first paint",
+  "  rAF loop: video.currentTime = f(scrollProgress)   scrub, do not play",
+  "  layers: position:absolute, object-fit:cover       full-bleed world",
+].join("\n");
+
+test("§7.6.4 IS COPIED, NOT PARAPHRASED — the four lines appear verbatim and in order", () => {
+  // THE TOKEN-BY-TOKEN TEST BELOW CANNOT SEE A PARAPHRASE, and that was MEASURED
+  // rather than reasoned about. Two mutations of `videoConsumptionPrompt` left
+  // every test in this file, all 35 in `orchestrator.test.ts` and all 20 in the
+  // harness green:
+  //
+  //   · deleting `  poster=<leg-N-poster.webp>  instant first paint` outright —
+  //     both `/leg-1-poster\.webp/` assertions are satisfied by the per-leg
+  //     LIST above the block, so the instruction that produces instant first
+  //     paint was deletable with nothing red;
+  //   · dropping `preload paused` from the <video> attributes AND reversing the
+  //     fetch->blob direction into `blob: URL <- fetch(mp4)` — `/fetch/` and
+  //     `/blob:/` are presence-only and order-blind, and no assertion mentions
+  //     `preload` or `paused` at all. The arrow direction is the one step §7.6.4
+  //     explains: "the fetch->blob step is what makes seeking instant".
+  //
+  // A prompt is not a set of tokens; it is an instruction an agent follows in
+  // order. So the whole block is pinned as one substring, and any deletion,
+  // reordering or rewording of those four lines fails HERE.
+  const p = videoConsumptionPrompt([
+    {
+      index: 1,
+      still: "/ws/design-refs/01.png",
+      section: "descent",
+      aspect: "16:9",
+      out: "/ws/assets/world/leg-1.mp4",
+      poster: "/ws/assets/world/leg-1-poster.webp",
+    },
+  ]);
+  assert.ok(
+    p.includes(PATTERN_BLOCK),
+    `the §7.6.4 block is not present verbatim. Prompt was:\n${p}`,
+  );
+  // AND THE PATTERN COMES AFTER THE PATHS. The block names `leg-N`; the list
+  // names leg 1. Read in the other order the placeholder has nothing to bind to.
+  assert.ok(
+    p.indexOf("/ws/assets/world/leg-1.mp4") < p.indexOf(PATTERN_BLOCK),
+    "the concrete paths precede the pattern that refers to them",
+  );
+});
+
 test("A LEG THAT FAILED IS NOT ADVERTISED — a 404 in a prompt is worse than a shorter prompt", async () => {
   // `LegRunSummary` counts produced legs; it does not say WHICH. Handing the
   // build agent every PLANNED path wires a world layer around a file that was
