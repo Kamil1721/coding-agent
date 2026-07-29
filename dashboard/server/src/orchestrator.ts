@@ -113,6 +113,10 @@ import { designHandoffSection, designSegmentPrompt } from "./design-prompt.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
 import type { FixTask } from "./fix-triage.js";
 import { archiveAttempt, readAttempt, scorerOutRoot } from "./gate-attempts.js";
+// THE ONE DOOR. `renderEvidence` routes the judge's evidence bundle through the
+// same allowlist the fix loop's prompts go through, rather than through a second
+// copy of the same decision. See the docblock on `renderEvidence`.
+import { toAgentVisible } from "./gate-report.js";
 import { maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
 import type { GateFixLoopResult, StopReason } from "./gate-fix-loop.js";
 import type { ApiCriterion, ApiPhase, ApiProvider, ApiRunStatus, GraphSseEvent } from "./api-types.js";
@@ -2086,22 +2090,85 @@ export async function workspaceDiff(workspace: string): Promise<string> {
   }
 }
 
-/** The evidence bundle handed to the judge. Execution facts only. */
+/**
+ * The evidence bundle handed to the judge. Execution facts only.
+ *
+ * IT GOES THROUGH `gate-report.ts`, AND THAT IS THE POINT OF THIS FUNCTION.
+ * Until 2026-07-29 it iterated `container.tier0` printing every gate's `detail`
+ * verbatim and `container.criterionCoverage` printing every coverage `detail`
+ * verbatim. `GATE:suite-green`'s detail is assembled in `scorer-container.ts`
+ * from the held-out runner's own output tail and the `titlePath` of each excused
+ * failure; a coverage `detail` is the assertion message that produced it. So the
+ * judge prompt carried held-out test titles — the exact bytes `gate-report.ts`
+ * exists to keep out of a fixing agent's prompt, leaving by a different door.
+ *
+ * IT IS NOT A `heldOutPass` PROBLEM, and the fix is deliberate rather than
+ * reflexive. The judge gates nothing (`#judgePhase` only emits log lines) and
+ * its output never re-enters the GATE/FIX loop, so no measurement is corrupted
+ * by it. What IS corrupted is the claim the sealed store makes: that the
+ * held-out suite's identities exist in exactly one place. A verdict-shaped
+ * document quoting a held-out title is the same leak with a smaller blast
+ * radius, and "smaller" is not a boundary.
+ *
+ * ONE DOOR, NOT TWO. `toAgentVisible` owns the allowlist — a gate id nobody has
+ * reasoned about gets its detail withheld, so a gate added upstream fails closed
+ * here for free. Re-deriving that decision in this file would be a second
+ * redactor, and two redactors drift the first time either is edited.
+ *
+ * WHAT SURVIVES AND WHY, field by field:
+ *   - gate `outcome`: always. It is an enum the protocol defines, not text the
+ *     container wrote. A gate that PASSED gets no detail at all, because
+ *     `toAgentVisible` only reports `fail`/`unknown` and a passing
+ *     `GATE:suite-green` detail still quotes the runner's tail.
+ *   - gate `detail`: only for the allowlisted ids, only when failing.
+ *   - `criterionCoverage[].criterionId` and `.outcome`: kept. The ids are ALREADY
+ *     in this prompt — `judge.ts:renderInputs` prints every criterion id, tier
+ *     and statement in its FROZEN ACCEPTANCE CRITERIA block — so withholding
+ *     them here would be theatre, not a boundary. `.detail` and `.testRefs` are
+ *     the held-out half and are gone.
+ *   - `infraFailure`: emitted. `toAgentVisible` returns an EMPTY failure list
+ *     when the container hit infrastructure errors, and evidence that reads as
+ *     "no gate had anything to say" when the browser would not launch is a
+ *     fabricated all-clear.
+ *   - non-blocking exploit findings: kept as kind + path, never `detail`.
+ *     `toAgentVisible` drops them for a reason that does not apply here — they
+ *     gate nothing, so a FIXER should not spend a round on them — whereas a
+ *     reviewer is exactly who they were reported for.
+ */
 export function renderEvidence(container: ContainerResult | null): string {
   if (container === null) return "The sealed container produced no machine-readable result.";
+  const report = toAgentVisible(container);
+  const redactedDetail = new Map(report.failures.map((failure) => [failure.id, failure.detail] as const));
+
   const lines: string[] = [];
+  if (report.infraFailure !== null) {
+    lines.push(`scorer infrastructure (the SCORER's failure, not the artefact's): ${report.infraFailure}`);
+  }
   for (const gate of container.tier0) {
-    lines.push(`${gate.id}: ${gate.outcome} — ${truncate(gate.detail, 200)}`);
+    const detail = redactedDetail.get(gate.id);
+    lines.push(
+      detail === undefined
+        ? `${gate.id}: ${gate.outcome}`
+        : `${gate.id}: ${gate.outcome} — ${truncate(detail, 200)}`,
+    );
   }
   lines.push(
     `suite: exit ${String(container.suiteExecution.exitCode)}, ` +
       `${String(container.suiteExecution.testsPassed ?? 0)}/${String(container.suiteExecution.testsTotal ?? 0)} passed`,
   );
   for (const coverage of container.criterionCoverage) {
-    lines.push(`${coverage.criterionId}: ${coverage.outcome} — ${truncate(coverage.detail, 160)}`);
+    lines.push(`${coverage.criterionId}: ${coverage.outcome}`);
+  }
+  for (const failure of report.failures) {
+    if (failure.id.startsWith("exploit:")) {
+      lines.push(`exploit scan: ${failure.summary} — ${truncate(failure.detail, 160)}`);
+    } else if (failure.id.startsWith("dom:")) {
+      lines.push(`dom: ${failure.summary} — ${truncate(failure.detail, 160)}`);
+    }
   }
   for (const finding of container.exploitFindings) {
-    lines.push(`exploit scan: ${finding.kind} in ${finding.path} — ${truncate(finding.detail, 160)}`);
+    if (finding.blocking) continue; // already above, with its detail
+    lines.push(`exploit scan (non-blocking): ${finding.kind} in ${finding.path}`);
   }
   for (const shot of container.screenshots) {
     lines.push(`screenshot ${shot.flowId} @ ${shot.breakpoint}: ${String(shot.bytes)} bytes, nonBlank=${String(shot.nonBlank)}`);

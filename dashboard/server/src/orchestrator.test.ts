@@ -39,7 +39,9 @@ import { readDesignManifest, writeDesignManifest } from "./design-manifest.js";
 import { readDesignLaneRecord } from "./design-outcome.js";
 import { ModelCatalog } from "./models.js";
 import type { CatalogEntry } from "./models.js";
-import { Orchestrator } from "./orchestrator.js";
+import { Orchestrator, renderEvidence } from "./orchestrator.js";
+import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
+import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { ticketFromText } from "./ticket.js";
@@ -1065,4 +1067,112 @@ test("resume only applies a lock to a run that is PARKED for one", async () => {
   } finally {
     await h.cleanup();
   }
+});
+
+/* -------------------------------------------------------------------------
+ * THE JUDGE'S EVIDENCE BUNDLE — the held-out boundary, one door down
+ *
+ * `gate-report.ts` exists so that a fixing agent never learns the held-out
+ * suite by name. `renderEvidence` was handing the SAME bytes to the judge:
+ * `container.tier0` printed every gate's `detail` verbatim, and
+ * `GATE:suite-green`'s detail is assembled in `bakeoff/src/scorer-container.ts`
+ * out of the held-out runner's output tail and the `titlePath` of each excused
+ * failure; `container.criterionCoverage` printed every coverage `detail`, which
+ * is the assertion message that produced it.
+ *
+ * WHAT THIS TEST CAN AND CANNOT SEE, stated because the difference is the
+ * defect this repo keeps shipping. `judge.ts:renderInputs` is not exported, so
+ * this asserts on `renderEvidence` — the value `#judgePhase` passes as
+ * `evidence:` — and NOT on the assembled prompt. The other three inputs to that
+ * prompt were checked BY READING `judge.ts:renderInputs` and named here so the
+ * reading is auditable rather than implied:
+ *   - `request.ticket.brief`  — the owner's own text. Never touches a container.
+ *   - `request.criteria`      — id, tier and statement of each VISIBLE criterion.
+ *                               Authored by the spec seat before any build; the
+ *                               verdict page renders the same strings.
+ *   - `request.diff`          — `workspaceDiff` over the BUILDER's workspace.
+ *                               The frozen suite is mounted into the sealed
+ *                               container, never into that tree.
+ * `evidence` is therefore the only container-derived string in the prompt, and
+ * it is the one asserted below.
+ * ---------------------------------------------------------------------- */
+
+/** A title that could only have come from the held-out suite. */
+const HELD_OUT_TITLE = "T-7 the contact form confirms on submit › REQ-004";
+
+/** A container that carries that title in every field the old renderer read. */
+function leakyContainer(): ContainerResult {
+  return containerFixture({
+    tier0: [
+      tier0Fixture({
+        id: "GATE:suite-green",
+        name: "acceptance suite is green",
+        outcome: "fail",
+        detail: `2 test(s) failed. ${HELD_OUT_TITLE} — expected 1 confirmation, got 0`,
+      }),
+      // A gate that PASSED, whose detail also quotes the runner. `toAgentVisible`
+      // reports only fail/unknown, so this one must render outcome-only.
+      tier0Fixture({
+        id: "GATE:suite-intact",
+        name: "frozen suite intact",
+        outcome: "pass",
+        detail: `all 9 frozen files match, including ${HELD_OUT_TITLE}`,
+      }),
+      // ALLOWLISTED. Its detail is the artefact's own compiler talking, and it
+      // must still cross — a redactor that withheld everything would pass this
+      // test while making the judge useless.
+      tier0Fixture({
+        id: "GATE:build",
+        name: "build succeeds",
+        outcome: "fail",
+        detail: "src/app.ts(12,3): error TS2345: Argument of type 'string'",
+        command: "npm run build",
+        exitCode: 2,
+      }),
+    ],
+    criterionCoverage: [
+      coverageFixture({
+        criterionId: "REQ-004",
+        outcome: "failed",
+        testRefs: [HELD_OUT_TITLE],
+        detail: `${HELD_OUT_TITLE}: expected the confirmation to be visible`,
+      }),
+    ],
+  });
+}
+
+test("NO HELD-OUT TEST TITLE REACHES THE JUDGE — not via a gate detail, not via coverage", () => {
+  const evidence = renderEvidence(leakyContainer());
+  assert.ok(
+    !evidence.includes(HELD_OUT_TITLE),
+    `the held-out suite's identities reached the judge prompt:\n${evidence}`,
+  );
+  assert.ok(!evidence.includes("T-7"), "the bare test id is an identity too");
+});
+
+test("and the redaction is not a blanket one — the compiler's own error still crosses", () => {
+  // THE OTHER HALF OF THE CONTROL. Withholding every detail would satisfy the
+  // test above and leave the judge reading a list of enum values. The
+  // allowlisted gates are the ones whose detail is the ARTEFACT's toolchain
+  // talking about the artefact, and they must survive.
+  const evidence = renderEvidence(leakyContainer());
+  assert.match(evidence, /error TS2345/, "GATE:build is allowlisted and its detail must cross");
+  assert.match(evidence, /GATE:suite-green: fail/, "which gate failed is not held out; what it SAID is");
+  assert.match(evidence, /GATE:suite-intact: pass/, "a passing gate still has to appear");
+  assert.match(evidence, /REQ-004: failed/, "criterion ids are already in the prompt's criteria block");
+  assert.doesNotMatch(evidence, /GATE:suite-intact: pass —/, "a passing gate's detail must not render");
+});
+
+test("evidence never reads as an all-clear when the SCORER was the thing that broke", () => {
+  // `toAgentVisible` returns an EMPTY failure list on an infrastructure error,
+  // so a renderer that only printed failures would emit a clean-looking page for
+  // a run where no browser ever launched.
+  const evidence = renderEvidence(
+    containerFixture({
+      infrastructureErrors: ["chromium failed to launch: missing shared library"],
+      tier0: [tier0Fixture({ id: "GATE:boot", outcome: "unknown", detail: "never ran" })],
+    }),
+  );
+  assert.match(evidence, /scorer infrastructure/i);
+  assert.match(evidence, /chromium failed to launch/);
 });
