@@ -298,6 +298,103 @@ export function byName(name: string): CalibrationFixture {
   return found;
 }
 
+/* -------------------------------------------------------------------------
+ * The eighth artefact — and why it is NOT in FIXTURES
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The visual-substance fixture: complete, correct, and hollow in one region.
+ *
+ * READ THIS BEFORE MOVING IT INTO {@link FIXTURES}. It is deliberately a separate
+ * export, and adding it to that array turns the standing calibration gate RED on
+ * two assertions in a file this one does not own:
+ *
+ *   1. `calibration.test.ts`'s outcome-and-tier test. `calibration.test.ts`
+ *      grades every member of `FIXTURES` through a REAL sealed container, and
+ *      that path has NO visual input at all — no parser, no model answers, no
+ *      screenshot adjudication. This artefact's copy is entirely present in the
+ *      DOM (`#about-body` `innerText` is 272 characters; body `innerText` is
+ *      468), so every assertion in `suites/portfolio-suite.ts` passes on it: an
+ *      `h1` carrying "Ada Lovelace", three titled project entries, a contact form
+ *      whose submit reveals `#confirm`, and a 200 on `/`. Measured expectation
+ *      through the container as it stands: `pass_with_notes` at QUALITY, from the
+ *      stock hover motion — NOT `fail`.
+ *   2. The false-pass test, which asserts `heldOutPass === false` on every member
+ *      of {@link MUST_FAIL}. `heldOutPass` here is TRUE, because the held-out
+ *      suite goes green.
+ *
+ * SO IT IS NOT A GRADER DEFECT AND NOT A FIXTURE DEFECT. It is an artefact whose
+ * discriminating evidence is a FACT ABOUT PIXELS, and the only thing that can see
+ * it is `visual-substance.ts` — whose `VIS-F-EMPTY-REGION` entry is
+ * `shadowLocked`. It is committed anyway, and this is the whole reason:
+ *
+ *   BEFORE IT EXISTED, THE VISUAL GATE'S CALIBRATION WAS VACUOUS. Design note
+ *   §7.1 states it exactly: no committed fixture is non-blank-but-hollow, so a
+ *   gate that fires on NOTHING AT ALL sorts all seven correctly. That is the M4
+ *   defect verbatim — emptying `MUST_FAIL` left calibration green at 7/7 because
+ *   an inert check and a working one produced the same output. This artefact is
+ *   the one thing in the corpus that an inert visual gate FAILS to sort.
+ *
+ * THE GEOMETRY IS ASSERTED, NOT ASSUMED, and skipping that is the defect the
+ * fixture exists to prove. `stock-motion-only`'s own sections sit at top=1087–1221
+ * — below the fold at every breakpoint — so a hollow section merely substituted
+ * into that shell would be in NO capture, the observation could never fire, and
+ * the control would report green because the check cannot see its own fixture.
+ * The hero is therefore `min-height:18vh` and `#about` sits ABOVE `#projects`.
+ * MEASURED against this committed copy, 2026-07-30, with the container's own
+ * context and screenshot options at the three `DEFAULT_BREAKPOINTS`, 0 assertion
+ * failures — and the paired mutation that moves `#about` below `#projects`
+ * produces 18 failures, `#about h2` landing at top=759 against an 812-tall frame.
+ */
+export interface VisualSubstanceFixture {
+  readonly name: string;
+  readonly ticket: string;
+  /**
+   * What the sealed container concludes TODAY, with no visual input. MEASURED
+   * expectation, and the reason this fixture is not in {@link FIXTURES}.
+   */
+  readonly expectedWithoutVisualGate: ExpectedOutcome;
+  /** What it must conclude once `VIS-F-EMPTY-REGION` is unlocked and gating. */
+  readonly expectedWithVisualGate: ExpectedOutcome;
+  readonly visualFailingTier: "FUNCTIONAL";
+  /** The enumerated entries that must fire, and the only ones that may. */
+  readonly firesOn: readonly string[];
+  /** Geometry asserted at each breakpoint: heading and empty body both in frame. */
+  readonly assertedGeometry: readonly string[];
+  readonly discriminates: string;
+}
+
+export const HOLLOW_SECTION_FIXTURE: VisualSubstanceFixture = {
+  name: "hollow-section",
+  ticket: PORTFOLIO_TICKET,
+  expectedWithoutVisualGate: "pass_with_notes",
+  expectedWithVisualGate: "fail",
+  visualFailingTier: "FUNCTIONAL",
+  firesOn: ["VIS-F-EMPTY-REGION"],
+  assertedGeometry: [
+    "375x812: #about h2 [172,210], #about-body [230,542] h=312, #about.bottom=542 <= #projects.top=562",
+    "768x1024: #about h2 [204,243], #about-body [263,457] h=194, #about.bottom=457 <= #projects.top=476",
+    "1280x800: #about h2 [172,210], #about-body [230,424] h=194, #about.bottom=424 <= #projects.top=444",
+  ],
+  discriminates:
+    "THE ONE ARTEFACT AN INERT VISUAL GATE CANNOT SORT. `stock-motion-only`'s shell, complete and " +
+    "correct, carrying an About section that keeps its visible heading and a bordered panel " +
+    "(`min-height:9rem`) whose body renders no glyphs: `#about-body p{color:var(--paper)}` on a " +
+    "`--paper` page, computed `rgb(255,255,255)` on `rgb(255,255,255)`. " +
+    "EVERY OTHER CHECK IN THE TREE PASSES ON IT, which is the point: the copy is in the DOM and in " +
+    "`innerText` (272 characters in the panel, 468 on the page), so every `.length` assertion passes; " +
+    "`GATE:screenshots-present` passes at 19060/33002/27832 bytes against MIN_SCREENSHOT_BYTES=1024, " +
+    "18.6x the floor at the tightest breakpoint; `GATE:boot`, `GATE:no-stub-markers` and the exploit " +
+    "gates all pass. Only a fact about pixels separates it from a correct build. " +
+    "THE PAIRED CONTROL IS ONE DECLARATION, and it is executed against this committed copy rather " +
+    "than kept as a second artefact: `var(--paper)` -> `var(--ink)` restores the copy to visibility " +
+    "with the SAME DOM, the SAME 468-character `innerText` and the same geometry, and measured " +
+    "19060 -> 43673 bytes and luminance stddev 28.164 -> 41.610 at 375. A second committed directory " +
+    "would drift from this one; a mutation cannot. " +
+    "DO NOT ADD IT TO `FIXTURES`. See the comment above this interface for the two assertions that " +
+    "go red and why neither is a grader defect.",
+};
+
 /**
  * Fixtures that must FAIL. The false-pass assertion runs over exactly these.
  *

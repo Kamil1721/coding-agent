@@ -61,6 +61,32 @@
  * than dropping the requirement, because an unmet requirement that renders as
  * nothing is the same false pass in a smaller font.
  *
+ * A VISUAL OBSERVATION IS A FOURTH SOURCE OF A FINDING, AND IT IS NOT A
+ * REQUIREMENT. `visual-substance.ts` enumerates three OBJECTIVE observations that
+ * may reach FUNCTIONAL — "the capture shows a page with nothing in it" and two
+ * that are shadow-locked. Until 2026-07-30 `findingCount` summed exactly
+ * `unmetCriteria + unmetGatesAt + heldOutCount`, so there was no arithmetic a
+ * visual finding could enter: the module's `"gating"` mode was a LABEL, and a run
+ * started in it printed GATING and behaved identically to shadow. That is worse
+ * than shadow, because shadow's own report says plainly that nothing in it can
+ * fail the run.
+ *
+ * IT IS COUNTED SEPARATELY FROM "things you asked for", for the same reason a
+ * tier-0 gate is. Nobody wrote a ticket asking that the page not be blank; the
+ * observation is ticket-INDEPENDENT, which is the only argument for having it at
+ * all. Filing it under the owner's requirements is what let a machine id turn up
+ * in a list of sentences they wrote (backlog #36), and `summaryLine` subtracts it
+ * from the requirement counts for exactly that reason.
+ *
+ * THIS MODULE RE-FILTERS ON `gating` RATHER THAN TRUSTING THE CALLER.
+ * `visual-substance.ts` exports both `record.violations` and `verdictFindings`,
+ * and says in its own header that "passing violations straight through is how a
+ * shadow gate becomes a live one by accident". A caller that reaches for the
+ * wrong one must not be able to turn a shadow run red from here, so
+ * {@link visualFindingsAt} counts only rows whose `gating` flag is true AND whose
+ * verdict is `violated`. Two modules asserting the same invariant is the point:
+ * one of them is the one that will be edited.
+ *
  * IT DOES NOT WRITE THE FILE. `renderVerdict` returns a string; the orchestrator
  * writes `runs/<runId>/results/verdict.md` at run end (Phase 2e Task 5). Keeping
  * the render pure is what lets its tests run without touching a filesystem.
@@ -74,6 +100,13 @@ import { ALL_GATE_IDS, GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ApiCriterionTier } from "./api-types.js";
 import { gateLabel, isGateAssumption, isGateCriterionId, isQualityRollupId } from "./spec-assumptions.js";
 import type { Assumption } from "./spec-assumptions.js";
+// The REAL type rather than a local restatement: a second declaration of the
+// shape is a second thing to keep in step, and the field this module reads —
+// `gating` — is exactly the one a restatement would be tempted to drop.
+import type { VisualObservationOutcome } from "./visual-substance.js";
+// VALUE import: the owner-facing sentence comes from a constant table, never from
+// the grader's note. See `visualObservationLabel`'s own doc comment.
+import { visualObservationLabel } from "./visual-substance.js";
 
 export type VerdictOutcome = "pass" | "fail" | "pass_with_notes";
 
@@ -94,6 +127,22 @@ export interface VerdictInput {
    * the boundary, expressed as a type.
    */
   readonly heldOutUnmet: Readonly<Record<ApiCriterionTier, number>>;
+  /**
+   * Objective visual observations that FIRED and that this run allows to count —
+   * `verdictFindings(record)` from `visual-substance.ts`.
+   *
+   * OPTIONAL, AND ABSENT MEANS ABSENT RATHER THAN CLEAN. A run with no visual
+   * evaluation contributes zero findings here, which is correct: `undefined` is
+   * not "the screenshots were fine", it is "no observation was scored". The
+   * distinction lives on the visual record's own `mode` field, which states
+   * whether the run was shadow or gating, so a silent shadow run cannot be read
+   * as a gating run that found nothing.
+   *
+   * IT IS OPTIONAL FOR A SECOND, BLUNTER REASON: every existing caller
+   * (`run-report.ts`, `calibration/grade-fixture.ts`) predates it, and a required
+   * field would have made this wiring a change to files it does not own.
+   */
+  readonly visualFindings?: readonly VisualObservationOutcome[];
 }
 
 /** Strictest first. Order is load-bearing: `failingTier` walks it in this order. */
@@ -192,13 +241,34 @@ function unmetGatesAt(input: VerdictInput, tier: ApiCriterionTier): number {
 }
 
 /**
- * Every finding at a tier, from all four sources that can produce one: an unmet
- * visible criterion, a failed tier-0 gate, an unmet held-out test, and — at
- * QUALITY only — an authored note that no test could have expressed.
+ * Visual observations that fired, are allowed to count on this run, and declare
+ * this tier.
+ *
+ * THREE CONDITIONS, ALL RE-CHECKED HERE. `verdict === "violated"` because a row
+ * downgraded by its corroboration rule is `unknown` and must not count;
+ * `gating === true` because a shadow row and a shadow-locked row both carry
+ * `gating: false` and either one reaching this arithmetic is the accident the
+ * visual module's header names; `declaredTier === tier` because a finding must
+ * land where it says it lands rather than wherever it was passed.
+ */
+function visualFindingsAt(input: VerdictInput, tier: ApiCriterionTier): number {
+  return (input.visualFindings ?? []).filter(
+    (finding) => finding.verdict === "violated" && finding.gating && finding.declaredTier === tier,
+  ).length;
+}
+
+/**
+ * Every finding at a tier, from all five sources that can produce one: an unmet
+ * visible criterion, a failed tier-0 gate, an unmet held-out test, an objective
+ * visual observation that fired, and — at QUALITY only — an authored note that no
+ * test could have expressed.
  */
 function findingCount(input: VerdictInput, tier: ApiCriterionTier): number {
   const counted =
-    unmetCriteria(input, tier).length + unmetGatesAt(input, tier) + heldOutCount(input, tier);
+    unmetCriteria(input, tier).length +
+    unmetGatesAt(input, tier) +
+    heldOutCount(input, tier) +
+    visualFindingsAt(input, tier);
   return tier === "QUALITY" ? counted + input.qualityFindings.length : counted;
 }
 
@@ -312,14 +382,60 @@ function renderGates(input: VerdictInput): readonly string[] {
   return lines;
 }
 
+/**
+ * The heading the visual observations render under. Exported so a test can assert
+ * WHERE the line sits rather than merely that the page contains it somewhere.
+ */
+export const VISUAL_SECTION_HEADING = "What the screenshots show";
+
+/**
+ * Objective visual observations that failed this run.
+ *
+ * SEPARATE FROM BOTH LISTS ABOVE. It is not a thing the owner asked for — no
+ * ticket says "the page should not be blank" — and it is not a tier-0 container
+ * gate either. It is a fixed observation about the delivered page, so it gets its
+ * own heading and its own sentence, and `summaryLine` counts it separately.
+ *
+ * THE SENTENCE COMES FROM THE CONSTANT TABLE AND THE MACHINE ID COMES ALONG IN
+ * BRACKETS. `outcome.note` is written during the run and is deliberately NOT
+ * rendered here, for the same reason `detail` is not: a verdict file sits in
+ * `results/`, which is served to the UI.
+ */
+function renderVisualObservations(input: VerdictInput): readonly string[] {
+  const fired = (input.visualFindings ?? []).filter(
+    (finding) => finding.verdict === "violated" && finding.gating,
+  );
+  if (fired.length === 0) return [];
+  const lines = [
+    `## ${VISUAL_SECTION_HEADING}`,
+    "",
+    "These are not things you asked for. They are fixed observations about the",
+    "delivered page that run whatever the ticket says:",
+    "",
+  ];
+  for (const finding of fired) {
+    lines.push(
+      `- ${visualObservationLabel(finding.observationId)} (${finding.observationId}, ` +
+        `seen at ${finding.frame.flowId} / ${finding.frame.breakpoint})`,
+    );
+  }
+  lines.push("");
+  return lines;
+}
+
 function renderWhy(input: VerdictInput): readonly string[] {
   const named = [...unmetCriteria(input, "BLOCKING"), ...unmetCriteria(input, "FUNCTIONAL")];
   const lines = ["## Why it did not pass", ""];
   if (named.length === 0) {
     // A failed gate IS the reason, and it has already been stated above in its
     // own words. Repeating the grader-defect paragraph there would report a
-    // working grader as broken on every build failure.
-    if (unmetGates(input).length > 0) return [];
+    // working grader as broken on every build failure. THE SAME APPLIES TO A
+    // VISUAL OBSERVATION: it is a recorded reason, printed under its own heading
+    // immediately above, so a run failed by one alone must not be described as
+    // "failed without a recorded reason, which is a grader defect".
+    if (unmetGates(input).length > 0 || visualFindingsAt(input, "BLOCKING") + visualFindingsAt(input, "FUNCTIONAL") > 0) {
+      return [];
+    }
     lines.push(
       "No requirement could be named. The failure is in the held-out counts below;",
       "if that section is empty too, the run was failed without a recorded reason,",
@@ -465,16 +581,40 @@ function plural(count: number, one: string, many: string): string {
  */
 function summaryLine(input: VerdictInput, outcome: VerdictOutcome): string {
   const gates = unmetGates(input).length;
-  const blocking = findingCount(input, "BLOCKING") - unmetGatesAt(input, "BLOCKING");
-  const functional = findingCount(input, "FUNCTIONAL") - unmetGatesAt(input, "FUNCTIONAL");
-  const quality = findingCount(input, "QUALITY") - unmetGatesAt(input, "QUALITY");
+  // A VISUAL OBSERVATION IS SUBTRACTED FROM EVERY REQUIREMENT COUNT. Nobody wrote
+  // a ticket asking that the page not be blank, and "2 things the ticket asked for
+  // are not there" for a run whose only extra finding is a screenshot observation
+  // is backlog #36's defect with a new source feeding it. The QUALITY subtraction
+  // is defensive rather than reachable: `declaredTier` is the literal
+  // "FUNCTIONAL", so a QUALITY visual finding cannot exist today — and if that
+  // literal is ever widened, this line keeps the note count honest instead of
+  // silently inflating it.
+  const visual = visualFindingsAt(input, "BLOCKING") + visualFindingsAt(input, "FUNCTIONAL");
+  const blocking =
+    findingCount(input, "BLOCKING") - unmetGatesAt(input, "BLOCKING") - visualFindingsAt(input, "BLOCKING");
+  const functional =
+    findingCount(input, "FUNCTIONAL") - unmetGatesAt(input, "FUNCTIONAL") - visualFindingsAt(input, "FUNCTIONAL");
+  const quality =
+    findingCount(input, "QUALITY") - unmetGatesAt(input, "QUALITY") - visualFindingsAt(input, "QUALITY");
   if (outcome === "fail") {
     const gateClause = `${plural(gates, "check every artefact must clear did", "checks every artefact must clear did")} not pass.`;
+    const visualClause = `${plural(visual, "fixed observation about the screenshots did", "fixed observations about the screenshots did")} not pass.`;
     if (blocking + functional === 0) {
-      return `${gateClause} No requirement from your ticket was reported as missing.`;
+      // WHICH CLAUSES ARE PRESENT IS DECIDED BY WHAT ACTUALLY FIRED. Before the
+      // visual source existed this branch could only be reached with gates > 0;
+      // it is now reachable with gates === 0, and printing "0 checks every
+      // artefact must clear did not pass" is the kind of sentence that makes an
+      // owner distrust the whole page.
+      const reasons = [gates === 0 ? null : gateClause, visual === 0 ? null : visualClause].filter(
+        (clause): clause is string => clause !== null,
+      );
+      const stated = reasons.length === 0 ? "" : `${reasons.join(" ")} `;
+      return `${stated}No requirement from your ticket was reported as missing.`;
     }
     const asked = `${plural(blocking + functional, "thing the ticket asked for is", "things the ticket asked for are")} not there — ${String(blocking)} BLOCKING, ${String(functional)} FUNCTIONAL.`;
-    return gates === 0 ? asked : `${asked} ${gateClause}`;
+    return [asked, gates === 0 ? null : gateClause, visual === 0 ? null : visualClause]
+      .filter((clause): clause is string => clause !== null)
+      .join(" ");
   }
   if (outcome === "pass_with_notes") {
     return `Everything the ticket asked for is there. ${plural(quality, "note", "notes")} on quality, which do not fail the run.`;
@@ -504,7 +644,13 @@ export function renderVerdict(input: VerdictInput): string {
   // GATES FIRST on a failing run. When the container stopped the artefact, that
   // is the fact the owner has to act on before any requirement in the list below
   // means anything.
-  if (outcome === "fail") lines.push(...renderGates(input), ...renderWhy(input));
+  // GATES FIRST, THEN THE SCREENSHOT OBSERVATIONS, THEN THE REQUIREMENTS. Both
+  // of the first two are facts about the delivered artefact that the owner has to
+  // act on before any requirement below means anything, and neither is a sentence
+  // they wrote.
+  if (outcome === "fail") {
+    lines.push(...renderGates(input), ...renderVisualObservations(input), ...renderWhy(input));
+  }
   lines.push(...renderHeldOut(input));
   lines.push(...renderNotes(input));
   lines.push(...renderAssumptionSummary(input));

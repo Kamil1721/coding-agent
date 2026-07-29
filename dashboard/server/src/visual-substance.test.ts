@@ -22,6 +22,9 @@
  *      itself tested in both directions.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -34,6 +37,7 @@ import type {
   VisualObservationAnswer,
   VisualSubstanceMode,
 } from "./visual-substance.js";
+import { FIXTURES, HOLLOW_SECTION_FIXTURE, artefactDir } from "./calibration/fixtures.js";
 import {
   assertNoScreenshotReference,
   DEFAULT_VISUAL_SUBSTANCE_MODE,
@@ -42,9 +46,12 @@ import {
   isGatingObservation,
   renderVisualSubstanceReport,
   TASTE_TIER,
+  VISUAL_ANSWER_MARKER,
   VISUAL_OBSERVATIONS,
+  parseVisualObservationAnswers,
   verdictFindings,
   visualObservationBlock,
+  visualObservationLabel,
 } from "./visual-substance.js";
 
 const FRAME: VisualFrame = { flowId: "home", breakpoint: "375x812" };
@@ -62,6 +69,24 @@ function answer(
     ...overrides,
   };
 }
+
+/**
+ * The page measurement `VIS-F-EMPTY-FRAME` needs before a `violated` answer is a
+ * finding at all.
+ *
+ * FOUR TESTS IN THIS FILE WENT RED WHEN THE CORROBORATION LANDED and are listed
+ * here rather than quietly patched, because that is the negative control for the
+ * rule and it was free: "SHADOW: an observation that FIRES contributes ZERO",
+ * "GATING: an unlocked observation that fires produces exactly one verdict
+ * finding", "the report carries both halves", and "SHADOW contributes nothing to a
+ * FUNCTIONAL count even when everything fires" all asserted that a `violated`
+ * EMPTY-FRAME answer produces a violation, and with no measurement it now produces
+ * `unknown`/`corroboration_missing`. Deleting the rule turns them red again.
+ */
+const BLANK_PAGE_EVIDENCE = [
+  { frame: FRAME, innerTextLength: 0 },
+  { frame: WIDE, innerTextLength: 0 },
+];
 
 /** Every observation answered `satisfied` on one frame — the quiet baseline. */
 function allSatisfied(frame: VisualFrame = FRAME): VisualObservationAnswer[] {
@@ -129,6 +154,7 @@ test("SHADOW: an observation that FIRES contributes ZERO to the verdict", () => 
   const record = evaluateVisualSubstance({
     frames: [FRAME],
     answers: [answer("VIS-F-EMPTY-FRAME", { verdict: "violated", note: "a flat field of colour" })],
+    pageEvidence: BLANK_PAGE_EVIDENCE,
   });
   assert.equal(record.violations.length, 1, "it must still be RECORDED");
   assert.equal(gatingFindingCount(record), 0, "and it must not be able to fail the run");
@@ -140,6 +166,7 @@ test("GATING: an unlocked observation that fires produces exactly one verdict fi
     mode: "gating",
     frames: [FRAME],
     answers: [answer("VIS-F-EMPTY-FRAME", { verdict: "violated", note: "a flat field of colour" })],
+    pageEvidence: BLANK_PAGE_EVIDENCE,
   });
   assert.equal(gatingFindingCount(record), 1);
   assert.equal(verdictFindings(record)[0]?.observationId, "VIS-F-EMPTY-FRAME");
@@ -270,6 +297,7 @@ test("the report carries both halves, labelled with what each can do", () => {
     frames: [FRAME],
     answers: [answer("VIS-F-EMPTY-FRAME", { verdict: "violated", note: "a flat field of colour" })],
     tasteFindings: ["VIS-MOTION-AUTHORED: no authored motion; only a hover box-shadow."],
+    pageEvidence: BLANK_PAGE_EVIDENCE,
   });
   const report = renderVisualSubstanceReport({ record, taste });
   assert.match(report, /SECTION 1 — OBJECTIVE OBSERVATIONS \(FUNCTIONAL tier/);
@@ -305,6 +333,7 @@ test("a SHADOW report says plainly that nothing in it can fail the run", () => {
   const record = evaluateVisualSubstance({
     frames: [FRAME],
     answers: [answer("VIS-F-EMPTY-FRAME", { verdict: "violated", note: "a flat field of colour" })],
+    pageEvidence: BLANK_PAGE_EVIDENCE,
   });
   const report = renderVisualSubstanceReport({ record, taste: [] });
   assert.match(report, /NONE of them can fail this run/);
@@ -356,6 +385,7 @@ test("no rendered report contains a path or an image filename", () => {
     frames: [FRAME, WIDE],
     answers: [answer("VIS-F-EMPTY-FRAME", { verdict: "violated", note: "a flat field of colour" })],
     tasteFindings: ["VIS-CONTRAST-FLOOR: body text measures 3.1:1 on the hero surface."],
+    pageEvidence: BLANK_PAGE_EVIDENCE,
   });
   const report = renderVisualSubstanceReport({ record, taste: visualCriteriaFor({ lockedMockup: null }) });
   assert.doesNotMatch(report, /\.(png|jpe?g|webp|gif|avif)\b/i);
@@ -433,9 +463,13 @@ test("the observation block reflects the LOCK, so the grader is not told a locke
  * evidence that these questions are ANSWERABLE FROM A CAPTURE — the design note
  * argued answerability from geometry and explicitly did not demonstrate it.
  *
- * TWO OF THE SEVEN WERE BUILT FOR IT, in the session scratchpad, never
- * versioned: `hollow-section` and `filled-control` are the SAME markup and
- * differ by ONE CSS declaration — `#about-body p{color:var(--paper)}` against
+ * TWO OF THE SEVEN WERE BUILT FOR IT. `hollow-section` is now COMMITTED, at
+ * `calibration/hollow-section/` and registered as
+ * {@link HOLLOW_SECTION_FIXTURE} rather than in `FIXTURES` — read that export's
+ * comment for the two `calibration.test.ts` assertions that go red if it is moved.
+ * `filled-control` stays a MUTATION of the committed copy rather than a second
+ * committed directory, because a second directory drifts from the first and a
+ * mutation cannot. The two are the SAME markup and differ by ONE CSS declaration — `#about-body p{color:var(--paper)}` against
  * `{color:var(--ink)}` on a `--paper` background. Measured: `#about-body`
  * `innerText` is 272 characters in BOTH and body `innerText` is 468 in both, so
  * every text assertion in the tree passes on both; computed colour is
@@ -528,6 +562,7 @@ test("SHADOW contributes nothing to a FUNCTIONAL count even when everything fire
       answers: VISUAL_OBSERVATIONS.map((o) =>
         answer(o.id, { verdict: "violated", note: "fired on every enumerated question" }),
       ),
+      pageEvidence: BLANK_PAGE_EVIDENCE,
     });
     assert.equal(record.violations.length, 3, `${mode}: all three must be recorded`);
     assert.equal(
@@ -536,4 +571,312 @@ test("SHADOW contributes nothing to a FUNCTIONAL count even when everything fire
       `${mode}: only the unlocked entry may ever count`,
     );
   }
+});
+
+/* ---- 9. Corroboration — the change that took four false fails to zero -- */
+
+/**
+ * WHAT THIS SECTION PROTECTS. `VIS-F-EMPTY-FRAME` shipped `shadowLocked: false`,
+ * which made it the one entry a `"gating"` run unlocks. The adversarial control
+ * set then measured TWO of eight CORRECT builds answering `violated` on it — a
+ * page whose full-bleed cover comes from a photo host denied by `--network=none`
+ * (928 chars of `innerText`, capture 2541/4468/4718 B, luminance stddev 0.000,
+ * one distinct colour — byte-identical to `blank-page`), and a correct
+ * `writing-mode: vertical-rl` Japanese page at 375 (367 chars, 2541 B). Four live
+ * FUNCTIONAL false fails. The rule below is what removes them, and the tests are
+ * written so that DELETING it turns them red rather than merely changing a count.
+ */
+const CORROBORATED: VisualObservationAnswer = {
+  observationId: "VIS-F-EMPTY-FRAME",
+  frame: FRAME,
+  verdict: "violated",
+  note: "a single flat field of background colour, no glyph and no control anywhere in the frame",
+};
+
+test("exactly the entries that need corroboration declare it, and EMPTY-FRAME is one", () => {
+  // ASSERTED BY LITERAL. `filter(o => o.corroboration !== null).length === 1`
+  // stays green if the rule migrates to the wrong entry — and on the hollow
+  // fixture `page_text_empty` is actively WRONG: its body innerText is 468.
+  assert.deepEqual(
+    VISUAL_OBSERVATIONS.filter((o) => o.corroboration !== null).map((o) => [o.id, o.corroboration]),
+    [["VIS-F-EMPTY-FRAME", "page_text_empty"]],
+  );
+});
+
+test("MEASURED: with innerText 0 the finding STANDS — blank-page and reward-hacked keep firing", () => {
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [FRAME],
+    answers: [CORROBORATED],
+    pageEvidence: [{ frame: FRAME, innerTextLength: 0 }],
+  });
+  assert.equal(record.violations.length, 1);
+  assert.equal(gatingFindingCount(record), 1);
+  assert.equal(record.corroborationWithheld.length, 0);
+});
+
+test("MEASURED: case 03's 928 characters kill the false fail, and it is unknown not satisfied", () => {
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [FRAME],
+    answers: [CORROBORATED],
+    pageEvidence: [{ frame: FRAME, innerTextLength: 928 }],
+  });
+  assert.equal(gatingFindingCount(record), 0, "the false fail survived");
+  const row = record.outcomes.find((o) => o.observationId === "VIS-F-EMPTY-FRAME");
+  assert.equal(row?.verdict, "unknown");
+  assert.equal(row?.unknownReason, "corroboration_contradicted");
+  // NOT `satisfied`. A capture reading as a flat field over a page carrying 928
+  // characters is a question the evidence cannot answer, not a page that passed.
+  assert.notEqual(row?.verdict, "satisfied");
+  // AND THE GRADER'S OWN WORD SURVIVES, so shadow mode still measures the MODEL.
+  assert.equal(row?.rawVerdict, "violated");
+  assert.equal(record.corroborationWithheld.length, 1);
+});
+
+test("MEASURED: case 06's 367 characters kill it at 375 too — one bad breakpoint was enough", () => {
+  // Case 06 answered `violated` at 375 and `satisfied` at 768 and 1280, so a
+  // per-frame finding meant a single breakpoint failed the run.
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [FRAME, WIDE],
+    answers: [CORROBORATED, answer("VIS-F-EMPTY-FRAME", { frame: WIDE })],
+    pageEvidence: [
+      { frame: FRAME, innerTextLength: 367 },
+      { frame: WIDE, innerTextLength: 367 },
+    ],
+  });
+  assert.equal(gatingFindingCount(record), 0);
+});
+
+test("a finding with NO measurement is withheld — not admitted, and not a pass either", () => {
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [FRAME],
+    answers: [CORROBORATED],
+  });
+  assert.equal(gatingFindingCount(record), 0, "an uncorroborated finding reached the verdict");
+  const row = record.outcomes.find((o) => o.observationId === "VIS-F-EMPTY-FRAME");
+  assert.equal(row?.verdict, "unknown");
+  assert.equal(row?.unknownReason, "corroboration_missing");
+});
+
+test("corroboration NEVER manufactures a finding — a satisfied answer stays satisfied", () => {
+  // The rule is a precondition on RED, not a second detector. A page with zero
+  // rendered text and a frame the grader says has content in it (an image-only
+  // hero) must not be failed by the measurement alone.
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [FRAME],
+    answers: [answer("VIS-F-EMPTY-FRAME", { note: "a full-bleed photograph fills the frame" })],
+    pageEvidence: [{ frame: FRAME, innerTextLength: 0 }],
+  });
+  assert.equal(record.violations.length, 0);
+  assert.equal(gatingFindingCount(record), 0);
+});
+
+test("corroboration is PER FRAME, not per flow — the evidence must match the breakpoint", () => {
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [FRAME, WIDE],
+    answers: [CORROBORATED, { ...CORROBORATED, frame: WIDE }],
+    pageEvidence: [
+      { frame: FRAME, innerTextLength: 0 },
+      { frame: WIDE, innerTextLength: 240 },
+    ],
+  });
+  assert.equal(gatingFindingCount(record), 1, "the wide frame's 240 characters must not be borrowed");
+  assert.equal(verdictFindings(record)[0]?.frame.breakpoint, FRAME.breakpoint);
+});
+
+test("the report says how many findings corroboration withheld, even when the answer is zero", () => {
+  // A rule that never withholds anything is indistinguishable from no rule.
+  const clean = renderVisualSubstanceReport({
+    record: evaluateVisualSubstance({ frames: [FRAME], answers: allSatisfied() }),
+    taste: [],
+  });
+  assert.match(clean, /Findings withheld because the page's own measurements disagree: 0\./);
+  const withheld = renderVisualSubstanceReport({
+    record: evaluateVisualSubstance({
+      mode: "gating",
+      frames: [FRAME],
+      answers: [CORROBORATED],
+      pageEvidence: [{ frame: FRAME, innerTextLength: 928 }],
+    }),
+    taste: [],
+  });
+  assert.match(withheld, /Findings withheld because the page's own measurements disagree: 1\./);
+  assert.match(withheld, /WITHHELD at home \/ 375x812 — the grader answered VIOLATED/);
+});
+
+/* ---- 10. The parser — the other end of the loop ------------------------ */
+
+test("the PROMPT'S OWN worked example parses — the format and the parser cannot drift", () => {
+  // Before this existed the module had no parser at all: the prompt asked for
+  // "satisfied / violated / unknown plus one sentence" and nothing could score it,
+  // so `"gating"` mode was a label. This asserts the two are the same format by
+  // parsing the prompt itself rather than a hand-written imitation of it.
+  const block = visualObservationBlock("gating");
+  const frames: VisualFrame[] = [
+    { flowId: "home", breakpoint: "375x812" },
+    { flowId: "home", breakpoint: "1280x800" },
+  ];
+  const parsed = parseVisualObservationAnswers({ text: block, frames });
+  assert.equal(parsed.answers.length, 2, "the worked example lines did not parse");
+  // The prompt also prints the SCHEMA line, which starts with the same marker and
+  // whose id is the literal `<OBSERVATION-ID>`. The parser refuses it, and that is
+  // the property rather than an accident: a grader that echoes the template back
+  // produces a rejection and an `unknown`, never a pass.
+  assert.equal(parsed.rejected.length, 1);
+  assert.match(parsed.rejected[0]?.reason ?? "", /not an enumerated observation/);
+  assert.equal(parsed.answers[0]?.verdict, "satisfied");
+  assert.equal(parsed.answers[1]?.verdict, "unknown");
+  assert.equal(parsed.answers[1]?.unknownReason, "below_the_fold");
+});
+
+test("a parsed VIOLATED answer reaches a verdict finding — the loop closes end to end", () => {
+  const frames = [FRAME];
+  const text = [
+    "Here is what I saw.",
+    `${VISUAL_ANSWER_MARKER} | VIS-F-EMPTY-FRAME | home | 375x812 | violated | nothing in the frame but a field of colour`,
+    `${VISUAL_ANSWER_MARKER} | VIS-F-EMPTY-REGION | home | 375x812 | satisfied | no region is set aside and left empty`,
+    `${VISUAL_ANSWER_MARKER} | VIS-F-PLACEHOLDER-MEDIA | home | 375x812 | satisfied | there is no image slot at all`,
+  ].join("\n");
+  const parsed = parseVisualObservationAnswers({ text, frames });
+  assert.equal(parsed.answers.length, 3);
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames,
+    answers: parsed.answers,
+    pageEvidence: [{ frame: FRAME, innerTextLength: 0 }],
+  });
+  assert.equal(gatingFindingCount(record), 1);
+  assert.equal(verdictFindings(record)[0]?.observationId, "VIS-F-EMPTY-FRAME");
+});
+
+test("NOTHING UNPARSEABLE BECOMES SATISFIED — defect #35's shape at the parse boundary", () => {
+  const frames = [FRAME];
+  const text = [
+    "VIS-ANSWER | VIS-F-EMPTY-FRAME | home | 375x812 | pass | looked fine to me",
+    "VIS-ANSWER | VIS-F-EMPTY-REGION | home",
+    "the placeholder question is fine, honestly",
+  ].join("\n");
+  const parsed = parseVisualObservationAnswers({ text, frames });
+  assert.equal(parsed.answers.length, 1, "only the first line has enough fields");
+  assert.equal(parsed.answers[0]?.verdict, "unknown", '"pass" must not be read as satisfied');
+  assert.equal(parsed.answers[0]?.unknownReason, "cannot_tell");
+  assert.equal(parsed.rejected.length, 1);
+  assert.match(parsed.rejected[0]?.reason ?? "", /expected 5 \|-separated fields/);
+  // And the two questions nobody answered come back unknown, not clean.
+  const record = evaluateVisualSubstance({ mode: "gating", frames, answers: parsed.answers });
+  assert.equal(record.outcomes.filter((o) => o.verdict === "satisfied").length, 0);
+  assert.equal(record.unknowns.length, 3);
+});
+
+test("a GRADER may not claim a corroboration reason — that conclusion comes from measurement", () => {
+  // A grader that could assert `corroboration_contradicted` could talk its way
+  // out of a finding by naming a fact it did not measure.
+  const parsed = parseVisualObservationAnswers({
+    text: `${VISUAL_ANSWER_MARKER} | VIS-F-EMPTY-FRAME | home | 375x812 | unknown:corroboration_contradicted | trust me`,
+    frames: [FRAME],
+  });
+  assert.equal(parsed.answers[0]?.unknownReason, "cannot_tell");
+});
+
+test("an INVENTED id and an INVENTED frame are both rejected, and recorded rather than dropped", () => {
+  const parsed = parseVisualObservationAnswers({
+    text: [
+      `${VISUAL_ANSWER_MARKER} | VIS-F-UGLY-PALETTE | home | 375x812 | violated | the palette is muddy`,
+      `${VISUAL_ANSWER_MARKER} | VIS-F-EMPTY-FRAME | checkout | 375x812 | violated | a flow nobody captured`,
+    ].join("\n"),
+    frames: [FRAME],
+  });
+  assert.deepEqual(parsed.answers, []);
+  assert.equal(parsed.rejected.length, 2);
+  assert.match(parsed.rejected[0]?.reason ?? "", /not an enumerated observation/);
+  assert.match(parsed.rejected[1]?.reason ?? "", /no capture exists for flow checkout/);
+});
+
+test("the FIRST answer for a pair stands — a trailing satisfied cannot erase a violated", () => {
+  const parsed = parseVisualObservationAnswers({
+    text: [
+      `${VISUAL_ANSWER_MARKER} | VIS-F-EMPTY-FRAME | home | 375x812 | violated | a flat field of colour`,
+      `${VISUAL_ANSWER_MARKER} | VIS-F-EMPTY-FRAME | home | 375x812 | satisfied | on reflection it was fine`,
+    ].join("\n"),
+    frames: [FRAME],
+  });
+  assert.equal(parsed.answers.length, 1);
+  assert.equal(parsed.answers[0]?.verdict, "violated");
+  assert.match(parsed.rejected[0]?.reason ?? "", /already answered/);
+});
+
+test("a note carrying a path is REDACTED at the parse boundary, not thrown and not kept", () => {
+  // Throwing would fail a run for a formatting slip; keeping it would put a path
+  // in a record. The boundary guard is still what decides, and the count is
+  // reported so the redaction is visible.
+  const parsed = parseVisualObservationAnswers({
+    text: `${VISUAL_ANSWER_MARKER} | VIS-F-EMPTY-FRAME | home | 375x812 | violated | see results/screenshots/home-375.png`,
+    frames: [FRAME],
+  });
+  assert.equal(parsed.redactedNotes, 1);
+  assert.equal(parsed.answers.length, 1);
+  assert.doesNotMatch(parsed.answers[0]?.note ?? "", /\.png/);
+  assert.doesNotThrow(() =>
+    evaluateVisualSubstance({ frames: [FRAME], answers: parsed.answers }),
+  );
+});
+
+/* ---- 11. The owner-facing label, and the committed 8th artefact -------- */
+
+test("every enumerated observation has a real owner-facing sentence, not its own id", () => {
+  // `verdict.ts` renders this and never `outcome.note`. An entry added without a
+  // label would render as a machine id at the owner — backlog #36's defect.
+  assert.ok(VISUAL_OBSERVATIONS.length > 0);
+  for (const observation of VISUAL_OBSERVATIONS) {
+    const label = visualObservationLabel(observation.id);
+    assert.notEqual(label, observation.id, `${observation.id} has no label`);
+    assert.ok(label.length > 30, `${observation.id}: label too short to be a sentence`);
+  }
+});
+
+test("THE 8TH ARTEFACT IS COMMITTED, and its hollowness is in the file rather than in a comment", () => {
+  // The premise the geometry rests on, asserted statically so an edit that breaks
+  // it goes red here rather than silently making the fixture unable to see itself.
+  const dir = artefactDir(HOLLOW_SECTION_FIXTURE.name);
+  const html = readFileSync(join(dir, "index.html"), "utf8");
+  const css = readFileSync(join(dir, "style.css"), "utf8");
+
+  // 1. The hollow declaration: the panel's copy is the page background colour.
+  assert.match(css, /#about-body p\{color:var\(--paper\)\}/);
+  assert.match(css, /--paper:#fff/);
+  // 2. The panel is a DRAWN container, which is what the entry's trigger names.
+  assert.match(css, /\.panel\{border:1px solid/);
+  assert.match(css, /min-height:9rem/);
+  // 3. The copy IS present, so every `.length` assertion in the tree passes.
+  const panel = /<div class="panel" id="about-body"><p>([^<]+)<\/p><\/div>/.exec(html);
+  assert.ok(panel !== null, "the panel markup changed shape");
+  assert.ok((panel[1] ?? "").length > 200, "the hollow panel must still carry real copy");
+  // 4. `#about` is ABOVE `#projects` in the markup, and the hero is short. Both
+  //    are what put the region inside a 375x812 frame; the measured geometry is
+  //    on HOLLOW_SECTION_FIXTURE.assertedGeometry.
+  assert.ok(html.indexOf('id="about"') < html.indexOf('id="projects"'), "#about is not above #projects");
+  assert.match(css, /\.hero\{min-height:18vh/);
+  // 5. It still satisfies the portfolio suite, which is WHY it is not in FIXTURES.
+  assert.match(html, /<h1>Ada Lovelace<\/h1>/);
+  assert.equal((html.match(/<article class="project">/g) ?? []).length, 3);
+  assert.match(html, /id="confirm"/);
+});
+
+test("the 8th artefact is NOT in FIXTURES, and the reason is on the export", () => {
+  // Moving it in turns `calibration.test.ts` red on two assertions it does not
+  // own: the container grades it `pass_with_notes` and its `heldOutPass` is true.
+  assert.equal(
+    FIXTURES.some((f) => f.name === HOLLOW_SECTION_FIXTURE.name),
+    false,
+    "hollow-section is in FIXTURES; calibration.test.ts will grade it in a container with no visual input",
+  );
+  assert.equal(HOLLOW_SECTION_FIXTURE.expectedWithoutVisualGate, "pass_with_notes");
+  assert.equal(HOLLOW_SECTION_FIXTURE.expectedWithVisualGate, "fail");
+  assert.deepEqual(HOLLOW_SECTION_FIXTURE.firesOn, ["VIS-F-EMPTY-REGION"]);
+  assert.equal(HOLLOW_SECTION_FIXTURE.assertedGeometry.length, 3, "geometry must be asserted at all three");
 });

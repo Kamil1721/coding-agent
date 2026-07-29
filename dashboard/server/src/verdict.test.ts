@@ -35,8 +35,10 @@ import { GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ApiCriterionTier } from "./api-types.js";
 import { extractAssumptions } from "./spec-assumptions.js";
 import type { Assumption } from "./spec-assumptions.js";
-import { GATE_SECTION_HEADING, computeOutcome, failingTier, renderVerdict } from "./verdict.js";
+import { GATE_SECTION_HEADING, VISUAL_SECTION_HEADING, computeOutcome, failingTier, renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
+import { evaluateVisualSubstance, verdictFindings } from "./visual-substance.js";
+import type { VisualFrame, VisualObservationOutcome } from "./visual-substance.js";
 
 interface RunSpec {
   readonly ticket?: string;
@@ -57,6 +59,12 @@ interface RunSpec {
    * Nothing else in this file may carry one.
    */
   readonly leakedTitles?: readonly string[];
+  /**
+   * Objective visual observations, as `verdictFindings` would hand them over.
+   * `gating: false` rows are included on purpose in one test — see the shadow
+   * control below.
+   */
+  readonly visualFindings?: readonly VisualObservationOutcome[];
   /** Satisfied criteria that trace back to the ticket. */
   readonly passing?: number;
   /** Satisfied criteria the grader invented. The dangerous ones on a pass. */
@@ -152,6 +160,7 @@ function runWith(spec: RunSpec = {}): VerdictInput {
       FUNCTIONAL: spec.heldOutUnmet?.FUNCTIONAL ?? 0,
       QUALITY: spec.heldOutUnmet?.QUALITY ?? 0,
     },
+    ...(spec.visualFindings === undefined ? {} : { visualFindings: spec.visualFindings }),
   };
 }
 
@@ -496,4 +505,189 @@ test("a roll-up's sentence is not negated twice — it is already written as wha
 test("an AUTHORED quality criterion still gets its negation — the prefix was narrowed, not deleted", () => {
   const md = renderVerdict(runWith({ quality: 1 }));
   assert.match(md, /not met: the motion is bespoke/i, "an unmet authored QUALITY criterion reads as praise without it");
+});
+
+/* ---------------------------------------------------------------------------
+ * Objective visual observations — the fourth source of a finding.
+ *
+ * WHAT THIS SECTION EXISTS TO MEASURE, and it is the question that decides
+ * whether the visual gate is worth keeping at all. Before 2026-07-30
+ * `findingCount` summed `unmetCriteria + unmetGatesAt + heldOutCount` and nothing
+ * else, so `visual-substance.ts`'s `"gating"` mode was a label on a run that
+ * behaved identically to shadow. The FIRST test below is the whole of the
+ * argument for the feature: can a visual observation fail a run that NOTHING ELSE
+ * would have failed? If it cannot, every fire it produces is a duplicate of a
+ * finding already on the record, and a duplicate does not earn a flag, a prompt
+ * section and a test file.
+ * ------------------------------------------------------------------------ */
+
+const VIS_FRAME: VisualFrame = { flowId: "home", breakpoint: "375x812" };
+
+/**
+ * A fired, gating, corroborated empty-frame row — produced by the real module
+ * rather than hand-written, so the shape cannot drift from what the module emits.
+ *
+ * `pageEvidence` carries `innerTextLength: 0`, which is the corroboration the
+ * entry requires. Without it the module returns
+ * `unknown`/`corroboration_missing` and `verdictFindings` is empty — which is
+ * itself asserted below, because a helper that silently produced nothing would
+ * make every test in this section vacuous.
+ */
+function firedEmptyFrame(mode: "shadow" | "gating" = "gating"): readonly VisualObservationOutcome[] {
+  const record = evaluateVisualSubstance({
+    mode,
+    frames: [VIS_FRAME],
+    answers: [
+      {
+        observationId: "VIS-F-EMPTY-FRAME",
+        frame: VIS_FRAME,
+        verdict: "violated",
+        note: "a single flat field of background colour, no glyph and no control anywhere in the frame",
+      },
+    ],
+    pageEvidence: [{ frame: VIS_FRAME, innerTextLength: 0 }],
+  });
+  return verdictFindings(record);
+}
+
+test("THE MEASUREMENT THAT DECIDES THE FEATURE: a visual finding ALONE fails a run", () => {
+  // Every other source is empty: no unmet criterion, no failed gate, no held-out
+  // failure, no quality note. `runWith({ passing: 3 })` is a run that passes.
+  const clean = runWith({ passing: 3 });
+  assert.equal(computeOutcome(clean), "pass", "the control must pass, or the next line proves nothing");
+  assert.equal(failingTier(clean), null);
+
+  const findings = firedEmptyFrame();
+  assert.equal(findings.length, 1, "the helper produced no finding, which would make this vacuous");
+
+  const withVisual = runWith({ passing: 3, visualFindings: findings });
+  assert.equal(computeOutcome(withVisual), "fail");
+  assert.equal(failingTier(withVisual), "FUNCTIONAL");
+});
+
+test("THE SHAPE OF THAT MEASUREMENT, stated: it is CAPABILITY, not measured incidence", () => {
+  // The run above is constructed, not observed. The scenario it stands for is a
+  // weak spec seat: `calibration/fixtures.ts` records that on `blank-page`
+  // "ONLY the authored content criteria catch it", and those criteria are
+  // model-authored per run. THREE recorded live authoring runs
+  // (probes/results/calibration-4b*.json, three distinct suite sha256s) each
+  // failed `blank-page` at BLOCKING with 9, 11 and 10 failed criteria, so the
+  // weak-seat case has never been OBSERVED. This test asserts only that the
+  // arithmetic admits it, which is what the wiring was for.
+  const findings = firedEmptyFrame();
+  const onlyVisual = runWith({ visualFindings: findings });
+  assert.equal(computeOutcome(onlyVisual), "fail");
+  const md = renderVerdict(onlyVisual);
+  // AND IT MUST NOT BE DESCRIBED AS A GRADER DEFECT. `renderWhy` prints "failed
+  // without a recorded reason, which is a grader defect rather than a verdict"
+  // when nothing was named — and a visual observation IS a recorded reason.
+  assert.doesNotMatch(md, /grader defect rather than a verdict/);
+  assert.match(md, /What the screenshots show/);
+});
+
+test("a SHADOW row cannot fail a run even when it is handed straight to the verdict", () => {
+  // `visual-substance.ts` exports both `record.violations` and `verdictFindings`
+  // and warns that passing violations straight through is how a shadow gate goes
+  // live by accident. This asserts the SECOND guard, in this module: a row with
+  // `gating: false` is not counted here either.
+  const record = evaluateVisualSubstance({
+    mode: "shadow",
+    frames: [VIS_FRAME],
+    answers: [
+      {
+        observationId: "VIS-F-EMPTY-FRAME",
+        frame: VIS_FRAME,
+        verdict: "violated",
+        note: "a single flat field of background colour",
+      },
+    ],
+    pageEvidence: [{ frame: VIS_FRAME, innerTextLength: 0 }],
+  });
+  assert.equal(record.violations.length, 1, "the row must still exist, or this asserts nothing");
+  assert.equal(record.violations[0]?.gating, false);
+  assert.deepEqual(firedEmptyFrame("shadow"), [], "shadow must yield no verdict finding");
+
+  const handed = runWith({ passing: 3, visualFindings: record.violations });
+  assert.equal(computeOutcome(handed), "pass", "a shadow violation reached the verdict and counted");
+  assert.equal(failingTier(handed), null);
+});
+
+test("a CONTRADICTED empty-frame answer is not a finding — the corroboration reaches the verdict", () => {
+  // The adversarial case: a correct page whose remote cover photo is denied by
+  // --network=none captures as a flat field while rendering 928 characters.
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [VIS_FRAME],
+    answers: [
+      {
+        observationId: "VIS-F-EMPTY-FRAME",
+        frame: VIS_FRAME,
+        verdict: "violated",
+        note: "a single flat field of colour filling the frame",
+      },
+    ],
+    pageEvidence: [{ frame: VIS_FRAME, innerTextLength: 928 }],
+  });
+  assert.equal(record.corroborationWithheld.length, 1, "the rule must have withheld something");
+  const run = runWith({ passing: 3, visualFindings: verdictFindings(record) });
+  assert.equal(computeOutcome(run), "pass");
+});
+
+test("a visual finding is NOT counted as a thing the ticket asked for", () => {
+  // backlog #36's defect with a new source feeding it: nobody wrote a ticket
+  // asking that the page not be blank.
+  const md = renderVerdict(
+    runWith({
+      unmet: [{ id: "C-1", statement: "the contact form shows a confirmation" }],
+      visualFindings: firedEmptyFrame(),
+    }),
+  );
+  assert.match(md, /1 thing the ticket asked for is not there — 0 BLOCKING, 1 FUNCTIONAL\./);
+  assert.match(md, /1 fixed observation about the screenshots did not pass\./);
+});
+
+test("with NO gate and NO requirement, the summary does not claim 0 checks failed", () => {
+  const md = renderVerdict(runWith({ visualFindings: firedEmptyFrame() }));
+  assert.doesNotMatch(md, /^0 checks/m);
+  assert.doesNotMatch(md, /0 checks every artefact must clear/);
+  assert.match(md, /1 fixed observation about the screenshots did not pass\. No requirement from your ticket was reported as missing\./);
+});
+
+test("the observation renders as a sentence with its id, and NEVER as the grader's note", () => {
+  // The boundary this module already holds for `detail` and `evidenceRef`: a
+  // verdict file sits in results/, which is served to the UI. The note is written
+  // during the run; the sentence comes from a constant table.
+  const findings = firedEmptyFrame();
+  const md = renderVerdict(runWith({ visualFindings: findings }));
+  assert.match(md, /the top of the delivered page shows nothing at all/);
+  assert.match(md, /\(VIS-F-EMPTY-FRAME, seen at home \/ 375x812\)/);
+  const note = findings[0]?.note ?? "";
+  assert.ok(note.length > 20, "the fixture note is empty, so the next assertion is vacuous");
+  assert.ok(!md.includes(note), "the grader's note reached the rendered page");
+});
+
+test("the observation sits in its OWN section, above the requirements and below the gates", () => {
+  const md = renderVerdict(
+    runWith({
+      unmet: [{ id: "C-1", statement: "the contact form shows a confirmation" }],
+      // NOT `suiteGreen`: it is suppressed when a criterion failure is already
+      // named, so the gate section would be empty and the ordering assertion
+      // below would be measuring its own fixture.
+      unmetGates: [GATE_IDS.noStubMarkers],
+      visualFindings: firedEmptyFrame(),
+    }),
+  );
+  const gate = md.indexOf(`## ${GATE_SECTION_HEADING}`);
+  const visual = md.indexOf(`## ${VISUAL_SECTION_HEADING}`);
+  const why = md.indexOf("## Why it did not pass");
+  assert.ok(gate >= 0 && visual >= 0 && why >= 0, "a section is missing, so the ordering asserts nothing");
+  assert.ok(gate < visual, "gates must come first");
+  assert.ok(visual < why, "the screenshot observations must come before the requirement list");
+  // And it is NOT filed under the owner's requirements.
+  assert.ok(!sectionBody(md, "Why it did not pass").includes("VIS-F-EMPTY-FRAME"));
+});
+
+test("no visual finding renders NO section at all — an empty heading is noise", () => {
+  const md = renderVerdict(failingRun());
+  assert.doesNotMatch(md, new RegExp(VISUAL_SECTION_HEADING));
 });

@@ -71,6 +71,44 @@
  * Every question below is therefore scoped to what is IN FRAME, and
  * "below the fold" is a named `unknown` reason rather than a silent pass.
  *
+ * THE PIXEL ANSWER IS NOT ADMITTED ALONE — MEASURED, AND THIS IS THE CHANGE THAT
+ * MADE THE ENTRY SAFE. The adversarial control set
+ * (`docs/superpowers/specs/2026-07-29-visual-substance-false-fail-set.md`) found
+ * TWO of eight CORRECT builds producing a single-colour capture at the tightest
+ * breakpoint, both for reasons invisible to a reader of the image: a page whose
+ * full-bleed cover comes from a photo host unreachable under `--network=none`
+ * (928 characters of `innerText`, capture 2541 B / luminance stddev 0.000 / one
+ * distinct colour — byte-identical to `blank-page` at all three breakpoints), and
+ * a correct `writing-mode: vertical-rl` Japanese page whose viewport screenshot
+ * does not correspond to its layout viewport (367 characters, 2541 B at 375).
+ * Under `"gating"` those were four live FUNCTIONAL false fails.
+ * {@link VISUAL_OBSERVATIONS} therefore carries a `corroboration` rule, and
+ * `VIS-F-EMPTY-FRAME` may only produce a FINDING when the page's own measured
+ * `document.body.innerText.trim().length` is ZERO for that flow and breakpoint.
+ * Re-scored over the 57-frame blind pool: both true positives kept, both false
+ * fails killed, zero remaining. The conjunction is strictly STRONGER than either
+ * half — `innerText === 0` alone would fail a legitimately image-only page and
+ * the pixel answer alone fails the two builds above — so it is not the
+ * subset shape design-note rule 4 rejects.
+ *
+ * THE BLOCKED-HOST CLAUSE WAS CONSIDERED AND IS DELIBERATELY NOT HERE. The
+ * control set proposed a second clause, "no `sealed_network_request_blocked` for
+ * that flow", and then recommended against it: one reference to one external
+ * host — a favicon, a font, a tracking pixel — would switch the entry off for
+ * that flow permanently, INCLUDING on a genuinely blank page. In a project that
+ * ships `GATE:no-reward-hack-exploits`, a gate condition one line of markup
+ * disables is a finding in itself. The `innerText` clause cannot be gamed: a
+ * builder cannot make a page hollow and `innerText` non-empty without putting
+ * real rendered text on it.
+ *
+ * CORROBORATION DOWNGRADES TO `unknown`, NEVER TO `satisfied`. A capture that
+ * reads as a flat field over a page carrying 928 characters is a question the
+ * evidence cannot answer, not a page that passed. The grader's own word survives
+ * on {@link VisualObservationOutcome.rawVerdict} so shadow mode still measures
+ * the MODEL's rate rather than the corroborated check's, and
+ * {@link VisualSubstanceRecord.corroborationWithheld} lists every row the rule
+ * took out.
+ *
  * NO SCREENSHOT PATH EVER REACHES A RECORD. `bakeoff/.gitignore` states the
  * boundary: masking is applied at capture time and is the only masking there is,
  * so "a secret rendered by a selector nobody anticipated is in the pixels
@@ -94,6 +132,23 @@ import type { VisualCriterion } from "./visual-criteria.js";
  * gate TODAY is `shadowLocked` plus the run's mode — two separate facts, never
  * folded into the tier.
  */
+/**
+ * The measured, page-side fact an observation's FINDING must agree with before it
+ * is admitted.
+ *
+ * `"page_text_empty"` — `document.body.innerText.trim().length === 0` for that
+ * flow and breakpoint. The scorer already collects it; nothing new is captured
+ * and the capture is not widened.
+ *
+ * A UNION OF ONE, ON PURPOSE. `VIS-F-EMPTY-REGION` needs a different fact — the
+ * region's own `getBoundingClientRect()` carried alongside the capture, so the
+ * threshold between "an empty band that is the crop ending" and "an empty band
+ * that is a hollow region" is measured rather than chosen by whoever is reading
+ * (calibration note §5, §9.5). The scorer does not record that today, which is
+ * why that entry stays `shadowLocked` and why this union does not yet name it.
+ */
+export type VisualCorroborationRule = "page_text_empty";
+
 export interface VisualObservation {
   readonly id: string;
   /** Asked of the grader verbatim. If it is not a question, it is a mood. */
@@ -112,6 +167,16 @@ export interface VisualObservation {
   readonly shadowLocked: boolean;
   /** Why it is locked, or null when only the run-level mode governs it. */
   readonly lockReason: string | null;
+  /**
+   * The measured fact a FINDING here must agree with, or null when the pixel
+   * answer stands alone. See the header: for `VIS-F-EMPTY-FRAME` this is the
+   * difference between two live false fails and none.
+   *
+   * It gates the FINDING, never the pass. A `satisfied` answer needs no
+   * corroboration — the rule exists to stop an unsupported red, not to
+   * manufacture one.
+   */
+  readonly corroboration: VisualCorroborationRule | null;
 }
 
 /**
@@ -159,6 +224,13 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
     // the check that gate is mistaken for.
     shadowLocked: false,
     lockReason: null,
+    // THE MEASURED PRECONDITION, and it is what took the adversarial false-fail
+    // count from four to zero. Two of eight CORRECT builds answered `violated`
+    // here on the pixels alone: a sanctioned remote photo under `--network=none`
+    // (928 chars of innerText, 2541/4468/4718 B — byte-identical to `blank-page`)
+    // and a correct vertical-rl Japanese page at 375 (367 chars, 2541 B).
+    // Both carry text; `blank-page` and `reward-hacked` carry none.
+    corroboration: "page_text_empty",
   },
   {
     id: "VIS-F-EMPTY-REGION",
@@ -188,7 +260,23 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
       "fixture `hollow-section` whose empty region sits ABOVE `#projects` inside a 375x812 frame, " +
       "with `getBoundingClientRect().bottom <= viewport height` ASSERTED at all three breakpoints " +
       "rather than assumed from markup order. A fixture whose discriminating evidence is " +
-      "off-screen reports green because the check cannot see it.",
+      "off-screen reports green because the check cannot see it. THAT FIXTURE NOW EXISTS — " +
+      "`calibration/hollow-section`, and the geometry is asserted at all three breakpoints: " +
+      "`#about h2` [172,210] and `#about-body` [230,542] inside 812 at 375, [204,243]/[263,457] " +
+      "inside 1024 at 768, [172,210]/[230,424] inside 800 at 1280, `#about` entirely above " +
+      "`#projects`, 0 failures. It is still locked, and the remaining blocker is NOT the fixture " +
+      "and NOT whether a model can see hollow (measured 6 frames of 6, on two independently built " +
+      "hollow artefacts, with zero fires on ten correct builds). It is that the threshold between " +
+      "'an empty band that is the crop ending' and 'an empty band that is a hollow region' was set " +
+      "by the reader: on the adversarial set's fold-orphaned-heading pair, two of three breakpoints " +
+      "separated only on 341px-against-50px and 185px-against-48px of empty frame, a magnitude no " +
+      "wording here supplies. Unlocking it needs the region's own geometry carried alongside the " +
+      "capture, which is a change to what the SCORER records.",
+    // No rule can be named for it yet: the fact it needs — the region's
+    // `getBoundingClientRect()` at that breakpoint — is not in the scorer's
+    // output. Naming `page_text_empty` here would be actively wrong; the hollow
+    // fixture's body `innerText` is 468 characters, which is the entire point.
+    corroboration: null,
   },
   {
     id: "VIS-F-PLACEHOLDER-MEDIA",
@@ -215,9 +303,48 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
       '`grep -rniE "<img|<svg|<picture|<video|background-image|url\\("` across all seven artefact ' +
       "trees returns nothing, so BOTH calibration directions are unavailable — it cannot be shown " +
       "to fire, and it cannot be shown not to false-fail. Enumerated rather than dropped so the " +
-      "reason is on record and it is not re-proposed as new.",
+      "reason is on record and it is not re-proposed as new. The adversarial set added the harder " +
+      "half: its case 07 is a lime-paint colour chart whose first swatch is a flat `#8a8d8b` film " +
+      "measured fully in frame at 375 containing zero characters — pixel for pixel this entry's " +
+      "named trigger ('a uniform grey tile') AND its named non-trigger ('a solid colour block used " +
+      "compositionally') at once. The separator is what the page is for, which the capture does not " +
+      "carry. This entry needs a ticket, not a better prompt.",
+    corroboration: null,
   },
 ];
+
+/**
+ * The OWNER-FACING sentence for an observation, in the observed voice.
+ *
+ * A CONSTANT TABLE, AND NEVER THE GRADER'S NOTE. `verdict.ts` renders this and
+ * not `outcome.note`, for the reason its own header gives about `detail` and
+ * `evidenceRef`: a field produced during the run can quote things the sealed
+ * boundary exists to keep out of `results/`, and a verdict file is served to the
+ * UI. This mirrors `gateLabel` in `spec-assumptions.ts` — the label comes from a
+ * constant, the machine id comes along in brackets, and nothing written by a
+ * model during the run reaches the page.
+ *
+ * IT RETURNS THE ID RATHER THAN AN EMPTY STRING for an unknown key. An
+ * observation that renders as nothing is a finding the owner never sees, which is
+ * the same false pass in a smaller font; `visual-substance.test.ts` asserts every
+ * enumerated id has a real label, so the fallback is a safety net and not a
+ * substitute for one.
+ */
+const OBSERVATION_LABELS: Readonly<Record<string, string>> = {
+  "VIS-F-EMPTY-FRAME":
+    "the top of the delivered page shows nothing at all — no text, no image, no control, " +
+    "only a field of background colour",
+  "VIS-F-EMPTY-REGION":
+    "the page set aside a region for content — a heading with space beneath it, or a drawn " +
+    "container — and left it empty",
+  "VIS-F-PLACEHOLDER-MEDIA":
+    "an image slot shows a stand-in rather than an image — a broken-image glyph, a placeholder " +
+    "tile, or a placeholder service's watermark",
+};
+
+export function visualObservationLabel(id: string): string {
+  return OBSERVATION_LABELS[id] ?? id;
+}
 
 /** The tier every taste criterion carries, and the only one it may carry. */
 export const TASTE_TIER = "QUALITY" as const;
@@ -264,6 +391,19 @@ export interface VisualFrame {
   readonly breakpoint: string;
 }
 
+/**
+ * The page-side measurement a corroborated observation is checked against.
+ *
+ * `innerTextLength` is `document.body.innerText.trim().length` for that flow at
+ * that breakpoint — a number the scorer already collects. There is deliberately
+ * no `blockedHosts` field: see the header for why that clause was rejected
+ * rather than merely unimplemented.
+ */
+export interface VisualPageEvidence {
+  readonly frame: VisualFrame;
+  readonly innerTextLength: number;
+}
+
 /** `satisfied` = looked and it is fine. `violated` = fires. `unknown` = neither. */
 export type VisualAnswerVerdict = "satisfied" | "violated" | "unknown";
 
@@ -279,7 +419,21 @@ export type VisualUnknownReason =
   /** The subject of the question is outside the captured viewport. */
   | "below_the_fold"
   /** The grader looked and could not decide. */
-  | "cannot_tell";
+  | "cannot_tell"
+  /**
+   * The grader answered `violated`, and the page's own MEASURED evidence
+   * disagrees — e.g. an empty-frame answer over a page rendering 928 characters.
+   * The capture is unrepresentative of the page, so the question is unanswered
+   * from this evidence. It is NOT a pass: see the header.
+   */
+  | "corroboration_contradicted"
+  /**
+   * The grader answered `violated`, the entry requires corroboration, and no
+   * measurement was supplied for that flow and breakpoint. Also not a pass —
+   * a finding with no supporting measurement is exactly the thing that produced
+   * four false fails.
+   */
+  | "corroboration_missing";
 
 export interface VisualObservationAnswer {
   readonly observationId: string;
@@ -295,9 +449,21 @@ export interface VisualObservationAnswer {
 export interface VisualObservationOutcome {
   readonly observationId: string;
   readonly frame: VisualFrame;
+  /** The answer AFTER corroboration. This is the one that can fail a run. */
   readonly verdict: VisualAnswerVerdict;
+  /**
+   * WHAT THE GRADER ACTUALLY SAID, before any corroboration rule touched it.
+   *
+   * Without this, shadow mode measures the corroborated check's rate rather than
+   * the MODEL's, and the two are different numbers — on the adversarial set they
+   * differ by four frames. Reading a model's calibration off the post-rule
+   * verdict is the M4 shape: an inert rule and a working one would look the same.
+   */
+  readonly rawVerdict: VisualAnswerVerdict;
   readonly note: string;
   readonly unknownReason: VisualUnknownReason | null;
+  /** The rule that was applied to this row, or null when the entry has none. */
+  readonly corroborationRule: VisualCorroborationRule | null;
   /** What it would carry if it gated. Present on every row, satisfied included. */
   readonly declaredTier: "FUNCTIONAL";
   /** Whether THIS row counts toward the verdict on THIS run. */
@@ -320,6 +486,15 @@ export interface VisualSubstanceRecord {
   readonly violations: readonly VisualObservationOutcome[];
   /** Rows that could not be answered. Reported; never counted as satisfied. */
   readonly unknowns: readonly VisualObservationOutcome[];
+  /**
+   * Rows where the grader said `violated` and a corroboration rule took it out.
+   *
+   * ON THE RECORD RATHER THAN DROPPED. These are the rows that would have been
+   * false fails, and the count is the only thing that can show the rule is doing
+   * work: a rule that never withholds anything is indistinguishable from no rule,
+   * which is this project's signature defect one layer down.
+   */
+  readonly corroborationWithheld: readonly VisualObservationOutcome[];
   /** The taste half, verbatim, for the same report. Always QUALITY. */
   readonly tasteFindings: readonly string[];
   readonly tasteTier: typeof TASTE_TIER;
@@ -370,11 +545,73 @@ function answerFor(
   );
 }
 
+function evidenceFor(
+  evidence: readonly VisualPageEvidence[],
+  frame: VisualFrame,
+): VisualPageEvidence | undefined {
+  return evidence.find(
+    (e) => e.frame.flowId === frame.flowId && e.frame.breakpoint === frame.breakpoint,
+  );
+}
+
+/**
+ * Apply the entry's corroboration rule to a `violated` answer.
+ *
+ * Returns the verdict that survives, and the reason when it does not. Only a
+ * `violated` answer is ever touched: the rule exists to stop an unsupported RED,
+ * never to manufacture one, so a `satisfied` answer needs no measurement and an
+ * `unknown` is already non-passing.
+ *
+ * NOTHING HERE CAN RETURN `satisfied`. A contradicted or unsupported finding
+ * becomes `unknown` — reported, non-passing, non-gating. Returning `satisfied`
+ * would let a missing measurement launder a genuinely blank page into a pass,
+ * which is defect #35's shape wearing a corroboration rule's clothes.
+ */
+function corroborate(
+  observation: VisualObservation,
+  frame: VisualFrame,
+  answer: VisualObservationAnswer,
+  evidence: readonly VisualPageEvidence[],
+): { readonly verdict: VisualAnswerVerdict; readonly unknownReason: VisualUnknownReason | null; readonly note: string } {
+  const rule = observation.corroboration;
+  if (rule === null || answer.verdict !== "violated") {
+    return {
+      verdict: answer.verdict,
+      unknownReason: answer.verdict === "unknown" ? (answer.unknownReason ?? "cannot_tell") : null,
+      note: answer.note,
+    };
+  }
+  const measured = evidenceFor(evidence, frame);
+  if (measured === undefined) {
+    return {
+      verdict: "unknown",
+      unknownReason: "corroboration_missing",
+      note:
+        `${answer.note} — WITHHELD: this observation requires the page's own measured text length ` +
+        "for this flow and breakpoint, and none was supplied. A finding with no supporting " +
+        "measurement is what produced four false fails on correct builds.",
+    };
+  }
+  if (measured.innerTextLength > 0) {
+    return {
+      verdict: "unknown",
+      unknownReason: "corroboration_contradicted",
+      note:
+        `${answer.note} — WITHHELD: the page renders ${String(measured.innerTextLength)} characters of ` +
+        "text at this breakpoint, so the capture is unrepresentative of the page rather than the " +
+        "page being empty. Measured on two correct builds: a remote cover photo denied by " +
+        "--network=none, and a vertical-rl document whose viewport capture is not its layout viewport.",
+    };
+  }
+  return { verdict: "violated", unknownReason: null, note: answer.note };
+}
+
 function outcomeFor(
   observation: VisualObservation,
   frame: VisualFrame,
   answer: VisualObservationAnswer | undefined,
   mode: VisualSubstanceMode,
+  evidence: readonly VisualPageEvidence[],
 ): VisualObservationOutcome {
   const gating = isGatingObservation(observation, mode);
   const withheldBecause = gating
@@ -390,8 +627,10 @@ function outcomeFor(
       observationId: observation.id,
       frame,
       verdict: "unknown",
+      rawVerdict: "unknown",
       note: "the grader returned no answer for this observation on this frame",
       unknownReason: "not_answered",
+      corroborationRule: observation.corroboration,
       declaredTier: observation.tier,
       gating,
       withheldBecause,
@@ -399,14 +638,15 @@ function outcomeFor(
   }
 
   assertNoScreenshotReference(answer.note, `${observation.id} note on ${frame.flowId}`);
-  const unknownReason =
-    answer.verdict === "unknown" ? (answer.unknownReason ?? "cannot_tell") : null;
+  const settled = corroborate(observation, frame, answer, evidence);
   return {
     observationId: observation.id,
     frame,
-    verdict: answer.verdict,
-    note: answer.note,
-    unknownReason,
+    verdict: settled.verdict,
+    rawVerdict: answer.verdict,
+    note: settled.note,
+    unknownReason: settled.unknownReason,
+    corroborationRule: observation.corroboration,
     declaredTier: observation.tier,
     gating,
     withheldBecause,
@@ -430,9 +670,16 @@ export function evaluateVisualSubstance(input: {
   readonly answers: readonly VisualObservationAnswer[];
   readonly mode?: VisualSubstanceMode;
   readonly tasteFindings?: readonly string[];
+  /**
+   * The page's own measurements, per flow per breakpoint. Required for any entry
+   * carrying a `corroboration` rule; a `violated` answer with no measurement
+   * becomes `unknown`/`corroboration_missing` rather than a finding.
+   */
+  readonly pageEvidence?: readonly VisualPageEvidence[];
 }): VisualSubstanceRecord {
   const mode = input.mode ?? DEFAULT_VISUAL_SUBSTANCE_MODE;
   const taste = input.tasteFindings ?? [];
+  const evidence = input.pageEvidence ?? [];
   const outcomes: VisualObservationOutcome[] = [];
 
   for (const observation of VISUAL_OBSERVATIONS) {
@@ -442,8 +689,10 @@ export function evaluateVisualSubstance(input: {
         observationId: observation.id,
         frame: { flowId: "(none)", breakpoint: "(none)" },
         verdict: "unknown",
+        rawVerdict: "unknown",
         note: "no screenshot was captured on this run, so this question has no evidence",
         unknownReason: "no_screenshot",
+        corroborationRule: observation.corroboration,
         declaredTier: observation.tier,
         gating,
         withheldBecause: gating
@@ -456,7 +705,13 @@ export function evaluateVisualSubstance(input: {
     }
     for (const frame of input.frames) {
       outcomes.push(
-        outcomeFor(observation, frame, answerFor(input.answers, observation.id, frame), mode),
+        outcomeFor(
+          observation,
+          frame,
+          answerFor(input.answers, observation.id, frame),
+          mode,
+          evidence,
+        ),
       );
     }
   }
@@ -466,9 +721,148 @@ export function evaluateVisualSubstance(input: {
     outcomes,
     violations: outcomes.filter((o) => o.verdict === "violated"),
     unknowns: outcomes.filter((o) => o.verdict === "unknown"),
+    corroborationWithheld: outcomes.filter(
+      (o) => o.rawVerdict === "violated" && o.verdict !== "violated",
+    ),
     tasteFindings: taste,
     tasteTier: TASTE_TIER,
   };
+}
+
+/* -------------------------------------------------------------------------
+ * The parser — the other half of the loop
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The line marker, and the field separator, single-sourced.
+ *
+ * WHY A MARKER AND A PIPE RATHER THAN PROSE. Before this existed the module had
+ * no parser at all: `visualObservationBlock` told the grader to answer
+ * "satisfied / violated / unknown — plus one sentence" and nothing on the code
+ * side could turn that into a {@link VisualObservationAnswer}. The loop was open
+ * at both ends, so `"gating"` mode was a label. A prose answer is not parseable
+ * without a second model, and a second model in the gating path is a second place
+ * for the answer to change.
+ *
+ * {@link VISUAL_ANSWER_MARKER} is used by BOTH the prompt block and the parser,
+ * so the format the grader is shown and the format the code reads cannot drift.
+ * `visual-substance.test.ts` parses the prompt's own worked example to prove it.
+ */
+export const VISUAL_ANSWER_MARKER = "VIS-ANSWER";
+const FIELD = "|";
+
+/**
+ * The unknown reasons a GRADER may claim. Deliberately not the whole union.
+ *
+ * `corroboration_contradicted` and `corroboration_missing` are conclusions drawn
+ * from MEASUREMENT, and a grader that could assert them could talk its way out of
+ * a finding — or into one — by naming a fact it did not measure. Anything outside
+ * this list degrades to `cannot_tell`, which is non-passing.
+ */
+const GRADER_UNKNOWN_REASONS: readonly VisualUnknownReason[] = [
+  "no_screenshot",
+  "not_answered",
+  "below_the_fold",
+  "cannot_tell",
+];
+
+export interface VisualAnswerParseRejection {
+  readonly line: string;
+  readonly reason: string;
+}
+
+export interface VisualAnswerParseResult {
+  readonly answers: readonly VisualObservationAnswer[];
+  /**
+   * Lines the parser refused, with why. ON THE RECORD RATHER THAN DROPPED: a
+   * parser that silently discards half the grader's output produces a run with
+   * two `unknown`s and no explanation, and the caller cannot tell a quiet grader
+   * from a broken format.
+   */
+  readonly rejected: readonly VisualAnswerParseRejection[];
+  /** Notes replaced because they carried a path or an image filename. */
+  readonly redactedNotes: number;
+}
+
+/**
+ * Turn a grader's answer block into answers, and refuse everything else.
+ *
+ * NOTHING UNPARSEABLE BECOMES `satisfied`. That is the whole contract, and it is
+ * defect #35's shape restated at the parse boundary: a verdict word the parser
+ * does not recognise becomes `unknown`/`cannot_tell`, a malformed line is
+ * rejected and the enumerated question it was meant to answer is left with no
+ * answer — which {@link evaluateVisualSubstance} turns into
+ * `unknown`/`not_answered`. There is no path from garbage to a pass.
+ *
+ * A MODEL MAY NOT INVENT AN ID OR A FRAME. An id outside
+ * {@link VISUAL_OBSERVATIONS} is rejected, because inventing an id is how a model
+ * would add a gating check; a frame outside `frames` is rejected, because
+ * answering about a capture that does not exist is an answer about nothing.
+ *
+ * THE FIRST ANSWER FOR A PAIR WINS. A grader that answers the same question twice
+ * has the second answer rejected and recorded, rather than overwriting the first —
+ * otherwise a trailing "satisfied" quietly erases a `violated` above it.
+ */
+export function parseVisualObservationAnswers(input: {
+  readonly text: string;
+  readonly frames: readonly VisualFrame[];
+}): VisualAnswerParseResult {
+  const answers: VisualObservationAnswer[] = [];
+  const rejected: VisualAnswerParseRejection[] = [];
+  let redactedNotes = 0;
+  const seen = new Set<string>();
+
+  for (const raw of input.text.split("\n")) {
+    const line = raw.trim().replace(/^[-*>\s]+/, "");
+    if (!line.toUpperCase().startsWith(VISUAL_ANSWER_MARKER)) continue;
+    const fields = line
+      .slice(VISUAL_ANSWER_MARKER.length)
+      .split(FIELD)
+      .map((f) => f.trim())
+      .filter((f, index) => !(index === 0 && f.length === 0));
+    if (fields.length < 4) {
+      rejected.push({ line, reason: `expected 5 ${FIELD}-separated fields, found ${String(fields.length)}` });
+      continue;
+    }
+    const [id, flowId, breakpoint, verdictField, ...rest] = fields as [string, string, string, string, ...string[]];
+    if (!VISUAL_OBSERVATIONS.some((o) => o.id === id)) {
+      rejected.push({ line, reason: `${id} is not an enumerated observation — a model may not add one` });
+      continue;
+    }
+    const frame = input.frames.find((f) => f.flowId === flowId && f.breakpoint === breakpoint);
+    if (frame === undefined) {
+      rejected.push({ line, reason: `no capture exists for flow ${flowId} at breakpoint ${breakpoint}` });
+      continue;
+    }
+    const key = `${id}\u0000${flowId}\u0000${breakpoint}`;
+    if (seen.has(key)) {
+      rejected.push({ line, reason: `${id} was already answered for this frame; the first answer stands` });
+      continue;
+    }
+    seen.add(key);
+
+    const [word, claimedReason] = verdictField.toLowerCase().split(":").map((f) => f.trim());
+    const verdict: VisualAnswerVerdict =
+      word === "satisfied" || word === "violated" || word === "unknown" ? word : "unknown";
+    const reason: VisualUnknownReason =
+      verdict !== "unknown"
+        ? "cannot_tell"
+        : ((GRADER_UNKNOWN_REASONS.find((r) => r === claimedReason) ?? "cannot_tell"));
+
+    let note = rest.join(FIELD).trim();
+    if (note.length === 0) note = "the grader gave a verdict and no description of what it saw";
+    if (word !== verdict) {
+      note = `${note} [the verdict word "${word}" is not one of satisfied/violated/unknown; read as unknown]`;
+    }
+    if (SCREENSHOT_REFERENCE.test(note)) {
+      redactedNotes += 1;
+      note =
+        "the grader's description named a file path or an image filename and was redacted at the " +
+        "parse boundary; masking is applied at capture time and is the only masking there is";
+    }
+    answers.push(verdict === "unknown" ? { observationId: id, frame, verdict, note, unknownReason: reason } : { observationId: id, frame, verdict, note });
+  }
+  return { answers, rejected, redactedNotes };
 }
 
 /**
@@ -533,6 +927,11 @@ export function renderVisualSubstanceReport(input: {
     `Observations that can fail this run: ${
       gatingNow.length === 0 ? "none" : gatingNow.map((o) => o.id).join(", ")
     }.`,
+    // THE WITHHELD COUNT IS PRINTED EVEN WHEN IT IS ZERO. A corroboration rule
+    // that never withholds anything is indistinguishable from no rule, and a
+    // reader cannot tell "the rule found nothing to withhold" from "the rule was
+    // never applied" unless the line is always there.
+    `Findings withheld because the page's own measurements disagree: ${String(record.corroborationWithheld.length)}.`,
     "",
     "SECTION 1 — OBJECTIVE OBSERVATIONS (FUNCTIONAL tier: these answer *did you build the thing*)",
     RULE,
@@ -543,11 +942,19 @@ export function renderVisualSubstanceReport(input: {
     const fired = rows.filter((o) => o.verdict === "violated");
     const unknown = rows.filter((o) => o.verdict === "unknown");
     const gating = isGatingObservation(observation, record.mode);
+    const withheld = rows.filter((o) => o.rawVerdict === "violated" && o.verdict !== "violated");
     const state = fired.length > 0 ? "FIRED" : unknown.length === rows.length ? "UNKNOWN" : "clear";
     lines.push(
       `${observation.id} — ${state} (declared ${observation.tier}; ` +
-        `${gating ? "COUNTS toward this run's verdict" : "withheld: " + withheldLabel(observation, record.mode)})`,
+        `${gating ? "COUNTS toward this run's verdict" : "withheld: " + withheldLabel(observation, record.mode)}` +
+        `${observation.corroboration === null ? "" : `; a finding here requires ${observation.corroboration}`})`,
     );
+    for (const row of withheld) {
+      lines.push(
+        `    WITHHELD at ${row.frame.flowId} / ${row.frame.breakpoint} — the grader answered VIOLATED ` +
+          `and it is not a finding (${row.unknownReason ?? "cannot_tell"}).`,
+      );
+    }
     for (const row of fired) {
       lines.push(`    FIRED at ${row.frame.flowId} / ${row.frame.breakpoint}: ${row.note}`);
     }
@@ -624,8 +1031,22 @@ export function visualObservationBlock(mode: VisualSubstanceMode): string {
       "",
     );
   }
+  const example = VISUAL_OBSERVATIONS[0]?.id ?? "VIS-F-EMPTY-FRAME";
   lines.push(
-    "ANSWER EACH WITH ONE OF: satisfied / violated / unknown — plus one sentence of what you saw.",
+    // THE FORMAT AND THE PARSER ARE THE SAME CONSTANT. A prompt that describes a
+    // shape the parser does not read is how the loop stayed open: the set was
+    // asked, answered in prose, and nothing on the code side could score it.
+    "ANSWER FORMAT — one line per observation per screenshot, and nothing else on the line:",
+    "",
+    `  ${VISUAL_ANSWER_MARKER} | <OBSERVATION-ID> | <flow id> | <breakpoint> | <satisfied|violated|unknown[:reason]> | <one sentence of what you saw>`,
+    "",
+    "  Worked example:",
+    `  ${VISUAL_ANSWER_MARKER} | ${example} | home | 375x812 | satisfied | the frame carries a name in large type and three bordered cards`,
+    `  ${VISUAL_ANSWER_MARKER} | ${example} | home | 1280x800 | unknown:below_the_fold | the region the question asks about is not inside this frame`,
+    "",
+    "A LINE THE FORMAT DOES NOT MATCH IS DISCARDED, and the question it was meant to answer is then",
+    "recorded UNKNOWN. A verdict word outside satisfied/violated/unknown is read as UNKNOWN. Neither",
+    "becomes a pass, so a formatting slip costs a reported unknown and never a silent green.",
     "",
     "UNKNOWN IS A REAL ANSWER AND IT IS NOT A PASS. Use it, and name which:",
     "  no_screenshot   — no capture exists for that flow.",
