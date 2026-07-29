@@ -1,0 +1,464 @@
+{
+  "probe": "F",
+  "question": "Three gaps probe E left open: (2) does PreToolUse still gate a run_in_background:true delegation, (1) can one subagent_type be allowed while another is denied in the same session, (3) does a single no-matcher slot suffice on its own?",
+  "sdkVersion": "0.3.220",
+  "backgroundIsGated": true,
+  "selectivityWorks": true,
+  "noMatcherSlotSuffices": true,
+  "verdict": "PASS",
+  "gap2": {
+    "status": "PASS",
+    "detail": "A run_in_background:true delegation IS gated. The hook fired for the background call (tool_input.run_in_background=[true], tool_name=[\"Agent\"]) and the deny prevented it: no task_started carrying wordpress-master, SubagentStart never fired for it, no firing came from inside it, no agentId anywhere in the session, no subagent tokens billed (task_notification usage=0, trailers=[]). The identical ALLOW control DID start a background wordpress-master, so the absence is a measurement. Both arms ran the same 12s grace step after the delegation attempt (completed=true), so a late asynchronous start had a window to appear and did not."
+  },
+  "gap1": {
+    "status": "PASS",
+    "detail": "Selective enforcement works IN ONE SESSION, keyed on tool_input.subagent_type. code-reviewer was allowed and STARTED (task_started=true, SubagentStart=true); wordpress-master was denied by the same hook and did NOT start on any of the three observables. The hook demonstrably SAW the denied call (tool_name=[\"Agent\"], subagent_type present), so its absence is not non-resolution."
+  },
+  "gap3": {
+    "status": "PASS",
+    "detail": "The ONLY PreToolUse slot registered in this session had NO matcher, and it alone fired for both delegation calls (2 firings total, tool names seen [\"Agent\"]) and alone carried the deny that stopped wordpress-master. No matcher string is needed — which matters because probe E measured matcher \"Task\" firing for a call whose tool_name was \"Agent\", behaviour no plain name match explains."
+  },
+  "arms": {
+    "bgAllowControl": {
+      "label": "F/gap2/bg-allow-control",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "preToolUseSlotsRegistered": 1,
+      "preToolUseMatcher": "OMITTED",
+      "hookFiredAtAll": true,
+      "hookFiringsTotal": 2,
+      "hookToolNamesSeen": [
+        "Agent",
+        "Bash"
+      ],
+      "denialsIssuedByHook": [],
+      "perTarget": {
+        "wordpress-master": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            true
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            true
+          ],
+          "hookDecisions": [
+            "continue"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": true,
+          "startedVia": {
+            "taskStarted": true,
+            "subagentStartHook": true,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [
+            {
+              "subagentType": "wordpress-master",
+              "taskType": "local_agent",
+              "taskId": "acaca7db923fe6d56",
+              "toolUseId": "toolu_01GboFxfSQWPbjRWtWHoYFKN",
+              "skipTranscript": false,
+              "description": "background ok check",
+              "atMs": 16597
+            }
+          ],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_01GboFxfSQWPbjRWtWHoYFKN"
+            ],
+            "matchedNotifications": [
+              {
+                "taskId": "acaca7db923fe6d56",
+                "toolUseId": "toolu_01GboFxfSQWPbjRWtWHoYFKN",
+                "status": "completed",
+                "totalTokens": 15010,
+                "toolUses": 0,
+                "summary": "OK",
+                "atMs": 18391
+              }
+            ],
+            "notificationTokens": 15010,
+            "subagentTokenTrailersInSession": [],
+            "anyTokensBilled": true
+          }
+        }
+      },
+      "allTaskStarts": [
+        {
+          "subagentType": "wordpress-master",
+          "taskType": "local_agent",
+          "taskId": "acaca7db923fe6d56",
+          "toolUseId": "toolu_01GboFxfSQWPbjRWtWHoYFKN",
+          "skipTranscript": false,
+          "description": "background ok check",
+          "atMs": 16597
+        },
+        {
+          "subagentType": null,
+          "taskType": "local_bash",
+          "taskId": "bj1cb36rq",
+          "toolUseId": "toolu_011SRteJuPrKvJ4tN8WpkdQT",
+          "skipTranscript": false,
+          "description": "Wait 12 seconds then print grace-window marker",
+          "atMs": 22290
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "acaca7db923fe6d56",
+          "toolUseId": "toolu_01GboFxfSQWPbjRWtWHoYFKN",
+          "status": "completed",
+          "totalTokens": 15010,
+          "toolUses": 0,
+          "summary": "OK",
+          "atMs": 18391
+        },
+        {
+          "taskId": "bj1cb36rq",
+          "toolUseId": "toolu_011SRteJuPrKvJ4tN8WpkdQT",
+          "status": "completed",
+          "totalTokens": null,
+          "toolUses": null,
+          "summary": "Wait 12 seconds then print grace-window marker",
+          "atMs": 31347
+        }
+      ],
+      "backgroundLevels": [
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "descriptions": [
+            "background ok check"
+          ],
+          "atMs": 16596
+        },
+        {
+          "count": 0,
+          "taskTypes": [],
+          "descriptions": [],
+          "atMs": 18391
+        }
+      ],
+      "anyBackgroundTaskEverLive": true,
+      "agentIdsSeenInSession": [
+        "acaca7db923fe6d56"
+      ],
+      "subagentStartHookFirings": [
+        {
+          "agentType": "wordpress-master",
+          "agentId": "present",
+          "atMs": 1785266204275
+        }
+      ],
+      "graceWindowCompleted": true,
+      "systemPermissionDenied": [],
+      "denyReasonEchoedInTranscript": false,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "exploratoryTiming": {
+        "note": "Wall-clock only. An awaited hook callback also stalls this process's message pump, so this cannot distinguish 'the spawn waited on the hook' from 'our reader was blocked'.",
+        "firstDelegationFiringAtMs": 1785266204232,
+        "firstSubagentTaskStartedAtMs": 16597
+      }
+    },
+    "bgDeny": {
+      "label": "F/gap2/bg-deny",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "preToolUseSlotsRegistered": 1,
+      "preToolUseMatcher": "OMITTED",
+      "hookFiredAtAll": true,
+      "hookFiringsTotal": 2,
+      "hookToolNamesSeen": [
+        "Agent",
+        "Bash"
+      ],
+      "denialsIssuedByHook": [
+        {
+          "subagentType": "wordpress-master",
+          "toolName": "Agent"
+        }
+      ],
+      "perTarget": {
+        "wordpress-master": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            true
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            true
+          ],
+          "hookDecisions": [
+            "deny"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": false,
+          "startedVia": {
+            "taskStarted": false,
+            "subagentStartHook": false,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_01GKSTB8Fsx5k8Zg5dA8TcRQ"
+            ],
+            "matchedNotifications": [],
+            "notificationTokens": 0,
+            "subagentTokenTrailersInSession": [],
+            "anyTokensBilled": false
+          }
+        }
+      },
+      "allTaskStarts": [
+        {
+          "subagentType": null,
+          "taskType": "local_bash",
+          "taskId": "bheu0nmd5",
+          "toolUseId": "toolu_01TnteN9cadz9kHnQmxidpWG",
+          "skipTranscript": false,
+          "description": "Wait 12 seconds as a fixed grace window, then print marker",
+          "atMs": 16416
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "bheu0nmd5",
+          "toolUseId": "toolu_01TnteN9cadz9kHnQmxidpWG",
+          "status": "completed",
+          "totalTokens": null,
+          "toolUses": null,
+          "summary": "Wait 12 seconds as a fixed grace window, then print marker",
+          "atMs": 25479
+        }
+      ],
+      "backgroundLevels": [],
+      "anyBackgroundTaskEverLive": false,
+      "agentIdsSeenInSession": [],
+      "subagentStartHookFirings": [],
+      "graceWindowCompleted": true,
+      "systemPermissionDenied": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "denyReasonEchoedInTranscript": true,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "exploratoryTiming": {
+        "note": "Wall-clock only. An awaited hook callback also stalls this process's message pump, so this cannot distinguish 'the spawn waited on the hook' from 'our reader was blocked'.",
+        "firstDelegationFiringAtMs": 1785266250882,
+        "firstSubagentTaskStartedAtMs": null
+      }
+    },
+    "selectivity": {
+      "label": "F/gap1+3/selective-single-slot",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "preToolUseSlotsRegistered": 1,
+      "preToolUseMatcher": "OMITTED",
+      "hookFiredAtAll": true,
+      "hookFiringsTotal": 2,
+      "hookToolNamesSeen": [
+        "Agent"
+      ],
+      "denialsIssuedByHook": [
+        {
+          "subagentType": "wordpress-master",
+          "toolName": "Agent"
+        }
+      ],
+      "perTarget": {
+        "code-reviewer": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            false
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            false
+          ],
+          "hookDecisions": [
+            "continue"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": true,
+          "startedVia": {
+            "taskStarted": true,
+            "subagentStartHook": true,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [
+            {
+              "subagentType": "code-reviewer",
+              "taskType": "local_agent",
+              "taskId": "aa3a93696f44cad36",
+              "toolUseId": "toolu_015Fvrjy9eKjpQXHAgQi8Rt1",
+              "skipTranscript": false,
+              "description": "alpha check",
+              "atMs": 13977
+            }
+          ],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_015Fvrjy9eKjpQXHAgQi8Rt1"
+            ],
+            "matchedNotifications": [
+              {
+                "taskId": "aa3a93696f44cad36",
+                "toolUseId": "toolu_015Fvrjy9eKjpQXHAgQi8Rt1",
+                "status": "completed",
+                "totalTokens": 13746,
+                "toolUses": 0,
+                "summary": "ALPHA",
+                "atMs": 16021
+              }
+            ],
+            "notificationTokens": 13746,
+            "subagentTokenTrailersInSession": [
+              13842
+            ],
+            "anyTokensBilled": true
+          }
+        },
+        "wordpress-master": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            false
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            false
+          ],
+          "hookDecisions": [
+            "deny"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": false,
+          "startedVia": {
+            "taskStarted": false,
+            "subagentStartHook": false,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_01RPfAw7cHcBW8DgJcdhQdFq"
+            ],
+            "matchedNotifications": [],
+            "notificationTokens": 0,
+            "subagentTokenTrailersInSession": [
+              13842
+            ],
+            "anyTokensBilled": true
+          }
+        }
+      },
+      "allTaskStarts": [
+        {
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "taskId": "aa3a93696f44cad36",
+          "toolUseId": "toolu_015Fvrjy9eKjpQXHAgQi8Rt1",
+          "skipTranscript": false,
+          "description": "alpha check",
+          "atMs": 13977
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "aa3a93696f44cad36",
+          "toolUseId": "toolu_015Fvrjy9eKjpQXHAgQi8Rt1",
+          "status": "completed",
+          "totalTokens": 13746,
+          "toolUses": 0,
+          "summary": "ALPHA",
+          "atMs": 16021
+        }
+      ],
+      "backgroundLevels": [],
+      "anyBackgroundTaskEverLive": false,
+      "agentIdsSeenInSession": [
+        "aa3a93696f44cad36"
+      ],
+      "subagentStartHookFirings": [
+        {
+          "agentType": "code-reviewer",
+          "agentId": "present",
+          "atMs": 1785266294142
+        }
+      ],
+      "graceWindowCompleted": false,
+      "systemPermissionDenied": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "denyReasonEchoedInTranscript": true,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "exploratoryTiming": {
+        "note": "Wall-clock only. An awaited hook callback also stalls this process's message pump, so this cannot distinguish 'the spawn waited on the hook' from 'our reader was blocked'.",
+        "firstDelegationFiringAtMs": 1785266294100,
+        "firstSubagentTaskStartedAtMs": 13977
+      }
+    }
+  },
+  "sessionsSpent": 3,
+  "notes": "All three gaps closed. A SINGLE no-matcher PreToolUse slot, keyed on tool_input.subagent_type, gates delegation SELECTIVELY (one target allowed, another denied, same session) and gates it in BACKGROUND mode (run_in_background:true — the DEFAULT per sdk-tools.d.ts:500), where a deny leaves no task_started, no SubagentStart, no agentId and no billed subagent tokens. Every arm carried a control that started a subagent, so every absence is a measurement.",
+  "caveats": [
+    "Every arm ran permissionMode 'acceptEdits' (production parity with claude-builder.ts:661) and settingSources:['user'] so the targets resolve. Behaviour under other permission modes is untested.",
+    "managedSettings.allowManagedHooksOnly was NOT set in probe F's arms; probe E measured that the mechanism survives that lock for foreground delegation, and F did not re-test the lock under background mode.",
+    "Enforcement keys on tool_input.subagent_type only. Probe E measured tool_name 'Agent' at the hook and 'Task' in permission_denials for the SAME call, so neither name is safe to key on.",
+    "The 'no agentId' and 'no subagent tokens' checks are session-wide string scans, so they are decisive only in the single-target background arms; the selectivity arm legitimately contains the allowed agent's agentId.",
+    "startedFor() ORs three observables but only TWO were ever demonstrated positive in probe F: task_started carrying subagent_type, and the SubagentStart hook. The third (a PreToolUse firing carrying agent_id, i.e. fired from INSIDE the subagent) never went positive anywhere, because every subagent in F ran with tool_uses:0 and so made no tool calls of its own. Read the deny arms as two positive channels demonstrated silent, not three.",
+    "run_in_background OMITTED was never observed for the Agent tool. Probe E measured explicit false, probe F measured explicit true; the schema default (field absent, defaults to true per sdk-tools.d.ts:500) is inferred to behave as the true case and was NOT measured. Enforcement is structurally unaffected because the hook keys on tool_input.subagent_type, which is present in every delegation call regardless of the background flag.",
+    "AgentInput.isolation is the THIRD dead guard in claude-builder.ts (isolation:\"remote\" runs the build off-host and, per the schema, ALWAYS runs in background) and is entirely untested by probes A/E/F. It is the same hazard class as gap 2 and is explicitly OUT OF SCOPE here: a delegation shortlist built on this hook does not by itself constrain isolation."
+  ],
+  "postRunAnnotations": {
+    "note": "Added by hand AFTER the run, read off the durable primary record at results/raw/F-session-log.json. No measured field above was altered.",
+    "backgroundModeWasGenuinelyInEffect": {
+      "detail": "The gap-2 ALLOW control is not merely a delegation that carried a flag: the Agent tool_result reads \"Async agent launched successfully ... The agent is working in the background. You will be notified automatically when it completes\", a system/background_tasks_changed level reported count=1 with task_type \"local_agent\" and description \"background ok check\" at 16596ms and dropped back to count=0 at 18391ms when it finished, and the completion arrived as an out-of-band system/task_notification (usage.total_tokens 15010) rather than as the tool_result. The gap-2 DENY arm emitted the SAME tool input (run_in_background:true, verified in both the assistant tool_use block and the hook tool_input) and produced ZERO background_tasks_changed envelopes, no task_started carrying a subagent_type, no SubagentStart, no agentId and no tokens. So the deny prevented the background task from ever existing, not merely from being reported."
+    },
+    "lateStartWindow": {
+      "detail": "Both gap-2 arms ran an identical `sleep 12; echo GRACE_WINDOW_DONE` Bash step immediately after the delegation attempt, and both completed it (graceWindowCompleted=true). In the deny arm the denied Agent call is at 12799ms, the grace Bash tool_use at 13312ms and its completion notification at 25479ms, with the session continuing to result/success afterwards. An asynchronous spawn that raced ahead of the hook had roughly twelve further seconds of live session in which to emit task_started, SubagentStart or a background level, and emitted none."
+    },
+    "exploratoryTimingUnitsMismatch": {
+      "detail": "BUG IN A NON-VERDICT FIELD: arms.*.exploratoryTiming.firstDelegationFiringAtMs is an absolute Date.now() epoch value (recordFiring), while firstSubagentTaskStartedAtMs is milliseconds since session start (observe). They are NOT comparable and must not be read as an ordering measurement. This field feeds no verdict by design - see the file header on why in-parent wall-clock ordering cannot distinguish \"the spawn waited on the hook\" from \"our own message pump was blocked by the awaited callback\"."
+    },
+    "noMatcherSlotSeesEveryToolCall": {
+      "detail": "The single no-matcher PreToolUse slot fired for Bash as well as for Agent in every arm (hookToolNamesSeen [\"Agent\",\"Bash\"]; the Bash firings carry subagent_type absent, run_in_background \"ABSENT\", decision \"continue\"). Shipping a no-matcher slot therefore puts the callback on the hot path for EVERY tool call: it must return {continue:true} for everything that is not a delegation, which is what the probe hook does and why the Bash grace step ran normally in the deny arm."
+    },
+    "denySurfacesToTheModelAsAToolError": {
+      "detail": "Identical to probe E. The denied call returns { is_error: true, content: <permissionDecisionReason> } verbatim: \"probe F: subagent is not on the delegation shortlist (wordpress-master)\". In both deny cases the model reported the refusal and moved on without retrying and without doing the subagent work itself. Enforcement acts on the subagent SPAWN, not on the model intent to delegate."
+    },
+    "selectivityArmTokenFieldIsSessionWide": {
+      "detail": "arms.selectivity.perTarget[\"wordpress-master\"].tokens.anyTokensBilled is true ONLY because subagentTokenTrailersInSession is a session-wide string scan and the ALLOWED code-reviewer legitimately billed 13842 subagent tokens in that same session. The gap-1 verdict does not read that field - it reads the three type-specific start observables, all false for wordpress-master. The token and agentId checks are decisive only in the single-target gap-2 arms, where they are clean (deny arm: agentIdsSeenInSession [], notificationTokens 0, trailers [])."
+    },
+    "sessionAccounting": {
+      "detail": "3 live sessions spent of a budget of 8: F/gap2/bg-allow-control, F/gap2/bg-deny, F/gap1+3/selective-single-slot. The stricter background retry arm was never needed - the model emitted run_in_background:true on the first attempt in both gap-2 arms."
+    }
+  }
+}

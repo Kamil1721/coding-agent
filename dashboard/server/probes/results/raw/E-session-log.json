@@ -1,0 +1,369 @@
+{
+  "ranAt": "2026-07-28T18:51:16.857Z",
+  "fixture": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-e-L2OImC",
+  "sessionsSpent": 4,
+  "sessions": [
+    {
+      "label": "E/allow/no-lock",
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "rate_limit_event",
+        "system/task_started",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "agentCount": 154
+      },
+      "toolUses": [
+        {
+          "name": "Agent",
+          "input": "{\"description\":\"Reply OK check\",\"prompt\":\"Reply with the single word OK. Do not do anything else, do not explain, do not ask questions — just respond with exactly: OK\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+        }
+      ],
+      "subagentStarts": [
+        "wordpress-master"
+      ],
+      "skipTranscriptSubagentStarts": [],
+      "otherTaskStarts": [],
+      "denials": [],
+      "hookState": {
+        "firings": [
+          {
+            "slot": "matcher:Agent",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01WsrD2EPAczvgfGAX1evALW",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Reply OK check\",\"prompt\":\"Reply with the single word OK. Do not do anything else, do not explain, do not ask questions — just respond with exactly: OK\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          },
+          {
+            "slot": "matcher:Task",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01WsrD2EPAczvgfGAX1evALW",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Reply OK check\",\"prompt\":\"Reply with the single word OK. Do not do anything else, do not explain, do not ask questions — just respond with exactly: OK\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01WsrD2EPAczvgfGAX1evALW",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Reply OK check\",\"prompt\":\"Reply with the single word OK. Do not do anything else, do not explain, do not ask questions — just respond with exactly: OK\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          }
+        ],
+        "denialsIssued": [],
+        "subagentStartHook": [
+          {
+            "agentType": "wordpress-master",
+            "agentId": "present"
+          }
+        ]
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 2,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "Using `wordpress-master` for this delegation, as instructed.[{\"type\":\"text\",\"text\":\"Reply with the single word OK. Do not do anything else, do not explain, do not ask questions — just respond with exactly: OK\"}][{\"tool_use_id\":\"toolu_01WsrD2EPAczvgfGAX1evALW\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"OK\"},{\"type\":\"text\",\"text\":\"agentId: a3c690aa57264ae20 (use SendMessage with to: 'a3c690aa57264ae20', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 20639\\ntool_uses: 0\\nduration_ms: 1772</usage>\"}]}]`wordpress-master` replied: OK"
+    },
+    {
+      "label": "E/deny/no-lock",
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "user",
+        "rate_limit_event",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "agentCount": 154
+      },
+      "toolUses": [
+        {
+          "name": "Agent",
+          "input": "{\"description\":\"Reply OK\",\"prompt\":\"Reply with the single word OK. Do not do anything else, do not explain, do not add punctuation beyond the word itself.\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+        }
+      ],
+      "subagentStarts": [],
+      "skipTranscriptSubagentStarts": [],
+      "otherTaskStarts": [],
+      "denials": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "hookState": {
+        "firings": [
+          {
+            "slot": "matcher:Agent",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01FGXJU2CTP4ud8w5rcxZVEC",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Reply OK\",\"prompt\":\"Reply with the single word OK. Do not do anything else, do not explain, do not add punctuation beyond the word itself.\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          },
+          {
+            "slot": "matcher:Task",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01FGXJU2CTP4ud8w5rcxZVEC",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Reply OK\",\"prompt\":\"Reply with the single word OK. Do not do anything else, do not explain, do not add punctuation beyond the word itself.\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01FGXJU2CTP4ud8w5rcxZVEC",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Reply OK\",\"prompt\":\"Reply with the single word OK. Do not do anything else, do not explain, do not add punctuation beyond the word itself.\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          }
+        ],
+        "denialsIssued": [
+          {
+            "slot": "matcher:Agent",
+            "toolName": "Agent"
+          },
+          {
+            "slot": "matcher:Task",
+            "toolName": "Agent"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent"
+          }
+        ],
+        "subagentStartHook": []
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 2,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "Using `wordpress-master` for this delegation, per your instruction not to do the work myself.[{\"type\":\"tool_result\",\"content\":\"probe E: subagent is not on the delegation shortlist\",\"is_error\":true,\"tool_use_id\":\"toolu_01FGXJU2CTP4ud8w5rcxZVEC\"}]The delegation attempt failed:\n\n```\nprobe E: subagent is not on the delegation shortlist\n```\n\n`wordpress-master` was rejected by the harness before it could run — this isn't a fabricated result, it's the literal tool error. I haven't done the task myself, and I won't guess at a workaround without your say-so. Let me know if you want me to retry, try a different subagent, or leave it as-is."
+    },
+    {
+      "label": "E/allow/locked",
+      "envelopes": [
+        "system/init",
+        "rate_limit_event",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "agentCount": 154
+      },
+      "toolUses": [
+        {
+          "name": "Agent",
+          "input": "{\"description\":\"Get OK reply from wordpress-master\",\"prompt\":\"Reply with the single word OK. Do not do anything else.\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+        }
+      ],
+      "subagentStarts": [
+        "wordpress-master"
+      ],
+      "skipTranscriptSubagentStarts": [],
+      "otherTaskStarts": [],
+      "denials": [],
+      "hookState": {
+        "firings": [
+          {
+            "slot": "matcher:Agent",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01S8QMhqdqf2GJsa9YpTEzb9",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Get OK reply from wordpress-master\",\"prompt\":\"Reply with the single word OK. Do not do anything else.\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          },
+          {
+            "slot": "matcher:Task",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01S8QMhqdqf2GJsa9YpTEzb9",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Get OK reply from wordpress-master\",\"prompt\":\"Reply with the single word OK. Do not do anything else.\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01S8QMhqdqf2GJsa9YpTEzb9",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Get OK reply from wordpress-master\",\"prompt\":\"Reply with the single word OK. Do not do anything else.\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          }
+        ],
+        "denialsIssued": [],
+        "subagentStartHook": [
+          {
+            "agentType": "wordpress-master",
+            "agentId": "present"
+          }
+        ]
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 2,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "Using `wordpress-master` for this per your instruction to delegate.[{\"type\":\"text\",\"text\":\"Reply with the single word OK. Do not do anything else.\"}][{\"tool_use_id\":\"toolu_01S8QMhqdqf2GJsa9YpTEzb9\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"OK\"},{\"type\":\"text\",\"text\":\"agentId: a133d69041965a317 (use SendMessage with to: 'a133d69041965a317', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 20617\\ntool_uses: 0\\nduration_ms: 1455</usage>\"}]}]`wordpress-master` replied: **OK**"
+    },
+    {
+      "label": "E/deny/locked",
+      "envelopes": [
+        "system/init",
+        "rate_limit_event",
+        "assistant",
+        "assistant",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "agentCount": 154
+      },
+      "toolUses": [
+        {
+          "name": "Agent",
+          "input": "{\"description\":\"Get OK reply from wordpress-master\",\"prompt\":\"Reply with the single word OK. Do not do any other work, analysis, or ask questions — just respond with exactly: OK\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+        }
+      ],
+      "subagentStarts": [],
+      "skipTranscriptSubagentStarts": [],
+      "otherTaskStarts": [],
+      "denials": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "hookState": {
+        "firings": [
+          {
+            "slot": "matcher:Agent",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01KaGm7uVed8VfLTbfgxw3TW",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Get OK reply from wordpress-master\",\"prompt\":\"Reply with the single word OK. Do not do any other work, analysis, or ask questions — just respond with exactly: OK\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          },
+          {
+            "slot": "matcher:Task",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01KaGm7uVed8VfLTbfgxw3TW",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Get OK reply from wordpress-master\",\"prompt\":\"Reply with the single word OK. Do not do any other work, analysis, or ask questions — just respond with exactly: OK\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01KaGm7uVed8VfLTbfgxw3TW",
+            "subagentType": "wordpress-master",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "inputExcerpt": "{\"description\":\"Get OK reply from wordpress-master\",\"prompt\":\"Reply with the single word OK. Do not do any other work, analysis, or ask questions — just respond with exactly: OK\",\"subagent_type\":\"wordpress-master\",\"model\":\"sonnet\",\"run_in_background\":false}"
+          }
+        ],
+        "denialsIssued": [
+          {
+            "slot": "matcher:Agent",
+            "toolName": "Agent"
+          },
+          {
+            "slot": "matcher:Task",
+            "toolName": "Agent"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent"
+          }
+        ],
+        "subagentStartHook": []
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 2,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "Using `wordpress-master` for this per your instruction.[{\"type\":\"tool_result\",\"content\":\"probe E: subagent is not on the delegation shortlist\",\"is_error\":true,\"tool_use_id\":\"toolu_01KaGm7uVed8VfLTbfgxw3TW\"}]I delegated to `wordpress-master` as instructed, but the call failed:\n\n```\nprobe E: subagent is not on the delegation shortlist\n```\n\nThis subagent type isn't available for direct delegation in this environment (it's not on the allowed shortlist), even though it's listed among available agent types. I didn't do the work myself — this is a hard capability limit surfaced by an actual failed attempt, not an assumption."
+    }
+  ]
+}

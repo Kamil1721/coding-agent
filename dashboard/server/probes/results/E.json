@@ -1,0 +1,216 @@
+{
+  "probe": "E",
+  "question": "Does a programmatic Options.hooks PreToolUse hook fire for the delegation tool, and does its deny stop the subagent?",
+  "sdkVersion": "0.3.220",
+  "hookFiresForAgent": true,
+  "denyStopsSubagent": true,
+  "negativeControlHeld": true,
+  "worksUnderHookLockdown": true,
+  "verdict": "PASS",
+  "toolNameObserved": "Agent",
+  "matcherSemantics": {
+    "allMatchersRun": true,
+    "maxSlotsPerCall": 3,
+    "perCall": [
+      {
+        "toolUseId": "toolu_01WsrD2EPAczvgfGAX1evALW",
+        "slots": [
+          "matcher:Agent",
+          "matcher:Task",
+          "matcher:none"
+        ]
+      }
+    ]
+  },
+  "matcherVerdict": {
+    "slotsThatFiredForDelegation": [
+      "matcher:Agent",
+      "matcher:Task",
+      "matcher:none"
+    ],
+    "allMatchersRunConfirmed": true
+  },
+  "arms": {
+    "allowNoLock": {
+      "label": "E/allow/no-lock",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "hookFiredAtAll": true,
+      "hookFiringSlots": [
+        "matcher:Agent",
+        "matcher:Task",
+        "matcher:none"
+      ],
+      "hookToolNamesSeen": [
+        "Agent"
+      ],
+      "delegationFiringCount": 3,
+      "delegationToolNames": [
+        "Agent"
+      ],
+      "denialsIssuedByHook": 0,
+      "agentToolUseEmitted": true,
+      "subagentStarted": true,
+      "startedVia": {
+        "taskStarted": true,
+        "subagentStartHook": true,
+        "firingInsideSubagent": false
+      },
+      "taskStartedSubagentTypes": [
+        "wordpress-master"
+      ],
+      "skipTranscriptSubagentTypes": [],
+      "otherTaskStarts": [],
+      "systemPermissionDenied": [],
+      "resultSubtype": "success",
+      "numTurns": 2,
+      "timedOut": false,
+      "error": null,
+      "denyReasonEchoedInTranscript": false
+    },
+    "denyNoLock": {
+      "label": "E/deny/no-lock",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "hookFiredAtAll": true,
+      "hookFiringSlots": [
+        "matcher:Agent",
+        "matcher:Task",
+        "matcher:none"
+      ],
+      "hookToolNamesSeen": [
+        "Agent"
+      ],
+      "delegationFiringCount": 3,
+      "delegationToolNames": [
+        "Agent"
+      ],
+      "denialsIssuedByHook": 3,
+      "agentToolUseEmitted": true,
+      "subagentStarted": false,
+      "startedVia": {
+        "taskStarted": false,
+        "subagentStartHook": false,
+        "firingInsideSubagent": false
+      },
+      "taskStartedSubagentTypes": [],
+      "skipTranscriptSubagentTypes": [],
+      "otherTaskStarts": [],
+      "systemPermissionDenied": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "resultSubtype": "success",
+      "numTurns": 2,
+      "timedOut": false,
+      "error": null,
+      "denyReasonEchoedInTranscript": true
+    },
+    "allowLocked": {
+      "label": "E/allow/locked",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "hookFiredAtAll": true,
+      "hookFiringSlots": [
+        "matcher:Agent",
+        "matcher:Task",
+        "matcher:none"
+      ],
+      "hookToolNamesSeen": [
+        "Agent"
+      ],
+      "delegationFiringCount": 3,
+      "delegationToolNames": [
+        "Agent"
+      ],
+      "denialsIssuedByHook": 0,
+      "agentToolUseEmitted": true,
+      "subagentStarted": true,
+      "startedVia": {
+        "taskStarted": true,
+        "subagentStartHook": true,
+        "firingInsideSubagent": false
+      },
+      "taskStartedSubagentTypes": [
+        "wordpress-master"
+      ],
+      "skipTranscriptSubagentTypes": [],
+      "otherTaskStarts": [],
+      "systemPermissionDenied": [],
+      "resultSubtype": "success",
+      "numTurns": 2,
+      "timedOut": false,
+      "error": null,
+      "denyReasonEchoedInTranscript": false
+    },
+    "denyLocked": {
+      "label": "E/deny/locked",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "hookFiredAtAll": true,
+      "hookFiringSlots": [
+        "matcher:Agent",
+        "matcher:Task",
+        "matcher:none"
+      ],
+      "hookToolNamesSeen": [
+        "Agent"
+      ],
+      "delegationFiringCount": 3,
+      "delegationToolNames": [
+        "Agent"
+      ],
+      "denialsIssuedByHook": 3,
+      "agentToolUseEmitted": true,
+      "subagentStarted": false,
+      "startedVia": {
+        "taskStarted": false,
+        "subagentStartHook": false,
+        "firingInsideSubagent": false
+      },
+      "taskStartedSubagentTypes": [],
+      "skipTranscriptSubagentTypes": [],
+      "otherTaskStarts": [],
+      "systemPermissionDenied": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "resultSubtype": "success",
+      "numTurns": 2,
+      "timedOut": false,
+      "error": null,
+      "denyReasonEchoedInTranscript": true
+    }
+  },
+  "sessionsSpent": 4,
+  "notes": "A programmatic Options.hooks PreToolUse hook FIRES for the delegation tool (literal tool_name: Agent) and permissionDecision:\"deny\" PREVENTS the subagent from starting — with and without managedSettings.allowManagedHooksOnly. Both allow controls started wordpress-master, so the absence in the deny arms is informative. This is a usable enforcement point where canUseTool is not.",
+  "postRunAnnotations": {
+    "note": "Added by hand AFTER the run. These are read off the durable primary record at results/raw/E-session-log.json; no measured field above was altered.",
+    "toolNameIsNotStableAcrossSurfaces": {
+      "hookInputToolName": "Agent",
+      "resultPermissionDenialsToolName": "Task",
+      "detail": "The PreToolUse hook input carries tool_name 'Agent', but the same denied call is reported as tool_name 'Task' in the result message's permission_denials array (see arms.denyNoLock.systemPermissionDenied). Any enforcement code must not assume one name; match on tool_input.subagent_type, which is present in the hook input."
+    },
+    "matcherTaskMatchedAToolNamedAgent": {
+      "detail": "All three slots — matcher 'Agent', matcher 'Task', and no matcher — fired for the SAME tool_use_id, and maxSlotsPerCall=3 confirms the engine runs every matching matcher. Notably matcher 'Task' fired for a call whose tool_name was 'Agent', which plain regex matching on tool_name cannot explain; the engine appears to resolve Task/Agent as aliases at matcher time. Practical consequence: either matcher string works, but a no-matcher slot is the only one that needs no assumption."
+    },
+    "lockWasDemonstrablyInEffect": {
+      "detail": "The two unlocked arms open with five system/hook_started + five system/hook_response envelopes before system/init (the owner's user-tier session hooks). Both locked arms open at system/init with none of those envelopes. So managedSettings.allowManagedHooksOnly:true was actually applied and did suppress filesystem-tier hooks — while our programmatic Options.hooks callback still fired and still denied. The lock arm is not a no-op."
+    },
+    "denySurfacesToTheModelAsAToolError": {
+      "detail": "The denied call returns { is_error: true, content: <permissionDecisionReason> } to the model, verbatim. In both deny arms the model reported the failure and stopped rather than retrying or doing the work itself (numTurns=2, result=success). Enforcement acts on subagent START, not on the model's intent to delegate — a model that reacts differently to the error is not constrained by this mechanism."
+    }
+  },
+  "caveats": [
+    "Only permissionMode 'acceptEdits' was exercised, in all four arms. That IS the production mode — src/builders/claude-builder.ts:661 sets permissionMode:'acceptEdits' in buildOptions(), the function that carries the delegation boundary, and the only other permissionMode in src (models.ts:156, 'plan') is a model-catalog probe with tools:[] that never delegates. So the finding covers production as configured today; hook behaviour under default/dontAsk/bypassPermissions is UNTESTED and a change of production mode would need a re-run.",
+    "All three matcher slots issued the deny simultaneously (by design, so the arm's outcome would not depend on which slot the engine routed through). Which single slot suffices on its own was therefore NOT measured.",
+    "One delegation target (wordpress-master) and one delegation shape were tested. Enforcement of an actual shortlist would branch on tool_input.subagent_type, which is confirmed present in the hook input but whose per-value behaviour was not swept.",
+    "Neither deny arm produced a system/permission_denied envelope; the denial appeared only in the result message's permission_denials and in the is_error tool_result. This matches sdk.d.ts:4166 ('PreToolUse hook denies bypass canUseTool and are not covered here'), so host code must not watch system/permission_denied to observe hook denials."
+  ]
+}

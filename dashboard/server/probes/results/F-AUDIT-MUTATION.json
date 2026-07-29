@@ -1,0 +1,374 @@
+{
+  "probe": "F-AUDIT-MUTATION",
+  "question": "(1) MUTATION: flip probe F's background DENY arm to ALLOW, one bit, and re-run it. Does the outcome change? If not, probe F's gap-2 PASS is an artifact of the readers, not a measurement. (2) DEFAULT PATH: probe E measured run_in_background:false, probe F measured true; is the documented DEFAULT (key absent) also gated?",
+  "sdkVersion": "0.3.220",
+  "mutationExecuted": true,
+  "mutationRestoredSpawn": true,
+  "omittedFlagGated": true,
+  "verdict": "PASS",
+  "mutation": {
+    "status": "PASS",
+    "detail": "MUTATION IS SENSITIVE. Same prompt, same options, same readers as probe F's F/gap2/bg-deny; the only change is the hook decision (deny -> continue, denialsIssuedByHook empty=true). The background subagent then STARTED: started=true (task_started=true, SubagentStart=true), a background task was live ([{\"count\":1,\"taskTypes\":[\"local_agent\"],\"descriptions\":[\"background ok check\"],\"atMs\":16909},{\"count\":0,\"taskTypes\":[],\"descriptions\":[],\"atMs\":18857}]), agentIds=[\"a19552b813a5f6dde\"], tokens billed=15047. Probe F's negative reading in the deny arm therefore tracks the hook decision, not a broken reader."
+  },
+  "omittedFlag": {
+    "status": "PASS",
+    "detail": "The DOCUMENTED DEFAULT (run_in_background key ABSENT, sdk-tools.d.ts:502-504) is gated, and gated SELECTIVELY. Both calls omitted the key (hook saw ABSENT for both). code-reviewer was allowed and STARTED (task_started=true, SubagentStart=true, live-in-background=true, tokens=13785); wordpress-master was denied by the SAME no-matcher slot and did not start on any observable (task_started=false, SubagentStart=false, firing-inside=false) and never appeared in any background_tasks_changed level (levels=[{\"count\":1,\"taskTypes\":[\"local_agent\"],\"descriptions\":[\"alpha check\"],\"atMs\":7206},{\"count\":0,\"taskTypes\":[],\"descriptions\":[],\"atMs\":9655}]). Grace window completed=true."
+  },
+  "arms": {
+    "mutationFlippedToAllow": {
+      "label": "AUDIT/mutation/bg-deny-FLIPPED-to-allow",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "sessionIds": [
+        "675848e1-58b7-490f-8ba7-7198ad9240c7"
+      ],
+      "isSingleSession": true,
+      "preToolUseSlotsRegistered": 1,
+      "preToolUseMatcher": "OMITTED",
+      "hookFiredAtAll": true,
+      "hookFiringsTotal": 2,
+      "hookToolNamesSeen": [
+        "Agent",
+        "Bash"
+      ],
+      "denialsIssuedByHook": [],
+      "perTarget": {
+        "wordpress-master": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            true
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            true
+          ],
+          "hookDecisions": [
+            "continue"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": true,
+          "startedVia": {
+            "taskStarted": true,
+            "subagentStartHook": true,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [
+            {
+              "subagentType": "wordpress-master",
+              "taskType": "local_agent",
+              "taskId": "a19552b813a5f6dde",
+              "toolUseId": "toolu_01Bv9Nawxhs9ngCMAYiNmmzZ",
+              "skipTranscript": false,
+              "description": "background ok check",
+              "atMs": 16910
+            }
+          ],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_01Bv9Nawxhs9ngCMAYiNmmzZ"
+            ],
+            "matchedNotifications": [
+              {
+                "taskId": "a19552b813a5f6dde",
+                "toolUseId": "toolu_01Bv9Nawxhs9ngCMAYiNmmzZ",
+                "status": "completed",
+                "totalTokens": 15047,
+                "toolUses": 0,
+                "summary": "OK",
+                "atMs": 18858
+              }
+            ],
+            "notificationTokens": 15047,
+            "subagentTokenTrailersInSession": [],
+            "anyTokensBilled": true
+          }
+        }
+      },
+      "allTaskStarts": [
+        {
+          "subagentType": "wordpress-master",
+          "taskType": "local_agent",
+          "taskId": "a19552b813a5f6dde",
+          "toolUseId": "toolu_01Bv9Nawxhs9ngCMAYiNmmzZ",
+          "skipTranscript": false,
+          "description": "background ok check",
+          "atMs": 16910
+        },
+        {
+          "subagentType": null,
+          "taskType": "local_bash",
+          "taskId": "basv7caew",
+          "toolUseId": "toolu_017s2awXMT9xS8kQGuWzoN26",
+          "skipTranscript": false,
+          "description": "Wait 12 seconds then print grace window done",
+          "atMs": 22626
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "a19552b813a5f6dde",
+          "toolUseId": "toolu_01Bv9Nawxhs9ngCMAYiNmmzZ",
+          "status": "completed",
+          "totalTokens": 15047,
+          "toolUses": 0,
+          "summary": "OK",
+          "atMs": 18858
+        },
+        {
+          "taskId": "basv7caew",
+          "toolUseId": "toolu_017s2awXMT9xS8kQGuWzoN26",
+          "status": "completed",
+          "totalTokens": null,
+          "toolUses": null,
+          "summary": "Wait 12 seconds then print grace window done",
+          "atMs": 31693
+        }
+      ],
+      "backgroundLevels": [
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "descriptions": [
+            "background ok check"
+          ],
+          "atMs": 16909
+        },
+        {
+          "count": 0,
+          "taskTypes": [],
+          "descriptions": [],
+          "atMs": 18857
+        }
+      ],
+      "anyBackgroundTaskEverLive": true,
+      "agentIdsSeenInSession": [
+        "a19552b813a5f6dde"
+      ],
+      "subagentStartHookFirings": [
+        {
+          "agentType": "wordpress-master",
+          "agentId": "present",
+          "atMs": 1785267011759
+        }
+      ],
+      "graceWindowCompleted": true,
+      "systemPermissionDenied": [],
+      "denyReasonEchoedInTranscript": false,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "exploratoryTiming": {
+        "note": "Wall-clock only. An awaited hook callback also stalls this process's message pump, so this cannot distinguish 'the spawn waited on the hook' from 'our reader was blocked'.",
+        "firstDelegationFiringAtMs": 1785267011724,
+        "firstSubagentTaskStartedAtMs": 16910
+      }
+    },
+    "omittedFlagSelective": {
+      "label": "AUDIT/omitted-flag/selective-default-path",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "sessionIds": [
+        "f062ecb9-dd8f-4075-a1a2-e134ab0e3d0c"
+      ],
+      "isSingleSession": true,
+      "preToolUseSlotsRegistered": 1,
+      "preToolUseMatcher": "OMITTED",
+      "hookFiredAtAll": true,
+      "hookFiringsTotal": 3,
+      "hookToolNamesSeen": [
+        "Agent",
+        "Bash"
+      ],
+      "denialsIssuedByHook": [
+        {
+          "subagentType": "wordpress-master",
+          "toolName": "Agent"
+        }
+      ],
+      "perTarget": {
+        "code-reviewer": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            "ABSENT"
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            "ABSENT"
+          ],
+          "hookDecisions": [
+            "continue"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": true,
+          "startedVia": {
+            "taskStarted": true,
+            "subagentStartHook": true,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [
+            {
+              "subagentType": "code-reviewer",
+              "taskType": "local_agent",
+              "taskId": "a2bb2ba65324800e5",
+              "toolUseId": "toolu_01GB3s84zbPyKq7SyPNrBMK9",
+              "skipTranscript": false,
+              "description": "alpha check",
+              "atMs": 7206
+            }
+          ],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_01GB3s84zbPyKq7SyPNrBMK9"
+            ],
+            "matchedNotifications": [
+              {
+                "taskId": "a2bb2ba65324800e5",
+                "toolUseId": "toolu_01GB3s84zbPyKq7SyPNrBMK9",
+                "status": "completed",
+                "totalTokens": 13785,
+                "toolUses": 0,
+                "summary": "ALPHA",
+                "atMs": 9655
+              }
+            ],
+            "notificationTokens": 13785,
+            "subagentTokenTrailersInSession": [],
+            "anyTokensBilled": true
+          }
+        },
+        "wordpress-master": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            "ABSENT"
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            "ABSENT"
+          ],
+          "hookDecisions": [
+            "deny"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": false,
+          "startedVia": {
+            "taskStarted": false,
+            "subagentStartHook": false,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_016WJ8LtuGvTRz6Fk3t8eE6M"
+            ],
+            "matchedNotifications": [],
+            "notificationTokens": 0,
+            "subagentTokenTrailersInSession": [],
+            "anyTokensBilled": false
+          }
+        }
+      },
+      "allTaskStarts": [
+        {
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "taskId": "a2bb2ba65324800e5",
+          "toolUseId": "toolu_01GB3s84zbPyKq7SyPNrBMK9",
+          "skipTranscript": false,
+          "description": "alpha check",
+          "atMs": 7206
+        },
+        {
+          "subagentType": null,
+          "taskType": "local_bash",
+          "taskId": "br4v2y17g",
+          "toolUseId": "toolu_01X45znZPAgYHT6bgT4tPEdG",
+          "skipTranscript": false,
+          "description": "sleep 12; echo GRACE_WINDOW_DONE",
+          "atMs": 13469
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "a2bb2ba65324800e5",
+          "toolUseId": "toolu_01GB3s84zbPyKq7SyPNrBMK9",
+          "status": "completed",
+          "totalTokens": 13785,
+          "toolUses": 0,
+          "summary": "ALPHA",
+          "atMs": 9655
+        },
+        {
+          "taskId": "br4v2y17g",
+          "toolUseId": "toolu_01X45znZPAgYHT6bgT4tPEdG",
+          "status": "completed",
+          "totalTokens": null,
+          "toolUses": null,
+          "summary": "sleep 12; echo GRACE_WINDOW_DONE",
+          "atMs": 22525
+        }
+      ],
+      "backgroundLevels": [
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "descriptions": [
+            "alpha check"
+          ],
+          "atMs": 7206
+        },
+        {
+          "count": 0,
+          "taskTypes": [],
+          "descriptions": [],
+          "atMs": 9655
+        }
+      ],
+      "anyBackgroundTaskEverLive": true,
+      "agentIdsSeenInSession": [
+        "a2bb2ba65324800e5"
+      ],
+      "subagentStartHookFirings": [
+        {
+          "agentType": "code-reviewer",
+          "agentId": "present",
+          "atMs": 1785267053277
+        }
+      ],
+      "graceWindowCompleted": true,
+      "systemPermissionDenied": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "denyReasonEchoedInTranscript": true,
+      "resultSubtype": "success",
+      "numTurns": 4,
+      "timedOut": false,
+      "error": null,
+      "exploratoryTiming": {
+        "note": "Wall-clock only. An awaited hook callback also stalls this process's message pump, so this cannot distinguish 'the spawn waited on the hook' from 'our reader was blocked'.",
+        "firstDelegationFiringAtMs": 1785267053241,
+        "firstSubagentTaskStartedAtMs": 7206
+      }
+    }
+  },
+  "sessionsSpent": 2,
+  "notes": "The mutation is sensitive (flipping the hook deny->allow makes the background subagent start), so probe F's gap-2 negative is a measurement. And the documented DEFAULT path (run_in_background absent) is gated selectively by the same single no-matcher slot, which probe F only inferred.",
+  "caveats": [
+    "The mutated arm is configuration-identical to probe F's own bg-allow-control. Its value is INDEPENDENT REPRODUCTION plus proof that the readers are sensitive to the hook decision - it is not a novel condition.",
+    "Both arms ran permissionMode 'acceptEdits', settingSources:['user'], no managedSettings lock. allowManagedHooksOnly under background mode, other permission modes, and AgentInput.isolation remain unmeasured here."
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "probe": "C",
+  "arm": "allowManagedHooksOnly",
+  "positive": true,
+  "negativeControl": true,
+  "verdict": "PASS",
+  "notes": "model=claude-haiku-4-5-20251001 mode=acceptEdits projectHookFiredLocked=false projectHookFiredControl=true flagTierHookFiredLocked=false flagTierHookFiredControl=true programmaticHookFiredLocked=true programmaticHookFiredControl=true lockedToolUses=[Read] controlToolUses=[Read] lockedResult=success lockedTimedOut=false controlResult=success controlTimedOut=false",
+  "runnerNote": "STEP-5 RUNNER NOTE: PASS with a control that could have failed (the unlocked project-tier hook DID fire). The detail the verdict does not carry: allowManagedHooksOnly suppressed BOTH the project-tier hook AND the flag-tier (Options.settings) hook, while our programmatic Options.hooks callback still fired under the lock. Flag-tier suppression is beyond what sdk.d.ts:5418 names (\"user, project, and local\") and was deliberately left non-gating by the harness author."
+}

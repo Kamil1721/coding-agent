@@ -1,0 +1,22 @@
+{
+  "ranAt": "2026-07-28T18:27:02.403Z",
+  "fixture": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/apparatus-6gHmQV",
+  "wroteFile": true,
+  "warnings": [],
+  "arms": [
+    {
+      "label": "1/probeA-shape-default-mode",
+      "consulted": [
+        "Write"
+      ],
+      "toolUses": [
+        "Bash",
+        "Write"
+      ],
+      "sawResult": true,
+      "timedOut": false,
+      "error": null
+    }
+  ],
+  "verdict": "CALLBACK-WIRING-WORKS: canUseTool fires in this harness for at least one tool, so probe A's empty consulted list is a fact about the Agent tool, not about the wiring."
+}

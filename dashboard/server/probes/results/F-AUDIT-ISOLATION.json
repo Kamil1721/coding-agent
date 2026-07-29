@@ -1,0 +1,217 @@
+{
+  "probe": "F-AUDIT-ISOLATION",
+  "question": "Does the single no-matcher PreToolUse slot still SEE and still STOP a delegation whose input carries isolation:\"worktree\"? (\"remote\" is availability-gated and stays unmeasured.)",
+  "sdkVersion": "0.3.220",
+  "hookSawIsolationField": true,
+  "isolatedDelegationGated": true,
+  "verdict": "PASS",
+  "isolation": {
+    "status": "PASS",
+    "detail": "The lone no-matcher slot SAW the isolated call (isolation present in tool_input) and STOPPED it: wordpress-master started=false ({\"taskStarted\":false,\"subagentStartHook\":false,\"firingInsideSubagent\":false}), and the tool result carried the HOOK's reason, not a git/worktree error, so the absence is the hook's doing. In-session allow control code-reviewer started=true."
+  },
+  "arms": {
+    "isolationWorktree": {
+      "label": "AUDIT/isolation-worktree/selective",
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "sessionIds": [
+        "2fb6e318-b335-442b-913b-cd4528a0a62b"
+      ],
+      "isSingleSession": true,
+      "preToolUseSlotsRegistered": 1,
+      "preToolUseMatcher": "OMITTED",
+      "hookFiredAtAll": true,
+      "hookFiringsTotal": 3,
+      "hookToolNamesSeen": [
+        "Agent",
+        "Bash"
+      ],
+      "denialsIssuedByHook": [
+        {
+          "subagentType": "wordpress-master",
+          "toolName": "Agent"
+        }
+      ],
+      "perTarget": {
+        "code-reviewer": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            "ABSENT"
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            "ABSENT"
+          ],
+          "hookDecisions": [
+            "continue"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": true,
+          "startedVia": {
+            "taskStarted": true,
+            "subagentStartHook": true,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [
+            {
+              "subagentType": "code-reviewer",
+              "taskType": "local_agent",
+              "taskId": "a653a873f36649a96",
+              "toolUseId": "toolu_01ERg1mQ4goCFtSVft3HvfFV",
+              "skipTranscript": false,
+              "description": "alpha check",
+              "atMs": 27888
+            }
+          ],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_01ERg1mQ4goCFtSVft3HvfFV"
+            ],
+            "matchedNotifications": [
+              {
+                "taskId": "a653a873f36649a96",
+                "toolUseId": "toolu_01ERg1mQ4goCFtSVft3HvfFV",
+                "status": "completed",
+                "totalTokens": 13916,
+                "toolUses": 0,
+                "summary": "ALPHA",
+                "atMs": 29583
+              }
+            ],
+            "notificationTokens": 13916,
+            "subagentTokenTrailersInSession": [],
+            "anyTokensBilled": true
+          }
+        },
+        "wordpress-master": {
+          "modelEmittedDelegation": true,
+          "emittedRunInBackground": [
+            "ABSENT"
+          ],
+          "hookSawDelegation": true,
+          "hookRunInBackground": [
+            "ABSENT"
+          ],
+          "hookDecisions": [
+            "deny"
+          ],
+          "hookToolNames": [
+            "Agent"
+          ],
+          "started": false,
+          "startedVia": {
+            "taskStarted": false,
+            "subagentStartHook": false,
+            "firingInsideSubagent": false
+          },
+          "taskStartedRecords": [],
+          "tokens": {
+            "delegationToolUseIds": [
+              "toolu_01AuGQ7hNE3Sgth14SzQW6Uh"
+            ],
+            "matchedNotifications": [],
+            "notificationTokens": 0,
+            "subagentTokenTrailersInSession": [],
+            "anyTokensBilled": false
+          }
+        }
+      },
+      "allTaskStarts": [
+        {
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "taskId": "a653a873f36649a96",
+          "toolUseId": "toolu_01ERg1mQ4goCFtSVft3HvfFV",
+          "skipTranscript": false,
+          "description": "alpha check",
+          "atMs": 27888
+        },
+        {
+          "subagentType": null,
+          "taskType": "local_bash",
+          "taskId": "bn090xuwu",
+          "toolUseId": "toolu_01WHCtx8nvpj3Wr3eUCUh5Zd",
+          "skipTranscript": false,
+          "description": "Wait 10 seconds grace window, then confirm",
+          "atMs": 36026
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "a653a873f36649a96",
+          "toolUseId": "toolu_01ERg1mQ4goCFtSVft3HvfFV",
+          "status": "completed",
+          "totalTokens": 13916,
+          "toolUses": 0,
+          "summary": "ALPHA",
+          "atMs": 29583
+        },
+        {
+          "taskId": "bn090xuwu",
+          "toolUseId": "toolu_01WHCtx8nvpj3Wr3eUCUh5Zd",
+          "status": "completed",
+          "totalTokens": null,
+          "toolUses": null,
+          "summary": "Wait 10 seconds grace window, then confirm",
+          "atMs": 43093
+        }
+      ],
+      "backgroundLevels": [
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "descriptions": [
+            "alpha check"
+          ],
+          "atMs": 27887
+        },
+        {
+          "count": 0,
+          "taskTypes": [],
+          "descriptions": [],
+          "atMs": 29582
+        }
+      ],
+      "anyBackgroundTaskEverLive": true,
+      "agentIdsSeenInSession": [
+        "a653a873f36649a96"
+      ],
+      "subagentStartHookFirings": [
+        {
+          "agentType": "code-reviewer",
+          "agentId": "present",
+          "atMs": 1785267383964
+        }
+      ],
+      "graceWindowCompleted": true,
+      "systemPermissionDenied": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "denyReasonEchoedInTranscript": true,
+      "resultSubtype": "success",
+      "numTurns": 4,
+      "timedOut": false,
+      "error": null,
+      "exploratoryTiming": {
+        "note": "Wall-clock only. An awaited hook callback also stalls this process's message pump, so this cannot distinguish 'the spawn waited on the hook' from 'our reader was blocked'.",
+        "firstDelegationFiringAtMs": 1785267383825,
+        "firstSubagentTaskStartedAtMs": 27888
+      }
+    }
+  },
+  "sessionsSpent": 1,
+  "notes": "isolation:\"worktree\" -> PASS. isolation:\"remote\" is availability-gated and REMAINS UNMEASURED.",
+  "caveats": [
+    "Only isolation:\"worktree\" was exercised. isolation:\"remote\" runs off-host, always in background, and the schema says availability is gated; it was NOT tested and no claim covers it.",
+    "Fixture is a real git repo with a born HEAD (git init -b main + one commit), so a worktree failure cannot be blamed on an unborn HEAD. Sandbox allowWrite covers the fixture ROOT, not just the workspace.",
+    "DENY_REASON in this file is \"AUDIT-ISOLATION: ...\" so these records cannot be confused with probe F's."
+  ]
+}

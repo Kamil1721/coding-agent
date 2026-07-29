@@ -1,0 +1,114 @@
+dist/builders/delegation-hook.js md5: 2f80165d71ea994d8d0bd1eedd3f61c4  mtime: Jul 28 23:17:46 2026
+replayed at: 2026-07-28T21:20:38Z
+
+=== SHIPPED GUARD (dist/builders/delegation-hook.js) vs RECORDED INPUTS ===
+
+isDelegationShaped is: function isDelegationShaped(input) { return "subagent_type" in input || "isolation" in input; }
+shortlist: code-reviewer, trigger-dev-expert, debugger 
+
+Bash         keys=[command,description]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm1/record-all)
+
+Bash         keys=[command,description]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm1/record-all)
+
+Agent        keys=[description,prompt,run_in_background,subagent_type]
+    subagent_type="wordpress-master"  isolation=undefined  run_in_background=false
+    -> DENY  reason: `wordpress-master` is not available to this run. Delegate to one of: code-reviewer, trigge…
+    (H-session-log.json:H/arm1/record-all)
+
+ToolSearch   keys=[max_results,query]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm1/record-all)
+
+SendMessage  keys=[content,message,recipient,summary,to,type]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm1/record-all)
+
+SendMessage  keys=[content,message,recipient,summary,to,type]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm1/record-all)
+
+Agent        keys=[description,prompt,run_in_background,subagent_type]
+    subagent_type="code-reviewer"  isolation=undefined  run_in_background=false
+    -> CONTINUE
+    (H-session-log.json:H/arm2/production-guard)
+
+ToolSearch   keys=[max_results,query]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm2/production-guard)
+
+SendMessage  keys=[content,message,recipient,summary,to,type]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm2/production-guard)
+
+Agent        keys=[description,prompt,run_in_background,subagent_type]
+    subagent_type="wordpress-master"  isolation=undefined  run_in_background=false
+    -> DENY  reason: `wordpress-master` is not available to this run. Delegate to one of: code-reviewer, trigge…
+    (H-session-log.json:H/arm2/production-guard)
+
+Agent        keys=[description,model,prompt,run_in_background,subagent_type]
+    subagent_type="code-reviewer"  isolation=undefined  run_in_background=false
+    -> CONTINUE
+    (H-session-log.json:H/arm3/deny-sendmessage)
+
+ToolSearch   keys=[max_results,query]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm3/deny-sendmessage)
+
+SendMessage  keys=[content,message,recipient,summary,to,type]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H-session-log.json:H/arm3/deny-sendmessage)
+
+ToolSearch   keys=[max_results,query]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H2-DENIED-TARGET-session-log.json:H2/denied-target-by-name)
+
+Agent        keys=[description,model,prompt,run_in_background,subagent_type]
+    subagent_type="code-reviewer"  isolation=undefined  run_in_background=false
+    -> CONTINUE
+    (H2-DENIED-TARGET-session-log.json:H2/denied-target-by-name)
+
+Agent        keys=[description,model,prompt,run_in_background,subagent_type]
+    subagent_type="wordpress-master"  isolation=undefined  run_in_background=false
+    -> DENY  reason: `wordpress-master` is not available to this run. Delegate to one of: code-reviewer, trigge…
+    (H2-DENIED-TARGET-session-log.json:H2/denied-target-by-name)
+
+SendMessage  keys=[content,message,recipient,summary,to,type]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H2-DENIED-TARGET-session-log.json:H2/denied-target-by-name)
+
+SendMessage  keys=[content,message,recipient,summary,to,type]
+    subagent_type=undefined  isolation=undefined  run_in_background=undefined
+    -> CONTINUE
+    (H2-DENIED-TARGET-session-log.json:H2/denied-target-by-name)
+
+=== CONTROLS ===
+  denied-type Agent{subagent_type:"wordpress-master"} -> DENY  (must be DENY)
+  allowed-type Agent{subagent_type:"code-reviewer"}   -> CONTINUE  (must be CONTINUE)
+
+  BOTH CONTROLS HELD — the guard is armed and is not a blanket denier in this harness.
+
+=== SENDMESSAGE ===
+  6 recorded SendMessage inputs replayed.
+  distinct verdicts: CONTINUE
+  any carrying subagent_type: false
+  any carrying isolation:     false
+
+  differential: the SAME tool_name with subagent_type added -> DENY
+  (so the CONTINUE is produced by the INPUT SHAPE, not by the tool name being unknown)
+
+decideDelegation on a bare SendMessage input, called directly (bypassing the router): {"allow":false,"reason":"Set `run_in_background: false`. It defaults to true, and a background subagent keeps writing the workspace after this phase returns — t

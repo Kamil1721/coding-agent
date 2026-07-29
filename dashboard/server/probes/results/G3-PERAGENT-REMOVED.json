@@ -1,0 +1,518 @@
+{
+  "probe": "G3",
+  "question": "ADVERSARIAL RE-RUN OF PROBE G WITH THE PER-AGENT HALF REMOVED. Probe G applied managedSettings.allowedMcpServers:[]+allowManagedMcpServersOnly AND per-agent disallowedTools:['mcp__*'] together and could not attribute its narrowing to either. G2 ran per-agent-only and found 620 tools / 589 mcp__. This file is the remaining cell: SESSION LOCK KEPT, per-agent disallowedTools REMOVED. If the child's count does not move off probe G's 28, the session-level lock alone does all the work and the per-agent half can be credited with nothing. A run-time NONCE carried only in AgentDefinition.prompt separates 'the per-agent spec is inert' from 'Options.agents never bound at all'.",
+  "mutation": "REMOVED from AgentDefinition: disallowedTools: ['mcp__*'] (probe G line ~616). KEPT: managedSettings.allowedMcpServers: [] + allowManagedMcpServersOnly: true, maxTurns: 10, background: false, same TARGET_AGENT, same model, same prompts. ADDED: a nonce in AgentDefinition.prompt only.",
+  "nonce": "G3M2CYYRJX",
+  "sdkVersion": "0.3.220",
+  "runStamp": "2026-07-28T21-10-01-778Z",
+  "targetAgent": "trigger-dev-expert",
+  "model": "claude-sonnet-5",
+  "resultsDir": "/Users/kamilborzecki/Projects/coding-agent/dashboard/server/probes/results",
+  "baselineCaveat": "THE 625 HAS NO RECORDED APPARATUS in this tree \u2014 every occurrence is prose citing it (claude-builder.ts:753, claude-builder.test.ts:1467, the phase-1-1 plan at 787/819/853/1016); no result file, session log or probe produced it. The unnarrowed arm here IS the baseline re-measurement. Every 'gap' statement below is about THIS probe's two arms.",
+  "channels": {
+    "strong": "MCP REACHABILITY \u2014 engine-side/in-process, independent of the child's arithmetic: a PreToolUse firing carrying agent_id for an mcp__ name, a canUseTool consultation for an mcp__ name that no parent tool_use accounts for, or an mcp__ tool_use in the child's own engine-written transcript.",
+    "weak": "COUNTS \u2014 the child's self-reported census, written by the child to a file this process reads off disk. A model can abbreviate, miscount or hallucinate its own tool list; both the derived count and the model's stated TOTAL= are reported so degradation is visible."
+  },
+  "parentInitToolCount": 33,
+  "parentSelfReportedToolCount": 34,
+  "narrowedChildToolCount": 28,
+  "unnarrowedChildToolCount": 619,
+  "narrowedChildMcpSurface": false,
+  "unnarrowedChildMcpSurface": true,
+  "gapAssessment": "CLOSED",
+  "gapThresholds": {
+    "closed": "narrowed child reports ZERO mcp__ tools, no MCP attempt is observed from inside it, and its total is \u2264 1.25 \u00d7 the parent's OWN mid-session self-reported total",
+    "narrowedButOpen": "narrowed child total < 0.5 \u00d7 unnarrowed child total, but not 'closed'",
+    "unchanged": "narrowed child total \u2265 0.9 \u00d7 unnarrowed child total"
+  },
+  "positive": true,
+  "negativeControl": true,
+  "verdict": "PASS",
+  "arms": {
+    "unnarrowed": {
+      "label": "G3/unnarrowed",
+      "armTag": "unnarrowed",
+      "attempt": 1,
+      "fixtureRoot": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz",
+      "narrowed": false,
+      "parent": {
+        "initToolCount": 42,
+        "initMcpServerCount": 22,
+        "initMcpServers": [
+          "plugin:playwright:playwright:pending",
+          "plugin:context7:context7:pending",
+          "plugin:sentry:sentry:connected",
+          "plugin:firebase:firebase:pending",
+          "plugin:vercel:vercel:pending",
+          "plugin:expo:expo:needs-auth",
+          "plugin:railway:railway:pending",
+          "plugin:neon:neon:pending",
+          "railway:pending",
+          "skyvern:pending",
+          "trigger:pending",
+          "RevenueCat:pending",
+          "github:pending",
+          "claude.ai Supabase:pending",
+          "claude.ai Sentry:pending",
+          "claude.ai Granola:pending",
+          "claude.ai GoogleDrive:pending",
+          "claude.ai Uber:needs-auth",
+          "claude.ai PDF Viewer:pending",
+          "claude.ai Context7:pending",
+          "claude.ai Gmail:pending",
+          "claude.ai Notion:pending"
+        ],
+        "initMcpToolNames": [
+          "mcp__plugin_sentry_sentry__analyze_issue_with_seer",
+          "mcp__plugin_sentry_sentry__execute_sentry_tool",
+          "mcp__plugin_sentry_sentry__find_organizations",
+          "mcp__plugin_sentry_sentry__find_projects",
+          "mcp__plugin_sentry_sentry__get_sentry_resource",
+          "mcp__plugin_sentry_sentry__search_events",
+          "mcp__plugin_sentry_sentry__search_issues",
+          "mcp__plugin_sentry_sentry__search_sentry_tools",
+          "mcp__plugin_sentry_sentry__update_issue"
+        ],
+        "census": {
+          "present": true,
+          "path": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-parent-tool-census.txt",
+          "expectedPath": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-parent-tool-census.txt",
+          "foundAtExpectedPath": true,
+          "bytes": 771,
+          "writtenByParent": true,
+          "derivedCount": 43,
+          "duplicateLines": 0,
+          "statedTotal": 43,
+          "statedMcpTotal": 9,
+          "derivedMcpCount": 9,
+          "mcpNamesSample": [
+            "mcp__plugin_sentry_sentry__analyze_issue_with_seer",
+            "mcp__plugin_sentry_sentry__execute_sentry_tool",
+            "mcp__plugin_sentry_sentry__find_organizations",
+            "mcp__plugin_sentry_sentry__find_projects",
+            "mcp__plugin_sentry_sentry__get_sentry_resource",
+            "mcp__plugin_sentry_sentry__search_events",
+            "mcp__plugin_sentry_sentry__search_issues",
+            "mcp__plugin_sentry_sentry__search_sentry_tools",
+            "mcp__plugin_sentry_sentry__update_issue"
+          ],
+          "nameSample": [
+            "Agent",
+            "AskUserQuestion",
+            "Bash",
+            "Edit",
+            "Read",
+            "ReportFindings",
+            "ScheduleWakeup",
+            "Skill",
+            "ToolSearch",
+            "Workflow",
+            "Write",
+            "advisor",
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "DesignSync",
+            "EnterPlanMode",
+            "EnterWorktree",
+            "ExitPlanMode",
+            "ExitWorktree",
+            "LSP",
+            "Monitor",
+            "NotebookEdit",
+            "PushNotification",
+            "RemoteTrigger"
+          ],
+          "nonNameLineCount": 0,
+          "nonNameLineSample": [],
+          "countsAgree": true,
+          "hasBuiltins": [
+            "Read",
+            "Write",
+            "Bash",
+            "Edit"
+          ]
+        }
+      },
+      "nonceBinding": {
+        "nonce": "G3M2CYYRJX",
+        "inChildCensusFile": false,
+        "inChildTranscript": false,
+        "inParentAssistantText": false
+      },
+      "child": {
+        "started": true,
+        "startsSeen": [
+          "trigger-dev-expert"
+        ],
+        "hookStartsSeen": [
+          {
+            "agentType": "trigger-dev-expert",
+            "agentId": "present"
+          }
+        ],
+        "census": {
+          "present": true,
+          "path": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt",
+          "expectedPath": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt",
+          "foundAtExpectedPath": true,
+          "bytes": 23328,
+          "writtenByParent": true,
+          "derivedCount": 619,
+          "duplicateLines": 0,
+          "statedTotal": 619,
+          "statedMcpTotal": 588,
+          "derivedMcpCount": 588,
+          "mcpNamesSample": [
+            "mcp__RevenueCat__archive-entitlement",
+            "mcp__RevenueCat__archive-offering",
+            "mcp__RevenueCat__archive-product",
+            "mcp__RevenueCat__archive-virtual-currency",
+            "mcp__RevenueCat__assign-customer-offering",
+            "mcp__RevenueCat__attach-products-to-entitlement",
+            "mcp__RevenueCat__attach-products-to-package",
+            "mcp__RevenueCat__create-app",
+            "mcp__RevenueCat__create-audience",
+            "mcp__RevenueCat__create-entitlement",
+            "mcp__RevenueCat__create-offering",
+            "mcp__RevenueCat__create-packages",
+            "mcp__RevenueCat__create-paywall-ai",
+            "mcp__RevenueCat__create-product",
+            "mcp__RevenueCat__create-product-prices",
+            "mcp__RevenueCat__create-project",
+            "mcp__RevenueCat__create-virtual-currency",
+            "mcp__RevenueCat__create-webhook-integration",
+            "mcp__RevenueCat__delete-package-from-offering",
+            "mcp__RevenueCat__delete-webhook-integration",
+            "mcp__RevenueCat__detach-products-from-entitlement",
+            "mcp__RevenueCat__detach-products-from-package",
+            "mcp__RevenueCat__edit-paywall-ai",
+            "mcp__RevenueCat__equalize-subscription-prices",
+            "mcp__RevenueCat__get-account-billing",
+            "mcp__RevenueCat__get-app",
+            "mcp__RevenueCat__get-audience",
+            "mcp__RevenueCat__get-audience-filter-options",
+            "mcp__RevenueCat__get-benchmarks",
+            "mcp__RevenueCat__get-chart-data",
+            "mcp__RevenueCat__get-chart-options-schema",
+            "mcp__RevenueCat__get-customer",
+            "mcp__RevenueCat__get-customer-center-config",
+            "mcp__RevenueCat__get-entitlement",
+            "mcp__RevenueCat__get-experiment",
+            "mcp__RevenueCat__get-experiment-results",
+            "mcp__RevenueCat__get-offering",
+            "mcp__RevenueCat__get-offering-prices",
+            "mcp__RevenueCat__get-overview-metrics",
+            "mcp__RevenueCat__get-paywall"
+          ],
+          "nameSample": [
+            "Agent",
+            "Bash",
+            "Edit",
+            "Read",
+            "ReportFindings",
+            "Skill",
+            "ToolSearch",
+            "Write",
+            "advisor",
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "DesignSync",
+            "EnterWorktree",
+            "ExitWorktree",
+            "LSP",
+            "ListMcpResourcesTool",
+            "Monitor",
+            "NotebookEdit",
+            "PushNotification",
+            "ReadMcpResourceDirTool",
+            "ReadMcpResourceTool",
+            "RemoteTrigger",
+            "SendMessage",
+            "TaskCreate"
+          ],
+          "nonNameLineCount": 0,
+          "nonNameLineSample": [],
+          "countsAgree": true,
+          "hasBuiltins": [
+            "Read",
+            "Write",
+            "Bash",
+            "Edit"
+          ]
+        },
+        "transcripts": [
+          {
+            "agentType": "trigger-dev-expert",
+            "path": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-g-unnarrowed-beEjsz-workspace/62722d8e-76c6-4f60-8b32-e78da8292c9c/subagents/agent-a40c0955a273a7aea.jsonl",
+            "exists": true,
+            "toolUseNames": [
+              "Write",
+              "Bash",
+              "Edit",
+              "ToolSearch",
+              "mcp__plugin_context7_context7__resolve-library-id"
+            ],
+            "mcpToolUseNames": [
+              "mcp__plugin_context7_context7__resolve-library-id"
+            ],
+            "rawIncludesNonce": false
+          }
+        ],
+        "reportsMcpTools": true,
+        "mcpAttemptObserved": true,
+        "mcpEvidence": {
+          "preToolUseFiringsInsideSubagentForMcp": [
+            "mcp__plugin_context7_context7__resolve-library-id"
+          ],
+          "canUseToolMcpNotAttributableToParent": [],
+          "mcpNamesInChildTranscript": [
+            "mcp__plugin_context7_context7__resolve-library-id"
+          ],
+          "parentOwnMcpToolUses": [
+            "mcp__plugin_context7_context7__resolve-library-id"
+          ]
+        },
+        "mcpSurface": true
+      },
+      "apparatus": {
+        "preToolUseFiringCount": 7,
+        "preToolUseFiredInsideSubagent": true,
+        "preToolUseToolNames": [
+          "Agent",
+          "Write",
+          "Bash",
+          "Edit",
+          "ToolSearch",
+          "mcp__plugin_context7_context7__resolve-library-id"
+        ],
+        "canUseToolConsultationCount": 0,
+        "canUseToolNames": [],
+        "subagentStopSeen": true
+      },
+      "session": {
+        "resultSubtype": "success",
+        "numTurns": 3,
+        "timedOut": false,
+        "error": null,
+        "sawResult": true,
+        "sessionId": "62722d8e-76c6-4f60-8b32-e78da8292c9c"
+      }
+    },
+    "narrowed": {
+      "label": "G3/sessionlockonly",
+      "armTag": "sessionlockonly",
+      "attempt": 1,
+      "fixtureRoot": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L",
+      "narrowed": true,
+      "parent": {
+        "initToolCount": 33,
+        "initMcpServerCount": 0,
+        "initMcpServers": [],
+        "initMcpToolNames": [],
+        "census": {
+          "present": true,
+          "path": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-parent-tool-census.txt",
+          "expectedPath": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-parent-tool-census.txt",
+          "foundAtExpectedPath": true,
+          "bytes": 370,
+          "writtenByParent": true,
+          "derivedCount": 34,
+          "duplicateLines": 0,
+          "statedTotal": 34,
+          "statedMcpTotal": 0,
+          "derivedMcpCount": 0,
+          "mcpNamesSample": [],
+          "nameSample": [
+            "Agent",
+            "AskUserQuestion",
+            "Bash",
+            "Edit",
+            "Read",
+            "ReportFindings",
+            "ScheduleWakeup",
+            "Skill",
+            "ToolSearch",
+            "Workflow",
+            "Write",
+            "advisor",
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "DesignSync",
+            "EnterPlanMode",
+            "EnterWorktree",
+            "ExitPlanMode",
+            "ExitWorktree",
+            "LSP",
+            "Monitor",
+            "NotebookEdit",
+            "PushNotification",
+            "RemoteTrigger"
+          ],
+          "nonNameLineCount": 0,
+          "nonNameLineSample": [],
+          "countsAgree": true,
+          "hasBuiltins": [
+            "Read",
+            "Write",
+            "Bash",
+            "Edit"
+          ]
+        }
+      },
+      "nonceBinding": {
+        "nonce": "G3M2CYYRJX",
+        "inChildCensusFile": false,
+        "inChildTranscript": false,
+        "inParentAssistantText": false
+      },
+      "child": {
+        "started": true,
+        "startsSeen": [
+          "trigger-dev-expert"
+        ],
+        "hookStartsSeen": [
+          {
+            "agentType": "trigger-dev-expert",
+            "agentId": "present"
+          }
+        ],
+        "census": {
+          "present": true,
+          "path": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-child-tool-census.txt",
+          "expectedPath": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-child-tool-census.txt",
+          "foundAtExpectedPath": true,
+          "bytes": 292,
+          "writtenByParent": true,
+          "derivedCount": 28,
+          "duplicateLines": 0,
+          "statedTotal": 28,
+          "statedMcpTotal": 0,
+          "derivedMcpCount": 0,
+          "mcpNamesSample": [],
+          "nameSample": [
+            "Agent",
+            "Bash",
+            "Edit",
+            "Read",
+            "ReportFindings",
+            "Skill",
+            "ToolSearch",
+            "Write",
+            "advisor",
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "DesignSync",
+            "EnterWorktree",
+            "ExitWorktree",
+            "LSP",
+            "Monitor",
+            "NotebookEdit",
+            "PushNotification",
+            "RemoteTrigger",
+            "SendMessage",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskStop"
+          ],
+          "nonNameLineCount": 0,
+          "nonNameLineSample": [],
+          "countsAgree": true,
+          "hasBuiltins": [
+            "Read",
+            "Write",
+            "Bash",
+            "Edit"
+          ]
+        },
+        "transcripts": [
+          {
+            "agentType": "trigger-dev-expert",
+            "path": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-g-sessionlockonly-oOoC7L-workspace/a0acdbdc-2057-402b-9457-5bdc83954872/subagents/agent-a701903dd6e2b5073.jsonl",
+            "exists": true,
+            "toolUseNames": [
+              "Write"
+            ],
+            "mcpToolUseNames": [],
+            "rawIncludesNonce": false
+          }
+        ],
+        "reportsMcpTools": false,
+        "mcpAttemptObserved": false,
+        "mcpEvidence": {
+          "preToolUseFiringsInsideSubagentForMcp": [],
+          "canUseToolMcpNotAttributableToParent": [],
+          "mcpNamesInChildTranscript": [],
+          "parentOwnMcpToolUses": []
+        },
+        "mcpSurface": false
+      },
+      "apparatus": {
+        "preToolUseFiringCount": 3,
+        "preToolUseFiredInsideSubagent": true,
+        "preToolUseToolNames": [
+          "Agent",
+          "Write"
+        ],
+        "canUseToolConsultationCount": 0,
+        "canUseToolNames": [],
+        "subagentStopSeen": true
+      },
+      "session": {
+        "resultSubtype": "success",
+        "numTurns": 3,
+        "timedOut": false,
+        "error": null,
+        "sawResult": true,
+        "sessionId": "a0acdbdc-2057-402b-9457-5bdc83954872"
+      }
+    }
+  },
+  "sessionsSpent": 2,
+  "notes": "MEASURED. PARENT: 33 tools on the system/init envelope (MCP servers still 'pending' there, so MCP is excluded by construction) and 34 self-reported mid-session. NARROWED CHILD: 28 tools, ZERO of them mcp__, and no MCP call observable from inside it through any of the three engine-side channels. UNNARROWED CHILD, same prompt, same agent, same session shape, narrowing removed: 619 tools with 588 mcp__ names (mcpAttemptObserved=true) \u2014 so this instrument DOES see a wide child surface when there is one, which is what makes the narrowed reading a measurement rather than a silence. Gap assessment: CLOSED.",
+  "caveats": [
+    "The two narrowings (session-level allowedMcpServers lock, per-agent disallowedTools) are applied and removed TOGETHER, as production ships them. Which one does the work is NOT separated by this probe and is not claimed.",
+    "Target agent trigger-dev-expert is one of only 3 of the owner's 144 on-disk agents with no `tools:` frontmatter allowlist. Whether a disk allowlist merges with Options.agents is UNMEASURED; if it binds, children of the other 141 are ~6 tools wide for a reason that has nothing to do with MCP, and this probe's numbers do not describe them.",
+    "The 625 was recorded for a BACKGROUND child. Both arms here run production's `background: false`. This probe does not reproduce that condition.",
+    "No sandbox block, unlike production \u2014 see the file header for why."
+  ],
+  "parentCounts": {
+    "narrowedArm": {
+      "initToolCount": 33,
+      "initMcpServerCount": 0,
+      "selfReportedCount": 34,
+      "selfReportedStatedTotal": 34,
+      "selfReportedMcpCount": 0
+    },
+    "unnarrowedArm": {
+      "initToolCount": 42,
+      "initMcpServerCount": 22,
+      "selfReportedCount": 43,
+      "selfReportedStatedTotal": 43,
+      "selfReportedMcpCount": 9
+    },
+    "timePointWarning": "initToolCount is the engine's own count AT init, when every MCP server still reports status 'pending' (results/mcp.json) \u2014 it structurally EXCLUDES MCP tools. Only the mid-session self-reported counts are a like-for-like comparison with the child. Publishing 'parent 42 vs child N' without this line reproduces the artefact that most likely produced 625-vs-42 in the first place."
+  },
+  "instrumentCalibration": {
+    "parentInitToolCount": 33,
+    "parentSelfReportedCount": 34,
+    "parentStatedTotal": 34,
+    "selfReportMinusInit": 1,
+    "note": "Different time-points (init vs mid-session) and different sources (engine vs model), so a difference is expected. A LARGE one is a warning about how much weight the child counts can carry."
+  },
+  "postRunAnnotations": {
+    "addedAt": "2026-07-28, after the run, by an ADD-ONLY read-modify-write. No measured value was changed.",
+    "inheritedCaveatThatIsFALSEforThisFile": "caveats[0] was copied verbatim from probe G and says the two narrowings are 'applied and removed TOGETHER ... which one does the work is NOT separated by this probe'. That is exactly what THIS file DID separate. Read caveats[0] as probe G's, not G3's. Left in place rather than edited, because the record must describe the run that produced it.",
+    "theMutation": "AgentDefinition.disallowedTools:['mcp__*'] REMOVED from both arms. managedSettings.allowedMcpServers:[] + allowManagedMcpServersOnly:true KEPT in the 'sessionlockonly' arm. Everything else byte-identical to probe-g-tool-surface.mjs.",
+    "result": "THE COUNT DID NOT MOVE. Session-lock-only child = 28 tools / 0 mcp__ \u2014 the SAME NUMBER and the BYTE-IDENTICAL NAME SET as probe G's narrowed child (28), which had the per-agent key. The session-level lock alone does 100% of the narrowing; the per-agent half can be credited with nothing. This is the complementary cell to probe G2 (per-agent-only -> 620 tools / 589 mcp__) and completes the 2x2.",
+    "engineSideAttestation": "Not the child's arithmetic: the engine-written subagent transcript carries a 'deferred_tools_delta' attachment listing the tools handed to the child. sessionlockonly: added=19, mcp=0 (+9 base = 28, exactly the census). unnarrowed control: added=611, mcp=589 (+9 base = 620; the child's own census said 619/588, i.e. it dropped one name). The 28-vs-620 discriminator is engine-attested, not self-reported.",
+    "controlHeldInTheSameRun": "The unnarrowed control arm ran FIRST in this same process with 22 MCP servers at init, produced a 619-name/588-mcp child census, and its child CALLED mcp__plugin_context7_context7__resolve-library-id (recorded by a PreToolUse firing carrying insideAgentType='trigger-dev-expert', and in the child's own transcript; the probe's hook denied it, so no external service was touched). So a narrow reading in the mutated arm is a measurement, not a silence.",
+    "numberThatProbeGRECORDEDasUNOBTAINED": "The unnarrowed PARENT's mid-session self-report, which probe G lost to its 300s ceiling: 43 tools, 9 of them mcp__ (init said 42 with 22 servers pending). So the like-for-like unnarrowed comparison is PARENT 43 (9 mcp) vs CHILD 620 (589 mcp). The asymmetry is real and it is about MCP: the child receives the whole deferred-tool catalogue as an in-context attachment; the parent does not.",
+    "nonceTestINCONCLUSIVE": "A run-time nonce was placed ONLY in AgentDefinition.prompt to separate G2's fork ('the per-agent spec is inert' vs 'Options.agents never bound'). It was NOT echoed in any channel in either arm (census file, child transcript, parent assistant text). THIS DOES NOT RESOLVE THE FORK. The test is one-sided: there is no arm in which the nonce WAS echoed, so 'not bound' and 'bound but the model followed the user-turn instruction (which said to write nothing after MCP_TOTAL=) over a system-prompt standing order' are indistinguishable here. Reported as INCONCLUSIVE. Note also that the parent supplied run_in_background:false itself in both arms, so AgentDefinition.background:false was not independently exercised either.",
+    "whatThisDoesNOTOverturn": "Probe G's headline ('the gap is CLOSED') SURVIVES and is reproduced here independently: 28 / 0 mcp / no MCP call observable from inside the child. Only the ATTRIBUTION changes \u2014 the narrowing is entirely the session-level lock. The casualty is the 'defence in depth' phrasing at claude-builder.ts:751-755, which probe G's own postRunAudit had already flagged."
+  }
+}

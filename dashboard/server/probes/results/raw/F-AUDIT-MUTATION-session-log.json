@@ -1,0 +1,393 @@
+{
+  "ranAt": "2026-07-28T19:31:30.637Z",
+  "fixture": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-f-aA3Kmo",
+  "sessionsSpent": 2,
+  "sessions": [
+    {
+      "label": "AUDIT/mutation/bg-deny-FLIPPED-to-allow",
+      "prompt": "Two steps, in this exact order.\n\nSTEP 1 - background delegation. Make exactly ONE Agent tool call with these parameters:\n  subagent_type: \"wordpress-master\"\n  run_in_background: true\n  model: \"haiku\"\n  description: \"background ok check\"\n  prompt: \"Reply with the single word OK. Do nothing else.\"\nrun_in_background MUST be true. Do NOT set it to false and do NOT omit it: I am testing\nbackground delegation itself and I do not need the subagent's answer. Do not wait for it,\ndo not call TaskOutput, do not send it messages.\n\nSTEP 2 - whatever happened in step 1, whether it succeeded or was refused, run exactly this\nBash command and let it finish: sleep 12; echo GRACE_WINDOW_DONE\n\nThen reply with ONE short line saying what happened in step 1. Do not do the subagent's work\nyourself and do not retry step 1.",
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "rate_limit_event",
+        "system/background_tasks_changed",
+        "system/task_started",
+        "user",
+        "assistant",
+        "assistant",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_updated",
+        "system/task_notification",
+        "assistant",
+        "system/task_started",
+        "system/task_notification",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "agentCount": 154,
+        "sessionId": "675848e1-58b7-490f-8ba7-7198ad9240c7"
+      },
+      "sessionIds": [
+        "675848e1-58b7-490f-8ba7-7198ad9240c7"
+      ],
+      "sessionIdCount": 1,
+      "toolUses": [
+        {
+          "name": "Agent",
+          "atMs": 16873,
+          "input": "{\"description\":\"background ok check\",\"prompt\":\"Reply with the single word OK. Do nothing else.\",\"subagent_type\":\"wordpress-master\",\"model\":\"haiku\",\"run_in_background\":true}"
+        },
+        {
+          "name": "Bash",
+          "atMs": 19527,
+          "input": "{\"command\":\"sleep 12; echo GRACE_WINDOW_DONE\",\"description\":\"Wait 12 seconds then print grace window done\",\"timeout\":20000}"
+        }
+      ],
+      "toolUseResults": [
+        "{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"a19552b813a5f6dde\",\"description\":\"background ok check\",\"resolvedModel\":\"claude-haiku-4-5-20251001\",\"prompt\":\"Reply with the single word OK. Do nothing else.\",\"outputFile\":\"/private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-f-aA3Kmo-workspace/675848e1-58b7-490f-8ba7-7198ad9240c7/tasks/a19552b813a5f6dde.output\",\"canReadOutputFile\":true}",
+        "{\"stdout\":\"GRACE_WINDOW_DONE\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false}"
+      ],
+      "taskStarts": [
+        {
+          "subagentType": "wordpress-master",
+          "taskType": "local_agent",
+          "taskId": "a19552b813a5f6dde",
+          "toolUseId": "toolu_01Bv9Nawxhs9ngCMAYiNmmzZ",
+          "skipTranscript": false,
+          "description": "background ok check",
+          "atMs": 16910
+        },
+        {
+          "subagentType": null,
+          "taskType": "local_bash",
+          "taskId": "basv7caew",
+          "toolUseId": "toolu_017s2awXMT9xS8kQGuWzoN26",
+          "skipTranscript": false,
+          "description": "Wait 12 seconds then print grace window done",
+          "atMs": 22626
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "a19552b813a5f6dde",
+          "toolUseId": "toolu_01Bv9Nawxhs9ngCMAYiNmmzZ",
+          "status": "completed",
+          "totalTokens": 15047,
+          "toolUses": 0,
+          "summary": "OK",
+          "atMs": 18858
+        },
+        {
+          "taskId": "basv7caew",
+          "toolUseId": "toolu_017s2awXMT9xS8kQGuWzoN26",
+          "status": "completed",
+          "totalTokens": null,
+          "toolUses": null,
+          "summary": "Wait 12 seconds then print grace window done",
+          "atMs": 31693
+        }
+      ],
+      "taskUpdates": [
+        {
+          "taskId": "a19552b813a5f6dde",
+          "status": "completed",
+          "atMs": 18858
+        }
+      ],
+      "backgroundLevels": [
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "descriptions": [
+            "background ok check"
+          ],
+          "atMs": 16909
+        },
+        {
+          "count": 0,
+          "taskTypes": [],
+          "descriptions": [],
+          "atMs": 18857
+        }
+      ],
+      "denials": [],
+      "hookState": {
+        "firings": [
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01Bv9Nawxhs9ngCMAYiNmmzZ",
+            "subagentType": "wordpress-master",
+            "runInBackground": true,
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "atMs": 1785267011724,
+            "inputExcerpt": "{\"description\":\"background ok check\",\"prompt\":\"Reply with the single word OK. Do nothing else.\",\"subagent_type\":\"wordpress-master\",\"model\":\"haiku\",\"run_in_background\":true}",
+            "decision": "continue"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Bash",
+            "toolUseId": "toolu_017s2awXMT9xS8kQGuWzoN26",
+            "subagentType": null,
+            "runInBackground": "ABSENT",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "atMs": 1785267014377,
+            "inputExcerpt": "{\"command\":\"sleep 12; echo GRACE_WINDOW_DONE\",\"timeout\":20000,\"description\":\"Wait 12 seconds then print grace window done\"}",
+            "decision": "continue"
+          }
+        ],
+        "denialsIssued": [],
+        "subagentStartHook": [
+          {
+            "agentType": "wordpress-master",
+            "agentId": "present",
+            "atMs": 1785267011759
+          }
+        ]
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "Using `wordpress-master` in the background per the exact instructions given (step 1 requires this specific agent/model/background configuration).[{\"tool_use_id\":\"toolu_01Bv9Nawxhs9ngCMAYiNmmzZ\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\\nagentId: a19552b813a5f6dde (internal ID - do not mention to user. Use SendMessage with to: 'a19552b813a5f6dde', summary: '<5-10 word recap>' to continue this agent.)\\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-f-aA3Kmo-workspace/675848e1-58b7-490f-8ba7-7198ad9240c7/tasks/a19552b813a5f6dde.output\\nDo NOT Read or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context. If the user asks for progress, say the agent is still running; you'll get a completion notification.\"}]}]Now step 2, the grace-window bash command.OK[{\"tool_use_id\":\"toolu_017s2awXMT9xS8kQGuWzoN26\",\"type\":\"tool_result\",\"content\":\"GRACE_WINDOW_DONE\",\"is_error\":false}]Step 1: `wordpress-master` ran in the background as instructed and has since completed, replying \"OK.\" Step 2's grace-window sleep finished (`GRACE_WINDOW_DONE` printed) after that."
+    },
+    {
+      "label": "AUDIT/omitted-flag/selective-default-path",
+      "prompt": "Three steps, in this exact order.\n\nSTEP 1 - call the Agent tool ONCE with exactly these parameters and no others:\n  subagent_type: \"code-reviewer\"\n  model: \"haiku\"\n  description: \"alpha check\"\n  prompt: \"Reply with the single word ALPHA. Do nothing else.\"\n\nSTEP 2 - call the Agent tool ONCE more with exactly these parameters and no others:\n  subagent_type: \"wordpress-master\"\n  model: \"haiku\"\n  description: \"beta check\"\n  prompt: \"Reply with the single word BETA. Do nothing else.\"\n\nCRITICAL: do NOT include a run_in_background key in EITHER call. Omit that parameter\nentirely - do not set it to true and do not set it to false. I am testing the tool's\nDEFAULT behaviour when the flag is absent, so adding it would invalidate the test.\n\nThe two calls are INDEPENDENT. If one is refused, say so and STILL make the other one.\nDo not wait for either subagent, do not call TaskOutput, do not send them messages, do\nnot do their work yourself, and do not retry a refused call.\n\nSTEP 3 - whatever happened above, run exactly this Bash command and let it finish:\nsleep 12; echo GRACE_WINDOW_DONE\n\nThen reply with one short line per call saying what happened.",
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_started",
+        "user",
+        "assistant",
+        "user",
+        "rate_limit_event",
+        "assistant",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_updated",
+        "system/task_notification",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "system/task_notification",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "agentCount": 154,
+        "sessionId": "f062ecb9-dd8f-4075-a1a2-e134ab0e3d0c"
+      },
+      "sessionIds": [
+        "f062ecb9-dd8f-4075-a1a2-e134ab0e3d0c"
+      ],
+      "sessionIdCount": 1,
+      "toolUses": [
+        {
+          "name": "Agent",
+          "atMs": 7170,
+          "input": "{\"subagent_type\":\"code-reviewer\",\"model\":\"haiku\",\"description\":\"alpha check\",\"prompt\":\"Reply with the single word ALPHA. Do nothing else.\"}"
+        },
+        {
+          "name": "Agent",
+          "atMs": 8264,
+          "input": "{\"subagent_type\":\"wordpress-master\",\"model\":\"haiku\",\"description\":\"beta check\",\"prompt\":\"Reply with the single word BETA. Do nothing else.\"}"
+        },
+        {
+          "name": "Bash",
+          "atMs": 10373,
+          "input": "{\"command\":\"sleep 12; echo GRACE_WINDOW_DONE\"}"
+        }
+      ],
+      "toolUseResults": [
+        "{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"a2bb2ba65324800e5\",\"description\":\"alpha check\",\"resolvedModel\":\"claude-haiku-4-5-20251001\",\"prompt\":\"Reply with the single word ALPHA. Do nothing else.\",\"outputFile\":\"/private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-f-aA3Kmo-workspace/f062ecb9-dd8f-4075-a1a2-e134ab0e3d0c/tasks/a2bb2ba65324800e5.output\",\"canReadOutputFile\":true}",
+        "\"Error: probe F: subagent is not on the delegation shortlist (wordpress-master)\"",
+        "{\"stdout\":\"GRACE_WINDOW_DONE\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false}"
+      ],
+      "taskStarts": [
+        {
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "taskId": "a2bb2ba65324800e5",
+          "toolUseId": "toolu_01GB3s84zbPyKq7SyPNrBMK9",
+          "skipTranscript": false,
+          "description": "alpha check",
+          "atMs": 7206
+        },
+        {
+          "subagentType": null,
+          "taskType": "local_bash",
+          "taskId": "br4v2y17g",
+          "toolUseId": "toolu_01X45znZPAgYHT6bgT4tPEdG",
+          "skipTranscript": false,
+          "description": "sleep 12; echo GRACE_WINDOW_DONE",
+          "atMs": 13469
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "a2bb2ba65324800e5",
+          "toolUseId": "toolu_01GB3s84zbPyKq7SyPNrBMK9",
+          "status": "completed",
+          "totalTokens": 13785,
+          "toolUses": 0,
+          "summary": "ALPHA",
+          "atMs": 9655
+        },
+        {
+          "taskId": "br4v2y17g",
+          "toolUseId": "toolu_01X45znZPAgYHT6bgT4tPEdG",
+          "status": "completed",
+          "totalTokens": null,
+          "toolUses": null,
+          "summary": "sleep 12; echo GRACE_WINDOW_DONE",
+          "atMs": 22525
+        }
+      ],
+      "taskUpdates": [
+        {
+          "taskId": "a2bb2ba65324800e5",
+          "status": "completed",
+          "atMs": 9655
+        }
+      ],
+      "backgroundLevels": [
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "descriptions": [
+            "alpha check"
+          ],
+          "atMs": 7206
+        },
+        {
+          "count": 0,
+          "taskTypes": [],
+          "descriptions": [],
+          "atMs": 9655
+        }
+      ],
+      "denials": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "hookState": {
+        "firings": [
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent",
+            "toolUseId": "toolu_01GB3s84zbPyKq7SyPNrBMK9",
+            "subagentType": "code-reviewer",
+            "runInBackground": "ABSENT",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "atMs": 1785267053241,
+            "inputExcerpt": "{\"description\":\"alpha check\",\"prompt\":\"Reply with the single word ALPHA. Do nothing else.\",\"subagent_type\":\"code-reviewer\",\"model\":\"haiku\"}",
+            "decision": "continue"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Agent",
+            "toolUseId": "toolu_016WJ8LtuGvTRz6Fk3t8eE6M",
+            "subagentType": "wordpress-master",
+            "runInBackground": "ABSENT",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "atMs": 1785267054334,
+            "inputExcerpt": "{\"description\":\"beta check\",\"prompt\":\"Reply with the single word BETA. Do nothing else.\",\"subagent_type\":\"wordpress-master\",\"model\":\"haiku\"}",
+            "decision": "deny"
+          },
+          {
+            "slot": "matcher:none",
+            "toolName": "Bash",
+            "toolUseId": "toolu_01X45znZPAgYHT6bgT4tPEdG",
+            "subagentType": null,
+            "runInBackground": "ABSENT",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "atMs": 1785267056445,
+            "inputExcerpt": "{\"command\":\"sleep 12; echo GRACE_WINDOW_DONE\"}",
+            "decision": "continue"
+          }
+        ],
+        "denialsIssued": [
+          {
+            "subagentType": "wordpress-master",
+            "toolName": "Agent"
+          }
+        ],
+        "subagentStartHook": [
+          {
+            "agentType": "code-reviewer",
+            "agentId": "present",
+            "atMs": 1785267053277
+          }
+        ]
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 4,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "Using the two agent calls exactly as specified (no skill/process detour — these are literal, fully-specified mechanical steps, and explicit user instructions override skill workflows per the global rules).[{\"tool_use_id\":\"toolu_01GB3s84zbPyKq7SyPNrBMK9\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\\nagentId: a2bb2ba65324800e5 (internal ID - do not mention to user. Use SendMessage with to: 'a2bb2ba65324800e5', summary: '<5-10 word recap>' to continue this agent.)\\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-f-aA3Kmo-workspace/f062ecb9-dd8f-4075-a1a2-e134ab0e3d0c/tasks/a2bb2ba65324800e5.output\\nDo NOT Read or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context. If the user asks for progress, say the agent is still running; you'll get a completion notification.\"}]}][{\"type\":\"tool_result\",\"content\":\"probe F: subagent is not on the delegation shortlist (wordpress-master)\",\"is_error\":true,\"tool_use_id\":\"toolu_016WJ8LtuGvTRz6Fk3t8eE6M\"}]ALPHABoth calls made as specified, no `run_in_background` key included in either. Now running the grace-window sleep.[{\"tool_use_id\":\"toolu_01X45znZPAgYHT6bgT4tPEdG\",\"type\":\"tool_result\",\"content\":\"GRACE_WINDOW_DONE\",\"is_error\":false}]- **Call 1** (`code-reviewer`, alpha check): succeeded, ran without `run_in_background`, and returned `ALPHA` (via async completion notification).\n- **Call 2** (`wordpress-master`, beta check): refused outright — error `probe F: subagent is not on the delegation shortlist (wordpress-master)`. No agent was launched, so nothing to wait on.\n- Grace-window `sleep 12; echo GRACE_WINDOW_DONE` ran to completion as instructed."
+    }
+  ]
+}

@@ -1,0 +1,411 @@
+{
+  "ranAt": "2026-07-28T21:15:39.588Z",
+  "runStamp": "2026-07-28T21-10-01-778Z",
+  "sessionsSpent": 2,
+  "fixtures": [
+    "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz",
+    "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L"
+  ],
+  "sessions": [
+    {
+      "label": "G3/unnarrowed",
+      "envelopes": [
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "rate_limit_event",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 42,
+        "toolNames": [
+          "Task",
+          "AskUserQuestion",
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterPlanMode",
+          "EnterWorktree",
+          "ExitPlanMode",
+          "ExitWorktree",
+          "LSP",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "Skill",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write",
+          "mcp__plugin_sentry_sentry__analyze_issue_with_seer",
+          "mcp__plugin_sentry_sentry__execute_sentry_tool",
+          "mcp__plugin_sentry_sentry__find_organizations",
+          "mcp__plugin_sentry_sentry__find_projects",
+          "mcp__plugin_sentry_sentry__get_sentry_resource",
+          "mcp__plugin_sentry_sentry__search_events",
+          "mcp__plugin_sentry_sentry__search_issues",
+          "mcp__plugin_sentry_sentry__search_sentry_tools",
+          "mcp__plugin_sentry_sentry__update_issue"
+        ],
+        "mcpServers": [
+          "plugin:playwright:playwright:pending",
+          "plugin:context7:context7:pending",
+          "plugin:sentry:sentry:connected",
+          "plugin:firebase:firebase:pending",
+          "plugin:vercel:vercel:pending",
+          "plugin:expo:expo:needs-auth",
+          "plugin:railway:railway:pending",
+          "plugin:neon:neon:pending",
+          "railway:pending",
+          "skyvern:pending",
+          "trigger:pending",
+          "RevenueCat:pending",
+          "github:pending",
+          "claude.ai Supabase:pending",
+          "claude.ai Sentry:pending",
+          "claude.ai Granola:pending",
+          "claude.ai GoogleDrive:pending",
+          "claude.ai Uber:needs-auth",
+          "claude.ai PDF Viewer:pending",
+          "claude.ai Context7:pending",
+          "claude.ai Gmail:pending",
+          "claude.ai Notion:pending"
+        ],
+        "mcpServerCount": 22,
+        "agentCount": 155,
+        "sessionId": "62722d8e-76c6-4f60-8b32-e78da8292c9c"
+      },
+      "parentToolUses": [
+        {
+          "name": "Agent",
+          "input": "{\"description\":\"Trigger-dev-expert tool census\",\"subagent_type\":\"trigger-dev-expert\",\"run_in_background\":false,\"prompt\":\"Do NOT do any Trigger.dev work and do not write any code. This is a tool-surface census, and you are the instrument. Do exactly these three steps, in order.\\n(1) Write a file at the absolute path /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/…"
+        },
+        {
+          "name": "Write",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt\",\"content\":\"Agent\\nBash\\nEdit\\nRead\\nReportFindings\\nSkill\\nToolSearch\\nWrite\\nadvisor\\nCronCreate\\nCronDelete\\nCronList\\nDesignSync\\nEnterWorktree\\nExitWorktree\\nLSP\\nListMcpResourcesTool\\nMonitor\\nNotebookEdit\\nPushNotification\\nReadMcpResourceDirTool\\nReadM…"
+        },
+        {
+          "name": "Bash",
+          "input": "{\"command\":\"wc -l < /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt; grep -c '^mcp__' /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt\",\"description\":\"Count total lines and mcp__ prefixed lines in census file\"}"
+        },
+        {
+          "name": "Edit",
+          "input": "{\"replace_all\":false,\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt\",\"old_string\":\"mcp__trigger__wait_for_run_to_complete\\nmcp__trigger__whoami\\n\",\"new_string\":\"mcp__trigger__wait_for_run_to_complete\\nmcp__trigger__whoami\\nTOTAL=619\\nMCP_TOTAL=588\\n\"}"
+        },
+        {
+          "name": "ToolSearch",
+          "input": "{\"query\":\"select:mcp__plugin_context7_context7__resolve-library-id\",\"max_results\":3}"
+        },
+        {
+          "name": "mcp__plugin_context7_context7__resolve-library-id",
+          "input": "{\"libraryName\":\"trigger.dev\",\"query\":\"tool surface census probe\"}"
+        },
+        {
+          "name": "Write",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-parent-tool-census.txt\",\"content\":\"Agent\\nAskUserQuestion\\nBash\\nEdit\\nRead\\nReportFindings\\nScheduleWakeup\\nSkill\\nToolSearch\\nWorkflow\\nWrite\\nadvisor\\nCronCreate\\nCronDelete\\nCronList\\nDesignSync\\nEnterPlanMode\\nEnterWorktree\\nExitPlanMode\\nExitWorktree\\nLSP\\nMonitor\\nNotebookEd…"
+        }
+      ],
+      "subagentStarts": [
+        "trigger-dev-expert"
+      ],
+      "skipTranscriptSubagentStarts": [],
+      "otherTaskStarts": [],
+      "hookState": {
+        "firings": [
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "isMcp": false,
+            "atMs": 1785273018942
+          },
+          {
+            "toolName": "Write",
+            "firedInsideSubagent": true,
+            "insideAgentType": "trigger-dev-expert",
+            "isMcp": false,
+            "atMs": 1785273229385
+          },
+          {
+            "toolName": "Bash",
+            "firedInsideSubagent": true,
+            "insideAgentType": "trigger-dev-expert",
+            "isMcp": false,
+            "atMs": 1785273235619
+          },
+          {
+            "toolName": "Edit",
+            "firedInsideSubagent": true,
+            "insideAgentType": "trigger-dev-expert",
+            "isMcp": false,
+            "atMs": 1785273242101
+          },
+          {
+            "toolName": "ToolSearch",
+            "firedInsideSubagent": true,
+            "insideAgentType": "trigger-dev-expert",
+            "isMcp": false,
+            "atMs": 1785273245489
+          },
+          {
+            "toolName": "mcp__plugin_context7_context7__resolve-library-id",
+            "firedInsideSubagent": true,
+            "insideAgentType": "trigger-dev-expert",
+            "isMcp": true,
+            "atMs": 1785273247411
+          },
+          {
+            "toolName": "Write",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "isMcp": false,
+            "atMs": 1785273272959
+          }
+        ],
+        "subagentStarts": [
+          {
+            "agentType": "trigger-dev-expert",
+            "agentId": "present"
+          }
+        ],
+        "subagentStops": [
+          {
+            "agentType": "trigger-dev-expert",
+            "transcriptPath": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-g-unnarrowed-beEjsz-workspace/62722d8e-76c6-4f60-8b32-e78da8292c9c/subagents/agent-a40c0955a273a7aea.jsonl"
+          }
+        ],
+        "canUseToolConsultations": [],
+        "mcpDeniedByHook": [
+          {
+            "toolName": "mcp__plugin_context7_context7__resolve-library-id",
+            "firedInsideSubagent": true,
+            "insideAgentType": "trigger-dev-expert",
+            "isMcp": true,
+            "atMs": 1785273247411
+          }
+        ],
+        "mcpDeniedByCanUseTool": []
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "[{\"type\":\"text\",\"text\":\"Do NOT do any Trigger.dev work and do not write any code. This is a tool-surface census, and you are the instrument. Do exactly these three steps, in order.\\n(1) Write a file at the absolute path /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt. Its contents must be the exact name of EVERY tool you have available, ONE NAME PER LINE, spelled exactly as the tool is named to you, with no bullets, no numbering, no commentary and no markdown. Do not summarise, do not abbreviate, do not truncate: if the list is long, write all of it anyway. After the last name, write these two lines and nothing after them:\\nTOTAL=<the number of tool names you listed above>\\nMCP_TOTAL=<how many of those names begin with mcp__>\\n(2) THEN, if and only if you actually have a tool whose name begins with mcp__, call exactly ONE of them, exactly once. Choose one whose name contains resolve or search or list or get. NEVER call one that creates, updates, deletes, deploys, writes, uploads, sends, or drives a browser. If the call is refused, that is expected: do not retry it, do not try a different tool, and do not work around it.\\n(3) Reply with ONE line, and nothing else: either `MCP_PRESENT=yes <the exact name you called>` or `MCP_PRESENT=no` if you have no tool whose name begins with mcp__.\"}][{\"tool_use_id\":\"toolu_013Z3JwX6vtV7DBn7iC1HupQ\",\"type\":\"tool_result\",\"content\":\"File created successfully at: /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt (file state is current in your context — no need to Read it back)\"}][{\"tool_use_id\":\"toolu_01NrfRTqwpvc79nedgrikASY\",\"type\":\"tool_result\",\"content\":\"     619\\n588\",\"is_error\":false}][{\"tool_use_id\":\"toolu_01CKK6sxvmY59veTyJ3BL65F\",\"type\":\"tool_result\",\"content\":\"The file /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-unnarrowed-beEjsz/workspace/unnarrowed-child-tool-census.txt has been updated successfully. (file state is current in your context — no need to Read it back)\"}][{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01UjFtD9qCnGzLZMYfKAPCDJ\",\"content\":[{\"type\":\"tool_reference\",\"tool_name\":\"mcp__plugin_context7_context7__resolve-library-id\"}]}][{\"type\":\"tool_result\",\"content\":\"probe G: MCP calls are recorded and blocked in BOTH arms (held constant)\",\"is_error\":true,\"tool_use_id\":\"toolu_01Jd1EKsAwJLdecTeUpxwgGv\"}][{\"tool_use_id\":\"toolu_01T2DxTyDcbxFpsAiXBPZNs1\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"MCP_PRESENT=yes mcp__plugin_context7_context7__resolve-library-id\"},{\"type\":\"text\",\"text\":\"agentId: a40c0955a273a7aea (use SendMessage with to: 'a40c0955a273a7aea', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 101298\\ntool_uses: 5\\nduration_ms: 230554</usage>\"}]}][{\"tool_use_id\":\"toolu_019ML6W1KZoweLssNWbq3NxR\",\"type\":\"tool_result\",\"content\":\"File created successfully at: /private/var/folders/7t/…"
+    },
+    {
+      "label": "G3/sessionlockonly",
+      "envelopes": [
+        "system/init",
+        "rate_limit_event",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 33,
+        "toolNames": [
+          "Task",
+          "AskUserQuestion",
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterPlanMode",
+          "EnterWorktree",
+          "ExitPlanMode",
+          "ExitWorktree",
+          "LSP",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "Skill",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write"
+        ],
+        "mcpServers": [],
+        "mcpServerCount": 0,
+        "agentCount": 155,
+        "sessionId": "a0acdbdc-2057-402b-9457-5bdc83954872"
+      },
+      "parentToolUses": [
+        {
+          "name": "Agent",
+          "input": "{\"description\":\"Tool-surface census subagent\",\"subagent_type\":\"trigger-dev-expert\",\"run_in_background\":false,\"prompt\":\"Do NOT do any Trigger.dev work and do not write any code. This is a tool-surface census, and you are the instrument. Do exactly these three steps, in order.\\n(1) Write a file at the absolute path /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC…"
+        },
+        {
+          "name": "Write",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-child-tool-census.txt\",\"content\":\"Agent\\nBash\\nEdit\\nRead\\nReportFindings\\nSkill\\nToolSearch\\nWrite\\nadvisor\\nCronCreate\\nCronDelete\\nCronList\\nDesignSync\\nEnterWorktree\\nExitWorktree\\nLSP\\nMonitor\\nNotebookEdit\\nPushNotification\\nRemoteTrigger\\nSendMessage\\nTaskCreate\\nT…"
+        },
+        {
+          "name": "Write",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-parent-tool-census.txt\",\"content\":\"Agent\\nAskUserQuestion\\nBash\\nEdit\\nRead\\nReportFindings\\nScheduleWakeup\\nSkill\\nToolSearch\\nWorkflow\\nWrite\\nadvisor\\nCronCreate\\nCronDelete\\nCronList\\nDesignSync\\nEnterPlanMode\\nEnterWorktree\\nExitPlanMode\\nExitWorktree\\nLSP\\nMonitor\\n…"
+        }
+      ],
+      "subagentStarts": [
+        "trigger-dev-expert"
+      ],
+      "skipTranscriptSubagentStarts": [],
+      "otherTaskStarts": [],
+      "hookState": {
+        "firings": [
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "isMcp": false,
+            "atMs": 1785273306339
+          },
+          {
+            "toolName": "Write",
+            "firedInsideSubagent": true,
+            "insideAgentType": "trigger-dev-expert",
+            "isMcp": false,
+            "atMs": 1785273323387
+          },
+          {
+            "toolName": "Write",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "isMcp": false,
+            "atMs": 1785273337521
+          }
+        ],
+        "subagentStarts": [
+          {
+            "agentType": "trigger-dev-expert",
+            "agentId": "present"
+          }
+        ],
+        "subagentStops": [
+          {
+            "agentType": "trigger-dev-expert",
+            "transcriptPath": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-g-sessionlockonly-oOoC7L-workspace/a0acdbdc-2057-402b-9457-5bdc83954872/subagents/agent-a701903dd6e2b5073.jsonl"
+          }
+        ],
+        "canUseToolConsultations": [],
+        "mcpDeniedByHook": [],
+        "mcpDeniedByCanUseTool": []
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "[{\"type\":\"text\",\"text\":\"Do NOT do any Trigger.dev work and do not write any code. This is a tool-surface census, and you are the instrument. Do exactly these three steps, in order.\\n(1) Write a file at the absolute path /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-child-tool-census.txt. Its contents must be the exact name of EVERY tool you have available, ONE NAME PER LINE, spelled exactly as the tool is named to you, with no bullets, no numbering, no commentary and no markdown. Do not summarise, do not abbreviate, do not truncate: if the list is long, write all of it anyway. After the last name, write these two lines and nothing after them:\\nTOTAL=<the number of tool names you listed above>\\nMCP_TOTAL=<how many of those names begin with mcp__>\\n(2) THEN, if and only if you actually have a tool whose name begins with mcp__, call exactly ONE of them, exactly once. Choose one whose name contains resolve or search or list or get. NEVER call one that creates, updates, deletes, deploys, writes, uploads, sends, or drives a browser. If the call is refused, that is expected: do not retry it, do not try a different tool, and do not work around it.\\n(3) Reply with ONE line, and nothing else: either `MCP_PRESENT=yes <the exact name you called>` or `MCP_PRESENT=no` if you have no tool whose name begins with mcp__.\"}][{\"tool_use_id\":\"toolu_01JH4bHu89heg9zHZP1aVqoo\",\"type\":\"tool_result\",\"content\":\"File created successfully at: /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-child-tool-census.txt (file state is current in your context — no need to Read it back)\"}][{\"tool_use_id\":\"toolu_01NLr3Un5C8Vsn3XETbdkn45\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"MCP_PRESENT=no\"},{\"type\":\"text\",\"text\":\"agentId: a701903dd6e2b5073 (use SendMessage with to: 'a701903dd6e2b5073', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 52516\\ntool_uses: 1\\nduration_ms: 20896</usage>\"}]}][{\"tool_use_id\":\"toolu_01TrD3Ur31iTuFd97w7xw9T4\",\"type\":\"tool_result\",\"content\":\"File created successfully at: /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-sessionlockonly-oOoC7L/workspace/sessionlockonly-parent-tool-census.txt (file state is current in your context — no need to Read it back)\"}]DONE"
+    }
+  ]
+}

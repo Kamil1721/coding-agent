@@ -1,0 +1,40 @@
+{
+  "probe": "G3",
+  "question": "ADVERSARIAL RE-RUN OF PROBE G WITH THE PER-AGENT HALF REMOVED. Probe G applied managedSettings.allowedMcpServers:[]+allowManagedMcpServersOnly AND per-agent disallowedTools:['mcp__*'] together and could not attribute its narrowing to either. G2 ran per-agent-only and found 620 tools / 589 mcp__. This file is the remaining cell: SESSION LOCK KEPT, per-agent disallowedTools REMOVED. If the child's count does not move off probe G's 28, the session-level lock alone does all the work and the per-agent half can be credited with nothing. A run-time NONCE carried only in AgentDefinition.prompt separates 'the per-agent spec is inert' from 'Options.agents never bound at all'.",
+  "mutation": "REMOVED from AgentDefinition: disallowedTools: ['mcp__*'] (probe G line ~616). KEPT: managedSettings.allowedMcpServers: [] + allowManagedMcpServersOnly: true, maxTurns: 10, background: false, same TARGET_AGENT, same model, same prompts. ADDED: a nonce in AgentDefinition.prompt only.",
+  "nonce": "G3JLTVMW1G",
+  "sdkVersion": "0.3.220",
+  "runStamp": "2026-07-28T21-09-53-062Z",
+  "targetAgent": "trigger-dev-expert",
+  "model": "claude-sonnet-5",
+  "resultsDir": "/Users/kamilborzecki/Projects/coding-agent/dashboard/server/probes/results",
+  "baselineCaveat": "THE 625 HAS NO RECORDED APPARATUS in this tree — every occurrence is prose citing it (claude-builder.ts:753, claude-builder.test.ts:1467, the phase-1-1 plan at 787/819/853/1016); no result file, session log or probe produced it. The unnarrowed arm here IS the baseline re-measurement. Every 'gap' statement below is about THIS probe's two arms.",
+  "channels": {
+    "strong": "MCP REACHABILITY — engine-side/in-process, independent of the child's arithmetic: a PreToolUse firing carrying agent_id for an mcp__ name, a canUseTool consultation for an mcp__ name that no parent tool_use accounts for, or an mcp__ tool_use in the child's own engine-written transcript.",
+    "weak": "COUNTS — the child's self-reported census, written by the child to a file this process reads off disk. A model can abbreviate, miscount or hallucinate its own tool list; both the derived count and the model's stated TOTAL= are reported so degradation is visible."
+  },
+  "parentInitToolCount": null,
+  "parentSelfReportedToolCount": null,
+  "narrowedChildToolCount": null,
+  "unnarrowedChildToolCount": null,
+  "narrowedChildMcpSurface": null,
+  "unnarrowedChildMcpSurface": null,
+  "gapAssessment": "not measured (--verify-paths)",
+  "gapThresholds": {
+    "closed": "narrowed child reports ZERO mcp__ tools, no MCP attempt is observed from inside it, and its total is ≤ 1.25 × the parent's OWN mid-session self-reported total",
+    "narrowedButOpen": "narrowed child total < 0.5 × unnarrowed child total, but not 'closed'",
+    "unchanged": "narrowed child total ≥ 0.9 × unnarrowed child total"
+  },
+  "positive": false,
+  "negativeControl": false,
+  "verdict": "VOID",
+  "arms": {},
+  "sessionsSpent": 0,
+  "notes": "INCONCLUSIVE: --verify-paths run. NO live session was started and nothing was measured. This exists to prove that this file writes G3-PERAGENT-REMOVED.json and raw/G3-PERAGENT-REMOVED-session-log.json and touches no other probe's artefacts, before any live run spends the record.",
+  "caveats": [
+    "The two narrowings (session-level allowedMcpServers lock, per-agent disallowedTools) are applied and removed TOGETHER, as production ships them. Which one does the work is NOT separated by this probe and is not claimed.",
+    "Target agent trigger-dev-expert is one of only 3 of the owner's 144 on-disk agents with no `tools:` frontmatter allowlist. Whether a disk allowlist merges with Options.agents is UNMEASURED; if it binds, children of the other 141 are ~6 tools wide for a reason that has nothing to do with MCP, and this probe's numbers do not describe them.",
+    "The 625 was recorded for a BACKGROUND child. Both arms here run production's `background: false`. This probe does not reproduce that condition.",
+    "No sandbox block, unlike production — see the file header for why."
+  ]
+}

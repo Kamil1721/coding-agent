@@ -1,0 +1,1255 @@
+{
+  "ranAt": "2026-07-28T20:34:51.659Z",
+  "fixture": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-h-EbQxQC",
+  "sessionsSpent": 3,
+  "sessions": [
+    {
+      "label": "H/arm1/record-all",
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "toolNames": [
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterWorktree",
+          "ExitWorktree",
+          "LSP",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "Skill",
+          "Task",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write",
+          "mcp__plugin_sentry_sentry__analyze_issue_with_seer",
+          "mcp__plugin_sentry_sentry__execute_sentry_tool",
+          "mcp__plugin_sentry_sentry__find_organizations",
+          "mcp__plugin_sentry_sentry__find_projects",
+          "mcp__plugin_sentry_sentry__get_sentry_resource",
+          "mcp__plugin_sentry_sentry__search_events",
+          "mcp__plugin_sentry_sentry__search_issues",
+          "mcp__plugin_sentry_sentry__search_sentry_tools",
+          "mcp__plugin_sentry_sentry__update_issue"
+        ],
+        "sendMessagePresent": true,
+        "agentCount": 154
+      },
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "rate_limit_event",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_started",
+        "user",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_updated",
+        "system/task_notification",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "result/success"
+      ],
+      "toolUses": [
+        {
+          "id": "toolu_013HtBjDky4qP6YvpHnpkEca",
+          "name": "Bash",
+          "shape": {
+            "keys": [
+              "command",
+              "description"
+            ],
+            "types": {
+              "command": "string",
+              "description": "string"
+            },
+            "preview": {
+              "command": "env | grep -i -E \"claude|anthropic|model\" ",
+              "description": "Check environment for session model info"
+            },
+            "note": null
+          },
+          "input": "{\"command\":\"env | grep -i -E \\\"claude|anthropic|model\\\" \",\"description\":\"Check environment for session model info\"}"
+        },
+        {
+          "id": "toolu_01Df4dDCbmgGZkxX5LCM49Yq",
+          "name": "Bash",
+          "shape": {
+            "keys": [
+              "command",
+              "description"
+            ],
+            "types": {
+              "command": "string",
+              "description": "string"
+            },
+            "preview": {
+              "command": "grep -r \"\\\"model\\\"\" ~/.claude/settings.json 2>/dev/null; echo \"---\"; cat ~/.claude.json 2>/dev/null | grep -o '\"model\":\"[^\"]*\"' | head -5",
+              "description": "Check settings for configured model"
+            },
+            "note": null
+          },
+          "input": "{\"command\":\"grep -r \\\"\\\\\\\"model\\\\\\\"\\\" ~/.claude/settings.json 2>/dev/null; echo \\\"---\\\"; cat ~/.claude.json 2>/dev/null | grep -o '\\\"model\\\":\\\"[^\\\"]*\\\"' | head -5\",\"description\":\"Check settings for configured model\"}"
+        },
+        {
+          "id": "toolu_01Rcah4jHGm3R1P5TYucGMqv",
+          "name": "Agent",
+          "shape": {
+            "keys": [
+              "description",
+              "prompt",
+              "run_in_background",
+              "subagent_type"
+            ],
+            "types": {
+              "description": "string",
+              "prompt": "string",
+              "run_in_background": "boolean",
+              "subagent_type": "string"
+            },
+            "preview": {
+              "description": "Reply with ALPHA",
+              "prompt": "Reply with the single word ALPHA. Nothing else.",
+              "run_in_background": "false",
+              "subagent_type": "wordpress-master"
+            },
+            "note": null
+          },
+          "input": "{\"description\":\"Reply with ALPHA\",\"prompt\":\"Reply with the single word ALPHA. Nothing else.\",\"subagent_type\":\"wordpress-master\",\"run_in_background\":false}"
+        },
+        {
+          "id": "toolu_012q9oFQQt8gfiYUhzGqggTt",
+          "name": "ToolSearch",
+          "shape": {
+            "keys": [
+              "max_results",
+              "query"
+            ],
+            "types": {
+              "max_results": "number",
+              "query": "string"
+            },
+            "preview": {
+              "max_results": "1",
+              "query": "select:SendMessage"
+            },
+            "note": null
+          },
+          "input": "{\"query\":\"select:SendMessage\",\"max_results\":1}"
+        },
+        {
+          "id": "toolu_01AEhpLnokm6HVdAzx9KtTdh",
+          "name": "SendMessage",
+          "shape": {
+            "keys": [
+              "content",
+              "message",
+              "recipient",
+              "summary",
+              "to",
+              "type"
+            ],
+            "types": {
+              "content": "string",
+              "message": "string",
+              "recipient": "string",
+              "summary": "string",
+              "to": "string",
+              "type": "string"
+            },
+            "preview": {
+              "content": "New instruction: reply with the single word BRAVO…",
+              "message": "New instruction: reply with the single word BRAVO. Nothing else.",
+              "recipient": "a778c6fcb0f4113bb",
+              "summary": "follow up with one word",
+              "to": "a778c6fcb0f4113bb",
+              "type": "message"
+            },
+            "note": null
+          },
+          "input": "{\"to\":\"a778c6fcb0f4113bb\",\"summary\":\"follow up with one word\",\"message\":\"New instruction: reply with the single word BRAVO. Nothing else.\",\"type\":\"message\",\"recipient\":\"a778c6fcb0f4113bb\",\"content\":\"New instruction: reply with the single word BRAVO…\"}"
+        },
+        {
+          "id": "toolu_01XCvN1VVA1MJHHvH3SMuwYN",
+          "name": "SendMessage",
+          "shape": {
+            "keys": [
+              "content",
+              "message",
+              "recipient",
+              "summary",
+              "to",
+              "type"
+            ],
+            "types": {
+              "content": "string",
+              "message": "string",
+              "recipient": "string",
+              "summary": "string",
+              "to": "string",
+              "type": "string"
+            },
+            "preview": {
+              "content": "Reply with the single word CHARLIE.",
+              "message": "Reply with the single word CHARLIE.",
+              "recipient": "a00000000000000f1",
+              "summary": "reachability check",
+              "to": "a00000000000000f1",
+              "type": "message"
+            },
+            "note": null
+          },
+          "input": "{\"to\":\"a00000000000000f1\",\"summary\":\"reachability check\",\"message\":\"Reply with the single word CHARLIE.\",\"type\":\"message\",\"recipient\":\"a00000000000000f1\",\"content\":\"Reply with the single word CHARLIE.\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "toolUseId": "toolu_013HtBjDky4qP6YvpHnpkEca",
+          "isError": false,
+          "text": "PATH=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Library/Apple/usr/bin:/Users/kamilborzecki/.local/bin:/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin:/Users/kamilborzecki/.orbstack/bin:/Users/kamilborzecki/Library/Android/sdk/emulator:/Users/kamilborzecki/Library/Android/sdk/platform-tools:/Users/kamilborzecki/Library/Android/sdk/cmdline-tools/latest/bin:/Users/kamilborzecki/.orbstack/bin:/Users/kamilborzecki/Library/Android/sdk/emulator:/Users/kamilborzecki/Library/Android/sdk/platform-tools:/Users/kamilborzecki/Library/Android/sdk/cmdline-tools/latest/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/frontend-design/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/code-simplifier/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/playwright/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/context7/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/ralph-loop/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/sentry/1.2.0/bin:/Use…"
+        },
+        {
+          "toolUseId": "toolu_01Df4dDCbmgGZkxX5LCM49Yq",
+          "isError": false,
+          "text": "---"
+        },
+        {
+          "toolUseId": "toolu_01Rcah4jHGm3R1P5TYucGMqv",
+          "isError": false,
+          "text": "ALPHA\nagentId: a778c6fcb0f4113bb (use SendMessage with to: 'a778c6fcb0f4113bb', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 16086\ntool_uses: 0\nduration_ms: 1751</usage>"
+        },
+        {
+          "toolUseId": "toolu_012q9oFQQt8gfiYUhzGqggTt",
+          "isError": false,
+          "text": "{\"type\":\"tool_reference\",\"tool_name\":\"SendMessage\"}"
+        },
+        {
+          "toolUseId": "toolu_01AEhpLnokm6HVdAzx9KtTdh",
+          "isError": false,
+          "text": "{\"success\":true,\"message\":\"Agent \\\"a778c6fcb0f4113bb\\\" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-h-EbQxQC-workspace/4968ce98-73bb-4ccf-a74a-0bb20153695b/tasks/a778c6fcb0f4113bb.output\",\"resumedAgentId\":\"a778c6fcb0f4113bb\",\"pin\":{\"id\":\"a778c6fcb0f4113bb\",\"name\":\"a778c6fcb0f4113bb\",\"ref\":\"42330c\"}}"
+        },
+        {
+          "toolUseId": "toolu_01XCvN1VVA1MJHHvH3SMuwYN",
+          "isError": false,
+          "text": "{\"success\":false,\"message\":\"Agent \\\"a00000000000000f1\\\" could not be resumed: No transcript found for agent ID: a00000000000000f1\"}"
+        }
+      ],
+      "firings": [
+        {
+          "seq": 1,
+          "toolName": "Bash",
+          "toolUseId": "toolu_013HtBjDky4qP6YvpHnpkEca",
+          "shape": {
+            "keys": [
+              "command",
+              "description"
+            ],
+            "types": {
+              "command": "string",
+              "description": "string"
+            },
+            "preview": {
+              "command": "env | grep -i -E \"claude|anthropic|model\" ",
+              "description": "Check environment for session model info"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 2,
+          "toolName": "Bash",
+          "toolUseId": "toolu_01Df4dDCbmgGZkxX5LCM49Yq",
+          "shape": {
+            "keys": [
+              "command",
+              "description"
+            ],
+            "types": {
+              "command": "string",
+              "description": "string"
+            },
+            "preview": {
+              "command": "grep -r \"\\\"model\\\"\" ~/.claude/settings.json 2>/dev/null; echo \"---\"; cat ~/.claude.json 2>/dev/null | grep -o '\"model\":\"[^\"]*\"' | head -5",
+              "description": "Check settings for configured model"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 3,
+          "toolName": "Agent",
+          "toolUseId": "toolu_01Rcah4jHGm3R1P5TYucGMqv",
+          "shape": {
+            "keys": [
+              "description",
+              "prompt",
+              "run_in_background",
+              "subagent_type"
+            ],
+            "types": {
+              "description": "string",
+              "prompt": "string",
+              "run_in_background": "boolean",
+              "subagent_type": "string"
+            },
+            "preview": {
+              "description": "Reply with ALPHA",
+              "prompt": "Reply with the single word ALPHA. Nothing else.",
+              "run_in_background": "false",
+              "subagent_type": "wordpress-master"
+            },
+            "note": null
+          },
+          "hasSubagentType": true,
+          "subagentType": "wordpress-master",
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 5,
+          "toolName": "ToolSearch",
+          "toolUseId": "toolu_012q9oFQQt8gfiYUhzGqggTt",
+          "shape": {
+            "keys": [
+              "max_results",
+              "query"
+            ],
+            "types": {
+              "max_results": "number",
+              "query": "string"
+            },
+            "preview": {
+              "max_results": "1",
+              "query": "select:SendMessage"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 6,
+          "toolName": "SendMessage",
+          "toolUseId": "toolu_01AEhpLnokm6HVdAzx9KtTdh",
+          "shape": {
+            "keys": [
+              "content",
+              "message",
+              "recipient",
+              "summary",
+              "to",
+              "type"
+            ],
+            "types": {
+              "content": "string",
+              "message": "string",
+              "recipient": "string",
+              "summary": "string",
+              "to": "string",
+              "type": "string"
+            },
+            "preview": {
+              "content": "New instruction: reply with the single word BRAVO…",
+              "message": "New instruction: reply with the single word BRAVO. Nothing else.",
+              "recipient": "a778c6fcb0f4113bb",
+              "summary": "follow up with one word",
+              "to": "a778c6fcb0f4113bb",
+              "type": "message"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": true,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 8,
+          "toolName": "SendMessage",
+          "toolUseId": "toolu_01XCvN1VVA1MJHHvH3SMuwYN",
+          "shape": {
+            "keys": [
+              "content",
+              "message",
+              "recipient",
+              "summary",
+              "to",
+              "type"
+            ],
+            "types": {
+              "content": "string",
+              "message": "string",
+              "recipient": "string",
+              "summary": "string",
+              "to": "string",
+              "type": "string"
+            },
+            "preview": {
+              "content": "Reply with the single word CHARLIE.",
+              "message": "Reply with the single word CHARLIE.",
+              "recipient": "a00000000000000f1",
+              "summary": "reachability check",
+              "to": "a00000000000000f1",
+              "type": "message"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": true,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        }
+      ],
+      "denialsIssued": [],
+      "subagentStartHook": [
+        {
+          "seq": 4,
+          "agentType": "wordpress-master",
+          "agentIdPresent": true
+        },
+        {
+          "seq": 7,
+          "agentType": "wordpress-master",
+          "agentIdPresent": true
+        }
+      ],
+      "subagentStarts": [
+        {
+          "seq": 38,
+          "subagentType": "wordpress-master",
+          "taskType": "local_agent",
+          "skipTranscript": false
+        },
+        {
+          "seq": 51,
+          "subagentType": "wordpress-master",
+          "taskType": "local_agent",
+          "skipTranscript": false
+        }
+      ],
+      "otherTaskStarts": [],
+      "systemPermissionDenied": [],
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 7,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "[{\"tool_use_id\":\"toolu_013HtBjDky4qP6YvpHnpkEca\",\"type\":\"tool_result\",\"content\":\"PATH=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Library/Apple/usr/bin:/Users/kamilborzecki/.local/bin:/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin:/Users/kamilborzecki/.orbstack/bin:/Users/kamilborzecki/Library/Android/sdk/emulator:/Users/kamilborzecki/Library/Android/sdk/platform-tools:/Users/kamilborzecki/Library/Android/sdk/cmdline-tools/latest/bin:/Users/kamilborzecki/.orbstack/bin:/Users/kamilborzecki/Library/Android/sdk/emulator:/Users/kamilborzecki/Library/Android/sdk/platform-tools:/Users/kamilborzecki/Library/Android/sdk/cmdline-tools/latest/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/frontend-design/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/code-simplifier/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/playwright/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/context7/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/ralph-loop/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/sentry/1.2.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/claude-md-management/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/skill-creator/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/firebase/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/claude-code-setup/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/pyright-lsp/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/vercel/0.45.1/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/expo/1.8.5/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/railway/1.3.6/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/hookify/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/revenuecat/bcce7a3261b1/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/neon/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/conorluddy/ios-simulator-skill/e0ee87a884b4/bin:/Users/kamilborzecki/.claude/plugins/cache/RevenueCat/revenuecat-play-billing/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/frontend-design/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/code-simplifier/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/playwright/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/context7/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/ralph-loop/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/sentry/1.2.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/claude-md-management/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/skill-creator/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/firebase/unknown/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/claude-code-setup/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/pyright-lsp/1.0.0/bin:/Users/kamilborzecki/.claude/plugins/cache/claude-plugins-official/vercel/0.45.1/bin:/…"
+    },
+    {
+      "label": "H/arm2/production-guard",
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "toolNames": [
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterWorktree",
+          "ExitWorktree",
+          "LSP",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "Skill",
+          "Task",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write",
+          "mcp__plugin_sentry_sentry__analyze_issue_with_seer",
+          "mcp__plugin_sentry_sentry__execute_sentry_tool",
+          "mcp__plugin_sentry_sentry__find_organizations",
+          "mcp__plugin_sentry_sentry__find_projects",
+          "mcp__plugin_sentry_sentry__get_sentry_resource",
+          "mcp__plugin_sentry_sentry__search_events",
+          "mcp__plugin_sentry_sentry__search_issues",
+          "mcp__plugin_sentry_sentry__search_sentry_tools",
+          "mcp__plugin_sentry_sentry__update_issue"
+        ],
+        "sendMessagePresent": true,
+        "agentCount": 154
+      },
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "rate_limit_event",
+        "system/task_started",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_started",
+        "user",
+        "assistant",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_updated",
+        "system/task_notification",
+        "assistant",
+        "assistant",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "result/success"
+      ],
+      "toolUses": [
+        {
+          "id": "toolu_01U1qVkiEX1GHhusZVWzVqTc",
+          "name": "Agent",
+          "shape": {
+            "keys": [
+              "description",
+              "prompt",
+              "run_in_background",
+              "subagent_type"
+            ],
+            "types": {
+              "description": "string",
+              "prompt": "string",
+              "run_in_background": "boolean",
+              "subagent_type": "string"
+            },
+            "preview": {
+              "description": "One-word ALPHA reply task",
+              "prompt": "Reply with the single word ALPHA. Nothing else.",
+              "run_in_background": "false",
+              "subagent_type": "code-reviewer"
+            },
+            "note": null
+          },
+          "input": "{\"description\":\"One-word ALPHA reply task\",\"prompt\":\"Reply with the single word ALPHA. Nothing else.\",\"subagent_type\":\"code-reviewer\",\"run_in_background\":false}"
+        },
+        {
+          "id": "toolu_01QTm74nz9xTr3pKthPQ9L2D",
+          "name": "ToolSearch",
+          "shape": {
+            "keys": [
+              "max_results",
+              "query"
+            ],
+            "types": {
+              "max_results": "number",
+              "query": "string"
+            },
+            "preview": {
+              "max_results": "1",
+              "query": "select:SendMessage"
+            },
+            "note": null
+          },
+          "input": "{\"query\":\"select:SendMessage\",\"max_results\":1}"
+        },
+        {
+          "id": "toolu_01CwXaqiWHawQZcYMeD8xmoS",
+          "name": "SendMessage",
+          "shape": {
+            "keys": [
+              "content",
+              "message",
+              "recipient",
+              "summary",
+              "to",
+              "type"
+            ],
+            "types": {
+              "content": "string",
+              "message": "string",
+              "recipient": "string",
+              "summary": "string",
+              "to": "string",
+              "type": "string"
+            },
+            "preview": {
+              "content": "Second, unrelated task: reply with the single wor…",
+              "message": "Second, unrelated task: reply with the single word BRAVO. Nothing else.",
+              "recipient": "a993acbb93e2037d8",
+              "summary": "assign a second task",
+              "to": "a993acbb93e2037d8",
+              "type": "message"
+            },
+            "note": null
+          },
+          "input": "{\"to\":\"a993acbb93e2037d8\",\"summary\":\"assign a second task\",\"message\":\"Second, unrelated task: reply with the single word BRAVO. Nothing else.\",\"type\":\"message\",\"recipient\":\"a993acbb93e2037d8\",\"content\":\"Second, unrelated task: reply with the single wor…\"}"
+        },
+        {
+          "id": "toolu_01EUZ1PiePvzUX2uw3sBVQzP",
+          "name": "Agent",
+          "shape": {
+            "keys": [
+              "description",
+              "prompt",
+              "run_in_background",
+              "subagent_type"
+            ],
+            "types": {
+              "description": "string",
+              "prompt": "string",
+              "run_in_background": "boolean",
+              "subagent_type": "string"
+            },
+            "preview": {
+              "description": "One-word ECHO reply task",
+              "prompt": "Reply with the single word ECHO. Nothing else.",
+              "run_in_background": "false",
+              "subagent_type": "wordpress-master"
+            },
+            "note": null
+          },
+          "input": "{\"description\":\"One-word ECHO reply task\",\"prompt\":\"Reply with the single word ECHO. Nothing else.\",\"subagent_type\":\"wordpress-master\",\"run_in_background\":false}"
+        }
+      ],
+      "toolResults": [
+        {
+          "toolUseId": "toolu_01U1qVkiEX1GHhusZVWzVqTc",
+          "isError": false,
+          "text": "ALPHA\nagentId: a993acbb93e2037d8 (use SendMessage with to: 'a993acbb93e2037d8', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 15054\ntool_uses: 0\nduration_ms: 2588</usage>"
+        },
+        {
+          "toolUseId": "toolu_01QTm74nz9xTr3pKthPQ9L2D",
+          "isError": false,
+          "text": "{\"type\":\"tool_reference\",\"tool_name\":\"SendMessage\"}"
+        },
+        {
+          "toolUseId": "toolu_01CwXaqiWHawQZcYMeD8xmoS",
+          "isError": false,
+          "text": "{\"success\":true,\"message\":\"Agent \\\"a993acbb93e2037d8\\\" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-h-EbQxQC-workspace/970399d9-215c-4100-a5d3-4379caf8130d/tasks/a993acbb93e2037d8.output\",\"resumedAgentId\":\"a993acbb93e2037d8\",\"pin\":{\"id\":\"a993acbb93e2037d8\",\"name\":\"a993acbb93e2037d8\",\"ref\":\"7a5986\"}}"
+        },
+        {
+          "toolUseId": "toolu_01EUZ1PiePvzUX2uw3sBVQzP",
+          "isError": true,
+          "text": "probe H: subagent is not on the delegation shortlist"
+        }
+      ],
+      "firings": [
+        {
+          "seq": 9,
+          "toolName": "Agent",
+          "toolUseId": "toolu_01U1qVkiEX1GHhusZVWzVqTc",
+          "shape": {
+            "keys": [
+              "description",
+              "prompt",
+              "run_in_background",
+              "subagent_type"
+            ],
+            "types": {
+              "description": "string",
+              "prompt": "string",
+              "run_in_background": "boolean",
+              "subagent_type": "string"
+            },
+            "preview": {
+              "description": "One-word ALPHA reply task",
+              "prompt": "Reply with the single word ALPHA. Nothing else.",
+              "run_in_background": "false",
+              "subagent_type": "code-reviewer"
+            },
+            "note": null
+          },
+          "hasSubagentType": true,
+          "subagentType": "code-reviewer",
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 11,
+          "toolName": "ToolSearch",
+          "toolUseId": "toolu_01QTm74nz9xTr3pKthPQ9L2D",
+          "shape": {
+            "keys": [
+              "max_results",
+              "query"
+            ],
+            "types": {
+              "max_results": "number",
+              "query": "string"
+            },
+            "preview": {
+              "max_results": "1",
+              "query": "select:SendMessage"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 12,
+          "toolName": "SendMessage",
+          "toolUseId": "toolu_01CwXaqiWHawQZcYMeD8xmoS",
+          "shape": {
+            "keys": [
+              "content",
+              "message",
+              "recipient",
+              "summary",
+              "to",
+              "type"
+            ],
+            "types": {
+              "content": "string",
+              "message": "string",
+              "recipient": "string",
+              "summary": "string",
+              "to": "string",
+              "type": "string"
+            },
+            "preview": {
+              "content": "Second, unrelated task: reply with the single wor…",
+              "message": "Second, unrelated task: reply with the single word BRAVO. Nothing else.",
+              "recipient": "a993acbb93e2037d8",
+              "summary": "assign a second task",
+              "to": "a993acbb93e2037d8",
+              "type": "message"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": true,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 14,
+          "toolName": "Agent",
+          "toolUseId": "toolu_01EUZ1PiePvzUX2uw3sBVQzP",
+          "shape": {
+            "keys": [
+              "description",
+              "prompt",
+              "run_in_background",
+              "subagent_type"
+            ],
+            "types": {
+              "description": "string",
+              "prompt": "string",
+              "run_in_background": "boolean",
+              "subagent_type": "string"
+            },
+            "preview": {
+              "description": "One-word ECHO reply task",
+              "prompt": "Reply with the single word ECHO. Nothing else.",
+              "run_in_background": "false",
+              "subagent_type": "wordpress-master"
+            },
+            "note": null
+          },
+          "hasSubagentType": true,
+          "subagentType": "wordpress-master",
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        }
+      ],
+      "denialsIssued": [
+        {
+          "seq": 14,
+          "toolName": "Agent",
+          "subagentType": "wordpress-master",
+          "why": "shortlist"
+        }
+      ],
+      "subagentStartHook": [
+        {
+          "seq": 10,
+          "agentType": "code-reviewer",
+          "agentIdPresent": true
+        },
+        {
+          "seq": 13,
+          "agentType": "code-reviewer",
+          "agentIdPresent": true
+        }
+      ],
+      "subagentStarts": [
+        {
+          "seq": 25,
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "skipTranscript": false
+        },
+        {
+          "seq": 38,
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "skipTranscript": false
+        }
+      ],
+      "otherTaskStarts": [],
+      "systemPermissionDenied": [
+        {
+          "tool": "Task",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 5,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "Using `code-reviewer` for Step 1 (foreground one-word reply task), then `wordpress-master` for Step 3 (expected to potentially be blocked). Proceeding in order as instructed.\n\n**Step 1:**[{\"type\":\"text\",\"text\":\"Reply with the single word ALPHA. Nothing else.\"}][{\"tool_use_id\":\"toolu_01U1qVkiEX1GHhusZVWzVqTc\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"ALPHA\"},{\"type\":\"text\",\"text\":\"agentId: a993acbb93e2037d8 (use SendMessage with to: 'a993acbb93e2037d8', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 15054\\ntool_uses: 0\\nduration_ms: 2588</usage>\"}]}]**Step 2:**[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01QTm74nz9xTr3pKthPQ9L2D\",\"content\":[{\"type\":\"tool_reference\",\"tool_name\":\"SendMessage\"}]}][{\"tool_use_id\":\"toolu_01CwXaqiWHawQZcYMeD8xmoS\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"success\\\":true,\\\"message\\\":\\\"Agent \\\\\\\"a993acbb93e2037d8\\\\\\\" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-h-EbQxQC-workspace/970399d9-215c-4100-a5d3-4379caf8130d/tasks/a993acbb93e2037d8.output\\\",\\\"resumedAgentId\\\":\\\"a993acbb93e2037d8\\\",\\\"pin\\\":{\\\"id\\\":\\\"a993acbb93e2037d8\\\",\\\"name\\\":\\\"a993acbb93e2037d8\\\",\\\"ref\\\":\\\"7a5986\\\"}}\"}]}]BRAVO**Step 3:**[{\"type\":\"tool_result\",\"content\":\"probe H: subagent is not on the delegation shortlist\",\"is_error\":true,\"tool_use_id\":\"toolu_01EUZ1PiePvzUX2uw3sBVQzP\"}]STEP1=ALPHA | STEP2=BRAVO | STEP3=probe H: subagent is not on the delegation shortlist"
+    },
+    {
+      "label": "H/arm3/deny-sendmessage",
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 39,
+        "toolNames": [
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterWorktree",
+          "ExitWorktree",
+          "LSP",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "Skill",
+          "Task",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write",
+          "mcp__plugin_sentry_sentry__analyze_issue_with_seer",
+          "mcp__plugin_sentry_sentry__execute_sentry_tool",
+          "mcp__plugin_sentry_sentry__find_organizations",
+          "mcp__plugin_sentry_sentry__find_projects",
+          "mcp__plugin_sentry_sentry__get_sentry_resource",
+          "mcp__plugin_sentry_sentry__search_events",
+          "mcp__plugin_sentry_sentry__search_issues",
+          "mcp__plugin_sentry_sentry__search_sentry_tools",
+          "mcp__plugin_sentry_sentry__update_issue"
+        ],
+        "sendMessagePresent": true,
+        "agentCount": 154
+      },
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "assistant",
+        "rate_limit_event",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "toolUses": [
+        {
+          "id": "toolu_01LjZUjd6PzSWgmdyiJAbiDM",
+          "name": "Agent",
+          "shape": {
+            "keys": [
+              "description",
+              "model",
+              "prompt",
+              "run_in_background",
+              "subagent_type"
+            ],
+            "types": {
+              "description": "string",
+              "model": "string",
+              "prompt": "string",
+              "run_in_background": "boolean",
+              "subagent_type": "string"
+            },
+            "preview": {
+              "description": "Reply with ALPHA",
+              "model": "sonnet",
+              "prompt": "Reply with the single word ALPHA. Nothing else.",
+              "run_in_background": "false",
+              "subagent_type": "code-reviewer"
+            },
+            "note": null
+          },
+          "input": "{\"description\":\"Reply with ALPHA\",\"prompt\":\"Reply with the single word ALPHA. Nothing else.\",\"subagent_type\":\"code-reviewer\",\"run_in_background\":false,\"model\":\"sonnet\"}"
+        },
+        {
+          "id": "toolu_01DRvYbtTwGu6XBnZcbS9gSu",
+          "name": "ToolSearch",
+          "shape": {
+            "keys": [
+              "max_results",
+              "query"
+            ],
+            "types": {
+              "max_results": "number",
+              "query": "string"
+            },
+            "preview": {
+              "max_results": "1",
+              "query": "select:SendMessage"
+            },
+            "note": null
+          },
+          "input": "{\"query\":\"select:SendMessage\",\"max_results\":1}"
+        },
+        {
+          "id": "toolu_01Q8h9SAA2MUGEJXYy6hzyUP",
+          "name": "SendMessage",
+          "shape": {
+            "keys": [
+              "content",
+              "message",
+              "recipient",
+              "summary",
+              "to",
+              "type"
+            ],
+            "types": {
+              "content": "string",
+              "message": "string",
+              "recipient": "string",
+              "summary": "string",
+              "to": "string",
+              "type": "string"
+            },
+            "preview": {
+              "content": "New instruction: reply with the single word BRAVO…",
+              "message": "New instruction: reply with the single word BRAVO. Nothing else.",
+              "recipient": "aff93a579c8216ecf",
+              "summary": "follow up with one word",
+              "to": "aff93a579c8216ecf",
+              "type": "message"
+            },
+            "note": null
+          },
+          "input": "{\"to\":\"aff93a579c8216ecf\",\"summary\":\"follow up with one word\",\"message\":\"New instruction: reply with the single word BRAVO. Nothing else.\",\"type\":\"message\",\"recipient\":\"aff93a579c8216ecf\",\"content\":\"New instruction: reply with the single word BRAVO…\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "toolUseId": "toolu_01DRvYbtTwGu6XBnZcbS9gSu",
+          "isError": false,
+          "text": "{\"type\":\"tool_reference\",\"tool_name\":\"SendMessage\"}"
+        },
+        {
+          "toolUseId": "toolu_01LjZUjd6PzSWgmdyiJAbiDM",
+          "isError": false,
+          "text": "ALPHA\nagentId: aff93a579c8216ecf (use SendMessage with to: 'aff93a579c8216ecf', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 19163\ntool_uses: 0\nduration_ms: 4325</usage>"
+        },
+        {
+          "toolUseId": "toolu_01Q8h9SAA2MUGEJXYy6hzyUP",
+          "isError": true,
+          "text": "probe H: SendMessage is not on the delegation shortlist"
+        }
+      ],
+      "firings": [
+        {
+          "seq": 15,
+          "toolName": "Agent",
+          "toolUseId": "toolu_01LjZUjd6PzSWgmdyiJAbiDM",
+          "shape": {
+            "keys": [
+              "description",
+              "model",
+              "prompt",
+              "run_in_background",
+              "subagent_type"
+            ],
+            "types": {
+              "description": "string",
+              "model": "string",
+              "prompt": "string",
+              "run_in_background": "boolean",
+              "subagent_type": "string"
+            },
+            "preview": {
+              "description": "Reply with ALPHA",
+              "model": "sonnet",
+              "prompt": "Reply with the single word ALPHA. Nothing else.",
+              "run_in_background": "false",
+              "subagent_type": "code-reviewer"
+            },
+            "note": null
+          },
+          "hasSubagentType": true,
+          "subagentType": "code-reviewer",
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 17,
+          "toolName": "ToolSearch",
+          "toolUseId": "toolu_01DRvYbtTwGu6XBnZcbS9gSu",
+          "shape": {
+            "keys": [
+              "max_results",
+              "query"
+            ],
+            "types": {
+              "max_results": "number",
+              "query": "string"
+            },
+            "preview": {
+              "max_results": "1",
+              "query": "select:SendMessage"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": false,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        },
+        {
+          "seq": 18,
+          "toolName": "SendMessage",
+          "toolUseId": "toolu_01Q8h9SAA2MUGEJXYy6hzyUP",
+          "shape": {
+            "keys": [
+              "content",
+              "message",
+              "recipient",
+              "summary",
+              "to",
+              "type"
+            ],
+            "types": {
+              "content": "string",
+              "message": "string",
+              "recipient": "string",
+              "summary": "string",
+              "to": "string",
+              "type": "string"
+            },
+            "preview": {
+              "content": "New instruction: reply with the single word BRAVO…",
+              "message": "New instruction: reply with the single word BRAVO. Nothing else.",
+              "recipient": "aff93a579c8216ecf",
+              "summary": "follow up with one word",
+              "to": "aff93a579c8216ecf",
+              "type": "message"
+            },
+            "note": null
+          },
+          "hasSubagentType": false,
+          "subagentType": null,
+          "isSendMessageShape": true,
+          "firedInsideSubagent": false,
+          "insideAgentType": null
+        }
+      ],
+      "denialsIssued": [
+        {
+          "seq": 18,
+          "toolName": "SendMessage",
+          "why": "sendmessage"
+        }
+      ],
+      "subagentStartHook": [
+        {
+          "seq": 16,
+          "agentType": "code-reviewer",
+          "agentIdPresent": true
+        }
+      ],
+      "subagentStarts": [
+        {
+          "seq": 19,
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "skipTranscript": false
+        }
+      ],
+      "otherTaskStarts": [],
+      "systemPermissionDenied": [
+        {
+          "tool": "SendMessage",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 4,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "Using `code-reviewer` for STEP 1, as explicitly instructed by the task.\n\nI'll launch the code-reviewer agent and fetch the SendMessage tool schema in parallel since they're independent.[{\"type\":\"text\",\"text\":\"Reply with the single word ALPHA. Nothing else.\"}][{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01DRvYbtTwGu6XBnZcbS9gSu\",\"content\":[{\"type\":\"tool_reference\",\"tool_name\":\"SendMessage\"}]}][{\"tool_use_id\":\"toolu_01LjZUjd6PzSWgmdyiJAbiDM\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"ALPHA\"},{\"type\":\"text\",\"text\":\"agentId: aff93a579c8216ecf (use SendMessage with to: 'aff93a579c8216ecf', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 19163\\ntool_uses: 0\\nduration_ms: 4325</usage>\"}]}]STEP 1 complete: `code-reviewer` replied ALPHA (agentId `aff93a579c8216ecf`). Now STEP 2.[{\"type\":\"tool_result\",\"content\":\"probe H: SendMessage is not on the delegation shortlist\",\"is_error\":true,\"tool_use_id\":\"toolu_01Q8h9SAA2MUGEJXYy6hzyUP\"}]STEP 1=ALPHA | STEP2=probe H: SendMessage is not on the delegation shortlist"
+    }
+  ]
+}

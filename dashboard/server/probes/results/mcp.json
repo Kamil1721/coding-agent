@@ -1,0 +1,9 @@
+{
+  "probe": "mcp",
+  "arm": "managedSettings.allowedMcpServers=[] + allowManagedMcpServersOnly",
+  "positive": true,
+  "negativeControl": true,
+  "verdict": "PASS",
+  "notes": "model=claude-haiku-4-5-20251001 mode=acceptEdits narrowedServerCount=0 narrowedServers=[] controlServerCount=13 controlServers=[plugin:playwright:playwright:pending,plugin:context7:context7:pending,plugin:sentry:sentry:pending,plugin:firebase:firebase:pending,plugin:vercel:vercel:pending,plugin:expo:expo:needs-auth,plugin:railway:railway:pending,plugin:neon:neon:pending,railway:pending,skyvern:pending,trigger:pending,RevenueCat:pending,github:pending] narrowedToolCount=30 controlToolCount=30 narrowedTimedOut=false controlTimedOut=false",
+  "runnerNote": "STEP-5 RUNNER NOTE: PASS on the server-list control (13 servers unnarrowed vs 0 narrowed), which is what the verdict rests on. DO NOT lean on toolCount for Task 3 Step 4: the owner MCP servers report status=\"pending\" in the init envelope, so their tools are not loaded when it is emitted — the canary run measured 39 control vs 30 narrowed, run 1 measured 30 vs 30, same server-list outcome both times. Server names/status are captured in notes for the deniedMcpServers fallback."
+}

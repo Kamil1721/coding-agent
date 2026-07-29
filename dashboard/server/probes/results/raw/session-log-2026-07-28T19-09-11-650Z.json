@@ -1,0 +1,359 @@
+{
+  "runStamp": "2026-07-28T19-09-11-650Z",
+  "ranAt": "2026-07-28T19:10:25.997Z",
+  "fixture": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8",
+  "sessions": [
+    {
+      "label": "B/policy",
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "rate_limit_event",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-haiku-4-5-20251001",
+        "permissionMode": "acceptEdits",
+        "mcpServers": [
+          {
+            "name": "plugin:playwright:playwright",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:context7:context7",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:sentry:sentry",
+            "status": "connected"
+          },
+          {
+            "name": "plugin:firebase:firebase",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:vercel:vercel",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:expo:expo",
+            "status": "needs-auth"
+          },
+          {
+            "name": "plugin:railway:railway",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:neon:neon",
+            "status": "pending"
+          },
+          {
+            "name": "railway",
+            "status": "pending"
+          },
+          {
+            "name": "skyvern",
+            "status": "pending"
+          },
+          {
+            "name": "trigger",
+            "status": "pending"
+          },
+          {
+            "name": "RevenueCat",
+            "status": "pending"
+          },
+          {
+            "name": "github",
+            "status": "pending"
+          }
+        ],
+        "toolCount": 39,
+        "agentCount": 154
+      },
+      "toolUses": [
+        {
+          "name": "Read",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/workspace/sealed/held-out.test.ts\"}"
+        },
+        {
+          "name": "Read",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/workspace/ordinary.txt\"}"
+        },
+        {
+          "name": "Read",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/sealed-outside/held-out.test.ts\"}"
+        },
+        {
+          "name": "Bash",
+          "input": "{\"command\":\"cat sealed/held-out.test.ts\",\"description\":\"Attempt to cat file in sealed directory\"}"
+        },
+        {
+          "name": "Bash",
+          "input": "{\"command\":\"cat ordinary-bash.txt\",\"description\":\"Attempt to cat ordinary-bash.txt file\"}"
+        }
+      ],
+      "taskStarts": [],
+      "otherTaskStarts": [],
+      "denials": [],
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 6,
+      "timedOut": false,
+      "stoppedEarly": false,
+      "error": null,
+      "transcriptExcerpt": "[{\"type\":\"tool_result\",\"content\":\"<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>\",\"is_error\":true,\"tool_use_id\":\"toolu_017Gj7UdGbsKV35xw2sr1s4U\"}][{\"tool_use_id\":\"toolu_0175yaPUrNDQXg3amFNuLrX2\",\"type\":\"tool_result\",\"content\":\"1\\tthis file is not sealed\\n2\\t\"}][{\"type\":\"tool_result\",\"content\":\"<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>\",\"is_error\":true,\"tool_use_id\":\"toolu_01P4G4MnVH1Q192L8e8GQj5K\"}][{\"type\":\"tool_result\",\"content\":\"Exit code 1\\ncat: sealed/held-out.test.ts: Operation not permitted\",\"is_error\":true,\"tool_use_id\":\"toolu_018bfApGwRU52v1zcys5TwqG\"}][{\"tool_use_id\":\"toolu_018YK3dGZLZdZQaHUpEuknqe\",\"type\":\"tool_result\",\"content\":\"ORDINARY-BASH-3d7b0e51\",\"is_error\":false}]## Results Summary\n\n| Step | Result | Output |\n|------|--------|--------|\n| **1. Read sealed/held-out.test.ts** | ❌ FAILED | File is in a directory that is denied by your permission settings. |\n| **2. Read ordinary.txt** | ✅ SUCCESS | `this file is not sealed` |\n| **3. Read ../sealed-outside/held-out.test.ts** | ❌ FAILED | File is in a directory that is denied by your permission settings. |\n| **4. cat sealed/held-out.test.ts** | ❌ FAILED | `cat: sealed/held-out.test.ts: Operation not permitted` |\n| **5. cat ordinary-bash.txt** | ✅ SUCCESS | `ORDINARY-BASH-3d7b0e51` |\n\n**Summary:** The sandbox is working as configured. Both the `Read` tool and `Bash` commands respect the sealed directory re…"
+    },
+    {
+      "label": "B/control-no-policy",
+      "envelopes": [
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_started",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/hook_response",
+        "system/init",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "rate_limit_event",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-haiku-4-5-20251001",
+        "permissionMode": "acceptEdits",
+        "mcpServers": [
+          {
+            "name": "plugin:playwright:playwright",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:context7:context7",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:sentry:sentry",
+            "status": "connected"
+          },
+          {
+            "name": "plugin:firebase:firebase",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:vercel:vercel",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:expo:expo",
+            "status": "needs-auth"
+          },
+          {
+            "name": "plugin:railway:railway",
+            "status": "pending"
+          },
+          {
+            "name": "plugin:neon:neon",
+            "status": "pending"
+          },
+          {
+            "name": "railway",
+            "status": "pending"
+          },
+          {
+            "name": "skyvern",
+            "status": "pending"
+          },
+          {
+            "name": "trigger",
+            "status": "pending"
+          },
+          {
+            "name": "RevenueCat",
+            "status": "pending"
+          },
+          {
+            "name": "github",
+            "status": "pending"
+          }
+        ],
+        "toolCount": 39,
+        "agentCount": 154
+      },
+      "toolUses": [
+        {
+          "name": "Read",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/workspace/sealed/held-out.test.ts\"}"
+        },
+        {
+          "name": "Read",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/workspace/ordinary.txt\"}"
+        },
+        {
+          "name": "Read",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/sealed-outside/held-out.test.ts\"}"
+        },
+        {
+          "name": "Bash",
+          "input": "{\"command\":\"cat /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/workspace/sealed/held-out.test.ts\"}"
+        },
+        {
+          "name": "Bash",
+          "input": "{\"command\":\"cat /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/workspace/ordinary-bash.txt\"}"
+        }
+      ],
+      "taskStarts": [],
+      "otherTaskStarts": [],
+      "denials": [
+        {
+          "tool": "Read",
+          "reasonType": "result",
+          "message": ""
+        }
+      ],
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 6,
+      "timedOut": false,
+      "stoppedEarly": false,
+      "error": null,
+      "transcriptExcerpt": "I'll execute these five steps in order, reporting results for each.[{\"tool_use_id\":\"toolu_01BvVpEUBDyA7T3ZJFmr866k\",\"type\":\"tool_result\",\"content\":\"1\\t// SEALED-SENTINEL-4f2a91c7\\n2\\t\"}][{\"tool_use_id\":\"toolu_01H82PhDw5vbkYHKC81wQMCH\",\"type\":\"tool_result\",\"content\":\"1\\tthis file is not sealed\\n2\\t\"}][{\"type\":\"tool_result\",\"content\":\"Claude requested permissions to read from /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/sealed-outside/held-out.test.ts, but you haven't granted it yet.\",\"is_error\":true,\"tool_use_id\":\"toolu_012rk8UHeoydUeVE6xQkwScT\"}][{\"tool_use_id\":\"toolu_01AFuxf3sU5u5efWcUpqBSLE\",\"type\":\"tool_result\",\"content\":\"// SEALED-SENTINEL-4f2a91c7\",\"is_error\":false}][{\"tool_use_id\":\"toolu_01GRqBQTWXoypR54vhLEhLxr\",\"type\":\"tool_result\",\"content\":\"ORDINARY-BASH-3d7b0e51\",\"is_error\":false}]## Summary of Results\n\nHere are the results for all five steps:\n\n### 1. **Read sealed/held-out.test.ts** — ✅ SUCCEEDED\n```\n// SEALED-SENTINEL-4f2a91c7\n```\n\n### 2. **Read ordinary.txt** — ✅ SUCCEEDED\n```\nthis file is not sealed\n```\n\n### 3. **Read ../sealed-outside/held-out.test.ts** — ❌ FAILED\nError: Claude requested permissions to read from `/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-z9ajh8/sealed-outside/held-out.test.ts`, but you haven't granted it yet.\n\n### 4. **cat sealed/held-out.test.ts** — ✅ SUCCEEDED\n```\n// SEALED-SENTINEL-4f2a91c7\n```\n\n### 5. **cat ordinary-bash.txt** — ✅ SUCCEEDED\n```\nORDINARY-BASH-3d7b0e51\n```\n\n---\n\n**Notable differe…"
+    }
+  ]
+}

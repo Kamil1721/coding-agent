@@ -1,0 +1,604 @@
+{
+  "probe": "I",
+  "ranAt": "2026-07-28T21:51:32.302Z",
+  "runStamp": "2026-07-28T21-50-22-997Z",
+  "sessionsSpent": 3,
+  "maxLiveSessions": 3,
+  "fixtures": [
+    "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s1-XQ9DEm",
+    "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk",
+    "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s3-hUSSKF"
+  ],
+  "sessions": [
+    {
+      "label": "I/S1-nonce",
+      "envelopes": [
+        "system/init",
+        "rate_limit_event",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 33,
+        "mcpServerCount": 0,
+        "mcpServers": [],
+        "mcpToolNamesInInit": 0,
+        "agentCount": 156,
+        "onDiskAgentOccurrences": 2,
+        "freshAgentOccurrences": 1,
+        "sessionId": "1b618d1c-3147-46ac-9f51-5d08d595bd59"
+      },
+      "registry": {
+        "total": 155,
+        "onDiskAgentEntries": [
+          {
+            "name": "code-reviewer",
+            "description": "PROBE-I-DESC-QX7 — on-disk-collision nonce instrument (probe I)",
+            "model": "haiku"
+          }
+        ],
+        "freshAgentEntries": [
+          {
+            "name": "zzz-probe-only-agent",
+            "description": "PROBE-I-DESC-QX7 — fresh-name nonce instrument (negative control for probe I)",
+            "model": "haiku"
+          }
+        ],
+        "onDiskEntryCarriesProbeDescription": true,
+        "freshEntryCarriesProbeDescription": true
+      },
+      "contextUsageAgents": {
+        "totalAgentRows": 150,
+        "rows": [
+          {
+            "agentType": "code-reviewer",
+            "source": "flagSettings",
+            "tokens": 46
+          },
+          {
+            "agentType": "zzz-probe-only-agent",
+            "source": "flagSettings",
+            "tokens": 53
+          }
+        ],
+        "note": "getContextUsage().agents[] = {agentType, source, tokens} (sdk.d.ts:3107). `source` is undocumented; recorded as corroboration only."
+      },
+      "toolUses": [
+        {
+          "id": "toolu_019QA63bLKdiKwtPngeT64fZ",
+          "name": "Agent",
+          "atMs": 14475,
+          "input": "{\"description\":\"probe i alpha\",\"prompt\":\"Use no tools at all. Follow your own operating instructions exactly and reply in a single short line.\",\"subagent_type\":\"zzz-probe-only-agent\",\"run_in_background\":false}"
+        },
+        {
+          "id": "toolu_015voMpoexMCGHG5YZpywMU4",
+          "name": "Agent",
+          "atMs": 21542,
+          "input": "{\"description\":\"probe i beta\",\"prompt\":\"Use no tools at all. Follow your own operating instructions exactly and reply in a single short line.\",\"subagent_type\":\"code-reviewer\",\"run_in_background\":false}"
+        }
+      ],
+      "toolResults": [
+        {
+          "toolUseId": "toolu_019QA63bLKdiKwtPngeT64fZ",
+          "isError": false,
+          "atMs": 19430,
+          "text": "PROBE-I-NONCE-4TQXZ7M2-FRESH-6BWLH8\nagentId: a5ab5a4598feab1c4 (use SendMessage with to: 'a5ab5a4598feab1c4', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 16992\ntool_uses: 0\nduration_ms: 4948</usage>"
+        },
+        {
+          "toolUseId": "toolu_015voMpoexMCGHG5YZpywMU4",
+          "isError": false,
+          "atMs": 24039,
+          "text": "Understood — replying without tools.\nagentId: a81e4baab2a4d24b1 (use SendMessage with to: 'a81e4baab2a4d24b1', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 12162\ntool_uses: 0\nduration_ms: 2495</usage>"
+        }
+      ],
+      "taskStarts": [
+        {
+          "subagentType": "zzz-probe-only-agent",
+          "taskType": "local_agent",
+          "taskId": "a5ab5a4598feab1c4",
+          "toolUseId": "toolu_019QA63bLKdiKwtPngeT64fZ",
+          "skipTranscript": false,
+          "atMs": 14484
+        },
+        {
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "taskId": "a81e4baab2a4d24b1",
+          "toolUseId": "toolu_015voMpoexMCGHG5YZpywMU4",
+          "skipTranscript": false,
+          "atMs": 21544
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "a5ab5a4598feab1c4",
+          "toolUseId": "toolu_019QA63bLKdiKwtPngeT64fZ",
+          "status": "completed",
+          "totalTokens": 16682,
+          "toolUses": 0,
+          "atMs": 19430
+        },
+        {
+          "taskId": "a81e4baab2a4d24b1",
+          "toolUseId": "toolu_015voMpoexMCGHG5YZpywMU4",
+          "status": "completed",
+          "totalTokens": 12155,
+          "toolUses": 0,
+          "atMs": 24038
+        }
+      ],
+      "backgroundLevels": [],
+      "hookState": {
+        "firings": [
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "subagentType": "zzz-probe-only-agent",
+            "runInBackground": false,
+            "modelParam": null
+          },
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "subagentType": "code-reviewer",
+            "runInBackground": false,
+            "modelParam": null
+          }
+        ],
+        "subagentStarts": [
+          {
+            "agentType": "zzz-probe-only-agent",
+            "agentId": "a5ab5a4598feab1c4"
+          },
+          {
+            "agentType": "code-reviewer",
+            "agentId": "a81e4baab2a4d24b1"
+          }
+        ],
+        "subagentStops": [
+          {
+            "agentType": "zzz-probe-only-agent",
+            "agentId": "a5ab5a4598feab1c4",
+            "transcriptPath": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s1-XQ9DEm-workspace/1b618d1c-3147-46ac-9f51-5d08d595bd59/subagents/agent-a5ab5a4598feab1c4.jsonl"
+          },
+          {
+            "agentType": "code-reviewer",
+            "agentId": "a81e4baab2a4d24b1",
+            "transcriptPath": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s1-XQ9DEm-workspace/1b618d1c-3147-46ac-9f51-5d08d595bd59/subagents/agent-a81e4baab2a4d24b1.jsonl"
+          }
+        ],
+        "consultationCount": 0,
+        "denials": []
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "[{\"type\":\"text\",\"text\":\"Use no tools at all. Follow your own operating instructions exactly and reply in a single short line.\"}][{\"tool_use_id\":\"toolu_019QA63bLKdiKwtPngeT64fZ\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"PROBE-I-NONCE-4TQXZ7M2-FRESH-6BWLH8\"},{\"type\":\"text\",\"text\":\"agentId: a5ab5a4598feab1c4 (use SendMessage with to: 'a5ab5a4598feab1c4', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 16992\\ntool_uses: 0\\nduration_ms: 4948</usage>\"}]}][{\"type\":\"text\",\"text\":\"Use no tools at all. Follow your own operating instructions exactly and reply in a single short line.\"}][{\"tool_use_id\":\"toolu_015voMpoexMCGHG5YZpywMU4\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Understood — replying without tools.\"},{\"type\":\"text\",\"text\":\"agentId: a81e4baab2a4d24b1 (use SendMessage with to: 'a81e4baab2a4d24b1', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 12162\\ntool_uses: 0\\nduration_ms: 2495</usage>\"}]}]DONE"
+    },
+    {
+      "label": "I/S2-maxTurns",
+      "envelopes": [
+        "system/init",
+        "rate_limit_event",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user",
+        "system/task_updated",
+        "system/task_notification",
+        "user",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 33,
+        "mcpServerCount": 0,
+        "mcpServers": [],
+        "mcpToolNamesInInit": 0,
+        "agentCount": 156,
+        "onDiskAgentOccurrences": 2,
+        "freshAgentOccurrences": 1,
+        "sessionId": "1fa38629-a3d2-40b4-80f7-3c1a5ee07c00"
+      },
+      "registry": null,
+      "contextUsageAgents": null,
+      "toolUses": [
+        {
+          "id": "toolu_016NWBU3QF3wkZFdLakoB4Yd",
+          "name": "Agent",
+          "atMs": 7074,
+          "input": "{\"subagent_type\":\"zzz-probe-only-agent\",\"description\":\"probe i alpha\",\"run_in_background\":false,\"prompt\":\"Read the file at /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-alpha.txt. It contains exactly one token. Then reply with that token, verbatim, and nothing else. Do not write, create or edit any file.\"}"
+        },
+        {
+          "id": "toolu_01S8WjGBqXpHcbWimGyZ7Bp4",
+          "name": "Read",
+          "atMs": 9443,
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-alpha.txt\"}"
+        },
+        {
+          "id": "toolu_01DuF3rejNrbaNzfMerwGNvq",
+          "name": "Agent",
+          "atMs": 12862,
+          "input": "{\"subagent_type\":\"code-reviewer\",\"description\":\"probe i beta\",\"run_in_background\":false,\"prompt\":\"Read the file at /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-beta.txt. It contains exactly one token. Then reply with that token, verbatim, and nothing else. Do not write, create or edit any file.\"}"
+        },
+        {
+          "id": "toolu_01LwkFXzga8ucWRoW3naa5BN",
+          "name": "Read",
+          "atMs": 15039,
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-beta.txt\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "toolUseId": "toolu_01S8WjGBqXpHcbWimGyZ7Bp4",
+          "isError": false,
+          "atMs": 9451,
+          "text": "1\tSEED-I-8HXQ2P5L-FRESH-DKR7\n2\t"
+        },
+        {
+          "toolUseId": "toolu_016NWBU3QF3wkZFdLakoB4Yd",
+          "isError": false,
+          "atMs": 9460,
+          "text": "(Subagent completed but returned no output.)\nagentId: ab7499c5f8336e8bc (use SendMessage with to: 'ab7499c5f8336e8bc', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 16830\ntool_uses: 1\nduration_ms: 2381</usage>"
+        },
+        {
+          "toolUseId": "toolu_01LwkFXzga8ucWRoW3naa5BN",
+          "isError": false,
+          "atMs": 15045,
+          "text": "1\tSEED-I-8HXQ2P5L-ONDISK-WV4M\n2\t"
+        },
+        {
+          "toolUseId": "toolu_01DuF3rejNrbaNzfMerwGNvq",
+          "isError": false,
+          "atMs": 16385,
+          "text": "SEED-I-8HXQ2P5L-ONDISK-WV4M\nagentId: a2851c82ce60f4698 (use SendMessage with to: 'a2851c82ce60f4698', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 12414\ntool_uses: 1\nduration_ms: 3522</usage>"
+        }
+      ],
+      "taskStarts": [
+        {
+          "subagentType": "zzz-probe-only-agent",
+          "taskType": "local_agent",
+          "taskId": "ab7499c5f8336e8bc",
+          "toolUseId": "toolu_016NWBU3QF3wkZFdLakoB4Yd",
+          "skipTranscript": false,
+          "atMs": 7079
+        },
+        {
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "taskId": "a2851c82ce60f4698",
+          "toolUseId": "toolu_01DuF3rejNrbaNzfMerwGNvq",
+          "skipTranscript": false,
+          "atMs": 12864
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "ab7499c5f8336e8bc",
+          "toolUseId": "toolu_016NWBU3QF3wkZFdLakoB4Yd",
+          "status": "completed",
+          "totalTokens": 16665,
+          "toolUses": 1,
+          "atMs": 9459
+        },
+        {
+          "taskId": "a2851c82ce60f4698",
+          "toolUseId": "toolu_01DuF3rejNrbaNzfMerwGNvq",
+          "status": "completed",
+          "totalTokens": 12389,
+          "toolUses": 1,
+          "atMs": 16385
+        }
+      ],
+      "backgroundLevels": [],
+      "hookState": {
+        "firings": [
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "subagentType": "zzz-probe-only-agent",
+            "runInBackground": false,
+            "modelParam": null
+          },
+          {
+            "toolName": "Read",
+            "firedInsideSubagent": true,
+            "insideAgentType": "zzz-probe-only-agent",
+            "subagentType": null,
+            "runInBackground": null,
+            "modelParam": null
+          },
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "subagentType": "code-reviewer",
+            "runInBackground": false,
+            "modelParam": null
+          },
+          {
+            "toolName": "Read",
+            "firedInsideSubagent": true,
+            "insideAgentType": "code-reviewer",
+            "subagentType": null,
+            "runInBackground": null,
+            "modelParam": null
+          }
+        ],
+        "subagentStarts": [
+          {
+            "agentType": "zzz-probe-only-agent",
+            "agentId": "ab7499c5f8336e8bc"
+          },
+          {
+            "agentType": "code-reviewer",
+            "agentId": "a2851c82ce60f4698"
+          }
+        ],
+        "subagentStops": [
+          {
+            "agentType": "code-reviewer",
+            "agentId": "a2851c82ce60f4698",
+            "transcriptPath": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s2-GTMGFk-workspace/1fa38629-a3d2-40b4-80f7-3c1a5ee07c00/subagents/agent-a2851c82ce60f4698.jsonl"
+          }
+        ],
+        "consultationCount": 0,
+        "denials": []
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "[{\"type\":\"text\",\"text\":\"Read the file at /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-alpha.txt. It contains exactly one token. Then reply with that token, verbatim, and nothing else. Do not write, create or edit any file.\"}][{\"tool_use_id\":\"toolu_01S8WjGBqXpHcbWimGyZ7Bp4\",\"type\":\"tool_result\",\"content\":\"1\\tSEED-I-8HXQ2P5L-FRESH-DKR7\\n2\\t\"}][{\"tool_use_id\":\"toolu_016NWBU3QF3wkZFdLakoB4Yd\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"(Subagent completed but returned no output.)\"},{\"type\":\"text\",\"text\":\"agentId: ab7499c5f8336e8bc (use SendMessage with to: 'ab7499c5f8336e8bc', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 16830\\ntool_uses: 1\\nduration_ms: 2381</usage>\"}]}][{\"type\":\"text\",\"text\":\"Read the file at /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-beta.txt. It contains exactly one token. Then reply with that token, verbatim, and nothing else. Do not write, create or edit any file.\"}][{\"tool_use_id\":\"toolu_01LwkFXzga8ucWRoW3naa5BN\",\"type\":\"tool_result\",\"content\":\"1\\tSEED-I-8HXQ2P5L-ONDISK-WV4M\\n2\\t\"}][{\"tool_use_id\":\"toolu_01DuF3rejNrbaNzfMerwGNvq\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"SEED-I-8HXQ2P5L-ONDISK-WV4M\"},{\"type\":\"text\",\"text\":\"agentId: a2851c82ce60f4698 (use SendMessage with to: 'a2851c82ce60f4698', summary: '<5-10 word recap>' to continue this agent)\\n<usage>subagent_tokens: 12414\\ntool_uses: 1\\nduration_ms: 3522</usage>\"}]}]Step 1 (`zzz-probe-only-agent`) returned no output.\n\nDONE"
+    },
+    {
+      "label": "I/S3-background",
+      "envelopes": [
+        "system/init",
+        "rate_limit_event",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_started",
+        "user",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_started",
+        "user",
+        "assistant",
+        "result/success",
+        "assistant",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_updated",
+        "system/task_notification",
+        "system/init",
+        "assistant",
+        "system/background_tasks_changed",
+        "system/task_updated",
+        "system/task_notification",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "result/success",
+        "system/init",
+        "assistant",
+        "result/success"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 33,
+        "mcpServerCount": 0,
+        "mcpServers": [],
+        "mcpToolNamesInInit": 0,
+        "agentCount": 156,
+        "onDiskAgentOccurrences": 2,
+        "freshAgentOccurrences": 1,
+        "sessionId": "705d3e99-7186-4c3e-b603-8ab8663f43d2"
+      },
+      "registry": null,
+      "contextUsageAgents": null,
+      "toolUses": [
+        {
+          "id": "toolu_01CDKp3bUPqFtmEHJQGEi2bc",
+          "name": "Agent",
+          "atMs": 11660,
+          "input": "{\"description\":\"probe i alpha\",\"subagent_type\":\"zzz-probe-only-agent\",\"prompt\":\"Use no tools at all. Reply with the single word READY and nothing else.\"}"
+        },
+        {
+          "id": "toolu_01H2PdidpiBboGX6RcRYZw1h",
+          "name": "Agent",
+          "atMs": 11848,
+          "input": "{\"description\":\"probe i beta\",\"subagent_type\":\"code-reviewer\",\"prompt\":\"Use no tools at all. Reply with the single word READY and nothing else.\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "toolUseId": "toolu_01CDKp3bUPqFtmEHJQGEi2bc",
+          "isError": false,
+          "atMs": 11673,
+          "text": "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: a82785dc0aaca37e5 (internal ID - do not mention to user. Use SendMessage with to: 'a82785dc0aaca37e5', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s3-hUSSKF-workspace/705d3e99-7186-4c3e-b603-8ab8663f43d2/tasks/a82785dc0aaca37e5.output\nDo NOT Read or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context. If the user asks for progress, say the agent is still running; you'll get a completion notification."
+        },
+        {
+          "toolUseId": "toolu_01H2PdidpiBboGX6RcRYZw1h",
+          "isError": false,
+          "atMs": 11852,
+          "text": "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: a3acc424587e8937a (internal ID - do not mention to user. Use SendMessage with to: 'a3acc424587e8937a', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s3-hUSSKF-workspace/705d3e99-7186-4c3e-b603-8ab8663f43d2/tasks/a3acc424587e8937a.output\nDo NOT Read or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context. If the user asks for progress, say the agent is still running; you'll get a completion notification."
+        }
+      ],
+      "taskStarts": [
+        {
+          "subagentType": "zzz-probe-only-agent",
+          "taskType": "local_agent",
+          "taskId": "a82785dc0aaca37e5",
+          "toolUseId": "toolu_01CDKp3bUPqFtmEHJQGEi2bc",
+          "skipTranscript": false,
+          "atMs": 11672
+        },
+        {
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "taskId": "a3acc424587e8937a",
+          "toolUseId": "toolu_01H2PdidpiBboGX6RcRYZw1h",
+          "skipTranscript": false,
+          "atMs": 11851
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "a82785dc0aaca37e5",
+          "toolUseId": "toolu_01CDKp3bUPqFtmEHJQGEi2bc",
+          "status": "completed",
+          "totalTokens": 15947,
+          "toolUses": 0,
+          "atMs": 13298
+        },
+        {
+          "taskId": "a3acc424587e8937a",
+          "toolUseId": "toolu_01H2PdidpiBboGX6RcRYZw1h",
+          "status": "completed",
+          "totalTokens": 12143,
+          "toolUses": 0,
+          "atMs": 13400
+        }
+      ],
+      "backgroundLevels": [
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "taskIds": [
+            "a82785dc0aaca37e5"
+          ],
+          "atMs": 11671
+        },
+        {
+          "count": 2,
+          "taskTypes": [
+            "local_agent",
+            "local_agent"
+          ],
+          "taskIds": [
+            "a82785dc0aaca37e5",
+            "a3acc424587e8937a"
+          ],
+          "atMs": 11851
+        },
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "taskIds": [
+            "a3acc424587e8937a"
+          ],
+          "atMs": 13297
+        },
+        {
+          "count": 0,
+          "taskTypes": [],
+          "taskIds": [],
+          "atMs": 13400
+        }
+      ],
+      "hookState": {
+        "firings": [
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "subagentType": "zzz-probe-only-agent",
+            "runInBackground": null,
+            "modelParam": null
+          },
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "subagentType": "code-reviewer",
+            "runInBackground": null,
+            "modelParam": null
+          }
+        ],
+        "subagentStarts": [
+          {
+            "agentType": "zzz-probe-only-agent",
+            "agentId": "a82785dc0aaca37e5"
+          },
+          {
+            "agentType": "code-reviewer",
+            "agentId": "a3acc424587e8937a"
+          }
+        ],
+        "subagentStops": [],
+        "consultationCount": 0,
+        "denials": []
+      },
+      "sawResult": true,
+      "resultSubtype": "success",
+      "numTurns": 1,
+      "timedOut": false,
+      "error": null,
+      "transcriptExcerpt": "[{\"tool_use_id\":\"toolu_01CDKp3bUPqFtmEHJQGEi2bc\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\\nagentId: a82785dc0aaca37e5 (internal ID - do not mention to user. Use SendMessage with to: 'a82785dc0aaca37e5', summary: '<5-10 word recap>' to continue this agent.)\\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s3-hUSSKF-workspace/705d3e99-7186-4c3e-b603-8ab8663f43d2/tasks/a82785dc0aaca37e5.output\\nDo NOT Read or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context. If the user asks for progress, say the agent is still running; you'll get a completion notification.\"}]}][{\"tool_use_id\":\"toolu_01H2PdidpiBboGX6RcRYZw1h\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\\nagentId: a3acc424587e8937a (internal ID - do not mention to user. Use SendMessage with to: 'a3acc424587e8937a', summary: '<5-10 word recap>' to continue this agent.)\\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s3-hUSSKF-workspace/705d3e99-7186-4c3e-b603-8ab8663f43d2/tasks/a3acc424587e8937a.output\\nDo NOT Read or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context. If the user asks for progress, say the agent is still running; you'll get a completion notification.\"}]}]DONEREADYREADYNo action needed — the d…"
+    }
+  ]
+}

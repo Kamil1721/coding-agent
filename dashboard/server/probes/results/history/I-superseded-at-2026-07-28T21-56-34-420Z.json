@@ -1,0 +1,666 @@
+{
+  "probe": "I",
+  "question": "Does Options.agents bind at all for an agent name that ALSO exists in ~/.claude/agents/? And if it does, do AgentDefinition.maxTurns and AgentDefinition.background bind with it — the two fields production relies on as a per-lane budget and a structural guard?",
+  "sdkVersion": "0.3.220",
+  "runStamp": "2026-07-28T21-50-22-997Z",
+  "model": "claude-sonnet-5",
+  "definitionModel": "haiku",
+  "onDiskAgent": "code-reviewer",
+  "freshAgent": "zzz-probe-only-agent",
+  "resultsDir": "/Users/kamilborzecki/Projects/coding-agent/dashboard/server/probes/results",
+  "whyThisExists": "Probe G2 measured per-agent disallowedTools:['mcp__*'] doing nothing (child at 620 tools, 589 mcp__, identical to an unnarrowed child). Two readings explain that and G2 could not separate them: 'Options.agents binds but disallowedTools is ignored' (spec_inert) versus 'Options.agents does not bind at all when a same-named agent exists on disk' (agents_does_not_bind). Under the second, background:false and maxTurns are decoration too.",
+  "typingsOnPrecedence": {
+    "verdict": "SILENT. sdk.d.ts 0.3.220 states no precedence between Options.agents and filesystem-discovered agents, in either direction.",
+    "quotedNegatives": [
+      "sdk.d.ts:1352-1367 — Options.agents doc is only: 'Programmatically define custom subagents that can be invoked via the Agent tool. Keys are agent names, values are agent definitions.' No mention of name collisions, merging, or filesystem agents.",
+      "sdk.d.ts:38-100 — the AgentDefinition type documents each field in isolation (maxTurns: 'Maximum number of agentic turns (API round-trips) before stopping'; background: 'Run this agent as a background task (non-blocking, fire-and-forget) when invoked'). It says nothing about what happens when a same-named agent exists on disk.",
+      "sdk-tools.d.ts:498 — the ONLY precedence sentence anywhere near this is on AgentInput.model: 'Takes precedence over the agent definition's model frontmatter.' It orders TOOL INPUT against DEFINITION, not Options against disk — and its word choice ('frontmatter') is the one place the typings acknowledge that a definition may come from a file at all.",
+      "sdk.mjs (transport argv builder) never pushes --agents; Options.agents travels in SDKControlInitializeRequest.agents (sdk.d.ts:3426), so the managed-settings --agents rejection documented at sdk.d.ts:6092 governs a DIFFERENT channel and does not speak to this."
+    ]
+  },
+  "onDiskRoster": {
+    "dir": "/Users/kamilborzecki/.claude/agents",
+    "exists": true,
+    "count": 144,
+    "onDiskAgentPresent": true,
+    "freshAgentPresent": false,
+    "onDiskAgentFrontmatter": {
+      "file": "code-reviewer.md",
+      "description": "Use this agent when you need to conduct comprehensive code reviews focusing on code quality, security vulnerabilities, and best practices.",
+      "model": "claude-opus-5",
+      "tools": "Read, Write, Edit, Bash, Glob, Grep"
+    },
+    "duplicateNames": [],
+    "error": null
+  },
+  "agentsBinds": false,
+  "whichReading": "agents_does_not_bind",
+  "nonceEchoed": false,
+  "maxTurnsBinds": false,
+  "backgroundBinds": false,
+  "verdict": "FAIL",
+  "notes": "MEASURED — READING B. Options.agents DOES NOT BIND for a name that also exists in ~/.claude/agents/. The fresh name zzz-probe-only-agent, registered identically and existing ONLY in Options.agents, echoed its nonce (so the definition channel demonstrably works in this very session), while code-reviewer — same shape, same session, same parent prompt — did not. The MODEL channel says the same thing independently of the prompt: the fresh child ran on claude-haiku-4-5-20251001 (options-definition) while the colliding-name child ran on claude-opus-5[1m] (on-disk-frontmatter, via tool_result) — the model named in code-reviewer.md, not the one in Options.agents. The on-disk definition won on BOTH fields the disk file DECLARES. The per-agent report contract, which lives in the prompt, is therefore decoration for every shortlisted agent that exists on disk. AND THE TWO PRODUCTION FIELDS WERE MEASURED, NOT ENTAILED: maxTurnsBinds=false, backgroundBinds=false. Even the fields code-reviewer.md leaves undeclared did not survive, so nothing in the Options entry reaches the child. background:false and maxTurns are decoration for every shortlisted agent that exists on disk.",
+  "caveats": [
+    "REGISTRY/RUNTIME CONTRADICTION: supportedAgents() advertises THIS PROBE's description (and model 'haiku') for 'code-reviewer', and getContextUsage() sources it to the SDK tier — yet the child the engine actually ran did not carry this probe's prompt. A verification that stops at the roster will conclude the definition bound. It did not.",
+    "The engine's own init roster lists 'code-reviewer' 2 times: the disk entry and the Options entry coexist under one name rather than one replacing the other. That duplicate is the mechanism behind the split between what the roster advertises and what the runtime resolves.",
+    "The disk file declares only name/description/tools/model/color — it is SILENT on maxTurns and background. S2 and S3 were run anyway rather than entailed from the nonce, because a per-field merge that fills only the gaps the disk leaves would bind them.",
+    "maxTurns arm VOID — fresh: void-no-measurement (turns=null, usedATool=false, token=false); on-disk: not-bound (turns=2, usedATool=true, token=true). A child that never reached for a tool was not cut off at one round-trip; it declined the task, which measures nothing. maxTurnsBinds=false is NOT a measurement here.",
+    "background:false appears INERT FOR EVERYONE: both children were launched asynchronously despite the field. AgentInput documents background as the harness DEFAULT, so this says the definition field does not override it at all.",
+    "n=1 per arm. One model (claude-sonnet-5), one on-disk agent (code-reviewer), one fresh name, SDK 0.3.220. Nothing here generalises to other agents on the shortlist without re-running.",
+    "The session-level MCP lock (managedSettings.allowedMcpServers:[] + allowManagedMcpServersOnly) is ON in every arm, held byte-identical. It is orthogonal to agent binding but it is not production-absent, and without it no arm finishes inside 90 s."
+  ],
+  "negativeControlHeld": true,
+  "modelProvenanceOnDisk": "on-disk-frontmatter",
+  "modelProvenanceFresh": "options-definition",
+  "registryVsRuntime": {
+    "initRosterOccurrencesOfOnDiskName": 2,
+    "initRosterOccurrencesOfFreshName": 1,
+    "supportedAgentsAdvertisesProbeDescription": true,
+    "supportedAgentsAdvertisedModel": "haiku",
+    "contextUsageSourceRows": [
+      {
+        "agentType": "code-reviewer",
+        "source": "flagSettings",
+        "tokens": 46
+      },
+      {
+        "agentType": "zzz-probe-only-agent",
+        "source": "flagSettings",
+        "tokens": 53
+      }
+    ],
+    "runtimeModelForOnDiskName": "claude-opus-5[1m]",
+    "runtimeModelProvenance": "on-disk-frontmatter",
+    "runtimeModelVia": "tool_result",
+    "onDiskFrontmatterModel": "claude-opus-5",
+    "contradiction": true
+  },
+  "maxTurnsClassification": {
+    "fresh": "void-no-measurement",
+    "onDisk": "not-bound"
+  },
+  "backgroundNeedsDefaultControl": false,
+  "s1": {
+    "label": "I/S1-nonce",
+    "attempt": 1,
+    "fixtureRoot": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s1-XQ9DEm",
+    "init": {
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "toolCount": 33,
+      "mcpServerCount": 0,
+      "mcpServers": [],
+      "mcpToolNamesInInit": 0,
+      "agentCount": 156,
+      "onDiskAgentOccurrences": 2,
+      "freshAgentOccurrences": 1,
+      "sessionId": "1b618d1c-3147-46ac-9f51-5d08d595bd59"
+    },
+    "registry": {
+      "total": 155,
+      "onDiskAgentEntries": [
+        {
+          "name": "code-reviewer",
+          "description": "PROBE-I-DESC-QX7 — on-disk-collision nonce instrument (probe I)",
+          "model": "haiku"
+        }
+      ],
+      "freshAgentEntries": [
+        {
+          "name": "zzz-probe-only-agent",
+          "description": "PROBE-I-DESC-QX7 — fresh-name nonce instrument (negative control for probe I)",
+          "model": "haiku"
+        }
+      ],
+      "onDiskEntryCarriesProbeDescription": true,
+      "freshEntryCarriesProbeDescription": true
+    },
+    "contextUsageAgents": {
+      "totalAgentRows": 150,
+      "rows": [
+        {
+          "agentType": "code-reviewer",
+          "source": "flagSettings",
+          "tokens": 46
+        },
+        {
+          "agentType": "zzz-probe-only-agent",
+          "source": "flagSettings",
+          "tokens": 53
+        }
+      ],
+      "note": "getContextUsage().agents[] = {agentType, source, tokens} (sdk.d.ts:3107). `source` is undocumented; recorded as corroboration only."
+    },
+    "delegations": [
+      {
+        "index": 0,
+        "toolUseId": "toolu_019QA63bLKdiKwtPngeT64fZ",
+        "toolName": "Agent",
+        "subagentType": "zzz-probe-only-agent",
+        "emittedRunInBackground": false,
+        "emittedModel": null,
+        "promptExcerpt": "Use no tools at all. Follow your own operating instructions exactly and reply in a single short line.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": true,
+        "textBackground": false,
+        "status": "completed",
+        "agentId": "a5ab5a4598feab1c4",
+        "agentTypeEchoed": "zzz-probe-only-agent",
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "totalToolUseCount": 0,
+        "iterationsCount": 1,
+        "replyText": "PROBE-I-NONCE-4TQXZ7M2-FRESH-6BWLH8",
+        "rawExcerpt": "PROBE-I-NONCE-4TQXZ7M2-FRESH-6BWLH8\nagentId: a5ab5a4598feab1c4 (use SendMessage with to: 'a5ab5a4598feab1c4', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 16992\ntool_uses: 0\nduration_ms: 4948</usage>"
+      },
+      {
+        "index": 1,
+        "toolUseId": "toolu_015voMpoexMCGHG5YZpywMU4",
+        "toolName": "Agent",
+        "subagentType": "code-reviewer",
+        "emittedRunInBackground": false,
+        "emittedModel": null,
+        "promptExcerpt": "Use no tools at all. Follow your own operating instructions exactly and reply in a single short line.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": true,
+        "textBackground": false,
+        "status": "completed",
+        "agentId": "a81e4baab2a4d24b1",
+        "agentTypeEchoed": "code-reviewer",
+        "resolvedModel": "claude-opus-5[1m]",
+        "totalToolUseCount": 0,
+        "iterationsCount": 1,
+        "replyText": "Understood — replying without tools.",
+        "rawExcerpt": "Understood — replying without tools.\nagentId: a81e4baab2a4d24b1 (use SendMessage with to: 'a81e4baab2a4d24b1', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 12162\ntool_uses: 0\nduration_ms: 2495</usage>"
+      }
+    ],
+    "fresh": {
+      "delegated": true,
+      "rosterRejected": false,
+      "nonceEchoed": true,
+      "crossNonce": false,
+      "resolvedModel": "claude-haiku-4-5-20251001",
+      "modelProvenance": "options-definition",
+      "modelVia": "tool_result",
+      "arm": {
+        "index": 0,
+        "toolUseId": "toolu_019QA63bLKdiKwtPngeT64fZ",
+        "toolName": "Agent",
+        "subagentType": "zzz-probe-only-agent",
+        "emittedRunInBackground": false,
+        "emittedModel": null,
+        "promptExcerpt": "Use no tools at all. Follow your own operating instructions exactly and reply in a single short line.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": true,
+        "textBackground": false,
+        "status": "completed",
+        "agentId": "a5ab5a4598feab1c4",
+        "agentTypeEchoed": "zzz-probe-only-agent",
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "totalToolUseCount": 0,
+        "iterationsCount": 1,
+        "replyText": "PROBE-I-NONCE-4TQXZ7M2-FRESH-6BWLH8",
+        "rawExcerpt": "PROBE-I-NONCE-4TQXZ7M2-FRESH-6BWLH8\nagentId: a5ab5a4598feab1c4 (use SendMessage with to: 'a5ab5a4598feab1c4', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 16992\ntool_uses: 0\nduration_ms: 4948</usage>"
+      }
+    },
+    "onDisk": {
+      "delegated": true,
+      "rosterRejected": false,
+      "nonceEchoed": false,
+      "crossNonce": false,
+      "resolvedModel": "claude-opus-5[1m]",
+      "modelProvenance": "on-disk-frontmatter",
+      "modelVia": "tool_result",
+      "arm": {
+        "index": 1,
+        "toolUseId": "toolu_015voMpoexMCGHG5YZpywMU4",
+        "toolName": "Agent",
+        "subagentType": "code-reviewer",
+        "emittedRunInBackground": false,
+        "emittedModel": null,
+        "promptExcerpt": "Use no tools at all. Follow your own operating instructions exactly and reply in a single short line.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": true,
+        "textBackground": false,
+        "status": "completed",
+        "agentId": "a81e4baab2a4d24b1",
+        "agentTypeEchoed": "code-reviewer",
+        "resolvedModel": "claude-opus-5[1m]",
+        "totalToolUseCount": 0,
+        "iterationsCount": 1,
+        "replyText": "Understood — replying without tools.",
+        "rawExcerpt": "Understood — replying without tools.\nagentId: a81e4baab2a4d24b1 (use SendMessage with to: 'a81e4baab2a4d24b1', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 12162\ntool_uses: 0\nduration_ms: 2495</usage>"
+      }
+    },
+    "childTurns": [
+      {
+        "agentType": "zzz-probe-only-agent",
+        "path": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s1-XQ9DEm-workspace/1b618d1c-3147-46ac-9f51-5d08d595bd59/subagents/agent-a5ab5a4598feab1c4.jsonl",
+        "exists": true,
+        "assistantRecords": 2,
+        "distinctAssistantMessages": 1,
+        "toolNames": [],
+        "models": [
+          "claude-haiku-4-5-20251001"
+        ],
+        "modelProvenance": "options-definition",
+        "replyExcerpt": "PROBE-I-NONCE-4TQXZ7M2-FRESH-6BWLH8"
+      },
+      {
+        "agentType": "code-reviewer",
+        "path": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s1-XQ9DEm-workspace/1b618d1c-3147-46ac-9f51-5d08d595bd59/subagents/agent-a81e4baab2a4d24b1.jsonl",
+        "exists": true,
+        "assistantRecords": 1,
+        "distinctAssistantMessages": 1,
+        "toolNames": [],
+        "models": [
+          "claude-opus-5"
+        ],
+        "modelProvenance": "on-disk-frontmatter",
+        "replyExcerpt": "Understood — replying without tools."
+      }
+    ],
+    "session": {
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "sessionId": "1b618d1c-3147-46ac-9f51-5d08d595bd59"
+    }
+  },
+  "s2": {
+    "label": "I/S2-maxTurns",
+    "attempt": 1,
+    "fixtureRoot": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk",
+    "init": {
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "toolCount": 33,
+      "mcpServerCount": 0,
+      "mcpServers": [],
+      "mcpToolNamesInInit": 0,
+      "agentCount": 156,
+      "onDiskAgentOccurrences": 2,
+      "freshAgentOccurrences": 1,
+      "sessionId": "1fa38629-a3d2-40b4-80f7-3c1a5ee07c00"
+    },
+    "delegations": [
+      {
+        "index": 0,
+        "toolUseId": "toolu_016NWBU3QF3wkZFdLakoB4Yd",
+        "toolName": "Agent",
+        "subagentType": "zzz-probe-only-agent",
+        "emittedRunInBackground": false,
+        "emittedModel": null,
+        "promptExcerpt": "Read the file at /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-alpha.txt. It contains exactly one token. Then reply with that token, verbatim, and nothing else. Do not write, create or edit any file.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": true,
+        "textBackground": false,
+        "status": "completed",
+        "agentId": "ab7499c5f8336e8bc",
+        "agentTypeEchoed": "zzz-probe-only-agent",
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "totalToolUseCount": 1,
+        "iterationsCount": 1,
+        "replyText": "",
+        "rawExcerpt": "(Subagent completed but returned no output.)\nagentId: ab7499c5f8336e8bc (use SendMessage with to: 'ab7499c5f8336e8bc', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 16830\ntool_uses: 1\nduration_ms: 2381</usage>"
+      },
+      {
+        "index": 1,
+        "toolUseId": "toolu_01DuF3rejNrbaNzfMerwGNvq",
+        "toolName": "Agent",
+        "subagentType": "code-reviewer",
+        "emittedRunInBackground": false,
+        "emittedModel": null,
+        "promptExcerpt": "Read the file at /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-beta.txt. It contains exactly one token. Then reply with that token, verbatim, and nothing else. Do not write, create or edit any file.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": true,
+        "textBackground": false,
+        "status": "completed",
+        "agentId": "a2851c82ce60f4698",
+        "agentTypeEchoed": "code-reviewer",
+        "resolvedModel": "claude-opus-5[1m]",
+        "totalToolUseCount": 1,
+        "iterationsCount": 1,
+        "replyText": "SEED-I-8HXQ2P5L-ONDISK-WV4M",
+        "rawExcerpt": "SEED-I-8HXQ2P5L-ONDISK-WV4M\nagentId: a2851c82ce60f4698 (use SendMessage with to: 'a2851c82ce60f4698', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 12414\ntool_uses: 1\nduration_ms: 3522</usage>"
+      }
+    ],
+    "fresh": {
+      "delegated": true,
+      "rosterRejected": false,
+      "completedTask": false,
+      "turnCount": null,
+      "usedATool": false,
+      "classification": "void-no-measurement",
+      "resolvedModel": "claude-haiku-4-5-20251001",
+      "modelProvenance": "options-definition",
+      "totalToolUseCount": 1,
+      "iterationsCount": 1,
+      "transcriptTurns": [],
+      "arm": {
+        "index": 0,
+        "toolUseId": "toolu_016NWBU3QF3wkZFdLakoB4Yd",
+        "toolName": "Agent",
+        "subagentType": "zzz-probe-only-agent",
+        "emittedRunInBackground": false,
+        "emittedModel": null,
+        "promptExcerpt": "Read the file at /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-alpha.txt. It contains exactly one token. Then reply with that token, verbatim, and nothing else. Do not write, create or edit any file.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": true,
+        "textBackground": false,
+        "status": "completed",
+        "agentId": "ab7499c5f8336e8bc",
+        "agentTypeEchoed": "zzz-probe-only-agent",
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "totalToolUseCount": 1,
+        "iterationsCount": 1,
+        "replyText": "",
+        "rawExcerpt": "(Subagent completed but returned no output.)\nagentId: ab7499c5f8336e8bc (use SendMessage with to: 'ab7499c5f8336e8bc', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 16830\ntool_uses: 1\nduration_ms: 2381</usage>"
+      }
+    },
+    "onDisk": {
+      "delegated": true,
+      "rosterRejected": false,
+      "completedTask": true,
+      "turnCount": 2,
+      "usedATool": true,
+      "classification": "not-bound",
+      "resolvedModel": "claude-opus-5[1m]",
+      "modelProvenance": "on-disk-frontmatter",
+      "totalToolUseCount": 1,
+      "iterationsCount": 1,
+      "transcriptTurns": [
+        {
+          "agentType": "code-reviewer",
+          "path": "/Users/kamilborzecki/.claude/projects/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s2-GTMGFk-workspace/1fa38629-a3d2-40b4-80f7-3c1a5ee07c00/subagents/agent-a2851c82ce60f4698.jsonl",
+          "exists": true,
+          "assistantRecords": 3,
+          "distinctAssistantMessages": 2,
+          "toolNames": [
+            "Read"
+          ],
+          "models": [
+            "claude-opus-5"
+          ],
+          "modelProvenance": "on-disk-frontmatter",
+          "replyExcerpt": "I'll read the file.SEED-I-8HXQ2P5L-ONDISK-WV4M"
+        }
+      ],
+      "arm": {
+        "index": 1,
+        "toolUseId": "toolu_01DuF3rejNrbaNzfMerwGNvq",
+        "toolName": "Agent",
+        "subagentType": "code-reviewer",
+        "emittedRunInBackground": false,
+        "emittedModel": null,
+        "promptExcerpt": "Read the file at /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s2-GTMGFk/workspace/seed-beta.txt. It contains exactly one token. Then reply with that token, verbatim, and nothing else. Do not write, create or edit any file.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": true,
+        "textBackground": false,
+        "status": "completed",
+        "agentId": "a2851c82ce60f4698",
+        "agentTypeEchoed": "code-reviewer",
+        "resolvedModel": "claude-opus-5[1m]",
+        "totalToolUseCount": 1,
+        "iterationsCount": 1,
+        "replyText": "SEED-I-8HXQ2P5L-ONDISK-WV4M",
+        "rawExcerpt": "SEED-I-8HXQ2P5L-ONDISK-WV4M\nagentId: a2851c82ce60f4698 (use SendMessage with to: 'a2851c82ce60f4698', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 12414\ntool_uses: 1\nduration_ms: 3522</usage>"
+      }
+    },
+    "session": {
+      "resultSubtype": "success",
+      "numTurns": 3,
+      "timedOut": false,
+      "error": null,
+      "sessionId": "1fa38629-a3d2-40b4-80f7-3c1a5ee07c00"
+    }
+  },
+  "s3": {
+    "label": "I/S3-background",
+    "attempt": 1,
+    "fixtureRoot": "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-i-s3-hUSSKF",
+    "init": {
+      "model": "claude-sonnet-5",
+      "permissionMode": "acceptEdits",
+      "toolCount": 33,
+      "mcpServerCount": 0,
+      "mcpServers": [],
+      "mcpToolNamesInInit": 0,
+      "agentCount": 156,
+      "onDiskAgentOccurrences": 2,
+      "freshAgentOccurrences": 1,
+      "sessionId": "705d3e99-7186-4c3e-b603-8ab8663f43d2"
+    },
+    "delegations": [
+      {
+        "index": 0,
+        "toolUseId": "toolu_01CDKp3bUPqFtmEHJQGEi2bc",
+        "toolName": "Agent",
+        "subagentType": "zzz-probe-only-agent",
+        "emittedRunInBackground": null,
+        "emittedModel": null,
+        "promptExcerpt": "Use no tools at all. Reply with the single word READY and nothing else.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": false,
+        "textBackground": false,
+        "status": "async_launched",
+        "agentId": "a82785dc0aaca37e5",
+        "agentTypeEchoed": null,
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "totalToolUseCount": null,
+        "iterationsCount": null,
+        "replyText": null,
+        "rawExcerpt": "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: a82785dc0aaca37e5 (internal ID - do not mention to user. Use SendMessage with to: 'a82785dc0aaca37e5', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s3-hUSSKF-workspace/705d3e99-7186-4c3e-b603-8ab8663f43d2/tasks/a82785dc0aaca37e5.output\nDo NOT Read or tai…"
+      },
+      {
+        "index": 1,
+        "toolUseId": "toolu_01H2PdidpiBboGX6RcRYZw1h",
+        "toolName": "Agent",
+        "subagentType": "code-reviewer",
+        "emittedRunInBackground": null,
+        "emittedModel": null,
+        "promptExcerpt": "Use no tools at all. Reply with the single word READY and nothing else.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": false,
+        "textBackground": false,
+        "status": "async_launched",
+        "agentId": "a3acc424587e8937a",
+        "agentTypeEchoed": null,
+        "resolvedModel": "claude-opus-5[1m]",
+        "totalToolUseCount": null,
+        "iterationsCount": null,
+        "replyText": null,
+        "rawExcerpt": "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: a3acc424587e8937a (internal ID - do not mention to user. Use SendMessage with to: 'a3acc424587e8937a', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s3-hUSSKF-workspace/705d3e99-7186-4c3e-b603-8ab8663f43d2/tasks/a3acc424587e8937a.output\nDo NOT Read or tai…"
+      }
+    ],
+    "fresh": {
+      "delegated": true,
+      "rosterRejected": false,
+      "emittedRunInBackground": null,
+      "voidBecauseParentSetIt": false,
+      "status": "async_launched",
+      "ranInBackground": true,
+      "ranInForeground": false,
+      "agentId": "a82785dc0aaca37e5",
+      "resolvedModel": "claude-haiku-4-5-20251001",
+      "modelProvenance": "options-definition",
+      "arm": {
+        "index": 0,
+        "toolUseId": "toolu_01CDKp3bUPqFtmEHJQGEi2bc",
+        "toolName": "Agent",
+        "subagentType": "zzz-probe-only-agent",
+        "emittedRunInBackground": null,
+        "emittedModel": null,
+        "promptExcerpt": "Use no tools at all. Reply with the single word READY and nothing else.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": false,
+        "textBackground": false,
+        "status": "async_launched",
+        "agentId": "a82785dc0aaca37e5",
+        "agentTypeEchoed": null,
+        "resolvedModel": "claude-haiku-4-5-20251001",
+        "totalToolUseCount": null,
+        "iterationsCount": null,
+        "replyText": null,
+        "rawExcerpt": "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: a82785dc0aaca37e5 (internal ID - do not mention to user. Use SendMessage with to: 'a82785dc0aaca37e5', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s3-hUSSKF-workspace/705d3e99-7186-4c3e-b603-8ab8663f43d2/tasks/a82785dc0aaca37e5.output\nDo NOT Read or tai…"
+      }
+    },
+    "onDisk": {
+      "delegated": true,
+      "rosterRejected": false,
+      "emittedRunInBackground": null,
+      "voidBecauseParentSetIt": false,
+      "status": "async_launched",
+      "ranInBackground": true,
+      "ranInForeground": false,
+      "agentId": "a3acc424587e8937a",
+      "resolvedModel": "claude-opus-5[1m]",
+      "modelProvenance": "on-disk-frontmatter",
+      "arm": {
+        "index": 1,
+        "toolUseId": "toolu_01H2PdidpiBboGX6RcRYZw1h",
+        "toolName": "Agent",
+        "subagentType": "code-reviewer",
+        "emittedRunInBackground": null,
+        "emittedModel": null,
+        "promptExcerpt": "Use no tools at all. Reply with the single word READY and nothing else.",
+        "resultPresent": true,
+        "isError": false,
+        "parseOk": true,
+        "structuredChannelPresent": true,
+        "textForeground": false,
+        "textBackground": false,
+        "status": "async_launched",
+        "agentId": "a3acc424587e8937a",
+        "agentTypeEchoed": null,
+        "resolvedModel": "claude-opus-5[1m]",
+        "totalToolUseCount": null,
+        "iterationsCount": null,
+        "replyText": null,
+        "rawExcerpt": "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: a3acc424587e8937a (internal ID - do not mention to user. Use SendMessage with to: 'a3acc424587e8937a', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: /private/tmp/claude-501/-private-var-folders-7t-1svm6vyx47d4fcys1gpxf5m80000gn-T-probe-i-s3-hUSSKF-workspace/705d3e99-7186-4c3e-b603-8ab8663f43d2/tasks/a3acc424587e8937a.output\nDo NOT Read or tai…"
+      }
+    },
+    "childTurns": [],
+    "corroboration": {
+      "backgroundLevels": [
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "taskIds": [
+            "a82785dc0aaca37e5"
+          ],
+          "atMs": 11671
+        },
+        {
+          "count": 2,
+          "taskTypes": [
+            "local_agent",
+            "local_agent"
+          ],
+          "taskIds": [
+            "a82785dc0aaca37e5",
+            "a3acc424587e8937a"
+          ],
+          "atMs": 11851
+        },
+        {
+          "count": 1,
+          "taskTypes": [
+            "local_agent"
+          ],
+          "taskIds": [
+            "a3acc424587e8937a"
+          ],
+          "atMs": 13297
+        },
+        {
+          "count": 0,
+          "taskTypes": [],
+          "taskIds": [],
+          "atMs": 13400
+        }
+      ],
+      "anyBackgroundTaskEverLive": true,
+      "taskStarts": [
+        {
+          "subagentType": "zzz-probe-only-agent",
+          "taskType": "local_agent",
+          "taskId": "a82785dc0aaca37e5",
+          "toolUseId": "toolu_01CDKp3bUPqFtmEHJQGEi2bc",
+          "skipTranscript": false,
+          "atMs": 11672
+        },
+        {
+          "subagentType": "code-reviewer",
+          "taskType": "local_agent",
+          "taskId": "a3acc424587e8937a",
+          "toolUseId": "toolu_01H2PdidpiBboGX6RcRYZw1h",
+          "skipTranscript": false,
+          "atMs": 11851
+        }
+      ],
+      "taskNotifications": [
+        {
+          "taskId": "a82785dc0aaca37e5",
+          "toolUseId": "toolu_01CDKp3bUPqFtmEHJQGEi2bc",
+          "status": "completed",
+          "totalTokens": 15947,
+          "toolUses": 0,
+          "atMs": 13298
+        },
+        {
+          "taskId": "a3acc424587e8937a",
+          "toolUseId": "toolu_01H2PdidpiBboGX6RcRYZw1h",
+          "status": "completed",
+          "totalTokens": 12143,
+          "toolUses": 0,
+          "atMs": 13400
+        }
+      ]
+    },
+    "session": {
+      "resultSubtype": "success",
+      "numTurns": 1,
+      "timedOut": false,
+      "error": null,
+      "sessionId": "705d3e99-7186-4c3e-b603-8ab8663f43d2"
+    }
+  },
+  "s4": null,
+  "sessionsSpent": 3
+}

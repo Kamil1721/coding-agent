@@ -1,0 +1,159 @@
+{
+  "ranAt": "2026-07-28T20:55:29.837Z",
+  "runStamp": "2026-07-28T20-50-27-821Z",
+  "sessionsSpent": 1,
+  "fixtures": [
+    "/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-peragent-QWwLyw"
+  ],
+  "sessions": [
+    {
+      "label": "G2/per-agent-only",
+      "envelopes": [
+        "system/init",
+        "rate_limit_event",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "system/thinking_tokens",
+        "assistant",
+        "assistant",
+        "assistant",
+        "system/task_started",
+        "user",
+        "system/task_progress",
+        "assistant",
+        "user"
+      ],
+      "init": {
+        "model": "claude-sonnet-5",
+        "permissionMode": "acceptEdits",
+        "toolCount": 42,
+        "toolNames": [
+          "Task",
+          "AskUserQuestion",
+          "Bash",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DesignSync",
+          "Edit",
+          "EnterPlanMode",
+          "EnterWorktree",
+          "ExitPlanMode",
+          "ExitWorktree",
+          "LSP",
+          "Monitor",
+          "NotebookEdit",
+          "PushNotification",
+          "Read",
+          "RemoteTrigger",
+          "ReportFindings",
+          "ScheduleWakeup",
+          "SendMessage",
+          "Skill",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "ToolSearch",
+          "WebFetch",
+          "WebSearch",
+          "Workflow",
+          "Write",
+          "mcp__plugin_sentry_sentry__analyze_issue_with_seer",
+          "mcp__plugin_sentry_sentry__execute_sentry_tool",
+          "mcp__plugin_sentry_sentry__find_organizations",
+          "mcp__plugin_sentry_sentry__find_projects",
+          "mcp__plugin_sentry_sentry__get_sentry_resource",
+          "mcp__plugin_sentry_sentry__search_events",
+          "mcp__plugin_sentry_sentry__search_issues",
+          "mcp__plugin_sentry_sentry__search_sentry_tools",
+          "mcp__plugin_sentry_sentry__update_issue"
+        ],
+        "mcpServers": [
+          "plugin:playwright:playwright:pending",
+          "plugin:context7:context7:pending",
+          "plugin:sentry:sentry:connected",
+          "plugin:firebase:firebase:pending",
+          "plugin:vercel:vercel:pending",
+          "plugin:expo:expo:needs-auth",
+          "plugin:railway:railway:pending",
+          "plugin:neon:neon:pending",
+          "railway:pending",
+          "skyvern:pending",
+          "trigger:pending",
+          "RevenueCat:pending",
+          "github:pending",
+          "claude.ai Supabase:pending",
+          "claude.ai Sentry:pending",
+          "claude.ai Granola:pending",
+          "claude.ai GoogleDrive:pending",
+          "claude.ai Uber:needs-auth",
+          "claude.ai PDF Viewer:pending",
+          "claude.ai Context7:pending",
+          "claude.ai Gmail:pending",
+          "claude.ai Notion:pending"
+        ],
+        "mcpServerCount": 22,
+        "agentCount": 155,
+        "sessionId": "ad991a9a-ddb1-421a-888c-2dbc6ab8b4c9"
+      },
+      "parentToolUses": [
+        {
+          "name": "Agent",
+          "input": "{\"description\":\"Tool-surface census probe\",\"subagent_type\":\"trigger-dev-expert\",\"prompt\":\"Do NOT do any Trigger.dev work and do not write any code. This is a tool-surface census, and you are the instrument. Do exactly these three steps, in order.\\n(1) Write a file at the absolute path /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-peragent-QWwLyw/workspace/peragent-child-tool-cen…"
+        },
+        {
+          "name": "Write",
+          "input": "{\"file_path\":\"/private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-peragent-QWwLyw/workspace/peragent-child-tool-census.txt\",\"content\":\"Agent\\nBash\\nEdit\\nRead\\nReportFindings\\nSkill\\nToolSearch\\nWrite\\nadvisor\\nCronCreate\\nCronDelete\\nCronList\\nDesignSync\\nEnterWorktree\\nExitWorktree\\nLSP\\nListMcpResourcesTool\\nMonitor\\nNotebookEdit\\nPushNotification\\nReadMcpResourceDirTool\\nReadMcpRe…"
+        }
+      ],
+      "subagentStarts": [
+        "trigger-dev-expert"
+      ],
+      "skipTranscriptSubagentStarts": [],
+      "otherTaskStarts": [],
+      "hookState": {
+        "firings": [
+          {
+            "toolName": "Agent",
+            "firedInsideSubagent": false,
+            "insideAgentType": null,
+            "isMcp": false,
+            "atMs": 1785271850271
+          },
+          {
+            "toolName": "Write",
+            "firedInsideSubagent": true,
+            "insideAgentType": "trigger-dev-expert",
+            "isMcp": false,
+            "atMs": 1785272105815
+          }
+        ],
+        "subagentStarts": [
+          {
+            "agentType": "trigger-dev-expert",
+            "agentId": "present"
+          }
+        ],
+        "subagentStops": [],
+        "canUseToolConsultations": [],
+        "mcpDeniedByHook": [],
+        "mcpDeniedByCanUseTool": []
+      },
+      "sawResult": false,
+      "resultSubtype": null,
+      "numTurns": null,
+      "timedOut": true,
+      "error": null,
+      "transcriptExcerpt": "Using `trigger-dev-expert` for step 1 as explicitly instructed (verbatim prompt, no Trigger.dev work involved — this is a tool-surface census).[{\"type\":\"text\",\"text\":\"Do NOT do any Trigger.dev work and do not write any code. This is a tool-surface census, and you are the instrument. Do exactly these three steps, in order.\\n(1) Write a file at the absolute path /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-peragent-QWwLyw/workspace/peragent-child-tool-census.txt. Its contents must be the exact name of EVERY tool you have available, ONE NAME PER LINE, spelled exactly as the tool is named to you, with no bullets, no numbering, no commentary and no markdown. Do not summarise, do not abbreviate, do not truncate: if the list is long, write all of it anyway. After the last name, write these two lines and nothing after them:\\nTOTAL=<the number of tool names you listed above>\\nMCP_TOTAL=<how many of those names begin with mcp__>\\n(2) THEN, if and only if you actually have a tool whose name begins with mcp__, call exactly ONE of them, exactly once. Choose one whose name contains resolve or search or list or get. NEVER call one that creates, updates, deletes, deploys, writes, uploads, sends, or drives a browser. If the call is refused, that is expected: do not retry it, do not try a different tool, and do not work around it.\\n(3) Reply with ONE line, and nothing else: either `MCP_PRESENT=yes <the exact name you called>` or `MCP_PRESENT=no` if you have no tool whose name begins with mcp__.\"}][{\"tool_use_id\":\"toolu_01HRzA4y662hzR2wL77iPFav\",\"type\":\"tool_result\",\"content\":\"File created successfully at: /private/var/folders/7t/1svm6vyx47d4fcys1gpxf5m80000gn/T/probe-g-peragent-QWwLyw/workspace/peragent-child-tool-census.txt (file state is current in your context — no need to Read it back)\"}]"
+    }
+  ]
+}
