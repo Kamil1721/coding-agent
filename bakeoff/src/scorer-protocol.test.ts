@@ -21,12 +21,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AcceptanceCriterion, CriterionTier } from "./contracts.js";
 import {
+  GATE_IDS,
   TITLE_PATH_SEPARATOR,
   criterionNamedInTestTitle,
   isSuiteTestFailure,
+  parseContainerResult,
   triageSuiteFailures,
 } from "./scorer-protocol.js";
 import type { SuiteTestOutcome } from "./scorer-protocol.js";
+import { gateToCriterion } from "./scorer.js";
 
 const criterion = (id: string, tier: CriterionTier): AcceptanceCriterion => ({
   id,
@@ -185,3 +188,93 @@ test("a retried test that ends skipped is not a failure; one that ends unexpecte
   assert.equal(isSuiteTestFailure({ titlePath: "f › T-1", ok: false, statuses: ["skipped", "skipped"] }), false);
   assert.equal(isSuiteTestFailure({ titlePath: "f › T-1", ok: false, statuses: ["skipped", "unexpected"] }), true);
 });
+
+/* -------------------------------------------------------------------------
+ * `unknown`: the gate that did not run is not the gate that passed (#35)
+ *
+ * THIS IS THE WHOLE FIX, IN ONE ASSERTION. `unknown` only means anything
+ * because `gateToCriterion` refuses to call it a pass; if that mapping ever
+ * changes, `GATE:build` goes back to being switched off by a manifest that
+ * declared a build step absent, and every test above would stay green while it
+ * happened. The mapping is in scorer.ts and is READ here, never redefined.
+ * ---------------------------------------------------------------------- */
+
+test("an `unknown` gate is NOT a pass, and carries its reason into the criterion", () => {
+  const unknown = gateToCriterion({
+    id: GATE_IDS.build,
+    name: "build succeeds",
+    outcome: "unknown",
+    detail: "THE BUILD GATE WAS NEVER EVALUATED, and this is not a pass.",
+    durationMs: 0,
+    command: null,
+    exitCode: null,
+  });
+  assert.equal(unknown.passed, false, "an unevaluated BLOCKING gate must never score as passed");
+  assert.equal(unknown.tier, "BLOCKING");
+  assert.match(unknown.detail ?? "", /NEVER EVALUATED/, "a non-pass with no reason is unactionable");
+});
+
+test("`not_applicable` still passes, and still says why — the corroborated case", () => {
+  const na = gateToCriterion({
+    id: GATE_IDS.build,
+    name: "build succeeds",
+    outcome: "not_applicable",
+    detail: "the frozen manifest declares no build step, and the artefact agrees",
+    durationMs: 0,
+    command: null,
+    exitCode: null,
+  });
+  assert.equal(na.passed, true);
+  assert.match(na.detail ?? "", /^NOT APPLICABLE: /);
+});
+
+test("a container result carrying `unknown` parses; an invented outcome is refused", () => {
+  // The host and the image are built from the same tree, but they are shipped
+  // separately: an image built before this change emits no `unknown`, and a host
+  // built before it REFUSES one. That asymmetry is the safe direction and it is
+  // asserted here so the vocabulary cannot widen by accident.
+  const result = parseContainerResult(containerResultWithBuildOutcome("unknown"));
+  assert.equal(result.tier0[0]?.outcome, "unknown");
+  assert.throws(
+    () => parseContainerResult(containerResultWithBuildOutcome("skipped")),
+    /tier0\[0\]\.outcome is "skipped"/,
+  );
+});
+
+/** A minimal, valid container result whose single gate carries `outcome`. */
+function containerResultWithBuildOutcome(outcome: string): unknown {
+  return {
+    protocolVersion: 1,
+    ticketId: "T",
+    acceptanceSuiteSha256: "0".repeat(64),
+    startedAt: "2026-07-29T00:00:00.000Z",
+    endedAt: "2026-07-29T00:00:01.000Z",
+    nodeVersion: "v22.12.0",
+    playwrightVersion: "1.62.0",
+    tier0: [
+      {
+        id: GATE_IDS.build,
+        name: "build succeeds",
+        outcome,
+        detail: "d",
+        durationMs: 0,
+        command: null,
+        exitCode: null,
+      },
+    ],
+    exploitFindings: [],
+    suiteExecution: {
+      exitCode: 0,
+      durationMs: 1,
+      testsTotal: 1,
+      testsPassed: 1,
+      testsFailed: 0,
+      timedOut: false,
+      reportProblem: null,
+    },
+    criterionCoverage: [],
+    screenshots: [],
+    domFindings: [],
+    infrastructureErrors: [],
+  };
+}

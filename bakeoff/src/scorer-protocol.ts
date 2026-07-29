@@ -1006,12 +1006,26 @@ export function parseScorerPlan(raw: unknown): ScorerPlan {
 /**
  * Whether a gate could be evaluated at all.
  *
- * `not_applicable` is a first-class outcome and is NOT a pass in disguise: it
- * records that the frozen suite declared no such command or expectation. It can
- * only be reached when the SUITE declares absence, never when the artefact
- * happens to lack something.
+ * `not_applicable` records that the frozen suite declared no such command or
+ * expectation AND that the artefact agrees. `gateToCriterion` maps it to
+ * `passed: true`, so it is the one outcome that is a pass in disguise, and it
+ * must therefore be reachable only where the absence has been CORROBORATED.
+ *
+ * `unknown` is the outcome for the case that used to hide inside
+ * `not_applicable`: the suite declared the step absent and the artefact says
+ * otherwise, so the gate ran nothing and has established nothing. It is NOT a
+ * pass — `gateToCriterion` maps every outcome that is not `pass` and not
+ * `not_applicable` to `passed: false` — and it is not a `fail` either, because
+ * "this artefact does not build" is a claim no unevaluated gate has earned.
+ *
+ * MEASURED, defect #35, 2026-07-29: with a manifest declaring `build: null` —
+ * which the spec seat routinely infers for a static-site ticket
+ * (bakeoff/STATUS.md section 1.4) — `GATE:build` reported NOT APPLICABLE and
+ * therefore PASSED on the `broken-build` calibration artefact, whose entire
+ * purpose is to not compile. "No gate failed" and "the gate was never
+ * evaluated" looked identical in the failure list. They no longer do.
  */
-export type GateOutcome = "pass" | "fail" | "not_applicable";
+export type GateOutcome = "pass" | "fail" | "not_applicable" | "unknown";
 
 export interface Tier0GateResult {
   readonly id: string;
@@ -1167,8 +1181,8 @@ export function parseContainerResult(raw: unknown): ContainerResult {
   }
 
   const gateOutcome = (value: unknown, where: string): GateOutcome => {
-    if (value !== "pass" && value !== "fail" && value !== "not_applicable") {
-      fail(`${where}.outcome is ${JSON.stringify(value)}`, "Expected pass | fail | not_applicable.");
+    if (value !== "pass" && value !== "fail" && value !== "not_applicable" && value !== "unknown") {
+      fail(`${where}.outcome is ${JSON.stringify(value)}`, "Expected pass | fail | not_applicable | unknown.");
     }
     return value;
   };

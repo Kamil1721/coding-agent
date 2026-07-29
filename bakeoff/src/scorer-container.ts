@@ -66,6 +66,7 @@ import type {
 } from "./scorer-protocol.js";
 import {
   assertRunningInsideSealedContainer,
+  detectBuildEvidence,
   evaluateHttpExpectation,
   evaluateSqliteExpectation,
   loopbackOrigins,
@@ -80,7 +81,7 @@ import {
   startStaticServer,
   walkFiles,
 } from "./tier0.js";
-import type { DataExpectationResult, StartedProcess, StaticServer } from "./tier0.js";
+import type { DataExpectationResult, StartedProcess, StaticServer, WalkedFile } from "./tier0.js";
 
 /** Where the scorer's own pinned Playwright and config live inside the image. */
 const SCORER_HOME = "/opt/bakeoff-scorer";
@@ -171,6 +172,15 @@ function artifactEnv(origin: string | null): NodeJS.ProcessEnv {
 interface StaticScanOutput {
   readonly gates: readonly Tier0GateResult[];
   readonly exploitFindings: readonly ExploitFinding[];
+  /**
+   * Every file the scan walked.
+   *
+   * Handed on to the BUILD gate rather than re-walked there, so that "what was
+   * looked at for build evidence" and "what was scanned" are the same list with
+   * the same exclusions and the same cap. Two walks would be two scopes, and the
+   * second one's exclusions would drift silently.
+   */
+  readonly walkedFiles: readonly WalkedFile[];
 }
 
 function runStaticScans(plan: ScorerPlan, manifest: SuiteManifest): StaticScanOutput {
@@ -259,24 +269,75 @@ function runStaticScans(plan: ScorerPlan, manifest: SuiteManifest): StaticScanOu
     null,
   );
 
-  return { gates: [stubGate, exploitGate], exploitFindings: exploits };
+  return { gates: [stubGate, exploitGate], exploitFindings: exploits, walkedFiles: walk.files };
+}
+
+/**
+ * What `GATE:build` reports when the frozen manifest declares no build step.
+ *
+ * NOT A CONSTANT, and defect #35 is why it stopped being one. The manifest is
+ * authored by the spec seat from the ticket alone, before any implementation
+ * exists, and for a static-site ticket it routinely declares `build: null`. That
+ * declaration used to produce `not_applicable`, which `gateToCriterion` maps to
+ * `passed: true` — so a BLOCKING gate the owner reads as always-on was switched
+ * off by an inference about the TICKET, on artefacts that plainly do have a
+ * build. Measured on `broken-build`: NOT APPLICABLE, and the run's failure list
+ * showed nothing at all where the build gate should have been.
+ *
+ * The absence is now corroborated against the artefact. No evidence of a build
+ * step: `not_applicable`, as before, and the detail names what was searched for
+ * so the absence can be audited. Evidence of a build step: `unknown`, which is
+ * not a pass and appears in the failure list carrying its own reason — the gate
+ * did not run, and nothing may read that as the artefact having built.
+ *
+ * IT IS DELIBERATELY NOT `fail`. The gate compiled nothing; "this artefact does
+ * not build" is a claim it has not earned, and a gate that reports a conclusion
+ * it did not measure is the defect this whole change exists to remove.
+ */
+function absentBuildVerdict(artifactDir: string, walkedFiles: readonly WalkedFile[]): AbsentVerdict {
+  const evidence = detectBuildEvidence(artifactDir, walkedFiles);
+  if (evidence.found.length === 0) {
+    return {
+      outcome: "not_applicable",
+      detail:
+        "the frozen manifest declares no build step, and the artefact agrees: searched for " +
+        `${evidence.searchedFor.join("; ")} across ${walkedFiles.length} walked file(s) and found none. ` +
+        "A hand-written static site has nothing to build, which is the common case for this harness.",
+    };
+  }
+  return {
+    outcome: "unknown",
+    detail:
+      "THE BUILD GATE WAS NEVER EVALUATED, and this is not a pass. The frozen manifest declares no build " +
+      `step, but the artefact contradicts that declaration: ${evidence.found.slice(0, 10).join("; ")}` +
+      `${evidence.found.length > 10 ? ` (+${evidence.found.length - 10} more)` : ""}. ` +
+      "Nothing was compiled, so nothing here says the artefact builds. Either the suite's manifest is " +
+      "wrong for this ticket (the spec seat inferred a static site and the builder shipped a compiled " +
+      "one), or the artefact ships sources it never built. Both need a human; neither is a green build.",
+  };
 }
 
 /* -------------------------------------------------------------------------
  * Phase 2 — build, typecheck, lint
  * ---------------------------------------------------------------------- */
 
+/** What a gate reports when the frozen manifest declared its command absent. */
+interface AbsentVerdict {
+  readonly outcome: GateOutcome;
+  readonly detail: string;
+}
+
 async function runCommandGate(
   id: string,
   name: string,
   command: string | null,
-  absentMeans: string,
+  absent: AbsentVerdict,
   cwd: string,
   timeoutMs: number,
   plan: ScorerPlan,
 ): Promise<Tier0GateResult> {
   if (command === null) {
-    return gate(id, name, "not_applicable", absentMeans, 0, null, null);
+    return gate(id, name, absent.outcome, absent.detail, 0, null, null);
   }
   const result = await runCommand(command, cwd, timeoutMs, plan.limits.capturedOutputChars, artifactEnv(null));
   const ok = result.exitCode === 0 && !result.timedOut;
@@ -1765,24 +1826,35 @@ async function main(): Promise<number> {
   const statics = runStaticScans(plan, manifest);
   gates.push(...statics.gates);
 
-  const commandGates: readonly { readonly id: string; readonly name: string; readonly command: string | null; readonly absent: string }[] = [
+  const commandGates: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly command: string | null;
+    readonly absent: AbsentVerdict;
+  }[] = [
     {
       id: GATE_IDS.build,
       name: "build succeeds",
       command: composeBuildCommand(manifest),
-      absent: "the frozen manifest declares no build step",
+      absent: absentBuildVerdict(CONTAINER_PATHS.artifact, statics.walkedFiles),
     },
     {
       id: GATE_IDS.typecheck,
       name: "typecheck is clean",
       command: manifest.execution.typecheck,
-      absent: "the frozen manifest declares no typecheck step",
+      // TYPECHECK AND LINT ARE DELIBERATELY LEFT AS DECLARED-ABSENT-IS-ABSENT,
+      // and that is a known remaining gap rather than a decision that they are
+      // safe. A missing lint step is a genuine choice a project makes; a missing
+      // typecheck on a TypeScript artefact is the same hole as #35 one door
+      // down, and it is not closed here because no false-positive measurement
+      // has been taken for it. Recorded rather than quietly assumed benign.
+      absent: { outcome: "not_applicable", detail: "the frozen manifest declares no typecheck step" },
     },
     {
       id: GATE_IDS.lint,
       name: "lint is clean",
       command: manifest.execution.lint,
-      absent: "the frozen manifest declares no lint step",
+      absent: { outcome: "not_applicable", detail: "the frozen manifest declares no lint step" },
     },
   ];
   for (const spec of commandGates) {
