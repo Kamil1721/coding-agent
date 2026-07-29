@@ -222,11 +222,15 @@ test("the inferred count reported by the API is the number the verdict prints", 
 });
 
 test("tier-0 gates are excluded from the inferred count in BOTH the API number and the page", () => {
-  // The dashboard's own criteria table carries no `GATE:*` rows, so this shape
-  // arrives from the calibration path — where 12 of 22 entries under "What this
-  // run assumed" were gate ids on 2026-07-29. Filtering them out of the page
-  // while leaving them in the number would make the page drop 12 entries it had
-  // just claimed to have, so the two move together or not at all.
+  // MEASURED on the calibration path, where 12 of the 22 entries under "What
+  // this run assumed" were gate ids on 2026-07-29. Whether the DASHBOARD path
+  // can also carry `GATE:*` rows is NOT asserted here and was not verified:
+  // `RunStore.putCriteria` inserts whatever criterion set its caller hands it,
+  // and that caller lives in `orchestrator.ts`. So this is written as a property
+  // of the two functions rather than a claim about which runs reach them.
+  // Filtering gates out of the page while leaving them in the number would make
+  // the page drop 12 entries it had just claimed to have, so the two move
+  // together or not at all.
   const ticketed = [
     criterion("REQ-001", "The system shall present at least three project entries.", "FUNCTIONAL", "pass"),
     criterion("REQ-002", "The system shall expose a contact route that accepts a message.", "FUNCTIONAL", "pass"),

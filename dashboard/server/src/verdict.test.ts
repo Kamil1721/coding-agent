@@ -265,8 +265,9 @@ test("failingTier reports the STRICTEST tier carrying a finding, and null only o
 function sectionBody(markdown: string, heading: string): string {
   const start = markdown.indexOf(`## ${heading}`);
   assert.notEqual(start, -1, `the page has no "## ${heading}" section:\n${markdown}`);
-  const rest = markdown.slice(start + heading.length);
-  const end = rest.indexOf("\n## ");
+  const rest = markdown.slice(start);
+  // From index 1, so the section's own heading cannot terminate it.
+  const end = rest.indexOf("\n## ", 1);
   return end === -1 ? rest : rest.slice(0, end);
 }
 
