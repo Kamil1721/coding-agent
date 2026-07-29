@@ -63,6 +63,18 @@
  * A FIXTURE THAT GRADES WRONG IS A GRADER DEFECT, NOT A FIXTURE DEFECT.
  * Fix the grader. Editing a fixture to make calibration pass defeats the
  * entire point of having one.
+ *
+ * THAT RULE WAS QUALIFIED EXACTLY ONCE, ON 2026-07-29, BY THE OWNER. A fixture
+ * that does not satisfy its OWN TICKET is a third thing the rule above has no
+ * name for, and `correct-portfolio` was measured to be one twice over — see its
+ * `discriminates` below. It was RE-IMPLEMENTED against the ticket, and the
+ * distinction that keeps the rule intact is testable rather than rhetorical:
+ * the work was done against `PORTFOLIO_TICKET`, not against grader output, and
+ * NOT ONE CRITERION RESULT MOVED. All seven fixtures grade to identical rows
+ * before and after. An artefact edited to move a result would have moved one;
+ * that is the difference between re-implementing a control and tuning it, and
+ * it is why the before/after records are named in the comment on that fixture
+ * rather than summarised.
  */
 
 /** What the grader must conclude. `pass_with_notes` means QUALITY findings only. */
@@ -94,13 +106,48 @@ export const FIXTURES: readonly CalibrationFixture[] = [
   {
     name: "correct-portfolio",
     ticket: PORTFOLIO_TICKET,
+    // RE-MEASURED 2026-07-29 AFTER THE ARTEFACT WAS RE-IMPLEMENTED (image
+    // sha256:c98bad3a…7826b20), and these two values did NOT move — which is a
+    // measurement, not an omission. Before and after, this fixture grades
+    // `pass`, no failing tier, no failed gate, no failed criterion and no
+    // QUALITY finding: probes/results/calibration-4a.before-refix.json against
+    // calibration-4a.after-refix.json, seven fixtures each, identical rows on
+    // all seven. See `discriminates` below for why that identity is itself the
+    // most important thing this fixture measured today.
     expected: "pass",
     failingTier: null,
     discriminates:
-      "THE FALSE-FAIL CONTROL. A genuinely correct artefact: hero, three projects, " +
-      "a working contact form, and scroll-driven staggered reveals rather than a stock fade. " +
-      "If this fails, the grader is too strict and every real run will burn fix rounds it " +
-      "cannot win.",
+      "THE FALSE-FAIL CONTROL, RE-IMPLEMENTED 2026-07-29 — read that before treating this as the artefact " +
+      "the earlier write-ups measured. A genuinely correct artefact: hero, three projects, a working " +
+      "contact form, and scroll-driven staggered reveals rather than a stock fade. If this fails, the " +
+      "grader is too strict and every real run will burn fix rounds it cannot win. " +
+      "WHY IT WAS REWRITTEN, against this file's own rule that editing an artefact to move a result " +
+      "defeats the point of having one: two independent measurements found the artefact did not satisfy " +
+      "its OWN ticket. Calibration 4B's spec seat, authoring from the ticket alone, wrote a contact-form " +
+      "criterion wanting an email field, a MESSAGE field and a submit control — the artefact shipped an " +
+      "email input and a button and nothing else — and the container's own assertion recorded that the " +
+      "page rendered 189 characters of text across a hero, three projects and a contact section. The " +
+      "owner weighed the rule and decided that a false-fail control which is itself thin cannot do its " +
+      "job: it keeps producing reports that are half grader defect and half fixture defect with nothing " +
+      "downstream able to tell which. No criterion result was moved by the rewrite; see the tier comment " +
+      "above. " +
+      "WHAT CHANGED: index.html gained a labelled message textarea inside the contact form, and real copy " +
+      "in the hero, in each of the three project entries and in the contact section — the 1843 " +
+      "translation of Menabrea's Sketch, the seven notes signed A.A.L., the table of operations for the " +
+      "Bernoulli numbers in Note G, the Jacquard-loom line from Note A. style.css gained the form and " +
+      "prose rules that copy needs. app.js IS UNTOUCHED, deliberately: the confirmation is the same " +
+      "listener it always was. " +
+      "THE MESSAGE CONTROL IS NOT `required`, AND THAT IS MEASURED RATHER THAN CHOSEN TO SUIT THE " +
+      "GRADER: marking it required was run through the sealed container the same day and turned this " +
+      "fixture into fail/FUNCTIONAL on REQ-004, because Chromium's interactive validation fires before " +
+      "the submit event, so preventDefault never runs and the confirmation never unhides while held-out " +
+      "T-4 fills only the email field. " +
+      "AND THE FINDING THAT COSTS THE MOST: THE 4A SUITE CANNOT SEE ANY OF THIS. All seven fixtures grade " +
+      "to identical outcome, tier, failed gates, failed criteria and QUALITY rows before and after. The " +
+      "frozen suite asserts an email field, a submit control and a confirmation — nothing about a message " +
+      "field, and nothing about copy at all. The message control is guarded by " +
+      "correct-portfolio-artefact.test.ts, which was measured to fail ALONE. The COPY is guarded by " +
+      "NOTHING: revert it to one clause per project and every check in this tree stays green.",
   },
   {
     name: "missing-section",

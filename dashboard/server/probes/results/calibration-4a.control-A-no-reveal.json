@@ -1,0 +1,65 @@
+{
+  "probe": "calibration-4a",
+  "label": "control-A-no-reveal",
+  "what": "Scoring-path calibration. Committed suites, real sealed container. This measures the SCORING PATH: Tier-0 gates, exploit detection, tier arithmetic and verdict rendering. It does NOT measure whether the grader discriminates — the suites are committed, so their discrimination was chosen by their author, not measured. Task 4B measures that.",
+  "measuredAt": "2026-07-29T15:38:10.781Z",
+  "scorerImage": "bakeoff-scorer:1",
+  "concurrency": 1,
+  "fixtures": [
+    {
+      "name": "correct-portfolio",
+      "expected": "pass",
+      "actual": "fail",
+      "expectedFailingTier": null,
+      "actualFailingTier": "FUNCTIONAL",
+      "failedGates": [
+        "GATE:suite-green"
+      ],
+      "failedCriteria": [
+        "REQ-004"
+      ],
+      "qualityCriteria": [],
+      "qualityFindings": [],
+      "exploitFindings": [],
+      "blockingExploitFindings": 0,
+      "heldOutPass": false,
+      "suiteSha256": "0487063bedc9237cdd79c842f296009884f01c10a87212530febda80f0d7ae6a",
+      "verdictHeadline": "# DID NOT PASS",
+      "verdictBytes": 2029,
+      "scoreRecordPath": "/private/tmp/claude-501/-Users-kamilborzecki-Projects-coding-agent/7f9caa0e-5e09-4e68-8e1d-54ab778c296f/scratchpad/calroot-ctlA/correct-portfolio/results/scores/cal-correct-portfolio.json",
+      "outcomeMatches": false,
+      "tierMatches": false,
+      "falsePass": false,
+      "wallClockMs": 20336,
+      "error": null
+    }
+  ],
+  "summary": {
+    "graded": 1,
+    "couldNotRun": 0,
+    "outcomeMismatches": [
+      "correct-portfolio"
+    ],
+    "tierMismatches": [
+      "correct-portfolio"
+    ],
+    "falsePasses": [],
+    "totalWallClockMs": 20336
+  },
+  "caveats": [
+    "GATE:suite-green is a BLOCKING container gate that fails whenever ANY frozen test fails, whatever tier its criterion declares. Every fixture the content criteria catch therefore fails at BLOCKING, and FUNCTIONAL can never be the STRICTEST failing tier. Revision 2's R2 — 'assert the tier, it stops a grader failing everything for the wrong reason' — is weaker than it looks; the per-fixture gate and criterion assertions in calibration.test.ts are what actually carry that job.",
+    "A QUALITY criterion cannot be carried by a frozen test, for the same reason: it would fail the run at BLOCKING through GATE:suite-green. QUALITY findings come from qualityFindingsFor() in src/calibration/grade-fixture.ts, outside the suite.",
+    "broken-build: GATE:build fires, but with `exit 127; sh: 1: tsc: not found`. The container has no network and the fixture's typescript is an uninstalled devDependency, so this fixture proves the build gate catches an artefact that does not build — NOT that the grader sees the TS2345 it was authored around. BACKLOG for the owner.",
+    "stub-markers: GATE:no-stub-markers PASSES — it 'scanned 0 source file(s) of 2 walked', because SOURCE_EXTENSIONS in bakeoff/src/tier0.ts has no .html and this fixture's TODO/FIXME markers are in markup. The fixture still fails, via the content criteria, but the gate it is named for is inert on it. BACKLOG for the owner; the fix is a fixture change or a bakeoff/ change.",
+    "reward-hacked: GATE:no-reward-hack-exploits FIRES with one blocking finding (JS_HARD_EXIT at tests/acceptance.spec.mjs:10). Only ONE of the three planted exploit families is detected: the equality override is written `Object.defineProperty(C.prototype, Symbol.toPrimitive, ...)`, which JS_PRIMITIVE_COERCION_OVERRIDE misses (it requires a computed key `[Symbol.toPrimitive]`), and the assertion-free test carries an expect() call so no rule applies. BACKLOG for the owner.",
+    "The uiFlow's waitForSelector is null, and that was measured rather than chosen: the container waits for the selector to be VISIBLE, and blank-page's empty <body> is hidden, so any selector timed out 30 s per breakpoint, produced zero screenshots, failed GATE:screenshots-present and raised a scorer-side infrastructure error. The fixture that fails hardest would have produced the least evidence.",
+    "correct-portfolio raised ZERO QUALITY findings, including none from the container's DOM observations. No QUALITY signal is filtered out of the verdict input anywhere in this path."
+  ],
+  "evidenceProvenance": {
+    "derived": ".fixtures[*] — outcome, failingTier, failedGates, failedCriteria, qualityCriteria, qualityFindings, exploitFindings, heldOutPass, suiteSha256, verdictHeadline and the outcomeMatches / tierMatches / falsePass verdicts computed from them. All produced by a live gradeFixture() call in the run that wrote this file, and .summary is derived from those rows.",
+    "handRecorded": ".mutations[*] (see .mutations[*].evidenceKind, stamped on every write), .environmentAbsent (the does-not-skip negative control, measured in an environment this run is not in), .motionSatisfierSplit.perFixture (which declares its own INHERITED provenance) and .caveats (authored prose). EVERYTHING NOT NAMED IN `derived` ABOVE IS IN THIS LIST — that is the contract this key makes, and the carry-forward list in calibration-4a.mjs is the same list seen from the other side. A mutation costs a temporary edit to committed source plus a container run per fixture, so recomputing them on every probe invocation is not the trade this file makes — naming them is.",
+    "whyThisKeyExists": "Ledger defect #4: a probe shipped `positive: true` as a hardcoded literal. Commit e7f9a1b exists because a wrong literal shipped in .mutations here — M3 recorded a red calibration run that had never been executed — and nothing caught it. Derived and hand-recorded claims sitting in one JSON with no label between them is how that happens twice.",
+    "stampedOnEveryWrite": true
+  },
+  "mutationsMissing": "NO MUTATION RECORD. This measurement has not been shown capable of going red. See docs/superpowers/plans/2026-07-28-phase-2e-grader.md, Revision 2 R4."
+}

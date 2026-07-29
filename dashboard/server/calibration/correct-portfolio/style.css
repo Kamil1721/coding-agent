@@ -1,9 +1,22 @@
-:root{--ink:#141310;--paper:#f4f1ea;--accent:#8a5a2b}
+*{box-sizing:border-box}
+:root{--ink:#141310;--paper:#f4f1ea;--accent:#8a5a2b;--faint:rgba(20,19,16,.62)}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 Georgia,serif}
 .hero{min-height:70vh;display:grid;align-content:center;padding:0 8vw}
 .hero h1{font-size:clamp(3rem,9vw,7rem);margin:0;letter-spacing:-.03em}
+.eyebrow{margin:0 0 1.25rem;font-size:.8rem;letter-spacing:.18em;text-transform:uppercase;color:var(--accent)}
+.standfirst{margin:1.75rem 0 0;max-width:44ch;font-size:1.25rem;line-height:1.5;color:var(--faint)}
 main{padding:0 8vw 12vh}
+h2{font-size:.8rem;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin:0 0 .5rem}
 .project{border-top:1px solid rgba(20,19,16,.15);padding:2.5rem 0}
-#contact input{display:block;padding:.75rem;width:min(28rem,100%)}
+.project h3{margin:0;font-size:clamp(1.4rem,3vw,2rem);font-weight:400;letter-spacing:-.01em}
+.project .meta{margin:.4rem 0 1.25rem;font-size:.85rem;color:var(--faint)}
+.project p{margin:0;max-width:62ch}
+#contact{border-top:1px solid rgba(20,19,16,.15);padding:2.5rem 0 0}
+#contact > p{max-width:52ch}
+#contact label{display:block;margin:1.5rem 0 .4rem;font-size:.85rem;letter-spacing:.06em;color:var(--faint)}
+#contact input,#contact textarea{display:block;width:min(28rem,100%);padding:.75rem;font:inherit;color:inherit;background:transparent;border:1px solid rgba(20,19,16,.3)}
+#contact textarea{resize:vertical;min-height:7rem}
+#contact button{margin-top:1.5rem;padding:.75rem 2rem;font:inherit;color:var(--paper);background:var(--ink);border:0;cursor:pointer}
+#confirm{margin-top:1.5rem;color:var(--accent)}
 .reveal{opacity:0;transform:translateY(2rem)}
 .reveal.in{opacity:1;transform:none;transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}

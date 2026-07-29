@@ -1,17 +1,77 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8">
-<title>Ada Lovelace — Portfolio</title><link rel="stylesheet" href="style.css"></head>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ada Lovelace — Portfolio</title>
+<link rel="stylesheet" href="style.css">
+</head>
 <body>
-<header class="hero"><h1>Ada Lovelace</h1><p>Analytical engines, mostly.</p></header>
+
+<header class="hero">
+  <p class="eyebrow">1815–1852 · mathematician</p>
+  <h1>Ada Lovelace</h1>
+  <p class="standfirst">Translator and annotator of the Analytical Engine. In 1843 she published seven notes,
+    signed A.A.L., on a machine that was never built — and used them to argue that an engine directed by
+    punched cards could operate on symbols, and not on numbers alone.</p>
+</header>
+
 <main>
-<section id="projects"><h2>Projects</h2>
-<article class="project"><h3>Note G</h3><p>First published algorithm.</p></article>
-<article class="project"><h3>Bernoulli Engine</h3><p>Mechanical computation.</p></article>
-<article class="project"><h3>Difference Notes</h3><p>Annotations and translation.</p></article>
+
+<section id="projects">
+  <h2>Projects</h2>
+
+  <article class="project">
+    <h3>Note G — the Bernoulli programme</h3>
+    <p class="meta">Scientific Memoirs, volume III · 1843</p>
+    <p>A table of operations for computing the Bernoulli numbers on the Analytical Engine, set out as columns
+      of variables and the ordered operations that transform them, with the working cycles marked so that a
+      group of operations can be repeated. It is generally read as the first published algorithm written for a
+      machine to carry out. It is also the note in which she draws the boundary herself: the engine
+      “has no pretensions whatever to originate anything. It can do whatever we know how to order it to
+      perform.”</p>
+  </article>
+
+  <article class="project">
+    <h3>The translation of Menabrea's Sketch</h3>
+    <p class="meta">From the French of L. F. Menabrea · 1842–1843</p>
+    <p>Luigi Menabrea, who had heard Babbage lecture in Turin in 1840, published his account of the Analytical
+      Engine in French in 1842. She translated it into English and then appended notes A to G, which together
+      run to roughly three times the length of the paper they annotate — a commentary that became the primary
+      description of the machine in English. The work is signed A.A.L. rather than with her name.</p>
+  </article>
+
+  <article class="project">
+    <h3>Note A — the loom and the general machine</h3>
+    <p class="meta">On what separates the two engines · 1843</p>
+    <p>The note that divides the Difference Engine, which computes and tabulates by one fixed method, from the
+      Analytical Engine, which is directed by cards and can be given a different problem without being rebuilt:
+      “the Analytical Engine weaves algebraical patterns just as the Jacquard-loom weaves flowers and leaves.”
+      From there she reasons past arithmetic altogether — anything whose relations can be written as symbols,
+      the pitches of a harmony among them, could in principle be composed by the same machinery.</p>
+  </article>
 </section>
-<section id="contact"><h2>Contact</h2>
-<form id="contact-form"><label for="email">Email</label>
-<input id="email" name="email" type="email" required>
-<button type="submit">Send</button></form>
-<p id="confirm" hidden>Thanks — I will reply shortly.</p></section>
+
+<section id="contact">
+  <h2>Contact</h2>
+  <p>Enquiries about the notes, the diagram of operations, or the drawings for the engine itself are welcome.
+    Leave an address and a message and I will reply.</p>
+
+  <form id="contact-form">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" required>
+
+    <label for="message">Message</label>
+    <textarea id="message" name="message" rows="6"></textarea>
+
+    <button type="submit">Send</button>
+  </form>
+
+  <p id="confirm" hidden>Thanks — I will reply shortly.</p>
+</section>
+
 </main>
-<script src="app.js"></script></body></html>
+
+<script src="app.js"></script>
+</body>
+</html>
