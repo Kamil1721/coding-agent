@@ -28,7 +28,10 @@ must-not-fire clause that is decided by degree rather than by evidence. Two case
 fire, and one case that was expected to fire was killed by measurement. On this evidence
 **`VIS-F-EMPTY-FRAME` must not gate without DOM corroboration, and `VIS-F-EMPTY-REGION` cannot gate
 at all while the capture is a viewport crop.** Section 7 proposes the corroboration, which is cheap
-and preserves every true positive the design note claims.
+and preserves every true positive the design note claims. Two claims in an earlier draft of this note
+were weaker than they read and were corrected by further measurement rather than by softening: the
+vertical-rl mechanism now carries a flexless control (section 3.2), and the case 03 numbers were
+reproduced with docker's `--network=none` as the only denial (section 1).
 
 ---
 
@@ -55,10 +58,17 @@ field measures stddev 0.000 and 1 colour. Every geometric claim below is asserte
 not from markup order.
 
 **Deviations from the container, stated rather than hidden.** Masking was not applied, because no
-`maskSelectors` are meaningful on static fixtures and masking only ever removes pixels. The sealed
-network was enforced by the container itself for the runs quoted here; a local `route.abort(
-"connectionrefused")` simulation was used only while developing the cases, and agreed with the
-container.
+`maskSelectors` are meaningful on static fixtures and masking only ever removes pixels.
+
+**On how egress was denied, corrected after review.** The harness installs `page.route("**/*")` and
+aborts every non-same-origin request with `connectionrefused`, and that handler was active in the
+runs quoted in sections 2 to 6, so it fired before docker's `--network=none` ever got the chance. The
+provenance therefore needed proving rather than asserting. Case 03 was re-run in the same image with
+the route handler removed entirely (`NO_ROUTE=1`), leaving `--network=none` as the only denial:
+**2541 / 4468 / 4718 bytes, luminance stddev 0.000, one distinct colour, 928 characters of
+`innerText`**, identical to the routed run at every breakpoint. The blocked-host column is empty in
+that run only because the counter lives in the route handler that was removed; the container's own
+`requestfailed` listener is what records `sealed_network_request_blocked` in a real scoring run.
 
 ---
 
@@ -152,13 +162,34 @@ page returns 129,976 bytes with every column present and correct, and the contai
 Japanese properly (the image carries IPAGothic and IPAPGothic; no tofu).
 
 **Mechanism, measured rather than assumed.** For a `vertical-rl` document that overflows leftward the
-scroll range is negative: `document.scrollingElement.scrollLeft` reads 0 at the start of the text and
-cannot be set higher (assignments of 333, 666 and 1041 all read back 0). The viewport screenshot does
-not correspond to the layout viewport: at 768 the capture is a band shifted left of what the viewport
-shows, so the masthead and lead are missing and the contents are cropped in; at 1280, where the
-document does not overflow, the capture is correct. `clip: { x: -666 }` is rejected as "outside the
-resulting image" while `clip: { x: 0 }` returns the same blank 2541 bytes, so the blankness is in the
-viewport image itself and not in how it was cropped afterwards.
+scroll range is genuinely negative, which was checked rather than inferred: assigning `scrollLeft`
+values of `-100` and `-333` reads back `-100` and `-333`, `-666` clamps to `-603`, and any positive
+value reads back `0`. So `scrollLeft === 0` is the **start** of the text, the position the browser
+lands on, and the position at which `getBoundingClientRect()` puts the masthead inside the frame. The
+viewport screenshot does not correspond to that layout viewport: at 768 the capture is a band shifted
+left of what the viewport shows, so the masthead and lead are missing and the contents are cropped
+in; at 1280, where the document does not overflow, the capture is correct. `clip: { x: -666 }` is
+rejected as "outside the resulting image" while `clip: { x: 0 }` returns the same blank 2541 bytes,
+so the blankness is in the viewport image itself and not in how it was cropped afterwards.
+
+**Control on the mechanism, because the first version of this section attributed it too broadly.**
+The case page builds its columns with flexbox inside a `height: 100dvh` block, so "the capture is at
+fault" had to be separated from "this page is built oddly". A **flexless control** was written: one
+`writing-mode: vertical-rl` declaration on the root, ordinary paragraphs, no flex anywhere, enough
+copy that it overflows as far as the case does. Measured in the same image at 375x812:
+
+| flexless vertical control | value |
+|---|---|
+| `scrollWidth` / `clientWidth` | 1032 / 375 |
+| first child at `scrollLeft === 0` | viewport x 275 to 343, inside the frame |
+| **viewport capture** | **2538 bytes, blank** |
+| `fullPage` capture | 131,013 bytes, all columns present |
+
+An earlier, shorter version of the same control overflowed by only 9 pixels and captured correctly at
+73,503 bytes, which is what makes this a control rather than a coincidence: **the blank capture
+appears with the overflow, not with the flexbox.** The mechanism is generic to vertical-rl documents
+whose content extends past one viewport, and Control B in section 6 does not by itself establish it,
+because switching to `horizontal-tb` removes the overflow as well as the writing mode.
 
 This is the shape recorded as instance 10: an external tool accepting a request it does not honour
 the way the caller assumes. The design note states that "every capture is one viewport, at the top of
@@ -286,7 +317,8 @@ not to drop the entry. It is to require **DOM corroboration from data the scorer
 admit an empty-frame finding only when, for that flow and breakpoint,
 
 - `document.body.innerText.trim().length === 0`, **and**
-- no `sealed_network_request_blocked` was recorded for that flow.
+- no `sealed_network_request_blocked` was recorded for that flow (see the caveat below: this
+  second clause is builder-triggerable and I do not recommend shipping it).
 
 Checked against every artefact measured here: `blank-page` and `reward-hacked` have `innerText` 0 and
 no blocked host, so both still fire. Case 03 has 928 characters and a blocked host, so it does not.
@@ -294,6 +326,23 @@ Case 06 has 367 characters, so it does not. **The conjunction is strictly strong
 and so is not the subset shape rule 4 rejects: `innerText === 0` alone would fail a legitimately
 image-only page, and the pixel test alone fails cases 03 and 06. Neither half is sufficient; together
 they separate every artefact in this set correctly.
+
+**The two halves are not equally safe, and the difference has to be said where the change is
+proposed.** The `innerText` half cannot be gamed: a builder cannot make a page hollow and also make
+`innerText` non-empty without putting real rendered text on it. The blocked-host half **can** be
+gamed, and cheaply: one reference to one external host, a favicon, a font, a tracking pixel, disables
+`VIS-F-EMPTY-FRAME` for that flow permanently, including on a genuinely blank page. In a project that
+ships `GATE:no-reward-hack-exploits`, a gate condition that one line of markup switches off is a
+finding in itself. Three options, in the order I would take them:
+
+1. Ship the `innerText` half alone. It already kills case 06, and it kills case 03 too, since that
+   page has 928 characters. On the evidence here it is sufficient by itself.
+2. If the blocked-host half is kept, narrow it to hosts whose response would have painted into the
+   frame, which the scorer cannot currently determine from what it collects, and say so.
+3. If neither, leave `VIS-F-EMPTY-FRAME` shadow-locked with the other two.
+
+Option 1 is the recommendation. The blocked-host clause is written out here so that the next reader
+knows it was considered and why it was not taken.
 
 **7.2 `VIS-F-EMPTY-REGION` cannot gate while the capture is a viewport crop.** Section 2 is the whole
 argument: the correct page and the note's own hollow fixture differ by eleven bytes and zero on the
