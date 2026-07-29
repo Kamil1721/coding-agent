@@ -419,19 +419,41 @@ test("rule 3 reads spelled-out numbers: REQ-005's `>= 3` matches the word 'three
   assert.equal(numericAssertionDriftFindings(stripped).length, 1);
 });
 
-test("rule 3 skips the VISIBLE half, which is required to use different values", () => {
+/**
+ * Rule 3 reaches a test only when BOTH halves of "held out" agree: the FILE is
+ * under `holdout/` and the criterion names the test as HELD-OUT evidence. The
+ * two are near-redundant on a well-formed suite, so a single fixture cannot show
+ * either one is alive — an earlier version of this test passed with the file
+ * filter deleted, because the evidence filter alone was doing the work. Each
+ * conjunct therefore gets a fixture only IT can stop.
+ */
+test("rule 3 skips the VISIBLE half: the file-visibility conjunct is alive", () => {
+  // The criterion names T-13 as HELD-OUT evidence, so the evidence filter lets
+  // it through. Only the file's `visible/` path can keep this quiet.
   const draft = draftOf(
-    [criterion("REQ-002", "The site shall render no filler markers.", ["T-6"], ["T-31"])],
-    [
-      {
-        path: "visible/site-basics.spec.mjs",
-        source: VISIBLE_T30_T31,
-        testIds: ["T-30", "T-31"],
-        criterionIds: ["REQ-001", "REQ-002"],
-      },
-    ],
+    [criterion("REQ-012", REQ_012_STATEMENT, ["T-13"])],
+    [{ path: "visible/quality.spec.mjs", source: HOLDOUT_T13, testIds: ["T-13"], criterionIds: ["REQ-012"] }],
   );
   assert.deepEqual(numericAssertionDriftFindings(draft), []);
+});
+
+test("rule 3 skips the VISIBLE half: the evidence-half conjunct is alive", () => {
+  // The file is under `holdout/`, so the file filter lets it through. Only the
+  // criterion binding T-13 as VISIBLE evidence can keep this quiet.
+  const draft = draftOf(
+    [criterion("REQ-012", REQ_012_STATEMENT, ["T-99"], ["T-13"])],
+    [{ path: "holdout/quality.spec.mjs", source: HOLDOUT_T13, testIds: ["T-13"], criterionIds: ["REQ-012"] }],
+  );
+  assert.deepEqual(numericAssertionDriftFindings(draft), []);
+});
+
+test("POSITIVE CONTROL: both conjuncts satisfied and the same file fires", () => {
+  // Same source, same threshold, same statement as the two silent cases above.
+  const draft = draftOf(
+    [criterion("REQ-012", REQ_012_STATEMENT, ["T-13"])],
+    [{ path: "holdout/quality.spec.mjs", source: HOLDOUT_T13, testIds: ["T-13"], criterionIds: ["REQ-012"] }],
+  );
+  assert.equal(numericAssertionDriftFindings(draft).length, 1);
 });
 
 /* -------------------------------------------------------------------------
