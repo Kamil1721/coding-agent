@@ -1525,6 +1525,19 @@ export class Orchestrator {
       result.passed ? "info" : "warn",
       `the gate/fix loop stopped after ${String(result.attempts)} attempt(s): ${result.reason}`,
     );
+    // THE SAME TWO NUMBERS, ON THE ROW RATHER THAN ONLY IN THE LOG. A log line is
+    // not an answer to "what happened to the run that ran while I was asleep":
+    // `api-types.ts` reserves `gateAttempts` / `gateStopReason` for exactly this
+    // and said, until this line, that nothing wrote them — so every run reported
+    // `0` / `null` forever and a cron report would say "no loop outcome recorded"
+    // about every run it ever submitted.
+    //
+    // OUTSIDE THE `rateLimit === null` GUARD BELOW, DELIBERATELY. A rate-limited
+    // run has genuinely performed those attempts and genuinely stopped for that
+    // reason; the backlog is withheld because that run is not terminal, but the
+    // count is a fact about work already done. It is patched again when the run
+    // resumes and the loop runs to a new outcome.
+    this.#deps.store.updateRun(runId, { gateAttempts: result.attempts, gateStopReason: result.reason });
     // NOT ON A RATE LIMIT. That run is not terminal — the window drains and it
     // resumes — and a backlog headed "Stopped: cancelled" for a run that is
     // going to continue is a false statement about work that is not finished.

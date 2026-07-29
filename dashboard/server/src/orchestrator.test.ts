@@ -869,6 +869,54 @@ test("SEAM, MEASURED THROUGH THE REAL ORCHESTRATOR: the path the WIRE offers is 
   }
 });
 
+/* -------------------------------------------------------------------------
+ * PHASE 4 TASK 7 — the GATE/FIX loop's outcome reaches the run record.
+ *
+ * `api-types.ts` named the missing statement outright: until `#gateFixLoop` calls
+ * `store.updateRun(runId, {gateAttempts, gateStopReason})`, every run reports
+ * `0` / `null` forever — and an unattended run whose stop reason nobody can see
+ * is §12's "automated disappointment" with the disappointment hidden.
+ *
+ * THE ARM MEASURED HERE IS `infra`, AND THAT IS THE ONE THIS HARNESS CAN REACH.
+ * `designRun` gives the orchestrator an env with no `PATH`, so the sealed gate
+ * cannot find docker, `report.infraFailure` is non-null and the loop stops at
+ * attempt 1 before the green and cap branches. Reaching `green` / `retry-cap` /
+ * `not-converging` needs a gate that returns real `ContainerResult`s across
+ * attempts, and `#gatePhase` builds its gate from `createGate()` with no
+ * injection seam — so those arms would need either Docker or a new seam in
+ * orchestrator.ts, which is under concurrent edit. Stated rather than faked.
+ * ---------------------------------------------------------------------- */
+
+test("the run record carries the loop's attempts AND its stop reason, together", async () => {
+  const h = await designRun({ designLock: "auto" });
+  try {
+    const row = h.store.getRun(h.runId);
+    assert.equal(row?.gateAttempts, 1, "one gate run happened and the row says so");
+    assert.equal(row?.gateStopReason, "infra", "NOT null, and not `green`: the scorer could not run");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("THE PAIR MOVES TOGETHER — an attempt count of 0 next to a reason is a false pair", async () => {
+  // db.ts says these two move together or not at all. "not-converging after 0
+  // attempts" is a sentence about nothing, and `gateAttempts: 0` beside a reason
+  // is the same conflation `heldOutPass: null` exists to refuse. Written as one
+  // equivalence so BOTH half-patches are red: attempts without a reason, and a
+  // reason without attempts.
+  const h = await designRun({ designLock: "auto" });
+  try {
+    const row = h.store.getRun(h.runId);
+    assert.equal(
+      (row?.gateAttempts ?? 0) > 0,
+      row?.gateStopReason !== null,
+      "a run has either both halves of a loop outcome or neither",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("ONE SESSION ACROSS BOTH SEGMENTS — this is what keeps §6.1's edges real", async () => {
   const h = await designRun({ designLock: "auto" });
   try {
