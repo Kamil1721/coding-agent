@@ -4,6 +4,22 @@ dist/
 *.tsbuildinfo
 next-env.d.ts
 
+# PER-AGENT BUILD OUTPUTS. `dist/` above does NOT cover these.
+#
+# When several agents work this tree at once they cannot share `dist/`: one
+# agent's `npm run build` clobbers another's compiled tests mid-run, and the
+# failure looks like a test regression rather than a collision. The house
+# workaround is a private outDir per agent — `dist-2b`, `dist-calfix` — which
+# `dist/` does not match, so 3.4 MB of compiled output sat untracked and one
+# `git add -A` away from the repository.
+#
+# The name is not free-form: `contract-parity.test.ts` resolves the client
+# package relative to `import.meta.dirname` and documents that every outDir this
+# repo uses sits at `dashboard/server/<outDir>` for exactly that reason. So the
+# pattern is a SIBLING of `dist`, deliberately — a nested outDir would break
+# that test rather than be caught by this rule.
+dist-*/
+
 # Run state and artefacts — never in version control.
 dashboard/data/
 dashboard/runs/
