@@ -173,9 +173,12 @@ import { describeEnvironment, environmentFromInit } from "../build-environment.j
 import type { InitEnvelope, RunEnvironment } from "../build-environment.js";
 import { subscriptionSubprocessEnv } from "../subprocess-env.js";
 import { makeDelegationHook } from "./delegation-hook.js";
+import type { DelegationObserver } from "./delegation-hook.js";
+import { GraphProjection } from "../graph-emit.js";
 import { addTokens, zeroTokens } from "../tokens.js";
 import type { TokenTotals } from "../tokens.js";
 import type { BuildEventSink, BuildOutcome, BuildRequest, SubscriptionBuilder } from "./types.js";
+import type { GraphSseEvent } from "../api-types.js";
 
 /** Set to "1" to let a build run when the CLI sandbox cannot start. */
 export const ALLOW_UNSANDBOXED_ENV = "DASHBOARD_ALLOW_UNSANDBOXED_BUILDER";
@@ -711,7 +714,18 @@ function denyReadRule(root: string): string {
  * the guard and a different one to the CLI's own sandbox. Two layers that
  * disagree about what a path is are not two layers.
  */
-export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): Options {
+export function buildOptions(
+  request: BuildRequest,
+  allowUnsandboxed: boolean,
+  /**
+   * A bystander on the delegation hook, for the canvas. STRICTLY ADDITIVE and
+   * defaulted to null, so every existing call site — and every assertion about
+   * the object this returns — is unchanged. It cannot alter a decision: see
+   * `DelegationObserver`, which is invoked after the decision is computed, has
+   * its return value discarded, and is wrapped in a try/catch.
+   */
+  observeDelegation: DelegationObserver | null = null,
+): Options {
   const workspace = canonicaliseForDecision(request.workspace);
   const sealedRoots = request.sealedRoots.map((root) => canonicaliseForDecision(root));
 
@@ -751,7 +765,7 @@ export function buildOptions(request: BuildRequest, allowUnsandboxed: boolean): 
     // (the allow control billed 20639), and not one `background_tasks_changed`
     // envelope. See delegation-hook.ts for the rest of what was measured and
     // what was not.
-    hooks: { PreToolUse: [makeDelegationHook(request.allowedAgents)] },
+    hooks: { PreToolUse: [makeDelegationHook(request.allowedAgents, observeDelegation)] },
     // NO `agents:` KEY, AND ITS ABSENCE IS THE MEASUREMENT — NOT AN OVERSIGHT.
     //
     // This object carried one `AgentDefinition` per shortlisted agent until
@@ -1214,7 +1228,29 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
     let failure: string | null = null;
 
     const allowUnsandboxed = (request.env[ALLOW_UNSANDBOXED_ENV] ?? "").trim() === "1";
-    const options = buildOptions(request, allowUnsandboxed);
+    // THE CANVAS (spec §9.1). Node ids are minted HERE, on the server, and are
+    // short (`n1`, `n2`, …) because `redactForPersistence` collapses any 40+ char
+    // mixed-case-and-digit token to one identical literal — a canvas keyed on raw
+    // `task_id`s would merge two agents into one node with everything still
+    // rendering. Every branch below gets ONE call; the transforms live in
+    // graph-emit.ts so they are executed by tests rather than reviewed inside a
+    // loop that needs a real CLI.
+    const graph = new GraphProjection();
+    const emitGraph = (events: readonly GraphSseEvent[]): void => {
+      for (const event of events) sink.graph(event);
+    };
+    const options = buildOptions(request, allowUnsandboxed, (observation) => {
+      // A HOOK DECISION IS ATTRIBUTED, NOT KNOWN. The hook input carries no task
+      // identity at all, so `graph_hook` is always `attribution: "inferred"`.
+      emitGraph(
+        graph.hookDecision({
+          event: "PreToolUse",
+          tool: observation.tool,
+          decision: observation.decision,
+          reason: observation.reason,
+        }),
+      );
+    });
     // WHICH DELEGATED AGENTS ARE IN FLIGHT. Needed because `task_notification` —
     // the message saying an agent finished — does not carry `subagent_type`; only
     // `task_started` does. See build-context.ts.
@@ -1242,7 +1278,9 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
           // and it is the only statement of it: nothing later in the stream
           // repeats the inventory, so a capture missed here is a run whose
           // largest input is unrecoverable afterwards.
-          announceEnvironment(message, sink);
+          // THE INVENTORY, AND THE RUN'S OWN NODE. One call, and it is the only
+          // statement of the environment the stream ever makes.
+          emitGraph(graph.session(announceEnvironment(message, sink), request.allowedAgents));
           continue;
         }
 
@@ -1253,10 +1291,15 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
         // stream costs nothing and reaches the same code.
         if (message.type === "system" && message.subtype === "task_started") {
           lanes.started(message);
+          // A NODE IS MINTED EVEN WITHOUT `subagent_type`, where `LaneWatch`
+          // above skips. The two answer different questions: a LANE would be a
+          // guess, a NODE ID invents nothing.
+          emitGraph(graph.taskStarted(message));
           continue;
         }
 
         if (message.type === "system" && message.subtype === "task_notification") {
+          emitGraph(graph.taskFinished(message));
           // Null unless this completion left the agent's lane with nothing
           // running — see LaneWatch for what "a lane went quiet" can and cannot
           // mean when nothing says how many agents a lane will run.
@@ -1278,9 +1321,15 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
             sink.raw(`\n[assistant]\n${text}\n`);
             sink.log("info", truncate(text, 500));
           }
-          for (const use of toolUses(message)) {
+          const uses = toolUses(message);
+          for (const use of uses) {
             sink.tool(use.name, summariseToolInput(use.input));
           }
+          // ATTRIBUTED THROUGH `parent_tool_use_id`, WHICH IS THE ONLY IDENTITY
+          // AN ASSISTANT TURN CARRIES — there is no `task_id` on it. Null means
+          // the orchestrator's own turn and is EXACT; an id we never saw is a
+          // guess and says so.
+          emitGraph(graph.assistant(message, uses));
           continue;
         }
 

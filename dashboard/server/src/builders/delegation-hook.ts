@@ -303,7 +303,47 @@ const DELEGATION_TOOL_NAMES: ReadonlySet<string> = new Set(["Agent", "Task"]);
  * the turn, with a `stopReason`) and was not what was measured. Ship the
  * measured shape.
  */
-export function makeDelegationHook(allowedAgents: readonly string[]): HookCallbackMatcher {
+/**
+ * What the canvas is told about a decision this hook made.
+ *
+ * DECISIONS, NOT FIRINGS, and the difference is the whole design. The slot fires
+ * for EVERY tool call, Bash included (measured) — reporting each
+ * `{continue:true}` pass-through would double the run's event volume to say
+ * nothing, so the observer is called only where this hook actually decided
+ * something.
+ */
+export interface DelegationObservation {
+  readonly tool: string;
+  readonly decision: "allow" | "deny";
+  readonly reason: string;
+}
+
+/**
+ * A caller that wants to WATCH the guard. Optional, and strictly a bystander.
+ *
+ * IT NEVER PARTICIPATES IN THE DECISION. It is invoked AFTER the decision is
+ * computed and its return value is discarded, so no observer can widen, narrow
+ * or reword a denial — the exact denial strings are pinned by tests and reach
+ * the model verbatim as an `is_error` tool_result. Every call is wrapped in a
+ * try/catch by {@link makeDelegationHook}, because a hook that throws is an
+ * unhandled rejection on the SDK's own reader loop and takes the whole run down;
+ * instrumentation must never be able to do that.
+ */
+export type DelegationObserver = (observation: DelegationObservation) => void;
+
+export function makeDelegationHook(
+  allowedAgents: readonly string[],
+  observe: DelegationObserver | null = null,
+): HookCallbackMatcher {
+  /** Never throws, never returns a value the decision depends on. */
+  const note = (observation: DelegationObservation): void => {
+    if (observe === null) return;
+    try {
+      observe(observation);
+    } catch {
+      /* the record of the guard is not the guard */
+    }
+  };
   return {
     hooks: [
       // ANNOTATED WITH THE SDK'S OWN `SyncHookJSONOutput`, not with a loose
@@ -328,6 +368,11 @@ export function makeDelegationHook(allowedAgents: readonly string[]): HookCallba
         // `run_in_background: false`. It defaults to true" — false for this tool,
         // and delivered to the model verbatim.
         if (isAgentMessage(preToolUse.tool_name, toolInput)) {
+          note({
+            tool: preToolUse.tool_name,
+            decision: "deny",
+            reason: AGENT_MESSAGE_DENIAL,
+          });
           return {
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -347,6 +392,15 @@ export function makeDelegationHook(allowedAgents: readonly string[]): HookCallba
           return { continue: true };
         }
         const decision = decideDelegation(shaped, allowedAgents);
+        // OBSERVED AFTER THE DECISION, IN BOTH DIRECTIONS. An allowed delegation
+        // is the interesting half for the canvas — it is the moment an agent was
+        // permitted to exist — and it is the half a deny-only observer would
+        // have made invisible.
+        note({
+          tool: preToolUse.tool_name,
+          decision: decision.allow ? "allow" : "deny",
+          reason: decision.allow ? "" : decision.reason,
+        });
         if (decision.allow) return { continue: true };
         return {
           hookSpecificOutput: {

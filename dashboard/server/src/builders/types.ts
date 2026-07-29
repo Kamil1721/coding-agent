@@ -20,6 +20,7 @@
  */
 
 import type { AnthropicEffort } from "bakeoff/dist/contracts.js";
+import type { GraphSseEvent } from "../api-types.js";
 import type { CompactionRecord, ContextSample } from "../build-context.js";
 import type { RunEnvironment } from "../build-environment.js";
 import type { RateLimitState } from "../claude-common.js";
@@ -68,6 +69,23 @@ export interface BuildEventSink {
    * stream — so it is captured when it happens or not at all.
    */
   compaction(record: CompactionRecord): void;
+  /**
+   * One canvas event: an agent, its status, a tool, a skill, a hook decision, a
+   * result, or the run's inventory (spec §9.1).
+   *
+   * TYPED AS `GraphSseEvent`, WHICH IS DERIVED FROM `SseEvent` RATHER THAN
+   * WRITTEN OUT. A driver cannot post a `status` or a `tokens` event down this
+   * seam, and a new `graph_*` member widens it automatically — a hand-written
+   * list here would be a FOURTH declaration site of the union whose three
+   * existing ones are the reason the type-level guard in `use-run-stream.ts`
+   * exists at all.
+   *
+   * REQUIRED, NOT OPTIONAL, for the same reason `environment` is: an optional
+   * hook is one a driver can quietly not implement, and the canvas then renders
+   * empty with everything still compiling. The Codex driver has no equivalent
+   * messages and calls it never, which is honest — it delegates to nothing.
+   */
+  graph(event: GraphSseEvent): void;
   /** Raw transcript text for the run's build log file. */
   raw(text: string): void;
 }

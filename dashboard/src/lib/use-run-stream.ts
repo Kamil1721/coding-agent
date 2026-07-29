@@ -8,10 +8,15 @@ import {
   isStalledStatus,
   isTerminalStatus,
   type CriterionResult,
+  type GraphAgentState,
+  type GraphAttribution,
+  type GraphMcpServer,
+  type GraphSdkRef,
   type LogLevel,
   type RunDetail,
   type RunEvent,
   type RunEventType,
+  type RunLane,
   type RunStatus,
 } from "./api-types";
 import { KEY, apiUrl, swrFetcher } from "./api";
@@ -80,7 +85,7 @@ function traceReducer(state: TraceState, action: TraceAction): TraceState {
  * from this list is a type the UI never receives — silently, with a clean
  * compile, since `readonly RunEventType[]` is just as valid when short.
  */
-const EVENT_TYPES: readonly RunEventType[] = [
+const EVENT_TYPES = [
   "phase",
   "log",
   "tool",
@@ -90,7 +95,54 @@ const EVENT_TYPES: readonly RunEventType[] = [
   "rate_limit",
   "verdict",
   "status",
-];
+  // The orchestration canvas, spec §9.1. These seven are the reason the guard
+  // below exists: they were added to three hand-maintained declaration sites in
+  // one commit, and forgetting THIS one compiles clean on both sides.
+  "graph_agent",
+  "graph_agent_status",
+  "graph_tool",
+  "graph_skill",
+  "graph_hook",
+  "graph_result",
+  "graph_inventory",
+] as const satisfies readonly RunEventType[];
+
+/**
+ * THE GUARD. The SSE union is declared in THREE hand-maintained places — the
+ * server's `api-types.ts`, this package's `api-types.ts`, and the runtime array
+ * above — with nothing enforcing agreement. Widening one and forgetting another
+ * COMPILES CLEAN ON BOTH SIDES AND SILENTLY RENDERS AN EMPTY CANVAS, because a
+ * backend using NAMED SSE events only delivers what a listener is registered
+ * for, and `readonly RunEventType[]` is just as valid when it is short.
+ *
+ * `as const satisfies` above is what makes this checkable: it pins the array to
+ * its literal members while still requiring every one of them to be a real
+ * event type. `Missing` is then the set of union members nobody listens for, and
+ * the assignment fails to compile unless that set is empty.
+ *
+ * MUTATION-PROVEN, NOT ASSERTED. Executed twice on 2026-07-29:
+ *
+ *   - deleting `"graph_skill"` failed `npm run typecheck` with, verbatim,
+ *     `src/lib/use-run-stream.ts(134,7): error TS2322: Type 'true' is not
+ *     assignable to type 'never'.` — run twice over, because `incremental: true`
+ *     is set and a stale result would have proven nothing;
+ *   - deleting `"graph_inventory"` failed `npm run build`, not merely the type
+ *     check: `Type error: Type 'true' is not assignable to type 'never'` at this
+ *     line, `Next.js build worker exited with code: 1`.
+ *
+ * Both restored, and both clean again. A guard nobody has watched fail is not a
+ * guard.
+ *
+ * WHAT IT DOES NOT COVER, IN THESE WORDS: it ties THIS package's `RunEventType`
+ * to THIS array. Drift between the SERVER's union and this one stays unenforced —
+ * the two files cannot import each other — and remains the co-change rule stated
+ * at the top of `api-types.ts`. It also says nothing about `parseRunEvent`
+ * below, which drops an unhandled type at its `default` with no type error
+ * available, because `type` there is `string | null`.
+ */
+type Missing = Exclude<RunEventType, (typeof EVENT_TYPES)[number]>;
+const _noneMissing: Missing extends never ? true : never = true;
+void _noneMissing;
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
@@ -103,6 +155,78 @@ function asNumber(value: unknown): number | null {
 function asCount(value: unknown): number {
   const num = asNumber(value);
   return num === null || num < 0 ? 0 : num;
+}
+
+/* ---- canvas narrowing, spec §9.1 ---------------------------------- */
+
+/**
+ * These stay DUMB ON PURPOSE. Whether an emitter is honest about `attribution`
+ * is a server-side property and is asserted server-side, where it is
+ * mutation-provable; all this side can do is refuse a value that is not one of
+ * the two literals. An event that fails any check here is DROPPED, exactly like
+ * a `verdict` with no path: a graph event whose node or attribution cannot be
+ * read is not a weaker graph event, it is not one.
+ */
+function asAttribution(value: unknown): GraphAttribution | null {
+  return value === "exact" || value === "inferred" ? value : null;
+}
+
+function asAgentState(value: unknown): GraphAgentState | null {
+  return value === "running" || value === "completed" || value === "failed" || value === "stopped"
+    ? value
+    : null;
+}
+
+function asLane(value: unknown): RunLane | null {
+  return value === "spec" ||
+    value === "design" ||
+    value === "build" ||
+    value === "review" ||
+    value === "gate"
+    ? value
+    : null;
+}
+
+/** A node id, or null. Empty is null: "" names no node. */
+function asNode(value: unknown): string | null {
+  const text = asString(value);
+  return text === null || text.length === 0 ? null : text;
+}
+
+/** Null when the CLI reported nothing. NEVER 0, which would be a claim. */
+function asNullableNumber(value: unknown): number | null {
+  return asNumber(value);
+}
+
+function asStrings(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    const text = asString(item);
+    if (text !== null) out.push(text);
+  }
+  return out;
+}
+
+function asSdkRef(value: unknown): GraphSdkRef | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const taskId = asString(record["taskId"]);
+  if (taskId === null) return null;
+  return { taskId, toolUseId: asString(record["toolUseId"]) };
+}
+
+function asMcpServers(value: unknown): readonly GraphMcpServer[] {
+  if (!Array.isArray(value)) return [];
+  const out: GraphMcpServer[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) continue;
+    const record = item as Record<string, unknown>;
+    const name = asString(record["name"]);
+    if (name === null) continue;
+    out.push({ name, status: asString(record["status"]) ?? "" });
+  }
+  return out;
 }
 
 /**
@@ -194,6 +318,111 @@ export function parseRunEvent(
       if (status === null || !isRunStatus(status)) return null;
       return { type: "status", status };
     }
+
+    /* ---- the canvas, spec §9.1 -------------------------------------- */
+    //
+    // THESE CASES ARE LOAD-BEARING AND NOTHING TYPE-CHECKS THEIR ABSENCE. The
+    // guard at `EVENT_TYPES` proves a LISTENER is registered for every union
+    // member; it says nothing about this switch, whose `default` returns null
+    // and whose `type` is `string | null`, so no exhaustiveness check is
+    // available. A `graph_*` event with no case here arrives, is dropped, and
+    // the canvas renders empty with a clean compile — the exact failure the
+    // guard exists for, one function further down.
+    case "graph_agent": {
+      const node = asNode(record["node"]);
+      const attribution = asAttribution(record["attribution"]);
+      if (node === null || attribution === null) return null;
+      return {
+        type: "graph_agent",
+        node,
+        parent: asNode(record["parent"]),
+        // Null is a REPORTED value here, not a parse failure: `subagent_type`
+        // is optional in the SDK's own typing and ambient tasks carry none.
+        agent: asString(record["agent"]),
+        lane: asLane(record["lane"]),
+        description: asString(record["description"]) ?? "",
+        ambient: record["ambient"] === true,
+        attribution,
+        sdk: asSdkRef(record["sdk"]),
+      };
+    }
+    case "graph_agent_status": {
+      const node = asNode(record["node"]);
+      const state = asAgentState(record["state"]);
+      const attribution = asAttribution(record["attribution"]);
+      if (node === null || state === null || attribution === null) return null;
+      return { type: "graph_agent_status", node, state, attribution };
+    }
+    case "graph_tool": {
+      const node = asNode(record["node"]);
+      const name = asString(record["name"]);
+      const attribution = asAttribution(record["attribution"]);
+      if (node === null || name === null || attribution === null) return null;
+      return {
+        type: "graph_tool",
+        node,
+        name,
+        mcpServer: asString(record["mcpServer"]),
+        summary: asString(record["summary"]) ?? "",
+        attribution,
+      };
+    }
+    case "graph_skill": {
+      const node = asNode(record["node"]);
+      const skill = asString(record["skill"]);
+      const source = record["source"];
+      const attribution = asAttribution(record["attribution"]);
+      if (node === null || skill === null || attribution === null) return null;
+      if (source !== "preloaded" && source !== "invoked") return null;
+      return { type: "graph_skill", node, skill, source, attribution };
+    }
+    case "graph_hook": {
+      const node = asNode(record["node"]);
+      const decision = record["decision"];
+      const attribution = asAttribution(record["attribution"]);
+      if (node === null || attribution === null) return null;
+      if (decision !== "allow" && decision !== "deny") return null;
+      return {
+        type: "graph_hook",
+        node,
+        event: asString(record["event"]) ?? "",
+        tool: asString(record["tool"]) ?? "",
+        decision,
+        reason: asString(record["reason"]) ?? "",
+        attribution,
+      };
+    }
+    case "graph_result": {
+      const node = asNode(record["node"]);
+      const state = asAgentState(record["state"]);
+      const attribution = asAttribution(record["attribution"]);
+      if (node === null || state === null || attribution === null) return null;
+      return {
+        type: "graph_result",
+        node,
+        state,
+        summary: asString(record["summary"]) ?? "",
+        // NULL, NOT 0. A run that reported no usage did not report zero usage.
+        totalTokens: asNullableNumber(record["totalTokens"]),
+        toolUses: asNullableNumber(record["toolUses"]),
+        durationMs: asNullableNumber(record["durationMs"]),
+        attribution,
+      };
+    }
+    case "graph_inventory":
+      return {
+        type: "graph_inventory",
+        agents: asCount(record["agents"]),
+        skills: asCount(record["skills"]),
+        tools: asCount(record["tools"]),
+        allowedAgents: asStrings(record["allowedAgents"]),
+        mcpServers: asMcpServers(record["mcpServers"]),
+        plugins: asStrings(record["plugins"]),
+        model: asString(record["model"]) ?? "",
+        claudeCodeVersion: asString(record["claudeCodeVersion"]) ?? "",
+        environmentHash: asString(record["environmentHash"]) ?? "",
+      };
+
     default:
       return null;
   }

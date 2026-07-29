@@ -661,6 +661,12 @@ export class Orchestrator {
           this.#emitLog(runId, "warn", `the run environment could not be recorded: ${describeError(error)}`);
         }
       },
+      // THE CANVAS, STRAIGHT ONTO THE EXISTING EVENT STREAM. No parallel
+      // channel, no second table: a graph event is persisted, sequenced and
+      // replayed by exactly the code that carries `status` and `phase`, which is
+      // what makes "this agent was running inside a cancelled run" impossible to
+      // render rather than merely unlikely.
+      graph: (event) => this.#emit(runId, event),
       contextUsage: (sample) => {
         recordContextEvent(sample);
       },

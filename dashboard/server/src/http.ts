@@ -15,11 +15,22 @@
  * No CORS header is set anywhere, for the same reason: the only page that may
  * talk to this API is the one this server serves.
  *
- * ROUTES BEYOND THE FROZEN CONTRACT: exactly one, and it is additive.
+ * ROUTES BEYOND THE FROZEN CONTRACT: exactly two, and both are additive.
+ *
  * `GET /api/runs/:id/screenshots/:file` serves a captured screenshot, because
  * `RunDetail.screenshots[].path` is an absolute host path that a browser cannot
  * open. It resolves ONE path segment inside that run's own screenshot
  * directory and nothing else.
+ *
+ * `GET /api/runs/:id/graph` returns the folded orchestration canvas plus the
+ * durable watermark it was folded at (spec §9.2). It exists because the
+ * alternative is the client replaying every event: measured on a 32,000-row run,
+ * `eventsSince(runId, 0)` returns in 22.7 ms and parses in 11.7 ms and is
+ * **7.01 MB on the wire**. THIS IS A WIRE-SIZE FIX, NOT A CPU ONE. It is folded
+ * from `store.eventsSince(runId, 0)` — durable rows — and NEVER from live
+ * orchestrator memory, because `attachSse` replays from durable rows too, and
+ * that is the only reason the window between this response and the client's
+ * `EventSource(…?lastEventId=atSeq)` is not a race.
  */
 
 import { createServer } from "node:http";
@@ -34,8 +45,10 @@ import type {
   HealthResponse,
   ModelOption,
   RunDetail,
+  RunGraphResponse,
   RunSummary,
 } from "./api-types.js";
+import { foldGraphAll } from "./graph.js";
 import type { AuthProbe } from "./auth.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
@@ -257,6 +270,12 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
     return;
   }
 
+  // GET /api/runs/:id/graph  (additive; see the file header)
+  if (segments.length === 4 && segments[3] === "graph" && method === "GET") {
+    sendJson(response, 200, graphSnapshot(deps.store, runId));
+    return;
+  }
+
   // POST /api/runs/:id/cancel
   if (segments.length === 4 && segments[3] === "cancel" && method === "POST") {
     const cancelled = deps.orchestrator.cancel(runId);
@@ -299,6 +318,32 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
   }
 
   sendError(response, 404, "not_found", `no route for ${method} ${path}`, null);
+}
+
+/**
+ * The folded canvas, and the watermark it was folded at.
+ *
+ * `atSeq` IS THE SEQ OF THE LAST ROW THAT WENT INTO THIS FOLD — never
+ * `store.latestSeq()`. The two differ whenever a run appends between the read
+ * and the reply, and the difference is not cosmetic: the client opens
+ * `EventSource(…?lastEventId=atSeq)`, which replays rows with `seq > atSeq`, so
+ * a watermark AHEAD of the fold silently drops every event in the gap from BOTH
+ * channels. It reads as a canvas that is merely a little stale.
+ *
+ * Folded from durable rows, and from nothing else. There is no path from here to
+ * the orchestrator's in-memory state, deliberately: a snapshot taken from live
+ * memory could not be resumed from by a client, because `attachSse` replays the
+ * table.
+ *
+ * IT NEVER THROWS ON AN OLD RUN. Every run recorded before this phase is a
+ * stream of `log`/`tool`/`status` rows with no `graph_*` member in it at all,
+ * and `foldGraph` returns those unchanged — so an old run answers 200 with an
+ * empty canvas and `inventory: null`, with no feature flag to forget to remove.
+ */
+function graphSnapshot(store: RunStore, runId: string): RunGraphResponse {
+  const rows = store.eventsSince(runId, 0);
+  const state = foldGraphAll(rows.map((row) => row.event));
+  return { atSeq: rows[rows.length - 1]?.seq ?? 0, ...state };
 }
 
 async function createRun(deps: HttpDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {

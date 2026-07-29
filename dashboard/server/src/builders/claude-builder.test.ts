@@ -25,6 +25,7 @@ import type {
   PreToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 import { shortlistFor } from "../agent-shortlist.js";
+import type { GraphSseEvent } from "../api-types.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
@@ -769,6 +770,7 @@ function req(overrides: Partial<BuildRequest> = {}): BuildRequest {
       rateLimit() {},
       session() {},
       environment() {},
+      graph() {},
       contextUsage() {},
       compaction() {},
       raw() {},
@@ -2015,6 +2017,8 @@ interface LoopRecord {
   readonly rateLimits: RateLimitState[];
   readonly raw: string[];
   readonly warnings: string[];
+  /** Canvas events, in emission order. Spec §9.1. */
+  readonly graph: GraphSseEvent[];
 }
 
 /** Every sink method, recorded — the loop's only observable output. */
@@ -2029,6 +2033,7 @@ function loopSink(): LoopRecord {
     rateLimits: [] as RateLimitState[],
     raw: [] as string[],
     warnings: [] as string[],
+    graph: [] as GraphSseEvent[],
   };
   return {
     ...record,
@@ -2041,6 +2046,7 @@ function loopSink(): LoopRecord {
       rateLimit: (state: RateLimitState) => record.rateLimits.push(state),
       session: (id: string) => record.sessions.push(id),
       environment: (env: RunEnvironment) => record.environments.push(env),
+      graph: (event: GraphSseEvent) => record.graph.push(event),
       contextUsage: (sample: ContextSample) => record.samples.push(sample),
       compaction: (compaction: CompactionRecord) => record.compactions.push(compaction),
       raw: (text: string) => record.raw.push(text),
@@ -2310,4 +2316,344 @@ test("THE LOOP: the DEFAULT session factory is the SDK's own `query`", async () 
   // And the orchestrator's construction — `new ClaudeSubscriptionBuilder()` with
   // no argument — is the one that gets the default.
   assert.equal(new ClaudeSubscriptionBuilder().provider, "anthropic");
+});
+
+/* -------------------------------------------------------------------------
+ * THE LOOP: the canvas (spec §9.1)
+ *
+ * WHY THESE ARE HERE AND NOT IN graph.test.ts. `graph-emit.ts` is a pure
+ * transform and is easy to test well — which is exactly the shape this file's
+ * header warns about. `recordResultTokens` was lifted into a well-tested pure
+ * function and an auditor then reverted the CALL SITE, leaving the suite green
+ * at 229/227/0/2 while every real run lost its per-model attribution. So the
+ * assertions below read the SINK after driving synthetic envelopes through
+ * `build()`: deleting `emitGraph(graph.taskStarted(message))` from the loop
+ * turns them red while `graph-emit`'s own tests stay green, and that asymmetry
+ * is the whole point of writing them twice.
+ * ---------------------------------------------------------------------- */
+
+function graphOf(record: LoopRecord, type: GraphSseEvent["type"]): GraphSseEvent[] {
+  return record.graph.filter((event) => event.type === type);
+}
+
+const INIT_ENVELOPE = envelope({
+  type: "system",
+  subtype: "init",
+  session_id: "sess-canvas",
+  cwd: WORKSPACE,
+  model: "claude-opus-5",
+  claude_code_version: "2.1.220",
+  agents: ["code-reviewer", "typescript-pro"],
+  skills: ["postgres", "graphify"],
+  tools: ["Read", "Agent"],
+  mcp_servers: [{ name: "context7", status: "connected" }],
+  plugins: [{ name: "railway", version: "1.0.0" }],
+});
+
+test("THE LOOP: init announces the run's own node and the inventory", async () => {
+  const record = loopSink();
+  await runLoop([INIT_ENVELOPE], record, { allowedAgents: ["code-reviewer"] });
+
+  const agents = graphOf(record, "graph_agent");
+  assert.equal(agents.length, 1, "the loop emitted no node for the run's own session");
+  const root = agents[0];
+  assert.ok(root?.type === "graph_agent");
+  // SHORT, SERVER-ASSIGNED. `redactForPersistence` collapses any 40+ char
+  // mixed-case-and-digit token to ONE identical literal, so an id taken from the
+  // SDK would merge two agents into one node after a round-trip through the
+  // events table.
+  assert.equal(root.node, "n1");
+  assert.equal(root.parent, null);
+  assert.equal(root.attribution, "exact");
+
+  const inventory = graphOf(record, "graph_inventory")[0];
+  assert.ok(inventory?.type === "graph_inventory");
+  assert.equal(inventory.agents, 2);
+  assert.equal(inventory.skills, 2);
+  // VISIBILITY IS NOT PERMISSION, and the inventory carries both numbers so the
+  // canvas can say so: two agents discovered, ONE of them reachable.
+  assert.deepEqual(inventory.allowedAgents, ["code-reviewer"]);
+  assert.deepEqual(inventory.mcpServers, [{ name: "context7", status: "connected" }]);
+  assert.deepEqual(inventory.plugins, ["railway"]);
+  assert.equal(inventory.environmentHash.length, 64);
+});
+
+test("THE LOOP: a delegated agent becomes a node, and its result lands on it", async () => {
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-abc",
+        subagent_type: "code-reviewer",
+        tool_use_id: "toolu_1",
+        description: "review the diff",
+      }),
+      envelope({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-abc",
+        status: "completed",
+        summary: "two findings",
+        usage: { total_tokens: 13_842, tool_uses: 9, duration_ms: 42_000 },
+      }),
+    ],
+    record,
+  );
+
+  const agent = graphOf(record, "graph_agent")[1];
+  assert.ok(agent?.type === "graph_agent");
+  assert.equal(agent.node, "n2", "node ids are minted by the server, in order");
+  assert.equal(agent.parent, "n1");
+  assert.equal(agent.agent, "code-reviewer");
+  assert.equal(agent.lane, "review", "the lane is declared once, by the node itself");
+  // THE RAW ID RIDES ALONG FOR THE INSPECTOR AND IS KEYED ON BY NOTHING.
+  assert.deepEqual(agent.sdk, { taskId: "task-abc", toolUseId: "toolu_1" });
+
+  assert.deepEqual(
+    graphOf(record, "graph_agent_status").map((event) =>
+      event.type === "graph_agent_status" ? event.state : null,
+    ),
+    ["running", "completed"],
+    "the loop never reported the agent starting or finishing",
+  );
+
+  const result = graphOf(record, "graph_result")[0];
+  assert.ok(result?.type === "graph_result");
+  assert.equal(result.node, "n2");
+  assert.equal(result.totalTokens, 13_842);
+  assert.equal(result.durationMs, 42_000);
+  assert.equal(result.attribution, "exact");
+});
+
+test("THE LOOP: a task with NO subagent_type still gets a node", async () => {
+  // DELIBERATELY DIVERGENT FROM `LaneWatch`, WHICH SKIPS IT. A lane would be a
+  // guess; a node id invents nothing — the task identity is present and exact.
+  // Skipping would blank the canvas outright if a CLI version stopped sending
+  // the field, which is the failure class this whole phase is written against.
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-ambient",
+        description: "housekeeping",
+        skip_transcript: true,
+      }),
+    ],
+    record,
+  );
+
+  const agent = graphOf(record, "graph_agent")[1];
+  assert.ok(agent?.type === "graph_agent");
+  assert.equal(agent.agent, null, "an agent name that was never sent must not be invented");
+  assert.equal(agent.lane, null);
+  assert.equal(agent.ambient, true, "the CLI asked hosts to hide this one");
+});
+
+test("THE LOOP: a result for a task nobody started is DROPPED, not re-pointed at the root", async () => {
+  // A resumed session replays nothing, so its first message can be a completion
+  // for a task this projection never saw. `attribution: "inferred"` marks a
+  // GUESSED EDGE; it cannot launder a WRONG NODE, and hanging one agent's result
+  // on another agent's node is exactly that.
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-from-a-previous-session",
+        status: "completed",
+        summary: "done",
+      }),
+    ],
+    record,
+  );
+
+  assert.equal(graphOf(record, "graph_result").length, 0);
+  assert.equal(graphOf(record, "graph_agent_status").length, 0);
+});
+
+test("THE LOOP: tool calls are attributed, and an MCP call is a tool_use", async () => {
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-abc",
+        subagent_type: "code-reviewer",
+        tool_use_id: "toolu_agent",
+      }),
+      // The orchestrator's OWN turn: `parent_tool_use_id: null` is EXACT by the
+      // SDK's own definition of the field, not a fallback.
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            { type: "tool_use", id: "tu_a", name: "Read", input: { file_path: "/w/a.ts" } },
+          ],
+        },
+      }),
+      // The subagent's turn, forwarded with the Agent block's id as its parent.
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: "toolu_agent",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_b",
+              name: "mcp__plugin_railway_railway__railway-agent",
+              input: { command: "status" },
+            },
+            { type: "tool_use", id: "tu_c", name: "Skill", input: { skill: "superpowers:brainstorming" } },
+          ],
+        },
+      }),
+      // A parent we never saw. Attributed to the root and SAID SO.
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: "toolu_unknown",
+        message: { content: [{ type: "tool_use", id: "tu_d", name: "Bash", input: { command: "ls" } }] },
+      }),
+    ],
+    record,
+  );
+
+  const tools = graphOf(record, "graph_tool");
+  assert.deepEqual(
+    tools.map((event) => (event.type === "graph_tool" ? [event.node, event.attribution] : null)),
+    [
+      ["n1", "exact"],
+      ["n2", "exact"],
+      ["n2", "exact"],
+      ["n1", "inferred"],
+    ],
+    "tool attribution went through something other than parent_tool_use_id",
+  );
+  // MCP IS NOT A SEPARATE EVENT TYPE — it is a tool_use whose name says which
+  // server it reached.
+  const mcp = tools[1];
+  assert.ok(mcp?.type === "graph_tool");
+  assert.equal(mcp.mcpServer, "plugin_railway_railway");
+  assert.equal(tools[0]?.type === "graph_tool" ? tools[0].mcpServer : "unset", null);
+
+  const skill = graphOf(record, "graph_skill")[0];
+  assert.ok(skill?.type === "graph_skill");
+  assert.equal(skill.skill, "superpowers:brainstorming");
+  assert.equal(skill.source, "invoked");
+  assert.equal(skill.node, "n2");
+});
+
+test("THE LOOP: a nested delegation is parented to the AGENT that spawned it", async () => {
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-parent",
+        subagent_type: "code-reviewer",
+        tool_use_id: "toolu_parent",
+      }),
+      // The subagent itself calls the Agent tool. Its block id is what the next
+      // `task_started` names, which is the only route from a task back to the
+      // node that spawned it.
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: "toolu_parent",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_child",
+              name: "Agent",
+              input: { subagent_type: "typescript-pro", run_in_background: false },
+            },
+          ],
+        },
+      }),
+      envelope({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-child",
+        subagent_type: "typescript-pro",
+        tool_use_id: "toolu_child",
+      }),
+    ],
+    record,
+  );
+
+  const child = graphOf(record, "graph_agent")[2];
+  assert.ok(child?.type === "graph_agent");
+  assert.equal(child.agent, "typescript-pro");
+  assert.equal(child.parent, "n2", "the nested agent was flattened onto the root");
+  assert.equal(child.attribution, "exact");
+});
+
+test("THE LOOP: a hook DECISION reaches the canvas, and says it was inferred", async () => {
+  // THE CASE THE REQUIRED `attribution` FIELD EXISTS FOR. A PreToolUse input
+  // carries the tool name and the tool input and NO TASK IDENTITY AT ALL, so
+  // which agent a hook decision belongs to is worked out on this side.
+  let seen: { prompt: string; options: Options } | null = null;
+  const record = loopSink();
+  const builder = new ClaudeSubscriptionBuilder((params) => {
+    seen = params;
+    return sessionOf([]);
+  });
+  await builder.build(req({ sink: record.sink, allowedAgents: ["code-reviewer"] }));
+  const params = seen as { prompt: string; options: Options } | null;
+  assert.ok(params);
+
+  await ask(params.options, "Agent", { subagent_type: "wordpress-master", run_in_background: false });
+  await ask(params.options, "Agent", { subagent_type: "code-reviewer", run_in_background: false });
+  // A pass-through carries no information; the slot fires for EVERY tool call,
+  // Bash included, and one event per call would double the run's volume to say
+  // nothing.
+  await ask(params.options, "Bash", { command: "npm test" });
+
+  const hooks = graphOf(record, "graph_hook");
+  assert.deepEqual(
+    hooks.map((event) => (event.type === "graph_hook" ? [event.tool, event.decision] : null)),
+    [
+      ["Agent", "deny"],
+      ["Agent", "allow"],
+    ],
+    "the guard's decisions never reached the canvas",
+  );
+  const denied = hooks[0];
+  assert.ok(denied?.type === "graph_hook");
+  assert.equal(denied.attribution, "inferred", "a hook decision is attributed, never known");
+  assert.equal(denied.event, "PreToolUse");
+  assert.equal(denied.node, "n1");
+  assert.match(denied.reason, /wordpress-master/);
+});
+
+test("THE LOOP: the observer cannot change, reword or break a decision", async () => {
+  // INSTRUMENTATION MUST NEVER PARTICIPATE. A throwing observer is the dangerous
+  // case: a hook that throws is an unhandled rejection on the SDK's own reader
+  // loop and takes the whole run down, so the guard would be turned into a
+  // crash by the code that watches it.
+  const options = buildOptions(req({ allowedAgents: ["code-reviewer"] }), false, () => {
+    throw new Error("the observer exploded");
+  });
+  assert.match(
+    denialReason(await ask(options, "Agent", { subagent_type: "wordpress-master", run_in_background: false })),
+    /wordpress-master/,
+    "a throwing observer changed the denial",
+  );
+  assert.equal(
+    (await ask(options, "Agent", { subagent_type: "code-reviewer", run_in_background: false })).continue,
+    true,
+    "a throwing observer turned an allowed delegation into a denial",
+  );
 });

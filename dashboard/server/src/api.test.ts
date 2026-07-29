@@ -17,10 +17,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
-import type { ModelOption, RunDetail, RunSummary, SseEvent } from "./api-types.js";
+import type {
+  GraphState,
+  ModelOption,
+  RunDetail,
+  RunGraphResponse,
+  RunSummary,
+  SseEvent,
+} from "./api-types.js";
+import { foldGraph, foldGraphAll } from "./graph.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
+import type { StoredEvent } from "./db.js";
 import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import type { RunController } from "./http.js";
 import { CODEX_DEFAULT_MODEL_ID, ModelCatalog } from "./models.js";
@@ -375,6 +384,204 @@ test("Last-Event-ID resumes an SSE stream instead of replaying it", async () => 
     }
     await reader.cancel();
     assert.deepEqual(ids, [3, 4], "only events after the last one the client saw");
+  } finally {
+    await harness.close();
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * GET /api/runs/:id/graph — the snapshot (spec §9.2)
+ * ---------------------------------------------------------------------- */
+
+function seedRun(harness: Harness, runId: string): void {
+  harness.store.createRun({
+    runId,
+    ticketId: "t-g",
+    ticketTitle: "g",
+    ticketText: "g",
+    ticketSha256: "d".repeat(64),
+    modelId: "opus[1m]",
+    provider: "anthropic",
+    deploy: false,
+    startedAt: new Date().toISOString(),
+    queuePosition: 1,
+  });
+}
+
+const ROOT: SseEvent = {
+  type: "graph_agent",
+  node: "n1",
+  parent: null,
+  agent: "orchestrator",
+  lane: null,
+  description: "the run's own session",
+  ambient: false,
+  attribution: "exact",
+  sdk: null,
+};
+
+const REVIEWER: SseEvent = {
+  type: "graph_agent",
+  node: "n2",
+  parent: "n1",
+  agent: "code-reviewer",
+  lane: "review",
+  description: "review the diff",
+  ambient: false,
+  attribution: "exact",
+  sdk: { taskId: "task-1", toolUseId: "toolu_1" },
+};
+
+test("GET /api/runs/:id/graph folds DURABLE ROWS, and atSeq is the last one folded", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-graph";
+    seedRun(harness, runId);
+    // Interleaved with ordinary events on purpose: the canvas rides the SAME
+    // stream as `status`/`phase`, which is what makes "this agent was running
+    // inside a cancelled run" impossible to render rather than merely unlikely.
+    harness.bus.emit(runId, { type: "status", status: "running" });
+    harness.bus.emit(runId, ROOT);
+    harness.bus.emit(runId, { type: "log", level: "info", text: "working" });
+    harness.bus.emit(runId, REVIEWER);
+    harness.bus.emit(runId, {
+      type: "graph_tool",
+      node: "n2",
+      name: "Read",
+      mcpServer: null,
+      summary: "file_path: /w/a.ts",
+      attribution: "exact",
+    });
+
+    const response = await fetch(`${harness.base}/api/runs/${runId}/graph`);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as RunGraphResponse;
+
+    // THE WATERMARK IS THE LAST ROW THAT WENT INTO THIS FOLD. Five events were
+    // appended, so the fold saw seq 1..5 and the client must resume at 5.
+    assert.equal(body.atSeq, 5);
+    assert.deepEqual(
+      body.nodes.map((node) => node.id),
+      ["n1", "n2"],
+    );
+    assert.deepEqual(body.edges, [{ from: "n1", to: "n2", attribution: "exact" }]);
+    assert.equal(body.nodes[1]?.toolCalls, 1);
+    // Nothing recorded an inventory, and that is not the same as an empty one.
+    assert.equal(body.inventory, null);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("GRAPH: the snapshot plus the tail from atSeq equals folding from zero", async () => {
+  // THE INVARIANT THE ENDPOINT EXISTS TO PRESERVE. `atSeq` must be the seq of the
+  // last row actually folded, never `store.latestSeq()`: the client opens
+  // `EventSource(…?lastEventId=atSeq)`, which replays rows with `seq > atSeq`, so
+  // a watermark AHEAD of the fold drops every event in the gap from BOTH channels
+  // and reads as a canvas that is merely a little stale.
+  //
+  // THE RACE IS FORCED, NOT HOPED FOR, AND THAT IS THE WHOLE TEST. The first
+  // draft of this appended events after calling `fetch()` and awaited the
+  // response — and it stayed GREEN under the exact mutation it was written to
+  // catch, because those appends all land before the server ever reads the
+  // table, leaving `latestSeq()` and "the last row folded" equal. A test that
+  // cannot distinguish the two implementations is not a test of the invariant.
+  //
+  // So the append is injected INTO the read: the store's own `eventsSince` is
+  // wrapped for the duration, and a row is written the instant the handler has
+  // taken its rows. That is exactly the window a live run creates, and it is the
+  // only way to open it deterministically from out here.
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-graph-race";
+    seedRun(harness, runId);
+    harness.bus.emit(runId, ROOT);
+    harness.bus.emit(runId, REVIEWER);
+
+    const store = harness.store as unknown as {
+      eventsSince: (runId: string, after: number) => readonly StoredEvent[];
+    };
+    const realEventsSince = store.eventsSince.bind(harness.store);
+    let raced = false;
+    store.eventsSince = (id: string, after: number): readonly StoredEvent[] => {
+      const rows = realEventsSince(id, after);
+      if (!raced) {
+        raced = true;
+        harness.bus.emit(id, {
+          type: "graph_tool",
+          node: "n2",
+          name: "Write",
+          mcpServer: null,
+          summary: "file_path: /w/b.ts",
+          attribution: "exact",
+        });
+        harness.bus.emit(id, {
+          type: "graph_agent_status",
+          node: "n2",
+          state: "completed",
+          attribution: "exact",
+        });
+      }
+      return rows;
+    };
+
+    const body = (await (
+      await fetch(`${harness.base}/api/runs/${runId}/graph`)
+    ).json()) as RunGraphResponse;
+    store.eventsSince = realEventsSince;
+    assert.ok(raced, "the read seam was never exercised, so no race was forced");
+    assert.equal(body.atSeq, 2, "atSeq must be the last row FOLDED, not the table's newest");
+
+    // Resume exactly where the snapshot stopped, as the client does.
+    const tail = harness.store.eventsSince(runId, body.atSeq).map((row) => row.event);
+    let state: GraphState = { nodes: body.nodes, edges: body.edges, inventory: body.inventory };
+    for (const event of tail) state = foldGraph(state, event);
+
+    const fromZero = foldGraphAll(harness.store.eventsSince(runId, 0).map((row) => row.event));
+    assert.deepEqual(state, fromZero, "the snapshot->tail seam lost or duplicated an event");
+    assert.equal(state.nodes[1]?.state, "completed");
+    assert.equal(state.nodes[1]?.toolCalls, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("GRAPH: a run recorded before the canvas existed returns an EMPTY canvas, not an error", async () => {
+  // No feature flag exists, because there is nothing to flag: an old run is a
+  // stream of `log`/`tool`/`status` rows and the reducer returns those unchanged.
+  // A fold that threw on an unrecognised type would take this endpoint down on
+  // every historical run — the requirement, inverted.
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-graph-legacy";
+    seedRun(harness, runId);
+    harness.bus.emit(runId, { type: "status", status: "queued" });
+    harness.bus.emit(runId, { type: "phase", phase: "build" });
+    harness.bus.emit(runId, { type: "log", level: "info", text: "an old run" });
+    harness.bus.emit(runId, { type: "tool", name: "Read", summary: "a.ts" });
+    harness.bus.emit(runId, { type: "status", status: "passed" });
+
+    const response = await fetch(`${harness.base}/api/runs/${runId}/graph`);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as RunGraphResponse;
+    assert.deepEqual(body, { atSeq: 5, nodes: [], edges: [], inventory: null });
+  } finally {
+    await harness.close();
+  }
+});
+
+test("GRAPH: a run with no events at all answers atSeq 0, and an unknown run is still a 404", async () => {
+  const harness = await startHarness(true);
+  try {
+    seedRun(harness, "run-graph-silent");
+    const body = (await (
+      await fetch(`${harness.base}/api/runs/run-graph-silent/graph`)
+    ).json()) as RunGraphResponse;
+    assert.equal(body.atSeq, 0, "a client must replay from zero, not from a guessed watermark");
+    assert.deepEqual(body.nodes, []);
+
+    const missing = await fetch(`${harness.base}/api/runs/no-such-run/graph`);
+    assert.equal(missing.status, 404, "the additive route must not become a way to probe run ids");
   } finally {
     await harness.close();
   }

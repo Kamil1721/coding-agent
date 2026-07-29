@@ -146,6 +146,73 @@ export interface RunDetail extends RunSummary {
 }
 
 /* -------------------------------------------------------------------------
+ * The orchestration canvas — spec §9.1
+ *
+ * SEVEN NEW MEMBERS ON THE EXISTING UNION, NOT A PARALLEL CHANNEL. Total
+ * ordering against `status`/`phase` is a CORRECTNESS requirement — an agent must
+ * not show "running" inside a cancelled run — and `seq` gives it for free, along
+ * with `Last-Event-ID` resumability that already works and is already exact.
+ *
+ * ZERO DDL. `events(run_id, seq, at, payload)` already exists, `payload` is
+ * opaque JSON, and the read path is an unchecked `JSON.parse(...) as SseEvent`.
+ * So live-canvas and replay-an-old-run are ONE code path — `foldGraph` over an
+ * SSE tail or over `eventsSince(runId, 0)` — and an old run, which contains no
+ * `graph_*` rows at all, folds to an empty canvas BY CONSTRUCTION. There is no
+ * feature flag, because there is nothing to flag.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Did the emitter KNOW which node this belongs to, or did it work it out?
+ *
+ * REQUIRED ON EVERY EVENT THAT NAMES A NODE, and that is the whole point. Hook
+ * messages carry no task identity, so hook→agent attribution is a SERVER-SIDE
+ * INFERENCE; a required field forces every emitter to say whether it knew or
+ * guessed, and lets the canvas draw an inferred edge differently instead of
+ * lying. An optional field would have been left off at exactly the call sites
+ * where the answer is "guessed".
+ *
+ * It marks a GUESSED edge. It can never launder a WRONG node: an event whose
+ * node cannot be determined is dropped, not re-pointed at the root.
+ */
+export type GraphAttribution = "exact" | "inferred";
+
+/** Delivery lane. Mirrors `Lane` in `agent-shortlist.ts`, structurally. */
+export type ApiLane = "spec" | "design" | "build" | "review" | "gate";
+
+/**
+ * An agent's state, in the CLI's own words.
+ *
+ * `unresolved` is NOT here on purpose: it is derived by `foldGraph` when a run
+ * goes terminal with an agent still reading `running`, and no emitter may claim
+ * it, because no message ever says it.
+ */
+export type GraphAgentState = "running" | "completed" | "failed" | "stopped";
+
+/**
+ * Raw SDK identifiers, FOR THE INSPECTOR ONLY.
+ *
+ * NEVER IDENTITY, AND THAT IS FORCED BY MEASUREMENT. `redactForPersistence`
+ * rewrites any 40+ character mixed-case-and-digit token to the IDENTICAL literal
+ * `[REDACTED:HIGH_ENTROPY_TOKEN]`, and `task_id` has no documented length bound.
+ * Two distinct agents whose ids crossed that threshold would come back from the
+ * events table as the same string and MERGE INTO ONE NODE — silently, with the
+ * canvas still rendering. Node identity is therefore a short server-assigned id
+ * (`n1`, `n2`, …) that no redactor rewrites, and nothing in `foldGraph` keys on
+ * anything in here.
+ */
+export interface GraphSdkRef {
+  readonly taskId: string;
+  /** The Agent tool_use block that spawned this task, when the CLI said. */
+  readonly toolUseId: string | null;
+}
+
+/** One MCP server as the CLI reported it at init. */
+export interface GraphMcpServer {
+  readonly name: string;
+  readonly status: string;
+}
+
+/* -------------------------------------------------------------------------
  * SSE
  * ---------------------------------------------------------------------- */
 
@@ -177,9 +244,259 @@ export type SseEvent =
       readonly verdictPath: string;
       readonly inferredCriteria: number;
     }
-  | { readonly type: "status"; readonly status: ApiRunStatus };
+  | { readonly type: "status"; readonly status: ApiRunStatus }
+  /* ---- the canvas, spec §9.1 ------------------------------------------ */
+  /**
+   * A node exists.
+   *
+   * ALWAYS FIRST FOR ITS NODE. The invariant is that a node id is never
+   * referenced before its `graph_agent`, which is why every event below carries
+   * only `node` and none of them carries `lane`: the lane is declared once, here,
+   * by the node itself. `foldGraph` DROPS a downstream event naming an unknown
+   * node rather than inventing one, so a violation of the invariant loses one
+   * pill instead of fabricating an agent.
+   *
+   * `agent` is nullable because `subagent_type` is optional in the SDK's own
+   * typing and ambient tasks carry none. A node is still minted: the task
+   * identity is present and exact, and skipping would blank the canvas outright
+   * if a CLI version ever stopped sending the field.
+   */
+  | {
+      readonly type: "graph_agent";
+      readonly node: string;
+      /** The node that delegated to this one. Null for the run's own session. */
+      readonly parent: string | null;
+      readonly agent: string | null;
+      /** Null for an agent in no lane — never a guess. */
+      readonly lane: ApiLane | null;
+      readonly description: string;
+      /** The CLI's `skip_transcript`: housekeeping, hidden by default. */
+      readonly ambient: boolean;
+      readonly attribution: GraphAttribution;
+      readonly sdk: GraphSdkRef | null;
+    }
+  | {
+      readonly type: "graph_agent_status";
+      readonly node: string;
+      readonly state: GraphAgentState;
+      readonly attribution: GraphAttribution;
+    }
+  /**
+   * A tool call.
+   *
+   * MCP IS NOT A SEPARATE EVENT TYPE. An MCP call IS a `tool_use` whose name
+   * matches `mcp__<server>__<tool>`; a nullable `mcpServer` carries exactly the
+   * same information with no classification risk and no second code path to keep
+   * in step.
+   */
+  | {
+      readonly type: "graph_tool";
+      readonly node: string;
+      readonly name: string;
+      readonly mcpServer: string | null;
+      readonly summary: string;
+      readonly attribution: GraphAttribution;
+    }
+  /**
+   * A skill.
+   *
+   * `source` contains the blast radius of an unsettled question (spec §10): skill
+   * invocation IS observable (`{"name":"Skill","input":{"skill":…}}`), while
+   * preloading is not — `Options.agents` was deleted after probe I measured it
+   * not binding, so `AgentDefinition.skills` preloads nothing and `"preloaded"`
+   * has no producer today. The discriminator stays so that a future preload does
+   * not have to be told apart from an invocation after the fact.
+   */
+  | {
+      readonly type: "graph_skill";
+      readonly node: string;
+      readonly skill: string;
+      readonly source: "preloaded" | "invoked";
+      readonly attribution: GraphAttribution;
+    }
+  /**
+   * A hook DECIDED something.
+   *
+   * `attribution` is `"inferred"` here by construction: a hook input carries no
+   * task identity, so which agent it belongs to is worked out on this side. This
+   * is the event the required field exists for.
+   */
+  | {
+      readonly type: "graph_hook";
+      readonly node: string;
+      /** `PreToolUse`, `PostToolUse`, … — the CLI's own hook event name. */
+      readonly event: string;
+      readonly tool: string;
+      readonly decision: "allow" | "deny";
+      readonly reason: string;
+      readonly attribution: GraphAttribution;
+    }
+  | {
+      readonly type: "graph_result";
+      readonly node: string;
+      readonly state: GraphAgentState;
+      readonly summary: string;
+      /** Null when the CLI reported no usage — NOT 0, which is a claim. */
+      readonly totalTokens: number | null;
+      readonly toolUses: number | null;
+      readonly durationMs: number | null;
+      readonly attribution: GraphAttribution;
+    }
+  /**
+   * What the CLI loaded for this run, and what this run may actually reach.
+   *
+   * COUNTS FOR THE BIG CATEGORIES, NAMES FOR THE SMALL ONES. 154 agents and 162
+   * skills are ~4 KB of names that no canvas renders and that
+   * `results/environment.json` already holds in full; `allowedAgents` is the
+   * ~26-name PERMISSION set, which is the one worth naming, and MCP servers and
+   * plugins are small and are what a reader asks about.
+   */
+  | {
+      readonly type: "graph_inventory";
+      readonly agents: number;
+      readonly skills: number;
+      readonly tools: number;
+      /** The delegation shortlist. Visibility is not permission. */
+      readonly allowedAgents: readonly string[];
+      readonly mcpServers: readonly GraphMcpServer[];
+      readonly plugins: readonly string[];
+      readonly model: string;
+      readonly claudeCodeVersion: string;
+      readonly environmentHash: string;
+    };
 
 export type SseEventType = SseEvent["type"];
+
+/**
+ * The canvas half of the union, by construction rather than by hand.
+ *
+ * `BuildEventSink.graph` takes this, so a driver cannot post a `status` or a
+ * `tokens` event down the graph seam, and adding a `graph_*` member to `SseEvent`
+ * widens the seam automatically. A hand-written second list would be a fourth
+ * declaration site — this file's whole problem, one layer down.
+ */
+export type GraphSseEvent = Extract<SseEvent, { readonly type: `graph_${string}` }>;
+
+/* -------------------------------------------------------------------------
+ * The folded canvas — what `GET /api/runs/:id/graph` returns
+ * ---------------------------------------------------------------------- */
+
+/**
+ * A node's state, including the one no emitter may claim.
+ *
+ * `unresolved` means THE RUN ENDED WHILE THIS AGENT STILL READ RUNNING and the
+ * stream never said how it finished. It is NOT `failed`: a cancelled run's
+ * in-flight agents did not fail, and this codebase already refuses that
+ * conflation everywhere else (`heldOutPass: null` is not `false`).
+ */
+export type GraphNodeState = GraphAgentState | "unresolved";
+
+/**
+ * Distinct tool names with a call count, NOT one pill per call.
+ *
+ * A single agent makes thousands of tool calls and the canvas draws pills. The
+ * count is exact and unbounded; the number of DISTINCT names is capped, and the
+ * node's own `toolCalls` keeps the true total either way, so a capped node is
+ * visibly capped rather than quietly wrong.
+ */
+export interface GraphToolPill {
+  readonly name: string;
+  readonly mcpServer: string | null;
+  readonly count: number;
+}
+
+export interface GraphSkillPill {
+  readonly skill: string;
+  readonly source: "preloaded" | "invoked";
+  readonly count: number;
+}
+
+export interface GraphHookPill {
+  readonly event: string;
+  readonly tool: string;
+  readonly decision: "allow" | "deny";
+  readonly count: number;
+}
+
+export interface GraphResult {
+  readonly state: GraphAgentState;
+  readonly summary: string;
+  readonly totalTokens: number | null;
+  readonly toolUses: number | null;
+  readonly durationMs: number | null;
+}
+
+export interface GraphNode {
+  readonly id: string;
+  readonly parent: string | null;
+  readonly agent: string | null;
+  readonly lane: ApiLane | null;
+  readonly description: string;
+  readonly ambient: boolean;
+  readonly state: GraphNodeState;
+  readonly attribution: GraphAttribution;
+  readonly sdk: GraphSdkRef | null;
+  readonly tools: readonly GraphToolPill[];
+  readonly skills: readonly GraphSkillPill[];
+  readonly hooks: readonly GraphHookPill[];
+  /** Every tool call, even the ones whose name did not fit in `tools`. */
+  readonly toolCalls: number;
+  readonly result: GraphResult | null;
+}
+
+/**
+ * A delegation edge.
+ *
+ * `attribution` is the CHILD's: an edge drawn from a parent the emitter had to
+ * guess is rendered differently, which is the entire reason the field is
+ * required rather than optional.
+ */
+export interface GraphEdge {
+  readonly from: string;
+  readonly to: string;
+  readonly attribution: GraphAttribution;
+}
+
+export interface GraphInventory {
+  readonly agents: number;
+  readonly skills: number;
+  readonly tools: number;
+  readonly allowedAgents: readonly string[];
+  readonly mcpServers: readonly GraphMcpServer[];
+  readonly plugins: readonly string[];
+  readonly model: string;
+  readonly claudeCodeVersion: string;
+  readonly environmentHash: string;
+}
+
+/**
+ * The whole canvas, as a value.
+ *
+ * `inventory` is NULL until a `graph_inventory` event arrives, and null means
+ * "nothing was recorded", never "the CLI reported nothing". An empty object
+ * would make those two indistinguishable — the same defect as a gate that could
+ * not run being reported as a gate that passed.
+ */
+export interface GraphState {
+  readonly nodes: readonly GraphNode[];
+  readonly edges: readonly GraphEdge[];
+  readonly inventory: GraphInventory | null;
+}
+
+/**
+ * `GET /api/runs/:id/graph`.
+ *
+ * A WIRE-SIZE FIX, NOT A CPU ONE. Measured on a 32,000-row run: `eventsSince`
+ * returns in 22.7 ms and parses in 11.7 ms — and is 7.01 MB on the wire. The
+ * client folds this once, then opens `EventSource(…?lastEventId=atSeq)`.
+ *
+ * `atSeq` IS A DURABLE WATERMARK: the seq of the last persisted row that went
+ * into this fold. `attachSse` replays from durable rows, so the window between
+ * the snapshot and the EventSource is not a race — but only because of that.
+ */
+export interface RunGraphResponse extends GraphState {
+  readonly atSeq: number;
+}
 
 export interface HealthResponse {
   readonly ok: boolean;

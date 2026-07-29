@@ -10,6 +10,7 @@
  *   GET    /api/runs            -> RunSummary[]   (newest first)
  *   GET    /api/runs/:id        -> RunDetail
  *   GET    /api/runs/:id/events -> text/event-stream
+ *   GET    /api/runs/:id/graph  -> RunGraphResponse   (additive; spec §9.2)
  *   POST   /api/runs/:id/cancel -> {ok:true}
  *   POST   /api/runs/:id/resume -> {ok:true}
  *   GET    /api/models          -> ModelOption[]
@@ -145,6 +146,154 @@ export interface OkResponse {
 }
 
 /* ------------------------------------------------------------------ */
+/* The orchestration canvas — spec §9.1                                */
+/*                                                                     */
+/* THE SEVEN `graph_*` MEMBERS RIDE THE EXISTING SSE UNION. There is no */
+/* second channel and there must never be one: total ordering against  */
+/* `status`/`phase` is a CORRECTNESS requirement — an agent must not    */
+/* show "running" inside a cancelled run — and the stream's `seq` gives */
+/* it for free, along with resumability that already works.            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Did the emitter KNOW which node this belongs to, or work it out?
+ *
+ * REQUIRED, NEVER OPTIONAL. Hook messages carry no task identity, so hook→agent
+ * attribution is a server-side inference; the required field is what forces
+ * every emitter to say so, and what lets the canvas draw an inferred edge
+ * differently instead of lying. It marks a GUESSED edge — a WRONG node is never
+ * sent at all, it is dropped on the server.
+ */
+export type GraphAttribution = "exact" | "inferred";
+
+/** Delivery lane. Declared once, by the node itself, on `graph_agent`. */
+export type RunLane = "spec" | "design" | "build" | "review" | "gate";
+
+/** An agent's state IN THE CLI'S OWN WORDS. See `GraphNodeState` for the rest. */
+export type GraphAgentState = "running" | "completed" | "failed" | "stopped";
+
+/**
+ * Raw SDK identifiers, FOR THE INSPECTOR ONLY — never identity.
+ *
+ * The server's redactor rewrites any 40+ character mixed-case-and-digit token to
+ * one identical literal, and `task_id` has no documented length bound, so two
+ * distinct agents can arrive carrying the same string. Node identity is the
+ * short server-assigned `id`; nothing here is ever keyed on, on either side.
+ */
+export interface GraphSdkRef {
+  readonly taskId: string;
+  readonly toolUseId: string | null;
+}
+
+export interface GraphMcpServer {
+  readonly name: string;
+  readonly status: string;
+}
+
+/**
+ * A node's state, including the one no emitter may claim.
+ *
+ * `unresolved` = the run ended while this agent still read `running`, and the
+ * stream never said how it finished. NOT `failed`: a cancelled run's in-flight
+ * agents did not fail, and `heldOutPass: null` is not `false` for the same
+ * reason. Render it as "we stopped watching", never as an error.
+ */
+export type GraphNodeState = GraphAgentState | "unresolved";
+
+/** Distinct names with a call count — NOT one pill per call. */
+export interface GraphToolPill {
+  readonly name: string;
+  readonly mcpServer: string | null;
+  readonly count: number;
+}
+
+export interface GraphSkillPill {
+  readonly skill: string;
+  readonly source: "preloaded" | "invoked";
+  readonly count: number;
+}
+
+export interface GraphHookPill {
+  readonly event: string;
+  readonly tool: string;
+  readonly decision: "allow" | "deny";
+  readonly count: number;
+}
+
+export interface GraphResult {
+  readonly state: GraphAgentState;
+  readonly summary: string;
+  readonly totalTokens: number | null;
+  readonly toolUses: number | null;
+  readonly durationMs: number | null;
+}
+
+export interface GraphNode {
+  readonly id: string;
+  readonly parent: string | null;
+  readonly agent: string | null;
+  readonly lane: RunLane | null;
+  readonly description: string;
+  readonly ambient: boolean;
+  readonly state: GraphNodeState;
+  readonly attribution: GraphAttribution;
+  readonly sdk: GraphSdkRef | null;
+  readonly tools: readonly GraphToolPill[];
+  readonly skills: readonly GraphSkillPill[];
+  readonly hooks: readonly GraphHookPill[];
+  /** Every tool call, including ones whose name did not fit in `tools`. */
+  readonly toolCalls: number;
+  readonly result: GraphResult | null;
+}
+
+/** `attribution` is the CHILD's: an edge to a guessed parent renders differently. */
+export interface GraphEdge {
+  readonly from: string;
+  readonly to: string;
+  readonly attribution: GraphAttribution;
+}
+
+export interface GraphInventory {
+  readonly agents: number;
+  readonly skills: number;
+  readonly tools: number;
+  readonly allowedAgents: readonly string[];
+  readonly mcpServers: readonly GraphMcpServer[];
+  readonly plugins: readonly string[];
+  readonly model: string;
+  readonly claudeCodeVersion: string;
+  readonly environmentHash: string;
+}
+
+/**
+ * The whole canvas as a value.
+ *
+ * `inventory: null` means NOTHING WAS RECORDED — never "the CLI reported
+ * nothing". An old run folds to exactly this, which is why the canvas needs no
+ * feature flag.
+ */
+export interface GraphState {
+  readonly nodes: readonly GraphNode[];
+  readonly edges: readonly GraphEdge[];
+  readonly inventory: GraphInventory | null;
+}
+
+/**
+ * `GET /api/runs/:id/graph` — snapshot, then subscribe.
+ *
+ * A WIRE-SIZE FIX, NOT A CPU ONE: a 32,000-row run is 7.01 MB of events but only
+ * 22.7 ms to read. Fold this once, then open
+ * `EventSource(/api/runs/:id/events?lastEventId=atSeq)`.
+ *
+ * `atSeq` IS A DURABLE WATERMARK — the seq of the last PERSISTED row that went
+ * into the fold. The server replays from the same table, which is the only
+ * reason the window between this response and the EventSource is not a race.
+ */
+export interface RunGraphResponse extends GraphState {
+  readonly atSeq: number;
+}
+
+/* ------------------------------------------------------------------ */
 /* SSE event shapes on /api/runs/:id/events                            */
 /* ------------------------------------------------------------------ */
 
@@ -171,7 +320,83 @@ export type RunEvent =
       readonly verdictPath: string;
       readonly inferredCriteria: number;
     }
-  | { readonly type: "status"; readonly status: RunStatus };
+  | { readonly type: "status"; readonly status: RunStatus }
+  /* ---- the orchestration canvas, spec §9.1 ---------------------------- */
+  /**
+   * A node exists. ALWAYS FIRST FOR ITS NODE — the invariant is that a node id
+   * is never referenced before its `graph_agent`, which is why every event below
+   * carries only `node` and none of them carries `lane`.
+   *
+   * `agent` is nullable because `subagent_type` is optional in the SDK's own
+   * typing; the node is still real, its name simply was not reported.
+   */
+  | {
+      readonly type: "graph_agent";
+      readonly node: string;
+      readonly parent: string | null;
+      readonly agent: string | null;
+      readonly lane: RunLane | null;
+      readonly description: string;
+      readonly ambient: boolean;
+      readonly attribution: GraphAttribution;
+      readonly sdk: GraphSdkRef | null;
+    }
+  | {
+      readonly type: "graph_agent_status";
+      readonly node: string;
+      readonly state: GraphAgentState;
+      readonly attribution: GraphAttribution;
+    }
+  /** An MCP call IS a tool call; `mcpServer` names the server, or is null. */
+  | {
+      readonly type: "graph_tool";
+      readonly node: string;
+      readonly name: string;
+      readonly mcpServer: string | null;
+      readonly summary: string;
+      readonly attribution: GraphAttribution;
+    }
+  | {
+      readonly type: "graph_skill";
+      readonly node: string;
+      readonly skill: string;
+      readonly source: "preloaded" | "invoked";
+      readonly attribution: GraphAttribution;
+    }
+  /** Always `attribution: "inferred"` — hook input carries no task identity. */
+  | {
+      readonly type: "graph_hook";
+      readonly node: string;
+      readonly event: string;
+      readonly tool: string;
+      readonly decision: "allow" | "deny";
+      readonly reason: string;
+      readonly attribution: GraphAttribution;
+    }
+  | {
+      readonly type: "graph_result";
+      readonly node: string;
+      readonly state: GraphAgentState;
+      readonly summary: string;
+      /** Null when the CLI reported no usage. NOT 0, which is a claim. */
+      readonly totalTokens: number | null;
+      readonly toolUses: number | null;
+      readonly durationMs: number | null;
+      readonly attribution: GraphAttribution;
+    }
+  | {
+      readonly type: "graph_inventory";
+      readonly agents: number;
+      readonly skills: number;
+      readonly tools: number;
+      /** The delegation shortlist. Visibility is not permission. */
+      readonly allowedAgents: readonly string[];
+      readonly mcpServers: readonly GraphMcpServer[];
+      readonly plugins: readonly string[];
+      readonly model: string;
+      readonly claudeCodeVersion: string;
+      readonly environmentHash: string;
+    };
 
 export type RunEventType = RunEvent["type"];
 

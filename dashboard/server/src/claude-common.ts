@@ -249,16 +249,33 @@ export function assistantText(message: SDKMessage): string {
   return parts.join("");
 }
 
-/** Tool-use blocks in an assistant message, for the `tool` SSE event. */
-export function toolUses(message: SDKMessage): readonly { name: string; input: unknown }[] {
+/**
+ * Tool-use blocks in an assistant message, for the `tool` SSE event and for the
+ * canvas.
+ *
+ * `id` IS CARRIED AND IS NULLABLE. It is the block id a later `task_started`
+ * names in its `tool_use_id`, which is the ONLY route from a delegated task back
+ * to the node that spawned it — an assistant message carries no `task_id` at
+ * all. Nullable rather than skipped: a block without an id is still a tool call
+ * worth showing, it simply cannot parent anything.
+ */
+export function toolUses(
+  message: SDKMessage,
+): readonly { id: string | null; name: string; input: unknown }[] {
   if (message.type !== "assistant") return [];
   const content = message.message.content;
   if (!Array.isArray(content)) return [];
-  const uses: { name: string; input: unknown }[] = [];
+  const uses: { id: string | null; name: string; input: unknown }[] = [];
   for (const block of content) {
     if (typeof block === "object" && block !== null && "type" in block && block.type === "tool_use") {
-      const named = block as { name?: unknown; input?: unknown };
-      if (typeof named.name === "string") uses.push({ name: named.name, input: named.input });
+      const named = block as { id?: unknown; name?: unknown; input?: unknown };
+      if (typeof named.name === "string") {
+        uses.push({
+          id: typeof named.id === "string" ? named.id : null,
+          name: named.name,
+          input: named.input,
+        });
+      }
     }
   }
   return uses;
