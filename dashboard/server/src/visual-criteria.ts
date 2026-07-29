@@ -55,17 +55,16 @@
  * grader elsewhere decides whether they hold.
  */
 
+import type { DesignLock } from "./design-manifest.js";
+
 /**
- * MINIMAL — Phase 2b (DESIGN lane) owns the full manifest and will widen this.
- * Defined here because Phase 2e needs the locked-mockup path and Phase 2b is
- * not built. Do not add fields speculatively: a second declaration site for a
- * type Phase 2b owns is a merge conflict with a wrong answer in it.
- * (Revision 2, R6.)
+ * MOVED TO `design-manifest.ts` ON 2026-07-29 (Phase 2b), which is what the
+ * previous docblock here asked for: "Phase 2b (DESIGN lane) owns the full
+ * manifest and will widen this... a second declaration site for a type Phase 2b
+ * owns is a merge conflict with a wrong answer in it." Re-exported so existing
+ * importers do not move.
  */
-export interface DesignManifest {
-  /** Absolute path to the mockup the owner locked, or null when the lane degraded. */
-  readonly lockedMockup: string | null;
-}
+export type { DesignLock, DesignManifest } from "./design-manifest.js";
 
 export interface VisualCriterion {
   readonly id: string;
@@ -205,7 +204,7 @@ function at(seed: CriterionSeed, reference: string | null): VisualCriterion {
  * degrades rather than blocks when no key resolves, and a degraded lane must
  * still be graded. Never empty in either state; see the header.
  */
-export function visualCriteriaFor(manifest: DesignManifest): readonly VisualCriterion[] {
+export function visualCriteriaFor(manifest: DesignLock): readonly VisualCriterion[] {
   const locked = manifest.lockedMockup;
   const floor = FLOOR.map((seed) => at(seed, null));
   if (locked === null) return floor;

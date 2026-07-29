@@ -21,11 +21,11 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import type { DesignManifest } from "./visual-criteria.js";
+import type { DesignLock } from "./visual-criteria.js";
 import { visualCriteriaFor } from "./visual-criteria.js";
 
 /** The DESIGN lane's happy path: the owner clicked a mockup and it was recorded. */
-function manifestWithLock(lockedMockup = "/ws/design-refs/02-hero.png"): DesignManifest {
+function manifestWithLock(lockedMockup = "/ws/design-refs/02-hero.png"): DesignLock {
   return { lockedMockup };
 }
 
