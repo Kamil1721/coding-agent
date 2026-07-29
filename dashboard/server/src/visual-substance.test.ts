@@ -29,6 +29,7 @@ import { visualGatePrompt } from "./design-prompt.js";
 import type { VisualCriterion } from "./visual-criteria.js";
 import { visualCriteriaFor } from "./visual-criteria.js";
 import type {
+  VisualAnswerVerdict,
   VisualFrame,
   VisualObservationAnswer,
   VisualSubstanceMode,
@@ -419,7 +420,102 @@ test("the observation block reflects the LOCK, so the grader is not told a locke
   assert.match(gating, /VIS-F-EMPTY-FRAME \[FUNCTIONAL\]/);
 });
 
-/* ---- 7. The arithmetic verdict.ts would see --------------------------- */
+/* ---- 7. The measured answers, from the blind run ---------------------- */
+
+/**
+ * WHAT THIS SECTION IS. On 2026-07-29 seven captures were taken at 375x812 with
+ * the container's own settings (`newContext` locale/timezone/colorScheme/
+ * reducedMotion per `scorer-container.ts:625-633`; `page.screenshot` with
+ * `animations:"disabled"`, `caret:"hide"`, `scale:"css"` and NO `fullPage` per
+ * :674-680), copied under random UUID names, and answered against
+ * {@link VISUAL_OBSERVATIONS} BEFORE the name-to-artefact mapping was opened.
+ * 7/7 matched. The answers are transcribed here because they are the only
+ * evidence that these questions are ANSWERABLE FROM A CAPTURE — the design note
+ * argued answerability from geometry and explicitly did not demonstrate it.
+ *
+ * TWO OF THE SEVEN WERE BUILT FOR IT, in the session scratchpad, never
+ * versioned: `hollow-section` and `filled-control` are the SAME markup and
+ * differ by ONE CSS declaration — `#about-body p{color:var(--paper)}` against
+ * `{color:var(--ink)}` on a `--paper` background. Measured: `#about-body`
+ * `innerText` is 272 characters in BOTH and body `innerText` is 468 in both, so
+ * every text assertion in the tree passes on both; computed colour is
+ * `rgb(255,255,255)` against a `rgb(255,255,255)` page in the hollow one. The
+ * region geometry was ASSERTED rather than assumed, at all three breakpoints:
+ * `#about h2` [172,210] and `#about-body` [230,542] inside a 812-tall frame at
+ * 375, [204,243]/[263,457] inside 1024 at 768, [172,210]/[230,424] inside 800 at
+ * 1280 — heading and empty body both in frame, `#about` entirely above
+ * `#projects`, 0 failures. A fixture whose discriminating evidence is off-screen
+ * reports green because the check cannot see it.
+ */
+const MEASURED_375: readonly { artefact: string; emptyFrame: VisualAnswerVerdict; emptyRegion: VisualAnswerVerdict }[] = [
+  { artefact: "hollow-section", emptyFrame: "satisfied", emptyRegion: "violated" },
+  { artefact: "filled-control", emptyFrame: "satisfied", emptyRegion: "satisfied" },
+  { artefact: "correct-portfolio", emptyFrame: "satisfied", emptyRegion: "satisfied" },
+  { artefact: "stock-motion-only", emptyFrame: "satisfied", emptyRegion: "satisfied" },
+  { artefact: "missing-section", emptyFrame: "satisfied", emptyRegion: "satisfied" },
+  { artefact: "stub-markers", emptyFrame: "satisfied", emptyRegion: "satisfied" },
+  { artefact: "blank-page", emptyFrame: "violated", emptyRegion: "satisfied" },
+];
+
+test("MEASURED: the two entries' fire sets are DISJOINT — EMPTY-FRAME is not a subset", () => {
+  // Design note §8: if EMPTY-REGION also fired on `blank-page`, EMPTY-FRAME
+  // would be a strict subset of it and the two entries would have to collapse
+  // into one. Measured blind, they fire on different artefacts and never on the
+  // same one: `blank-page` (nothing is here) against `hollow-section` (the page
+  // drew a container and did not fill it). Two questions, not one phrased twice.
+  const frameFires = MEASURED_375.filter((m) => m.emptyFrame === "violated").map((m) => m.artefact);
+  const regionFires = MEASURED_375.filter((m) => m.emptyRegion === "violated").map((m) => m.artefact);
+  assert.deepEqual(frameFires, ["blank-page"]);
+  assert.deepEqual(regionFires, ["hollow-section"]);
+  assert.equal(frameFires.filter((a) => regionFires.includes(a)).length, 0, "the sets overlap");
+});
+
+test("MEASURED: neither entry fires on ANY of the five committed calibration fixtures", () => {
+  // The half of calibration that matters most. A FUNCTIONAL finding on
+  // `stock-motion-only` turns `pass_with_notes` into `fail` (verdict.ts:210),
+  // and one on `correct-portfolio` turns `pass` into `fail`. Both are must-pass.
+  const committed = ["correct-portfolio", "stock-motion-only", "missing-section", "stub-markers", "blank-page"];
+  for (const name of committed) {
+    const row = MEASURED_375.find((m) => m.artefact === name);
+    assert.ok(row !== undefined, `${name} was not in the measured set`);
+    assert.equal(row.emptyRegion, "satisfied", `${name}: EMPTY-REGION fired on a committed fixture`);
+  }
+  // `blank-page` is the one exception, and it is a fixture that must FAIL.
+  const frameFires = committed.filter((n) => MEASURED_375.find((m) => m.artefact === n)?.emptyFrame === "violated");
+  assert.deepEqual(frameFires, ["blank-page"]);
+});
+
+test("MEASURED: the hollow build fires EMPTY-REGION ALONE, and the restore silences it", () => {
+  // BREAK IT, WATCH IT GO RED, RESTORE IT, WATCH IT GO GREEN — over the module,
+  // with the answers that were given blind. `GATE:screenshots-present` PASSES on
+  // the hollow build: 19060 / 33002 / 27832 bytes against MIN_SCREENSHOT_BYTES
+  // = 1024, so `nonBlank` is true at all three breakpoints, 18.6x the floor at
+  // the tightest. This is not a subset of that gate.
+  const frame: VisualFrame = { flowId: "home", breakpoint: "375" };
+  const base: VisualObservationAnswer[] = [
+    { observationId: "VIS-F-EMPTY-FRAME", frame, verdict: "satisfied", note: "a hero name, an About heading, a Projects section with filled cards" },
+    { observationId: "VIS-F-PLACEHOLDER-MEDIA", frame, verdict: "satisfied", note: "the frame contains no image slot at all" },
+  ];
+  const hollow = evaluateVisualSubstance({
+    frames: [frame],
+    answers: [
+      ...base,
+      { observationId: "VIS-F-EMPTY-REGION", frame, verdict: "violated", note: "an About heading over a bordered panel containing no glyph, no image and no control" },
+    ],
+  });
+  assert.deepEqual(hollow.violations.map((v) => v.observationId), ["VIS-F-EMPTY-REGION"], "it must fire ALONE");
+
+  const restored = evaluateVisualSubstance({
+    frames: [frame],
+    answers: [
+      ...base,
+      { observationId: "VIS-F-EMPTY-REGION", frame, verdict: "satisfied", note: "the same bordered panel, full of body copy" },
+    ],
+  });
+  assert.deepEqual(restored.violations, [], "the restore must go green");
+});
+
+/* ---- 8. The arithmetic verdict.ts would see --------------------------- */
 
 test("SHADOW contributes nothing to a FUNCTIONAL count even when everything fires", () => {
   // verdict.ts:210 — any BLOCKING or FUNCTIONAL finding means `fail`. This is
