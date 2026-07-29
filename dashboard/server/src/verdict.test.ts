@@ -33,6 +33,7 @@ import { test } from "node:test";
 import type { CriterionResult } from "bakeoff/dist/contracts.js";
 import { GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ApiCriterionTier } from "./api-types.js";
+import { extractAssumptions } from "./spec-assumptions.js";
 import type { Assumption } from "./spec-assumptions.js";
 import { GATE_SECTION_HEADING, computeOutcome, failingTier, renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
@@ -399,4 +400,100 @@ test("gate ids are kept out of the assumption roll-call, and the count says how 
   assert.doesNotMatch(assumed, /GATE:/, "a fixed check is not an assumption about the ticket");
   assert.match(assumed, /2 of 3 criteria were inferred/, "the ticket-scoped arithmetic must exclude gates");
   assert.match(assumed, /3 fixed checks/, "and must still account for the gates it left out");
+});
+
+/* -------------------------------------------------------------------------
+ * HOST-ROLLED-UP QUALITY IDS ON THE PAGE
+ *
+ * The gate tests above pass `assumptions` this file built by hand, which is
+ * enough to test the RENDERER. These do not: they run the real
+ * `extractAssumptions` over the real criterion ids, because the join between the
+ * two modules is where the defect lived. `calibration/grade-fixture.ts` builds
+ * its VerdictInput exactly this way — `statementFor` hands back the bare id for
+ * any criterion with no authored prose, and every `QUALITY:*` id has none.
+ * ---------------------------------------------------------------------- */
+
+const QUALITY_TICKET = "Build a portfolio site for Ada Lovelace with a hero and three projects.";
+
+/** A page whose only finding is one host-rolled-up QUALITY observation. */
+function pageWithRollup(id: string): string {
+  const criteria = [
+    { id: "REQ-002", statement: "The hero shall name Ada Lovelace.", tier: "FUNCTIONAL" as const, evidenceRequired: "" },
+    { id, statement: id, tier: "QUALITY" as const, evidenceRequired: "" },
+  ];
+  return renderVerdict({
+    ticket: QUALITY_TICKET,
+    criteriaResults: [
+      { criterionId: "REQ-002", tier: "FUNCTIONAL", passed: true, evidenceRef: null, detail: null },
+      { criterionId: id, tier: "QUALITY", passed: false, evidenceRef: null, detail: "3 observation(s): home@1280x800" },
+    ],
+    qualityFindings: [],
+    assumptions: extractAssumptions(QUALITY_TICKET, criteria),
+    heldOutUnmet: { BLOCKING: 0, FUNCTIONAL: 0, QUALITY: 0 },
+  });
+}
+
+test("a QUALITY roll-up renders as a sentence, not as QUALITY:default_serif_font", () => {
+  const md = pageWithRollup("QUALITY:default_serif_font");
+  assert.match(md, /default serif font/i, "the observation must be stated in owner-facing English");
+  assert.doesNotMatch(
+    md,
+    /^- (?:not met: )?QUALITY:default_serif_font\s*$/m,
+    "a bare machine id is what shipped on 2026-07-29",
+  );
+});
+
+test("a QUALITY roll-up is never given fabricated provenance, while a real inference keeps its own", () => {
+  // POSITIVE AND NEGATIVE IN ONE PAGE. An absence assertion alone would pass if
+  // the renderer stopped emitting the INFERRED prose for everyone, so a
+  // genuinely inferred criterion has to carry it on the same page.
+  const criteria = [
+    { id: "REQ-009", statement: "The site shall expose an RSS feed.", tier: "FUNCTIONAL" as const, evidenceRequired: "" },
+    {
+      id: "QUALITY:default_serif_font",
+      statement: "QUALITY:default_serif_font",
+      tier: "QUALITY" as const,
+      evidenceRequired: "",
+    },
+  ];
+  const md = renderVerdict({
+    ticket: QUALITY_TICKET,
+    criteriaResults: [
+      { criterionId: "REQ-009", tier: "FUNCTIONAL", passed: false, evidenceRef: null, detail: null },
+      {
+        criterionId: "QUALITY:default_serif_font",
+        tier: "QUALITY",
+        passed: false,
+        evidenceRef: null,
+        detail: "3 observation(s)",
+      },
+    ],
+    qualityFindings: [],
+    assumptions: extractAssumptions(QUALITY_TICKET, criteria),
+    heldOutUnmet: { BLOCKING: 0, FUNCTIONAL: 0, QUALITY: 0 },
+  });
+  assert.match(
+    md,
+    /INFERRED, not something you wrote/,
+    "the genuinely inferred requirement must still be labelled — otherwise this test proves nothing",
+  );
+  assert.doesNotMatch(
+    sectionBody(md, "Notes on quality"),
+    /INFERRED|the grader added this|grader's guess/,
+    "a host roll-up of the container's own observations is not a guess about what the ticket implied",
+  );
+});
+
+test("a roll-up's sentence is not negated twice — it is already written as what went wrong", () => {
+  // The "not met: " prefix exists because an AUTHORED quality criterion is
+  // written as the satisfied case. A roll-up's sentence is written as the
+  // observation, so the prefix would say the opposite of what happened.
+  const md = pageWithRollup("QUALITY:placeholder_text");
+  assert.doesNotMatch(md, /not met: Placeholder text/i, "double negation: the page now claims the page is clean");
+  assert.match(md, /- Placeholder text/, "and the observation still has to be on the page");
+});
+
+test("an AUTHORED quality criterion still gets its negation — the prefix was narrowed, not deleted", () => {
+  const md = renderVerdict(runWith({ quality: 1 }));
+  assert.match(md, /not met: the motion is bespoke/i, "an unmet authored QUALITY criterion reads as praise without it");
 });

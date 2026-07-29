@@ -72,7 +72,7 @@ import type { CriterionResult } from "bakeoff/dist/contracts.js";
 // erase at runtime — leaving the ordering below silently matching nothing.
 import { ALL_GATE_IDS, GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ApiCriterionTier } from "./api-types.js";
-import { gateLabel, isGateAssumption, isGateCriterionId } from "./spec-assumptions.js";
+import { gateLabel, isGateAssumption, isGateCriterionId, isQualityRollupId } from "./spec-assumptions.js";
 import type { Assumption } from "./spec-assumptions.js";
 
 export type VerdictOutcome = "pass" | "fail" | "pass_with_notes";
@@ -376,7 +376,18 @@ function renderNotes(input: VerdictInput): readonly string[] {
   // Criterion statements are written as the satisfied case ("the motion is
   // bespoke"), so an unmet one needs the negation said out loud or it reads as
   // praise sitting in a list of complaints.
-  for (const result of unmetQuality) lines.push(...renderUnmetCriterion(input, result, "not met: "));
+  //
+  // A HOST ROLL-UP IS THE EXCEPTION, and it gets no prefix. `QUALITY:*` ids carry
+  // no authored prose at all: their sentence comes from `spec-assumptions.ts`'s
+  // constant table and is written in the OBSERVED voice, because an observation
+  // that did not fire produces no criterion to render. "not met: the page
+  // renders in the browser's default serif font" negates a sentence that is
+  // already negative and tells the owner the opposite of what happened.
+  for (const result of unmetQuality) {
+    lines.push(
+      ...renderUnmetCriterion(input, result, isQualityRollupId(result.criterionId) ? "" : "not met: "),
+    );
+  }
   if (heldOutQuality > 0) lines.push(`- ${String(heldOutQuality)} QUALITY (held out, counted only)`);
   lines.push("");
   return lines;

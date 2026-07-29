@@ -27,7 +27,14 @@ import type { AcceptanceCriterion } from "bakeoff/dist/contracts.js";
 // the drift test below would then compare the label table against nothing —
 // a check that can only observe success, which is the defect this repo ships.
 import { ALL_GATE_IDS, GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
-import { GATE_LABELS, extractAssumptions, gateLabel, renderAssumptions } from "./spec-assumptions.js";
+import {
+  GATE_LABELS,
+  extractAssumptions,
+  gateLabel,
+  isQualityRollupId,
+  qualityRollupLabel,
+  renderAssumptions,
+} from "./spec-assumptions.js";
 
 /** A minimal criterion. The tracer reads `id` and `statement` and nothing else. */
 function c(id: string, statement: string): AcceptanceCriterion {
@@ -193,4 +200,78 @@ test("a gate criterion is `default` on its ID alone, never `inferred`, and reads
     assert.equal(x?.statement, gateLabel(id));
     assert.doesNotMatch(String(x?.because), /grader's guess|nothing you wrote appears/);
   }
+});
+
+/* -------------------------------------------------------------------------
+ * HOST-ROLLED-UP QUALITY IDS
+ *
+ * Same defect as the gate ids above, one door down and NOT fixable the same
+ * way. `bakeoff/src/scorer.ts:summariseDomFindings` mints one criterion per DOM
+ * observation kind that fired — `QUALITY:default_serif_font` — with no authored
+ * prose, and `calibration/grade-fixture.ts:statementFor` hands the bare id back
+ * as the statement. The tracer then found no overlap with the ticket, because
+ * there is none to find, and stamped it "INFERRED, not something you wrote".
+ *
+ * WHY THERE IS NO DRIFT TEST HERE. `ALL_GATE_IDS` is exported; there is no
+ * `ALL_DOM_FINDING_KINDS`. The eight DOM kinds are checked by the COMPILER
+ * instead — `DOM_FINDING_LABELS` is `satisfies Record<DomFindingKind, string>`,
+ * so a kind added upstream is a missing property and a kind renamed upstream is
+ * an unknown property. Both directions were mutated and both went red; see the
+ * comment on the table. The two roll-ups that are not DOM findings are string
+ * literals in scorer.ts with nothing to check against, and the fallback below is
+ * what covers them.
+ * ---------------------------------------------------------------------- */
+
+test("a QUALITY roll-up is `default` on its ID alone, never `inferred`, and reads as a sentence", () => {
+  // The ticket shares nothing with "QUALITY:default_serif_font" — the input that
+  // produced the fabricated INFERRED label. C-2 is the positive control: if this
+  // went green because the module stopped labelling anything `inferred`, it
+  // catches that.
+  const a = extractAssumptions("Build a portfolio site for Ada Lovelace", [
+    { id: "QUALITY:default_serif_font", statement: "QUALITY:default_serif_font", tier: "QUALITY", evidenceRequired: "" },
+    { id: "QUALITY:scorer_infrastructure", statement: "QUALITY:scorer_infrastructure", tier: "QUALITY", evidenceRequired: "" },
+    c("C-2", "a project list renders at least three entries"),
+  ]);
+  assert.equal(a.find((x) => x.criterionId === "C-2")?.source, "inferred", "the positive control");
+  for (const id of ["QUALITY:default_serif_font", "QUALITY:scorer_infrastructure"]) {
+    const x = a.find((v) => v.criterionId === id);
+    assert.equal(x?.source, "default", `${id} is an observation the grader makes, not a guess about the ticket`);
+    assert.notEqual(x?.statement, id, `${id} still renders as its own machine id`);
+    assert.equal(x?.statement, qualityRollupLabel(id));
+    assert.doesNotMatch(String(x?.because), /grader's guess|nothing you wrote appears/);
+  }
+});
+
+test("every DOM observation kind that can be rolled up has a sentence, and no sentence is an id", () => {
+  // Driven from the KINDS, not from the label table: iterating the table would
+  // only prove the table agrees with itself. The list is the union's members,
+  // and the compiler is what keeps the union and the table in step.
+  const kinds = [
+    "console_error",
+    "unhandled_rejection",
+    "same_origin_request_failed",
+    "sealed_network_request_blocked",
+    "image_natural_width_zero",
+    "horizontal_overflow",
+    "default_serif_font",
+    "placeholder_text",
+  ];
+  for (const id of [...kinds.map((k) => `QUALITY:${k}`), "QUALITY:non_blocking_exploit_pattern", "QUALITY:scorer_infrastructure"]) {
+    const label = qualityRollupLabel(id);
+    assert.ok(label.length > 10, `${id} has no usable label`);
+    assert.doesNotMatch(label, /^QUALITY:/, `${id} renders as its own id, which is the defect`);
+    assert.doesNotMatch(label, /has no description/, `${id} fell through to the unlabelled fallback`);
+  }
+});
+
+test("an id the table does not know says so IN ENGLISH — the fallback is reachable here", () => {
+  // Unlike `gateLabel`, whose drift test makes its fallback nearly unreachable,
+  // two of the ten roll-up ids are unchecked string literals upstream. This
+  // branch is where a rename lands, so it has to leave the owner with something
+  // to act on.
+  const label = qualityRollupLabel("QUALITY:something_renamed_upstream");
+  assert.match(label, /grader defect|report it/i, "an unlabelled roll-up must read as a grader defect");
+  assert.notEqual(label, "QUALITY:something_renamed_upstream");
+  assert.equal(isQualityRollupId("QUALITY:something_renamed_upstream"), true, "the PREFIX decides, not the table");
+  assert.equal(isQualityRollupId("REQ-004"), false);
 });

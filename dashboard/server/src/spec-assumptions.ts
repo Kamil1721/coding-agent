@@ -70,6 +70,12 @@ import type { AcceptanceCriterion } from "bakeoff/dist/contracts.js";
 // test that compares {@link GATE_LABELS} against this list would then be
 // comparing the table against nothing — a check that can only observe success.
 import { GATE_IDS, GATE_ID_PREFIX } from "bakeoff/dist/scorer-protocol.js";
+// A TYPE import, and for once that is the STRONGER check rather than the weaker
+// one. See {@link DOM_FINDING_LABELS}: the table is keyed by this union, so a
+// kind added or removed upstream is a COMPILE error here. A runtime drift test
+// is not available for it — there is no `ALL_DOM_FINDING_KINDS` constant to
+// import — and the type system is what stands in for one.
+import type { DomFindingKind } from "bakeoff/dist/scorer-protocol.js";
 
 /**
  * Where a criterion came from.
@@ -208,6 +214,144 @@ function gateReason(id: string): string {
   return (
     `a fixed check that runs on every artefact whatever the ticket says (${id}). ` +
     "It is not a guess about what you meant, so there is nothing here to correct."
+  );
+}
+
+/* -------------------------------------------------------------------------
+ * HOST-ROLLED-UP QUALITY IDS — the same defect as the tier-0 gates, one door
+ * down, and NOT solvable the same way
+ *
+ * MEASURED, same 4B verdict file. `QUALITY:default_serif_font` reached the page
+ * as its own machine id, stamped "INFERRED, not something you wrote — the
+ * grader added this. It is the grader's guess about what your ticket implies".
+ * Every word of that is false in the same way it was false for `GATE:*`: these
+ * ids are minted by `summariseDomFindings` in `bakeoff/src/scorer.ts` out of the
+ * container's own DOM observations, one per kind that fired. Nobody inferred
+ * anything about the ticket.
+ *
+ * WHY THIS IS NOT JUST A SECOND `GATE_LABELS`. The gate table is checked at
+ * RUNTIME against `ALL_GATE_IDS`, an exported constant, so a gate added upstream
+ * turns the suite red. There is no equivalent constant here. The kinds live in
+ * the `DomFindingKind` UNION and in a `known` array local to
+ * `parseContainerResult`; neither is exported, and the two roll-ups that are not
+ * DOM findings at all are bare string literals inside `summariseDomFindings`.
+ * Copying ten ids into a list nothing can check is exactly the "second
+ * uncheckable list" this file already refuses to grow.
+ *
+ * SO THE CHECKED SURFACE IS MAXIMISED RATHER THAN ABANDONED, in two parts:
+ *
+ *   1. {@link DOM_FINDING_LABELS} is typed `Record<DomFindingKind, string>`. A
+ *      kind ADDED upstream fails to compile ("property is missing"); a kind
+ *      REMOVED upstream fails to compile too (an object literal may not name a
+ *      key the type does not have). That is a stricter check than the gates'
+ *      runtime one, not a weaker one — it cannot be reached with the suite green.
+ *
+ *   2. The two non-DOM roll-ups below are UNCHECKED and are labelled as such.
+ *      `QUALITY:non_blocking_exploit_pattern` and `QUALITY:scorer_infrastructure`
+ *      are string literals in scorer.ts with no type behind them; nothing here
+ *      can notice if they are renamed. What protects the owner in that case is
+ *      {@link qualityRollupLabel}'s fallback, which says in English that the
+ *      grader has no description for the id — a grader defect the owner can
+ *      report, rather than a symbol they cannot act on.
+ *
+ * THE PREFIX, NOT THE TABLE, DECIDES WHAT IS A ROLL-UP. Same rule as
+ * `isGateCriterionId`: an unlabelled roll-up is still a roll-up, and treating one
+ * as an ordinary criterion is how it gets fabricated provenance again.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * `QUALITY:` — the prefix `summariseDomFindings` mints its criterion ids with.
+ *
+ * A SECOND SPELLING OF AN UPSTREAM LITERAL, said out loud because it is a real
+ * cost. `scorer-protocol.ts` exports `GATE_ID_PREFIX` and exports no equivalent
+ * for this one, so the string is repeated here rather than imported. If the
+ * upstream prefix changes, this goes quiet — which is why the fallback in
+ * {@link qualityRollupLabel} has to say something rather than nothing.
+ */
+export const QUALITY_ROLLUP_PREFIX = "QUALITY:";
+
+/**
+ * One owner-facing sentence per DOM observation kind.
+ *
+ * KEYED BY THE UNION ON PURPOSE — see the block comment above. They are written
+ * in the OBSERVED voice, like {@link GATE_LABELS} and unlike an authored QUALITY
+ * criterion, because that is the only place they render: an observation that did
+ * not fire produces no criterion at all. `verdict.ts:renderNotes` therefore does
+ * NOT prefix them with "not met:", which would negate a sentence that is already
+ * negative.
+ */
+const DOM_FINDING_LABELS: Readonly<Record<DomFindingKind, string>> = Object.freeze({
+  console_error: "The page logged errors to the browser console while it was being used.",
+  unhandled_rejection: "Something the page started in the background failed, and nothing handled the failure.",
+  same_origin_request_failed: "The page asked its own server for something and did not get it.",
+  sealed_network_request_blocked:
+    "The page tried to reach the open internet. The grader runs sealed, so the request was blocked — " +
+    "anything the page needs has to ship with it.",
+  image_natural_width_zero: "An image on the page never loaded: it takes up space and shows nothing.",
+  horizontal_overflow: "The page scrolls sideways at one of the widths it was looked at.",
+  default_serif_font:
+    "The page renders in the browser's default serif font, so no typeface was chosen for it.",
+  placeholder_text: "Placeholder text — lorem ipsum, \"your text here\" — is still on the page.",
+});
+
+/**
+ * Every host-rolled-up QUALITY id this module can name.
+ *
+ * The DOM half is derived from the typed table, so it cannot drift from it. The
+ * two entries after it are the unchecked ones; they are written out rather than
+ * derived because there is nothing to derive them from.
+ */
+const QUALITY_ROLLUP_LABELS: ReadonlyMap<string, string> = new Map([
+  ...Object.entries(DOM_FINDING_LABELS).map(
+    ([kind, label]) => [`${QUALITY_ROLLUP_PREFIX}${kind}`, label] as const,
+  ),
+  // UNCHECKED, and deliberately so. Both are bare string literals in
+  // `summariseDomFindings`; no type or constant upstream can be compared against
+  // them. A rename upstream lands on the fallback below, which says so.
+  [
+    `${QUALITY_ROLLUP_PREFIX}non_blocking_exploit_pattern`,
+    "Code that could rig a test suite was found outside the test files. It is reported and it did not " +
+      "fail the run — the blocking version of this check is a separate one.",
+  ],
+  [
+    `${QUALITY_ROLLUP_PREFIX}scorer_infrastructure`,
+    "The grader itself hit a problem while scoring this run. That is the grader's failure and not your " +
+      "artefact's: report it rather than changing code to satisfy it.",
+  ],
+]);
+
+/** Is this criterion id a host roll-up of the container's own observations? */
+export function isQualityRollupId(id: string): boolean {
+  return id.startsWith(QUALITY_ROLLUP_PREFIX);
+}
+
+/** True for the record of a roll-up criterion. Ticket-level notes are never one. */
+export function isQualityRollupAssumption(assumption: Assumption): boolean {
+  return assumption.criterionId !== null && isQualityRollupId(assumption.criterionId);
+}
+
+/**
+ * The owner-facing sentence for a host-rolled-up QUALITY id.
+ *
+ * THE FALLBACK IS THE LOAD-BEARING PART HERE, unlike {@link gateLabel} where a
+ * drift test makes it nearly unreachable. Two of the ten ids are unchecked, so
+ * this branch is genuinely reachable, and it has to leave the owner with
+ * something they can act on: "the grader has no description for this" is a bug
+ * report they can file. The bare id is not.
+ */
+export function qualityRollupLabel(id: string): string {
+  return (
+    QUALITY_ROLLUP_LABELS.get(id) ??
+    `The grader recorded a quality observation it has no description for (${id}). It did not fail the ` +
+      `run. The missing description is a grader defect: report it.`
+  );
+}
+
+/** Why a roll-up carries `default`. Same shape as {@link gateReason}. */
+function qualityRollupReason(id: string): string {
+  return (
+    `an observation the grader records on every artefact whatever the ticket says (${id}). ` +
+    "It is reported and it never fails a run, so there is nothing here to correct."
   );
 }
 
@@ -410,6 +554,22 @@ export function extractAssumptions(
         statement: gateLabel(criterion.id),
         source: "default" as const,
         because: gateReason(criterion.id),
+      };
+    }
+
+    // AND BEFORE ANY TRACING, for the same reason. A `QUALITY:*` id is minted by
+    // the host from the container's own observations; it is not an inference
+    // about the ticket, and the tracer running over the string
+    // "QUALITY:default_serif_font" found no overlap — of course it did — and
+    // stamped it "INFERRED, not something you wrote". Routing on the PREFIX
+    // means an id this module has no label for is still kept away from the
+    // heuristic; `qualityRollupLabel` says so in English.
+    if (isQualityRollupId(criterion.id)) {
+      return {
+        ...base,
+        statement: qualityRollupLabel(criterion.id),
+        source: "default" as const,
+        because: qualityRollupReason(criterion.id),
       };
     }
 
