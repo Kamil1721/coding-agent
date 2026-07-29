@@ -203,6 +203,16 @@ test("CONTRACT: the client's RunDetail declares designLock, with the server's sh
   );
 
   const state = region(client, CLIENT_TYPES, "export interface DesignLockState {", "}");
+  // THE PARSE IS VERIFIED, NOT ASSUMED. This region closes on the FIRST `}`, so
+  // a member that ever spans braces — an inlined object literal for `mockups`,
+  // say — truncates it. The field checks below would then go red naming the
+  // wrong cause ("the client is missing `reason`") when the real fault is this
+  // parser. Counting first makes the truncation say so itself.
+  assert.equal(
+    state.split(";").length - 1,
+    5,
+    "the DesignLockState region did not parse as five fields — re-point this parser, do not delete it",
+  );
   for (const field of [
     /readonly awaiting: boolean;/,
     /readonly mockups: readonly Screenshot\[\];/,
