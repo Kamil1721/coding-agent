@@ -593,3 +593,60 @@ test("THE LANE'S OWN ARGV IS WHAT THE SCRIPT IS RUN WITH — and it survives int
   assert.equal(existsSync(leg.poster), true, "and so did the poster");
   rmSync(workspaceTmpDir(f.dir), { recursive: true, force: true });
 });
+
+test("A FAILED LEG COMES BACK ok:false — the branch that decides what gets advertised", async (t) => {
+  // MEASURED SURVIVAL. Inverting `defaultSpawnLeg`'s catch branch to
+  // `{ ok: true, … }` left all 38 design tests, all 35 in orchestrator.test.ts
+  // and all 21 here GREEN: `video-lane.test.ts` stubs `spawnLeg` wholesale, the
+  // orchestrator's stub script always exits 0, and the argv test above only ever
+  // observes a SUCCESSFUL run. So the one branch that decides whether a leg is
+  // real was pinned by nothing permanent.
+  //
+  // What it costs: `renderVideoSpend` counts `produced`, so a leg that failed
+  // inflates `legsProduced` and `meteredSeconds` in `results/video.json`, and
+  // `runVideoLane` advertises its path to the build agents — a world layer built
+  // around an mp4 that is not there. That is the failure "A LEG THAT FAILED IS
+  // NOT ADVERTISED" exists to prevent, arriving through the one seam that test
+  // cannot reach.
+  //
+  // AND THE DETAIL IS CHECKED FOR THE KEY HERE, not only in the script's own
+  // leak test. `detail` is the string the lane PERSISTS into results/video.json;
+  // the script redacts its stderr, and this asserts that what the lane keeps of
+  // it is clean too.
+  const fake = await fakeFor(t, { postStatus: 400, echoKeyInError: true });
+  const f = fixture();
+  const manifest = {
+    version: 1,
+    refs: [{ path: f.still, section: "descent", aspect: "16:9", intent: "x", animate: true }],
+    lockedMockup: null,
+    lockedBy: null,
+    lockedReason: null,
+    lockedAt: null,
+  };
+  const plan = planVideoLegs(legPlannerInput(manifest), f.dir, resolveLegCap({}));
+  const leg = plan.legs[0];
+  const env = videoLaneEnv(
+    {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      GEMINI_API_KEY: SENTINEL_KEY,
+      GEMINI_VIDEO_API_BASE: fake.url,
+      GEMINI_VIDEO_POLL_SEC: "0.2",
+      GEMINI_VIDEO_TIMEOUT_SEC: "5",
+    },
+    f.dir,
+  );
+  mkdirSync(workspaceTmpDir(f.dir), { recursive: true });
+
+  const result = await defaultSpawnLeg(SCRIPT)(leg, env);
+  assert.equal(result.ok, false, "an API error is a FAILED leg, whatever else is true");
+  assert.match(result.detail, /exit 3\b/u, "the script's own exit code survives into the record");
+  assert.match(result.detail, /INVALID_ARGUMENT|400/u, "and so does the diagnosis");
+  assert.ok(!result.detail.includes(SENTINEL_KEY), "the key is not in the string the lane persists");
+  assert.match(result.detail, /\[REDACTED\]/u, "it was removed, visibly");
+  // NOTHING WAS WRITTEN. A failed leg that still leaves an mp4 behind is the
+  // truncation trap wearing a different hat.
+  assert.equal(existsSync(leg.out), false, "no mp4 for a leg that failed");
+  assert.equal(existsSync(`${leg.out}.part`), false, "and no .part either");
+  rmSync(workspaceTmpDir(f.dir), { recursive: true, force: true });
+});
