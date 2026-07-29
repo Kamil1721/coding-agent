@@ -152,6 +152,8 @@ export function serialiseDesignManifest(manifest: DesignManifest): string;
 export function toVisualManifest(manifest: DesignManifest): DesignLock;
 /** Disk-facing helpers. Every later task reads the manifest through these two. */
 export function readDesignManifest(workspace: string): DesignManifest | null;
+/** Drop refs whose file is not on disk. What the HANDOFF is built from. */
+export function pruneMissingRefs(manifest: DesignManifest): DesignManifest;
 export function writeDesignManifest(workspace: string, manifest: DesignManifest): void;
 export function readDesignDirection(workspace: string): string;
 export function countDesignPngs(refsDir: string): number;
@@ -284,6 +286,32 @@ test("the disk helpers round-trip, and a missing file is null rather than a thro
   assert.equal(readDesignDirection(ws), "", "absent direction is empty, never a heading over a hole");
 });
 
+test("pruneMissingRefs keeps the prompt honest, and drops a lock that points at nothing", () => {
+  // A partial lane does not stop the run, so the build segment still gets a
+  // handoff — but a path in a prompt that resolves to nothing is a Read failure
+  // several turns deep inside a build agent, reported as its confusion rather
+  // than as a design fault.
+  const ws = mkdtempSync(join(tmpdir(), "design-prune-"));
+  const refsDir = join(ws, "design-refs");
+  mkdirSync(refsDir, { recursive: true });
+  const present = join(refsDir, "01.png");
+  const absent = join(refsDir, "02.png");
+  writeFileSync(present, "x", "utf8");
+  const manifest: DesignManifest = {
+    version: 1,
+    refs: [
+      { path: present, section: "hero", aspect: "16:9", intent: "x" },
+      { path: absent, section: "work", aspect: "16:9", intent: "y" },
+    ],
+    lockedMockup: absent, lockedBy: "owner", lockedReason: "r", lockedAt: "2026-07-29T10:00:00.000Z",
+  };
+  const pruned = pruneMissingRefs(manifest);
+  assert.deepEqual(pruned.refs.map((r) => r.path), [present]);
+  assert.equal(pruned.lockedMockup, null, "a lock on a missing file is no lock");
+  assert.equal(pruned.lockedBy, null);
+  assert.equal(pruneMissingRefs({ ...manifest, refs: [manifest.refs[0]!], lockedMockup: present }).lockedMockup, present);
+});
+
 test("countDesignPngs counts DISK, not the manifest's claims", () => {
   // classifyDesignLane compares the two. A count taken from the manifest would
   // make "the manifest lists 5 refs over 3 files" undetectable by construction.
@@ -298,7 +326,7 @@ test("countDesignPngs counts DISK, not the manifest's claims", () => {
 });
 ```
 
-The test file's imports grow accordingly: `import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";` and the four new helpers from `./design-manifest.js`.
+The test file's imports grow accordingly: `import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";` and the five new helpers (`readDesignManifest`, `writeDesignManifest`, `readDesignDirection`, `countDesignPngs`, `pruneMissingRefs`) from `./design-manifest.js`.
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -510,6 +538,37 @@ export function readDesignManifest(workspace: string): DesignManifest | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The manifest with every ref whose file is missing removed.
+ *
+ * WHAT THE HANDOFF IS BUILT FROM, AND WHY IT IS A SEPARATE FUNCTION. A partial
+ * DESIGN lane (`too-few-images`, `manifest-invalid`) does NOT stop the run —
+ * degrade-don't-block applies here as everywhere else — so the build segment
+ * still gets a handoff. But §7.3 mechanism 2 works by putting absolute paths in
+ * a prompt, and a path that resolves to nothing is a `Read` failure inside every
+ * build agent, several turns deep, reported as an agent's confusion rather than
+ * as a design fault. So the REPORT keeps the discrepancy (`classifyDesignLane`
+ * compares the manifest's claim against the disk count) and the PROMPT carries
+ * only files that exist.
+ *
+ * A locked mockup that is itself missing drops the lock: the gate then grades on
+ * the rule-based floor, which is the honest answer, rather than against a
+ * reference nobody can open.
+ */
+export function pruneMissingRefs(manifest: DesignManifest): DesignManifest {
+  const refs = manifest.refs.filter((ref) => existsSync(ref.path));
+  if (refs.length === manifest.refs.length) return manifest;
+  const lockedSurvives = manifest.lockedMockup !== null && refs.some((r) => r.path === manifest.lockedMockup);
+  return {
+    ...manifest,
+    refs,
+    lockedMockup: lockedSurvives ? manifest.lockedMockup : null,
+    lockedBy: lockedSurvives ? manifest.lockedBy : null,
+    lockedReason: lockedSurvives ? manifest.lockedReason : null,
+    lockedAt: lockedSurvives ? manifest.lockedAt : null,
+  };
 }
 
 /** Used only by the HOST, when it applies a lock. The agent writes the refs. */
@@ -1390,6 +1449,8 @@ MSG
 ```ts
 export type DesignLaneMode = "full" | "degraded" | "off";
 export function visualIntent(ticketText: string): boolean;
+/** The PURE half of the predicate: the two terms that can return "off". */
+export function designSurfaceGate(surface: Surface, ticketText: string): boolean;
 export function designLaneMode(input: {
   surface: Surface;
   ticketText: string;
@@ -1398,6 +1459,10 @@ export function designLaneMode(input: {
 }): DesignLaneMode;
 ```
 
+**Why `shortlistFor` is still a permission boundary after this widening — say it, or a reviewer rejects the task on purity grounds with the defence undiscovered.** `surface.ts` states the rule: *"a boundary that awaits a model call has a failure mode… and a boundary with a failure mode is not a boundary."* `designMode` now depends transitively on `designPreflight`, which spawns `npx`. **It does not weaken the boundary**, because `designLaneRuns` is `mode !== "off"` and **`"off"` is decided by `designSurfaceGate` alone** — surface plus `visualIntent`, both pure, both synchronous, neither able to fail. The preflight can only move the lane between `full` and `degraded`, and those two shortlist identically. `designSurfaceGate` is exported separately so that fact is checkable rather than argued.
+
+It also means the orchestrator can **skip the preflight entirely when the gate is false**: a `cli` ticket must not spend up to 20 seconds probing `npx` for a lane that cannot run.
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
@@ -1405,7 +1470,7 @@ export function designLaneMode(input: {
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { DesignCapability } from "./design-capability.js";
-import { designLaneMode, visualIntent } from "./design-lane.js";
+import { designLaneMode, designSurfaceGate, visualIntent } from "./design-lane.js";
 
 const WITH_KEY: DesignCapability = {
   imageScript: "/scripts/gemini-image.sh",
@@ -1455,6 +1520,21 @@ test("a failed preflight degrades too — a lane that cannot generate must say s
     designLaneMode({ surface: "web-ui", ticketText: "a portfolio", capability: WITH_KEY, preflightOk: false }),
     "degraded",
   );
+});
+
+test("the OFF decision is PURE — no capability, no preflight, nothing that can await", () => {
+  // shortlistFor feeds a permission boundary and surface.ts forbids one that can
+  // fail. Everything that decides whether the DESIGN agents are shortlisted has
+  // to be answerable from these two arguments alone.
+  assert.equal(designSurfaceGate("web-ui", "a page"), true);
+  assert.equal(designSurfaceGate("cli", "make it beautiful"), false);
+  assert.equal(designSurfaceGate("fullstack", "an api and an admin screen"), false);
+  for (const capability of [WITH_KEY, NO_KEY]) {
+    for (const preflightOk of [true, false]) {
+      const off = designLaneMode({ surface: "cli", ticketText: "a beautiful cli", capability, preflightOk });
+      assert.equal(off, "off", "no capability state may turn a non-visual surface on, or a visual one off");
+    }
+  }
 });
 
 test("visualIntent reads intent, not incidental words", () => {
@@ -1556,15 +1636,30 @@ export function visualIntent(ticketText: string): boolean {
   return mentions(ticketText.toLowerCase(), VISUAL_INTENT);
 }
 
+/**
+ * THE PURE HALF, AND THE ONLY HALF THAT CAN SAY "off".
+ *
+ * `shortlistFor` feeds a permission boundary, and `surface.ts` is explicit that a
+ * boundary which can await or fail is not a boundary. Everything that decides
+ * whether the DESIGN agents are shortlisted lives in this function: surface and
+ * `visualIntent`, both pure, both total. The capability terms below can only
+ * choose between `full` and `degraded`, which shortlist identically.
+ *
+ * Exported so the orchestrator can ask it BEFORE running the preflight — a `cli`
+ * ticket has no business spending 20 seconds probing `npx`.
+ */
+export function designSurfaceGate(surface: Surface, ticketText: string): boolean {
+  if (surface !== "web-ui" && surface !== "fullstack") return false;
+  return visualIntent(ticketText) || surface === "web-ui";
+}
+
 export function designLaneMode(input: {
   surface: Surface;
   ticketText: string;
   capability: DesignCapability;
   preflightOk: boolean;
 }): DesignLaneMode {
-  const visualSurface = input.surface === "web-ui" || input.surface === "fullstack";
-  if (!visualSurface) return "off";
-  if (!(visualIntent(input.ticketText) || input.surface === "web-ui")) return "off";
+  if (!designSurfaceGate(input.surface, input.ticketText)) return "off";
   // The third term of §6.5's predicate. False here means DEGRADED, never off.
   if (!input.capability.key.available || input.capability.imageScript === null) return "degraded";
   if (!input.preflightOk) return "degraded";
@@ -1957,6 +2052,8 @@ export function designSegmentPrompt(input: {
   return lines.join("\n");
 }
 ```
+
+**What a PARTIAL lane does, stated so it is not an unspecified branch.** `too-few-images` and `manifest-invalid` (Task 7) **do not stop the run** — degrade-don't-block applies here as everywhere else, and three real mockups are better than none. What changes is what crosses the seam: the *report* keeps the discrepancy, and the *prompt* is built from `pruneMissingRefs(manifest)` (Task 1), so no build agent is ever handed a path that resolves to nothing. If the locked mockup is itself one of the missing files, the lock drops and the gate falls back to the rule-based floor, which is the honest answer.
 
 **One detail worth stating rather than leaving to be discovered:** the degraded branch names `picsum`/`placehold.co` on purpose. Phase 2a's `AS-PLACEHOLDER-IMAGE` denies those at write time, and `taste-frontend-expert.md`'s own fallback instruction is "fall back to taste-skill §4.8 priority 2 (real photo URLs) or labeled TODO slots". A degraded lane that reaches for a random Unsplash URL would hit a hook denial three times and escalate — a self-inflicted loop the prompt can simply prevent.
 
@@ -2406,10 +2503,16 @@ test("SPEND IS A COUNT, NEVER A DOLLAR FIGURE", () => {
   // The DESIGN lane spends real money through a key read from ~/.gemini/api_key,
   // and nothing in this program knows the price. costUsd stays null for the run;
   // design spend is a call count and a model name, on its own line.
+  //
+  // SCOPED TO THE RECORD'S OWN KEYS, not to its serialised text: a preflight
+  // detail or a degrade reason may legitimately contain the word "cost", and a
+  // test that went red for that would be red for the wrong reason and get
+  // loosened by whoever hit it.
   const record = classify({ imageCalls: 7 });
   assert.equal(record.imageCalls, 7);
-  const json = JSON.stringify(record);
-  assert.doesNotMatch(json, /usd|cost|dollar|price/i, "no field here may look like money");
+  for (const key of Object.keys(record)) {
+    assert.doesNotMatch(key, /usd|cost|dollar|price/i, `${key} looks like money`);
+  }
 });
 
 test("the record carries the key SOURCE and never anything key-shaped", () => {
@@ -3492,6 +3595,8 @@ MSG
 **Files:**
 - Modify: `dashboard/server/src/orchestrator.ts` (`#buildPhase`, `resume`, `reconcileOnBoot`, `#recordScreenshots`'s neighbours)
 - Modify: `dashboard/server/src/orchestrator.test.ts`
+- Modify: `dashboard/server/src/db.ts` (three columns through the existing `RUN_MIGRATIONS` array) and `db.test.ts`
+- Modify: `dashboard/server/src/tokens.ts` (`mergeTokenTotals`) and `tokens.test.ts`
 - Create: `dashboard/server/src/design-segment-probe.mjs`
 
 **Interfaces:**
@@ -3578,11 +3683,21 @@ test("segment 2's prompt carries the locked mockup's ABSOLUTE path", async () =>
 });
 
 test("TOKENS ACCUMULATE ACROSS SEGMENTS — segment 2 must not clobber segment 1", async () => {
-  // orchestrator.ts:721-723 writes outcome.tokens onto the row per call.
-  const harness = await runFullTicket({ ticket: "a portfolio page", designLock: "auto" });
-  const detail = harness.detail();
+  // orchestrator.ts:721-723 writes toApiTokens(outcome.tokens) onto the row PER
+  // CALL, so today's code would report segment 2's number as the run's.
+  //
+  // THE HARNESS MAKES SEGMENT 2 SMALLER ON PURPOSE (1000 in, then 10), which is
+  // what makes this test red-able WITHOUT knowing whether a resumed session
+  // reports per-call or cumulative totals. Under a clobber the row reads 10 and
+  // this fails; under either summing or max-ing it passes. Which of those two is
+  // correct is a question about the SDK — see Step 6's probe.
+  const harness = await runFullTicket({
+    ticket: "a portfolio page",
+    designLock: "auto",
+    segmentTokens: [{ inputTokens: 1000 }, { inputTokens: 10 }],
+  });
   assert.ok(
-    (detail.tokens?.inputTokens ?? 0) >= harness.builderCalls[0]!.emittedTokens.inputTokens,
+    (harness.detail().tokens?.inputTokens ?? 0) >= 1000,
     "the run reports at least what the design segment spent",
   );
 });
@@ -3646,14 +3761,19 @@ In `#buildPhase`, before the existing `resuming` logic, compute the lane and the
       homeDir: this.#deps.env["HOME"] ?? homedir(),
       imageScript: designScriptPath(this.#deps.env, this.#deps.env["HOME"] ?? homedir()),
     });
-    const preflight = await designPreflight({
-      env: this.#deps.env,
-      homeDir: this.#deps.env["HOME"] ?? homedir(),
-      workspace: runPaths.workspace,
-      capability,
-      run: execCommandRunner,
-      canWrite: canWriteDir,
-    });
+    // THE PURE GATE FIRST. `designSurfaceGate` is the only term that can answer
+    // "off", so a cli/api/library ticket never pays the preflight's `npx` probe.
+    const gated = designSurfaceGate(surface, ticket.brief);
+    const preflight = gated
+      ? await designPreflight({
+          env: this.#deps.env,
+          homeDir: this.#deps.env["HOME"] ?? homedir(),
+          workspace: runPaths.workspace,
+          capability,
+          run: execCommandRunner,
+          canWrite: canWriteDir,
+        })
+      : { checks: [], ok: true, blockers: [] };
     const laneMode = designLaneMode({ surface, ticketText: ticket.brief, capability, preflightOk: preflight.ok });
     for (const check of preflight.checks) {
       if (!check.ok) this.#emitLog(runId, check.blocking ? "warn" : "info", `design preflight — ${check.detail}`);
@@ -3775,7 +3895,11 @@ After the design segment's `build()` returns, classify, record, register the moc
                 : "the dashboard was interrupted",
           );
     const handoff = designHandoffSection({
-      manifest,
+      // PRUNED, not raw. `classifyDesignLane` has already recorded the
+      // discrepancy for the report; the PROMPT must carry only paths that
+      // resolve, or a partial lane becomes a Read failure inside every build
+      // agent, several turns deep, reported as the agent's confusion.
+      manifest: manifest === null ? null : pruneMissingRefs(manifest),
       mode: laneMode,
       workspace: runPaths.workspace,
       dials: readDesignDirection(runPaths.workspace),
@@ -3921,6 +4045,21 @@ and `reconcileOnBoot` finishes an expired park rather than leaving it forever:
 
 and the sink's one line changes from `graph: (event) => this.#emit(runId, event)` to `graph: (event) => this.#emit(runId, remap(event))`.
 
+**Tokens, and the one thing about them this plan cannot settle from the repo.** `orchestrator.ts:721-723` writes `toApiTokens(outcome.tokens)` onto the row after each `build()`, so segment 2 would report *its* number as the run's. Whether a resumed session's `outcome.tokens` is per-call or already cumulative is **not knowable from the code** — nothing in the repo has run two segments. So the row takes the **larger** of what it holds and what just arrived, which is correct under both readings and never under-reports:
+
+```ts
+    // MAX, NOT SUM, AND THE REASON IS AN UNSETTLED QUESTION RATHER THAN A
+    // PREFERENCE. If a resumed session reports CUMULATIVE totals, summing would
+    // double-count segment 1; if it reports PER-CALL totals, max under-reports by
+    // segment 1's share. Under-reporting a token count is a smaller lie than
+    // inventing one, and this is the same rule `costUsd: null` follows. Step 6's
+    // probe settles it; when it does, this becomes a sum and the comment goes.
+    const merged = mergeTokenTotals(store.getRun(runId)?.tokens ?? null, toApiTokens(outcome.tokens));
+    if (outcome.tokens.callCount > 0) store.updateRun(runId, { tokens: merged });
+```
+
+with `mergeTokenTotals(previous, incoming)` taking the field-wise maximum — a four-line pure function in `tokens.ts` with its own test (`a second segment never lowers the run's reported totals`).
+
 Mockups become clickable through the route that already exists (§17.1: *"The screenshots route already serves images by basename"*). `serveScreenshot` resolves under `results/screenshots/<runId>/`, so each PNG is **copied** there — the workspace is the artefact and is not served:
 
 ```ts
@@ -3966,13 +4105,14 @@ The two-segment design rests on one claim about an external tool: **`resume: <se
 | **segment 1** | a trivial prompt ("remember the word FERROUS"); record `session_id` from `system/init` |
 | **segment 2, armed** | a second `query` with `resume: <that id>`, prompting "what word did I ask you to remember?" — the reply names FERROUS, and `system/init.session_id` is **the same id** |
 | **segment 2, control** | byte-identical second query with `resume` omitted — the model does **not** know the word |
+| **tokens, both arms** | print `outcome.tokens` for segment 1 and segment 2. If segment 2's input total is **≥ segment 1's**, the SDK reports CUMULATIVE totals and `mergeTokenTotals`'s max is exactly right; if it is a small independent number, totals are PER-CALL and the merge should become a sum. **Record which**, and change the one line if it is the latter. |
 
 The control is what makes the armed arm mean anything: without it, a model that guessed or a prompt that leaked the word would read as a successful resume. If the armed arm fails, **stop and report it** — the two-segment model is wrong and the park must move into a hook-await instead.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git commit -F - -- dashboard/server/src/orchestrator.ts dashboard/server/src/orchestrator.test.ts dashboard/server/src/db.ts dashboard/server/src/design-segment-probe.mjs <<'MSG'
+git commit -F - -- dashboard/server/src/orchestrator.ts dashboard/server/src/orchestrator.test.ts dashboard/server/src/db.ts dashboard/server/src/db.test.ts dashboard/server/src/tokens.ts dashboard/server/src/tokens.test.ts dashboard/server/src/design-segment-probe.mjs <<'MSG'
 feat(design): run the DESIGN segment, park for the lock, then build to it
 
 The build phase now runs two builder.build() calls against one session. Segment
@@ -4222,6 +4362,26 @@ function toDetail(row: RunRow, store: RunStore, paths: DashboardPaths): RunDetai
 
 with `export const DESIGN_MOCKUP_LABEL = "design mockup — ";` exported from `design-lock.ts` and used by `#recordDesignMockups` in Task 10, so the prefix has **one** definition rather than being typed twice.
 
+**THE CLIENT MUST SEND `designLock: "auto"` UNTIL THE MOCKUP CARDS EXIST, and this is not optional.** `interactive` is true for a dashboard-submitted run, so `designLockPolicy` would return `"ask"` — and NOT COVERED 1 says no card UI ships in this phase. Joined up, that means **every web-UI ticket the owner submits from the dashboard parks for 30 minutes and then fallback-locks the first mockup**: worse than either end of the design, and produced by two individually-correct decisions in different sections. So `dashboard/src/lib/api.ts`'s create-run call sends it explicitly:
+
+```ts
+    // AUTO UNTIL THE MOCKUP CARDS EXIST. The server would otherwise treat a
+    // dashboard submission as interactive and park the run at awaiting_input —
+    // with no UI in this phase that can choose a mockup, that is a 30-minute
+    // stall followed by an automatic pick. Delete this line in the same commit
+    // that ships the cards, and not before.
+    designLock: "auto",
+```
+
+with a matching test in `dashboard/server/src/contract-parity.test.ts` — the client's source is already read there, so the check costs nothing:
+
+```ts
+test("CONTRACT: the client sends designLock explicitly while there is no card UI", () => {
+  const client = readFileSync(join(CLIENT_LIB, "api.ts"), "utf8");
+  assert.match(client, /designLock:\s*"auto"/, "a dashboard-submitted run would park with nothing able to resume it");
+});
+```
+
 The client mirror in `dashboard/src/lib/api-types.ts` — the same two additions, verbatim, **in this commit**:
 
 ```ts
@@ -4457,6 +4617,8 @@ MSG
 - [ ] **Segment 2's node ids extend segment 1's** rather than colliding, proven at both levels: the unit control (Task 9 Step 5.1) and the fold-level control that shows the build's tool pills landing on the designer's node without the remap (Task 9 Step 5.2).
 - [ ] The visual gate's agent is `ui-designer` and the author's name appears nowhere in its prompt.
 - [ ] `costUsd` is `null` on a run that generated images, and no field anywhere in the design record looks like money.
+- [ ] **A two-segment run does not under-report tokens** — the merge is field-wise max, and the probe recorded whether a resumed session's totals are per-call or cumulative (if per-call, the merge became a sum in the same commit).
+- [ ] **The client sends `designLock: "auto"`** and the parity test asserting it is green — without it, every dashboard-submitted web-UI ticket parks for the full timeout with no UI able to unpark it.
 - [ ] `bakeoff/` untouched. `dashboard/STATUS.md` and `bakeoff/STATUS.md` untouched by this plan's tasks (the phase result is written into STATUS.md by whoever owns it, not by these commits).
 - [ ] No AI-attribution trailer on any commit. No `--amend`. No `git push`.
 
@@ -4482,7 +4644,7 @@ MSG
 
 ## NOT COVERED — stated rather than left silent
 
-1. **The clickable mockup cards themselves.** Task 11 delivers everything the UI needs (`RunDetail.designLock.mockups`, served by the existing screenshots route) and the client type mirror, but **no React component is planned here**. §17's diagram says "UI shows the 5 mockups as clickable cards"; that is a client task, and this plan's client surface stops at the type.
+1. **The clickable mockup cards themselves.** Task 11 delivers everything the UI needs (`RunDetail.designLock.mockups`, served by the existing screenshots route) and the client type mirror, but **no React component is planned here**. §17's diagram says "UI shows the 5 mockups as clickable cards"; that is a client task, and this plan's client surface stops at the type. **Because of that gap, the client sends `designLock: "auto"` explicitly** (Task 11 Step 3, with its own parity test) — otherwise a dashboard-submitted web-UI ticket would park for the full timeout with nothing in the UI able to unpark it. That line is deleted in the same commit that ships the cards, and not before.
 2. **§7.1's scroll-scrubbed-video pipeline and all of §7.6 (Phase 2c).** Deliberate, per §12: "2c after 2b, not merged with it. 2b proves the still pipeline, the manifest and the handoff end to end." The only 2c work here is the manifest's forward-compatible shape.
 3. **The canvas's "degraded lane" rendering.** §6.5 says "the canvas shows the lane as degraded". The *data* exists after this phase (`design-lane.json`, the error-level log event, `RunDetail.designLock`), but node styling belongs to Phase 3, which owns the canvas.
 4. **Per-agent turn bounds for the DESIGN lane.** `boundsFor("taste-frontend-expert")` returns 30 and has no production caller — `agent-shortlist.ts` says so plainly, and both routes to applying it were measured closed. §11 item 3 stays open; this phase does not re-open it.
@@ -4503,4 +4665,5 @@ MSG
 
 1. **Whether the SDK's `resume: <sessionId>` genuinely continues the session across two `query()` calls.** The rate-limit path already relies on it and it is unmeasured. Task 10 Step 6 is the probe; the plan says plainly to stop if it fails.
 2. **Whether a `21:9` still and a `21:9` Playwright screenshot are comparable enough for the gate to be useful.** §7.4's mechanism is specified; nothing in the repo has run it.
-3. **The real false-positive rate of `visualIntent`.** Phase 2a measured its own rules against a corpus; this plan's keyword list has no corpus behind it, and the failure direction (a `fullstack` ticket paying for five images it did not want) costs real money. Worth a corpus pass over the calibration tickets once the lane runs.
+3. **Whether a resumed session's `outcome.tokens` is per-call or cumulative.** Nothing in the repo has ever run two segments, and the answer changes `mergeTokenTotals` from a max to a sum. The max is the safe branch — it can under-report, never invent — and Task 10 Step 6's probe settles it.
+4. **The real false-positive rate of `visualIntent`.** Phase 2a measured its own rules against a corpus; this plan's keyword list has no corpus behind it, and the failure direction (a `fullstack` ticket paying for five images it did not want) costs real money. Worth a corpus pass over the calibration tickets once the lane runs.
