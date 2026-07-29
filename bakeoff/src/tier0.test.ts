@@ -35,6 +35,8 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import {
   detectBuildEvidence,
+  detectLintEvidence,
+  detectTypecheckEvidence,
   isScannableSourceFile,
   loadScannableSources,
   scanExploits,
@@ -401,4 +403,150 @@ describe("the scan scope the gate reports is the scope it read", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+/* -------------------------------------------------------------------------
+ * TYPECHECK AND LINT EVIDENCE — the #35 hole one door down
+ *
+ * `scorer-container.ts` left `GATE:typecheck` and `GATE:lint` treating
+ * declared-absent as absent, for one stated reason: no false-positive
+ * measurement had been taken for them. It has now, and the numbers are recorded
+ * in the commit that adds these detectors. NOTHING IN THE CONTAINER CALLS THEM
+ * YET — `scorer-container.ts` is not this task's file to edit — so what is
+ * pinned here is the detector, not a gate outcome.
+ *
+ * THE MEASUREMENT FOUND ONE REAL FALSE POSITIVE and it is pinned below: the
+ * first rule matched `jsconfig.json`, which a plain-JavaScript site ships purely
+ * for editor path resolution with nothing to typecheck anywhere in the tree.
+ * ---------------------------------------------------------------------- */
+
+describe("typecheck evidence", () => {
+  test("a hand-written static site has nothing to typecheck", () => {
+    // Six of the seven calibration fixtures are exactly this shape, and a rule
+    // that fired here would flip a passing gate to non-passing on every correct
+    // artefact this harness is built for.
+    const dir = scratchDir({ "index.html": "<!doctype html><p>hi</p>", "app.js": "console.log(1);", "style.css": "p{}" });
+    try {
+      const evidence = detectTypecheckEvidence(dir, walkFiles(dir, ["."], 5_000).files);
+      assert.deepEqual(evidence.found, [], "a static site was reported as having something to typecheck");
+      assert.ok(evidence.searchedFor.length > 0, "an absence nobody can audit is an assertion, not a measurement");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a TypeScript source is evidence — the detector is not inert", () => {
+    // THE POSITIVE CONTROL. Without it the test above passes for a function that
+    // returns [] unconditionally, which is this repo's signature defect.
+    const dir = scratchDir({ "index.html": "<!doctype html>", "src/app.ts": "export const x: number = 1;" });
+    try {
+      const evidence = detectTypecheckEvidence(dir, walkFiles(dir, ["."], 5_000).files);
+      assert.equal(evidence.found.length, 1);
+      assert.match(String(evidence.found[0]), /src\/app\.ts/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("MEASURED FALSE POSITIVE: jsconfig.json is an editor hint, not a typecheck project", () => {
+    // The rule was written `(?:ts|js)config` and this tree tripped it. A
+    // plain-JS site with a jsconfig for import path resolution has nothing to
+    // typecheck; a tsconfig beside the same JS means allowJs/checkJs, which does.
+    const js = scratchDir({ "index.html": "<!doctype html>", "app.js": "1;", "jsconfig.json": '{"compilerOptions":{"baseUrl":"."}}' });
+    const ts = scratchDir({ "index.html": "<!doctype html>", "app.js": "1;", "tsconfig.json": '{"compilerOptions":{"checkJs":true}}' });
+    try {
+      assert.deepEqual(detectTypecheckEvidence(js, walkFiles(js, ["."], 5_000).files).found, []);
+      assert.equal(detectTypecheckEvidence(ts, walkFiles(ts, ["."], 5_000).files).found.length, 1, "tsconfig still counts");
+    } finally {
+      rmSync(js, { recursive: true, force: true });
+      rmSync(ts, { recursive: true, force: true });
+    }
+  });
+
+  test("a .d.ts alone is not evidence, for the reason the build gate excludes it", () => {
+    const dir = scratchDir({ "index.html": "<!doctype html>", "types.d.ts": "declare const x: number;" });
+    try {
+      assert.deepEqual(detectTypecheckEvidence(dir, walkFiles(dir, ["."], 5_000).files).found, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a declared typecheck script is evidence even with no TypeScript in sight", () => {
+    const dir = scratchDir({
+      "index.html": "<!doctype html>",
+      "package.json": '{"name":"x","scripts":{"typecheck":"tsc --noEmit"}}',
+    });
+    try {
+      const found = detectTypecheckEvidence(dir, walkFiles(dir, ["."], 5_000).files).found;
+      assert.equal(found.length, 1);
+      assert.match(String(found[0]), /scripts\.typecheck/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("lint evidence", () => {
+  test("JAVASCRIPT SOURCES ARE NOT EVIDENCE — this is the asymmetry with typecheck", () => {
+    // A missing lint step is a genuine choice a project makes. Keying on the
+    // presence of `.js` would fire on every static site in the fixture set, and
+    // a gate that fails correct work gets switched off.
+    const dir = scratchDir({ "index.html": "<!doctype html>", "app.js": "console.log(1);", "b.mjs": "export {};" });
+    try {
+      assert.deepEqual(detectLintEvidence(dir, walkFiles(dir, ["."], 5_000).files).found, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a configured linter IS evidence — the detector is not inert", () => {
+    for (const [name, body] of [["eslint.config.js", "export default [];"], [".eslintrc.json", "{}"], ["biome.json", "{}"]] as const) {
+      const dir = scratchDir({ "index.html": "<!doctype html>", "app.js": "1;", [name]: body });
+      try {
+        const found = detectLintEvidence(dir, walkFiles(dir, ["."], 5_000).files).found;
+        assert.equal(found.length, 1, `${name} was not recognised as a linter configuration`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("a declared lint script is evidence", () => {
+    const dir = scratchDir({ "index.html": "<!doctype html>", "package.json": '{"scripts":{"lint":"eslint ."}}' });
+    try {
+      assert.match(String(detectLintEvidence(dir, walkFiles(dir, ["."], 5_000).files).found[0]), /scripts\.lint/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an EMPTY script string is not a declaration — neither gate may fire on it", () => {
+    const dir = scratchDir({ "index.html": "<!doctype html>", "package.json": '{"scripts":{"lint":"  ","typecheck":""}}' });
+    try {
+      const files = walkFiles(dir, ["."], 5_000).files;
+      assert.deepEqual(detectLintEvidence(dir, files).found, []);
+      assert.deepEqual(detectTypecheckEvidence(dir, files).found, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a dependency's own TypeScript and eslintrc are out of scope for both", () => {
+  // NEVER_WALKED_DIRS keeps node_modules out of the walk, and both detectors take
+  // the walk rather than re-walking. If either ever walked for itself, every
+  // artefact with an installed dependency would report evidence.
+  const dir = scratchDir({
+    "index.html": "<!doctype html>",
+    "node_modules/left-pad/index.ts": "export default 1;",
+    "node_modules/left-pad/.eslintrc.json": "{}",
+  });
+  try {
+    const files = walkFiles(dir, ["."], 5_000).files;
+    assert.deepEqual(detectTypecheckEvidence(dir, files).found, []);
+    assert.deepEqual(detectLintEvidence(dir, files).found, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

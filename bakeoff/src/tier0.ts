@@ -407,6 +407,144 @@ export function detectBuildEvidence(artifactDir: string, files: readonly WalkedF
 }
 
 /* -------------------------------------------------------------------------
+ * 1c. Typecheck and lint evidence — the same question for the other two gates
+ *
+ * `GATE:typecheck` and `GATE:lint` still treat declared-absent as absent. The
+ * #35 write-up said so out loud and left them open for ONE stated reason: no
+ * false-positive measurement had been taken for them. These two functions exist
+ * to make that measurement possible; nothing in the container calls them yet.
+ *
+ * THE TWO ARE NOT SYMMETRIC, and pretending they were is the way to build a
+ * gate that gets switched off. `scorer-container.ts` already says it: "a missing
+ * lint step is a genuine choice a project makes; a missing typecheck on a
+ * TypeScript artefact is the same hole as #35". So:
+ *
+ *   typecheck — SOURCES ARE EVIDENCE. A `.ts` file that nothing typechecks is
+ *               the hole. TypeScript exists to be checked; shipping it and
+ *               declaring the check absent is the artefact contradicting itself.
+ *   lint      — ONLY CONFIGURATION IS EVIDENCE. `.js` files are not evidence of
+ *               anything: every static site has them, and a lint gate keyed on
+ *               their presence would fire on every correct artefact this harness
+ *               is built for. A project that has configured a linter and then
+ *               declared the step absent is the contradiction; a project that
+ *               never configured one has made a choice.
+ *
+ * NEITHER IS WIRED IN. Reporting a count is the deliverable; deciding to gate on
+ * it is a separate decision that needs the count first, which is the order #35
+ * did not have available.
+ */
+
+/**
+ * `tsconfig.json`, `tsconfig.build.json` — a project someone set up to be checked.
+ *
+ * `jsconfig.json` IS DELIBERATELY NOT MATCHED, AND THAT IS A MEASURED EXCLUSION
+ * RATHER THAN AN OPINION. The first version of this rule read
+ * `(?:ts|js)config` and produced a false positive on the shape most likely to
+ * meet it: a plain-JavaScript static site that ships a `jsconfig.json` purely so
+ * an editor can resolve import paths, with nothing to typecheck anywhere in the
+ * tree. `tsconfig.json` stays — a JS project that writes one has opted into
+ * `allowJs`/`checkJs`, which is a typecheck project by definition.
+ */
+const TS_PROJECT_CONFIG_RE = /(?:^|\/)tsconfig(?:\.[\w-]+)?\.json$/i;
+
+/** TypeScript sources. `.d.ts` is excluded for the reason build excludes it. */
+const TYPECHECKED_EXTENSIONS: readonly string[] = Object.freeze([".ts", ".tsx", ".mts", ".cts"]);
+
+/** A configured linter. Presence means someone set one up on purpose. */
+const LINT_CONFIG_RE =
+  /(?:^|\/)(?:eslint\.config\.[cm]?[jt]s|\.eslintrc(?:\.[cm]?js|\.json|\.ya?ml)?|biome\.jsonc?|\.oxlintrc\.json|xo\.config\.[cm]?[jt]s)$/i;
+
+/** Read one `scripts.<name>` out of a package.json, or null. */
+function packageScript(absolutePath: string, name: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(absolutePath, "utf8")) as unknown;
+  } catch {
+    return null; // unreadable or not JSON: reported by absence, never by a guess
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const scripts = (parsed as Record<string, unknown>)["scripts"];
+  if (scripts === null || typeof scripts !== "object") return null;
+  const value = (scripts as Record<string, unknown>)[name];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/** Every package.json in scope: the root, read directly, then the walked ones. */
+function packageJsonPaths(artifactDir: string, files: readonly WalkedFile[]): readonly { path: string; absolutePath: string }[] {
+  // The root is read directly and not via the walk, for the same reason
+  // `detectBuildEvidence` does it: it is the most decisive piece of evidence and
+  // must not be lost to the walk's file cap.
+  const out = [{ path: "package.json", absolutePath: join(artifactDir, "package.json") }];
+  for (const file of files) {
+    const lower = file.path.toLowerCase();
+    if (lower === "package.json") continue;
+    if (lower.endsWith("/package.json")) out.push({ path: file.path, absolutePath: file.absolutePath });
+  }
+  return out;
+}
+
+/**
+ * Look for evidence that this artefact has something to typecheck.
+ *
+ * Same shape and same walk as {@link detectBuildEvidence}, so "what was looked
+ * at" cannot drift between the three gates.
+ */
+export function detectTypecheckEvidence(artifactDir: string, files: readonly WalkedFile[]): BuildEvidence {
+  const searchedFor: readonly string[] = Object.freeze([
+    'a package.json declaring a non-empty "scripts.typecheck" or "scripts.type-check"',
+    "a tsconfig project file (jsconfig is deliberately excluded — measured false positive)",
+    `a TypeScript source (${TYPECHECKED_EXTENSIONS.join(" ")}, excluding .d.ts)`,
+  ]);
+  const found: string[] = [];
+
+  for (const pkg of packageJsonPaths(artifactDir, files)) {
+    for (const name of ["typecheck", "type-check"]) {
+      const script = packageScript(pkg.absolutePath, name);
+      if (script !== null) found.push(`${pkg.path} declares scripts.${name} = ${JSON.stringify(script)}`);
+    }
+  }
+
+  for (const file of files) {
+    const lower = file.path.toLowerCase();
+    if (TS_PROJECT_CONFIG_RE.test(lower)) {
+      found.push(`${file.path} is a TypeScript project configuration`);
+      continue;
+    }
+    if (lower.endsWith(".d.ts")) continue;
+    const ext = TYPECHECKED_EXTENSIONS.find((candidate) => lower.endsWith(candidate));
+    if (ext !== undefined) found.push(`${file.path} is a ${ext} source, which exists to be typechecked`);
+  }
+
+  return { found, searchedFor };
+}
+
+/**
+ * Look for evidence that this artefact has a linter configured.
+ *
+ * SOURCES ARE DELIBERATELY NOT EVIDENCE HERE — see the block comment above. This
+ * asymmetry is the whole difference between the two gates, and it is the reason
+ * a lint corroboration can be considered at all.
+ */
+export function detectLintEvidence(artifactDir: string, files: readonly WalkedFile[]): BuildEvidence {
+  const searchedFor: readonly string[] = Object.freeze([
+    'a package.json declaring a non-empty "scripts.lint"',
+    "a linter configuration (eslint/biome/oxlint/xo)",
+  ]);
+  const found: string[] = [];
+
+  for (const pkg of packageJsonPaths(artifactDir, files)) {
+    const script = packageScript(pkg.absolutePath, "lint");
+    if (script !== null) found.push(`${pkg.path} declares scripts.lint = ${JSON.stringify(script)}`);
+  }
+
+  for (const file of files) {
+    if (LINT_CONFIG_RE.test(file.path.toLowerCase())) found.push(`${file.path} is a linter configuration`);
+  }
+
+  return { found, searchedFor };
+}
+
+/* -------------------------------------------------------------------------
  * 2. Stub markers (doc 02 section 5.3 forbidden-pattern scan)
  * ---------------------------------------------------------------------- */
 
