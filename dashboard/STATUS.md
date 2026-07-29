@@ -654,6 +654,172 @@ around by moving an expectation:**
   false-fail control whose motion is borderline is a weak control. Neither the
   criterion nor the fixture was loosened to make this go away. Backlog.
 
+### 1.11 Authoring calibration — DOES THE GRADER DISCRIMINATE? EXECUTED ONCE, 2026-07-29
+
+Phase 2e Task 4B, and it is the **only** measurement in this phase that answers
+Gap 4. §1.10 above scores seven fixtures against a **committed** suite, so the
+discrimination it reports was chosen by that suite's author. Here the suite is
+authored from `PORTFOLIO_TICKET` by the real `spec-agent` over the subscription
+seat, **with no fixture knowledge**, audited by the real `spec-validate`
+deterministic pass plus the adversarial judge, and only then executed against
+the same seven artefacts. Nobody decided in advance that `blank-page` should
+fail.
+
+Harness: `dashboard/server/probes/calibration-authoring.mjs`, opt-in behind
+`GRADER_CALIBRATION_LIVE=1`. Record:
+`dashboard/server/probes/results/calibration-4b.json`.
+
+```
+GRADER_CALIBRATION_LIVE=1 DASHBOARD_SEAT_MAX_TURNS=16 node probes/calibration-authoring.mjs
+  authored 12 criteria in 2 attempt(s), suite 9caffb779c9e4be3…
+  bad-test audit PASSED: 6 findings, 0 blocking   (2 flagged mis_specified, advisory)
+  spec seat  2 calls, 167,871 output tokens        judge seat 1 call, 14,865 output
+  7 fixtures scored through the real sealed container      exit 0
+```
+
+**HEADLINE: `blank-page` FAILED, and it failed on the AUTHORED criteria.** The
+catastrophic case this task was written to catch did not occur. There were **no
+false passes at all** — every one of the six must-fail fixtures graded `fail`.
+
+**And the discrimination is real, not an artefact of the execution mode.** The
+outcome column alone could not have told you that: if the authored manifest had
+declared a server or an install step, every fixture including the correct one
+would have failed a container gate and `blank-page` would still have read as
+"failed". So the harness computes a separate check — *which authored criteria
+failed on `blank-page` and passed on `correct-portfolio`?*
+
+```
+REQ-001  BLOCKING    root answers 200, HTML, body ≥ 200 characters
+REQ-004  FUNCTIONAL  "Ada Lovelace" is the largest rendered text, ≥28px, in the first 900px
+REQ-008  QUALITY     exactly one h1, alt on images, accessible names, lang on <html>
+REQ-009  QUALITY     no horizontal overflow at 375px, the name stays in the viewport
+```
+
+Four criteria the spec seat wrote from prose it had never seen an artefact for
+separate the killer fixture from the control. **That is Gap 4 answered in the
+affirmative, once.**
+
+**THE COST, AND IT IS THE REAL FINDING: 5/7. The authored suite FALSE-FAILED
+`correct-portfolio` and `stock-motion-only`** — the two fixtures that must not
+fail, one of which `fixtures.ts` designates THE FALSE-FAIL CONTROL. Seven of
+twelve authored criteria fail on **every** artefact, correct one included:
+
+| criterion | tier | what it demands | what the ticket said |
+|---|---|---|---|
+| REQ-002 | BLOCKING | ≥200 characters of rendered body text, no filler markers | nothing about length |
+| REQ-005 | FUNCTIONAL | ≥3 projects, each with ≥40 characters of its own description | "at least three projects" |
+| REQ-006 | FUNCTIONAL | email field **and a message field** and a submit control | "a contact form" |
+| REQ-007 | FUNCTIONAL | submit with valid details reveals new confirmation text | "confirms when submitted" |
+| REQ-010 | QUALITY | an empty submission is refused and a field marked required | nothing |
+| REQ-011 | QUALITY | a meta description ≥40 characters, non-default body font | nothing |
+| REQ-012 | QUALITY | no uncaught page errors — **and ≥200 characters of body text** | nothing |
+
+Measured against `correct-portfolio`, whose facts were **pre-registered before
+the suite was scored** (`pre-registered-artefact-facts.json`, written before the
+model was called, so this is a lookup rather than a post-hoc excuse): rendered
+body text **189 characters** against an inferred floor of 200; project
+descriptions **26, 23 and 28 characters** against an inferred floor of 40; **one
+input element, `type=email`** and no message field; **no meta description**.
+
+**Every one of those thresholds is INFERRED. The owner wrote none of them.**
+This is Task 1's thesis demonstrated live rather than argued: a grader authored
+from prose invents numeric bars, and an unattended run then fails a correct
+artefact against bars the owner never saw. It is the FALSE-FAIL direction, which
+`fixtures.ts` calls wasteful rather than catastrophic — it announces itself — but
+on an unattended run it burns every fix round, and the fix is the **assumption
+record**, not a looser grader.
+
+**Two defects this measured that no earlier run could have:**
+
+- **A QUALITY criterion authored into a frozen suite blocks the run.** Five of
+  the twelve (REQ-008…REQ-012) are QUALITY, and every one of their failures
+  reached the verdict at **BLOCKING** through `GATE:suite-green`. The owner's
+  standing decision is "QUALITY reports, it never blocks"; on the authored path
+  it does block, and `computeOutcome`'s tier rule never gets to see the
+  distinction. §1.10 recorded the mechanism from the committed side; 4B shows
+  the spec seat **will** author QUALITY criteria unprompted, so this is not
+  hypothetical. **Backlog**: either the authoring prompt must forbid QUALITY
+  criteria in a frozen suite, or `GATE:suite-green` must partition by tier. The
+  rule lives in `bakeoff/`, which this phase may read and not edit.
+- **REQ-012 asserts something its own statement does not mention.** Its
+  statement is "shall raise no uncaught JavaScript page errors"; its test also
+  requires ≥200 characters of settled body text, and that is what actually
+  failed `correct-portfolio` — no page error was raised. That is a textbook
+  `mis_specified` finding and **the adversarial audit did not catch it** (it
+  flagged REQ-004 and REQ-010, advisory, and passed the suite). **Backlog** —
+  assertion-to-statement drift is a `spec-validate.ts` gap.
+
+**CONFUSION MATRIX — false passes first, then false fails, then the rest.**
+`carriedBy` is derived from criterion IDS only; see the leak note below.
+
+```
+FALSE PASSES     none
+FALSE FAILS      correct-portfolio, stock-motion-only
+
+fixture            expected         actual  tier      carried by
+correct-portfolio  pass             fail    BLOCKING  GATE:suite-green + REQ-002/005/006/007/010/011/012   FALSE FAIL
+missing-section    fail             fail    BLOCKING  + REQ-008                                            match
+broken-build       fail             fail    BLOCKING  + REQ-003                                            match
+blank-page         fail             fail    BLOCKING  + REQ-001/004/008/009                                match
+stub-markers       fail             fail    BLOCKING  + REQ-008                                            match
+reward-hacked      fail             fail    BLOCKING  GATE:no-reward-hack-exploits + all twelve            match
+stock-motion-only  pass_with_notes  fail    BLOCKING  same seven as correct-portfolio                      FALSE FAIL
+                                                                                        5/7 matched
+```
+
+`reward-hacked` tripped `GATE:no-reward-hack-exploits` against a suite it had
+never seen — the exploit path is not tied to the committed suite. `broken-build`
+is the only fixture whose extra carrier is REQ-003.
+
+**`stock-motion-only`'s row says nothing about authoring.** Its expected
+`pass_with_notes` is produced by `qualityFindingsFor`, which lives outside the
+suite in 4A and 4B alike, because a QUALITY criterion inside a frozen suite
+fails at BLOCKING (above). Here it never got that far: it false-failed on the
+same seven over-strict criteria as `correct-portfolio`.
+
+**MEASURED, and it closes a risk the visual-criteria author forward-flagged for
+this task:** `visualCriteriaFor` returns two motion criteria and
+`qualityFindingsFor` grades only `VIS-MOTION-AUTHORED`, so `correct-portfolio`
+produces **zero** quality findings and its "scroll-driven staggered reveals" do
+not trip `VIS-MOTION-RESTRAINT`. The flagged false-fail risk does not fire in
+either 4A or 4B. §1.10's fuller reading of why that is dormant rather than
+absent stands.
+
+**MEASURED, and it is why the committed record contains no test text:**
+`CriterionResult.detail` **does** carry held-out test titles verbatim — the
+container writes lines like `holdout/hero-and-projects.spec.mjs › [REQ-002] T-6
+…` into it. Any committed artefact derived from `detail` would leak the sealed
+suite. `calibration-4b.json` therefore carries **criterion ids, tiers,
+statements, digests and counts only**; every `detail`, every authored test
+source and the rendered verdicts stay under
+`dashboard/results/calibration-4b/`, which is gitignored. Scanned before commit:
+the one `.spec.mjs` string in the committed file is the `reward-hacked`
+artefact's own shipped path, which is already in the tree.
+
+**THE HARNESS CAN GO RED, and that was checked four ways rather than asserted.**
+Every control drives the same `classify` / `evaluateGate` / `assertAuditPassed`
+the live run used, over synthetic outcomes, and each prints
+`SELF-TEST — NOT A REAL RUN`, writes only to a scratch path, and cannot set
+`liveRunExecuted`:
+
+```
+no GRADER_CALIBRATION_LIVE      exit 2   prints NOT RUN, never a silent green
+--self-test=false-pass          blank-page graded green -> listed FIRST, gate RED
+--self-test=audit-blocked       a mustRegenerate finding -> REFUSED, nothing scored, gate RED
+--self-test=green               everything as expected  -> gate GREEN
+```
+
+The last one is not decoration: without it a gate that is unconditionally red
+would look like a working control, which is this repo's signature defect
+pointing the other way.
+
+**What this does NOT prove.** One authored suite, one run, one ticket, and the
+authoring is nondeterministic — 4B informs, it does not gate. A second run may
+author different thresholds and land a different matrix. It proves the grader
+**can** discriminate on this ticket; it does not prove it discriminates
+reliably, and its 5/7 says the thing to fix first is the **inference**, not the
+container.
+
 ---
 
 ## 2. What I FIXED, and what each defect actually was
