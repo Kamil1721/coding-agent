@@ -2,7 +2,14 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
 import type { DesignCapability } from "./design-capability.js";
-import { designSegmentPrompt, DESIGN_DIALS, MIN_DESIGN_REFS } from "./design-prompt.js";
+import type { DesignManifest } from "./design-manifest.js";
+import {
+  designHandoffSection,
+  designSegmentPrompt,
+  DESIGN_DIALS,
+  IMAGE_TO_CODE_SKILL,
+  MIN_DESIGN_REFS,
+} from "./design-prompt.js";
 
 const WS = "/runs/r1/workspace";
 const CAP: DesignCapability = {
@@ -124,4 +131,108 @@ test("auto-choose asks ui-designer, never the author (§17.3 rule 3)", () => {
 
 test("without auto-choose the prompt does NOT ask anyone to pick — the owner will", () => {
   assert.doesNotMatch(full({ autoChoose: false }), /choice\.json/);
+});
+
+/* ---- Task 6: the DESIGN -> BUILD handoff, all three mechanisms -------- */
+
+const HERO = `${WS}/design-refs/01-hero.png`;
+const WORK = `${WS}/design-refs/02-work.png`;
+
+const LOCKED: DesignManifest = {
+  version: 1,
+  refs: [
+    { path: HERO, section: "hero", aspect: "21:9", intent: "full-bleed opening statement" },
+    { path: WORK, section: "work", aspect: "16:9", intent: "three projects, uneven weight" },
+  ],
+  lockedMockup: HERO,
+  lockedBy: "owner",
+  lockedReason: "chosen in the dashboard",
+  lockedAt: "2026-07-29T10:00:00.000Z",
+};
+
+function handoff(overrides: Partial<Parameters<typeof designHandoffSection>[0]> = {}): string {
+  return designHandoffSection({
+    manifest: LOCKED,
+    mode: "full",
+    workspace: WS,
+    dials: "DESIGN_VARIANCE: high\nMOTION_INTENSITY: medium\nVISUAL_DENSITY: low",
+    ...overrides,
+  });
+}
+
+test("MECHANISM 1 — the filesystem location is named AS A LOCATION, inside the workspace", () => {
+  // REWRITTEN FROM THE PLAN, WHICH ASSERTED `match(handoff(), /<ws>\/design-refs/)`.
+  // Every absolute ref path mechanism 2 prints CONTAINS that substring, so the
+  // plan's assertion passed automatically whenever the ref loop emitted anything
+  // and could not go red on its own — a check whose failure mode is a strict
+  // subset of a louder check's is not a second check. This one demands a line
+  // that names the directory and is NOT one of the ref lines, and Step 5 control
+  // 4 removes exactly that line and watches this test fail ALONE.
+  const p = handoff();
+  const refsDir = `${WS}/design-refs`;
+  const locationLines = p
+    .split("\n")
+    .filter((line) => line.includes(refsDir) && !line.includes(HERO) && !line.includes(WORK));
+  assert.ok(locationLines.length > 0, "the mockup directory is never stated as a directory");
+  assert.match(locationLines.join("\n"), /workspace/i, "and it is named as being inside the workspace");
+});
+
+test("MECHANISM 2 — EVERY ref appears as an ABSOLUTE path, not a count and not a directory", () => {
+  // "Paths in a prompt are what make Read on a PNG actually happen" (§7.3).
+  // A prompt that says "five mockups are in design-refs/" is a mechanism that
+  // does not work: the child has to guess filenames.
+  const p = handoff();
+  assert.ok(p.includes(HERO), "the hero path is missing");
+  assert.ok(p.includes(WORK), "the second path is missing");
+  assert.match(p, /Read/);
+});
+
+test("MECHANISM 2 — the LOCKED mockup is marked as the one being built to", () => {
+  const p = handoff();
+  assert.match(p, /LOCKED/);
+  const lockedLine = p.split("\n").find((line) => line.includes("LOCKED") && line.includes(HERO));
+  assert.ok(lockedLine !== undefined, "the locked path is not identified on its own line");
+});
+
+test("MECHANISM 2 — the three dials are carried through VERBATIM", () => {
+  const p = handoff();
+  for (const dial of DESIGN_DIALS) assert.ok(p.includes(dial), `${dial} did not survive the handoff`);
+  assert.match(p, /MOTION_INTENSITY: medium/);
+});
+
+test("MECHANISM 3 — the skill bridge is an INVOCATION instruction, not a preload", () => {
+  // Options.agents is gone (probe I): AgentDefinition.skills preloads nothing for
+  // any name that exists on disk, which is every shortlisted agent. The only
+  // channel measured to reach a child is the Agent call's own prompt.
+  const p = handoff();
+  assert.ok(p.includes(IMAGE_TO_CODE_SKILL), "the skill is not named");
+  assert.match(p, /invoke|use the .*skill/i);
+});
+
+test("ALL THREE mechanisms are present in one block — two of three is nothing", () => {
+  const p = handoff();
+  const present = [
+    p.includes("design-refs"),
+    p.includes(HERO) && p.includes(WORK),
+    p.includes(IMAGE_TO_CODE_SKILL),
+  ];
+  assert.deepEqual(present, [true, true, true], "a handoff missing any mechanism is not a handoff");
+});
+
+test("a DEGRADED lane hands over the written direction and says there are no stills", () => {
+  const p = handoff({ manifest: null, mode: "degraded" });
+  assert.match(p, /direction\.md/);
+  assert.match(p, /no (design )?stills/i);
+  assert.doesNotMatch(p, /\.png/);
+});
+
+test("an OFF lane produces an EMPTY handoff — never a paragraph about images that do not exist", () => {
+  assert.equal(handoff({ manifest: null, mode: "off", dials: "" }), "");
+});
+
+test("an unlocked manifest still hands over every path, and says nothing is locked", () => {
+  const unlocked: DesignManifest = { ...LOCKED, lockedMockup: null, lockedBy: null, lockedReason: null, lockedAt: null };
+  const p = handoff({ manifest: unlocked });
+  assert.ok(p.includes(HERO));
+  assert.match(p, /no mockup (is |was )?locked/i);
 });

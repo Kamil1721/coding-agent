@@ -23,6 +23,7 @@ import { join } from "node:path";
 
 import type { DesignCapability } from "./design-capability.js";
 import type { DesignLaneMode } from "./design-lane.js";
+import type { DesignManifest } from "./design-manifest.js";
 import { manifestPathFor, refsDirFor } from "./design-manifest.js";
 
 /** Spec §7.3, verbatim. Injected here and again into every build agent's prompt. */
@@ -169,5 +170,99 @@ export function designSegmentPrompt(input: {
     "WHEN THIS SEGMENT IS DONE, stop. Do not start implementation: the build agents",
     "are not reachable from this segment and every attempt to start one is denied.",
   );
+  return lines.join("\n");
+}
+
+/**
+ * The skill that turns "here are pictures" into a mechanical implementation
+ * procedure (spec §7.3 mechanism 3).
+ *
+ * NAMED FOR INVOCATION, NOT PRELOADED, AND THAT IS A MEASURED CONSTRAINT RATHER
+ * THAN A PREFERENCE. §6.3 says "preloaded on frontend builders", but
+ * `Options.agents` no longer exists: probe I measured that an `AgentDefinition`
+ * registered under a name that also exists in ~/.claude/agents/ is not consulted
+ * at all, and every name in DELIVERY_LANES exists on disk. So
+ * `AgentDefinition.skills` preloads nothing (api-types.ts:303-308 says exactly
+ * this, which is why `graph_skill.source: "preloaded"` has no producer today).
+ * The only channel measured to reach a child is the Agent call's own `prompt`.
+ *
+ * `image-to-code` is the SKILL.md `name:`; the directory is
+ * `image-to-code-skill`. §6.3's correction records that the SDK accepts either,
+ * so the canonical name is used here.
+ */
+export const IMAGE_TO_CODE_SKILL = "image-to-code";
+
+/**
+ * The block the orchestrator injects into EVERY build agent's prompt.
+ *
+ * ALL THREE OF §7.3's MECHANISMS OR NONE OF THEM. Subagents do not share
+ * context: a mockup living only in the designer's transcript is invisible
+ * downstream, so the filesystem location, every absolute path, and the skill that
+ * knows what to do with them all have to cross this seam together. Ship two and
+ * the third's absence is silent — the build simply looks like it ignored the
+ * design.
+ *
+ * EACH MECHANISM IS SEPARATELY REMOVABLE AND SEPARATELY OBSERVED. The directory
+ * sentence below is not decoration: it is the only line that states mechanism 1
+ * independently of the ref paths, which all contain the directory as a substring.
+ * Delete it and `MECHANISM 1` goes red while `MECHANISM 2` stays green — that
+ * control was executed, and it is the difference between three mechanisms and
+ * one mechanism with two decorations.
+ */
+export function designHandoffSection(input: {
+  manifest: DesignManifest | null;
+  mode: DesignLaneMode;
+  workspace: string;
+  dials: string;
+}): string {
+  if (input.mode === "off") return "";
+  const refsDir = refsDirFor(input.workspace);
+
+  if (input.mode === "degraded" || input.manifest === null || input.manifest.refs.length === 0) {
+    const degraded: string[] = [
+      "THE DESIGN LANE PRODUCED NO STILLS on this run — image generation was",
+      "unavailable. It produced written art direction instead:",
+      "",
+      `  Read ${join(refsDir, "direction.md")}`,
+      "",
+      "Build to that document. It is the only design input this run has, so it is the",
+      "one the visual gate will read your work against.",
+    ];
+    if (input.dials.length > 0) degraded.push("", input.dials);
+    return degraded.join("\n");
+  }
+
+  const lines: string[] = [
+    "THE DESIGN IS ALREADY MADE. Build to it; do not re-invent it.",
+    "",
+    `  Mockups live in ${refsDir}/ — inside this workspace, which is the only`,
+    "  directory anything here may write to.",
+    "",
+    "Read each of these. They render visually to you; they are not filenames to",
+    "guess at:",
+    "",
+  ];
+  for (const ref of input.manifest.refs) {
+    const locked = ref.path === input.manifest.lockedMockup;
+    lines.push(
+      `  ${locked ? "LOCKED  " : "        "}${ref.path}` +
+        `   [${ref.section}, ${ref.aspect}] ${ref.intent}`,
+    );
+  }
+  lines.push("");
+  lines.push(
+    input.manifest.lockedMockup === null
+      ? "No mockup is locked on this run, so the set as a whole is the reference."
+      : `The LOCKED mockup is the design that was chosen: ${input.manifest.lockedMockup}. ` +
+        `Resembling a different one from the set is not a pass.`,
+    "",
+    `Invoke the \`${IMAGE_TO_CODE_SKILL}\` skill before you write markup. It is the`,
+    "procedure for turning these images into an implementation — read the images",
+    "deeply first, then build to them section by section.",
+    "",
+  );
+  if (input.dials.length > 0) {
+    lines.push("THE DIALS THE DESIGN WAS SET TO. Build to these values:", "", input.dials, "");
+  }
   return lines.join("\n");
 }
