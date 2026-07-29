@@ -375,11 +375,13 @@
       "executed": true,
       "executedAt": "2026-07-29",
       "reExecutedInThisSession": true,
-      "scope": "NARROWER THAN M1 AND M2, AND SAID SO RATHER THAN LEFT TO LOOK EQUIVALENT: this mutation was applied to the COMPILED build (dist-4afinish/calibration/grade-fixture.js), not to the TypeScript source, and qualityFindingsFor was called directly rather than through a container run. It proves the guard throws; it does not re-prove the standing gate goes red, which M1 and M2 already do.",
+      "scope": "NARROWER THAN M1 AND M2, AND SAID SO RATHER THAN LEFT TO LOOK EQUIVALENT: this mutation was applied to the COMPILED build (dist-4afinish/calibration/grade-fixture.js), not to the TypeScript source, and qualityFindingsFor was called directly rather than through a container run. It proves the guard throws; it does not re-prove the standing gate goes red, which M1 and M2 already do. CALIBRATION WAS NOT RUN UNDER THIS MUTATION; see calibrationWentRed.",
       "whatWasChanged": "MOTION_CRITERION_ID was rewritten from 'VIS-MOTION-AUTHORED' to 'VIS-MOTION-NONEXISTENT' in the compiled module, then qualityFindingsFor('./calibration/stock-motion-only') was called.",
       "restored": true,
       "result": "THREW, as required: \"visualCriteriaFor() emits no VIS-MOTION-NONEXISTENT criterion (motion criteria: VIS-MOTION-AUTHORED, VIS-MOTION-RESTRAINT)\". The error names the criteria that DO exist, so the failure is actionable without a debugger. With the guard intact, the same call returns one finding tagged VIS-MOTION-AUTHORED for stock-motion-only and zero for correct-portfolio.",
-      "calibrationWentRed": true
+      "calibrationWentRed": false,
+      "guardThrew": true,
+      "calibrationWentRedNote": "FALSE, AND DELIBERATELY SO. Calibration was NOT run under this mutation, so claiming it went red would be asserting a red run that never happened — the exact shape this phase keeps finding. The guard was proven capable of failing by a direct call; `guardThrew` is the honest field. M1 and M2 are the two mutations that turned the standing gate red."
     }
   ],
   "motionSatisfierSplit": {
@@ -397,7 +399,8 @@
       "stock-motion-only": [],
       "stub-markers": []
     },
-    "note": "The split rests on TWO independent patterns hitting correct-portfolio, not on one broad pattern landing by accident. The broadest entries in the list — /\\.animate\\s*\\(/ and /\\bgetBoundingClientRect\\b/ — fire on NOTHING in the fixture set, so no fixture is classified by an incidental match."
+    "note": "The split rests on TWO independent patterns hitting correct-portfolio, not on one broad pattern landing by accident. The broadest entries in the list — /\\.animate\\s*\\(/ and /\\bgetBoundingClientRect\\b/ — fire on NOTHING in the fixture set, so no fixture is classified by an incidental match.",
+    "provenance": "INHERITED, NOT RE-MEASURED THIS SESSION. The per-pattern attribution below is the first agent's. Re-measuring it would require exporting or duplicating MOTION_SATISFIERS, and a duplicate would be testing its own copy. Its CONCLUSION was independently re-verified in the finishing session: correct-portfolio raised zero QUALITY findings (so a satisfier hit) and the other six each raised the VIS-MOTION-AUTHORED finding (so none hit). The split stands; the per-pattern breakdown is quoted rather than re-run."
   },
   "environmentAbsent": {
     "what": "Phase 2e Task 4A step 7: the standing gate must FAIL WITH A NAMED REASON when it cannot run, never skip into green. environmentProblem() has TWO branches and BOTH were exercised, because 'the daemon is down' and 'the image was never built' want different things from the reader and only one of them is what a fresh clone hits.",
