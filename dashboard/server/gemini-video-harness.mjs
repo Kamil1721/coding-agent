@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -102,15 +102,26 @@ test("THE OVERRIDE TOOK EFFECT — the script reached the fake server, not Googl
   // duration nobody chose, with all seventeen tests here still green.
   const body = posts[0].body;
   assert.ok(body, "the POST body was recorded, so this asserts something");
+  // REALIGNED WITH REVISION 1, WHICH WAS SETTLED BY A LIVE CALL. This file was
+  // written against §7.6.1's documented body; the owner-approved live call then
+  // returned HTTP 400 twice -- "`inlineData` isn\'t supported by this model" and
+  // "The value type for `durationSeconds` needs to be a number" -- and
+  // `gemini-video.sh:199-213` was corrected to `{bytesBase64Encoded, mimeType}`
+  // and `int(duration)`. These three assertions were left behind and went red
+  // against the corrected script. They are updated to the MEASURED shape, not to
+  // whatever the script happens to emit: a number and a flat image object are
+  // what the API accepted, and the string form is what it rejected.
   assert.deepEqual(
     body.parameters,
-    { aspectRatio: "16:9", resolution: "720p", durationSeconds: "4" },
+    { aspectRatio: "16:9", resolution: "720p", durationSeconds: 4 },
     "THE DEFAULTS THIS PLAN'S ENTIRE SPEND ARGUMENT RESTS ON, as they actually leave the script",
   );
+  assert.equal(typeof body.parameters.durationSeconds, "number", "a string here is a measured HTTP 400");
   assert.equal(body.instances[0].prompt, "a slow push-in over the hero", "the prompt is instances[0].prompt");
-  assert.equal(body.instances[0].image.inlineData.mimeType, "image/png");
+  assert.equal(body.instances[0].image.inlineData, undefined, "inlineData is what the API refused");
+  assert.equal(body.instances[0].image.mimeType, "image/png");
   assert.ok(
-    Buffer.from(body.instances[0].image.inlineData.data, "base64").equals(readFileSync(f.still)),
+    Buffer.from(body.instances[0].image.bytesBase64Encoded, "base64").equals(readFileSync(f.still)),
     "the still is attached byte-for-byte — it IS the first frame (§7.6.2), not a filename",
   );
   await fake.close();
@@ -172,7 +183,7 @@ test("duration is 4|6|8, and 1080p/4k require 8", async (t) => {
   assert.equal(posts.length, 1, "the two refusals spent nothing");
   assert.deepEqual(
     posts[0].body.parameters,
-    { aspectRatio: "16:9", resolution: "1080p", durationSeconds: "8" },
+    { aspectRatio: "16:9", resolution: "1080p", durationSeconds: 8 },
     "the NON-default combination survives the trip into the body too, in the right fields",
   );
   await fake.close();
@@ -409,4 +420,87 @@ test("THE POSTER IS MADE BEFORE THE POST — proven by a converter that only fai
   assert.equal(fake.requests.length, 0, "THE POINT: the poster failed while the request log was still empty");
   assert.equal(existsSync(f.out), false);
   await fake.close();
+});
+
+/* ---------------------------------------------------------------------------
+ * TASK 8 — THE TWO SEAMS BETWEEN TYPESCRIPT AND BASH.
+ *
+ * Neither side's own tests can see these: `video-lane.test.ts` asserts on a
+ * string, and the script has never heard of `planVideoLegs`.
+ *
+ * THE COMPILED IMPORT IS OVERRIDABLE, deliberately. The plan hard-codes
+ * `./dist-video/...`, and this file is COMMITTED — a hard-coded private outDir
+ * becomes a permanent build-order dependency that fails for every later runner,
+ * and `dist-video` is a name two concurrent tasks were already told to use.
+ * `VIDEO_DIST=dist-task8 node --test gemini-video-harness.mjs` runs it against a
+ * private build; the default is the shared `dist/` that `npm run build` writes.
+ * ------------------------------------------------------------------------- */
+const VIDEO_DIST = process.env.VIDEO_DIST ?? "./dist";
+const { planVideoLegs, resolveLegCap } = await import(`${VIDEO_DIST}/design/video-legs.js`);
+const { legPlannerInput, workspaceTmpDir } = await import(`${VIDEO_DIST}/design/video-lane.js`);
+
+test("TMPDIR POINTING AT A DIRECTORY THAT DOES NOT EXIST BREAKS THE SCRIPT", async (t) => {
+  // The behaviour the lane's string assertion cannot see. The script's
+  // `mktemp -d "${TMPDIR:-/tmp}/gemini-video.XXXXXXXX"` fails with "mkdtemp
+  // failed on <dir>/gemini-video.XXXXXXXX: No such file or directory" and, under
+  // `set -e`, the script is dead at exit 1 for a reason nothing in the ticket
+  // predicts. This is the negative half; the next test is the positive half, and
+  // neither means anything without the other.
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const absent = join(f.dir, "does-not-exist");
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url, env: { TMPDIR: absent } });
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /mkdtemp failed|No such file or directory/, r.stderr);
+  assert.equal(fake.requests.length, 0, "it died before spending anything, at least");
+  assert.equal(existsSync(f.out), false);
+});
+
+test("...and the same TMPDIR, created first, works — and is where the script actually writes", async (t) => {
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const tmp = workspaceTmpDir(f.dir);
+  mkdirSync(tmp, { recursive: true });
+  const r = await runScript(["x", "-i", f.still, "-o", f.out], { base: fake.url, env: { TMPDIR: tmp } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(existsSync(f.out), true);
+  // AND IT HONOURED IT. MEASURED on Darwin 25.6: a bare `mktemp -d` IGNORES
+  // TMPDIR entirely and lands in /var/folders/.../T, so "the script did not
+  // crash" is not evidence that TMPDIR took effect — which is exactly instance
+  // 10's shape. The script's tempdir is removed by its own EXIT trap, so what is
+  // observed is that the parent it was created under is no longer empty-by-
+  // construction: nothing else in this test writes into `tmp`.
+  assert.equal(existsSync(tmp), true, "the workspace tmpdir survived the run's trap");
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("THE POSTER PATH THE PROMPT ADVERTISES IS THE POSTER PATH THE SCRIPT WRITES", async (t) => {
+  // Two independent derivations of one path: planVideoLegs computes
+  // `<workspace>/assets/world/leg-N-poster.webp` and the script computes
+  // `${OUT%.*}-poster.webp`, having never been told the first. They agree today.
+  // If either drifts, the build agent gets a poster= that 404s, "instant first
+  // paint" silently stops being true, and every unit test on both sides stays
+  // green because neither knows the other exists.
+  //
+  // THE MANIFEST GOES IN AS THE SHAPE THE PROGRAM WRITES — `refs`, through
+  // `legPlannerInput` — so this also exercises the join `planVideoLegs` alone
+  // does not have. Handing it `{sections:[...]}` here would test a file no
+  // writer produces.
+  const fake = await fakeFor(t, { pollsBeforeDone: 1 });
+  const f = fixture();
+  const manifest = {
+    version: 1,
+    refs: [{ path: f.still, section: "descent", aspect: "16:9", intent: "x", animate: true }],
+    lockedMockup: null,
+    lockedBy: null,
+    lockedReason: null,
+    lockedAt: null,
+  };
+  const plan = planVideoLegs(legPlannerInput(manifest), f.dir, resolveLegCap({}));
+  assert.equal(plan.legs.length, 1, "the manifest shape the DESIGN lane writes yields a leg");
+  const leg = plan.legs[0];
+  const r = await runScript(["x", "-i", leg.still, "-a", leg.aspect, "-o", leg.out], { base: fake.url });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(existsSync(leg.out), true);
+  assert.equal(existsSync(leg.poster), true, "the path planVideoLegs put in the prompt is the one on disk");
 });

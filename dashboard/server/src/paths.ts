@@ -123,6 +123,16 @@ export interface RunPaths {
   readonly ledger: string;
   /** Where the build prompt actually sent is recorded, verbatim. */
   readonly promptFile: string;
+  /**
+   * Metered image→video spend, in UNITS. `costUsd` stays null; see
+   * `api-types.ts` and spec §7.5 — the script prints a path, the Veo response
+   * carries no price, and this program has no price table to look one up in.
+   *
+   * ITS EXISTENCE IS ALSO A GUARD. `runVideoLane` reads this path back to decide
+   * whether the run has already spent, so a resumed BUILD segment does not buy
+   * the cap a second time.
+   */
+  readonly videoRecord: string;
 }
 
 export function runPathsFor(paths: DashboardPaths, runId: string): RunPaths {
@@ -135,6 +145,7 @@ export function runPathsFor(paths: DashboardPaths, runId: string): RunPaths {
     runLog: join(root, "results", "run.log"),
     ledger: join(root, "results", "ledger.jsonl"),
     promptFile: join(root, "results", "prompt.txt"),
+    videoRecord: join(root, "results", "video.json"),
   };
 }
 

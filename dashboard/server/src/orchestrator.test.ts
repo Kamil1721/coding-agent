@@ -15,7 +15,7 @@
 
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -37,6 +37,7 @@ import { DESIGN_MOCKUP_LABEL, readDesignLock, writeDesignLock } from "./design-l
 import type { DesignLockRecord } from "./design-lock.js";
 import { readDesignManifest, writeDesignManifest } from "./design-manifest.js";
 import { readDesignLaneRecord } from "./design-outcome.js";
+import { foldGraphAll } from "./graph.js";
 import { ModelCatalog } from "./models.js";
 import type { CatalogEntry } from "./models.js";
 import { Orchestrator, highestArchivedAttempt, renderEvidence } from "./orchestrator.js";
@@ -287,6 +288,12 @@ interface FakeBuilderOptions {
   readonly segmentTokens: readonly number[];
   /** Write no manifest at all, whatever the png count says. */
   readonly writeManifest: boolean;
+  /**
+   * Mark every ref `animate: true` — Phase 2c's field, which Phase 2b will one
+   * day write for real. Default `false`, so every test above this one sees the
+   * manifest it has always seen.
+   */
+  readonly animateRefs: boolean;
 }
 
 class FakeBuilder implements SubscriptionBuilder {
@@ -379,7 +386,13 @@ class FakeBuilder implements SubscriptionBuilder {
     for (let n = 0; n < this.#options.pngCount; n += 1) {
       const path = join(refsDir, `0${String(n + 1)}-section.png`);
       writeFileSync(path, `not really a png ${String(n)}`, "utf8");
-      refs.push({ path, section: `section-${String(n + 1)}`, aspect: "16:9" as const, intent: "x" });
+      refs.push({
+        path,
+        section: `section-${String(n + 1)}`,
+        aspect: "16:9" as const,
+        intent: "x",
+        ...(this.#options.animateRefs ? { animate: true } : {}),
+      });
       // The tool events the image-call counter reads, IN THE DRIVER'S OWN SHAPE.
       // `summariseToolInput` (claude-common.ts:291) walks `file_path, path,
       // command, …` and returns `"<key>: <value>"` truncated to 160 chars, so a
@@ -426,6 +439,56 @@ class FakeCatalog extends ModelCatalog {
 
 const GEMINI_STUB_NAME = "gemini-image.sh";
 
+/**
+ * A `gemini-video.sh` that spends nothing, at the ONE path `videoCapability`
+ * looks in: `<home>/.claude/scripts/`.
+ *
+ * IT IS A FAKE THAT STILL PROVES THINGS. It does `mktemp -d` first, exactly as
+ * the real script does, so a TMPDIR that is merely NAMED and not created kills
+ * it at exit 9 rather than passing quietly. It derives the poster from `-o` the
+ * way the real script does (`${OUT%.*}-poster.webp`), so the path
+ * `planVideoLegs` advertised in the prompt is the path something actually wrote.
+ * And it records whether GEMINI_API_KEY arrived — by PRESENCE, never by value.
+ */
+function writeVideoStub(home: string): void {
+  const dir = join(home, ".claude", "scripts");
+  mkdirSync(dir, { recursive: true });
+  const script = join(dir, "gemini-video.sh");
+  writeFileSync(
+    script,
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'out=""',
+      'while [ $# -gt 0 ]; do',
+      '  case "$1" in',
+      '    -o) out="$2"; shift 2 ;;',
+      "    -i|-a|-d|-r|-m) shift 2 ;;",
+      "    *) shift ;;",
+      "  esac",
+      "done",
+      "# THE REAL SCRIPT'S FIRST ACT, IN ITS EXACT FORM (gemini-video.sh:133).",
+      "# The explicit template is not stylistic: MEASURED on Darwin 25.6, a bare",
+      "# `mktemp -d` IGNORES TMPDIR and lands in /var/folders/.../T — so a stub",
+      "# using the bare form would pass against a TMPDIR the script never honoured",
+      "# and prove nothing about the sandbox. It also fails outright when the",
+      "# directory does not exist, which is the half a string assertion cannot see.",
+      'work="$(mktemp -d "${TMPDIR:-/tmp}/gemini-video-stub.XXXXXXXX")" || exit 9',
+      'mkdir -p "$(dirname "$out")"',
+      "printf 'not really an mp4' > \"$out\"",
+      "printf 'not really a webp' > \"${out%.*}-poster.webp\"",
+      "key=absent",
+      'if [ -n "${GEMINI_API_KEY:-}" ]; then key=present; fi',
+      "printf 'out=%s tmpdir=%s work=%s key=%s\\n' \\",
+      '  "$out" "${TMPDIR:-unset}" "$work" "$key" >> "$VIDEO_STUB_LOG"',
+      'rmdir "$work"',
+      "exit 0",
+      "",
+    ].join("\n"),
+    { encoding: "utf8", mode: 0o755 },
+  );
+}
+
 interface DesignHarness {
   readonly runId: string;
   readonly orchestrator: Orchestrator;
@@ -438,6 +501,8 @@ interface DesignHarness {
   emittedGraph(): readonly GraphSseEvent[];
   status(): string;
   tokens(): ApiTokens | null;
+  /** One line per `gemini-video.sh` invocation the stub saw. See `writeVideoStub`. */
+  videoStubLog(): readonly string[];
   settle(timeoutMs?: number): Promise<void>;
   waitFor(ready: () => boolean, timeoutMs: number, what: string): Promise<void>;
   rewindParkTime(ms: number): void;
@@ -533,6 +598,8 @@ async function designRun(options: {
   noKey?: boolean;
   pngCount?: number;
   writeManifest?: boolean;
+  animateRefs?: boolean;
+  videoScript?: boolean;
   segmentTokens?: readonly number[];
   env?: NodeJS.ProcessEnv;
 }): Promise<DesignHarness> {
@@ -541,6 +608,14 @@ async function designRun(options: {
   mkdirSync(home, { recursive: true });
   const script = join(dir, GEMINI_STUB_NAME);
   writeFileSync(script, "#!/usr/bin/env bash\nexit 0\n", "utf8");
+  // THE VIDEO SCRIPT LIVES UNDER THE RUN'S OWN HOME, WHICH IS THE SAFETY
+  // PROPERTY AND NOT A CONVENIENCE. `videoCapability` derives the script path
+  // from `home`, and the orchestrator derives `home` from the run's env — so on
+  // a machine where the REAL `~/.claude/scripts/gemini-video.sh` exists and a
+  // key resolves, no test here can reach a metered Veo call. The stub below is
+  // the only `gemini-video.sh` any of these runs can find.
+  const videoLog = join(dir, "video-stub.log");
+  if (options.videoScript === true) writeVideoStub(home);
 
   const paths = resolvePaths({ DASHBOARD_HOME: dir });
   ensureDirs(paths);
@@ -558,6 +633,7 @@ async function designRun(options: {
     pngCount: options.pngCount ?? 5,
     segmentTokens: options.segmentTokens ?? [],
     writeManifest: options.writeManifest ?? true,
+    animateRefs: options.animateRefs ?? false,
   });
 
   const env: NodeJS.ProcessEnv = {
@@ -567,6 +643,10 @@ async function designRun(options: {
     // `infra` at attempt 1 rather than scoring a container for ten minutes.
     HOME: home,
     DASHBOARD_GEMINI_IMAGE_SCRIPT: script,
+    // Where the video stub records what it was handed. It reaches the stub
+    // because `videoLaneEnv` is a SUBTRACTION of metered credentials, never an
+    // allowlist — the same property that keeps GEMINI_API_KEY on the way in.
+    VIDEO_STUB_LOG: videoLog,
     ...(options.noKey === true ? {} : { GEMINI_API_KEY: "not-a-real-key-fixture" }),
     ...options.env,
   };
@@ -635,6 +715,12 @@ async function designRun(options: {
         .filter((event): event is GraphSseEvent => event.type.startsWith("graph_")),
     status: () => store.getRun(runId)?.status ?? "gone",
     tokens: () => store.getRun(runId)?.tokens ?? null,
+    videoStubLog: () =>
+      existsSync(videoLog)
+        ? readFileSync(videoLog, "utf8")
+            .split("\n")
+            .filter((line) => line !== "")
+        : [],
     settle: (timeoutMs = 30_000) => waitUntil(settled, timeoutMs, "the run never settled"),
     waitFor: waitUntil,
     rewindParkTime: (ms) => {
@@ -871,6 +957,125 @@ test("segment 2's canvas nodes extend segment 1's instead of colliding with them
     // And the build's tool pill is on the build's own node, not the designer's.
     const tools = h.emittedGraph().filter((event) => event.type === "graph_tool");
     assert.equal(new Set(tools.map((event) => event.node)).size, 2, "two segments, two tool owners");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/* ---------------------------------------------------------------------------
+ * THE IMAGE→VIDEO LANE, DRIVEN BY THE RUN (spec §7.6).
+ *
+ * `video-lane.test.ts` drives `runVideoLane` directly and can never say whether
+ * `#buildPhase` still calls it, whether the manifest it is handed is the shape
+ * the DESIGN lane writes, or whether the node its graph events name is one the
+ * canvas knows. Those are this file's questions, and the whole point is that a
+ * unit test cannot ask them (instances 2, 3, 6, 7, 11).
+ *
+ * NO METERED CALL IS POSSIBLE HERE. The capability resolves from the run's own
+ * `HOME`, which `designRun` points at a temp directory; the only
+ * `gemini-video.sh` reachable is `writeVideoStub`'s. That is a structural
+ * guarantee, not a convention — see the comment in `#buildPhase`.
+ * ------------------------------------------------------------------------- */
+
+test("THE VIDEO LANE RUNS INSIDE THE BUILD PHASE, and its pill lands on a node the canvas knows", async () => {
+  const h = await designRun({ designLock: "auto", animateRefs: true, videoScript: true });
+  try {
+    // 1. IT SPENT, AND IT SPENT THE CAP. Five animate refs, two invocations —
+    //    counted from the SCRIPT's own log, not from the plan we handed it.
+    const log = h.videoStubLog();
+    assert.equal(log.length, 2, "spec §7.6.3.2: at most 2 legs per run, counted at the script");
+    assert.match(String(log[0]), /leg-1\.mp4/u);
+    assert.match(String(log[1]), /leg-2\.mp4/u);
+
+    // 2. TMPDIR WAS INSIDE THE WORKSPACE AND EXISTED. The stub's first act is
+    //    `mktemp -d`, which exits 9 against a directory that was only named.
+    const workspace = runPathsFor(h.paths, h.runId).workspace;
+    assert.match(String(log[0]), new RegExp(`tmpdir=${workspace}/\\.tmp\\b`, "u"));
+    assert.match(String(log[0]), new RegExp(`work=${workspace}/\\.tmp/`, "u"));
+    assert.match(String(log[0]), /key=present/u, "GEMINI_API_KEY is NOT stripped — spec §7.5");
+
+    // 3. THE RECORD. costUsd null, spend in units, and the cap's source.
+    const record = JSON.parse(readFileSync(runPathsFor(h.paths, h.runId).videoRecord, "utf8")) as {
+      costUsd: unknown;
+      legsProduced: number;
+      meteredSeconds: number;
+      capSource: string;
+    };
+    assert.equal(record.costUsd, null, "no price exists to record, so none is invented");
+    assert.equal(record.legsProduced, 2);
+    assert.equal(record.meteredSeconds, 8, "2 legs x 4 s — UNITS, which are real");
+    assert.equal(record.capSource, "default");
+
+    // 4. THE CANVAS. Not "an event was emitted" — the folded state, through the
+    //    real reducer, which DROPS a graph_tool naming a node it does not know.
+    const folded = foldGraphAll(h.emittedGraph());
+    const withVideo = folded.nodes.filter((n) => n.tools.some((p) => p.name === "gemini-video.sh"));
+    assert.equal(withVideo.length, 1, "the pill survived the fold");
+    assert.equal(withVideo[0]?.tools.find((p) => p.name === "gemini-video.sh")?.count, 2);
+    assert.equal(withVideo[0]?.parent, null, "and it hangs on the run's own root, not on an invented node");
+
+    // 5. THE PROMPT THE BUILD AGENT ACTUALLY RECEIVED carries §7.6.4's pattern
+    //    and the ABSOLUTE paths — which is what makes the fetch happen (§7.3).
+    const buildPrompt = String(h.builderCalls[1]?.prompt);
+    assert.match(buildPrompt, /scrub, do not play/iu);
+    assert.match(buildPrompt, new RegExp(`${workspace}/assets/world/leg-1\\.mp4`, "u"));
+    assert.match(buildPrompt, /leg-1-poster\.webp/u);
+    assert.match(buildPrompt, /AUDIO IS GENERATED AND IGNORED/u);
+    assert.ok(!buildPrompt.includes("not-a-real-key-fixture"), "and no key in the prompt");
+
+    // 6. THE POSTER THE PROMPT ADVERTISES IS ON DISK. Two derivations of one
+    //    path — planVideoLegs computed it for the prompt, the script computed
+    //    `${OUT%.*}-poster.webp` and was never told the first.
+    assert.equal(existsSync(join(workspace, "assets", "world", "leg-1-poster.webp")), true);
+    assert.equal(existsSync(join(workspace, "assets", "world", "leg-1.mp4")), true);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("NO SCRIPT UNDER THE RUN'S HOME MEANS NO LANE — the build prompt is byte-identical", async () => {
+  // The negative control for all six assertions above, and the property that
+  // makes every other test in this file safe on a machine that HAS the real
+  // script: the capability is derived from the RUN's HOME, so an absent stub is
+  // an absent capability, no spend, no record, and a prompt with no video in it.
+  const h = await designRun({ designLock: "auto", animateRefs: true });
+  try {
+    assert.equal(h.videoStubLog().length, 0, "nothing was invoked");
+    // A DEGRADED LANE IS STILL EXPLAINABLE. The record is written either way —
+    // an absent one would be indistinguishable from a lane that never ran.
+    const record = JSON.parse(readFileSync(runPathsFor(h.paths, h.runId).videoRecord, "utf8")) as {
+      capability: { available: boolean; reason: string; scriptSha256: string | null };
+      legsProduced: number;
+    };
+    assert.equal(record.capability.available, false);
+    assert.equal(record.capability.scriptSha256, null, "no script, so nothing to hash");
+    assert.match(record.capability.reason, /gemini-video\.sh/u, "and it names what was missing");
+    assert.equal(record.legsProduced, 0);
+    const folded = foldGraphAll(h.emittedGraph());
+    assert.equal(
+      folded.nodes.filter((n) => n.tools.some((p) => p.name === "gemini-video.sh")).length,
+      0,
+    );
+    assert.ok(!String(h.builderCalls[1]?.prompt).includes("scrub, do not play"));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A MANIFEST WITH NO `animate` SPENDS NOTHING, even with the script and the key present", async () => {
+  // Phase 2b writes `animate`; until it does, every real manifest yields zero
+  // legs. That is the correct degraded state and it must be observed rather
+  // than assumed — the script is RIGHT THERE and the key resolves.
+  const h = await designRun({ designLock: "auto", videoScript: true });
+  try {
+    assert.equal(h.videoStubLog().length, 0, "no animate section, no leg, no spend");
+    const record = JSON.parse(readFileSync(runPathsFor(h.paths, h.runId).videoRecord, "utf8")) as {
+      legsProduced: number;
+      capability: { available: boolean };
+    };
+    assert.equal(record.capability.available, true, "the capability WAS there — this is not a null result");
+    assert.equal(record.legsProduced, 0);
+    assert.ok(!String(h.builderCalls[1]?.prompt).includes("scrub, do not play"));
   } finally {
     await h.cleanup();
   }
@@ -1215,6 +1420,7 @@ test("a resumed run archives BESIDE the earlier attempts, never on top of them",
     pngCount: 0,
     segmentTokens: [],
     writeManifest: false,
+    animateRefs: false,
   });
   const orchestrator = new Orchestrator({
     store,

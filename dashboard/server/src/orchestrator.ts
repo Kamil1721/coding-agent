@@ -110,6 +110,8 @@ import {
 import type { DesignManifest } from "./design-manifest.js";
 import { classifyDesignLane, designLaneFailureMessage, writeDesignLaneRecord } from "./design-outcome.js";
 import { designHandoffSection, designSegmentPrompt } from "./design-prompt.js";
+import { defaultVideoCapabilityDeps, videoCapability } from "./design/video-capability.js";
+import { defaultSpawnLeg, runVideoLane } from "./design/video-lane.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
 import type { FixTask } from "./fix-triage.js";
 import { archiveAttempt, readAttempt, scorerOutRoot } from "./gate-attempts.js";
@@ -837,6 +839,66 @@ export class Orchestrator {
         ? fullShortlist.filter((agent) => designLanes.has(agent))
         : fullShortlist;
       const policy = designLockPolicy(row.designLock, row.interactive);
+      // FOLDED FROM THE DURABLE ROWS, not from memory, for the same reason
+      // `graphSnapshot` is: a park can outlive the process, so there is no
+      // in-memory segment-1 state to read on the second segment. Read HERE
+      // rather than beside `remap` below because the video lane needs it too,
+      // and it needs it before the prompt exists.
+      const priorGraph = store
+        .eventsSince(runId, 0)
+        .map((stored) => stored.event)
+        .filter((event): event is GraphSseEvent => event.type.startsWith("graph_"));
+
+      /* ---- THE IMAGE→VIDEO LANE (spec §7.6), before the build is prompted --
+       *
+       * BUILD SEGMENT ONLY, AND THAT IS THE SPEND CONTROL. The design segment is
+       * what WRITES `animate` into the manifest, so running the lane there would
+       * plan against a file that does not exist yet; and the loop reaches a
+       * non-design segment exactly once per entry (`if (!designSegment) return`
+       * below). Re-entry by `resume` is guarded inside `runVideoLane`, by the
+       * record this run already wrote.
+       *
+       * THE CAPABILITY IS RESOLVED FROM THE RUN'S OWN ENVIRONMENT, never
+       * `process.env` — the same reason `designRun` in the tests hands the
+       * orchestrator a temp `HOME`. `videoCapability` derives the script path
+       * from `home`, so a run whose HOME has no `gemini-video.sh` degrades, and
+       * no test on a machine that HAS the script can reach a metered Veo call by
+       * accident.
+       *
+       * THE GRAPH EVENTS DO NOT GO THROUGH `sink.graph`. That applies `remap`,
+       * which mints a FRESH id for any node it has not seen — and a fresh id is
+       * one `foldGraph` has never heard of, so the pill would be dropped
+       * (`graph.ts:180-183`). The lane's node is the run's existing ROOT, read
+       * off the durable stream by the same `graphResumeState` the remap uses.
+       */
+      const videoCap = videoCapability({
+        ...defaultVideoCapabilityDeps(),
+        env: this.#deps.env,
+        home: this.#deps.env["HOME"] ?? "",
+      });
+      const { prompt: videoPrompt } = designSegment
+        ? { prompt: "" }
+        : await runVideoLane({
+            workspace: runPaths.workspace,
+            recordPath: runPaths.videoRecord,
+            node: graphResumeState(priorGraph).rootNode ?? "",
+            env: this.#deps.env,
+            capability: videoCap,
+            // The manifest this pass already read. A second `readDesignManifest`
+            // here would be a second derivation of one path, and the plan's own
+            // hand-rolled `JSON.parse(join(workspace,"design-refs",…))` is
+            // exactly that.
+            readManifest: () => manifest,
+            spawnLeg: defaultSpawnLeg(videoCap.scriptPath ?? ""),
+            emitGraph: (event) => this.#emit(runId, event),
+            writeRecord: (path, json) => {
+              writeFileSync(path, json, "utf8");
+            },
+            ensureDir: (path) => {
+              mkdirSync(path, { recursive: true });
+            },
+            fileExists: (path) => existsSync(path),
+          });
 
       const prompt = designSegment
         ? designSegmentPrompt({
@@ -846,7 +908,12 @@ export class Orchestrator {
             capability: this.#capability(),
             autoChoose: policy === "auto",
           })
-        : this.#buildSegmentPrompt(row, ticket, runPaths, manifest, laneMode, fullShortlist);
+        : // APPENDED UNCONDITIONALLY. `videoPrompt` is "" whenever there are no
+          // legs, so a degraded lane adds nothing; §7.3 mechanism 2 is why the
+          // ABSOLUTE paths have to be in the prompt at all — a path in a prompt
+          // is what makes a `Read`/`fetch` actually happen.
+          this.#buildSegmentPrompt(row, ticket, runPaths, manifest, laneMode, fullShortlist) +
+          (videoPrompt === "" ? "" : `\n\n${videoPrompt}\n`);
       // REDACTED ON THE WAY TO DISK. The prompt embeds the ticket text, and here
       // the ticket text is FREE-FORM OWNER INPUT typed into a web form — not a
       // frozen, harness-authored brief as in the bake-off. Every other persisted
@@ -895,14 +962,6 @@ export class Orchestrator {
       // dropped and every later `graph_tool{node:"n2"}` attaches to segment 1's
       // `n2` — the canvas renders perfectly and attributes the build's work to
       // the designer.
-      //
-      // FOLDED FROM THE DURABLE ROWS, not from memory, for the same reason
-      // `graphSnapshot` is: a park can outlive the process, so there is no
-      // in-memory segment-1 state to read on the second segment.
-      const priorGraph = store
-        .eventsSince(runId, 0)
-        .map((stored) => stored.event)
-        .filter((event): event is GraphSseEvent => event.type.startsWith("graph_"));
       const remap =
         priorGraph.length === 0
           ? (event: GraphSseEvent): GraphSseEvent => event
