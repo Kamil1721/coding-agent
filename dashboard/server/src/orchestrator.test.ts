@@ -17,7 +17,7 @@ import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { BAKEOFF_SCHEMA_VERSION } from "bakeoff/dist/contracts.js";
 import type { AcceptanceSuite } from "bakeoff/dist/contracts.js";
@@ -799,6 +799,70 @@ test("resuming with a path that is not a mockup is REFUSED and the run stays par
     assert.equal(h.orchestrator.resume(h.runId, "/etc/passwd"), false);
     assert.equal(h.status(), "awaiting_input");
     assert.equal(h.lock()?.awaiting, true, "and the park record still says so");
+    assert.equal(h.builderCalls.length, 1, "no build segment started behind the refusal");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * PHASE 4 TASK 6'S BLOCKING GATE, EXECUTED. The two tests below are the record
+ * of why `POST /api/runs` still does not persist `designLock` / `interactive`.
+ *
+ * Phase 4 Task 6 would have wired those two columns, which are already migrated
+ * and already accepted by `NewRun`, and which nothing writes. Doing so makes
+ * `designLockPolicy` return `"ask"` for the first time in production — and the
+ * unpark channel for an `"ask"` run is broken, so such a run would park with no
+ * exit but the 30-minute timeout and a `fallback` lock. That is strictly worse
+ * than today's behaviour, so the task is BLOCKED rather than skipped, and these
+ * are the measurements that block it.
+ * ---------------------------------------------------------------------- */
+
+test("SEAM: a published mockup path can NEVER be a path lockManifest accepts", () => {
+  // A PURE COMPARISON OF TWO STRING CONSTRUCTIONS, no fixture and no HTTP,
+  // because the obvious check is circular: "drive resume against a parked run"
+  // needs the very columns Task 6 would add.
+  //
+  //   #recordDesignMockups publishes  join(results, "screenshots", runId, `design-${basename(ref.path)}`)
+  //     (orchestrator.ts — `path: target` is what reaches addScreenshot, and
+  //      http.ts's toDetail reports those same rows as designLock.mockups[].path)
+  //   lockManifest accepts ONLY       manifest.refs.some((r) => r.path === attempt.path)
+  //     (design-lock.ts, exact equality)
+  const results = join("/somewhere", "results");
+  const ref = join("/somewhere", "runs", "r1", "workspace", "design-refs", "01-hero.png");
+  const published = join(results, "screenshots", "r1", `design-${basename(ref)}`);
+  assert.notEqual(published, ref, "if these can be equal, the seam is closed and Task 6 may proceed");
+  // AND IT IS NOT AN ARTEFACT OF THIS FIXTURE'S DIRECTORIES. The `design-`
+  // prefix alone makes the basenames differ, so no choice of results root,
+  // run id or ref path can make the two equal.
+  assert.notEqual(basename(published), basename(ref), "the design- prefix alone is enough to refuse every ref");
+});
+
+test("SEAM, MEASURED THROUGH THE REAL ORCHESTRATOR: the path the WIRE offers is refused", async () => {
+  // THE CORROBORATION, AND IT IS DELIBERATELY NOT THE ONE THE PLAN ASKED FOR.
+  // The plan wanted a `POST /api/runs/:id/resume` in api.test.ts recording a
+  // 409. That harness's `resume` is a FIXTURE whose rule is
+  // `store.listScreenshots(runId).some((shot) => shot.path === chosenMockup)` —
+  // and a path from `designLock.mockups[].path` IS a screenshot path, so that
+  // probe answers 200 and would read as "the seam is closed". A check that can
+  // only observe the answer it was hoping for is the defect this whole phase is
+  // written against, so the measurement is taken against the REAL
+  // `Orchestrator.resume` -> `#applyDesignLock` -> `lockManifest` instead.
+  //
+  // IT DOES NOT DEPEND ON TASK 6, and that is what breaks the circularity: this
+  // harness seeds `designLock: "ask"` straight into `store.createRun`, so the
+  // park exists without the route persisting anything.
+  const h = await designRun({ designLock: "ask" });
+  try {
+    const wirePath = h.mockups()[1]?.path ?? "";
+    assert.ok(wirePath.length > 0, "the API lists mockups for the owner to click");
+    assert.equal(
+      h.orchestrator.resume(h.runId, wirePath),
+      false,
+      "the ONLY path a client can send is refused; the route turns this false into a 409",
+    );
+    assert.equal(h.status(), "awaiting_input", "and the run is still parked, with no way for a click to end it");
+    assert.equal(h.lock()?.awaiting, true);
     assert.equal(h.builderCalls.length, 1, "no build segment started behind the refusal");
   } finally {
     await h.cleanup();
