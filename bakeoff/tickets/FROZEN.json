@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "algorithm": "sha256",
+  "digestScope": "sha256 of the ticket brief: every byte of the file after the newline that terminates the closing \"---\" frontmatter fence, taken as raw UTF-8 with NO normalisation — no trimming, no newline conversion, no Unicode normalisation, no BOM stripping. Files containing CR, NUL or a BOM are rejected at load rather than normalised.",
+  "frozenAt": "2026-07-27T16:05:31.265Z",
+  "tickets": {
+    "T1": "8df22224f32bdda5b9e65b1e057a6a7b3ae22ca1175680d4093e779d5b4b2c80",
+    "T2": "27076be66e247c203fab49c22e334e40c682576b84e69607b2bca035c99d0c2b",
+    "T3": "93bdd3c7aa4568d7ea45fd9d8b6429dc13688db68f2ba0146cd5e347b3aa43a8",
+    "T4": "c3c8c89dc5cf49918e6ed6b1c6b16d7cbfef221e9486906c00a9dc47a794e386",
+    "T5": "78f9ea152b4160d1b023b9faa268660cb614bca2336c1492f07d19532ce4d2e0",
+    "T6": "6be24c912ad5ce918a0281dfa00f7bcba23a55cf1460201f11f94ced35a8b8ef"
+  },
+  "setDigest": "eae01c0f642a698177023bbccd7035897a9bfb380fa6398263ed7ff1b87fbc3f"
+}

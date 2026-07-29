@@ -1,0 +1,12 @@
+# The ticket briefs are hashed over their RAW BYTES, with no normalisation of any
+# kind (see `ticketDigest` in ../src/hash.ts). A checkout that converted line
+# endings would change all six digests at once, silently, on a machine that never
+# edited a ticket — and `verifyFrozen()` would correctly but uselessly refuse to
+# run the campaign.
+#
+# `-text` disables git's end-of-line conversion entirely for this directory:
+# whatever bytes were committed are the bytes on disk, on every platform. This
+# covers the repo-checkout failure path. The editor failure path is covered
+# separately by src/tickets.ts, which refuses to load a brief containing a CR or
+# a byte-order mark.
+* -text

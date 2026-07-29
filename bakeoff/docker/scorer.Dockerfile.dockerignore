@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Build context for docker/scorer.Dockerfile.
+#
+# Scoped to this Dockerfile (BuildKit resolves <dockerfile>.dockerignore before
+# <context>/.dockerignore) so it cannot narrow the context of some other image
+# built from the same directory later.
+#
+# Two of these exclusions are correctness, not speed:
+#   - acceptance/  is the sealed suite store. It must reach the container as a
+#     read-only bind mount at run time, per ticket, never baked into the image.
+#     An image carrying every ticket's suite would hand the whole freeze to
+#     anyone who could pull it.
+#   - results/     holds run records, ledgers and screenshots. None of it may be
+#     visible to a scorer whose entire value is being uninformed.
+# ---------------------------------------------------------------------------
+
+node_modules
+dist
+*.tsbuildinfo
+
+.env
+.env.*
+
+acceptance
+results
+
+.git
+.gitignore
+.DS_Store
+*.log
+
+docker/README.md
+README.md
