@@ -92,6 +92,7 @@ import type { ModelCatalog } from "./models.js";
 import { ensureRunDirs, gateEnv, runPathsFor } from "./paths.js";
 import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
+import { writeAssumptions, writeRunVerdict } from "./run-report.js";
 import { describeTokens, toApiTokens, zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
 import { SubscriptionSeatCaller } from "./subscription-caller.js";
@@ -323,6 +324,12 @@ export class Orchestrator {
       // ---- PHASE 1: the sealed acceptance suite ------------------------
       this.#setPhase(runId, "spec");
       const suite = await this.#specPhase(runId, ticket, signal);
+      // SPEC-PHASE EXIT. Written here, above the abort check, for two reasons:
+      // a run cancelled during the spec phase has still had criteria inferred on
+      // its behalf and the record of them is exactly as useful, and this is the
+      // last moment before the build starts — everything in that file is a
+      // sentence the owner can add to the TICKET, which is the cheap correction.
+      this.#recordAssumptions(runId, ticket, runPaths);
       if (signal.aborted) return this.#cancelled(runId, log);
 
       // ---- PHASE 2: build ---------------------------------------------
@@ -469,6 +476,37 @@ export class Orchestrator {
     );
     this.#recordCriteria(runId, record.suite);
     return record.suite;
+  }
+
+  /**
+   * `assumptions.md`, plus the count the API reports.
+   *
+   * READ FROM THE STORE, NOT FROM THE SUITE, and that is a boundary rather than
+   * a shortcut: `AcceptanceCriterion.evidenceRequired` names held-out test ids
+   * by contract ("holdout test T-14 PASS ..."), and `ApiCriterion` has no such
+   * field. `#recordCriteria` has just written the same criteria there, redacted.
+   *
+   * A failure to write it must NOT take the run down — this is the record of the
+   * run, not the run — so it is logged as a warning, which is itself a record.
+   */
+  #recordAssumptions(runId: string, ticket: Ticket, runPaths: RunPaths): void {
+    try {
+      const record = writeAssumptions(
+        runPaths.results,
+        ticket.brief,
+        this.#deps.store.listCriteria(runId),
+      );
+      this.#deps.store.updateRun(runId, { inferredCriteria: record.inferredCriteria });
+      this.#emitLog(
+        runId,
+        record.inferredCriteria === 0 ? "info" : "warn",
+        `${String(record.inferredCriteria)} of the criteria this run will be graded against were not ` +
+          `stated in your ticket. What the grader assumed is recorded in ${record.path}; correcting the ` +
+          "ticket is cheaper than debugging the verdict it produces.",
+      );
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the assumption record could not be written: ${describeError(error)}`);
+    }
   }
 
   #recordCriteria(runId: string, suite: AcceptanceSuite): void {
@@ -992,9 +1030,62 @@ export class Orchestrator {
     this.#finish(runId, "cancelled", { endedAt: new Date().toISOString(), queuePosition: null });
   }
 
+  /**
+   * The single funnel every terminal status passes through — and therefore the
+   * one place `verdict.md` is written.
+   *
+   * `rate_limited` deliberately does not come through here: it is not terminal,
+   * the window drains and the run resumes, and a verdict written for it would be
+   * a verdict on a run that has not finished. `#rateLimited` writes its own
+   * patch for exactly that reason.
+   *
+   * ORDER IS LOAD-BEARING. The patch is persisted FIRST so the verdict is
+   * rendered from the run's final recorded state — the status it is ending in
+   * and the failure reason that came with it, not the ones it had a moment ago.
+   * The `verdict` event is then emitted BEFORE the `status` event, because a
+   * client revalidates on a terminal status and must find `verdictPath` already
+   * in the read model when it does.
+   */
   #finish(runId: string, status: ApiRunStatus, patch: Parameters<RunStore["updateRun"]>[1]): void {
-    this.#deps.store.updateRun(runId, { ...patch, status });
+    const row = this.#deps.store.updateRun(runId, { ...patch, status });
+    const verdictPath = this.#writeVerdict(runId, row);
+    if (verdictPath !== null) {
+      const updated = this.#deps.store.updateRun(runId, { verdictPath });
+      this.#emit(runId, {
+        type: "verdict",
+        verdictPath,
+        inferredCriteria: updated.inferredCriteria,
+      });
+    }
     this.#emit(runId, { type: "status", status });
+  }
+
+  /**
+   * `verdict.md` for a run that has just ended.
+   *
+   * The branch between a real verdict and the no-verdict page lives inside
+   * `writeRunVerdict`, not here. If this method chose, the choice would be
+   * wiring no test reaches and whichever arm a test did not exercise would be
+   * dead in the run while a unit test stood over it — the shape of defect this
+   * project has already shipped twice.
+   *
+   * Every input comes from the persisted row and the criteria table, both
+   * redacted on the way in and neither carrying a held-out test title.
+   */
+  #writeVerdict(runId: string, row: RunRow): string | null {
+    try {
+      return writeRunVerdict(runPathsFor(this.#deps.paths, runId).results, {
+        ticketText: row.ticketText,
+        criteria: this.#deps.store.listCriteria(runId),
+        status: row.status,
+        failureReason: row.failureReason,
+      });
+    } catch (error) {
+      // The record of the run, not the run. A run that finished must not be
+      // reported as a harness fault because one file could not be written.
+      this.#emitLog(runId, "warn", `the verdict could not be written: ${describeError(error)}`);
+      return null;
+    }
   }
 
   #setPhase(runId: string, phase: ApiPhase): void {
