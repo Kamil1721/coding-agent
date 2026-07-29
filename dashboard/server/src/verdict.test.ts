@@ -691,3 +691,27 @@ test("no visual finding renders NO section at all — an empty heading is noise"
   const md = renderVerdict(failingRun());
   assert.doesNotMatch(md, new RegExp(VISUAL_SECTION_HEADING));
 });
+
+test("A QUALITY-TIERED visual finding WOULD flip a clean pass — which is why demoting is not free", () => {
+  // NOT A HYPOTHETICAL, AND NOT PROSE. The 2026-07-29 calibration recommends that
+  // VIS-F-EMPTY-FRAME "belongs at QUALITY, where a redundant observation costs
+  // nothing". It does not: `findingCount` adds QUALITY findings, so ONE such row
+  // takes `correct-portfolio` from pass/failingTier: null to
+  // pass_with_notes/QUALITY — two values calibration asserts, broken by the
+  // mechanism installed to protect them. Unreachable today because
+  // `VisualObservation.tier` is the LITERAL "FUNCTIONAL" (asserted per entry in
+  // visual-substance.test.ts), so this is built by hand on purpose: the cast is
+  // what a widened tier would produce, and this is the assertion that would catch
+  // it. Demoting means a report string OUTSIDE VerdictInput, or nothing.
+  const demoted = {
+    ...(firedEmptyFrame()[0] as VisualObservationOutcome),
+    declaredTier: "QUALITY",
+  } as unknown as VisualObservationOutcome;
+  const clean = runWith({ passing: 3 });
+  assert.equal(computeOutcome(clean), "pass", "the control must pass or this proves nothing");
+  assert.equal(failingTier(clean), null);
+
+  const withNote = runWith({ passing: 3, visualFindings: [demoted] });
+  assert.equal(computeOutcome(withNote), "pass_with_notes");
+  assert.equal(failingTier(withNote), "QUALITY");
+});

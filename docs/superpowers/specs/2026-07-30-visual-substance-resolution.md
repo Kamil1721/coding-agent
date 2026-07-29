@@ -143,6 +143,20 @@ does not own — the outcome-and-tier test and the false-pass test over `MUST_FA
 `HOLLOW_SECTION_FIXTURE`, a separate export, with both expectations stated:
 `expectedWithoutVisualGate: "pass_with_notes"` and `expectedWithVisualGate: "fail"`.
 
+### 3.1 A committed premise measured false: design note §7.2's expected outcome
+
+§7.2 specifies this fixture as *"Expected `fail`, `failingTier: "FUNCTIONAL"`."* **Through the only
+path that exists, it grades `pass_with_notes` at QUALITY with `heldOutPass: true`.** Stated as its own
+correction rather than left as an implementation detail, because the next reader who takes §7.2 at face
+value will put it in `FIXTURES` and turn the standing gate red.
+
+The premise is not wrong about what the artefact *is* — it is wrong about what any current code path
+can conclude about it. `fail`/`FUNCTIONAL` is what it grades **once `VIS-F-EMPTY-REGION` is unlocked and
+gating**, which is why both expectations are carried on the export
+(`expectedWithoutVisualGate` and `expectedWithVisualGate`) instead of one. The fixture record itself
+says a fixture that grades wrong is a grader defect and not a fixture defect; this is a third thing that
+rule has no name for, and the honest handling is two fields and this paragraph.
+
 **THE GEOMETRY IS ASSERTED, NOT ASSUMED**, measured against the **committed copy** at the three
 `DEFAULT_BREAKPOINTS` with the container's own context and screenshot options, **0 failures**:
 
@@ -284,6 +298,13 @@ the empty panel is off-screen entirely. At 375 the hollow artefact and its fille
 **identical bytes (29,287 both)** — the fixture becomes unable to see its own discriminating evidence,
 which is the exact defect the geometry assertion exists to catch. Restored: `PASS (0 failures)`.
 
+**I — `findingCount` stops counting visual findings at QUALITY** (`if (tier === "QUALITY") return 0;`
+inserted into `visualFindingsAt`; grep confirms it at line 255). **1 of 33 RED** on
+"A QUALITY-TIERED visual finding WOULD flip a clean pass". This is what makes §6.1's argument against
+demoting a CHECK rather than a comment: the row is built by hand with `declaredTier: "QUALITY"`,
+because the literal type makes it unreachable from the enumerated set, and it is exactly what a widened
+tier would produce. Restored: 33/33.
+
 **G — the must-not-fire control, over the real pool.** Giving `correct-portfolio`'s three frames
 `blank-page`'s answers **and** `innerText: 0`:
 ```
@@ -349,12 +370,40 @@ frozen suite, every gate and every `.length` assertion in the tree pass, and bot
 3 frames of 3. Zero fires on ten adversarial correct builds. It is also the only entry that catches
 what no `.length` assertion can — text present in the DOM and absent from the pixels.
 
-It stays `shadowLocked` until the scorer carries the region's `getBoundingClientRect()` alongside the
-capture. The blocker is not that a model cannot see hollow — measured, 6 frames of 6 on two
-independently built artefacts. It is that the threshold between "an empty band that is the crop
+It stays `shadowLocked`. The blocker is not that a model cannot see hollow — measured, 6 frames of 6 on
+two independently built artefacts. It is that the threshold between "an empty band that is the crop
 ending" and "an empty band that is a hollow region" was set by the reader on the one adversarial shape
 that matters, and this pool does not exercise that shape in the firing direction. Two artefacts and one
 adjudication pass is not a rate.
+
+**AND THE UNLOCK MAY BE MUCH CHEAPER THAN A SCORER CHANGE — this is the part not to skip when weighing
+a one-entry set against the work.** The 2026-07-29 calibration says the magnitude it used is one "no
+wording in the entry supplies". It can be supplied, in a `nonTrigger` string in
+`visual-substance.ts`, without recording anything new:
+
+> the region's emptiness must be **bounded below by another visible element inside the same frame**. A
+> band that runs to the frame edge is the crop ending, not a region the page failed to fill.
+
+Against the geometry already measured, that clause separates the pool on visible evidence at every
+breakpoint rather than on a magnitude:
+
+| | 375 | 768 | 1280 |
+|---|---|---|---|
+| `hollow-section`, empty panel bottom → next visible element | 542 → `#projects` at **562**, in a 812 frame | 457 → **476**, in 1024 | 424 → **444**, in 800 |
+| case 01 (correct), heading bottom → next element | 762 → **818, below the fold** | 927 → **983, visible in a 1024 frame, so the region is not empty** | 752 → **808, below the fold** |
+
+Bounded at all three on the hollow artefact; unbounded at 375 and 1280 on the correct build, and at 768
+the correct build's next item is *in frame*, which answers the question outright. That is the same
+discrimination the calibration attributes to a chosen threshold, expressed as something a reader can
+see.
+
+**Deliberately NOT implemented or re-adjudicated here.** The 171 blind answers were given against the
+current wording; re-answering them after reading a new clause would destroy the only property that makes
+this re-calibration worth anything, and re-using sealed answers is the reason §4 can be trusted at all.
+Whoever takes it next should change the wording first and adjudicate blind against it, including the
+fold-orphaned-heading pair in the firing direction. Carrying the region geometry in the scorer's output
+remains the stronger fix — it makes the threshold measured rather than described — but it is no longer
+the only one, and the wording change costs one string and one blind pass.
 
 ### 6.3 `VIS-F-PLACEHOLDER-MEDIA` — delete it
 
