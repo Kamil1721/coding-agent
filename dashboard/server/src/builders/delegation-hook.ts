@@ -39,11 +39,40 @@
  * that call outright; see it for why outright is the best a PreToolUse hook can
  * do.
  *
- * RESIDUAL, RECORDED RATHER THAN LAUNDERED: `isolation: "remote"` is
- * availability-gated and off-host, so it is denied by construction and not by
- * measurement; `allowManagedHooksOnly` composed with the background/absent arms
- * is an inference from the lock gating WHETHER programmatic hooks run at all,
- * not per-tool shape; permission modes other than `acceptEdits` are untested.
+ * RESIDUAL, RECORDED RATHER THAN LAUNDERED. Two of the three are still open and
+ * both need a live session with a real model, which is a different thing from
+ * "untestable" — say which:
+ *
+ *   `isolation: "remote"`   availability-gated and off-host, so it is denied by
+ *                           construction and not by measurement. There is no
+ *                           apparatus on this machine to observe it with, so this
+ *                           one is genuinely not runnable here. `worktree` IS
+ *                           measured, against a real git-repo fixture.
+ *   `allowManagedHooksOnly` composed with the background / absent-flag /
+ *                           selective-policy arms. Probe E measured the lock for
+ *                           FOREGROUND delegation only; composing them is an
+ *                           inference from the lock gating WHETHER programmatic
+ *                           hooks run at all rather than per-tool shape. THIS ONE
+ *                           IS RUNNABLE — it wants a live metered session and
+ *                           nobody has been authorised to spend one on it.
+ *
+ * THE THIRD IS CLOSED, 2026-07-30, and closed by removing its reach rather than
+ * by measuring it. It used to read "permission modes other than `acceptEdits` are
+ * untested". `buildOptions` sets `permissionMode: "acceptEdits"` as a literal that
+ * takes nothing from `BuildRequest` and nothing from the environment, and
+ * `build()` hands the SDK `{ ...options, abortController }` — so no build under
+ * any other mode is reachable from this program. Pinned, with both mutations run,
+ * by "WIRING: permissionMode is acceptEdits and nothing parameterises it" in
+ * `claude-builder.test.ts`; read that test's docblock for the one channel it does
+ * NOT close (`Settings.permissions.defaultMode`, under the `settingSources:
+ * ["user"]` this builder sets) and for the free measurement that would.
+ *
+ * SEPARATELY, AND NOT A RESIDUAL OF THIS FILE: read every deny above as TWO
+ * demonstrated channels going silent, not three. `startedFor()` watches three
+ * start-observables and the third never went positive for ANY subagent in ANY arm,
+ * because every one of them ran with `tool_uses: 0` — so it never fired even for
+ * children that demonstrably started. That is a how-to-read qualifier on the
+ * evidence, not an unmeasured mechanism.
  */
 
 import type {
