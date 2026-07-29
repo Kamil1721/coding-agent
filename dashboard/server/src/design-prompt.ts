@@ -25,6 +25,8 @@ import type { DesignCapability } from "./design-capability.js";
 import type { DesignLaneMode } from "./design-lane.js";
 import type { DesignManifest } from "./design-manifest.js";
 import { manifestPathFor, refsDirFor } from "./design-manifest.js";
+import type { VisualSubstanceMode } from "./visual-substance.js";
+import { DEFAULT_VISUAL_SUBSTANCE_MODE, visualObservationBlock } from "./visual-substance.js";
 
 /** Spec §7.3, verbatim. Injected here and again into every build agent's prompt. */
 export const DESIGN_DIALS = ["DESIGN_VARIANCE", "MOTION_INTENSITY", "VISUAL_DENSITY"] as const;
@@ -311,23 +313,56 @@ export const VISUAL_GATE_AGENT = "ui-designer";
 export const VISUAL_GATE_AUTHOR = "taste-frontend-expert";
 export const VISUAL_GATE_REPORT = "review/visual-gate.md";
 
+/**
+ * THE GATE NOW CARRIES TWO TIERS, AND THE PROMPT SAYS WHICH IS WHICH.
+ *
+ * Until 2026-07-29 this prompt opened "QUALITY tier, and it NEVER blocks a run",
+ * full stop. That is still true of TASTE and it is stated more loudly than
+ * before — the owner's standing decision holds, because subjective judgement
+ * rendered in red trains the owner to ignore red. What changed is that a narrow,
+ * ENUMERATED set of OBJECTIVE observations (`visual-substance.ts`) now rides in
+ * the same report at FUNCTIONAL, and a grader that believes everything it writes
+ * is non-blocking will write the objective half like a note.
+ *
+ * THE SPLIT IS IN THE TEXT THE GRADER READS, not only in the code that scores
+ * it. A model told "nothing here can fail" and then scored as if something could
+ * is being graded against a rubric it was never shown.
+ *
+ * THE MODE IS IN THE PROMPT TOO. `mode` defaults to
+ * `DEFAULT_VISUAL_SUBSTANCE_MODE`, which is `"shadow"` — evaluated, recorded,
+ * gating nothing. It is optional so that every existing call site keeps
+ * compiling and keeps getting the safe default; a required parameter here would
+ * have made "which mode" a thing each caller decides afresh.
+ */
 export function visualGatePrompt(input: {
   manifest: DesignManifest | null;
   workspace: string;
   previewUrl: string | null;
+  mode?: VisualSubstanceMode;
 }): string {
+  const mode = input.mode ?? DEFAULT_VISUAL_SUBSTANCE_MODE;
   const lines: string[] = [
-    "VISUAL GATE — QUALITY tier, and it NEVER blocks a run.",
+    "VISUAL GATE — TWO TIERS IN ONE REPORT, AND ONLY ONE OF THEM CAN FAIL A RUN.",
     "",
     "You are grading, not building, and you did not author what you are grading.",
-    "Report what you find; a finding informs the owner and does not fail the build.",
+    "",
+    "TASTE IS QUALITY TIER AND IT NEVER BLOCKS A RUN. The palette, the type pairing, the motion",
+    "character, the layout scaffold, how it compares to the mockup — every one of those informs the",
+    "owner and none of them fail the build. Write them as notes, because that is what they are.",
+    "",
+    "THE OBJECTIVE OBSERVATIONS BELOW ARE FUNCTIONAL TIER. They ask *did you build the thing*, not",
+    "*is it nice*, and the set is fixed in code — you answer it, you do not decide what belongs in",
+    "it. Keep the two halves separate in your report; a taste note filed as an objective observation",
+    "is a false fail, and an objective observation filed as taste is a false pass.",
     "",
   ];
   lines.push(
     input.previewUrl === null
       ? "There is no preview URL for this run, so no screenshots can be captured. Grade what " +
         "you can from the source in the workspace and say plainly which criteria you could not " +
-        "answer — an unanswerable criterion reported as a pass is worse than one reported as unknown."
+        "answer — an unanswerable criterion reported as a pass is worse than one reported as " +
+        "unknown. Every objective observation below is therefore UNKNOWN/no_screenshot on this " +
+        "run: none of them may be answered from source, because they are questions about pixels."
       : `The built site is running at ${input.previewUrl}. Capture ONE screenshot per section with ` +
         `Playwright, at the aspect ratio of that section's mockup, so the pair is comparable.`,
     "",
@@ -356,9 +391,21 @@ export function visualGatePrompt(input: {
     );
   }
 
+  lines.push(visualObservationBlock(mode), "");
+
   lines.push(
-    `Write ${VISUAL_GATE_REPORT}: one verdict per section, each naming the criterion, what you saw,`,
-    "and what would close the gap. Every criterion is QUALITY tier — it reports, it never blocks.",
+    `Write ${VISUAL_GATE_REPORT} in TWO CLEARLY SEPARATED SECTIONS.`,
+    "",
+    "  SECTION 1 — OBJECTIVE OBSERVATIONS (FUNCTIONAL). One line per observation per screenshot:",
+    "  the observation id, satisfied / violated / unknown, the unknown reason where it applies,",
+    "  and one sentence of what you saw. Nothing that is not on the fixed list may appear here.",
+    "",
+    "  SECTION 2 — TASTE (QUALITY). One verdict per section, each naming the criterion, what you",
+    "  saw, and what would close the gap. Every criterion here is QUALITY tier — it reports, it",
+    "  never blocks.",
+    "",
+    "Name no screenshot file and no path in the report. Masking is applied at capture time and is",
+    "the only masking there is, so a path in a committed record outlives any later correction.",
   );
   return lines.join("\n");
 }
