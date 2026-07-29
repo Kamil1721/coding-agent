@@ -635,22 +635,26 @@ const ASSERTION_PATTERN = /\b(?:assert|expect|should)\b/;
  * assertion-free tests — "mutation score threshold on the holdout suite" — and
  * that is a scorer-side gate on a built artefact, not something the author can
  * run before any implementation exists.
+ *
+ * IT USES {@link testSegments} RATHER THAN ITS OWN `indexOf`, and that is the
+ * fix rather than a tidy-up. `indexOf("T-1")` has no word boundary, so in a file
+ * holding both `T-1` and `T-13` where `T-13` is written first, `T-1` resolves to
+ * a position INSIDE `T-13` — two segments then start at the same offset, the
+ * ordering between them is whatever `sort` does with equal keys, and every
+ * assertion after that point is attributed to the wrong test. `testSegments`
+ * already anchors on `(?<![A-Za-z0-9_])id(?![A-Za-z0-9_])` for exactly this
+ * reason and is used by the two checks either side of this one; a second,
+ * weaker segmentation in the same file was the whole defect.
+ *
+ * A CONSEQUENCE WORTH STATING: a declared id that appears ONLY as a prefix of
+ * another id now matches nothing and is not reported here. That is right. It is
+ * an ABSENT test, not a vacuous one, and `expectedTestIds` coverage is checked
+ * elsewhere; reporting it as assertion-free would name the wrong defect.
  */
 function assertionFreeTestIds(file: DraftTestFile): readonly string[] {
-  const positions = file.expectedTestIds
-    .map((id) => ({ id, at: file.source.indexOf(id) }))
-    .filter((p) => p.at >= 0)
-    .sort((a, b) => a.at - b.at);
-
-  const out: string[] = [];
-  for (let i = 0; i < positions.length; i += 1) {
-    const current = positions[i];
-    if (current === undefined) continue;
-    const next = positions[i + 1];
-    const segment = file.source.slice(current.at, next === undefined ? undefined : next.at);
-    if (!ASSERTION_PATTERN.test(segment)) out.push(current.id);
-  }
-  return out;
+  return testSegments(file)
+    .filter((segment) => !ASSERTION_PATTERN.test(segment.text))
+    .map((segment) => segment.testId);
 }
 
 const STRING_LITERAL_PATTERN = /(['"`])((?:\\.|(?!\1)[^\\])*)\1/g;

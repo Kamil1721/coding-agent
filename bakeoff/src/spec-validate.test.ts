@@ -574,3 +574,94 @@ test("a `//` inside a STRING is not a comment — the producer survives masking"
     "a URL in a string must not blank the rest of the file",
   );
 });
+
+/* -------------------------------------------------------------------------
+ * `assertionFreeTestIds` — the `T-1` inside `T-13` mis-segmentation
+ *
+ * The advisory used a bare `indexOf`, so in a file holding both ids where
+ * `T-13` is written FIRST, `indexOf("T-1")` resolves to a position inside
+ * `T-13`. Two segments then begin at the same offset and every assertion after
+ * that point is attributed to the wrong test. `testSegments`, in the same file
+ * and used by the two checks either side of this one, has been boundary-aware
+ * all along; the fix is to stop having a second, weaker segmentation.
+ *
+ * ADVISORY-ONLY, so this never mis-GATED anything — it printed the wrong test
+ * id at the author. That is the whole reason it sat in the backlog rather than
+ * being an incident, and it is not a reason to leave it wrong: an advisory that
+ * names the wrong test is worse than no advisory, because the author reads the
+ * test it named, finds an assertion, and stops trusting the checker.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * T-13 written FIRST, T-1 second, and BOTH assert. The correct answer is [].
+ *
+ * THE FIXTURE HAD TO BE CHOSEN AGAINST THE BUG, not merely to contain both ids.
+ * The first version of this test had T-1 genuinely vacuous, and the bug reported
+ * ["T-1"] — the right answer, reached by accident: `indexOf("T-1")` lands inside
+ * `T-13`, so T-1's segment is the EMPTY STRING, which contains no assertion and
+ * is flagged. It agrees with the truth exactly when the truth is "vacuous". The
+ * mutation ran green and the test proved nothing. With both tests asserting, the
+ * empty segment produces a finding against a test that plainly asserts, which is
+ * the defect made visible.
+ */
+const T13_BEFORE_T1 = [
+  'import { test, expect } from "@playwright/test";',
+  "",
+  'test("[REQ-001] T-13 the page settles without errors", async ({ page }) => {',
+  '  await page.goto("http://127.0.0.1:3000/");',
+  "  expect(1).toBe(1);",
+  "});",
+  "",
+  'test("[REQ-001] T-1 the page serves a document", async ({ page }) => {',
+  '  const response = await page.goto("http://127.0.0.1:3000/");',
+  "  expect(response.status()).toBe(200);",
+  "});",
+].join("\n");
+
+function vacuousIds(source: string, testIds: readonly string[]): readonly string[] {
+  const draft = draftOf([criterion("REQ-001", "The site shall serve a home page.", testIds)], [
+    { path: "holdout/order.spec.mjs", source, testIds, criterionIds: ["REQ-001"] },
+    // A held-out file is required for the draft to be well-formed; this one is
+    // uninvolved and carries its own assertion so it cannot be the finding below.
+    { path: "holdout/other.spec.mjs", source: T13_BEFORE_T1, testIds: ["T-13"], criterionIds: ["REQ-001"] },
+  ]);
+  return deterministicAudit(draft, { syntaxCheck: false })
+    .filter((finding) => finding.detail.includes("contain no assertion"))
+    .filter((finding) => finding.detail.includes("holdout/order.spec.mjs"))
+    .map((finding) => /test "([^"]+)"/.exec(finding.detail)?.[1] ?? "(unparsed)")
+    .sort();
+}
+
+test("T-1 is not found INSIDE T-13 — neither test is called assertion-free, because both assert", () => {
+  // Under `indexOf`, `T-1` resolves to the offset of `T-13` on line 3, its
+  // segment is empty, and the advisory tells the author that a test containing
+  // `expect(response.status()).toBe(200)` has no assertion.
+  assert.deepEqual(
+    vacuousIds(T13_BEFORE_T1, ["T-1", "T-13"]),
+    [],
+    "a test that plainly asserts was reported as assertion-free",
+  );
+});
+
+test("and it still fires at all — a checker that reports nothing is not a fixed checker", () => {
+  // THE POSITIVE CONTROL for the test above. If `assertionFreeTestIds` returned
+  // [] unconditionally, that assertion would be satisfied by the empty list on
+  // one side and by nothing on the other.
+  const bothVacuous = [
+    'import { test } from "@playwright/test";',
+    'test("[REQ-001] T-13 nothing", async ({ page }) => { await page.goto("/"); });',
+    'test("[REQ-001] T-1 nothing either", async ({ page }) => { await page.goto("/"); });',
+  ].join("\n");
+  assert.deepEqual(vacuousIds(bothVacuous, ["T-1", "T-13"]), ["T-1", "T-13"]);
+});
+
+test("a declared id that appears only as another id's prefix is ABSENT, not vacuous", () => {
+  // The consequence of anchoring, said out loud. `T-1` is declared and never
+  // written; naming it assertion-free would report the wrong defect on a file
+  // whose real problem is a missing test.
+  const onlyT13 = [
+    'import { test, expect } from "@playwright/test";',
+    'test("[REQ-001] T-13 the page settles", async ({ page }) => { await page.goto("/"); expect(1).toBe(1); });',
+  ].join("\n");
+  assert.deepEqual(vacuousIds(onlyT13, ["T-1", "T-13"]), []);
+});
