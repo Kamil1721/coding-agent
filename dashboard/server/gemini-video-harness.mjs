@@ -94,6 +94,25 @@ test("THE OVERRIDE TOOK EFFECT — the script reached the fake server, not Googl
   );
   assert.equal(posts[0].apiKey, SENTINEL_KEY, "x-goog-api-key was sent");
   assert.match(r.stdout + r.stderr, /FAKE-SENTINEL-7/, "the sentinel operation name came back through the script");
+
+  // AND THE FLAGS REACHED THE BODY. Validating -d 4 and then failing to put it
+  // in the JSON is the instance-11 shape exactly: the check and the production
+  // path never connected. It is a COST defect, not a tidiness one -- a dropped
+  // durationSeconds means Veo applies its own default and every leg bills at a
+  // duration nobody chose, with all seventeen tests here still green.
+  const body = posts[0].body;
+  assert.ok(body, "the POST body was recorded, so this asserts something");
+  assert.deepEqual(
+    body.parameters,
+    { aspectRatio: "16:9", resolution: "720p", durationSeconds: "4" },
+    "THE DEFAULTS THIS PLAN'S ENTIRE SPEND ARGUMENT RESTS ON, as they actually leave the script",
+  );
+  assert.equal(body.instances[0].prompt, "a slow push-in over the hero", "the prompt is instances[0].prompt");
+  assert.equal(body.instances[0].image.inlineData.mimeType, "image/png");
+  assert.ok(
+    Buffer.from(body.instances[0].image.inlineData.data, "base64").equals(readFileSync(f.still)),
+    "the still is attached byte-for-byte — it IS the first frame (§7.6.2), not a filename",
+  );
   await fake.close();
 });
 
@@ -149,7 +168,13 @@ test("duration is 4|6|8, and 1080p/4k require 8", async (t) => {
   assert.match(hd4.stderr, /8/);
   const hd8 = await runScript(["x", "-i", f.still, "-r", "1080p", "-d", "8", "-o", f.out], { base: fake.url });
   assert.notEqual(hd8.code, 1, "1080p at 8s is legal");
-  assert.equal(fake.requests.filter((q) => q.method === "POST").length, 1, "the two refusals spent nothing");
+  const posts = fake.requests.filter((q) => q.method === "POST");
+  assert.equal(posts.length, 1, "the two refusals spent nothing");
+  assert.deepEqual(
+    posts[0].body.parameters,
+    { aspectRatio: "16:9", resolution: "1080p", durationSeconds: "8" },
+    "the NON-default combination survives the trip into the body too, in the right fields",
+  );
   await fake.close();
 });
 

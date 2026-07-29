@@ -41,18 +41,35 @@ export async function startFakeVeo(options = {}) {
 
   const server = createServer((req, res) => {
     const key = req.headers["x-goog-api-key"] ?? null;
-    requests.push({ method: req.method, path: req.url, apiKey: Array.isArray(key) ? key[0] : key });
+    // `body` is recorded, not discarded. Without it the request log proves only
+    // THAT a POST happened, and every flag the script validates is disconnected
+    // from the payload it validates them for: -d 4 could be dropped on the way
+    // into the JSON and Veo would silently apply its own default, billing every
+    // leg at a duration nobody chose. All the local tests would stay green and
+    // only a live metered call would show it.
+    const record = { method: req.method, path: req.url, apiKey: Array.isArray(key) ? key[0] : key, body: null };
+    requests.push(record);
     const json = (code, body) => {
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
     };
     if (req.method === "POST") {
-      req.resume();
-      if (postStatus !== 200) {
-        const message = echoKeyInError ? `invalid key: ${key}` : "bad request";
-        return json(postStatus, { error: { code: postStatus, status: "INVALID_ARGUMENT", message } });
-      }
-      return json(200, { name: SENTINEL_OPERATION });
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        try {
+          record.body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {
+          record.body = null;
+        }
+        if (postStatus !== 200) {
+          const message = echoKeyInError ? `invalid key: ${key}` : "bad request";
+          json(postStatus, { error: { code: postStatus, status: "INVALID_ARGUMENT", message } });
+          return;
+        }
+        json(200, { name: SENTINEL_OPERATION });
+      });
+      return;
     }
     if (req.url === `/v1beta/${SENTINEL_OPERATION}`) {
       polls += 1;
