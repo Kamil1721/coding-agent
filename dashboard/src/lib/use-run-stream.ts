@@ -12,6 +12,7 @@ import {
   type GraphAttribution,
   type GraphMcpServer,
   type GraphSdkRef,
+  type GraphState,
   type LogLevel,
   type RunDetail,
   type RunEvent,
@@ -20,6 +21,7 @@ import {
   type RunStatus,
 } from "./api-types";
 import { KEY, apiUrl, swrFetcher } from "./api";
+import { seqOf, useRunGraph } from "./use-run-graph";
 
 /* ------------------------------------------------------------------ */
 /* Trace                                                               */
@@ -625,6 +627,17 @@ export interface LiveRun {
   readonly error: unknown;
   readonly isLoading: boolean;
   readonly trace: readonly TraceEntry[];
+  /**
+   * The orchestration canvas.
+   *
+   * ITS OWN ACCUMULATOR, NEVER DERIVED FROM `trace`. `MAX_TRACE_ENTRIES` slices
+   * oldest-first, so a canvas rebuilt from trace rows would delete its earliest
+   * agents 3,000 events into a long run — nodes vanishing mid-run with nothing
+   * in the UI to explain it (spec §9.3).
+   */
+  readonly graph: GraphState;
+  /** False until the graph snapshot has settled; the socket waits on it. */
+  readonly graphReady: boolean;
   readonly stream: StreamState;
   readonly refresh: () => void;
   readonly reconnect: () => void;
@@ -653,6 +666,9 @@ export function useLiveRun(runId: string | null): LiveRun {
   const key = runId === null ? null : KEY.run(runId);
   const [trace, dispatchTrace] = useReducer(traceReducer, EMPTY_TRACE);
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  const graph = useRunGraph(runId);
+  const graphReady = graph.settled;
+  const graphIngest = graph.ingest;
 
   /**
    * One socket lifetime, identified by run + reconnect attempt. The state is
@@ -703,7 +719,13 @@ export function useLiveRun(runId: string | null): LiveRun {
   }, [key, refreshInterval, mutate]);
 
   useEffect(() => {
-    if (runId === null || streamClosed) return;
+    // THE SOCKET WAITS FOR THE GRAPH SNAPSHOT. `attachSse` replays from row 0,
+    // and those rows are the ones the snapshot has already folded — so opening
+    // before the watermark exists would leave `useRunGraph` deduping against a
+    // number it does not have yet, and `foldGraph` is not idempotent. One
+    // loopback round trip of "connecting" is the whole cost, and on the error
+    // path the watermark settles at 0 so nothing waits forever.
+    if (runId === null || streamClosed || !graphReady) return;
 
     let disposed = false;
     let consecutiveErrors = 0;
@@ -711,9 +733,18 @@ export function useLiveRun(runId: string | null): LiveRun {
     const mark = (state: StreamState): void =>
       setSocketState({ gen: socketGen, state });
 
-    const ingest = (raw: string, fallbackType: RunEventType | null): void => {
+    const ingest = (
+      raw: string,
+      fallbackType: RunEventType | null,
+      seq: number,
+    ): void => {
       const event = parseRunEvent(raw, fallbackType);
       if (event === null) return;
+
+      // The canvas sees EVERY event, including `status` — a terminal one is
+      // what resolves an agent still reading `running` to `unresolved` rather
+      // than leaving it spinning forever inside a cancelled run.
+      graphIngest(event, seq);
 
       const row = traceRowFor(event);
       if (row !== null) dispatchTrace({ kind: "append", entry: row });
@@ -761,7 +792,7 @@ export function useLiveRun(runId: string | null): LiveRun {
       if (disposed) return;
       consecutiveErrors = 0;
       mark("open");
-      ingest(message.data, null);
+      ingest(message.data, null, seqOf(message));
     };
 
     // A backend that uses named SSE events instead of the default `message`.
@@ -770,7 +801,8 @@ export function useLiveRun(runId: string | null): LiveRun {
         if (disposed) return;
         consecutiveErrors = 0;
         mark("open");
-        ingest((message as MessageEvent<string>).data, type);
+        const framed = message as MessageEvent<string>;
+        ingest(framed.data, type, seqOf(framed));
       };
       source.addEventListener(type, listener);
       return { type, listener } as const;
@@ -808,7 +840,7 @@ export function useLiveRun(runId: string | null): LiveRun {
       }
       source.close();
     };
-  }, [runId, streamClosed, socketGen, mutate]);
+  }, [runId, streamClosed, graphReady, graphIngest, socketGen, mutate]);
 
   // A new run id gets a clean trace.
   useEffect(() => {
@@ -830,11 +862,23 @@ export function useLiveRun(runId: string | null): LiveRun {
       error,
       isLoading,
       trace: trace.entries,
+      graph: graph.state,
+      graphReady,
       stream,
       refresh,
       reconnect,
     }),
-    [data, error, isLoading, trace.entries, stream, refresh, reconnect],
+    [
+      data,
+      error,
+      isLoading,
+      trace.entries,
+      graph.state,
+      graphReady,
+      stream,
+      refresh,
+      reconnect,
+    ],
   );
 }
 

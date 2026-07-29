@@ -32,6 +32,9 @@ export const KEY = {
   run: (runId: string): string => `/api/runs/${encodeURIComponent(runId)}`,
   events: (runId: string): string =>
     `/api/runs/${encodeURIComponent(runId)}/events`,
+  /** The folded orchestration canvas, spec §9.2. Snapshot first, then subscribe. */
+  graph: (runId: string): string =>
+    `/api/runs/${encodeURIComponent(runId)}/graph`,
   models: "/api/models",
   health: "/api/health",
 } as const;

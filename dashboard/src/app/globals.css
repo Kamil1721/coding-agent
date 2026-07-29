@@ -81,3 +81,116 @@ body {
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
 }
+
+/* ------------------------------------------------------------------ */
+/* The orchestration canvas                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ONE HUE CARRIES "LIVE", AND IT IS THE APP'S EXISTING ACCENT.
+ *
+ * The owner's reference image tints every node a different colour — violet,
+ * teal, pink, green. Copied literally that would put five accents on one
+ * screen and make colour mean nothing, so it is deliberately not copied: the
+ * canvas reuses the palette this app already has. `--color-accent` means "this
+ * is happening now" on a node border, on its glow, and on the edge feeding it.
+ * `pass`/`fail`/`warn` mean outcome and nothing else. Lane identity is carried
+ * by COLUMN POSITION, which is information the reference spent colour on.
+ */
+:root {
+  /* The canvas dot grid. Close to `--color-canvas`, never far: a grid you can
+     read at a glance competes with the nodes sitting on it. This value is the
+     result of looking at it — one step darker and the pane reads as flat black
+     rather than as a surface things are placed on. */
+  --canvas-grid: #262e3c;
+
+  /* Node geometry, shared by the layout module so spacing has ONE source. */
+  --node-width: 268px;
+  --node-radius: 10px;
+}
+
+/*
+ * THE FLOWING EDGE — a soft glow tube with a lighter dashed core travelling
+ * along it, per the owner's connector reference.
+ *
+ * MOTION IS INFORMATION HERE, NOT DECORATION, and every rule below exists to
+ * keep it that way:
+ *
+ *   - `.edge-core--flowing` is applied ONLY when the child agent is still
+ *     running. A finished delegation is a static line: the work is not moving
+ *     any more, so nothing on screen moves.
+ *   - `.edge--inferred` never animates and never gets the glow tube. Hook
+ *     messages carry no task identity, so hook->agent attribution is a
+ *     server-side GUESS. A guess that flows as confidently as a fact is the
+ *     canvas lying, which is the one thing the `attribution` field exists to
+ *     prevent. It renders as a dim dotted line and carries a visible label.
+ */
+.edge-glow {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 9;
+  stroke-linecap: round;
+  opacity: 0.14;
+}
+
+.edge-line {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.edge-core {
+  fill: none;
+  stroke: color-mix(in oklab, var(--color-accent) 55%, white);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 2 11;
+}
+
+@keyframes edge-flow {
+  from {
+    stroke-dashoffset: 26;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.edge-core--flowing {
+  animation: edge-flow 1.15s linear infinite;
+}
+
+/*
+ * Reduced motion: the travelling dashes stop, and the dashed core is REPLACED
+ * by a solid one rather than frozen mid-pattern. A frozen dash pattern reads as
+ * an inferred edge, which would make the two categories look alike for exactly
+ * the readers who cannot use motion to tell them apart. `.animate-pulse` is
+ * Tailwind's, and it is stilled here for the whole app for the same reason.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .edge-core--flowing {
+    animation: none;
+    stroke-dasharray: none;
+    stroke-width: 1.5;
+  }
+
+  .animate-pulse {
+    animation: none;
+  }
+}
+
+/* React Flow's own chrome, tuned to this palette rather than left at default. */
+.react-flow__attribution {
+  display: none;
+}
+
+.react-flow__controls-button {
+  border: none;
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-surface-raised);
+  fill: var(--color-ink-dim);
+}
+
+.react-flow__controls-button:hover {
+  background: var(--color-line);
+  fill: var(--color-ink);
+}

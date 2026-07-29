@@ -1,8 +1,34 @@
 "use client";
 
+/**
+ * The run view. THE CANVAS IS THE PAGE.
+ *
+ * WHAT CHANGED AND WHY. This screen used to be a column of panels — trace,
+ * criteria, screenshots, usage, ticket — which described a multi-agent run as a
+ * list of things that had happened to it. The orchestration canvas shows the
+ * same run as the shape it actually has: who delegated to whom, what each agent
+ * loaded, and which of those branches is moving right now. The panels that
+ * survive are the ones carrying facts the graph does not hold — the verdict's
+ * criteria, the artefacts, the token spend, the raw trace — and each appears
+ * exactly once. There is no second telling of the same story anywhere on this
+ * page.
+ *
+ * WHAT WAS DELIBERATELY NOT BUILT, from the owner's reference image: the MCP
+ * Connect/Disconnect controls, the SYSTEM ISSUES panel with Resolve buttons,
+ * and the DATABASE INTEGRATION panel with its API KEY field. No endpoint backs
+ * any of the three. A dashboard that looks like it can resolve a blockage and
+ * cannot is worse than one that shows neither, and a secret typed into a web
+ * form is a security decision nobody has made on this project.
+ *
+ * THE MOUNT ORDER MATTERS. `run === undefined` early-returns above the canvas,
+ * which is the boundary spec §9.3 requires the canvas to live below: rendering
+ * it above would remount React Flow the moment the run detail arrived and throw
+ * away the viewport.
+ */
+
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import { CriteriaPanel } from "@/components/run/criteria";
 import { RunHeader } from "@/components/run/header";
@@ -16,6 +42,10 @@ import {
 import { ScreenshotsPanel } from "@/components/run/screenshots";
 import { TracePane } from "@/components/run/trace";
 import { UsagePanel } from "@/components/run/usage";
+import { EnvironmentPanel } from "@/components/canvas/environment";
+import { AgentInspector } from "@/components/canvas/inspector";
+import { OrchestrationCanvas } from "@/components/canvas/orchestration-canvas";
+import { AgentRoster } from "@/components/canvas/roster";
 import { Notice, Panel, Skeleton } from "@/components/ui";
 import { ApiError, cancelRun, errorMessage, resumeRun } from "@/lib/api";
 import { findModel } from "@/lib/cost";
@@ -32,12 +62,15 @@ function useRunIdParam(): string | null {
 
 export default function RunPage(): ReactNode {
   const runId = useRunIdParam();
-  const { run, error, isLoading, trace, stream, refresh, reconnect } = useLiveRun(runId);
+  const { run, error, isLoading, trace, graph, graphReady, stream, refresh, reconnect } =
+    useLiveRun(runId);
   const { data: models } = useModels();
   const nowMs = useNow(1_000);
 
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showAmbient, setShowAmbient] = useState(false);
 
   const act = useCallback(
     (action: (id: string) => Promise<unknown>) => (): void => {
@@ -54,6 +87,23 @@ export default function RunPage(): ReactNode {
 
   const onCancel = act(cancelRun);
   const onResume = act(resumeRun);
+
+  // Looked up rather than stored: hiding the housekeeping agents, or a run that
+  // ends and re-folds, must not leave the inspector holding a node the canvas
+  // no longer draws.
+  const selected = useMemo(
+    () => graph.nodes.find((node) => node.id === selectedId) ?? null,
+    [graph.nodes, selectedId],
+  );
+
+  const visibleAgents = useMemo(
+    () => (showAmbient ? graph.nodes : graph.nodes.filter((node) => !node.ambient)),
+    [graph.nodes, showAmbient],
+  );
+
+  const clearSelection = useCallback((): void => {
+    setSelectedId(null);
+  }, []);
 
   if (runId === null) {
     return (
@@ -82,16 +132,14 @@ export default function RunPage(): ReactNode {
       );
     }
     return (
-      <Panel title="Run">
-        {isLoading ? <Skeleton rows={6} /> : null}
-      </Panel>
+      <Panel title="Run">{isLoading ? <Skeleton rows={6} /> : null}</Panel>
     );
   }
 
   const model = findModel(models, run.modelId);
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <RunHeader
         run={run}
         model={model}
@@ -117,22 +165,91 @@ export default function RunPage(): ReactNode {
       <OutcomeNotice run={run} />
       <DeliveryNotice run={run} />
 
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_400px]">
-        <div className="flex min-w-0 flex-col gap-3">
-          <TracePane trace={trace} stream={stream} onReconnect={reconnect} />
-          <CriteriaPanel criteria={run.criteria} />
-          <ScreenshotsPanel runId={run.runId} screenshots={run.screenshots} />
-        </div>
-
-        <div className="flex min-w-0 flex-col gap-3">
-          <UsagePanel run={run} model={model} />
-          <Panel title="Ticket" bodyClassName="p-0">
-            <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-sans text-[12.5px] leading-relaxed text-ink-dim">
+      {/*
+       * The orchestration row. Below `lg` the three rails stack: ticket and
+       * roster first, then the canvas at a fixed height, then the inspector —
+       * reading order matches the visual order at every width.
+       */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_324px] xl:grid-cols-[264px_minmax(0,1fr)_324px]">
+        {/*
+         * The rail is a flex column with `min-h-0`, so the roster's scroll area
+         * ENDS EXACTLY WHERE THE CANVAS DOES instead of at an arbitrary
+         * max-height. A fixed cap cuts the last visible agent through the middle
+         * of its row, which reads as a rendering fault rather than as a list
+         * that continues.
+         */}
+        <div className="order-2 flex min-h-0 min-w-0 flex-col gap-3 lg:order-1 xl:order-none">
+          <Panel title="Ticket" bodyClassName="p-0" className="shrink-0">
+            <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-sans text-[12.5px] leading-relaxed text-ink-dim">
               {run.ticketText}
             </pre>
           </Panel>
+
+          <Panel
+            title={`Agents · ${String(visibleAgents.length)}`}
+            subtitle="The canvas as a list. This is the keyboard-reachable equivalent; the graph itself offers partial affordances only."
+            className="flex min-h-[240px] flex-col overflow-hidden xl:min-h-0 xl:flex-1"
+            bodyClassName="min-h-0 flex-1 overflow-y-auto p-0"
+          >
+            <AgentRoster
+              graph={graph}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              showAmbient={showAmbient}
+            />
+          </Panel>
+        </div>
+
+        {/*
+         * ONE MOUNT, NO CONDITION AROUND IT, NO CHANGING KEY. Loading and empty
+         * are overlays inside the canvas component; wrapping this element in a
+         * ternary is what resets pan and zoom the moment the first agent lands.
+         */}
+        <section className="order-1 min-w-0 overflow-hidden rounded border border-line bg-canvas lg:order-2 xl:order-none">
+          <div className="h-[clamp(520px,66vh,820px)] w-full">
+            <OrchestrationCanvas
+              graph={graph}
+              ready={graphReady}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              showAmbient={showAmbient}
+              onShowAmbient={setShowAmbient}
+            />
+          </div>
+        </section>
+
+        <div className="order-3 flex min-w-0 flex-col gap-3">
+          <Panel
+            title={selected === null ? "Inspector" : "Agent"}
+            subtitle={
+              selected === null ? undefined : "Everything the run recorded about this agent."
+            }
+          >
+            <AgentInspector node={selected} onClose={clearSelection} />
+          </Panel>
+
+          <Panel
+            title="Environment"
+            subtitle="Reported once, by the CLI, at the start of the run."
+          >
+            <EnvironmentPanel inventory={graph.inventory} />
+          </Panel>
+
+          <UsagePanel run={run} model={model} />
         </div>
       </div>
+
+      {/*
+       * Under the canvas: the record. The trace is the raw stream the canvas is
+       * folded from, the criteria are the verdict, the screenshots are what the
+       * run produced. None of the three is derivable from the graph.
+       */}
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <TracePane trace={trace} stream={stream} onReconnect={reconnect} />
+        <CriteriaPanel criteria={run.criteria} />
+      </div>
+
+      <ScreenshotsPanel runId={run.runId} screenshots={run.screenshots} />
     </div>
   );
 }
