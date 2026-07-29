@@ -66,6 +66,7 @@ import { criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff
 import { deterministicAudit } from "bakeoff/dist/spec-validate.js";
 import type { ExploitFinding } from "bakeoff/dist/scorer-protocol.js";
 import type { ApiCriterionTier } from "../api-types.js";
+import { assertOutsideBakeoff } from "../paths.js";
 import { extractAssumptions } from "../spec-assumptions.js";
 import { computeOutcome, failingTier, renderVerdict } from "../verdict.js";
 import type { VerdictInput, VerdictOutcome } from "../verdict.js";
@@ -104,13 +105,48 @@ export const DEFAULT_CALIBRATION_RUN_ROOT = fileURLToPath(
  * `DASHBOARD_` for state the dashboard owns, `_ROOT` as in
  * `BAKEOFF_ACCEPTANCE_ROOT`, empty-or-blank means the default, and a relative
  * value resolves against the cwd exactly as `DASHBOARD_HOME` does.
+ *
+ * GUARDED, 2026-07-29, and the guard was RED FIRST. e6176eb shipped this
+ * override with no `assertOutsideBakeoff` and said so in its own message, on the
+ * grounds that an unverified guard is the defect that commit was fixing wearing
+ * a safety vest. `run-root.test.ts`'s "a run root inside bakeoff/ is REFUSED"
+ * is that missing test: measured red against the unguarded code, where
+ * `prepareFixtureDirs` really did `rm -rf` and mkdir
+ * `<bakeoff>/results/__cal-root-guard-probe__/__run-root-probe__/{acceptance,results,run}`.
+ * `paths.ts` gives the reason it matters: `bakeoff score`/`report` discover work
+ * by WALKING a results directory, so dashboard state under `bakeoff/` is
+ * aggregated into a campaign's co-primary metrics.
+ *
+ * THE GUARD IS ON THE RESOLVED ROOT, NOT ON THE ENV STRING, so it covers the
+ * relative form (`DASHBOARD_CALIBRATION_ROOT=../bakeoff/results` from
+ * `dashboard/server/` resolves inside) and the shipped default alike — the
+ * default is checked on every call rather than trusted, so moving it into the
+ * bake-off tree cannot pass unnoticed.
+ *
+ * WHAT IT DOES NOT COVER, MEASURED AND LEFT OPEN ON PURPOSE. It constrains one
+ * tree, not the whole filesystem. `DASHBOARD_CALIBRATION_ROOT=$HOME` is accepted
+ * and `prepareFixtureDirs` then deletes `$HOME/blank-page` and its six siblings
+ * — `run-root.test.ts` line 91 asserts exactly that deletion happens against an
+ * arbitrary override root, so this is executed evidence rather than a worry.
+ * Nothing narrower was shipped because every candidate either failed to
+ * characterise its own coverage (blocking `$HOME` while allowing
+ * `$HOME/Documents`) or broke the two legitimate uses — `mkdtempSync(tmpdir())`
+ * in `run-root.test.ts` and the documented `DASHBOARD_CALIBRATION_ROOT=/scratch
+ * npm test`. A blind spot that is written down beats a guard whose reach nobody
+ * can state.
+ *
+ * ONE WART, in a file this task does not own: `assertOutsideBakeoff`'s
+ * remediation hint says "Point DASHBOARD_HOME somewhere outside bakeoff/", which
+ * is the wrong variable for this caller. The label below puts the right name in
+ * the message itself so the reader is not sent to the wrong knob.
  */
 export const CALIBRATION_ROOT_ENV = "DASHBOARD_CALIBRATION_ROOT";
 
 export function calibrationRunRoot(env: NodeJS.ProcessEnv = process.env): string {
   const raw = (env[CALIBRATION_ROOT_ENV] ?? "").trim();
-  if (raw.length === 0) return DEFAULT_CALIBRATION_RUN_ROOT;
-  return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+  const root = raw.length === 0 ? DEFAULT_CALIBRATION_RUN_ROOT : isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+  assertOutsideBakeoff(root, `calibration run root (${CALIBRATION_ROOT_ENV})`);
+  return root;
 }
 
 /** The four directories one fixture's run owns. */

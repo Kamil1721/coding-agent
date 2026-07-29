@@ -25,10 +25,11 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { BAKEOFF_ROOT } from "../paths.js";
 import {
   CALIBRATION_ROOT_ENV,
   DEFAULT_CALIBRATION_RUN_ROOT,
@@ -102,4 +103,91 @@ test("two calibration roots genuinely isolate — one run's reset does not delet
   prepareFixtureDirs(PROBE, { [CALIBRATION_ROOT_ENV]: rootB });
   assert.equal(existsSync(sentinelB), false, "control: pointed at B, the reset clears B");
   assert.equal(existsSync(join(rootA, PROBE)), true, "and A, freshly prepared, is still standing");
+});
+
+/**
+ * The guard e6176eb deliberately shipped WITHOUT, because an unverified guard is
+ * the defect that commit was fixing wearing a safety vest. This is its red test.
+ *
+ * WHY THE BAKE-OFF TREE SPECIFICALLY. `paths.ts` states it: `bakeoff`'s `score`
+ * and `report` discover work by WALKING a results directory for `run.jsonl`, so
+ * anything the dashboard writes under `bakeoff/` can be aggregated into a
+ * campaign's co-primary metrics. `DASHBOARD_CALIBRATION_ROOT` was the one
+ * dashboard-owned path with no such check, and it is the destructive one —
+ * `prepareFixtureDirs` opens with an `rm -rf` of `<root>/<fixture>`.
+ *
+ * THE ASSERTION IS THE FILESYSTEM, NOT THE THROW. `assert.throws` alone fails
+ * with "Missing expected exception", which says nothing about what the unguarded
+ * call DID. So the call is made, the tree it left is observed, and the
+ * observation is asserted. MEASURED RED before the guard existed: the call
+ * created `<bakeoff>/results/__cal-root-guard-probe__/__run-root-probe__/` with
+ * `acceptance/`, `results/` and `run/` inside it — an `rm -rf` and four mkdirs
+ * aimed into the bake-off tree, which is the hazard rather than a missing
+ * exception.
+ *
+ * IT CLEANS UP BEFORE IT ASSERTS, so a red run does not leave a tree inside
+ * `bakeoff/` for whoever runs next.
+ *
+ * TWO MUTATIONS, 2026-07-29, and the second one's result is reported rather than
+ * spun:
+ *   A. `assertOutsideBakeoff` wrapped so containment still holds but the message
+ *      does not (`throw new Error("MUTATION A: …")`). This test alone goes RED —
+ *      1 of 3, on the `thrown.message` clause — while the `created` clause stays
+ *      green. So the message clause is a real second check, not decoration.
+ *   B. An unconditional throw in `calibrationRunRoot`. All THREE tests in this
+ *      file go red. The `doesNotThrow` clauses below therefore do NOT fail alone:
+ *      their failure mode is a subset of the two tests above, which already run
+ *      legitimate roots through `calibrationRunRoot` and `prepareFixtureDirs`
+ *      and are the real false-positive control for this guard. They are kept as
+ *      REDUNDANCY, so this test states both directions without the reader having
+ *      to hold the rest of the file in their head — not as an extra check. This
+ *      repo's rule is that a check whose failure mode is a subset of a louder
+ *      one's is not a second check; saying so beats letting them look like one.
+ */
+test("a run root inside bakeoff/ is REFUSED — the override drives an rm -rf", () => {
+  // Under `bakeoff/results/`, which .gitignore already excludes: if the guard is
+  // ever removed, the red run's debris cannot reach a commit. `prepareFixtureDirs`
+  // writes no `run.jsonl`, so nothing here is discoverable by a campaign `score`.
+  const probeRoot = join(BAKEOFF_ROOT, "results", "__cal-root-guard-probe__");
+  assert.equal(existsSync(probeRoot), false, "the probe root must not pre-exist, or this test grades a leftover");
+
+  let thrown: unknown = null;
+  try {
+    prepareFixtureDirs(PROBE, { [CALIBRATION_ROOT_ENV]: probeRoot });
+  } catch (error) {
+    thrown = error;
+  }
+  const created = existsSync(join(probeRoot, PROBE));
+  rmSync(probeRoot, { recursive: true, force: true });
+
+  assert.equal(
+    created,
+    false,
+    `prepareFixtureDirs CREATED ${join(probeRoot, PROBE)} — it ran its rm -rf and four mkdirs inside the ` +
+      "bake-off tree. `bakeoff score`/`report` discover runs by walking a results directory, so dashboard " +
+      "state landing there is aggregated into a campaign's co-primary metrics (paths.ts)",
+  );
+  assert.ok(
+    thrown instanceof Error && /inside the bake-off tree/.test(thrown.message),
+    `the call did not refuse a root inside ${BAKEOFF_ROOT}; it threw ${
+      thrown instanceof Error ? JSON.stringify(thrown.message) : String(thrown)
+    }`,
+  );
+
+  // REDUNDANT BY MEASUREMENT (mutation B above), KEPT ANYWAY: a scratch root
+  // outside both trees is still accepted, so the assertions above are
+  // containment rather than a blanket refusal. The two tests above already fail
+  // against a blanket refusal, so this cannot go red on its own.
+  const outside = mkdtempSync(join(tmpdir(), "cal-root-outside-"));
+  assert.doesNotThrow(() => prepareFixtureDirs(PROBE, { [CALIBRATION_ROOT_ENV]: outside }));
+  assert.ok(existsSync(join(outside, PROBE)), "a legitimate scratch root must still be prepared");
+
+  // AND THE SHIPPED DEFAULT, resolved but never prepared — `prepareFixtureDirs`
+  // on it would delete a live calibration's run state. This is the path the
+  // standing gate uses with no env set at all, and the reason the guard is
+  // applied to the RESOLVED root rather than only to a non-empty override.
+  assert.doesNotThrow(
+    () => calibrationRunRoot({}),
+    "the guard rejects the root calibration uses by default, which takes the whole gate down",
+  );
 });
