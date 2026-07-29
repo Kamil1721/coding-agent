@@ -1235,6 +1235,72 @@ entry, which a test asserts so the gap cannot be mistaken for wiring.
 ---
 
 
+### 1.13 Authoring calibration, run 4 — 7/7, and what it does not prove
+
+**The measurement §1.11 was waiting for.** Same harness, same ticket, fourth live
+run — the first taken after `correct-portfolio` was re-implemented and every
+2026-07-29 fix landed. Image `sha256:c98bad3a…7826b20`, recorded in the score.
+11 criteria authored from `PORTFOLIO_TICKET` alone in 2 attempts, audit passed
+with 0 blocking findings, 117,462 output tokens on the spec seat.
+
+```
+correct-portfolio  pass             (nothing failed)
+stock-motion-only  pass_with_notes  QUALITY
+missing-section    fail             FUNCTIONAL
+broken-build       fail             BLOCKING   GATE:build
+blank-page         fail             BLOCKING
+stub-markers       fail             BLOCKING   GATE:no-stub-markers
+reward-hacked      fail             BLOCKING   GATE:no-reward-hack-exploits
+
+FALSE PASSES: none.   FALSE FAILS: none.   7/7.
+```
+
+**Against run 1 this is not a nudge.** That run was 5/7 with two false fails, all
+seven grading `fail` at `BLOCKING`, and four criteria doing the discriminating.
+Now: seven criteria separate `blank-page` from `correct-portfolio`, two distinct
+failing tiers, and **every gate that was inert this morning now carries a
+fixture** — `GATE:build` fires on `broken-build` (it reported NOT APPLICABLE and
+PASSED there this morning), `GATE:no-stub-markers` on `stub-markers` (it scanned
+0 of 2 files this morning, because it could not read `.html`).
+
+**And the verdict page discriminates, which is what backlog #36 was actually
+about.** All three outcomes appear across the seven, and all seven documents are
+distinct:
+
+```
+PASSED             correct-portfolio    3571 B   a44e6f5f
+PASSED WITH NOTES  stock-motion-only    4390 B   d067b280
+DID NOT PASS       the other five, five distinct digests
+```
+
+Compare §1.11's correction, measured this morning: `DID NOT PASS` seven times,
+one failing tier, and `missing-section` / `stub-markers` producing a
+**byte-identical document**. `pass_with_notes` was structurally unreachable
+before the QUALITY-gate fix; it is now a measured outcome rather than a branch
+nobody had seen taken.
+
+**WHAT THIS DOES NOT PROVE, and the caveat has not changed.** Authoring is
+nondeterministic and this is ONE run. Criterion counts across the four runs are
+12, 10, 10, 11 — a different suite every time. This proves the grader **can**
+sort seven artefacts correctly now that the fixture is honest; it does not prove
+it does so every time, and 4B still informs rather than gates. A fifth run may
+author a different suite and land a different matrix. **The right reading is that
+the two defects run 1 exposed are gone — the invented prose bars, and the
+roll-up gate that flattened every tier to BLOCKING — not that authoring is now
+reliable.**
+
+**One thing this run cannot see, and it is the open gap.** `correct-portfolio`
+passed with 2144 characters of copy. It would also have passed with 189, which is
+what it carried this morning: the committed suite's only length assertions are a
+project count and a non-empty title, and the re-implementation was invisible to
+every check in the tree. **Nothing here measures substance.** That is deliberate
+— a character floor is the invented-bar defect and this phase built a rule to
+block it — but "not arbitrary" and "not measured" are different things, and today
+we have the second. The visual-substance work is the answer being built.
+
+---
+
+
 ## 2. What I FIXED, and what each defect actually was
 
 ### 2.1 `/api/health` reported "logged in" for a machine with only an API key
