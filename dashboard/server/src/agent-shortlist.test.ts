@@ -73,10 +73,57 @@ test("a CLI ticket gets no design lane", () => {
 });
 
 test("a web-ui ticket gets the design lane and the frontend build agents", () => {
-  const s = shortlistFor("web-ui");
+  // PHASE 2b TASK 4 ADAPTED THIS CALL, NOT ITS ASSERTIONS. `shortlistFor` gained
+  // a second argument — the three-valued `DesignLaneMode` — because spec 6.5's
+  // key term degrades the lane rather than turning it off. The mode is passed
+  // explicitly here; what a BARE call returns is pinned by its own test below.
+  const s = shortlistFor("web-ui", "full");
   assert.ok(s.includes("taste-frontend-expert"));
   assert.ok(s.includes("nextjs-developer"));
   assert.ok(s.includes("ui-designer"), "the visual gate is a separate agent from the author");
+});
+
+test("a DEGRADED design lane keeps taste-frontend-expert — the lane degrades, it does not vanish", () => {
+  // Spec 6.5: with no Gemini key "taste-frontend-expert still art-directs and
+  // produces written direction". Shortlisting on `mode === "full"` would delete
+  // the art direction along with the images, and delete it INVISIBLY: an agent
+  // that is not shortlisted has its delegated call denied by the PreToolUse hook,
+  // which reads downstream as a lane with nothing to do.
+  //
+  // `taste-frontend-expert` IS THE ONLY LOAD-BEARING NAME IN THIS TEST.
+  // `ui-designer` is also in DELIVERY_LANES.review, so it survives `shortlistFor`
+  // with the design lane empty — an assertion on it alone could not go red no
+  // matter what `designLaneRuns` did. It is asserted anyway, second, to say that
+  // both DESIGN agents are expected; the discriminating one is first.
+  const degraded = shortlistFor("web-ui", "degraded");
+  assert.ok(degraded.includes("taste-frontend-expert"), "a degraded lane still needs its author");
+  assert.ok(degraded.includes("ui-designer"));
+  assert.deepEqual(
+    [...degraded],
+    [...shortlistFor("web-ui", "full")],
+    "degraded and full shortlist IDENTICALLY — the difference is what the lane can produce, not who may run",
+  );
+});
+
+test("an OFF design lane drops both DESIGN agents, and only those", () => {
+  const off = shortlistFor("web-ui", "off");
+  assert.ok(!off.includes("taste-frontend-expert"), "no author for a lane that is not running");
+  assert.ok(off.includes("ui-designer"), "the REVIEW-lane role is not conditional on the DESIGN lane");
+  assert.ok(off.includes("nextjs-developer"), "turning the design lane off must not touch the build lane");
+});
+
+test("the default mode is `off` — a caller that has not classified the lane under-delegates", () => {
+  // PINNED BECAUSE IT IS A LIVE REGRESSION, not because it is desirable.
+  // `orchestrator.ts:622` (the build shortlist) and `:843` (the fix loop's
+  // allowedAgents) both still call this with one argument, so until Phase 2b
+  // Task 10 passes `laneMode` through BOTH, a production web-ui run has no
+  // DESIGN agents at all. The failure direction was chosen deliberately —
+  // under-delegating beats handing an unclassified ticket a lane it did not
+  // earn — but it is a behaviour change from the surface-only stub and it is
+  // written down here rather than discovered from a run that generated nothing.
+  const bare = shortlistFor("web-ui");
+  assert.ok(!bare.includes("taste-frontend-expert"), "no mode means no design lane");
+  assert.deepEqual([...bare], [...shortlistFor("web-ui", "off")], "the default IS `off`, not something else");
 });
 
 test("ui-designer is BOTH the token author and the visual gate — never the same role twice", () => {

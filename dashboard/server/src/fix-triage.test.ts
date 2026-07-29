@@ -27,7 +27,18 @@ test("each failure class routes to the agent that can actually fix it", () => {
 });
 
 test("every routed agent is on the shortlist — an unlisted one is denied by the delegation hook", () => {
-  const allowed = new Set(shortlistFor("fullstack"));
+  // PHASE 2b TASK 4 ADAPTED THIS CALL, NOT ITS ASSERTION. `shortlistFor` gained a
+  // `DesignLaneMode` second argument that DEFAULTS TO "off", so a bare call no
+  // longer carries the DESIGN lane and `agentFor("visual")` — taste-frontend-expert
+  // — would be denied. The claim under test is "the routing table is a subset of
+  // the shortlist for a surface whose lanes are all running", so the lane mode is
+  // now stated instead of inherited.
+  //
+  // THE CONSEQUENCE FOR PRODUCTION IS REAL AND IS NOT FIXED HERE: orchestrator.ts
+  // :843 fills the fix loop's `allowedAgents` from a bare `shortlistFor(...)`, so
+  // until Task 10 threads the lane mode through it, a `visual` gate failure is
+  // partitioned out as unpermitted on EVERY surface, not only on `cli`.
+  const allowed = new Set(shortlistFor("fullstack", "full"));
   for (const k of ALL_FAILURE_CLASSES) {
     assert.ok(allowed.has(agentFor(k)), `${k} routes to ${agentFor(k)}, which is not shortlisted`);
   }

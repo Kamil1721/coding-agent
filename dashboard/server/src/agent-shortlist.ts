@@ -27,6 +27,14 @@
  * exactly like a lane that had nothing to do.
  */
 
+/**
+ * TYPE-ONLY, AND IT HAS TO STAY THAT WAY. `design-lane.ts` imports `Surface`
+ * from this file, so a value import in either direction would be a runtime
+ * module cycle. `verbatimModuleSyntax` erases both, and `DesignLaneMode` keeps
+ * its single declaration site next to the predicate that produces it.
+ */
+import type { DesignLaneMode } from "./design-lane.js";
+
 /** Pipeline stage. Lanes are server-side labels, and per spec 6.1 their ordering is advisory. */
 export type Lane = "spec" | "design" | "build" | "review" | "gate";
 
@@ -90,12 +98,21 @@ const FRONTEND_BUILD: readonly string[] = ["nextjs-developer", "react-specialist
 const TERMINAL_BUILD: readonly string[] = ["cli-developer"];
 
 /**
- * DESIGN is the only conditional lane (spec 6.5). Phase 1 gates it on surface
- * alone; the `visualIntent()` and `geminiKeyAvailable()` terms in spec 6.5 belong
- * to Phase 2b, when there is a DESIGN lane for them to degrade.
+ * DESIGN is the only conditional lane (spec 6.5). Phase 2b replaces the
+ * surface-only stub with the real three-term predicate — but note which way it
+ * degrades: `designLaneMode` returns "degraded" when no Gemini key resolves, and
+ * a DEGRADED LANE STILL NEEDS ITS AGENTS. Spec 6.5: "taste-frontend-expert still
+ * art-directs and produces written direction." Shortlisting on `mode === "full"`
+ * would delete the art direction along with the images.
+ *
+ * It would also be invisible. An agent that is not shortlisted has its delegated
+ * call DENIED by the `PreToolUse` hook, and a denied lane produces nothing —
+ * which reads downstream exactly like a lane that had nothing to do. That is the
+ * failure this file's own header warns about, and the failure the whole of Phase
+ * 2b is designed against.
  */
-function designLaneRuns(surface: Surface): boolean {
-  return surface === "web-ui" || surface === "fullstack";
+function designLaneRuns(mode: DesignLaneMode): boolean {
+  return mode !== "off";
 }
 
 /**
@@ -132,10 +149,23 @@ function buildLaneFor(surface: Surface): readonly string[] {
  * so the list reads in the order the lanes are meant to execute.
  *
  * Pure and synchronous — it is called to build a permission boundary, and a
- * boundary that can throw or await is a boundary with a failure mode.
+ * boundary that can throw or await is a boundary with a failure mode. Widening
+ * it with `designMode` does not change that: `designLaneMode` decides "off" from
+ * `designSurfaceGate` alone, which is surface plus `visualIntent`, both pure and
+ * both total. The capability half of that predicate (which spawns `npx` through
+ * `designPreflight`) can only move the lane between "full" and "degraded", and
+ * those two shortlist identically.
+ *
+ * THE DEFAULT IS "off", AND IT UNDER-DELEGATES ON PURPOSE. A caller that has not
+ * yet been taught to classify the lane gets no DESIGN agents rather than a lane
+ * it did not earn. `orchestrator.ts` is that caller until Phase 2b Task 10 wires
+ * `shortlistFor(surface, laneMode)` through both of its call sites (the build
+ * shortlist and the fix-loop's `allowedAgents`); until then a web-ui run has no
+ * DESIGN lane, which is a REGRESSION from the surface-only stub this replaced and
+ * is pinned by a test rather than left to be discovered.
  */
-export function shortlistFor(surface: Surface): readonly string[] {
-  const design: readonly string[] = designLaneRuns(surface) ? DELIVERY_LANES.design : [];
+export function shortlistFor(surface: Surface, designMode: DesignLaneMode = "off"): readonly string[] {
+  const design: readonly string[] = designLaneRuns(designMode) ? DELIVERY_LANES.design : [];
   const ordered: string[] = [
     ...DELIVERY_LANES.spec,
     ...design,
