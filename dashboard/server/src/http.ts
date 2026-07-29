@@ -163,6 +163,12 @@ function toDetail(row: RunRow, store: RunStore, paths: DashboardPaths): RunDetai
     // zero value rather than "unknown". See api-types.ts.
     inferredCriteria: row.inferredCriteria,
     verdictPath: row.verdictPath,
+    // Straight off the row, and the PAIR travels together. `0`/`null` is "the
+    // GATE/FIX loop has not produced an outcome", which is what a queued,
+    // building, rate-limited or cancelled-before-the-gate run is — never "the
+    // gate passed". See api-types.ts for who is still not writing them.
+    gateAttempts: row.gateAttempts,
+    gateStopReason: row.gateStopReason,
     designLock:
       lock === null
         ? null

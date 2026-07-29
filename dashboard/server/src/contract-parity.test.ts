@@ -231,6 +231,46 @@ test("CONTRACT: the client's RunDetail declares designLock, with the server's sh
   );
 });
 
+/* -------------------------------------------------------------------------
+ * RunDetail's GATE/FIX loop outcome — Phase 2d Task 7, wired in Phase 2d
+ * follow-up
+ *
+ * The same hole `designLock` above sits in, for the same reason: two fields
+ * added to the server's `RunDetail` and forgotten in
+ * `dashboard/src/lib/api-types.ts` compile clean on BOTH sides, are serialised,
+ * arrive at the browser and never render. Nothing but this file compares the two
+ * declarations, so a PARTIAL widening — server only, or one field of the two —
+ * is what this exists to turn red.
+ *
+ * BOTH FIELDS ARE NAMED, NOT JUST ONE. They are a pair whose whole meaning is
+ * joint: `gateAttempts: 0` with `gateStopReason: null` says "no outcome", and
+ * either half alone is a sentence about nothing. A check on one could stay green
+ * while the client mirrored the other, which is precisely the drift that ships.
+ * ---------------------------------------------------------------------- */
+
+test("CONTRACT: the client's RunDetail declares the gate/fix loop outcome, with the server's shape", () => {
+  const detail = region(
+    readClient(CLIENT_TYPES),
+    CLIENT_TYPES,
+    "export interface RunDetail extends RunSummary {",
+    "\nexport ",
+  );
+  assert.match(
+    detail,
+    /readonly gateAttempts: number;/,
+    "the client's RunDetail mirror has no gateAttempts: the server sends it and the UI cannot see it",
+  );
+  // `string | null` on BOTH sides, deliberately: the reason vocabulary lives in
+  // `StopReason` (gate-fix-loop.ts) and neither api-types.ts imports it, so a
+  // client that narrowed this to a literal union would compile, then silently
+  // exclude a reason a newer server sends.
+  assert.match(
+    detail,
+    /readonly gateStopReason: string \| null;/,
+    "the client's RunDetail mirror has no gateStopReason, or narrowed it away from `string | null`",
+  );
+});
+
 test("CONTRACT: the client sends designLock explicitly while there is no card UI", () => {
   // NOT COVERED 1: no mockup-card component ships in this phase. `interactive`
   // is true for a dashboard-submitted run, so `designLockPolicy` would return

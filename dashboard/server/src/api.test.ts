@@ -1145,3 +1145,50 @@ test("designLockInteractive is §17.3 rule 2's missing definition — and has NO
   assert.equal(designLockInteractive(null, "https://evil.example.com/"), false);
   assert.equal(designLockInteractive(null, "not a url"), false, "an unparseable Referer is not a dashboard");
 });
+
+/* -------------------------------------------------------------------------
+ * The GATE/FIX loop's outcome, over the real HTTP contract — Phase 2d Task 7
+ *
+ * `store.updateRun` -> `runs` -> `toDetail` -> the wire is the whole path these
+ * two fields have, and it is exercised here end to end. WHAT IS NOT EXERCISED,
+ * said here rather than left to be assumed: the step BEFORE `updateRun`.
+ * `orchestrator.ts#gateFixLoop` holds the `GateFixLoopResult` next to the run id
+ * and does not yet persist it, so in production every run still answers `0` /
+ * `null`. That file belongs to another wave; the seam it plugs into is below,
+ * and it is proved to carry a value the moment something writes one.
+ * ---------------------------------------------------------------------- */
+
+test("RunDetail reports no gate outcome for a run that has not reached the gate", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = await newRun(harness, "a cli that renames files");
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.gateAttempts, 0, "a queued run has gated zero times, and 0 is the true count");
+    assert.equal(detail.gateStopReason, null, "NOT `green` — nothing has been measured about this run");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("RunDetail carries the loop's attempts and stop reason once they are persisted", async () => {
+  // The pair travels together and neither half is invented on the way out: a
+  // `toDetail` that hardcoded either (0, or "green", or the other field's value)
+  // would satisfy the test above and fail here.
+  const harness = await startHarness(true);
+  try {
+    const runId = await newRun(harness, "a portfolio page");
+    harness.store.updateRun(runId, { gateAttempts: 3, gateStopReason: "not-converging" });
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.gateAttempts, 3);
+    assert.equal(detail.gateStopReason, "not-converging");
+
+    // A green gate is a RECORDED outcome. It must not serialise back to the
+    // "nothing happened" shape the previous test asserts.
+    harness.store.updateRun(runId, { gateAttempts: 1, gateStopReason: "green" });
+    const green = await detailOf(harness, runId);
+    assert.equal(green.gateAttempts, 1);
+    assert.equal(green.gateStopReason, "green");
+  } finally {
+    await harness.close();
+  }
+});

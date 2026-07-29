@@ -147,6 +147,24 @@ export interface RunDetail extends RunSummary {
    */
   readonly verdictPath: string;
   /**
+   * Gate runs the GATE/FIX loop actually performed. 1 means "gated once".
+   *
+   * 0 IS "NO LOOP OUTCOME YET", NEVER "passed first time" — that is 1. Queued,
+   * building, rate-limited and cancelled-before-the-gate all read 0. Do not
+   * render it as a pass count.
+   */
+  readonly gateAttempts: number;
+  /**
+   * Why the loop stopped, or `null` when it has not stopped.
+   *
+   * `null` IS NOT `"green"` — it means nothing has been recorded, and it moves
+   * with `gateAttempts: 0`. The server's vocabulary is `green`, `retry-cap`,
+   * `not-converging`, `infra`, `cancelled`; it is typed `string` on both sides
+   * deliberately, so ANY renderer needs a default branch. A reason this build
+   * has never heard of is a newer server, not a bug.
+   */
+  readonly gateStopReason: string | null;
+  /**
    * The DESIGN lane's lock, or `null` when this run has no DESIGN lane.
    *
    * THE NULL IS LOAD-BEARING AND IS NOT THE SAME AS AN EMPTY LOCK. `null` means

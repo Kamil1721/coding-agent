@@ -24,11 +24,27 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { RunStore } from "./db.js";
+import type { RunRow } from "./db.js";
 
 const PHASE_2B_COLUMNS = ["design_segment_done", "design_lock", "interactive"] as const;
 
-function seed(store: RunStore, runId: string, extra: { designLock?: "auto" | "ask"; interactive?: boolean } = {}): void {
-  store.createRun({
+/**
+ * Phase 2d's pair, migrated on the same terms and tested on the same terms.
+ *
+ * They are stripped in the SAME fixture as the 2b columns rather than in a
+ * second one: `migrateRuns` walks one list, and a test that dropped only the 2d
+ * columns could not tell "the 2d entries were added" from "the loop over
+ * ADDED_RUN_COLUMNS still works at all".
+ */
+const PHASE_2D_COLUMNS = ["gate_attempts", "gate_stop_reason"] as const;
+
+/** Returns the created row so a caller can assert on the INSERT's own defaults. */
+function seed(
+  store: RunStore,
+  runId: string,
+  extra: { designLock?: "auto" | "ask"; interactive?: boolean } = {},
+): RunRow {
+  return store.createRun({
     runId,
     ticketId: `t-${runId}`,
     ticketTitle: runId,
@@ -81,6 +97,50 @@ test("the lock policy and the interactive marker survive the round-trip", () => 
   }
 });
 
+test("a fresh run has NO gate outcome, and no-outcome is not a green gate", () => {
+  // The distinction the whole pair exists for. A run that has not reached the
+  // gate must not be readable as one that passed it: `heldOutPass: null` makes
+  // the same refusal one field over, and a `gate_stop_reason` column defaulted
+  // to 'green' — or a `gateAttempts` that started at 1 — would quietly undo it.
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-gate-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    const created = seed(store, "run-fresh");
+    assert.equal(created.gateAttempts, 0, "nothing has gated yet, and 0 is the true count");
+    assert.equal(created.gateStopReason, null, "no reason has been recorded — NOT `green`");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the loop's outcome survives the round-trip, both halves of it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-gate-rt-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-gated");
+    const updated = store.updateRun("run-gated", { gateAttempts: 3, gateStopReason: "not-converging" });
+    assert.equal(updated.gateAttempts, 3, "three gate runs, not three of anything else");
+    assert.equal(updated.gateStopReason, "not-converging");
+
+    // Read back through a SECOND statement, not just the one `updateRun`
+    // returns: the return value is `getRun` already, but a column missing from
+    // RUN_COLUMNS would fail identically in both, so this pins the persisted
+    // row rather than the write path's echo of it.
+    const reread = store.getRun("run-gated");
+    assert.equal(reread?.gateAttempts, 3);
+    assert.equal(reread?.gateStopReason, "not-converging");
+
+    // A green run is a RECORDED outcome and must not read like an absent one.
+    const green = store.updateRun("run-gated", { gateAttempts: 1, gateStopReason: "green" });
+    assert.equal(green.gateStopReason, "green");
+    assert.notEqual(green.gateStopReason, null);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a database written before these columns existed gains them on open", () => {
   const dir = mkdtempSync(join(tmpdir(), "dash-db-migrate-"));
   try {
@@ -90,12 +150,14 @@ test("a database written before these columns existed gains them on open", () =>
     old.close();
 
     const stripper = new DatabaseSync(databasePath);
-    for (const column of PHASE_2B_COLUMNS) stripper.exec(`ALTER TABLE runs DROP COLUMN ${column}`);
+    for (const column of [...PHASE_2B_COLUMNS, ...PHASE_2D_COLUMNS]) {
+      stripper.exec(`ALTER TABLE runs DROP COLUMN ${column}`);
+    }
     const columns = stripper
       .prepare("PRAGMA table_info(runs)")
       .all()
       .map((row) => String(row["name"]));
-    for (const column of PHASE_2B_COLUMNS) {
+    for (const column of [...PHASE_2B_COLUMNS, ...PHASE_2D_COLUMNS]) {
       assert.ok(!columns.includes(column), `the fixture did not reproduce the pre-2b schema: ${column} is still there`);
     }
     stripper.close();
@@ -107,8 +169,13 @@ test("a database written before these columns existed gains them on open", () =>
       assert.equal(row.designSegmentDone, false, "a run that predates the DESIGN lane never ran a design segment");
       assert.equal(row.designLock, "", "and stated no lock policy");
       assert.equal(row.interactive, false);
+      assert.equal(row.gateAttempts, 0, "a run that predates the GATE/FIX loop gated zero times under it");
+      assert.equal(row.gateStopReason, null, "and it stopped for no reason this column knows — NOT for `green`");
       // Present is not the same as writable.
       assert.equal(migrated.updateRun("run-old", { designSegmentDone: true }).designSegmentDone, true);
+      const patched = migrated.updateRun("run-old", { gateAttempts: 2, gateStopReason: "retry-cap" });
+      assert.equal(patched.gateAttempts, 2);
+      assert.equal(patched.gateStopReason, "retry-cap");
     } finally {
       migrated.close();
     }

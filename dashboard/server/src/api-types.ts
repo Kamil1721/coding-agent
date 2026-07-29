@@ -167,6 +167,45 @@ export interface RunDetail extends RunSummary {
    */
   readonly verdictPath: string;
   /**
+   * Gate runs actually performed by the GATE/FIX loop. 1 means "gated once".
+   *
+   * ZERO IS "THE LOOP HAS NOT PRODUCED AN OUTCOME", NEVER "the gate passed
+   * first time" — that is 1. A queued run, a run still building, a run stopped
+   * on a rate limit and a run cancelled before the gate all read 0, and 0 is the
+   * true count for every one of them rather than a placeholder. It is the same
+   * refusal `heldOutPass: null` makes: a gate that did not run must never be
+   * indistinguishable from a gate that did.
+   */
+  readonly gateAttempts: number;
+  /**
+   * Why the GATE/FIX loop stopped, or `null` when it has not stopped.
+   *
+   * `null` IS NOT `"green"`. It means no loop outcome has been recorded for this
+   * run — the same fact `gateAttempts: 0` carries, and the two move together. A
+   * UI that renders a missing reason as a pass reproduces exactly the conflation
+   * this contract refuses everywhere else.
+   *
+   * A STRING, NOT A UNION, AND THAT IS A DECISION RATHER THAN LAZINESS. The
+   * vocabulary is `StopReason` in `gate-fix-loop.ts` — `green`, `retry-cap`,
+   * `not-converging`, `infra`, `cancelled` — and this file imports nothing, for
+   * the reason given on {@link ApiDesignLock.lockedBy}: the frozen wire contract
+   * must not drag domain modules into the client's mental model. Repeating the
+   * union here instead would be a second spelling needing its own compile-time
+   * join, for a field whose renderer needs a default branch either way — a
+   * newer server can send a reason this client has never heard of, and that is a
+   * newer server, not a bug. `backlog.ts` holds the owner-facing prose for each.
+   *
+   * WHO WRITES IT, AND WHAT IS STILL OPEN. `runGateFixLoop` returns
+   * `{attempts, reason}`; `orchestrator.ts#gateFixLoop` is the one place that
+   * holds that result next to the run id, and until it calls
+   * `store.updateRun(runId, {gateAttempts, gateStopReason})` every run reports
+   * `0`/`null` here. That is stated rather than left to be discovered: the
+   * store, the migration, this contract, the client mirror and the route are
+   * all in place and tested end-to-end from `updateRun` outward, and the one
+   * remaining line is in a file that belongs to another wave.
+   */
+  readonly gateStopReason: string | null;
+  /**
    * The DESIGN lane's lock, or `null` when this run has no DESIGN lane.
    *
    * ONE NULLABLE FIELD RATHER THAN FOUR FLAT ONES, AND THE NULL IS LOAD-BEARING.

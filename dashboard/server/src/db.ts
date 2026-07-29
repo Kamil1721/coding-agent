@@ -37,6 +37,20 @@ import type {
   ApiTokens,
   SseEvent,
 } from "./api-types.js";
+/**
+ * TYPE-ONLY, AND IT NARROWS THE WRITE AND NOTHING ELSE.
+ *
+ * `RunPatch.gateStopReason` takes the loop's own enum so a caller cannot persist
+ * `"greenn"`, while {@link RunRow.gateStopReason} reads back a plain `string`:
+ * a row written by a different version of this server must READ, not throw. A
+ * `oneOf` guard on the way out would take down `GET /api/runs` — every row, for
+ * every run — over one unrecognised word in one column, which is a far worse
+ * failure than rendering a reason the UI has no prose for.
+ *
+ * `verbatimModuleSyntax` erases this, so it is not a runtime dependency of the
+ * store on the loop and cannot become a module cycle.
+ */
+import type { StopReason } from "./gate-fix-loop.js";
 
 /* -------------------------------------------------------------------------
  * Row shapes
@@ -99,6 +113,17 @@ export interface RunRow {
   readonly designLock: string;
   /** The request that created this run came from a human at the dashboard. */
   readonly interactive: boolean;
+  /**
+   * Gate runs the GATE/FIX loop performed (Phase 2d). See
+   * `RunDetail.gateAttempts`: 0 is "no outcome recorded", never "passed first
+   * time", and it moves with {@link RunRow.gateStopReason}.
+   */
+  readonly gateAttempts: number;
+  /**
+   * Why the loop stopped — a `StopReason` on the way in, a plain string on the
+   * way out. `null` is "it has not stopped", NEVER `"green"`.
+   */
+  readonly gateStopReason: string | null;
   readonly updatedAt: string;
 }
 
@@ -129,6 +154,15 @@ export interface RunPatch {
    * change halfway through is a run whose park has no explanation.
    */
   readonly designSegmentDone?: boolean;
+  /**
+   * THE TWO MOVE TOGETHER OR NOT AT ALL, and nothing here enforces that because
+   * a patch is a partial by construction. The caller is `runGateFixLoop`'s only
+   * consumer, which holds both halves of one `GateFixLoopResult`; patching the
+   * reason without the count would publish "not-converging after 0 attempts",
+   * which is a sentence about nothing.
+   */
+  readonly gateAttempts?: number;
+  readonly gateStopReason?: StopReason | null;
 }
 
 export interface NewRun {
@@ -301,6 +335,8 @@ CREATE TABLE IF NOT EXISTS runs (
   design_segment_done        INTEGER NOT NULL DEFAULT 0,
   design_lock                TEXT NOT NULL DEFAULT '',
   interactive                INTEGER NOT NULL DEFAULT 0,
+  gate_attempts              INTEGER NOT NULL DEFAULT 0,
+  gate_stop_reason           TEXT,
   updated_at                 TEXT NOT NULL
 );
 
@@ -370,6 +406,8 @@ const RUN_COLUMNS = [
   "design_segment_done",
   "design_lock",
   "interactive",
+  "gate_attempts",
+  "gate_stop_reason",
   "updated_at",
 ].join(", ");
 
@@ -412,6 +450,20 @@ const ADDED_RUN_COLUMNS: readonly { readonly name: string; readonly ddl: string 
   {
     name: "interactive",
     ddl: "ALTER TABLE runs ADD COLUMN interactive INTEGER NOT NULL DEFAULT 0",
+  },
+  // Phase 2d (the GATE/FIX loop's outcome). Both defaults are the "nothing
+  // recorded yet" value and both are TRUE of every historical row: no run before
+  // this phase persisted an attempt count or a stop reason anywhere. Note the
+  // asymmetry — 0 is a real count that happens to mean "none", while the reason
+  // has no such value, so its column is NULLABLE and takes no default rather
+  // than defaulting to a word ("green") that would be a claim.
+  {
+    name: "gate_attempts",
+    ddl: "ALTER TABLE runs ADD COLUMN gate_attempts INTEGER NOT NULL DEFAULT 0",
+  },
+  {
+    name: "gate_stop_reason",
+    ddl: "ALTER TABLE runs ADD COLUMN gate_stop_reason TEXT",
   },
 ];
 
@@ -572,6 +624,12 @@ export class RunStore {
     if (patch.inferredCriteria !== undefined) push("inferred_criteria", patch.inferredCriteria);
     if (patch.verdictPath !== undefined) push("verdict_path", redactForPersistence(patch.verdictPath));
     if (patch.designSegmentDone !== undefined) push("design_segment_done", flag(patch.designSegmentDone));
+    if (patch.gateAttempts !== undefined) push("gate_attempts", patch.gateAttempts);
+    // NOT REDACTED, AND IT CANNOT USEFULLY BE: this is one of five short enum
+    // literals or null, exactly like `design_lock` above. `redactForPersistence`
+    // on a word like "not-converging" is a no-op that would still cost a cast on
+    // the way in and a widened type on the way out.
+    if (patch.gateStopReason !== undefined) push("gate_stop_reason", patch.gateStopReason);
 
     push("updated_at", new Date().toISOString());
     values.push(runId);
@@ -726,6 +784,11 @@ function toRunRow(row: Row): RunRow {
     designSegmentDone: bool(row, "design_segment_done"),
     designLock: str(row, "design_lock"),
     interactive: bool(row, "interactive"),
+    gateAttempts: num(row, "gate_attempts"),
+    // `strOrNull`, not `oneOf`: see the import of `StopReason` at the top. An
+    // unrecognised word reads through and renders oddly; a guard here would
+    // throw and take every run in the list with it.
+    gateStopReason: strOrNull(row, "gate_stop_reason"),
     updatedAt: str(row, "updated_at"),
   };
 }

@@ -204,6 +204,11 @@ export const RUN_DETAIL: RunDetail = {
   previewUrl: null,
   inferredCriteria: 0,
   verdictPath: "",
+  // The run is RUNNING, so the GATE/FIX loop has produced no outcome: 0 gate
+  // runs and no reason. `gateStopReason: "green"` here would say this build had
+  // been measured and passed, which is a different fixture entirely.
+  gateAttempts: 0,
+  gateStopReason: null,
   // This fixture's ticket is "Add a test suite to the dashboard client" — a run
   // with no DESIGN lane, which is exactly what `null` means. `{awaiting: false,
   // locked: null}` would say something different: that a lane ran and locked
