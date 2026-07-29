@@ -96,6 +96,31 @@ const SETTLED = detail("awaiting_input", {
 /** Parked for something that is not a design choice: no lane, no cards. */
 const NO_LANE = detail("awaiting_input", null);
 
+/**
+ * The lane ran and locked NOTHING — degraded, or failed.
+ *
+ * NOT THE SAME AS `designLock: null`, which means the run had no DESIGN lane at
+ * all. `api-types.ts` calls this "the case the whole lane's reporting exists to
+ * make visible", so it has to render something that says so rather than folding
+ * into the no-lane branch and disappearing.
+ */
+const UNLOCKED = detail("passed", {
+  awaiting: false,
+  mockups: MOCKUPS,
+  locked: null,
+  lockedBy: null,
+  reason: null,
+});
+
+/** Locked on a ref that was never published — no card can be distinguished. */
+const LOCKED_ELSEWHERE = detail("passed", {
+  awaiting: false,
+  mockups: MOCKUPS,
+  locked: `${WORKSPACE}/09-never-published.png`,
+  lockedBy: "ui-designer",
+  reason: "the strongest hero of the set",
+});
+
 /* ------------------------------------------------------------------ */
 
 interface Harness {
@@ -103,7 +128,25 @@ interface Harness {
   readonly resumes: unknown[];
 }
 
-async function serve(page: Page, body: RunDetail): Promise<Harness> {
+/**
+ * The refusal `POST /api/runs/:id/resume` actually returns, transcribed from
+ * `sendError` in `server/src/http.ts`. `error` is a machine code and `message` is
+ * the sentence written for a person; both are on the wire, and which one the UI
+ * picks is the difference between a run page that explains itself and one that
+ * says `not_resumable`.
+ */
+const REFUSAL = {
+  error: "not_resumable",
+  message: `run ${RUN} is awaiting_input and cannot be resumed, or ${String(MOCKUPS[1]?.path)} is not one of its mockups`,
+  remediation:
+    "A finished run is not resumed: re-running a scored artefact would overwrite a real result with a second one taken under different conditions. Submit a new run instead.",
+} as const;
+
+async function serve(
+  page: Page,
+  body: RunDetail,
+  resume: { status: number; body: string } = { status: 200, body: '{"ok":true}' },
+): Promise<Harness> {
   const resumes: unknown[] = [];
 
   // ONE HANDLER, NOT SEVERAL. Playwright matches the most recently registered
@@ -116,7 +159,11 @@ async function serve(page: Page, body: RunDetail): Promise<Harness> {
     if (path.endsWith("/resume")) {
       const raw = route.request().postData();
       resumes.push(raw === null ? null : JSON.parse(raw));
-      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      await route.fulfill({
+        status: resume.status,
+        contentType: "application/json",
+        body: resume.body,
+      });
       return;
     }
     if (path.includes("/screenshots/")) {
@@ -192,6 +239,30 @@ test.describe("parked on a design choice", () => {
     expect(harness.resumes[0]).toEqual({ chosenMockup: MOCKUPS[1]?.path });
   });
 
+  test("a REFUSED choice says which path was refused, not `not_resumable`", async ({ page }) => {
+    // THE PATH EVERY REAL CLICK TAKES TODAY, and the reason this test exists at
+    // all. `Orchestrator.resume` locks by exact equality against
+    // `manifest.refs[].path`, and the only path these cards can send is the
+    // PUBLISHED COPY — so until that seam is fixed server-side, 409 is not an
+    // edge case here, it is the outcome. What the owner reads in that moment is
+    // therefore part of the feature, not part of its error handling.
+    //
+    // Both halves are asserted. The bare code alone is what shipped before this
+    // commit, and it is indistinguishable from a working UI right up until
+    // something goes wrong.
+    await serve(page, PARKED, { status: 409, body: JSON.stringify(REFUSAL) });
+
+    await cards(page).nth(1).click();
+
+    const failure = page.getByText("That action did not go through");
+    await expect(failure).toBeVisible();
+    await expect(page.getByText(REFUSAL.message)).toBeVisible();
+    await expect(page.getByText("not_resumable", { exact: true })).toHaveCount(0);
+
+    // And the run stays exactly where it was: still parked, still offering.
+    await expect(cards(page)).toHaveCount(MOCKUPS.length);
+  });
+
   test("the generic waiting-on-input notice is replaced, not doubled up", async ({ page }) => {
     await serve(page, PARKED);
     await expect(cards(page)).toHaveCount(MOCKUPS.length);
@@ -234,6 +305,33 @@ test.describe("a run that is not awaiting a design choice", () => {
     await expect(locked).toHaveCount(1);
     await expect(locked.getByText("locked", { exact: true })).toBeVisible();
     await expect(panel(page).getByText("locked", { exact: true })).toHaveCount(1);
+  });
+
+  test("a lane that locked NOTHING says so, and is not the no-lane branch", async ({ page }) => {
+    await serve(page, UNLOCKED);
+
+    // `{awaiting:false, locked:null}` is a lane that ran and produced nothing to
+    // lock; `designLock: null` is a run with no lane. The panel appears for the
+    // first and not the second, which is the only thing on the page that can
+    // tell them apart.
+    await expect(page.getByRole("heading", { name: "Design lock" })).toBeVisible();
+    await expect(panel(page).getByText("nothing locked", { exact: true })).toBeVisible();
+    await expect(cards(page)).toHaveCount(0);
+    // The consequence is stated, because it changes what a pass on this run
+    // means: the visual gate had no reference and fell back to its floor.
+    await expect(panel(page).getByText(/rule-based floor/)).toBeVisible();
+  });
+
+  test("a lock on a mockup that was never published is said out loud", async ({ page }) => {
+    await serve(page, LOCKED_ELSEWHERE);
+
+    // Distinguishing no card here would read as "no design was locked", which is
+    // the opposite of what the record says. The path is shown instead.
+    await expect(panel(page).getByText("locked", { exact: true })).toHaveCount(0);
+    await expect(panel(page).getByText(/not among the mockups published/)).toBeVisible();
+    // And ui-designer's reason — the one reason on this screen an agent wrote
+    // rather than the host — is carried verbatim.
+    await expect(panel(page).getByText(/the strongest hero of the set/)).toBeVisible();
   });
 
   test("the window closed while the page was open: the cards stop offering", async ({ page }) => {

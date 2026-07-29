@@ -57,10 +57,24 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * `message` BEFORE `error`, and the order is the whole point.
+ *
+ * MEASURED, NOT REASONED ABOUT. Every error this backend sends is
+ * `{error, message, remediation}` where `error` is a MACHINE CODE and `message`
+ * is the sentence written for a person — `sendError` in `server/src/http.ts`
+ * builds every one of them that way. Reading `error` first meant that refusing a
+ * design choice painted the literal string `not_resumable` across the run page,
+ * and a bad request painted `invalid_body`. The prose that says which path was
+ * refused and why was on the wire the entire time and was never rendered.
+ *
+ * `error` stays as the fallback: nothing in the frozen contract promises a
+ * `message`, and a code is still better than "409 Conflict".
+ */
 function messageFromBody(body: unknown, fallback: string): string {
   if (typeof body === "object" && body !== null) {
     const record = body as Record<string, unknown>;
-    const candidate = record["error"] ?? record["message"];
+    const candidate = record["message"] ?? record["error"];
     if (typeof candidate === "string" && candidate.trim() !== "") {
       return candidate.trim().slice(0, 400);
     }
