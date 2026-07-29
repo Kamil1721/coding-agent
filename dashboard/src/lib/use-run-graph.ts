@@ -55,14 +55,17 @@ import { emptyGraph, foldGraph } from "./graph";
  * handled anyway because the alternative to a total function here is a canvas
  * that silently stops updating if a future server ever drops the id line.
  *
- * WHAT ACTUALLY BACKS THAT, NAMED RATHER THAN ASSERTED. Nothing checks
- * `lastEventId` directly — but the browser harness asserts the orchestrator's
- * `Read` pill reads `×2` after the tail has streamed, and if ids stopped
- * arriving EVERY event would take the fold-anyway branch below and that pill
- * would read `×4`. Executed as a mutation on 2026-07-29 by deleting the dedup
- * guard: the check went red with exactly `Read, called 4×`. So the id line is
- * covered transitively, and this sentence says which check does it instead of
- * claiming one that does not exist.
+ * WHAT ACTUALLY BACKS THAT, NAMED RATHER THAN ASSERTED, AND COMMITTED RATHER
+ * THAN RUN ONCE. Nothing checks `lastEventId` directly — but
+ * `tests/graph-replay.browser.spec.ts` streams the run's rows back with their
+ * `id:` lines, waits for a marker row past the watermark, and asserts the
+ * orchestrator's `Read` pill still reads `×2`. If ids stopped arriving, every
+ * event would take the fold-anyway branch below and that pill would read `×4`.
+ * Executed as a mutation on 2026-07-29 by deleting the dedup guard: the check
+ * went red with exactly `Read, called 4×`. So the id line is covered
+ * transitively, by a check `npm test` runs — the earlier version of this
+ * paragraph cited a browser harness that lived in one session and was never in
+ * the tree.
  */
 export const UNKNOWN_SEQ = -1;
 

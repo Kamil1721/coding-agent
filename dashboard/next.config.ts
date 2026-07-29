@@ -44,7 +44,24 @@ const apiOrigin = (
   process.env["DASHBOARD_API_ORIGIN"] ?? DEFAULT_API_ORIGIN
 ).replace(/\/+$/, "");
 
+/**
+ * A SECOND DEV SERVER NEEDS A SECOND BUILD DIRECTORY, and that is the only
+ * reason this line exists.
+ *
+ * `npm test` boots its own `next dev` (see `playwright.config.ts`). Next 16
+ * takes a lock inside the build directory and refuses to start a second dev
+ * server against the same one — observed verbatim, with the owner's own server
+ * already up on 4319: `⨯ Another next dev server is already running.` A test
+ * suite that can only run when nobody is developing is a test suite that stops
+ * being run, so the harness sets `NEXT_TEST_DIST_DIR=.next-test` and the two
+ * servers stop sharing state entirely. Unset — every other invocation, `dev`,
+ * `build`, `start` — this is exactly `.next`.
+ */
+const distDir = process.env["NEXT_TEST_DIST_DIR"] ?? ".next";
+
 const nextConfig: NextConfig = {
+  distDir,
+
   // The dashboard is a single-user local tool. It must never be reachable
   // off-machine: both subscription providers forbid making the account
   // available to anyone else. Loopback binding is enforced by `-H 127.0.0.1`

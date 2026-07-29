@@ -18,6 +18,12 @@ bakeoff/.scorer-modes-e2e/
 # the held-out tests in reach of anything that reads the repo.
 dashboard/acceptance/
 
+# The client suite's own build dir and artefacts. `npm test` runs a SECOND
+# `next dev` — Next 16 refuses to share a build directory between two dev
+# servers — and Playwright writes failure context under `test-results/`.
+dashboard/.next-test/
+dashboard/test-results/
+
 # Tooling scratch
 .debugfix-active
 .debugfix-blocks
