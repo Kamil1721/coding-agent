@@ -203,6 +203,18 @@ test("a QUALITY finding never rescues a FUNCTIONAL failure into notes", () => {
   assert.equal(computeOutcome(runWith({ blocking: 0, functional: 1, quality: 5 })), "fail");
 });
 
+// ADDITIVE. `runWith` records an assumption for every criterion it creates —
+// which is what Task 1 guarantees — so the fallback branch that fires when that
+// guarantee breaks was, until this test, code that would first run in front of
+// the owner on a failing run. An unmet requirement that renders as nothing is a
+// false pass in a smaller font.
+test("an unmet criterion with no assumption record is still reported, as a grader defect", () => {
+  const base = runWith({ unmet: [{ id: "C-3", statement: "the contact form confirms" }] });
+  const md = renderVerdict({ ...base, assumptions: [] });
+  assert.match(md, /C-3/, "the requirement must survive even with no prose for it");
+  assert.match(md, /NO STATEMENT WAS RECORDED/);
+});
+
 // ADDITIVE to the plan's eight, for the export the plan's own consumer needs:
 // calibration must assert the outcome AND THE FAILING TIER without parsing
 // markdown, and `fixtures.ts` says why — asserting the tier "stops a grader

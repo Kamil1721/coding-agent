@@ -63,7 +63,7 @@
  *
  * IT DOES NOT WRITE THE FILE. `renderVerdict` returns a string; the orchestrator
  * writes `runs/<runId>/results/verdict.md` at run end (Phase 2e Task 5). Keeping
- * the render pure is what lets the eight tests below run without a filesystem.
+ * the render pure is what lets its tests run without touching a filesystem.
  */
 
 import type { CriterionResult } from "bakeoff/dist/contracts.js";
@@ -104,13 +104,19 @@ const HEADLINE: Readonly<Record<VerdictOutcome, string>> = {
  * The count of held-out failures at a tier, clamped to a sane integer.
  *
  * This record crosses a JSON boundary on its way here from the score record, so
- * a missing or malformed entry is a real shape rather than a paranoid one. It
- * clamps DOWN to zero rather than up: an invented failure would fail a correct
- * artefact, and this file must never be the reason a run goes red.
+ * a missing or malformed entry is a real shape rather than a paranoid one.
+ *
+ * ANY POSITIVE VALUE COUNTS AS AT LEAST ONE FAILURE. A plain `Math.floor` would
+ * turn a 0.4 into a clean pass, and the two failure directions are not
+ * symmetric: a false fail announces itself and burns a fix round, a false pass
+ * is trusted and compounds. So a malformed positive rounds UP to one, and only
+ * a non-positive or non-finite value rounds to zero — no reachable input turns a
+ * recorded held-out failure into green.
  */
 function heldOutCount(input: VerdictInput, tier: ApiCriterionTier): number {
   const raw = input.heldOutUnmet[tier];
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.max(1, Math.floor(raw));
 }
 
 function unmetCriteria(input: VerdictInput, tier: ApiCriterionTier): readonly CriterionResult[] {
