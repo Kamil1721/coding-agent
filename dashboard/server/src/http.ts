@@ -39,6 +39,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
+import { DEFAULT_PORT, LOOPBACK_HOST } from "./dashboard-url.js";
 import type {
   ApiErrorResponse,
   CreateRunResponse,
@@ -60,10 +61,17 @@ import type { DashboardPaths } from "./paths.js";
 import { runPathsFor, safeSegment } from "./paths.js";
 import { ticketFromText } from "./ticket.js";
 
-/** The only interface this server will bind. */
-export const LOOPBACK_HOST = "127.0.0.1";
-
-export const DEFAULT_PORT = 4176;
+/**
+ * DECLARED IN `dashboard-url.ts`, RE-EXPORTED HERE.
+ *
+ * Not moved for tidiness: `index.ts` binds this port and the cron tick dials
+ * it, and the tick cannot import this file at all — `describeError` below pulls
+ * `orchestrator.js` in, which is the whole run pipeline. Two declarations of
+ * one port number fail silently (the server binds 4321, a client dials 4176,
+ * and the only symptom is a run that never appears), so there is one, and the
+ * four existing importers of these names keep working unchanged.
+ */
+export { DEFAULT_PORT, LOOPBACK_HOST };
 
 /** Ticket text cap. A ticket is a brief, not an upload. */
 export const MAX_TICKET_CHARS = 100_000;

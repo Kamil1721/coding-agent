@@ -19,25 +19,16 @@ import { pathToFileURL } from "node:url";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
+// THE PORT THIS PROCESS BINDS IS THE PORT A LOCAL CLIENT DIALS, and `parsePort`
+// used to live here privately. It is now declared once, in `dashboard-url.ts`,
+// because the cron tick needs the same answer and cannot import `http.ts`.
+import { LOOPBACK_HOST, parsePort } from "./dashboard-url.js";
 import { RunStore } from "./db.js";
-import { DEFAULT_PORT, LOOPBACK_HOST, assertLoopback, createDashboardServer } from "./http.js";
+import { assertLoopback, createDashboardServer } from "./http.js";
 import { ModelCatalog } from "./models.js";
 import { Orchestrator } from "./orchestrator.js";
 import { DASHBOARD_ENV, ensureDirs, resolvePaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
-
-function parsePort(raw: string | undefined): number {
-  if (raw === undefined || raw.trim().length === 0) return DEFAULT_PORT;
-  const port = Number.parseInt(raw.trim(), 10);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new BakeoffError(
-      "invalid_usage_shape",
-      `${DASHBOARD_ENV.port} must be a port number, got ${JSON.stringify(raw)}`,
-      `Unset ${DASHBOARD_ENV.port} to use ${String(DEFAULT_PORT)}, or set it to a number between 1 and 65535.`,
-    );
-  }
-  return port;
-}
 
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const paths = resolvePaths(env);
