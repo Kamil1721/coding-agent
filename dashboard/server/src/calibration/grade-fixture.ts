@@ -47,7 +47,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BAKEOFF_SCHEMA_VERSION } from "bakeoff/dist/contracts.js";
 import type { AcceptanceSuite, CriterionResult, RunRecord, ScoreRecord } from "bakeoff/dist/contracts.js";
@@ -84,7 +84,56 @@ const SCORER_IMAGE = process.env["BAKEOFF_SCORER_IMAGE"] ?? "bakeoff-scorer:1";
  * NOT under `src/`: `freezeSuite` chmods the sealed suite to 0444 and `tsc`
  * would then be compiling a read-only tree it has no business seeing.
  */
-export const CALIBRATION_RUN_ROOT = fileURLToPath(new URL("../../../results/calibration-4a/", import.meta.url));
+export const DEFAULT_CALIBRATION_RUN_ROOT = fileURLToPath(
+  new URL("../../../results/calibration-4a/", import.meta.url),
+);
+
+/**
+ * The override that lets two calibrations run at once.
+ *
+ * MEASURED, 2026-07-29. The root was a module constant with no override, and
+ * `prepareFixtureDirs` opens every fixture with an `rm -rf` of
+ * `<root>/<fixture>`. One process running `dist/calibration.test.js` while a
+ * second graded the same fixtures killed 5 of 7 of the second's containers with
+ * `ENOENT: mkdir '/scorer/out'`, twice — and that presents as the FIXTURE
+ * failing to score. Whoever debugs the "calibration regression" is then chasing
+ * a phantom in the grader, which is precisely the failure mode this tree exists
+ * to make impossible.
+ *
+ * Named and read like the rest of the dashboard's configuration (`paths.ts`):
+ * `DASHBOARD_` for state the dashboard owns, `_ROOT` as in
+ * `BAKEOFF_ACCEPTANCE_ROOT`, empty-or-blank means the default, and a relative
+ * value resolves against the cwd exactly as `DASHBOARD_HOME` does.
+ */
+export const CALIBRATION_ROOT_ENV = "DASHBOARD_CALIBRATION_ROOT";
+
+export function calibrationRunRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = (env[CALIBRATION_ROOT_ENV] ?? "").trim();
+  if (raw.length === 0) return DEFAULT_CALIBRATION_RUN_ROOT;
+  return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+}
+
+/** The four directories one fixture's run owns. */
+export interface FixtureRunPaths {
+  readonly base: string;
+  readonly acceptanceRoot: string;
+  readonly resultsDir: string;
+  readonly runDir: string;
+}
+
+/** Clear one fixture's tree and lay out the directories its run writes into. */
+export function prepareFixtureDirs(name: string, env: NodeJS.ProcessEnv = process.env): FixtureRunPaths {
+  const base = join(calibrationRunRoot(env), name);
+  const paths: FixtureRunPaths = {
+    base,
+    acceptanceRoot: join(base, "acceptance"),
+    resultsDir: join(base, "results"),
+    runDir: join(base, "run"),
+  };
+  resetDir(paths.base);
+  for (const dir of [paths.acceptanceRoot, paths.resultsDir, paths.runDir]) mkdirSync(dir, { recursive: true });
+  return paths;
+}
 
 export interface FixtureVerdict {
   readonly outcome: VerdictOutcome;
@@ -348,12 +397,7 @@ export async function gradeFixture(fixture: CalibrationFixture): Promise<Fixture
     );
   }
 
-  const base = join(CALIBRATION_RUN_ROOT, fixture.name);
-  const acceptanceRoot = join(base, "acceptance");
-  const resultsDir = join(base, "results");
-  const runDir = join(base, "run");
-  resetDir(base);
-  for (const each of [acceptanceRoot, resultsDir, runDir]) mkdirSync(each, { recursive: true });
+  const { acceptanceRoot, resultsDir, runDir } = prepareFixtureDirs(fixture.name);
 
   const suite = buildSuite(draft);
   freezeSuite(

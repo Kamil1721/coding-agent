@@ -76,7 +76,7 @@ import { execFileSync } from "node:child_process";
 import { before, describe, test } from "node:test";
 import { FIXTURES, MUST_FAIL, byName } from "./calibration/fixtures.js";
 import type { CalibrationFixture } from "./calibration/fixtures.js";
-import { gradeFixture } from "./calibration/grade-fixture.js";
+import { calibrationRunRoot, gradeFixture } from "./calibration/grade-fixture.js";
 import type { FixtureVerdict } from "./calibration/grade-fixture.js";
 
 const SCORER_IMAGE = process.env["BAKEOFF_SCORER_IMAGE"] ?? "bakeoff-scorer:1";
@@ -441,6 +441,33 @@ describe("CALIBRATION(scoring-path)", () => {
       [],
       "correct-portfolio raised a motion note too — the motion check is firing on everything",
     );
+  });
+
+  test("every fixture wrote its output under the run root THIS PROCESS was given", () => {
+    // THE HALF `run-root.test.ts` CANNOT CARRY. That file proves
+    // `prepareFixtureDirs` honours DASHBOARD_CALIBRATION_ROOT; it cannot prove
+    // `gradeFixture` CALLS it rather than a module constant, and a fix where the
+    // helper is correct and the caller ignores it survives a green suite —
+    // which is this repo's signature defect in the shape it keeps arriving in.
+    // `scoreRecordPath` is built from the resultsDir the run actually used, so
+    // it is the caller's own answer rather than a restatement of the helper's.
+    //
+    // IT ONLY DISCRIMINATES WHEN THE OVERRIDE IS SET, and that is stated rather
+    // than hidden: with no env this compares the default against the default.
+    // Run it the way the fix is meant to be used —
+    //   DASHBOARD_CALIBRATION_ROOT=/some/scratch npm test
+    // — which is also how two calibrations run at once without deleting each
+    // other's trees.
+    const root = calibrationRunRoot();
+    for (const fixture of FIXTURES) {
+      const verdict = verdictOf(fixture);
+      assert.ok(
+        verdict.scoreRecordPath.startsWith(root),
+        `${fixture.name}: scored into ${verdict.scoreRecordPath}, which is not under the run root ${root}. ` +
+          "The override was read and then ignored, so two concurrent calibrations still share one tree — " +
+          "and the second one dies with `ENOENT: mkdir '/scorer/out'`, which reads like a grader failure",
+      );
+    }
   });
 
   test("every fixture renders a verdict the owner could act on", () => {
