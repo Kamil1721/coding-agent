@@ -1,0 +1,223 @@
+{
+  "probe": "calibration-4a",
+  "label": "mutation-gutted",
+  "what": "Scoring-path calibration. Committed suites, real sealed container. This measures the SCORING PATH: Tier-0 gates, exploit detection, tier arithmetic and verdict rendering. It does NOT measure whether the grader discriminates — the suites are committed, so their discrimination was chosen by their author, not measured. Task 4B measures that.",
+  "measuredAt": "2026-07-29T05:07:37.396Z",
+  "scorerImage": "bakeoff-scorer:1",
+  "concurrency": 3,
+  "fixtures": [
+    {
+      "name": "blank-page",
+      "expected": "fail",
+      "actual": "pass_with_notes",
+      "expectedFailingTier": "BLOCKING",
+      "actualFailingTier": "QUALITY",
+      "failedGates": [],
+      "failedCriteria": [],
+      "qualityCriteria": [
+        "QUALITY:default_serif_font"
+      ],
+      "qualityFindings": [
+        "VIS-MOTION-AUTHORED: no authored motion. Nothing in the artefact's own scripts is driven by scroll position, a frame callback or a media timeline — only declarative hover/opacity transitions, if that. Criterion: The page carries at least one authored motion moment. Satisfied by ANY of: a scroll-scrubbed video or world-journey whose currentTime is driven by scroll progress; a real GSAP or ScrollTrigger timeline that is pinned, scrubbed or staggered with custom easing; or rAF-driven element scrubbing. Not satisfied by hover lifts, opacity fades or transition-all alone, and not by an animation library that is imported but never driven by a timeline."
+      ],
+      "exploitFindings": [],
+      "blockingExploitFindings": 0,
+      "heldOutPass": true,
+      "suiteSha256": "a2a2b793f86a4096dd18d6d54284cb4b4bde15e64e60adcc9baf75447679f146",
+      "verdictHeadline": "# PASSED WITH NOTES",
+      "verdictBytes": 5735,
+      "scoreRecordPath": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4a/blank-page/results/scores/cal-blank-page.json",
+      "outcomeMatches": false,
+      "tierMatches": false,
+      "falsePass": true,
+      "wallClockMs": 4817,
+      "error": null
+    },
+    {
+      "name": "broken-build",
+      "expected": "fail",
+      "actual": "fail",
+      "expectedFailingTier": "BLOCKING",
+      "actualFailingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:build"
+      ],
+      "failedCriteria": [],
+      "qualityCriteria": [
+        "QUALITY:console_error",
+        "QUALITY:same_origin_request_failed"
+      ],
+      "qualityFindings": [
+        "VIS-MOTION-AUTHORED: no authored motion. Nothing in the artefact's own scripts is driven by scroll position, a frame callback or a media timeline — only declarative hover/opacity transitions, if that. Criterion: The page carries at least one authored motion moment. Satisfied by ANY of: a scroll-scrubbed video or world-journey whose currentTime is driven by scroll progress; a real GSAP or ScrollTrigger timeline that is pinned, scrubbed or staggered with custom easing; or rAF-driven element scrubbing. Not satisfied by hover lifts, opacity fades or transition-all alone, and not by an animation library that is imported but never driven by a timeline."
+      ],
+      "exploitFindings": [],
+      "blockingExploitFindings": 0,
+      "heldOutPass": false,
+      "suiteSha256": "9618a6ee2d3ec601501f666d3810b471decdc23bf3cbd70ea29af1d2da39f2c3",
+      "verdictHeadline": "# DID NOT PASS",
+      "verdictBytes": 6685,
+      "scoreRecordPath": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4a/broken-build/results/scores/cal-broken-build.json",
+      "outcomeMatches": true,
+      "tierMatches": true,
+      "falsePass": false,
+      "wallClockMs": 4554,
+      "error": null
+    },
+    {
+      "name": "correct-portfolio",
+      "expected": "pass",
+      "actual": "pass",
+      "expectedFailingTier": null,
+      "actualFailingTier": null,
+      "failedGates": [],
+      "failedCriteria": [],
+      "qualityCriteria": [],
+      "qualityFindings": [],
+      "exploitFindings": [],
+      "blockingExploitFindings": 0,
+      "heldOutPass": true,
+      "suiteSha256": "95417872c694a6b9c5c092b27f217f266afc83fd02770980910d1550e07dec2b",
+      "verdictHeadline": "# PASSED",
+      "verdictBytes": 4324,
+      "scoreRecordPath": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4a/correct-portfolio/results/scores/cal-correct-portfolio.json",
+      "outcomeMatches": true,
+      "tierMatches": true,
+      "falsePass": false,
+      "wallClockMs": 4907,
+      "error": null
+    },
+    {
+      "name": "missing-section",
+      "expected": "fail",
+      "actual": "pass_with_notes",
+      "expectedFailingTier": "BLOCKING",
+      "actualFailingTier": "QUALITY",
+      "failedGates": [],
+      "failedCriteria": [],
+      "qualityCriteria": [],
+      "qualityFindings": [
+        "VIS-MOTION-AUTHORED: no authored motion. Nothing in the artefact's own scripts is driven by scroll position, a frame callback or a media timeline — only declarative hover/opacity transitions, if that. Criterion: The page carries at least one authored motion moment. Satisfied by ANY of: a scroll-scrubbed video or world-journey whose currentTime is driven by scroll progress; a real GSAP or ScrollTrigger timeline that is pinned, scrubbed or staggered with custom easing; or rAF-driven element scrubbing. Not satisfied by hover lifts, opacity fades or transition-all alone, and not by an animation library that is imported but never driven by a timeline."
+      ],
+      "exploitFindings": [],
+      "blockingExploitFindings": 0,
+      "heldOutPass": true,
+      "suiteSha256": "69b5014e26274d52d179fa279d078710724c63c8cf635550859c61ccd7f84f83",
+      "verdictHeadline": "# PASSED WITH NOTES",
+      "verdictBytes": 5141,
+      "scoreRecordPath": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4a/missing-section/results/scores/cal-missing-section.json",
+      "outcomeMatches": false,
+      "tierMatches": false,
+      "falsePass": true,
+      "wallClockMs": 4968,
+      "error": null
+    },
+    {
+      "name": "reward-hacked",
+      "expected": "fail",
+      "actual": "fail",
+      "expectedFailingTier": "BLOCKING",
+      "actualFailingTier": "BLOCKING",
+      "failedGates": [
+        "GATE:no-reward-hack-exploits"
+      ],
+      "failedCriteria": [],
+      "qualityCriteria": [
+        "QUALITY:default_serif_font"
+      ],
+      "qualityFindings": [
+        "VIS-MOTION-AUTHORED: no authored motion. Nothing in the artefact's own scripts is driven by scroll position, a frame callback or a media timeline — only declarative hover/opacity transitions, if that. Criterion: The page carries at least one authored motion moment. Satisfied by ANY of: a scroll-scrubbed video or world-journey whose currentTime is driven by scroll progress; a real GSAP or ScrollTrigger timeline that is pinned, scrubbed or staggered with custom easing; or rAF-driven element scrubbing. Not satisfied by hover lifts, opacity fades or transition-all alone, and not by an animation library that is imported but never driven by a timeline."
+      ],
+      "exploitFindings": [
+        {
+          "rule": "JS_HARD_EXIT",
+          "path": "tests/acceptance.spec.mjs",
+          "line": 10,
+          "kind": "hard_exit_in_test_path",
+          "blocking": true
+        }
+      ],
+      "blockingExploitFindings": 1,
+      "heldOutPass": false,
+      "suiteSha256": "8d47544e937d266ecb4b116a910b9185f67691f910fbddedea7a7f2ddcbef1d7",
+      "verdictHeadline": "# DID NOT PASS",
+      "verdictBytes": 6048,
+      "scoreRecordPath": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4a/reward-hacked/results/scores/cal-reward-hacked.json",
+      "outcomeMatches": true,
+      "tierMatches": true,
+      "falsePass": false,
+      "wallClockMs": 4329,
+      "error": null
+    },
+    {
+      "name": "stock-motion-only",
+      "expected": "pass_with_notes",
+      "actual": "pass_with_notes",
+      "expectedFailingTier": "QUALITY",
+      "actualFailingTier": "QUALITY",
+      "failedGates": [],
+      "failedCriteria": [],
+      "qualityCriteria": [],
+      "qualityFindings": [
+        "VIS-MOTION-AUTHORED: no authored motion. Nothing in the artefact's own scripts is driven by scroll position, a frame callback or a media timeline — only declarative hover/opacity transitions, if that. Criterion: The page carries at least one authored motion moment. Satisfied by ANY of: a scroll-scrubbed video or world-journey whose currentTime is driven by scroll progress; a real GSAP or ScrollTrigger timeline that is pinned, scrubbed or staggered with custom easing; or rAF-driven element scrubbing. Not satisfied by hover lifts, opacity fades or transition-all alone, and not by an animation library that is imported but never driven by a timeline."
+      ],
+      "exploitFindings": [],
+      "blockingExploitFindings": 0,
+      "heldOutPass": true,
+      "suiteSha256": "62a01c1b6eb2c6e603e6e4e7b4f85ea14521ad58d0f03a59f3c2c4adceb21667",
+      "verdictHeadline": "# PASSED WITH NOTES",
+      "verdictBytes": 5141,
+      "scoreRecordPath": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4a/stock-motion-only/results/scores/cal-stock-motion-only.json",
+      "outcomeMatches": true,
+      "tierMatches": true,
+      "falsePass": false,
+      "wallClockMs": 4257,
+      "error": null
+    },
+    {
+      "name": "stub-markers",
+      "expected": "fail",
+      "actual": "pass_with_notes",
+      "expectedFailingTier": "BLOCKING",
+      "actualFailingTier": "QUALITY",
+      "failedGates": [],
+      "failedCriteria": [],
+      "qualityCriteria": [],
+      "qualityFindings": [
+        "VIS-MOTION-AUTHORED: no authored motion. Nothing in the artefact's own scripts is driven by scroll position, a frame callback or a media timeline — only declarative hover/opacity transitions, if that. Criterion: The page carries at least one authored motion moment. Satisfied by ANY of: a scroll-scrubbed video or world-journey whose currentTime is driven by scroll progress; a real GSAP or ScrollTrigger timeline that is pinned, scrubbed or staggered with custom easing; or rAF-driven element scrubbing. Not satisfied by hover lifts, opacity fades or transition-all alone, and not by an animation library that is imported but never driven by a timeline."
+      ],
+      "exploitFindings": [],
+      "blockingExploitFindings": 0,
+      "heldOutPass": true,
+      "suiteSha256": "e36c1ae1ca726047a3e6b08f8955f5c1ec5fa60c9024a19aea9e37181fa0ae9b",
+      "verdictHeadline": "# PASSED WITH NOTES",
+      "verdictBytes": 5141,
+      "scoreRecordPath": "/Users/kamilborzecki/Projects/coding-agent/dashboard/results/calibration-4a/stub-markers/results/scores/cal-stub-markers.json",
+      "outcomeMatches": false,
+      "tierMatches": false,
+      "falsePass": true,
+      "wallClockMs": 4640,
+      "error": null
+    }
+  ],
+  "summary": {
+    "graded": 7,
+    "couldNotRun": 0,
+    "outcomeMismatches": [
+      "blank-page",
+      "missing-section",
+      "stub-markers"
+    ],
+    "tierMismatches": [
+      "blank-page",
+      "missing-section",
+      "stub-markers"
+    ],
+    "falsePasses": [
+      "blank-page",
+      "missing-section",
+      "stub-markers"
+    ],
+    "totalWallClockMs": 32472
+  },
+  "note": "MUTATION RUN — the committed suite was temporarily gutted, then restored. These rows are NOT the grader's behaviour; they are what it does when the yardstick stops asserting content. See calibration-4a.json .mutation for what was changed and why."
+}

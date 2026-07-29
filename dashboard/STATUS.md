@@ -517,6 +517,77 @@ a sandboxed Bash never reaches this callback at all, so scanning its command
 string would deny ordinary work while buying nothing. Do not "fix" that one here
 — the layer for it is the OS sandbox's `denyRead`.
 
+### 1.10 Scoring-path calibration — EXECUTED 2026-07-29, and what it does NOT prove
+
+Phase 2e Task 4A. Seven calibration fixtures scored through the **real** sealed
+scorer — `docker run --network=none`, image resolved by content digest, the
+frozen suite mounted read-only — against a **committed** acceptance suite.
+`dashboard/server/src/calibration.test.ts` runs in `npm test`.
+
+```
+dashboard/server  npm test        271 tests, 269 pass, 0 fail, 2 skipped (quota)
+                  of which calibration.test.js  7 tests, 7 pass, ~70 s
+                  7/7 fixtures match their expected outcome AND failing tier
+                  measurement: dashboard/server/probes/results/calibration-4a.json
+```
+
+**This proves the SCORING PATH: that the Tier-0 gates fire, that reward-hack
+detection inspects test files the artefact shipped, that the tier arithmetic in
+`computeOutcome` is right against real container output, and that the verdict
+renders. It does NOT prove the grader DISCRIMINATES.** The suites are committed,
+so the discrimination they produce was **chosen by their author — who had read
+all seven artefacts — not measured**. Task 4B authors a suite from the ticket
+alone and is the one that answers Gap 4. Do not read this row as Gap 4 closed.
+
+**The mutation was executed, not reasoned about.** The three content criteria
+(hero, three projects, contact confirmation) were replaced with one contentless
+criterion, `dist` rebuilt, the suite re-run: `blank-page`, `missing-section` and
+`stub-markers` all stopped failing and calibration went **RED — 3 of 7 tests
+failed, exit 1**. Restored; the file's sha256 is identical before and after
+(`b60ce081…3ab190`) and the suite is green again. Recorded in
+`probes/results/calibration-4a.json` under `.mutation`, raw rows in
+`calibration-4a.mutation-gutted.json`. **Corrected against the plan's
+prediction:** R4 expected `blank-page` to flip to `pass`; it flips to
+`pass_with_notes`, because two QUALITY findings survive any mutation of the
+suite (`QUALITY:default_serif_font` from the container's own DOM observation,
+and the VIS-MOTION-AUTHORED note). That is why the false-pass assertion asserts
+`outcome === "fail"` rather than `!== "pass"` — **`pass_with_notes` renders as
+"PASSED WITH NOTES" and an owner reading it walks away trusting the artefact.**
+
+**Does-not-skip, verified by negative control.** Run with
+`BAKEOFF_SCORER_IMAGE` pointed at an image that does not exist, the suite exits
+**1** with `CALIBRATION DID NOT RUN: the scorer image … is not built`, plus the
+build command. No `test.skip`, no docker probe that turns green when the daemon
+is absent.
+
+**Four things this measured that were previously assumed. None was worked
+around by moving an expectation:**
+
+- `GATE:suite-green` is a **BLOCKING** container gate that fails whenever ANY
+  frozen test fails, whatever tier its criterion declares. So every fixture the
+  content criteria catch fails at **BLOCKING**, and FUNCTIONAL can never be the
+  strictest failing tier. Revision 2's R2 — assert the tier, it stops a grader
+  failing everything for the wrong reason — is weaker than it looks; the
+  per-fixture **gate and criterion** assertions are what carry that job. The
+  same fact is why no QUALITY criterion may live in a frozen suite: it would
+  fail the run at BLOCKING.
+- `reward-hacked`: `GATE:no-reward-hack-exploits` **does** fire, with one
+  blocking `ExploitFinding` — `JS_HARD_EXIT` at `tests/acceptance.spec.mjs:10`,
+  test-adjacent and therefore gating. But **only one of the three planted
+  exploit families is detected**: the equality override is written
+  `Object.defineProperty(C.prototype, Symbol.toPrimitive, …)`, which
+  `JS_PRIMITIVE_COERCION_OVERRIDE` misses because it requires a computed key
+  `[Symbol.toPrimitive]`. **Backlog** — the rule is in `bakeoff/src/tier0.ts`.
+- `stub-markers`: `GATE:no-stub-markers` **passes** — it "scanned 0 source
+  file(s) of 2 walked", because `SOURCE_EXTENSIONS` has no `.html` and this
+  fixture's TODO/FIXME markers are in markup. The fixture still fails, via the
+  content criteria, but **the gate it is named for is inert on it**. Backlog.
+- `broken-build`: `GATE:build` fires with `exit 127; sh: 1: tsc: not found`.
+  No network, `typescript` an uninstalled devDependency. It proves the build
+  gate catches an artefact that does not build, **not** that the grader sees the
+  TS2345 the fixture was authored around. Backlog. No fixture artefact was
+  edited — `fixtures.ts` forbids exactly that.
+
 ---
 
 ## 2. What I FIXED, and what each defect actually was
