@@ -28,7 +28,7 @@
  * the verdict shared across the assertions below; grading per test would
  * multiply that by five for no extra signal.
  *
- * THREE MUTATIONS WERE RUN ON 2026-07-29, all recorded under `.mutations` in
+ * FOUR MUTATIONS WERE RUN ON 2026-07-29, all recorded under `.mutations` in
  * probes/results/calibration-4a.json, and M1 and M2 were RE-RUN FROM SCRATCH by
  * a second agent rather than inherited. A calibration nobody has watched fail is
  * not verified, and neither is a single assertion inside one.
@@ -39,11 +39,18 @@
  *      co-primary metric, so nothing downstream would have disagreed.
  *   2. Making `statementFor` append a `T-n` id turns the held-out-leak assertion
  *      RED (1 of 7, exit 1). Without that run it would be an assertion nothing
- *      can currently make fire, which is the defect this repo has shipped seven
- *      times.
- *   3. Breaking `MOTION_CRITERION_ID` makes `qualityFindingsFor` throw. Narrower
- *      than the other two, and labelled so in the record: it was applied to the
- *      compiled build and checked by a direct call, not through a container.
+ *      can currently make fire, which is the defect this repo has now shipped
+ *      nine times — including once in this file, as mutation 4 below.
+ *   3. Breaking `MOTION_CRITERION_ID` makes `qualityFindingsFor` throw. First
+ *      checked by a direct call on the compiled build, which is why its record
+ *      once read `calibrationWentRed: false`; RE-RUN 2026-07-29 from the
+ *      TypeScript source through the real gate — exit 1, 7 CANCELLED, 0 pass,
+ *      0 skipped. It throws after each container has run, so the seven cancel
+ *      rather than fail.
+ *   4. Emptying `MUST_FAIL` — the mutation that SURVIVED the adversarial pass at
+ *      7/7 green, and the reason the false-pass test below now asserts its own
+ *      set before iterating it. An assertion whose scope can be deleted without
+ *      anything going red is not a check on the grader; it is a check on nothing.
  *
  * BOTH does-not-skip branches were exercised, not just the convenient one.
  * `environmentProblem()` can fail for a missing daemon or a missing image, and a
@@ -199,6 +206,29 @@ describe("CALIBRATION(scoring-path)", () => {
   });
 
   test("no fixture produces a FALSE PASS — the catastrophic direction", () => {
+    // THE SET IS ASSERTED BEFORE IT IS ITERATED. As shipped on 2026-07-29 this
+    // test did nothing but loop `MUST_FAIL` re-asserting `outcome === "fail"` —
+    // which the test above already asserts for every fixture whose `expected` is
+    // "fail", i.e. for exactly these. It was therefore LOGICALLY IMPLIED by that
+    // test and could not fail unless it already had. MEASURED by the adversarial
+    // pass: emptying `MUST_FAIL` (`.slice(0, 0)` in fixtures.ts, every `expected`
+    // untouched) left the ENTIRE gate green at 7/7, exit 0, because a loop over
+    // an empty array asserts nothing. That is instance #8 of this repo's
+    // signature defect — a check that can only observe success — and it was
+    // sitting inside the file that documents the defect.
+    assert.deepEqual(
+      [...MUST_FAIL],
+      FIXTURES.filter((fixture) => fixture.expected === "fail"),
+      "MUST_FAIL is no longer every fixture declared to fail. Whatever it holds now, the fixtures it " +
+        "dropped are graded by nothing in this test — and the catastrophic direction is the one that " +
+        "must never narrow quietly",
+    );
+    assert.ok(
+      MUST_FAIL.length >= 5,
+      `only ${String(MUST_FAIL.length)} fixture(s) are expected to fail. The false-pass direction is what ` +
+        "this file exists for; a test set that thin cannot carry it",
+    );
+
     for (const fixture of MUST_FAIL) {
       const verdict = verdictOf(fixture);
       // BOTH flavours of pass, not just "pass". `pass_with_notes` renders as
@@ -209,6 +239,22 @@ describe("CALIBRATION(scoring-path)", () => {
         verdict.outcome,
         "fail",
         `FALSE PASS on ${fixture.name}: graded ${verdict.outcome} — the owner would trust a lie`,
+      );
+      // AND THE SECOND OPINION, which is the half the outcome assertion cannot
+      // give. `heldOutPass` is the bake-off's own co-primary metric, computed by
+      // `computeHeldOutPass` in contracts.ts from the sealed suite's own results
+      // rather than from this dashboard's tier arithmetic — so it can disagree
+      // with `outcome`, and a false pass that fools BOTH has no dissenter left.
+      // It is not a hypothetical: M1 measured `heldOutPass` flipping to TRUE on
+      // blank-page, missing-section and stub-markers under a gutted suite. The
+      // pass direction is asserted below on correct-portfolio; this is the fail
+      // direction, and nothing else in this file reads it.
+      assert.equal(
+        verdict.heldOutPass,
+        false,
+        `${fixture.name}: the sealed gate reported heldOutPass=${String(verdict.heldOutPass)} on a fixture ` +
+          "that must fail. Even if the outcome above still reads `fail`, the bake-off's own co-primary " +
+          "metric now calls this artefact green",
       );
     }
   });

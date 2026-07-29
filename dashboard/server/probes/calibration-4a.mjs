@@ -221,6 +221,58 @@ if (record.mutations === undefined) {
     "NO MUTATION RECORD. This measurement has not been shown capable of going red. See " +
     "docs/superpowers/plans/2026-07-28-phase-2e-grader.md, Revision 2 R4.";
 }
+
+/* -------------------------------------------------------------------------
+ * PROVENANCE — STAMPED ON EVERY WRITE, NOT CARRIED FORWARD
+ *
+ * Two kinds of claim live in this file and they do not deserve the same trust.
+ * `.fixtures[*]` is DERIVED: every field on it, including outcomeMatches /
+ * tierMatches / falsePass, comes from a live gradeFixture() call in the run that
+ * wrote the file. `.mutations[*]` is TESTIMONY: every boolean under it is a
+ * literal an author typed, carried forward verbatim by the block above, and no
+ * run recomputes any of it.
+ *
+ * That is exactly the shape of this repo's ledger defect #4 — a probe that
+ * shipped `positive: true` hardcoded — and commit e7f9a1b exists precisely
+ * because a wrong literal shipped in THIS block (M3 claimed a red calibration
+ * run that had never happened) and nothing caught it. So the block is labelled
+ * in the artefact itself: a reader scanning `.mutations[*].calibrationWentRed`
+ * must be able to see, without leaving the JSON, that they are reading a claim.
+ *
+ * IT IS STAMPED RATHER THAN HAND-WRITTEN because the carry-forward above copies
+ * only `mutations` and `motionSatisfierSplit`. A marker typed once into the JSON
+ * would be dropped on the next baseline write and the file would quietly go back
+ * to reading as machine-derived — the same drift it exists to prevent. Stamping
+ * unconditionally also means it cannot be edited out of a single entry.
+ * ---------------------------------------------------------------------- */
+const MUTATION_EVIDENCE_KIND =
+  "HAND-RECORDED TESTIMONY, NOT MEASURED BY THIS PROBE. Every boolean in this object — executed, " +
+  "reExecutedInThisSession, restored, calibrationWentRed, guardThrew, blankPageFlip.*, fixtureFlips[*].* — " +
+  "is a literal typed by the agent named in `attributedTo`. Nothing here is recomputed on a probe run. " +
+  "To verify one, re-apply the edit in `whatWasChanged` and watch it yourself; do not cite this file.";
+
+record.evidenceProvenance = {
+  derived:
+    ".fixtures[*] — outcome, failingTier, failedGates, failedCriteria, qualityCriteria, qualityFindings, " +
+    "exploitFindings, heldOutPass, suiteSha256, verdictHeadline and the outcomeMatches / tierMatches / " +
+    "falsePass verdicts computed from them. All produced by a live gradeFixture() call in the run that " +
+    "wrote this file, and .summary is derived from those rows.",
+  handRecorded:
+    ".mutations[*] (see .mutations[*].evidenceKind, stamped on every write), .motionSatisfierSplit.perFixture " +
+    "(which declares its own INHERITED provenance) and .caveats (authored prose). A mutation costs a " +
+    "temporary edit to committed source plus a container run per fixture, so recomputing them on every " +
+    "probe invocation is not the trade this file makes — naming them as testimony is.",
+  whyThisKeyExists:
+    "Ledger defect #4: a probe shipped `positive: true` as a hardcoded literal. Commit e7f9a1b exists " +
+    "because a wrong literal shipped in .mutations here — M3 recorded a red calibration run that had " +
+    "never been executed — and nothing caught it. Derived and hand-recorded claims sitting in one JSON " +
+    "with no label between them is how that happens twice.",
+  stampedOnEveryWrite: true,
+};
+for (const mutation of record.mutations ?? []) {
+  mutation.evidenceKind = MUTATION_EVIDENCE_KIND;
+}
+
 writeFileSync(outFile, `${JSON.stringify(record, null, 2)}\n`, "utf8");
 
 process.stdout.write(

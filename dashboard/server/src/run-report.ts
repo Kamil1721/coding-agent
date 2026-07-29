@@ -47,6 +47,13 @@
  *     example as "holdout test T-14 PASS AND db-query-7 count >= 1". It names
  *     held-out test ids BY CONTRACT. `ApiCriterion` has no such field, and the
  *     conversion below fills it with "" rather than passing anything through.
+ *     THAT BLANK IS A TYPE-LEVEL INVARIANT, NOT A GUARD ANYTHING WATCHES:
+ *     MEASURED 2026-07-29, passing the source criterion's `evidenceRequired`
+ *     through instead of blanking it leaves every test in `run-report.test.ts`
+ *     green, because there is no field on `ApiCriterion` for a value to arrive
+ *     on. The narrowing that a mutation CAN break is one level up, in
+ *     `Orchestrator.#recordCriteria`, which is where the frozen suite's criteria
+ *     become these rows; breaking it there turns `run-report.test.ts` red.
  *
  * What survives into both files is the ticket, criterion ids, tiers and
  * statements — all of which the dashboard already serves to the UI on

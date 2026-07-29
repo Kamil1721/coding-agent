@@ -525,11 +525,28 @@ frozen suite mounted read-only — against a **committed** acceptance suite.
 `dashboard/server/src/calibration.test.ts` runs in `npm test`.
 
 ```
-dashboard/server  npm test        271 tests, 269 pass, 0 fail, 2 skipped (quota)
-                  of which calibration.test.js  7 tests, 7 pass, ~70 s
+dashboard/server  npm run clean && npm test
+                  281 tests, 279 pass, 0 fail, 0 cancelled, 2 skipped (quota)
+                  of which calibration.test.js  7 tests, 7 pass, 70.6 s
                   7/7 fixtures match their expected outcome AND failing tier
                   measurement: dashboard/server/probes/results/calibration-4a.json
 ```
+
+**The count above was corrected on 2026-07-29, and the wrong one is named rather
+than quietly overwritten.** This line originally read `271 tests, 269 pass`. That
+was true when Task 4A closed and WRONG by the time the phase did: Task 5 added
+ten tests in `run-report.test.ts` after it was written, and nobody re-ran the
+line the DoD points at ("`npm test` passes; record the count"). The number above
+was measured by `npm run clean && npm test` — clean first, because a stale
+`dist/**/*.test.js` inflates the count, which is the same precaution the 240
+baseline was taken under.
+
+Arithmetic, so nobody has to guess: **240** (the post-Phase-1.1 baseline recorded
+above, not 238 — 238 is that run's PASS count, with 2 quota skips) **+41 new**
+= 281. The 41: spec-assumptions 9, visual-criteria 5, verdict 10, calibration 7,
+run-report 10. The 2 skips are the same quota-gated live-smoke tests as every
+run since 2026-07-27, verified by name: "the spec seat runs over the
+subscription…" and "a SeatCallRequest's jsonSchema is APPLIED…".
 
 **Read "7/7 ... AND failing tier" narrowly.** Three of those tiers —
 `blank-page`, `missing-section`, `stub-markers` — were **corrected from
@@ -591,8 +608,36 @@ Reverted. Re-executed in the finishing session, not inherited. Recorded as
 `FLOOR` would have silently relabelled every finding `VIS-MOTION-RESTRAINT`
 while still testing the authored-motion patterns. It now selects by id and
 throws if the id is gone. Breaking the id makes it throw, naming the criteria
-that do exist. Narrower than the other two and labelled so: applied to the
-compiled build and checked by direct call, not through a container.
+that do exist. **Originally narrower than the other two — applied to the compiled
+build and checked by a direct call, not through a container — and NO LONGER, so
+the old sentence is corrected rather than left standing.** It was re-run on
+2026-07-29 against the **TypeScript source** (`src/calibration/grade-fixture.ts`,
+line 150), rebuilt and put through the real standing gate: **exit 1, 7 cancelled,
+0 pass, 0 skipped**, with the guard's own message naming the criteria that do
+exist. Restored, sha256 `927d1952…1a0379` identical before and after,
+`git diff HEAD` on that path empty. `.mutations[2].calibrationWentRed` in
+`calibration-4a.json` was `false` and is now `true`; the note that justified the
+`false` is quoted inside its replacement so the correction is legible.
+
+**A fourth, and it is the one that SURVIVED.** An adversarial pass ran 28
+mutations against this phase; 26 went red. One of the two survivors: emptying
+`MUST_FAIL` in `fixtures.ts` (`.slice(0, 0)`, every fixture and every `expected`
+left untouched) left the **entire calibration gate green at 7/7, exit 0**. The
+false-pass test iterated that array and asserted nothing else, so an empty array
+made it vacuous — and worse, it was **logically implied** by the outcome-and-tier
+test above it, since every `MUST_FAIL` fixture has `expected: "fail"`, which that
+test already asserts. It could not fail unless that one already had. Meanwhile
+`fixtures.ts` claimed in its own header that the false-pass direction was
+asserted "SEPARATELY and more loudly than overall accuracy" — **a false claim,
+inside the file that documents this repo's signature defect, and instance #8 of
+it.** Closed 2026-07-29: the test now asserts its own scope before iterating it
+(that `MUST_FAIL` deep-equals the live re-derivation, and holds ≥5 fixtures) and
+asserts `heldOutPass === false` on each — the bake-off's co-primary metric, which
+nothing else in that file reads in the fail direction, and which M1 measured
+flipping to TRUE under a gutted suite. **Re-run against the fix: exit 1, 1 of 7
+failed — the false-pass test alone, with the other six still green**, which is
+the point: it now has a failure mode of its own rather than one it inherits.
+Restored (`76303356…6cd1b`). Recorded as `M4-empty-the-false-pass-set`.
 
 **Does-not-skip, verified by negative control on BOTH branches.**
 `environmentProblem()` can fail for a missing daemon or a missing image, and a
@@ -1342,12 +1387,18 @@ Recorded as their word. Where it matters, it is worth re-running yourself.
 
 ---
 
-## 6. The defect this repo keeps shipping — SEVEN instances, and counting
+## 6. The defect this repo keeps shipping — NINE instances, and counting
 
 **New 2026-07-29.** One shape accounts for every false green this project has
 produced: **a check that can only observe success.** It is worth the space
-because the next author will not be caught by the seven below — they will be
-caught by the eighth, and the only defence is knowing the shape.
+because the next author will not be caught by the nine below — they will be
+caught by the tenth, and the only defence is knowing the shape.
+
+**Instances 8 and 9 were added the same day the table was written, by an
+adversarial pass over the phase that wrote it.** That is the most useful fact in
+this section: the shape was not avoided by an author who had just finished
+cataloguing it. Knowing the shape is necessary and it is not sufficient — only
+running the mutation is.
 
 | # | The check | What it could not see |
 |---|---|---|
@@ -1358,6 +1409,8 @@ caught by the eighth, and the only defence is knowing the shape.
 | 5 | **The probe harness's own exit code** | The gate keyed on `notes.startsWith("INCONCLUSIVE:")` alone, so a plain `FAIL` exited **0**. Run 1 recorded three FAILs — including the probe gating the whole approach — and exited 0. This was the defect the harness was built to prevent, sitting inside the harness. |
 | 6 | **The Task 5 token seam** | The per-model fix was reverted at its SOLE production call site and the suite stayed byte-identical at 200/198/0/2 — every assertion lived where the function was called directly. The arithmetic was then lifted into a seam and pinned by five tests; an auditor reverted the CALL SITE and the suite stayed green at 229/227/0/2. **The seam moved the hole one line; it did not close it.** What closes it is driving `build()` with synthetic envelopes and reading the sink. |
 | 7 | **A test pinning `AgentBounds.effort`** | It asserted a field that was `null` for all 26 agents, whose only reader was a conditional spread into `AgentDefinition.effort` — a route probe I measured does not bind for any name this run can delegate to. Green forever, over a mechanism that does nothing. Deleted 2026-07-29 with the route. |
+| 8 | **The calibration FALSE-PASS test** — `calibration.test.ts`, "no fixture produces a FALSE PASS" | It looped `MUST_FAIL` asserting `outcome === "fail"`. Every `MUST_FAIL` fixture has `expected: "fail"`, which the test ABOVE it already asserts for every fixture — so it was **logically implied and could not fail unless that one already had**. Emptying `MUST_FAIL` (`.slice(0, 0)`, fixtures untouched) left the whole gate **green at 7/7, exit 0**. It survived an adversarial pass of 28 mutations in which 26 went red. Worse: `fixtures.ts` claimed in its header that the false-pass direction was asserted "SEPARATELY and more loudly than overall accuracy" — **a false claim sitting inside the file that documents this very defect.** Closed 2026-07-29: the test now asserts its own derivation and `heldOutPass === false`; re-run under the same mutation it fails ALONE, 1 of 7. |
+| 9 | **Two held-out-leak assertions in `run-report.test.ts`** | `assert.doesNotMatch(verdict, HELD_OUT_TITLE)` and the `holdout test T-2` twin, over `verdict.md`. That run never reaches the gate, so the file is the **no-verdict page, which prints no criterion prose at all** — there is nothing for a criterion-borne leak to ride in on. MEASURED: rendering that page from criteria whose statements carried both markers gives 807 bytes containing neither; the same criteria marked scored give 1879 bytes containing both. The `forAssumptions` blanking of `evidenceRequired` is the same shape — passing the field through leaves all ten tests green, because `ApiCriterion` **has no such field**. Milder than the others and said so: the boundary IS proven, by the `assumptions.md` twins (red under a `#recordCriteria` mutation) and by `verdict.test.ts` against `detail`/`evidenceRef`. Relabelled at the assertion site 2026-07-29, not deleted — they go live the day the run reaches the gate. |
 
 Instances 2, 3, 6 and 7 share a sharper sub-shape worth naming on its own: **the
 assertion and the production path were never connected.** A test that calls a
@@ -1371,7 +1424,16 @@ delete the layer, watch the boundary fail, put it back. Every 2026-07-29 claim
 in §0 carries one; the older EXECUTED rows mostly do not, and that is a real
 difference in strength between them.
 
-**Seven is a running tally, not a final count.** The docblock at
-`claude-builder.test.ts:1742` still says "six times" because it was written
-before instance 7. If you find an eighth, increment it here and say what it
-could not see.
+**Nine is a running tally, not a final count.** Two docblocks lag it by
+construction, and are left rather than swept so the drift stays visible:
+`claude-builder.test.ts:1753` says "six times" (written before instance 7), and
+`calibration.test.ts:19` says "five times" of the narrower *skipped-and-reported-
+green* sub-shape, which is its own count and not this one. If you find a tenth,
+increment it here and say what it could not see.
+
+**And the thing instances 8 and 9 add to the rule:** it is not enough for a check
+to be capable of failing in principle. Both of them WERE capable of failing —
+just only in the same circumstances that would already have turned a different,
+louder check red. **A check whose failure mode is a strict subset of another
+check's is not a second check.** The test for it is the one used here: break the
+thing THIS check is supposed to see, and confirm it fails ALONE.

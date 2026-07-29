@@ -241,9 +241,17 @@
     "VIS-MOTION-RESTRAINT IS NEVER GRADED, and a green calibration must not be read as evidence it holds. visualCriteriaFor() emits two motion criteria; qualityFindingsFor() decides exactly one of them (VIS-MOTION-AUTHORED), because the other — is the stagger capped, does one focal sequence carry the page — has no deterministic offline proxy. MEASURED CONSEQUENCE: correct-portfolio's app.js staggers EVERY observed row (IntersectionObserver adding `.in` at i*90ms), which is close to the 'same entrance replayed on every section' that VIS-MOTION-RESTRAINT warns against, and fixtures.ts requires that artefact to grade a plain `pass`. It does today only because nothing evaluates the criterion. When Phase 2b puts a vision model behind it, correct-portfolio is a live false-fail candidate — and the fixture, not the criterion, is the thing to look at first: a false-fail control whose motion is borderline is a weak control. BACKLOG for the owner.",
     "The motion criterion is now selected BY ID rather than by position. `motion[0]` would have meant that reordering FLOOR in visual-criteria.ts silently relabelled every finding VIS-MOTION-RESTRAINT while still testing the authored-motion patterns — a criterion id attached to evidence that is not its own. The guard was mutation-tested (M3)."
   ],
+  "evidenceProvenance": {
+    "derived": ".fixtures[*] — outcome, failingTier, failedGates, failedCriteria, qualityCriteria, qualityFindings, exploitFindings, heldOutPass, suiteSha256, verdictHeadline and the outcomeMatches / tierMatches / falsePass verdicts computed from them. All produced by a live gradeFixture() call in the run that wrote this file, and .summary is derived from those rows.",
+    "handRecorded": ".mutations[*] (see .mutations[*].evidenceKind, stamped on every write), .motionSatisfierSplit.perFixture (which declares its own INHERITED provenance) and .caveats (authored prose). A mutation costs a temporary edit to committed source plus a container run per fixture, so recomputing them on every probe invocation is not the trade this file makes — naming them as testimony is.",
+    "whyThisKeyExists": "Ledger defect #4: a probe shipped `positive: true` as a hardcoded literal. Commit e7f9a1b exists because a wrong literal shipped in .mutations here — M3 recorded a red calibration run that had never been executed — and nothing caught it. Derived and hand-recorded claims sitting in one JSON with no label between them is how that happens twice.",
+    "stampedOnEveryWrite": true
+  },
   "mutations": [
     {
       "id": "M1-gut-the-content-criteria",
+      "evidenceKind": "HAND-RECORDED TESTIMONY, NOT MEASURED BY THIS PROBE. Every boolean in this object — executed, reExecutedInThisSession, restored, calibrationWentRed, guardThrew, blankPageFlip.*, fixtureFlips[*].* — is a literal typed by the agent named in `attributedTo`. Nothing here is recomputed on a probe run. To verify one, re-apply the edit in `whatWasChanged` and watch it yourself; do not cite this file.",
+      "attributedTo": "Task 4A's original agent; RE-RUN FROM SCRATCH by the 4A finishing agent (2026-07-29), whose numbers these are.",
       "why": "Phase 2e Revision 2, R4: a calibration nobody has watched fail is not verified. If gutting the content criteria leaves calibration green, calibration is testing nothing.",
       "executed": true,
       "executedAt": "2026-07-29",
@@ -346,6 +354,8 @@
     },
     {
       "id": "M2-leak-a-held-out-test-id",
+      "evidenceKind": "HAND-RECORDED TESTIMONY, NOT MEASURED BY THIS PROBE. Every boolean in this object — executed, reExecutedInThisSession, restored, calibrationWentRed, guardThrew, blankPageFlip.*, fixtureFlips[*].* — is a literal typed by the agent named in `attributedTo`. Nothing here is recomputed on a probe run. To verify one, re-apply the edit in `whatWasChanged` and watch it yourself; do not cite this file.",
+      "attributedTo": "Task 4A's original agent; RE-RUN by the 4A finishing agent (2026-07-29), whose numbers these are.",
       "why": "The held-out-leak assertion in calibration.test.ts ('a held-out test id leaked into the verdict') cannot fire on the code as committed: statementFor() maps criterion ids to authored statements, and evidenceRequired — the only field carrying a T-n id — is never passed into the verdict input. An assertion nothing can make fail is not a test; it is the defect this repo has shipped seven times. So it was made to fail, deliberately.",
       "executed": true,
       "executedAt": "2026-07-29",
@@ -371,17 +381,64 @@
     },
     {
       "id": "M3-break-the-motion-criterion-id-guard",
+      "evidenceKind": "HAND-RECORDED TESTIMONY, NOT MEASURED BY THIS PROBE. Every boolean in this object — executed, reExecutedInThisSession, restored, calibrationWentRed, guardThrew, blankPageFlip.*, fixtureFlips[*].* — is a literal typed by the agent named in `attributedTo`. Nothing here is recomputed on a probe run. To verify one, re-apply the edit in `whatWasChanged` and watch it yourself; do not cite this file.",
+      "attributedTo": "Task 4A's original agent for the direct-call half; the adversarial pass ran it through the real suite; RE-RUN A THIRD TIME from the TypeScript source by the 2026-07-29 closing agent, whose numbers `calibrationUnderMutation` carries.",
       "why": "The MOTION_CRITERION_ID guard added to qualityFindingsFor this session is itself a check, and a check nobody has watched fail is the thing this phase keeps finding. It replaces a positional `motion[0]` lookup, so its whole job is to throw when visual-criteria.ts stops emitting VIS-MOTION-AUTHORED.",
       "executed": true,
       "executedAt": "2026-07-29",
       "reExecutedInThisSession": true,
-      "scope": "NARROWER THAN M1 AND M2, AND SAID SO RATHER THAN LEFT TO LOOK EQUIVALENT: this mutation was applied to the COMPILED build (dist-4afinish/calibration/grade-fixture.js), not to the TypeScript source, and qualityFindingsFor was called directly rather than through a container run. It proves the guard throws; it does not re-prove the standing gate goes red, which M1 and M2 already do. CALIBRATION WAS NOT RUN UNDER THIS MUTATION; see calibrationWentRed.",
+      "scope": "TWO EXECUTIONS, AND THEY ARE NOT THE SAME MUTATION — kept apart rather than merged into one stronger-sounding claim. (a) THE ORIGINAL, narrower than M1 and M2: applied to the COMPILED build (dist-4afinish/calibration/grade-fixture.js), with qualityFindingsFor called directly rather than through a container. It proved the guard throws and nothing more; calibration was NOT run under it, and `calibrationWentRed: false` was the honest field for that execution. (b) THE RE-RUN, 2026-07-29: applied to the TYPESCRIPT SOURCE (src/calibration/grade-fixture.ts line 150), rebuilt through `npm run build`, and put through the real standing gate. That is the execution `calibrationUnderMutation` records and the reason `calibrationWentRed` is now true.",
       "whatWasChanged": "MOTION_CRITERION_ID was rewritten from 'VIS-MOTION-AUTHORED' to 'VIS-MOTION-NONEXISTENT' in the compiled module, then qualityFindingsFor('./calibration/stock-motion-only') was called.",
       "restored": true,
       "result": "THREW, as required: \"visualCriteriaFor() emits no VIS-MOTION-NONEXISTENT criterion (motion criteria: VIS-MOTION-AUTHORED, VIS-MOTION-RESTRAINT)\". The error names the criteria that DO exist, so the failure is actionable without a debugger. With the guard intact, the same call returns one finding tagged VIS-MOTION-AUTHORED for stock-motion-only and zero for correct-portfolio.",
-      "calibrationWentRed": false,
+      "calibrationWentRed": true,
       "guardThrew": true,
-      "calibrationWentRedNote": "FALSE, AND DELIBERATELY SO. Calibration was NOT run under this mutation, so claiming it went red would be asserting a red run that never happened — the exact shape this phase keeps finding. The guard was proven capable of failing by a direct call; `guardThrew` is the honest field. M1 and M2 are the two mutations that turned the standing gate red."
+      "calibrationUnderMutation": {
+        "command": "npm run build --silent && node --test dist/calibration.test.js",
+        "mutatedFile": "src/calibration/grade-fixture.ts (TypeScript source, not the compiled build)",
+        "exitCode": 1,
+        "tests": 7,
+        "pass": 0,
+        "fail": 0,
+        "cancelled": 7,
+        "skipped": 0,
+        "howItFails": "The throw happens inside verdictFrom() during the shared before() hook, AFTER each fixture's container has run, so Promise.all rejects and all seven tests report CANCELLED rather than FAIL. Zero skipped — the property the standing gate is there for.",
+        "namedReason": "visualCriteriaFor() emits no VIS-MOTION-NONEXISTENT criterion (motion criteria: VIS-MOTION-AUTHORED, VIS-MOTION-RESTRAINT). Without it, pass_with_notes is unreachable and stock-motion-only grades identically to correct-portfolio — calibration would stay green with the visual-criteria path dead (Phase 2e Revision 2, R3)."
+      },
+      "calibrationWentRedNote": "CORRECTED 2026-07-29, in the STRENGTHENING direction, and the note it replaced is quoted here so the correction is legible rather than silent. It read: 'FALSE, AND DELIBERATELY SO. Calibration was NOT run under this mutation, so claiming it went red would be asserting a red run that never happened.' That was TRUE OF THE ORIGINAL EXECUTION and is the reason commit e7f9a1b exists. It is no longer true of this mutation: the adversarial pass ran M3 through the real calibration suite, and the closing agent then re-ran it a third time from the TypeScript source and recorded its own numbers above rather than inheriting anyone's. The stale note was REPLACED rather than left beside the corrected boolean — a note contradicting the field next to it is the same defect in a new place. M1, M2 and M4 are the other three mutations that turned the standing gate red."
+    },
+    {
+      "id": "M4-empty-the-false-pass-set",
+      "evidenceKind": "HAND-RECORDED TESTIMONY, NOT MEASURED BY THIS PROBE. Every boolean in this object — executed, reExecutedInThisSession, restored, calibrationWentRed, guardThrew, blankPageFlip.*, fixtureFlips[*].* — is a literal typed by the agent named in `attributedTo`. Nothing here is recomputed on a probe run. To verify one, re-apply the edit in `whatWasChanged` and watch it yourself; do not cite this file.",
+      "attributedTo": "The adversarial pass found it and it SURVIVED there; re-run and recorded by the 2026-07-29 closing agent against the strengthened test, whose numbers these are.",
+      "why": "THIS IS THE ONE THAT SURVIVED. The adversarial pass ran 28 mutations; 26 went red and this was one of the two that did not. Emptying MUST_FAIL left the entire calibration gate green at 7/7, exit 0, because the false-pass test did nothing but iterate that array — and a loop over an empty array asserts nothing. The deeper defect was that the test was LOGICALLY IMPLIED by the outcome-and-tier test above it: every MUST_FAIL fixture has `expected: \"fail\"`, which that test already asserts, so the false-pass test could not fail unless that one already had. Meanwhile fixtures.ts claimed in its header that the false-pass direction was asserted 'SEPARATELY and more loudly than overall accuracy'. That claim was false as implemented — instance #8 of this repo's signature defect, sitting inside the file that documents the defect.",
+      "executed": true,
+      "executedAt": "2026-07-29",
+      "reExecutedInThisSession": true,
+      "whatWasChanged": "src/calibration/fixtures.ts ONLY, and only the MUST_FAIL export: `FIXTURES.filter((f) => f.expected === \"fail\")` became `FIXTURES.filter((f) => f.expected === \"fail\").slice(0, 0)`. FIXTURES itself and every fixture's `expected` were left untouched — that is what makes it the interesting mutation rather than an obvious one, because the fixture table still reads correct at a glance. NO FIXTURE ARTEFACT WAS TOUCHED.",
+      "restored": true,
+      "restoredEvidence": "sha256 of fixtures.ts: 76303356ca8b5c4070860212893cf6f3927ca94e0aa7b36408c476799fc6cd1b before the mutation and after the restore (identical); fa1adcdd4617825f8bf37462bc4fc110bdf0fff3f298fa477e7d531379190a21 while mutated. The file is tracked, so `git diff HEAD -- dashboard/server/src/calibration/fixtures.ts` is an independent check of the restore and shows only the intended strengthening.",
+      "calibrationBeforeTheFix": {
+        "result": "SURVIVED — the gate stayed GREEN at 7/7, exit 0. That is the finding, not a footnote.",
+        "attributedTo": "the adversarial pass; not re-executed by the closing agent, because the code it was measured against no longer exists"
+      },
+      "calibrationWentRed": true,
+      "calibrationUnderMutation": {
+        "command": "npm run build --silent && node --test dist/calibration.test.js",
+        "againstCode": "the STRENGTHENED test — the point of this record is that the same mutation now fails",
+        "exitCode": 1,
+        "tests": 7,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "failedTests": [
+          "no fixture produces a FALSE PASS — the catastrophic direction"
+        ],
+        "firstFailure": "MUST_FAIL is no longer every fixture declared to fail. Whatever it holds now, the fixtures it dropped are graded by nothing in this test — and the catastrophic direction is the one that must never narrow quietly (deepStrictEqual: actual [], expected the five fixtures whose `expected` is \"fail\")",
+        "whyItMatters": "The other six tests stayed GREEN, including 'the committed suites produce the expected outcome AND tier'. That is the whole point of the fix: the false-pass test now has a failure mode of its own rather than one it inherits, so it fails on this mutation ALONE."
+      },
+      "theFix": "calibration.test.ts's false-pass test now asserts its own scope before iterating it — that MUST_FAIL deep-equals the live re-derivation `FIXTURES.filter(f => f.expected === \"fail\")`, and that it holds at least five fixtures — and then asserts `heldOutPass === false` on each, which is the bake-off's own co-primary metric from computeHeldOutPass and is read by nothing else in that file in the fail direction. M1 measured heldOutPass flipping to TRUE on three fixtures under a gutted suite, so it is a metric a false pass really can fool, not a formality. fixtures.ts's header claim was rewritten to state exactly these two things rather than left as prose the implementation did not support."
     }
   ],
   "motionSatisfierSplit": {

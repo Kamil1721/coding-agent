@@ -30,6 +30,15 @@
  * ids BY CONTRACT, and it is the field most likely to walk one back out through
  * `results/`, which the UI is served from. The same title is in the held-out
  * file's source. Neither emitted file may contain it.
+ *
+ * AND ONE OF THE TWO FILES IS PROVED, THE OTHER IS WATCHED. `assumptions.md`
+ * renders criterion prose, so the plant reaches it if anything upstream widens:
+ * folding `evidenceRequired` into `statement` in `Orchestrator.#recordCriteria`
+ * turns this file RED at 1 of 10 (MEASURED 2026-07-29). `verdict.md` on this run
+ * is the no-verdict page, which prints no criterion prose at all, so its two
+ * assertions cannot fire here and are labelled at the assertion site rather than
+ * left to look equally earned. The scored page's leak direction is proved in
+ * `verdict.test.ts` instead, against `detail`/`evidenceRef` — fields that exist.
  */
 
 import { strict as assert } from "node:assert";
@@ -459,18 +468,70 @@ test("a run emits assumptions.md at spec exit and verdict.md at the end, and Run
     );
     assert.match(assumptions, /three project entries/, "every criterion is accounted for");
 
-    /* ---- NOTHING HELD OUT LEAKED ---- */
-    for (const [name, text] of [
-      [ASSUMPTIONS_FILE, assumptions],
-      [VERDICT_FILE, verdict],
-    ] as const) {
-      assert.doesNotMatch(
-        text,
-        new RegExp(HELD_OUT_TITLE),
-        `${name} contains a held-out test title, which results/ serves to the UI`,
-      );
-      assert.doesNotMatch(text, /holdout test T-2/, `${name} carries evidenceRequired, which names held-out ids`);
-    }
+    /* ---- NOTHING HELD OUT LEAKED ----
+     *
+     * TWO FILES, AND THEY ARE NOT EQUALLY VERIFIED. That is written out, and the
+     * loop that used to cover both was split, because four `doesNotMatch` calls
+     * under one heading read as four guards of the same standing and only two of
+     * them can currently fire. Which two was MEASURED, not reasoned about.
+     */
+
+    /* assumptions.md — MUTATION-PROVEN, at the seam that carries the leak.
+     *
+     * The seam is NOT `forAssumptions` in run-report.ts. Passing the source
+     * criterion's `evidenceRequired` through there instead of blanking it to ""
+     * leaves all ten tests in this file GREEN, because `ApiCriterion` has no
+     * `evidenceRequired` field for a value to arrive on: that blank is a
+     * TYPE-LEVEL INVARIANT, not a guard anything watches.
+     *
+     * The seam is `Orchestrator.#recordCriteria`, which is where the frozen
+     * suite's `AcceptanceCriterion` — evidenceRequired and all — is narrowed to
+     * the `ApiCriterion` rows the store keeps. MEASURED 2026-07-29: folding
+     * `evidenceRequired` into `statement` there turns this test RED, 1 of 10,
+     * with "assumptions.md contains a held-out test title, which results/ serves
+     * to the UI", and the emitted record carries both the title and `holdout
+     * test T-2` in the criterion prose under INFERRED. Restored; orchestrator.ts
+     * sha256 28d42703… before and after, `git diff HEAD` on it empty.
+     */
+    assert.doesNotMatch(
+      assumptions,
+      new RegExp(HELD_OUT_TITLE),
+      `${ASSUMPTIONS_FILE} contains a held-out test title, which results/ serves to the UI`,
+    );
+    assert.doesNotMatch(
+      assumptions,
+      /holdout test T-2/,
+      `${ASSUMPTIONS_FILE} carries evidenceRequired, which names held-out ids`,
+    );
+
+    /* verdict.md — NOT EXERCISED BY THIS RUN. A regression detector, not evidence.
+     *
+     * This run never reaches the gate (`no-such-model`), so `renderRunVerdict`
+     * takes the no-verdict branch, and `renderNoVerdict` prints the ticket and
+     * boilerplate and NO criterion prose at all — there is nothing for a
+     * criterion-borne leak to ride in on. MEASURED rather than assumed: rendering
+     * that page from criteria whose statements carried BOTH the held-out title
+     * and `holdout test T-2` produced 807 bytes containing neither (753 for the
+     * cancelled arm), while the same criteria marked scored produced 1879 bytes
+     * containing both.
+     *
+     * So these two stay — they go live the day this run reaches the gate, or the
+     * day the no-verdict page starts listing criteria — but they are not what
+     * proves the boundary holds. THE MUTATION-PROVEN GUARD FOR THE SCORED PAGE IS
+     * `verdict.test.ts`, "the verdict NEVER contains a held-out test title",
+     * which plants the leak in `CriterionResult.detail` and `evidenceRef` —
+     * fields that exist on that type, so a value can actually arrive on them.
+     */
+    assert.doesNotMatch(
+      verdict,
+      new RegExp(HELD_OUT_TITLE),
+      `${VERDICT_FILE} contains a held-out test title, which results/ serves to the UI`,
+    );
+    assert.doesNotMatch(
+      verdict,
+      /holdout test T-2/,
+      `${VERDICT_FILE} carries evidenceRequired, which names held-out ids`,
+    );
 
     /* ---- the stream said so, before it said the run ended ---- */
     const events = h.store.eventsSince(runId, 0);

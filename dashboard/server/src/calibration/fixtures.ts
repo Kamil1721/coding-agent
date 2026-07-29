@@ -16,7 +16,22 @@
  *                But it announces itself, so it gets found.
  *
  * `calibration.test.ts` therefore asserts the false-pass direction SEPARATELY
- * and more loudly than overall accuracy.
+ * from overall accuracy — and because "separately" is a claim about what that
+ * test can FAIL on, here is the whole of what carries it:
+ *
+ *   - the DERIVATION of `MUST_FAIL` below, that it is every fixture whose
+ *     `expected` is "fail" and that there are at least five of them; and
+ *   - `heldOutPass === false` on each of them — the bake-off's own co-primary
+ *     metric, computed by `computeHeldOutPass` from the sealed suite's results
+ *     rather than from the dashboard's tier arithmetic, and read by nothing else
+ *     in that file in the fail direction.
+ *
+ * UNTIL 2026-07-29 THAT CLAIM WAS FALSE, and it is written out because a false
+ * claim in this position is worse than no claim: the test looped `MUST_FAIL`
+ * asserting `outcome === "fail"`, which the outcome-and-tier test above it
+ * already asserts for exactly those fixtures, so it was logically implied and
+ * could not fail on its own. Emptying `MUST_FAIL` left the entire gate green at
+ * 7/7. Recorded as M4 in probes/results/calibration-4a.json.
  *
  * THE DISCRIMINATING FIXTURE IS `blank-page`. It serves valid HTML, throws no
  * console error, and returns 200 on every route. A grader that only checks
@@ -188,5 +203,12 @@ export function byName(name: string): CalibrationFixture {
   return found;
 }
 
-/** Fixtures that must FAIL. The false-pass assertion runs over exactly these. */
+/**
+ * Fixtures that must FAIL. The false-pass assertion runs over exactly these.
+ *
+ * THE FILTER IS ASSERTED, NOT TRUSTED. `calibration.test.ts` re-derives this
+ * expression and compares, because narrowing it — to `.slice(0, 0)`, to one
+ * fixture, to a predicate that no longer matches — silently shrinks the
+ * catastrophic direction's scope while every test still reports green.
+ */
 export const MUST_FAIL: readonly CalibrationFixture[] = FIXTURES.filter((f) => f.expected === "fail");
