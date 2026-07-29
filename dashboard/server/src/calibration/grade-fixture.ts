@@ -30,36 +30,57 @@
  *      frozen test fails, whatever tier the test's criterion declares. So every
  *      content failure is ALSO carried at BLOCKING in the score record.
  *
- *      **THE CONSEQUENCE THIS USED TO DRAW IS NO LONGER TRUE, AND IT IS
- *      CORRECTED HERE RATHER THAN LEFT TO MISLEAD.** Until 2026-07-30 this bullet
- *      went on to say "FUNCTIONAL can never be the STRICTEST failing tier for any
- *      artefact the suite catches" and therefore that the tier assertion in
- *      `calibration.test.ts` is inert. `verdict.ts`'s `unmetGates` has since
- *      SUPPRESSED `GATE:suite-green` whenever a named BLOCKING/FUNCTIONAL
- *      criterion failure already exists (its own docblock gives the reason:
- *      suite-green is a roll-up, so counting it beside the failure it rolls up is
- *      one fact counted twice at a stricter tier — backlog #32, which is exactly
- *      the "failingTier returned BLOCKING for all seven and discriminated
- *      nothing" that this bullet was describing).
+ *      **THE CONSEQUENCE THIS USED TO DRAW WAS TRUE WHEN IT WAS WRITTEN AND IS
+ *      NOW FALSE.** Until 2026-07-30 this bullet went on to say "FUNCTIONAL can
+ *      never be the STRICTEST failing tier for any artefact the suite catches" and
+ *      therefore that the tier assertion in `calibration.test.ts` is inert.
+ *      `verdict.ts`'s `unmetGates` has since SUPPRESSED `GATE:suite-green`
+ *      whenever a named BLOCKING/FUNCTIONAL criterion failure already exists (its
+ *      own docblock gives the reason: suite-green is a roll-up, so counting it
+ *      beside the failure it rolls up is one fact counted twice at a stricter tier
+ *      — backlog #32, which is exactly the "failingTier returned BLOCKING for all
+ *      seven and discriminated nothing" this bullet was describing).
  *
- *      MEASURED 2026-07-30, seven fixtures, image
- *      `sha256:c98bad3a…7826b20`, reading the tier of every failed
- *      `CriterionResult` off the score records this run wrote:
+ *      IT IS ORDINARY DRIFT RATHER THAN A CLAIM THAT WAS ALWAYS WRONG, and the
+ *      recorded baseline is what settles that: `probes/results/calibration-4a.json`
+ *      (2026-07-29T05:35:03Z) has `blank-page` and `missing-section` at
+ *      `expectedFailingTier: "BLOCKING"` AND `actualFailingTier: "BLOCKING"`. The
+ *      #32 suppression moved both, `fixtures.ts` was updated with them, and this
+ *      paragraph was not.
  *
- *        correct-portfolio   null         (nothing failed)
- *        stock-motion-only   QUALITY      (nothing failed; the note is authored)
- *        missing-section     FUNCTIONAL   suite-green failed at BLOCKING and was
- *                                         SUPPRESSED behind REQ-004
- *        blank-page          FUNCTIONAL   same, behind REQ-002/003/004
- *        broken-build        BLOCKING     GATE:build survives suppression
- *        stub-markers        BLOCKING     GATE:no-stub-markers survives
- *        reward-hacked       BLOCKING     GATE:no-reward-hack-exploits survives
+ *      MEASURED 2026-07-30 against that baseline — seven fixtures, image
+ *      `sha256:c98bad3a…7826b20`, all seven `acceptanceSuiteSha256` values
+ *      IDENTICAL to the ones the baseline recorded, so this is the same committed
+ *      suite and the comparison is not across two different yardsticks.
+ *      PROVENANCE, SPLIT, because the two columns are not read the same way: the
+ *      per-criterion tiers below are read off the score records this run wrote,
+ *      and `failingTier` is NOT in a `ScoreRecord` at all — its column is pinned
+ *      by `calibration.test.ts`'s "the committed suites produce the expected
+ *      outcome AND tier" passing against `fixtures.ts`'s declaration for all
+ *      seven. Two executed facts, composed, and said so.
+ *
+ *        fixture            baseline  today       what the record shows
+ *        correct-portfolio  null      null        nothing failed
+ *        stock-motion-only  QUALITY   QUALITY     nothing failed; note is authored
+ *        missing-section    BLOCKING  FUNCTIONAL  suite-green DID fail at BLOCKING
+ *                                                 and was suppressed behind REQ-004
+ *        blank-page         BLOCKING  FUNCTIONAL  same, behind REQ-002/003/004
+ *        broken-build       BLOCKING  BLOCKING    GATE:build survives suppression
+ *        stub-markers       BLOCKING  BLOCKING    GATE:no-stub-markers survives
+ *        reward-hacked      BLOCKING  BLOCKING    GATE:no-reward-hack-exploits ditto
  *
  *      FOUR distinct values across the seven, so the tier assertion IS a
  *      discriminator now — the opposite of what this bullet claimed. `failedGates`
  *      remains the assertion that keeps the exploit path from dying unnoticed,
  *      because that is the one that names WHICH gate, but it is no longer the only
  *      one doing work.
+ *
+ *      ONE OTHER DELTA AGAINST THE BASELINE, AND IT IS A FIX LANDING RATHER THAN A
+ *      REGRESSION: `stub-markers` now fails `GATE:no-stub-markers` as well as
+ *      `GATE:suite-green`. The baseline recorded suite-green ALONE, because
+ *      `SOURCE_EXTENSIONS` had no `.html` and the gate "scanned 0 source file(s) of
+ *      2 walked" on a fixture named after it. Every other fixture's `failedGates`
+ *      set is byte-identical to the baseline's.
  *   2. A QUALITY criterion cannot be carried by a frozen test, for the same
  *      reason: it would fail the run at BLOCKING through `GATE:suite-green`.
  *      QUALITY findings therefore come from `qualityFindingsFor` below, outside
@@ -124,6 +145,14 @@ const SCORER_IMAGE = process.env["BAKEOFF_SCORER_IMAGE"] ?? "bakeoff-scorer:1";
  * `dashboard/results/calibration-4a/<fixture>/`. Zero skipped is part of the
  * result: `environmentProblem()` fails rather than skips, so a green here cannot
  * be a calibration that declined to run.
+ *
+ * IT IS 7 OF THOSE 8 THAT THE NO-ENV ARM ACTUALLY DISCRIMINATES, and the 8th says
+ * so itself: "every fixture wrote its output under the run root THIS PROCESS was
+ * given" notes that with no override it compares the default against the default.
+ * That one was carried by a SECOND run the same session — `CALIBRATION_ROOT_ENV`
+ * pointed at a scratch root, concurrency 1, 8/8 in 153.2 s — where the assertion
+ * has a different root to be wrong about. Both arms are needed and neither alone
+ * is the whole claim.
  */
 export const DEFAULT_CALIBRATION_RUN_ROOT = fileURLToPath(
   new URL("../../../results/calibration-4a/", import.meta.url),
