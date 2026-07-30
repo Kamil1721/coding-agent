@@ -87,15 +87,36 @@ body {
 /* ------------------------------------------------------------------ */
 
 /*
- * ONE HUE CARRIES "LIVE", AND IT IS THE APP'S EXISTING ACCENT.
+ * COLOUR MEANS "WHAT KIND OF WORK". CHROMA MEANS "IS THIS AN OUTCOME".
  *
- * The owner's reference image tints every node a different colour — violet,
- * teal, pink, green. Copied literally that would put five accents on one
- * screen and make colour mean nothing, so it is deliberately not copied: the
- * canvas reuses the palette this app already has. `--color-accent` means "this
- * is happening now" on a node border, on its glow, and on the edge feeding it.
- * `pass`/`fail`/`warn` mean outcome and nothing else. Lane identity is carried
- * by COLUMN POSITION, which is information the reference spent colour on.
+ * This replaces an earlier rule that reserved colour entirely for liveness and
+ * carried lane identity in column position alone. The owner asked for the
+ * change by name — "redesign the nodes to be distinct colours depending on the
+ * agent's role, for example front end back end" — and the old rule's worry was
+ * real, so it is answered rather than ignored:
+ *
+ *   ROLE OWNS THE HUE. Seven hues, one per role (see `canvas/roles.ts` for how a
+ *   role is derived). They appear on a card's left spine, on its role chip, and
+ *   as the gradient a connector carries from parent to child. Every one of them
+ *   sits between 0.070 and 0.100 CHROMA — dulled on purpose.
+ *
+ *   STATE OWNS THE CHROMA. `pass` 0.19, `fail` 0.16, `warn` 0.16, and they
+ *   appear only in a filled pill or a border. A jade `backend` spine and a green
+ *   `pass` badge are 20 degrees apart on the wheel and still cannot be confused,
+ *   because one is a dull 3px rule and the other is a saturated filled chip.
+ *
+ * WHY NOT SIMPLY SPACE THE HUES FURTHER APART: after removing the four hues the
+ * state palette already owns — fail 22, warn 85, pass 148, accent 250 — there is
+ * not enough wheel left to give seven roles a 40-degree guard each. Saturation
+ * is the axis that was still free, so saturation is the axis that carries the
+ * distinction. The hues below are then spaced as evenly as what remains allows:
+ * 32, 78, 120, 168, 212, 272, 330.
+ *
+ * `unmapped` IS NOT A HUE. An agent whose name and lane both mean nothing to
+ * this dashboard gets a flat, dark, near-zero-chroma grey — dimmer and duller
+ * than all seven, so it cannot be mistaken for any of them. Drawing it as the
+ * nearest plausible role would be the canvas asserting a classification no event
+ * carried.
  */
 :root {
   /* The canvas dot grid. Close to `--color-canvas`, never far: a grid you can
@@ -107,73 +128,286 @@ body {
   /* Node geometry, shared by the layout module so spacing has ONE source. */
   --node-width: 268px;
   --node-radius: 10px;
+
+  --role-orchestration: oklch(0.8 0.07 78);
+  --role-review: oklch(0.745 0.09 32);
+  --role-build: oklch(0.78 0.075 120);
+  --role-backend: oklch(0.775 0.08 168);
+  --role-frontend: oklch(0.785 0.085 212);
+  --role-spec: oklch(0.745 0.095 272);
+  --role-design: oklch(0.745 0.1 330);
+  --role-unmapped: oklch(0.63 0.012 258);
+
+  /*
+   * THE CHROME THE RUN CANVAS HAS TO SUBTRACT, IN ONE PLACE.
+   *
+   * The run view is a full-viewport canvas living inside `AppShell`, which is
+   * not this task's file to change. So it takes the viewport and removes the
+   * three boxes above and below it: the 44px sticky header, the 16px bottom
+   * padding `main` applies, and the ~34px footer. If the shell's chrome ever
+   * changes, `run-canvas.browser.spec.ts` goes red on the page acquiring a
+   * scrollbar — the number is defended rather than trusted.
+   */
+  --run-chrome: 94px;
+}
+
+/* ------------------------------------------------------------------ */
+/* The connector — a conduit, in four stacked strokes                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * WHY THIS IS FOUR PATHS AND NOT ONE.
+ *
+ * The version this replaces was a translucent 9px tube with a 2px dashed core
+ * sliding along it, and the owner's verdict on it was "mega basic" — correctly.
+ * A uniform dash pattern sliding along a hairline is the single most recognisable
+ * cheap-diagram effect there is, and making it thicker only makes it a bigger
+ * cheap effect. What reads as expensive in a real node editor is not the motion,
+ * it is the CONSTRUCTION: a cable that looks like a physical object lying on the
+ * surface. So the connector is now built the way the generated reference draws
+ * it, from the bottom up:
+ *
+ *   1. `.conduit-rim`    — widest, dimmest. One step lighter than the ground, so
+ *                          the casing below reads as a groove cut INTO the
+ *                          surface rather than a line drawn on top of it. This
+ *                          single stroke is most of the perceived quality.
+ *   2. `.conduit-casing` — near-black, narrower than the rim. The dark body of
+ *                          the cable. It also buys separation from the dot grid
+ *                          without dimming the grid itself.
+ *   3. `.conduit-body`   — the coloured stroke, filled with a per-edge gradient
+ *                          that runs from the PARENT's role hue to the CHILD's.
+ *                          The wire carries the colour of the work along it, so a
+ *                          reader can see design work handed to a build agent
+ *                          without reading either card.
+ *   4. `.conduit-core`   — a thin near-white specular line inside the body. The
+ *                          one thing that makes a stroke look round instead of
+ *                          flat.
+ *
+ * NONE OF THOSE FOUR MOVE. That matters: a graph of thirty edges is thirty of
+ * this and it is all static paint, so it costs one composite and never an
+ * animation frame.
+ *
+ * MOTION IS STILL INFORMATION, and it is now spent in three places instead of
+ * one:
+ *
+ *   - LIVE (`--live`): the child agent is running right now and the attribution
+ *     is exact. Loops forever. Work really is moving down this wire.
+ *   - ARRIVAL (`--sweep`): once, on the graph's first paint, staggered by depth,
+ *     so the run introduces itself as a FLOW from the session outwards and then
+ *     settles. Finite by construction — this is a reveal, not a decoration.
+ *   - ATTENTION (`--focus`): while a node is selected, hovered or focused, its
+ *     own edges energise. Motion as feedback for something the reader did, which
+ *     is the one category `orchestration-canvas.tsx` already allowed.
+ *
+ * A SETTLED EDGE NOBODY IS POINTING AT DOES NOT MOVE, which is what keeps the
+ * moving ones worth looking at.
+ *
+ * THE TRAVELLING HIGHLIGHT IS NOT A DASH PATTERN, and the difference is the whole
+ * point of the rewrite. It is ONE dash, 7% of the wire's length, drawn three
+ * times at increasing width and decreasing opacity with round caps — which is a
+ * soft-edged comet with a feathered falloff and no filter. `pathLength: 1000`
+ * normalises it, so a 300px hop and a 900px hop get a proportionally identical
+ * comet at identical speed instead of the long edge looking faster.
+ *
+ * THE REAL `feGaussianBlur` BLOOM IS PER-EDGE AND ONLY ON ENERGISED EDGES. See
+ * `flow-edge.tsx`: the filter region has to be computed from the endpoints
+ * because `filterUnits="objectBoundingBox"` DISABLES a filter whose referencing
+ * element has a zero-height bounding box, and a connector between two cards at
+ * the same y is exactly that. It is applied to a STATIC full-length path, never
+ * to the animated comet, so the blur is rasterised once instead of once a frame.
+ */
+
+.conduit-rim {
+  fill: none;
+  stroke: var(--color-line);
+  stroke-width: 13;
+  stroke-linecap: round;
+  opacity: 0.34;
+}
+
+.conduit-casing {
+  fill: none;
+  stroke: #05070a;
+  stroke-width: 10.5;
+  stroke-linecap: round;
+}
+
+.conduit-body {
+  fill: none;
+  stroke-width: 4.5;
+  stroke-linecap: round;
+}
+
+.conduit-core {
+  fill: none;
+  stroke: #e9eef7;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  opacity: 0.38;
+}
+
+/* The static ambient bloom of an energised wire. Filtered, never animated. */
+.conduit-bloom {
+  fill: none;
+  stroke-width: 5;
+  stroke-linecap: round;
+  opacity: 0.55;
 }
 
 /*
- * THE FLOWING EDGE — a soft glow tube with a lighter dashed core travelling
- * along it, per the owner's connector reference.
+ * The inferred connector: a guess, drawn as one.
  *
- * MOTION IS INFORMATION HERE, NOT DECORATION, and every rule below exists to
- * keep it that way:
- *
- *   - `.edge-core--flowing` is applied ONLY when the child agent is still
- *     running. A finished delegation is a static line: the work is not moving
- *     any more, so nothing on screen moves.
- *   - `.edge--inferred` never animates and never gets the glow tube. Hook
- *     messages carry no task identity, so hook->agent attribution is a
- *     server-side GUESS. A guess that flows as confidently as a fact is the
- *     canvas lying, which is the one thing the `attribution` field exists to
- *     prevent. It renders as a dim dotted line and carries a visible label.
+ * Thinner than the conduit, dotted, dim, grey rather than role-tinted, no
+ * casing, no core, no bloom, and never animated. Hook messages carry no task
+ * identity, so hook->agent attribution is a server-side GUESS, and a guess drawn
+ * with the same ceremony as a fact is the canvas lying about how much it knows.
+ * It is thicker than the 1.25px it used to be — the owner asked for thicker
+ * edges and that applies to this one too — and still, by construction, thinner
+ * and dimmer than the connector it must not be mistaken for.
  */
-.edge-glow {
+.conduit-guess {
   fill: none;
-  stroke: var(--color-accent);
+  stroke: var(--color-ink-faint);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-dasharray: 1 5;
+  opacity: 0.45;
+}
+
+.conduit-comet {
+  fill: none;
+  stroke-linecap: round;
+  /* pathLength units: one 70/1000 dash and a 930 gap, so exactly one comet is
+     ever on the wire. */
+  stroke-dasharray: 70 930;
+}
+
+.conduit-comet--halo {
   stroke-width: 9;
-  stroke-linecap: round;
-  opacity: 0.14;
+  opacity: 0.11;
 }
 
-.edge-line {
-  fill: none;
-  stroke-linecap: round;
+.conduit-comet--mid {
+  stroke-width: 4.6;
+  opacity: 0.3;
 }
 
-.edge-core {
-  fill: none;
-  stroke: color-mix(in oklab, var(--color-accent) 55%, white);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-dasharray: 2 11;
+.conduit-comet--hot {
+  stroke: #f2f6fd;
+  stroke-width: 2.2;
+  opacity: 0.92;
 }
 
-@keyframes edge-flow {
+@keyframes conduit-travel {
   from {
-    stroke-dashoffset: 26;
+    stroke-dashoffset: 1000;
   }
   to {
     stroke-dashoffset: 0;
   }
 }
 
-.edge-core--flowing {
-  animation: edge-flow 1.15s linear infinite;
+.conduit-comet--live {
+  animation: conduit-travel 1.6s linear infinite;
+}
+
+.conduit-comet--focus {
+  animation: conduit-travel 1.15s linear infinite;
 }
 
 /*
- * Reduced motion: the travelling dashes stop, and the dashed core is REPLACED
- * by a solid one rather than frozen mid-pattern. A frozen dash pattern reads as
- * an inferred edge, which would make the two categories look alike for exactly
- * the readers who cannot use motion to tell them apart. `.animate-pulse` is
- * Tailwind's, and it is stilled here for the whole app for the same reason.
+ * The arrival sweep. `both` holds the comet off the wire until its delay is up,
+ * so nine edges do not all start at the left edge together; `--sweep-delay` is
+ * set per edge from its depth in the graph.
+ */
+.conduit-comet--sweep {
+  animation: conduit-travel 1s linear var(--sweep-delay, 0ms) 1 both;
+}
+
+/*
+ * REDUCED MOTION, AND IT KEEPS THE ORIGINAL REASONING VERBATIM.
+ *
+ * The travelling highlight stops AND its dash pattern is replaced by a solid
+ * stroke rather than frozen mid-pattern. A frozen highlight is worse here than a
+ * frozen dash was: it parks one bright blob at an arbitrary point on the wire,
+ * which reads as a rendering fault. Made solid, the same three stacked strokes
+ * become a steady bright overlay along the whole conduit — so an energised edge
+ * still reads as brighter than a settled one, without motion carrying the
+ * difference. `.animate-pulse` is Tailwind's, and it is stilled here for the
+ * whole app for the same reason.
+ *
+ * BELOW the rules it overrides, not above them. A media query adds no
+ * specificity, so an override written earlier in the file loses the cascade and
+ * the reduced-motion path is dead while looking implemented.
  */
 @media (prefers-reduced-motion: reduce) {
-  .edge-core--flowing {
-    animation: none;
+  .conduit-comet {
     stroke-dasharray: none;
+  }
+
+  .conduit-comet--live,
+  .conduit-comet--focus,
+  .conduit-comet--sweep {
+    animation: none;
+  }
+
+  .conduit-comet--hot {
     stroke-width: 1.5;
+    opacity: 0.8;
+  }
+
+  .conduit-comet--halo {
+    opacity: 0.07;
+  }
+
+  .conduit-comet--mid {
+    opacity: 0.16;
   }
 
   .animate-pulse {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* The model dropdown                                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 110ms, 4px, and nothing else.
+ *
+ * The one thing this motion says is "this panel came out of the button above
+ * it", which is worth saying because the list overlaps the content below it. It
+ * is deliberately shorter than a pointer's dwell time — a dropdown that has to be
+ * waited for is slower than the control it replaced, and this one is on the path
+ * to every run. No scale, no blur: both would move the option text under a
+ * reader's eye while they are trying to read it.
+ *
+ * Stilled entirely under `prefers-reduced-motion: reduce` — and the override is
+ * BELOW the rule it overrides, not up with the canvas's reduced-motion block.
+ * A media query adds no specificity, so `.picker-popup{animation:none}` written
+ * above `.picker-popup{animation:picker-in ...}` loses the cascade and the
+ * reduced-motion path is dead while looking implemented. That was the first
+ * version of this rule, and `model-picker.browser.spec.ts` caught it by measuring
+ * the computed `animation-name` in both preference states.
+ */
+@keyframes picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.picker-popup {
+  animation: picker-in 110ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .picker-popup {
     animation: none;
   }
 }
@@ -193,4 +427,84 @@ body {
 .react-flow__controls-button:hover {
   background: var(--color-line);
   fill: var(--color-ink);
+}
+
+/*
+ * The handles are the plug, not a dot.
+ *
+ * The reference draws the cable ending FLUSH inside the card's edge, capped by
+ * the card's own role spine. A visible 7px circle at each end reads as a
+ * connectable port on a diagram nobody can edit, so the handles keep their
+ * anchor geometry — the connector still starts and ends exactly on the card's
+ * edge — and stop painting. `!important` is not needed: React Flow's own handle
+ * rule is a single class, same as this one, and this file loads after it.
+ */
+.react-flow__handle {
+  min-width: 0;
+  min-height: 0;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+}
+
+/*
+ * KEYBOARD FOCUS ON THE CANVAS ITSELF.
+ *
+ * The agent list that used to sit beside this graph was the keyboard-reachable
+ * equivalent of it, and its own caption said the canvas "offers partial
+ * affordances only". That list is now behind the run sheet rather than on the
+ * canvas's frame, so the canvas had to stop being a mouse-only surface: every
+ * card is a real focusable element with a roving tabindex, arrow keys move
+ * between cards, Enter opens the detail sheet and Escape closes it. This is the
+ * ring that makes that visible — on the CARD, not on React Flow's wrapper, which
+ * is 268px wide and has no radius of its own.
+ */
+.react-flow__node:focus {
+  outline: none;
+}
+
+.react-flow__node:focus-visible {
+  outline: none;
+}
+
+.node-shell:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  border-radius: var(--node-radius);
+}
+
+/* ------------------------------------------------------------------ */
+/* The sheets — detail on demand                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 150ms and 10px, from the edge the sheet is docked to.
+ *
+ * The one thing this motion says is "this came in from the right, and the canvas
+ * is still there behind it", which is worth saying because the sheet does NOT
+ * cover the graph: the selected card stays visible and its connectors stay
+ * energised while you read it. No scale and no fade of the canvas underneath —
+ * both would move or dim the thing the sheet is describing.
+ */
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.sheet-in {
+  animation: sheet-in 150ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-in {
+    animation: none;
+  }
 }

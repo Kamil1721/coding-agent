@@ -17,22 +17,35 @@
  *   sonnet         -> claude-sonnet-5        efforts low..max
  *   haiku          -> claude-haiku-4-5-...   no effort support
  *
- * THE OPENAI ROW IS A SENTINEL, DELIBERATELY. The Codex CLI exposes no model
- * list command, and `codex login status` reports "Not logged in" here, so there
- * is no authenticated client to ask. STATUS section 1.3 already records that
- * `gpt-5.6-luna` is a display name never confirmed against any vendor model
- * list — so hardcoding it (or its siblings) would be exactly the guess that
- * document warns about. Instead the dashboard offers CODEX_DEFAULT_MODEL_ID,
- * which means "start the thread with no `model` option and let the CLI use the
- * model the owner configured". That is a claim the code can keep.
- * `DASHBOARD_CODEX_MODELS` lets the owner name extra ids without a code change;
- * whatever is put there is the owner's assertion, not the dashboard's.
+ * CLAUDE ONLY — SEE `isOfferedProvider`. `GET /api/models` serves Anthropic rows
+ * and nothing else. Two removals got it there, and both were the owner's call
+ * rather than a cleanup:
  *
- * MOONSHOT AND DEEPSEEK ARE LISTED AND ALWAYS UNAVAILABLE. They are metered
- * API-key vendors with no subprocess SDK; the bake-off harness drives them over
- * its budget proxy. Listing them disabled, with the reason, is more honest than
- * hiding them: it answers "why can't I pick Kimi here?" in the UI instead of in
- * someone's memory.
+ * MOONSHOT AND DEEPSEEK ARE GONE — REMOVED BY THE OWNER, 2026-07-30. This
+ * docblock used to argue the other way, and that argument is recorded here so it
+ * is not silently re-litigated: "Listing them disabled, with the reason, is more
+ * honest than hiding them: it answers 'why can't I pick Kimi here?' in the UI
+ * instead of in someone's memory." The owner has now answered that question the
+ * other way — "we only use Claude" — so `kimi-k3` and `deepseek-v4-pro` no
+ * longer exist as rows at all, and the `metered()` helper that built them is
+ * deleted. THE OWNER WINS; do not put them back on the strength of the
+ * paragraph above. `ModelTier` keeps its `"metered"` member because it still
+ * describes a RUN's billing (`src/lib/cost.ts` reads it to decide whether a run
+ * can have a dollar cost at all) — no row served here carries it any more.
+ *
+ * THE CODEX ROW STILL EXISTS BUT IS NEVER OFFERED. Owner decision 2026-07-28,
+ * spec section 14: "Claude only. Codex stays in the tree as working code but is
+ * not a selectable provider for orchestration runs." So `CODEX_DEFAULT_MODEL_ID`
+ * stays resolvable — `POST /api/runs` answers a stale caller with 409 and the
+ * reason, which is a better answer than 400 "unknown model", and any historical
+ * run keeps a label — while `list()` filters it out so no UI can offer it.
+ * `builders/codex-builder.ts` is deliberately NOT deleted: section 14 records a
+ * verified config path that restricts a Codex build MORE strongly than Claude's
+ * (`permissions.sealed` covers Bash and every subprocess), and the decision "may
+ * reverse". Note what section 14 also says: the older claim that Codex has no
+ * equivalent of `sandbox.filesystem.denyRead` is FALSE of `CodexOptions.config`
+ * and true only of `ThreadOptions`. The reason Codex is not offered is the
+ * owner's scope decision, not that boundary.
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -47,12 +60,43 @@ import { subscriptionSubprocessEnvStrings } from "./subprocess-env.js";
  *
  * Not a vendor model id and not pretending to be one: it selects "whatever the
  * Codex CLI is configured to use", which is a fact about this machine that the
- * dashboard can actually verify by running.
+ * dashboard can actually verify by running. Retained, unofferable: see the
+ * header, and `isOfferedProvider` below.
+ *
+ * `DASHBOARD_CODEX_MODELS` — an env var that let the owner name extra Codex ids
+ * without a code change — is REMOVED (2026-07-30) along with the reader that
+ * parsed it. Every id it could add belonged to a provider no run may select, so
+ * it could only ever grow the unofferable half of the catalog.
  */
 export const CODEX_DEFAULT_MODEL_ID = "codex-default";
 
-/** Owner-supplied extra codex model ids, comma-separated. */
-export const CODEX_MODELS_ENV = "DASHBOARD_CODEX_MODELS";
+/**
+ * Whether a provider may be SELECTED for a run — the single declaration site for
+ * "Claude only" (owner, 2026-07-28, spec section 14).
+ *
+ * Deliberately a predicate over the provider rather than a flag on each row: a
+ * per-row flag can be set inconsistently by whoever adds the next row, and a
+ * provider is the granularity the owner's decision was actually made at.
+ *
+ * `list()` filters on this, so it decides what any UI can show. `http.ts` reads
+ * it too, so a refusal explains itself with the scope decision instead of
+ * telling the caller to authenticate a CLI that would not help.
+ */
+export function isOfferedProvider(provider: ModelOption["provider"]): boolean {
+  return provider === "anthropic";
+}
+
+/**
+ * Why the Codex row is unavailable — scope, not authentication.
+ *
+ * Unconditional on purpose: `codex login` would make the CLI reachable and would
+ * still not make it selectable, so reporting the auth detail here would invite
+ * the owner to fix the wrong thing.
+ */
+const CODEX_NOT_OFFERED_REASON =
+  "Claude only. The owner scoped the Codex provider out of the dashboard on 2026-07-28 " +
+  "(spec section 14): the builder stays in the tree as working code, but no run may select it. " +
+  "Nothing to authenticate — `codex login` would not change this.";
 
 /** How long the Anthropic model list is reused before re-asking the CLI. */
 export const CATALOG_CACHE_MS = 60_000;
@@ -81,26 +125,6 @@ export interface CatalogEntry {
    */
   readonly effort: AnthropicEffort | null;
 }
-
-function metered(id: string, label: string, provider: "moonshot" | "deepseek"): ModelOption {
-  return {
-    id,
-    label,
-    provider,
-    tier: "metered",
-    available: false,
-    reason:
-      "Metered vendor: billed per token against an API key. The dashboard drives only the two " +
-      "subscription CLIs (Claude, Codex) as subprocesses and holds no API key. This model is " +
-      "reachable from the bake-off harness, which speaks to it over its budget proxy.",
-  };
-}
-
-/** Constant rows: true regardless of what any CLI reports. */
-export const METERED_MODELS: readonly ModelOption[] = Object.freeze([
-  metered("kimi-k3", "Kimi K3", "moonshot"),
-  metered("deepseek-v4-pro", "DeepSeek V4 Pro", "deepseek"),
-]);
 
 function chooseEffort(info: ModelInfo): AnthropicEffort | null {
   const supported = info.supportedEffortLevels;
@@ -236,43 +260,38 @@ export class ModelCatalog {
       });
     }
 
-    const codexAvailable = auth.codex === "ok";
+    // NOT FILTERED HERE. `entries()` is the resolver's view and keeps the Codex
+    // row so a stale caller gets 409 plus a reason and an old run keeps a label;
+    // `list()` below is the view a UI sees, and that one filters.
     rows.push({
       option: {
         id: CODEX_DEFAULT_MODEL_ID,
         label: "Codex (CLI default model)",
         provider: "openai",
         tier: "included",
-        available: codexAvailable,
-        reason: codexAvailable ? null : auth.codexDetail,
+        available: false,
+        reason: CODEX_NOT_OFFERED_REASON,
       },
       effort: null,
     });
-    for (const extra of this.#extraCodexModels()) {
-      rows.push({
-        option: {
-          id: extra,
-          label: `Codex: ${extra}`,
-          provider: "openai",
-          tier: "included",
-          available: codexAvailable,
-          reason: codexAvailable
-            ? null
-            : auth.codexDetail,
-        },
-        effort: null,
-      });
-    }
-
-    for (const option of METERED_MODELS) rows.push({ option, effort: null });
 
     this.#entries = rows;
     this.#cachedAtMs = this.#nowMs();
     return rows;
   }
 
+  /**
+   * What a caller may CHOOSE from — the offered half of the catalog.
+   *
+   * An unavailable row is still listed here when its provider is offered: the
+   * picker's job is to say why `default` cannot run when the CLI is not logged
+   * in, and it cannot say that about a row it never receives. Unofferable is a
+   * different fact from unavailable, and only the first one is hidden.
+   */
   async list(): Promise<readonly ModelOption[]> {
-    return (await this.entries()).map((entry) => entry.option);
+    return (await this.entries())
+      .map((entry) => entry.option)
+      .filter((option) => isOfferedProvider(option.provider));
   }
 
   async resolve(modelId: string): Promise<CatalogEntry | null> {
@@ -282,14 +301,5 @@ export class ModelCatalog {
 
   invalidate(): void {
     this.#entries = null;
-  }
-
-  #extraCodexModels(): readonly string[] {
-    const raw = (this.#env[CODEX_MODELS_ENV] ?? "").trim();
-    if (raw.length === 0) return [];
-    return raw
-      .split(",")
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0 && part !== CODEX_DEFAULT_MODEL_ID);
   }
 }

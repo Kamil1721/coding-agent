@@ -1,7 +1,6 @@
 import type {
   CriterionResult,
   CriterionTier,
-  Provider,
   RunPhase,
   RunStatus,
 } from "./api-types";
@@ -193,20 +192,16 @@ export function criterionTone(
   }
 }
 
-export function providerLabel(provider: Provider): string {
-  switch (provider) {
-    case "anthropic":
-      return "Anthropic";
-    case "openai":
-      return "OpenAI";
-    case "moonshot":
-      return "Moonshot";
-    case "deepseek":
-      return "DeepSeek";
-    default:
-      return String(provider);
-  }
-}
+/*
+ * `providerLabel` WAS HERE AND IS GONE (2026-07-30).
+ *
+ * Its only caller was the model picker's per-row vendor badge, and every row the
+ * picker can now show is an Anthropic row — the owner removed the Kimi and
+ * DeepSeek rows and Codex is not offered (see `server/src/models.ts`). A badge
+ * reading "Anthropic" on every option is repetition, and a lookup table with two
+ * of its four vendors deleted and no caller left is dead code. The panel says
+ * "Claude" once, in words, instead.
+ */
 
 /**
  * Tone -> Tailwind classes. Kept in one table so that a state cannot acquire a

@@ -32,7 +32,15 @@ function NavLink({ href, label }: { href: string; label: string }): ReactNode {
   );
 }
 
-/** Compact auth read-out in the top bar. Detail and fix commands live on the new-ticket screen. */
+/**
+ * Compact auth read-out in the top bar. Detail and fix commands live on the
+ * new-ticket screen.
+ *
+ * THE `codex` DOT WAS REMOVED HERE ON 2026-07-30. It read `claude · codex` and
+ * sat, amber, on every screen — reporting a login the owner has no reason to
+ * perform, for a provider `/api/models` stopped offering when Codex was scoped out
+ * (spec section 14). `/api/health` still carries `codexAuth`; nothing renders it.
+ */
 function AuthGlance(): ReactNode {
   const { data, error } = useHealth();
 
@@ -48,10 +56,7 @@ function AuthGlance(): ReactNode {
     return <span className="text-[11.5px] text-ink-faint">checking auth…</span>;
   }
 
-  const entries = [
-    { name: "claude", ok: data.claudeAuth === "ok" },
-    { name: "codex", ok: data.codexAuth === "ok" },
-  ] as const;
+  const entries = [{ name: "claude", ok: data.claudeAuth === "ok" }] as const;
 
   return (
     <div className="flex items-center gap-3">

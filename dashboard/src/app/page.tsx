@@ -203,7 +203,7 @@ export default function NewTicketPage(): ReactNode {
         <AuthPanel />
         <Panel
           title="Model"
-          subtitle="Two tiers. Subscription models carry no dollar cost — only quota."
+          subtitle="Claude, from your own plan login. A subscription consumes quota, so no run here carries a dollar cost."
         >
           <ModelPicker
             models={models}

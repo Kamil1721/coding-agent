@@ -11,15 +11,29 @@
  *   GET    /api/runs/:id        -> RunDetail
  *   GET    /api/runs/:id/events -> text/event-stream
  *   GET    /api/runs/:id/graph  -> RunGraphResponse   (additive; spec §9.2)
+ *   GET    /api/runs/:id/files  -> CodeTreeResponse | CodeFileResponse (additive)
  *   POST   /api/runs/:id/cancel -> {ok:true}
  *   POST   /api/runs/:id/resume -> {ok:true}
  *   GET    /api/models          -> ModelOption[]
  *   GET    /api/health          -> {ok, claudeAuth, codexAuth}
  */
 
-export type Provider = "anthropic" | "openai" | "moonshot" | "deepseek";
+/**
+ * Mirrors the server's `ApiProvider`, which lost `"moonshot" | "deepseek"` on
+ * 2026-07-30 with the Kimi and DeepSeek rows the owner removed. `"openai"` stays
+ * because a run recorded before the 2026-07-28 Codex scope decision could carry
+ * it; no row `/api/models` serves is anything but `"anthropic"`.
+ */
+export type Provider = "anthropic" | "openai";
 
-/** `included` = covered by a subscription, so NO dollar figure exists. */
+/**
+ * `included` = covered by a subscription, so NO dollar figure exists.
+ *
+ * `metered` survives with no producer: `cost.ts` reads this field to tell "a
+ * subscription run has no cost" from "a metered run whose cost is not computed
+ * yet", and that distinction still has to be drawable for a run whose model has
+ * since left the catalog.
+ */
 export type ModelTier = "included" | "metered";
 
 export interface ModelOption {
@@ -611,4 +625,73 @@ export function isTerminalStatus(status: RunStatus): boolean {
  */
 export function isStalledStatus(status: RunStatus): boolean {
   return status === "rate_limited" || status === "awaiting_input";
+}
+
+/* -------------------------------------------------------------------------
+ * `GET /api/runs/:id/files` — the code the run produced
+ *
+ * Transcribed from `server/src/api-types.ts`. ONE route, two responses
+ * discriminated by `kind`: no `?path` is the tree, `?path=<relative>` is one
+ * file. Every refusal lives in `server/src/code-files.ts` and every one of them
+ * arrives here as the standard `{error, message, remediation}` body, so the
+ * viewer renders the server's sentence rather than inventing its own.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * One node of the run's workspace.
+ *
+ * `path` IS THE KEY AND THE REQUEST: relative to the workspace root, forward
+ * slashes, no leading slash — the exact spelling `?path=` accepts. The client
+ * therefore never constructs a path the server has not already listed.
+ *
+ * `bytes` is `null` for a directory and the FULL size on disk for a file, even a
+ * truncated one, so the viewer can say "showing 256 KB of 12.4 MB".
+ */
+export interface CodeTreeEntry {
+  readonly path: string;
+  readonly name: string;
+  readonly type: "dir" | "file";
+  readonly bytes: number | null;
+}
+
+/**
+ * Something in the workspace that was not listed, and why.
+ *
+ * RENDERED, NOT DROPPED. A viewer that silently omits `.git` and every
+ * credential file is indistinguishable from one that failed to read the
+ * directory; the reader cannot tell an empty workspace from a filtered one.
+ */
+export interface CodeExclusion {
+  readonly path: string;
+  readonly reason: string;
+}
+
+export interface CodeTreeResponse {
+  readonly kind: "tree";
+  readonly runId: string;
+  /** The absolute host path, for the reader who wants a terminal. */
+  readonly root: string;
+  readonly entries: readonly CodeTreeEntry[];
+  readonly exclusions: readonly CodeExclusion[];
+  readonly truncated: boolean;
+}
+
+/**
+ * One file's contents.
+ *
+ * `text` IS NULL FOR TWO DIFFERENT REASONS AND THE UI MUST NOT CONFLATE THEM:
+ * `binary` true means bytes that are not text, and `withheld` non-null means the
+ * server's redaction self-check refused the file. Each gets its own sentence.
+ */
+export interface CodeFileResponse {
+  readonly kind: "file";
+  readonly runId: string;
+  readonly path: string;
+  readonly bytes: number;
+  readonly text: string | null;
+  readonly binary: boolean;
+  readonly truncated: boolean;
+  /** How many spans the server's redactor replaced. 0 = nothing matched. */
+  readonly redactions: number;
+  readonly withheld: string | null;
 }

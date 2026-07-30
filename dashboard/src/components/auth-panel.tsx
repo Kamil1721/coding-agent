@@ -8,18 +8,24 @@ import { errorMessage } from "@/lib/api";
 import { Badge, CommandLine, Panel, Skeleton } from "./ui";
 
 /**
- * `/api/health` reports exactly two providers, because exactly two are
- * authenticated by a SUBSCRIPTION login rather than an API key:
+ * ONE ROW, BECAUSE ONE PROVIDER CAN RUN A TICKET (2026-07-30).
  *
- *   - Anthropic, via `claude setup-token` (a long-lived OAuth token held by
- *     the Claude CLI)
- *   - OpenAI, via `codex login` (browser OAuth, credentials under CODEX_HOME)
+ * This panel used to render two: Anthropic via `claude setup-token`, and OpenAI
+ * via `codex login`. The OpenAI row is gone — not because the probe stopped
+ * working, but because the owner scoped the Codex provider out on 2026-07-28
+ * (spec section 14), so `/api/models` no longer offers a Codex model and nothing
+ * on this screen can select one. A row telling the owner to run `codex login`
+ * would be an instruction to fix something that would still not be selectable
+ * afterwards — the same wrong-remediation defect the server's 409 avoids.
  *
- * Neither needs an API key and neither must ever ask for one. Moonshot and
- * DeepSeek are metered and have no health field at all — their availability
- * arrives per-model as `ModelOption.available` + `reason`, and is shown inline
- * in the picker. Rendering four provider rows here would leave two of them
- * permanently "unknown".
+ * `/api/health` STILL REPORTS `codexAuth`, and that is deliberate rather than
+ * missed: the field is part of the frozen contract, `auth.ts` probes both CLIs,
+ * and narrowing the wire because one renderer stopped reading it is a larger
+ * change than a UI request should make. It has no reader in this client now.
+ *
+ * The Moonshot and DeepSeek models this docblock used to mention were removed by
+ * the owner on the same day; they were metered API-key vendors and never had a
+ * health field at all.
  */
 const SUBSCRIPTION_PROVIDERS = [
   {
@@ -28,14 +34,8 @@ const SUBSCRIPTION_PROVIDERS = [
     detail: "Claude Agent SDK, driven as a subprocess",
     command: "claude setup-token",
   },
-  {
-    key: "codexAuth",
-    name: "OpenAI",
-    detail: "Codex SDK, driven as a subprocess",
-    command: "codex login",
-  },
 ] as const satisfies readonly {
-  key: keyof Pick<HealthState, "claudeAuth" | "codexAuth">;
+  key: keyof Pick<HealthState, "claudeAuth">;
   name: string;
   detail: string;
   command: string;
@@ -47,7 +47,7 @@ export function AuthPanel(): ReactNode {
   return (
     <Panel
       title="Subscription auth"
-      subtitle="Both providers run from your own plan login. No API key is involved."
+      subtitle="Claude runs from your own plan login. No API key is involved."
     >
       {isLoading && data === undefined ? (
         <Skeleton rows={2} />
