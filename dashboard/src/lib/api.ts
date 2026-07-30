@@ -35,6 +35,21 @@ export const KEY = {
   /** The folded orchestration canvas, spec §9.2. Snapshot first, then subscribe. */
   graph: (runId: string): string =>
     `/api/runs/${encodeURIComponent(runId)}/graph`,
+  /** The run's workspace as a tree. */
+  files: (runId: string): string =>
+    `/api/runs/${encodeURIComponent(runId)}/files`,
+  /**
+   * One file in the run's workspace.
+   *
+   * `encodeURIComponent` ENCODES THE SLASHES TOO, and that is correct rather
+   * than incidental: the value is one query parameter, the server reads it with
+   * `searchParams.get` which decodes exactly once, and a path spelled
+   * `visible-acceptance%2Fx.mjs` arrives as `visible-acceptance/x.mjs`. Leaving
+   * the slashes raw would work today and break the first time a filename
+   * contains an `&`.
+   */
+  file: (runId: string, path: string): string =>
+    `/api/runs/${encodeURIComponent(runId)}/files?path=${encodeURIComponent(path)}`,
   models: "/api/models",
   health: "/api/health",
 } as const;

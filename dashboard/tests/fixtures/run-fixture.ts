@@ -26,6 +26,8 @@
  */
 
 import type {
+  CodeFileResponse,
+  CodeTreeResponse,
   ModelOption,
   RunDetail,
   RunEvent,
@@ -234,3 +236,80 @@ export const MODELS: readonly ModelOption[] = [
     reason: null,
   },
 ];
+
+/* -------------------------------------------------------------------------
+ * `GET /api/runs/:id/files` — the code sidebar's two responses
+ *
+ * SHAPED BY WHAT MUST BE OBSERVABLE IN A BROWSER, and by nothing else. The
+ * server's own refusals are proved over a real filesystem in
+ * `server/src/code-files.test.ts`; there is nothing a fake API can say about a
+ * path traversal. What only a browser can show is that the tree is reachable by
+ * keyboard, that a nested file is one Tab-and-Enter away, and that a truncated
+ * file SAYS SO on screen rather than silently rendering a prefix.
+ *
+ * So the tree carries a nested directory, and one of its files is over the
+ * server's cap with `truncated: true`.
+ * ---------------------------------------------------------------------- */
+
+export const CODE_TREE: CodeTreeResponse = {
+  kind: "tree",
+  runId: RUN_ID,
+  root: "/Users/o/dashboard/runs/harness-canvas-run/workspace",
+  entries: [
+    { path: "visible-acceptance", name: "visible-acceptance", type: "dir", bytes: null },
+    {
+      path: "visible-acceptance/coglane-page.spec.mjs",
+      name: "coglane-page.spec.mjs",
+      type: "file",
+      bytes: 4_096,
+    },
+    { path: "index.html", name: "index.html", type: "file", bytes: 5_763 },
+    { path: "build.log", name: "build.log", type: "file", bytes: 12_369_476 },
+  ],
+  exclusions: [
+    {
+      path: ".env",
+      reason: ".env is a credential file by name and is never served",
+    },
+  ],
+  truncated: false,
+};
+
+/** The 256 KB the server would send of a 12,369,476-byte transcript. */
+const TRUNCATED_TEXT = `${"builder step\n".repeat(19_000)}`.slice(0, 262_144);
+
+export const CODE_FILES: Readonly<Record<string, CodeFileResponse>> = {
+  "index.html": {
+    kind: "file",
+    runId: RUN_ID,
+    path: "index.html",
+    bytes: 5_763,
+    text: "<!doctype html>\n<html lang=\"en\">\n  <body>\n    <h1>Coglane</h1>\n  </body>\n</html>\n",
+    binary: false,
+    truncated: false,
+    redactions: 0,
+    withheld: null,
+  },
+  "visible-acceptance/coglane-page.spec.mjs": {
+    kind: "file",
+    runId: RUN_ID,
+    path: "visible-acceptance/coglane-page.spec.mjs",
+    bytes: 4_096,
+    text: "// the visible subset\nexport default 1;\n",
+    binary: false,
+    truncated: false,
+    redactions: 0,
+    withheld: null,
+  },
+  "build.log": {
+    kind: "file",
+    runId: RUN_ID,
+    path: "build.log",
+    bytes: 12_369_476,
+    text: TRUNCATED_TEXT,
+    binary: false,
+    truncated: true,
+    redactions: 0,
+    withheld: null,
+  },
+};

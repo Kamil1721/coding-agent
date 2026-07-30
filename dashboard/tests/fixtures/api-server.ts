@@ -26,6 +26,8 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { RunEvent } from "../../src/lib/api-types";
 import { REPLAY_RUN_ID, RUN_ID } from "./config";
 import {
+  CODE_FILES,
+  CODE_TREE,
   GRAPH_EVENTS,
   GRAPH_SNAPSHOT,
   MODELS,
@@ -112,6 +114,34 @@ export function startFixtureApi(port: number): Promise<FixtureApi> {
     }
     if (path === `${run}/graph`) {
       sendJson(response, 200, GRAPH_SNAPSHOT);
+      return;
+    }
+    /*
+     * The code sidebar. `?path` absent is the tree, present is one file — the
+     * same discrimination the real route makes.
+     *
+     * A PATH THIS FIXTURE DOES NOT HOLD ANSWERS 404 WITH THE REAL ERROR SHAPE,
+     * not with an empty file. The refusals themselves are facts about a
+     * filesystem and are proved in `server/src/code-files.test.ts`; what a
+     * browser spec can observe is that the viewer renders the server's sentence
+     * instead of inventing one, which needs the error body to be shaped right.
+     */
+    if (path === `${run}/files`) {
+      const wanted = url.searchParams.get("path");
+      if (wanted === null) {
+        sendJson(response, 200, CODE_TREE);
+        return;
+      }
+      const file = Object.hasOwn(CODE_FILES, wanted) ? CODE_FILES[wanted] : undefined;
+      if (file === undefined) {
+        sendJson(response, 404, {
+          error: "not_found",
+          message: `no such file in this run's workspace: ${wanted}`,
+          remediation: "Re-read the tree.",
+        });
+        return;
+      }
+      sendJson(response, 200, file);
       return;
     }
     if (path === `${run}/events`) {
