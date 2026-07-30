@@ -22,13 +22,39 @@
  * `canvas/sheet.tsx` for what went where, and for why the agent index survived
  * the cut.
  *
- * FOUR THINGS ARE STILL UNCONDITIONALLY ON SCREEN, and each earns it:
+ * FIVE THINGS ARE STILL UNCONDITIONALLY ON SCREEN, and each earns it:
  *
  *   - the canvas;
  *   - the run chip (`RunHud`): status, title, phase, clock, Cancel, Resume. A
  *     control that stops a run going wrong does not belong behind a click;
+ *   - the `chat` control directly under it — see below, it is why this list says
+ *     five rather than four;
  *   - the role legend, because colour that has to be looked up is not working;
  *   - a notice, WHEN the run is in a state that needs one.
+ *
+ * WHERE THE CHAT WENT AND WHY IT IS NOW ONE OF THE FIVE — 2026-07-30.
+ *
+ * It used to mount inside `DetailSheet`, and only for a node with
+ * `parent === null`. That is a correct place for it and an unreachable one: no
+ * node exists until the BUILD segment emits its first `graph_agent`, which on the
+ * owner's recorded run was 79.5 minutes in. For those 79.5 minutes the screen
+ * offered no way to say anything to a run that the SERVER was accepting messages
+ * for the whole time (`postMessage` refuses a terminal run and nothing else), and
+ * whose most valuable message is the earliest one — a queued message is folded
+ * into the prompt the first design/build segment is composed from, i.e. into the
+ * brief the builder actually works to.
+ *
+ * So the chat is a `RunSheet` tab (messages are addressed to the RUN, never to a
+ * node), and the entry point is a control in this dock that is rendered in every
+ * status, including terminal ones, where the composer shows itself disabled with
+ * the reason on it. A feature invisible in the state the reader happens to be in
+ * is not a tidy feature, it is a missing one — that was learned the expensive way
+ * when the owner's only finished run reported "i dont see any chat anywhere".
+ *
+ * THE COMPOSER STILL CANNOT APPEAR ON A SUB-AGENT, and now for a structural
+ * reason instead of a conditional one: `DetailSheet` no longer has a chat slot to
+ * gate. A sub-agent is spawned with a prompt and ends; a chat box on one is a
+ * control that cannot act.
  *
  * WHERE `CodeBrowser` WENT, because it was mounted here by another task while
  * this one was in flight and its call site has moved rather than vanished. It is
@@ -84,8 +110,12 @@ import {
 } from "@/components/run/notices";
 import { OrchestrationCanvas } from "@/components/canvas/orchestration-canvas";
 import { RunHud } from "@/components/canvas/run-hud";
-import { DetailSheet, RunSheet } from "@/components/canvas/sheet";
-import { Notice, Panel, Skeleton, cx } from "@/components/ui";
+import {
+  DetailSheet,
+  RunSheet,
+  type RunSheetTab,
+} from "@/components/canvas/sheet";
+import { Button, Notice, Panel, Skeleton, cx } from "@/components/ui";
 import {
   ApiError,
   cancelRun,
@@ -98,9 +128,75 @@ import {
 import { OrchestratorChat } from "@/components/canvas/orchestrator-chat";
 import { findModel } from "@/lib/cost";
 import { useModels } from "@/lib/hooks";
-import { isTerminalStatus } from "@/lib/api-types";
+import { isTerminalStatus, type RunDetail } from "@/lib/api-types";
 import { designLockPhase } from "@/lib/mockups";
 import { useLiveRun, useNow } from "@/lib/use-run-stream";
+
+/**
+ * What actually happens to a message typed RIGHT NOW — or null when
+ * `OrchestratorChat`'s own copy already covers this state correctly.
+ *
+ * READ OUT OF THE SERVER AT THE TWO SITES THAT DECIDE IT, because it is not
+ * guessable from the status alone and this dashboard's worst habit is copy that
+ * promises more than the mechanism:
+ *
+ *   · LIVE delivery needs an open input channel, and `#liveInputs.set` has
+ *     exactly ONE call site (`server/src/orchestrator.ts`, inside the design/build
+ *     segment run). Everywhere else `pushLiveMessage` returns false, the row keeps
+ *     `delivered_at` NULL and the message is merely stored.
+ *   · The QUEUE is drained at exactly one site too: `ownerMessageBlock(pending)`
+ *     is appended to the design-segment and build-segment prompts inside
+ *     `#buildPhase`, and the rows are stamped only after that prompt is on disk.
+ *     The gate's fix rounds and the judge compose their own prompts and never
+ *     read a pending message.
+ *
+ * WHY IT IS WRITTEN HERE. `OrchestratorChat` states both paths in general terms
+ * and cannot state which one applies: it is handed `runIsOver` and a message list
+ * rather than the run, and its own header says an `isParked` prop would be a
+ * caller change and refuses to fake one with a default. This is that caller. Only
+ * the states its general paragraph leaves open get a sentence — a running build
+ * segment, a park and a terminal run are already described accurately there and
+ * get nothing added, because four restatements of one fact is the defect this
+ * screen has been cutting all week.
+ *
+ * IT PREDICTS NOTHING ABOUT A GIVEN MESSAGE. A run can be cancelled before it
+ * composes another prompt, and `resume` requeues rather than guaranteeing a
+ * segment. The only truthful record of one message's fate is the per-message state
+ * line the component renders under it (queued / read at T / never read).
+ */
+function chatDeliveryNote(run: RunDetail): string | null {
+  if (isTerminalStatus(run.status)) return null;
+  if (run.status === "queued") {
+    return (
+      "This run has not started yet — the queue is serial, so it is waiting for the " +
+      "run ahead of it. Anything you send now is stored, and travels into the prompt " +
+      "its first segment is composed from."
+    );
+  }
+  switch (run.phase) {
+    case "spec":
+      return (
+        "The acceptance suite is being written and there is no build session to push " +
+        "into yet, so a message now is stored rather than delivered. Stored messages " +
+        "are folded into the next design or build segment's prompt — for a run at this " +
+        "phase that is the first one it composes, which is the earliest point anything " +
+        "you say can shape what gets built."
+      );
+    case "gate":
+    case "judge":
+      return (
+        "The build segments are over. A stored message is only folded into a design or " +
+        "build segment prompt — the gate's fix rounds and the judge compose their own " +
+        "and read none — so a message sent now is likely to end up recorded as never " +
+        "read."
+      );
+    default:
+      // `build` (running, parked or between segments) and the momentary `done`
+      // before a run turns terminal. The component's own two-path paragraph is
+      // accurate for all of them.
+      return null;
+  }
+}
 
 function useRunIdParam(): string | null {
   const params = useParams();
@@ -122,6 +218,7 @@ export default function RunPage(): ReactNode {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showAmbient, setShowAmbient] = useState(false);
   const [runSheetOpen, setRunSheetOpen] = useState(false);
+  const [runSheetTab, setRunSheetTab] = useState<RunSheetTab>("ticket");
 
   /*
    * THE OWNER↔RUN CHAT.
@@ -131,7 +228,8 @@ export default function RunPage(): ReactNode {
    * a prompt, so the trace is already live — but `deliveredAt` lives on the message
    * row, not on an event, and adding a message event type to the frozen `SseEvent`
    * union to save one fetch is not a trade worth making. The refetch runs on send and
-   * on selection, which is every moment the panel is visible and could be stale.
+   * whenever the Chat tab is brought to the front, which is every moment the panel is
+   * readable and could be stale.
    */
   const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
   const loadMessages = useCallback((): void => {
@@ -204,21 +302,41 @@ export default function RunPage(): ReactNode {
   }, []);
 
   /*
-   * FETCH ON SELECT rather than on mount. The chat only exists inside the detail
-   * sheet, so a run whose nodes are never opened should not pull a transcript — and
-   * re-fetching on each open is what keeps `deliveredAt` current without a timer.
+   * FETCH WHEN THE CHAT TAB IS BROUGHT TO THE FRONT, rather than on mount or on
+   * selection. REWRITTEN 2026-07-30 WITH THE MOVE, because the reason it used to
+   * give stopped being true.
+   *
+   * It said "fetch on select … the chat only exists inside the detail sheet", and
+   * hung `loadMessages()` off node selection. The chat is now a run-sheet tab that
+   * a node has nothing to do with, so selecting a card pulls no transcript.
+   *
+   * EXACTLY THREE PATHS FETCH, and `openRunSheet` — directly below, and the most
+   * frequent of these four callbacks — is deliberately NOT one of them: it opens
+   * the sheet on Ticket, where a transcript is not on screen. Reaching the chat
+   * from there goes through `changeRunSheetTab`, which does fetch. The three are
+   * `openChat`, `changeRunSheetTab("chat")` and `onSendMessage` above, which
+   * together are every moment the transcript is both visible and possibly stale.
+   * Re-fetching on them is what keeps `deliveredAt` current without a timer, and a
+   * run whose chat is never opened still pulls nothing.
    */
-  const selectNode = useCallback(
-    (nodeId: string | null): void => {
-      setSelectedId(nodeId);
-      if (nodeId !== null) loadMessages();
+  const openRunSheet = useCallback((): void => {
+    setRunSheetTab("ticket");
+    setRunSheetOpen(true);
+  }, []);
+
+  const openChat = useCallback((): void => {
+    setRunSheetTab("chat");
+    setRunSheetOpen(true);
+    loadMessages();
+  }, [loadMessages]);
+
+  const changeRunSheetTab = useCallback(
+    (next: RunSheetTab): void => {
+      setRunSheetTab(next);
+      if (next === "chat") loadMessages();
     },
     [loadMessages],
   );
-
-  const openRunSheet = useCallback((): void => {
-    setRunSheetOpen(true);
-  }, []);
 
   const closeRunSheet = useCallback((): void => {
     setRunSheetOpen(false);
@@ -254,6 +372,9 @@ export default function RunPage(): ReactNode {
   }
 
   const model = findModel(models, run.modelId);
+  // Cheap, pure and read off the run this render is already drawing — never a
+  // second copy of the run's state that could disagree with the badge above it.
+  const deliveryNote = chatDeliveryNote(run);
 
   /*
    * WHICH KIND OF `awaiting_input` THIS IS, WHICH IS THE ONLY REASON THE NOTICE
@@ -283,7 +404,7 @@ export default function RunPage(): ReactNode {
         graph={graph}
         ready={graphReady}
         selectedId={selectedId}
-        onSelect={selectNode}
+        onSelect={setSelectedId}
         showAmbient={showAmbient}
         onShowAmbient={setShowAmbient}
         /*
@@ -329,6 +450,34 @@ export default function RunPage(): ReactNode {
               onResume={onResume}
               onOpenDetail={openRunSheet}
             />
+
+            {/*
+             * THE CHAT ENTRY POINT. Two things about it are load-bearing.
+             *
+             * IT IS DIRECTLY UNDER THE CHIP, ABOVE EVERY NOTICE. This dock is
+             * `max-h-[40%]`/`62%` with its own scroll, and a parked run stacks a
+             * notice AND `DesignLockPanel` — five mockup cards — underneath. Any
+             * control placed after those is off the bottom of the dock in exactly
+             * the state where typing at the run matters most, which is how "i dont
+             * see any chat anywhere" happens a second time.
+             *
+             * IT IS NOT CONDITIONAL ON STATUS, unlike `RunHud`'s Cancel and Resume
+             * two lines above. Those are refused by the server in the states they
+             * are hidden in; this one is not. On a terminal run the composer
+             * renders itself disabled with the reason on it (`runIsOver`), which is
+             * a reader who learns what the chat is over a reader who never finds
+             * it. It carries no unread count: the transcript is deliberately not
+             * fetched until this is pressed, so a badge here would either be a lie
+             * or a poll nobody asked for.
+             */}
+            <Button
+              onClick={openChat}
+              className="w-full justify-between"
+              title="Send this run an instruction or a reference image. Whether it is delivered live or queued for the next prompt depends on the run's state; the panel says which, and every message carries its own delivery state."
+            >
+              chat
+              <span className="font-normal text-ink-faint">instruct · attach</span>
+            </Button>
 
             {actionError !== null && (
               <Notice tone="fail" title="That action did not go through">
@@ -394,29 +543,13 @@ export default function RunPage(): ReactNode {
         }
       />
 
-      {selected !== null && (
-        <DetailSheet
-          node={selected}
-          onClose={clearSelection}
-          /*
-           * THE CHAT IS THE ROOT SESSION'S ONLY.
-           *
-           * `parent === null` is the run's own orchestrator session — the one thing
-           * with a session to inject into. A sub-agent is spawned with a prompt and
-           * ends; a chat box on one would be a control that cannot do anything, which
-           * is the category of thing this dashboard is supposed to refuse.
-           */
-          chat={
-            selected.parent === null ? (
-              <OrchestratorChat
-                messages={messages}
-                runIsOver={isTerminalStatus(run.status)}
-                onSend={onSendMessage}
-              />
-            ) : undefined
-          }
-        />
-      )}
+      {/*
+       * NO `chat` PROP ANY MORE — see this file's header and `DetailSheet`'s. The
+       * composer was gated here on `selected.parent === null`; it is now a tab on
+       * the run sheet, which is the only reason a run's first 80 minutes have a
+       * chat at all. Nothing about a NODE decides anything about the chat now.
+       */}
+      {selected !== null && <DetailSheet node={selected} onClose={clearSelection} />}
 
       {runSheetOpen && (
         <RunSheet
@@ -430,6 +563,33 @@ export default function RunPage(): ReactNode {
           onSelect={setSelectedId}
           showAmbient={showAmbient}
           onClose={closeRunSheet}
+          tab={runSheetTab}
+          onTab={changeRunSheetTab}
+          /*
+           * THE CHAT, BUILT HERE AND HANDED OVER, with the one state-specific
+           * sentence the component cannot write for itself above it.
+           *
+           * `chatDeliveryNote` (top of this file) returns null for every state
+           * `OrchestratorChat`'s own copy already describes accurately, so this is
+           * usually just the composer. When it does return a sentence it is because
+           * the component would otherwise leave the reader to assume the message is
+           * going somewhere — the spec phase being the whole reason this item was
+           * raised.
+           */
+          chat={
+            <>
+              {deliveryNote !== null && (
+                <p className="border-b border-line bg-canvas/40 px-3 py-2 text-[11.5px] leading-relaxed text-ink-dim">
+                  {deliveryNote}
+                </p>
+              )}
+              <OrchestratorChat
+                messages={messages}
+                runIsOver={isTerminalStatus(run.status)}
+                onSend={onSendMessage}
+              />
+            </>
+          }
         />
       )}
     </div>

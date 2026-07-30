@@ -338,7 +338,16 @@ export function parseRunEvent(
       };
     case "rate_limit": {
       const retryAfterSec = asNumber(record["retryAfterSec"]);
-      return { type: "rate_limit", retryAfterSec: retryAfterSec ?? 0 };
+      // DEFAULTS TO NOT-LIMITED when the field is absent or not a boolean.
+      // A frame from a server that predates `limited` reports a window reset
+      // instant and nothing about a refusal, so reading it as "not limited" is
+      // what it actually said. The old default was the opposite and that is the
+      // whole bug: `true` turned every routine window reading into a refusal.
+      return {
+        type: "rate_limit",
+        limited: record["limited"] === true,
+        retryAfterSec: retryAfterSec ?? 0,
+      };
     }
     case "verdict": {
       const verdictPath = asString(record["verdictPath"]);
@@ -536,7 +545,10 @@ export function applyRunEvent(
       return {
         ...previous,
         rateLimit: {
-          limited: true,
+          // FROM THE EVENT, NOT HARD-CODED. This read `limited: true` for every
+          // rate_limit frame, so a window-reset reading two seconds into a
+          // healthy run set the same state a real refusal does.
+          limited: event.limited,
           retryAfterSec: event.retryAfterSec > 0 ? event.retryAfterSec : null,
         },
       };
@@ -598,7 +610,17 @@ export function applyRunEvent(
   }
 }
 
-function traceRowFor(event: RunEvent): Omit<TraceEntry, "seq"> | null {
+/**
+ * EXPORTED SO A TEST CAN REACH IT, for the reason `parseRunEvent` was.
+ *
+ * This is the function that writes the words the reader actually sees in the
+ * trace, and nothing could call it from outside this module — so the sentence
+ * `rate limited; retry after 253699s` was never checked by anything. The trace
+ * is LIVE-ONLY (a finished run renders "no live trace to replay"), so a browser
+ * cannot show these rows after the fact either: a unit test is not a shortcut
+ * here, it is the only reachable check.
+ */
+export function traceRowFor(event: RunEvent): Omit<TraceEntry, "seq"> | null {
   const base = { atMs: Date.now(), name: null, result: null } as const;
   switch (event.type) {
     case "log":
@@ -634,14 +656,21 @@ function traceRowFor(event: RunEvent): Omit<TraceEntry, "seq"> | null {
         text: `screenshot — ${event.label}`,
       };
     case "rate_limit":
+      // TWO DIFFERENT SENTENCES, because they are two different facts. A
+      // not-limited frame is the provider saying when the window you are in
+      // reopens — worth showing as it fills, at `info`, in words that do not
+      // claim anything was refused. Only a real refusal is a warning.
       return {
         ...base,
         kind: "rate_limit",
-        level: "warn",
-        text:
-          event.retryAfterSec > 0
+        level: event.limited ? "warn" : "info",
+        text: event.limited
+          ? event.retryAfterSec > 0
             ? `rate limited; retry after ${event.retryAfterSec}s`
-            : "rate limited",
+            : "rate limited"
+          : event.retryAfterSec > 0
+            ? `provider quota: nothing refused; this window reopens in ${event.retryAfterSec}s`
+            : "provider quota reported; nothing refused",
       };
     case "verdict":
       return {

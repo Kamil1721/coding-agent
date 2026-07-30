@@ -916,3 +916,160 @@ emitter).
 
 **Then fix the terminal branch:** a rate-limited spec seat must land `rate_limited`
 (resumable, with a countdown), never `failed` with a dead Resume button.
+
+---
+
+# ITERATION 9 — THE SPEC-SEAT ABORT (item 0), ROOT-CAUSED AND FIXED
+
+Server **929 tests / 927 pass / 0 fail / 2 skipped** (+4). Client **10 failed /
+108 passed** (+5; the same 10 pre-existing `canvas-edges`/`code-browser`). Both
+typecheck clean.
+
+Iteration 8 left two questions. Both are answered below **from the run's own row
+and event table**, not inferred from the symptom — and one of them had the wrong
+shape entirely.
+
+## 1. `retryAfterSec: 253699` WAS NEVER A MISPARSE. THE EVENT WAS THE LIE.
+
+Iteration 8 guessed "either the value is misparsed, or a stale/whole-window
+figure is being read as a retry-after". **Neither.** The row says so:
+
+```sql
+sqlite> SELECT status, rate_limited, rate_limit_retry_after_sec, rate_limit_kind
+        FROM runs WHERE run_id='run-2026-07-30T13-31-38-076Z-c228e63b';
+failed | 0 | 253699 | seven_day
+```
+
+`rate_limited = 0`. **The provider refused nothing.** 253,699s is a correct
+decode of when the *seven-day window* rolls over — ordinary telemetry the Agent
+SDK emits at session start with `status: 'allowed' | 'allowed_warning'`. Only
+`status: 'rejected'` is a refusal, and `claude-common.ts:209` already had that
+right (`limited: rejected`).
+
+Corroborating proof it was never limited: `#noteRateLimit` logs a `warn` **only
+when `state.limited` is true**, and no such log exists in the run's 10 events.
+
+**Three surfaces turned a true reading into a false claim:**
+
+| Where | What it did |
+|---|---|
+| `orchestrator.ts` `#noteRateLimit` | emitted `rate_limit` **unconditionally**, with no `limited` on the wire |
+| `use-run-stream.ts` reducer | **hard-coded `limited: true`** for every `rate_limit` frame |
+| `use-run-stream.ts` `traceRowFor` | printed `rate limited; retry after 253699s` at **warn** |
+
+`limited` now goes on the wire and the client reads it. `retryAfterSec` is still
+carried when not limited — a window filling up is worth showing, which is what
+`rate-limit.ts`'s own docblock argues; it just may not be called a refusal.
+
+**The banner never fired.** `RateLimitNotice` is gated on
+`status === "rate_limited"` and the status was `failed`. What the owner actually
+saw was the **trace row**, live, two seconds in.
+
+## 2. THE ABORT: `#specPhase` THROWS, SO THE ABORT CHECK BELOW IT WAS DEAD CODE
+
+`"Claude Code process aborted by user"` is the CLI's own wording (absent from
+both `bakeoff/src` and `dashboard/server/src` — iteration 8 established that).
+Something called `abort()`. There are exactly two callers, and they were
+**indistinguishable**:
+
+- `cancel(runId)` — the owner asked. Terminal is correct.
+- `shutdown()` — the server is stopping. The stop banner promises, verbatim,
+  *"In-flight builds are aborted and stay resumable."*
+
+The build phase returns a `{kind: "cancelled"}` discriminant and was handled.
+**`#specPhase` throws**, so it sailed past `if (signal.aborted)` on the next line
+and landed in `#start`'s generic catch as a harness fault:
+
+```
+#specPhase throws → #execute's abort check skipped → #start catch
+  → #finish(runId, "failed", failureReason: "…aborted by user")
+```
+
+`failed` is terminal → `resume()` refuses it (`isTerminal`) → **the dead Resume
+button**. And `reconcileOnBoot` only scans `running`, so the terminal write beat
+the one mechanism built to recover exactly this. The recovery machinery was
+correct all along and was defeated by ordering.
+
+**THE FIX — discriminate at the SIGNAL, never at the message.** The CLI's wording
+is identical whoever aborted, and matching on a vendor string would be a guess.
+`abort(ABORT_CANCELLED | ABORT_SHUTDOWN)` now carries the reason:
+
+- **cancel** → `#cancelled`, terminal, unchanged.
+- **shutdown** → `#abandonedForShutdown`, which writes **no terminal state at
+  all**. The row stays `running`, which is the exact set `reconcileOnBoot`
+  scans, so the next boot offers it back. That makes the banner's promise true
+  with no new state machinery.
+
+Applied to the build phase too — a shutdown mid-build was writing terminal
+`cancelled`, non-resumable, for the same reason.
+
+## VERIFICATION
+
+**Four mutations executed, each restored, every probe string confirmed absent
+with `grep -a`:**
+
+| Mutation | Result |
+|---|---|
+| drop the spec-phase abort check | both abort tests red, `actual: 'failed'` — the original defect, exactly |
+| `limited: true` in `#noteRateLimit` | server test red, `actual: true / expected: false` (type-checks perfectly — a compiler cannot catch this one) |
+| `limited: true` in the client parser | 2 of 3 parse tests red; the "is a refusal" test correctly stayed green |
+| revert `traceRowFor` to the old wording | the trace-text test red on `rate limited` |
+| flip `abortReasonOf`'s default to `shutdown` | the default test red — the unsafe direction leaves a row `running` that nothing revisits |
+
+**A weak red was found and fixed.** The first abort test waited on a log line
+that only exists when the fix is present, so a regression failed it by **timing
+out at 30,069ms** saying nothing. Rewritten to wait on "the run stopped, however
+it went": the same mutation now fails in **911ms** with
+`actual: 'failed' / expected: 'running'`. A slow, vague red is a red nobody reads.
+
+**`resume()` was exercised, not assumed.** The advisor's catch: "resumable" is a
+claim about `resume()`, not about the button being clickable. The test drives the
+whole chain — shutdown → row still `running` → `reconcileOnBoot` →
+`awaiting_input` → `resume()` returns **true** → status `queued`. An enabled
+button that refuses is the same defect in a new hat.
+
+**Two tests were rewritten because they did not reach what they claimed.** The
+first named the recorded run in its docblock while driving the BUILD-phase
+callback — the run it named never reached a builder. Both callbacks close over
+the same `#noteRateLimit`, which is genuinely what is under test, so the docblock
+now says that instead of implying the spec-phase wiring is covered; it is not,
+and driving it needs a live seat call. The second claimed to test
+`abortReasonOf`'s unreasoned default while calling `cancel()`, which always
+passes a reason — so it asserted the default and never reached it. Now driven on
+the function directly. Both are the same failure this repo keeps finding: a check
+aimed at the wrong path.
+
+**No quota was spent.** The harness environment is `{}`, so the spec seat cannot
+reach a CLI and fails in under a second. That failure is not what is tested —
+what is tested is that an abort *outranks* whatever was thrown.
+
+## WHAT I COULD NOT VERIFY, AND WHY
+
+- **Which trigger actually fired on that run is UNPROVEN.** A SIGINT during the
+  editing session fits the 9m37s gap, but the stop banner goes to the server's
+  stdout, not to a file. The fix is correct for both triggers; that is why this
+  says "an abort during spec" rather than asserting a restart.
+- **The trace is LIVE-ONLY.** Opening the recorded run in a real browser this
+  session shows *"This run finished before the page was opened, so there is no
+  live trace to replay."* The row the owner saw existed only while the run was in
+  flight, so there is **no finished-run render that can be inspected after the
+  fact**. `traceRowFor` was therefore exported and unit-tested directly — the
+  same move, for the same reason, as `parseRunEvent` in iteration 7. Not a
+  shortcut; the only reachable check.
+- **No live run has been steered through this.** Needs quota. The first real run
+  after this change should be checked for the abort path landing
+  `awaiting_input`, not `failed`.
+
+## SEEN IN THE BROWSER, NOT FIXED — still open, and NOT closed by this
+
+1. **`Resume` is still enabled on a genuinely `failed` run** (audit gap #2).
+   This removes one *cause* of a bogus `failed`; it does not touch the button's
+   behaviour on a run that really did fail. Confirmed still enabled this session.
+2. **`failureReason` is still not on `RunDetail`** (audit gap #6), so a real
+   failure still shows the owner nothing.
+3. **NEW, observed on the render:** the canvas empty state on this run reads
+   *"Runs recorded before the canvas existed, and runs on the Codex provider,
+   contain none."* Iteration 6 gated that on terminal-and-empty, which this run
+   is — but every clause is still **false** about a 9-minute-old Claude run that
+   died before the build segment minted a node. The terminal branch needs a
+   fourth case: *terminal, and the build never started*.

@@ -40,6 +40,13 @@ const PHASE_2B_COLUMNS = ["design_segment_done", "design_lock", "interactive"] a
  * ADDED_RUN_COLUMNS still works at all".
  */
 const PHASE_2D_COLUMNS = ["gate_attempts", "gate_stop_reason"] as const;
+/**
+ * Columns added after phase 2d. `rate_limited_at` is the durable half of the
+ * opt-in auto-resume: without it a restart during a rate-limit window loses the
+ * remaining wait. It belongs in the migration sweep for the same reason as the
+ * others — an older database must open, not throw.
+ */
+const LATER_COLUMNS = ["rate_limited_at"] as const;
 
 /** Returns the created row so a caller can assert on the INSERT's own defaults. */
 function seed(
@@ -451,7 +458,7 @@ test("a database written before these columns existed gains them on open", () =>
     old.close();
 
     const stripper = new DatabaseSync(databasePath);
-    for (const column of [...PHASE_2B_COLUMNS, ...PHASE_2D_COLUMNS]) {
+    for (const column of [...PHASE_2B_COLUMNS, ...PHASE_2D_COLUMNS, ...LATER_COLUMNS]) {
       stripper.exec(`ALTER TABLE runs DROP COLUMN ${column}`);
     }
     const columns = stripper

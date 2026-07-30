@@ -30,6 +30,12 @@
  *
  * WHAT IS STILL UNCONDITIONAL: the agent's name, its state, its task, and the
  * timeline. Four things, in that order.
+ *
+ * ONE CORRECTION TO THE PARAGRAPH ABOVE, MADE THE SAME DAY: that first rebuild
+ * dropped the SDK ids and the hook note, but `n10 · no lane` itself survived it —
+ * the panel still opened on the node id and on a placeholder for a lane the node
+ * did not have. Both are gone now; see `MetaLine`, which also carries what was
+ * kept and why.
  */
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -85,6 +91,58 @@ const KIND_LOOK: Readonly<Record<ActivityRun["kind"], { dot: string; verb: strin
   search: { dot: "bg-line-strong", verb: "text-ink-dim" },
   housekeeping: { dot: "bg-line", verb: "text-ink-faint" },
 };
+
+/**
+ * What housekeeping means, in the words the run sheet also uses.
+ *
+ * THE RAW TOKEN IS GONE — 2026-07-30. This tooltip used to read "The CLI marked
+ * this skip_transcript.", which names the SDK field (`GraphNode.ambient` is folded
+ * from it) and tells a reader who does not know that field nothing at all.
+ *
+ * A HAND-KEPT COPY, NOT A SHARED CONSTANT. The same sentence is meant to appear in
+ * the run sheet (`sheet.tsx`), written there by a separate change in this pass;
+ * this file exports nothing for it and NO TEST COMPARES THE TWO, so they can drift
+ * silently. Treat them as two copies of one sentence and change both together.
+ */
+const HOUSEKEEPING_MEANING = "housekeeping — not an agent step";
+
+/**
+ * The line under the agent's name: its lane, and whether it is housekeeping.
+ *
+ * TWO THINGS WERE REMOVED HERE ON 2026-07-30, AND THEY ARE NOT THE SAME REMOVAL.
+ *
+ *   - `node.id` — the panel opened on `n10 · no lane`. `n10` is the reducer's own
+ *     arrival counter for this run's fold; it addresses nothing the reader can
+ *     act on, appears in no URL, and is not the SDK's task id (those were already
+ *     dropped from the technical-details section for the same reason). Gone.
+ *   - `"no lane"` — gone as a PLACEHOLDER only. A lane the server derived is a
+ *     real fact about where the agent sits in the pipeline and still prints; what
+ *     is dropped is the row that announced the absence of one, which was the
+ *     larger half of what the reader saw first.
+ *
+ * RETURNS NULL RATHER THAN AN EMPTY ROW. A node with no lane and no housekeeping
+ * mark now has nothing to say on this line, and rendering the `<p>` anyway would
+ * leave its padding — a visible gap under the name that no browser check here
+ * would have caught.
+ *
+ * The separator is between the two, so it only exists when both do.
+ */
+function MetaLine({
+  node,
+  className,
+}: {
+  node: GraphNode;
+  className: string;
+}): ReactNode {
+  if (node.lane === null && !node.ambient) return null;
+  return (
+    <p className={className}>
+      {node.lane !== null && <span>{node.lane}</span>}
+      {node.lane !== null && node.ambient && <span aria-hidden="true">·</span>}
+      {node.ambient && <span title={HOUSEKEEPING_MEANING}>housekeeping</span>}
+    </p>
+  );
+}
 
 function TimelineRow({ run }: { run: ActivityRun }): ReactNode {
   const look = KIND_LOOK[run.kind];
@@ -290,34 +348,24 @@ export function AgentInspector({
             <p className="truncate text-[13.5px] font-semibold text-ink">
               {node.agent ?? "session"}
             </p>
-            <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint">
-              <span className="font-mono">{node.id}</span>
-              <span aria-hidden="true">·</span>
-              <span>{node.lane ?? "no lane"}</span>
-              {node.ambient && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span title="The CLI marked this skip_transcript.">housekeeping</span>
-                </>
-              )}
-            </p>
+            <MetaLine
+              node={node}
+              className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint"
+            />
           </div>
           <Button variant="ghost" onClick={onClose} title="Clear the selection">
             close
           </Button>
         </header>
       ) : (
-        <p className="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[11px] text-ink-faint">
-          <span className="font-mono">{node.id}</span>
-          <span aria-hidden="true">·</span>
-          <span>{node.lane ?? "no lane"}</span>
-          {node.ambient && (
-            <>
-              <span aria-hidden="true">·</span>
-              <span title="The CLI marked this skip_transcript.">housekeeping</span>
-            </>
-          )}
-        </p>
+        /* The sheet draws its own name and close button, so this caller gets the
+         * meta line alone — and nothing at all when there is no lane and no
+         * housekeeping mark, which is why `MetaLine` owns the `<p>` and its
+         * padding rather than the branch here. */
+        <MetaLine
+          node={node}
+          className="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[11px] text-ink-faint"
+        />
       )}
 
       <div className="px-3 pb-2.5">

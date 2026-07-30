@@ -57,13 +57,29 @@ export function decideTick(input: DecideInput): TickPlan {
   // 1. A RATE-LIMITED RUN FIRST, because its reason is the most actionable one:
   // submitting into an exhausted 5-hour window gets the new run throttled too,
   // and the existing run is resumable and is the better use of the window.
+  //
+  // THE REASON USED TO SAY "That run resumes when the window drains" AND NO CODE
+  // PERFORMED THAT RESUME. `rate_limited` is not terminal and `pump()` only ever
+  // picks up `queued`, so the run sat there until a human pressed Resume — and
+  // an unattended queue that skipped on this sentence every tick was reporting a
+  // recovery that never came.
+  //
+  // WHAT REPLACES IT IS CONDITIONED ON NOTHING, because cron can condition on
+  // nothing here. `RunSummary` carries no rate-limit fields at all, so this
+  // process cannot see whether a timer is armed; and cron-tick is a SEPARATE
+  // process from the dashboard server, so its own environment does not prove
+  // what that server was started with. The honest statement is the one below:
+  // cron does not resume it, and unless the server's opt-in auto-resume is on
+  // (and it is off by default), a human does.
   const limited = input.runs.find((row) => row.status === "rate_limited");
   if (limited !== undefined) {
     return {
       kind: "skip",
       reason:
         `${limited.runId} is rate_limited: the provider's shared 5-hour window is exhausted, and a new ` +
-        `run would be throttled too. That run resumes when the window drains.`,
+        `run would be throttled too. Cron does not resume it and cannot see whether anything else will — ` +
+        `the dashboard's auto-resume is opt-in (DASHBOARD_RATE_LIMIT_AUTO_RESUME, off by default) and arms ` +
+        `only when the provider reported a reset instant. Unless it is on, a human has to resume that run.`,
     };
   }
 

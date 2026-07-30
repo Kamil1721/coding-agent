@@ -49,16 +49,54 @@
  * refusal is authored in `secret-intake.ts` from the NAME alone, and the JSON
  * parse failure below deliberately does not use `describeError` — a parse error
  * quotes the offending text, and here the offending text is the credential.
+ *
+ * `POST /api/runs` NOW DECIDES A TICKET'S IDENTITY, AND DOES I/O TO GET THERE.
+ * It accepts reference images (base64 data URLs, the chat's caps, from one
+ * declaration in `ticket-refs.ts`), writes their bytes under
+ * `runs/<id>/references/`, and — when the ticket names a page — CAPTURES THAT
+ * PAGE with a headless browser before replying. That is the only moment in the
+ * pipeline where the network is both present and permitted: the spec seat that
+ * authors the pass/fail suite runs with `tools: []` and can never fetch
+ * anything, and the scorer runs `docker run --network none` and must keep doing
+ * so. Capturing here turns the page into TEXT the spec seat can read and
+ * SCREENSHOTS the builder can open.
+ *
+ * The route therefore does file writes and, sometimes, ~25 s of network before
+ * `store.createRun`. Both are fail-soft: a capture that fails still creates the
+ * run, and says so on the run's own event stream rather than in the response.
+ *
+ * BOTH INTAKE ROUTES NOW TAKE DOCUMENTS TOO — `POST /api/runs` and
+ * `POST /api/runs/:id/messages`, from one set of rules in `document-intake.ts`.
+ * A ticket's documents are written to `runs/<id>/documents/`, recorded in the
+ * reference manifest as PATHS AND DIGESTS ONLY, and their digests enter the
+ * ticket id exactly as an image's do: a changed scope document is a different
+ * ticket with its own frozen suite. A chat message's documents are written to
+ * `runs/<id>/chat/` and are NOT identity, because the run's ticket id was fixed
+ * when its row was written.
+ *
+ * WHAT NEITHER ROUTE DOES, STATED HERE BECAUSE IT IS THE THING A READER WILL
+ * ASSUME: neither one puts a document in front of an agent. This file decodes,
+ * stores and digests; whether a seat is given a document is decided by the build
+ * and spec wiring, which reads the manifest later and is not this file's to
+ * write. At the time this route was written nothing did — `builderReferenceSection`
+ * and `designReferenceSection` render images and screenshots only, the chat's
+ * delivery shape (`LiveMessage`, the `messages` table, `ownerMessageBlock`)
+ * carries text and image paths only — so both routes emit a `warn` on the run's
+ * event stream saying the attachment was STORED, not read. The wording is about
+ * what the intake does rather than about what every other module does not,
+ * because the second kind of sentence goes stale silently.
  */
 
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { DEFAULT_PORT, LOOPBACK_HOST } from "./dashboard-url.js";
+import { ADVERSARY_RECORD_FILE, adversaryPassFromRecord } from "./adversary.js";
 import type {
+  ApiAdversaryPass,
   ApiErrorResponse,
   CreateRunResponse,
   HealthResponse,
@@ -75,6 +113,7 @@ import {
 } from "./code-files.js";
 import { foldGraphAll } from "./graph.js";
 import type { AuthProbe } from "./auth.js";
+import { GateProbe } from "./health-gate.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import { isTerminal } from "./db.js";
@@ -95,7 +134,26 @@ import {
   secretStoreFile,
 } from "./secret-intake.js";
 import type { SecretIntakeStatus } from "./secret-intake.js";
-import { ticketFromText } from "./ticket.js";
+import { ticketWithReferences } from "./ticket.js";
+import {
+  MAX_REFERENCE_IMAGES,
+  MAX_REFERENCE_IMAGE_BYTES,
+  decodeReferenceDataUrl,
+  digestBytes,
+  documentDirFor,
+  referenceDirFor,
+  writeReferenceManifest,
+} from "./ticket-refs.js";
+import type { ReferenceDocument, ReferenceImage } from "./ticket-refs.js";
+import {
+  ACCEPTED_DOCUMENT_MEDIA_TYPES,
+  MAX_DOCUMENT_BODY_BYTES,
+  MAX_REFERENCE_DOCUMENTS,
+  decodeDocumentDataUrl,
+} from "./document-intake.js";
+import type { DecodedDocument } from "./document-intake.js";
+import { captureSite, captureTargetFor, captureTargetIn } from "./site-capture.js";
+import type { CaptureOptions, SiteCapture, SiteCaptureResult } from "./site-capture.js";
 
 /**
  * DECLARED IN `dashboard-url.ts`, RE-EXPORTED HERE.
@@ -111,7 +169,60 @@ export { DEFAULT_PORT, LOOPBACK_HOST };
 
 /** Ticket text cap. A ticket is a brief, not an upload. */
 export const MAX_TICKET_CHARS = 100_000;
+
+/**
+ * The default request-body cap. Generous for JSON, and far too small for images.
+ *
+ * A MEASURED DEFECT LIVED HERE. `readBody` had this as its ONLY cap, so the chat
+ * route's documented image limits — 6 images of 8 MB each — were unreachable by
+ * a factor of ten: one 8 MB PNG is ~10.7 MB as a base64 data URL, so anything
+ * over roughly 750 KB decoded died as "request body too large" long before
+ * `decodeReferenceDataUrl` could apply the cap it advertises. The per-image
+ * refusal message named a limit no request could ever reach.
+ *
+ * The fix is a per-route cap rather than one global one: raising this for every
+ * route would let any endpoint buffer 64 MB of anything.
+ */
 const MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * The envelope the IMAGES alone need.
+ *
+ * DERIVED FROM THE IMAGE CAPS, NOT TYPED AS A NUMBER, so the two can never
+ * disagree again: base64 is 4/3 of the decoded size, and the slack covers the
+ * data-URL prefixes, the JSON envelope and the ticket text riding alongside.
+ *
+ * NO LONGER PASSED TO `readBody` DIRECTLY — see {@link MAX_ATTACHMENT_BODY_BYTES},
+ * which is what both attachment-bearing routes use now that a request may carry
+ * documents as well.
+ */
+export const MAX_IMAGE_BODY_BYTES =
+  MAX_REFERENCE_IMAGES * Math.ceil((MAX_REFERENCE_IMAGE_BYTES * 4) / 3) + 256 * 1024;
+
+/**
+ * The body cap on the two routes that carry ATTACHMENTS — images, documents, or
+ * both in the same request.
+ *
+ * THE SUM, NEVER THE LARGER OF THE TWO, and `document-intake.ts` states the same
+ * rule where `MAX_DOCUMENT_BODY_BYTES` is declared: a request may legitimately
+ * carry six reference images AND four documents, and a cap of `Math.max(...)`
+ * would refuse it while every per-attachment limit the API advertises says it is
+ * fine. That is the shape of the defect this file already carried once — a
+ * documented per-image limit unreachable by a factor of ten because the route
+ * used the 1 MB default envelope, so an oversized attachment died as "request
+ * body too large" quoting a limit no request could reach. `api-documents.test.ts`
+ * asserts the arithmetic rather than trusting review to catch a "simplification"
+ * back to a max.
+ *
+ * IT IS A REAL MEMORY COST, AND IT HAS ROUGHLY DOUBLED. `readBody` buffers the
+ * whole body before parsing, so a maximal request now holds ~128 MB of base64
+ * (~64 MB of images plus ~64 MB of documents) plus the decoded copies. That is
+ * acceptable here and only here: this server binds loopback, serves one human,
+ * and processes one such request at a time in practice. It would not be
+ * acceptable on anything shared, and a route that does not carry attachments
+ * must keep the {@link MAX_BODY_BYTES} default.
+ */
+export const MAX_ATTACHMENT_BODY_BYTES = MAX_IMAGE_BODY_BYTES + MAX_DOCUMENT_BODY_BYTES;
 
 /**
  * What the HTTP layer needs from the orchestrator, and nothing more.
@@ -154,6 +265,46 @@ export interface HttpDeps {
   readonly catalog: ModelCatalog;
   readonly auth: AuthProbe;
   readonly paths: DashboardPaths;
+  /**
+   * The environment the RUN gets, for the gate probe below.
+   *
+   * OPTIONAL SO THAT `index.ts` NEED NOT CHANGE, and the default is truthful
+   * only because of how `main` is called: `index.ts:46` hands the orchestrator
+   * its own `env` and `index.ts:48` passes none here, but `main()` is invoked
+   * with no argument in the only production path, so both are the same
+   * `process.env` object. If `main(customEnv)` ever becomes real, index.ts must
+   * pass `env` here too — otherwise the gate probe answers for a different
+   * `BAKEOFF_SCORER_IMAGE` than the gate phase will use. See
+   * `GateProbeOptions.env`.
+   */
+  readonly env?: NodeJS.ProcessEnv;
+  /**
+   * The cached scorer-gate probe. Built by {@link createDashboardServer} when
+   * absent, which is every production caller; the seam exists so a test can hand
+   * in a probe that does not spawn docker.
+   */
+  readonly gate?: GateProbe;
+  /**
+   * How a page named in a ticket gets captured. Defaults to real chromium.
+   *
+   * THE SEAM EXISTS BECAUSE THE ALTERNATIVE IS AN UNTESTABLE ROUTE. `POST
+   * /api/runs` decides the ticket's identity from the capture's outline, and a
+   * test that had to launch a browser to observe that would be a test nobody
+   * runs. Injecting the capture lets the route's own behaviour — the fail-soft,
+   * the manifest, the id — be checked with no network and no browser.
+   */
+  readonly captureSite?: (options: CaptureOptions) => Promise<SiteCaptureResult>;
+}
+
+/**
+ * `HttpDeps` with the optional wiring resolved, exactly once, per server.
+ *
+ * The probe holds the cache and the in-flight promise, so it must be ONE object
+ * for the life of the server — resolving it inside `handle()` would build a new
+ * one per request and probe docker on every poll.
+ */
+interface ResolvedHttpDeps extends HttpDeps {
+  readonly gate: GateProbe;
 }
 
 /**
@@ -189,13 +340,47 @@ function toSummary(row: RunRow): RunSummary {
   };
 }
 
+/**
+ * The human-factors pass's record, off the run's own `results/` directory.
+ *
+ * THE SAME SHAPE AS `readDesignLock`, ON PURPOSE: a per-request read of one
+ * small JSON file beside the run, absent for every run that never produced one.
+ * No cache — a cached copy would be a second source of truth for a field whose
+ * producer has never run, and the whole point of `#adversaryPhase` writing the
+ * record on every exit is that the file IS the answer.
+ *
+ * THE RUN ID COMES OFF THE STORE ROW, NEVER OFF THE REQUEST. `runPathsFor` is
+ * handed `row.runId`, which the store already resolved, so this adds no path
+ * surface: an id that reaches here has already matched a persisted run.
+ *
+ * `results/` IS NOT SERVED AND MUST NOT BE. It holds held-out test titles and
+ * the scorer's output; `code-files.ts`'s workspace-only fence is a security
+ * control. This reads ONE known filename inside it, server-side, and puts four
+ * values on the response — no route, no browsable directory.
+ *
+ * EVERY FAILURE IS `null`. An unreadable, corrupt or absent record all report
+ * "no pass on this run", and api-types.ts says so where the field is declared:
+ * the distinction that IS preserved is the one inside a readable record, between
+ * a pass that filed no report and a pass that found nothing.
+ */
+function readAdversaryPass(resultsDir: string): ApiAdversaryPass | null {
+  const path = join(resultsDir, ADVERSARY_RECORD_FILE);
+  if (!existsSync(path)) return null;
+  try {
+    return adversaryPassFromRecord(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function toDetail(row: RunRow, store: RunStore, paths: DashboardPaths): RunDetail {
   const screenshots = store.listScreenshots(row.runId);
   // ABSENT MEANS "NO DESIGN LANE", AND THAT IS NOT THE SAME AS AN EMPTY LOCK.
   // The record is written by the lane itself, so a run that never had one has
   // no file — and `null` here says exactly that, while a file saying
   // `{awaiting: false, locked: null}` says the lane ran and locked nothing.
-  const lock = readDesignLock(runPathsFor(paths, row.runId).results);
+  const results = runPathsFor(paths, row.runId).results;
+  const lock = readDesignLock(results);
   return {
     ...toSummary(row),
     ticketText: row.ticketText,
@@ -222,6 +407,14 @@ function toDetail(row: RunRow, store: RunStore, paths: DashboardPaths): RunDetai
     // gate passed". See api-types.ts for who is still not writing them.
     gateAttempts: row.gateAttempts,
     gateStopReason: row.gateStopReason,
+    // STRAIGHT OFF THE ROW, WHICH IS THE REDACTED COPY: `db.ts:746` is the only
+    // writer of this column and it runs `redactForPersistence` over the text
+    // first. It is NOT a status — a run parked at `awaiting_input` carries the
+    // DESIGN lane's failure while it is still live and still resumable — and it
+    // is last-write-wins across five writers, so it names the LAST thing that
+    // went wrong and not necessarily the one that ended the run. api-types.ts
+    // carries both caveats for the client that renders it.
+    failureReason: row.failureReason,
     designLock:
       lock === null
         ? null
@@ -235,6 +428,14 @@ function toDetail(row: RunRow, store: RunStore, paths: DashboardPaths): RunDetai
             lockedBy: lock.lockedBy,
             reason: lock.reason,
           },
+    // ABSENT MEANS "NO PASS RECORD ON THIS RUN", which is what EVERY run says
+    // today: the lane needs a `previewUrl` and has never executed. The
+    // distinction this field is here for is the one INSIDE a record —
+    // `findings: null` (the pass left no report) against `findings: []` (it
+    // reported and found nothing) — and `adversaryPassFromRecord` owns it. See
+    // api-types.ts's ApiAdversaryPass for the full truth table before rendering
+    // any of it.
+    adversary: readAdversaryPass(results),
   };
 }
 
@@ -295,21 +496,69 @@ function sendError(
   sendJson(response, status, body);
 }
 
-async function readBody(request: IncomingMessage): Promise<string> {
+/**
+ * Buffer a request body, refusing one that is too big for its route.
+ *
+ * `maxBytes` DEFAULTS TO THE SMALL CAP, so a route that says nothing gets the
+ * conservative one. Only the two attachment-bearing routes opt into
+ * {@link MAX_ATTACHMENT_BODY_BYTES}, and the refusal names the limit that
+ * actually applied — the previous message said only "request body too large",
+ * which for an oversized upload pointed the reader at the image cap rather than
+ * at the envelope cap that had really fired.
+ *
+ * THE REFUSAL IS A THROW, NOT A RESPONSE, and what the caller sees therefore
+ * depends on the route: `createRun` and `postMessage` catch it and answer 400
+ * `invalid_body` with this message inside, while a route that does not catch it
+ * (`POST /api/runs/:id/resume`) surfaces it through `createDashboardServer`'s
+ * handler as a 500 `internal_error` carrying the same sentence.
+ * `api-documents.test.ts` pins both, because the second one is the negative
+ * control proving the cap really is per-route rather than global.
+ */
+async function readBody(request: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<string> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
     total += buffer.byteLength;
-    if (total > MAX_BODY_BYTES) throw new Error("request body too large");
+    if (total > maxBytes) throw new BodyTooLargeError(maxBytes);
     chunks.push(buffer);
   }
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/**
+ * What {@link readBody} throws when a body exceeds its route's cap.
+ *
+ * A TYPE RATHER THAN A MESSAGE PREFIX, because both attachment routes have to
+ * tell this apart from a JSON parse error and answer differently — and the chat
+ * route in particular MUST NOT answer "body must be JSON" to an owner whose 10 MB
+ * scope document was refused by the envelope, which is what it did before: the
+ * one thing wrong with the request was the only thing the message did not
+ * mention. Matching on `error.message.startsWith(…)` would work today and break
+ * silently the first time the sentence is reworded.
+ *
+ * THE MESSAGE NAMES THE LIMIT THAT ACTUALLY FIRED, which is the whole point of
+ * per-route caps: quoting the per-image or per-document limit here would send
+ * the reader after a cap their request never reached.
+ */
+export class BodyTooLargeError extends Error {
+  readonly maxBytes: number;
+  constructor(maxBytes: number) {
+    super(`request body too large (over ${String(maxBytes)} bytes)`);
+    this.name = "BodyTooLargeError";
+    this.maxBytes = maxBytes;
+  }
+}
+
 export function createDashboardServer(deps: HttpDeps): Server {
+  const resolved: ResolvedHttpDeps = {
+    ...deps,
+    gate:
+      deps.gate ??
+      new GateProbe({ paths: deps.paths, env: deps.env ?? process.env }),
+  };
   const server = createServer((request, response) => {
-    void handle(deps, request, response).catch((error: unknown) => {
+    void handle(resolved, request, response).catch((error: unknown) => {
       if (!response.headersSent) {
         sendError(response, 500, "internal_error", describeError(error), null);
       } else {
@@ -322,7 +571,7 @@ export function createDashboardServer(deps: HttpDeps): Server {
   return server;
 }
 
-async function handle(deps: HttpDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", `http://${LOOPBACK_HOST}`);
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -334,12 +583,26 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
   }
 
   // GET /api/health
+  //
+  // TWO INDEPENDENT PROBES, AND `ok` STILL ANSWERS FOR AUTH ALONE. The gate is a
+  // separate field rather than a term in `ok` because the two failures have
+  // different remedies and different consequences: no login means no run at all,
+  // while no docker means a run that builds, produces code and cannot be SCORED.
+  // `cron-tick.ts:261-270` reads `ok` and journals "no CLI is authenticated" when
+  // it is false, so folding docker in would stop the unattended scheduler with a
+  // sentence naming the wrong cause.
+  //
+  // BOTH ARE AWAITED TOGETHER because they are two independent subprocess
+  // spawns, both cached, and neither depends on the other's answer. The gate
+  // probe has its own deadline (`health-gate.ts`) and cannot hold this response
+  // open for the docker CLI's own 120 s.
   if (segments.length === 2 && segments[1] === "health" && method === "GET") {
-    const auth = await deps.auth.status();
+    const [auth, gate] = await Promise.all([deps.auth.status(), deps.gate.status()]);
     const body: HealthResponse = {
       ok: auth.claude === "ok" || auth.codex === "ok",
       claudeAuth: auth.claude,
       codexAuth: auth.codex,
+      gate,
     };
     sendJson(response, 200, body);
     return;
@@ -449,7 +712,7 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
 
   /* POST /api/runs/:id/messages — say something to a run that is already going.
    *
-   * Accepts `{ text, images? }` as JSON, where `images` is an array of data URLs.
+   * Accepts `{ text, images?, documents? }` as JSON, both arrays of data URLs.
    *
    * WHY DATA URLs AND NOT MULTIPART. The only client is one fetch in this app's own
    * chat box, `secret-intake.ts` is the only multipart parser here and it is
@@ -566,38 +829,48 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
  * and `foldGraph` returns those unchanged — so an old run answers 200 with an
  * empty canvas and `inventory: null`, with no feature flag to forget to remove.
  */
-/** How much one attached image may be, decoded. Screenshots, not video. */
-const MAX_CHAT_IMAGE_BYTES = 8 * 1024 * 1024;
-/** How many images one message may carry. */
-const MAX_CHAT_IMAGES = 6;
+/**
+ * The chat's image caps ARE the ticket form's image caps, and there is now one
+ * declaration of each.
+ *
+ * They were duplicated here as `MAX_CHAT_IMAGE_BYTES`/`MAX_CHAT_IMAGES` with the
+ * same values `ticket-refs.ts` now owns; the decoder was duplicated too. Two
+ * intakes with independently-editable caps is how one of them quietly stops
+ * accepting what the other documents. The NUMBERS AND THE REGEX ARE UNCHANGED,
+ * so the chat route behaves exactly as it did — apart from the body cap above,
+ * which it was silently failing under.
+ */
+
 /** How long one message may be. Generous; a paste of a spec is legitimate. */
 const MAX_CHAT_TEXT_CHARS = 8_000;
 
-/** `data:image/png;base64,…` → the extension and the bytes, or null if not that. */
-function decodeDataUrl(value: unknown): { ext: string; bytes: Buffer } | null {
-  if (typeof value !== "string") return null;
-  const match = /^data:image\/(png|jpeg|jpg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(value);
-  if (match === null) return null;
-  const ext = match[1] === "jpeg" ? "jpg" : (match[1] ?? "png");
-  const bytes = Buffer.from(match[2] ?? "", "base64");
-  /*
-   * THE MIME TYPE IS NOT TRUSTED — the magic bytes are checked below by the caller
-   * only insofar as size is bounded. This is a loopback, single-user tool and the
-   * bytes go to a file the builder Reads, not to a renderer that could be tricked;
-   * the size cap is the control that matters, because an unbounded base64 body is
-   * the one way this endpoint could hurt the machine it runs on.
-   */
-  if (bytes.length === 0 || bytes.length > MAX_CHAT_IMAGE_BYTES) return null;
-  return { ext, bytes };
-}
-
 /**
- * Accept one owner message, with optional images, and queue it for the run.
+ * Accept one owner message, with optional images and documents, and queue it for
+ * the run.
  *
  * REFUSED ON A TERMINAL RUN, and that refusal is the honest part. A finished run has
  * no further segment boundary to drain at, so accepting the message would store an
  * instruction nothing will ever read while showing the owner a sent message. Better
  * to say the run is over.
+ *
+ * WHAT A DOCUMENT ON THIS ROUTE DOES AND — TODAY — DOES NOT DO. The bytes are
+ * decoded under the same rules as the ticket form's (one `document-intake.ts`,
+ * not a second dialect), written under `runs/<id>/chat/` beside the chat images,
+ * and their paths are reported on the run's own event stream. THEY ARE NOT
+ * DELIVERED TO THE RUNNING AGENT, and this route cannot make them be: the
+ * `messages` table has a single `images` column (`db.ts:485`), `LiveMessage`
+ * carries `{text, images}` only (`live-input.ts:33`), and `ownerMessageBlock`
+ * renders "N image(s)" (`owner-message.ts`). Putting document paths into the
+ * `images` field would deliver them and would make all three of those say
+ * "image" about a PDF — a name that lies is the defect this repository keeps
+ * finding, and here it would also feed a `Read` instruction about an image that
+ * is not one.
+ *
+ * SO THE GAP IS ANNOUNCED RATHER THAN PAPERED OVER: a `warn` on the run's stream
+ * names each stored path and says the running session was not given it. That
+ * line is asserted by `api-documents.test.ts`, so wiring delivery without
+ * removing the warning — or removing the warning without wiring delivery — fails
+ * a test rather than quietly changing what an attachment means.
  */
 async function postMessage(
   deps: HttpDeps,
@@ -619,8 +892,32 @@ async function postMessage(
 
   let payload: unknown;
   try {
-    payload = JSON.parse(await readBody(request));
-  } catch {
+    // THE ATTACHMENT CAP, because this route carries images AND documents. See
+    // MAX_ATTACHMENT_BODY_BYTES: under the default envelope cap the documented
+    // 8 MB-per-image limit was unreachable and every oversized attachment failed
+    // as a body error naming a limit no request could reach.
+    payload = JSON.parse(await readBody(request, MAX_ATTACHMENT_BODY_BYTES));
+  } catch (error) {
+    /*
+     * TWO FAILURES, TWO SENTENCES. A parse error still answers "body must be
+     * JSON" WITHOUT quoting the body: `JSON.parse`'s own message includes the
+     * offending text, and the offending text here is whatever the owner typed
+     * into a chat box — the same reason the secret route refuses to use
+     * `describeError` (see the file header). An oversized envelope is not a
+     * parse error and must say so, or the one thing wrong with the request is
+     * the only thing the refusal does not mention.
+     */
+    if (error instanceof BodyTooLargeError) {
+      sendError(
+        response,
+        400,
+        "body_too_large",
+        error.message,
+        `One message may carry ${String(MAX_REFERENCE_IMAGES)} image(s) and ` +
+          `${String(MAX_REFERENCE_DOCUMENTS)} document(s). Send fewer, or smaller ones.`,
+      );
+      return;
+    }
     sendError(response, 400, "invalid_body", "body must be JSON", null);
     return;
   }
@@ -633,8 +930,25 @@ async function postMessage(
   const text = typeof record["text"] === "string" ? record["text"].trim() : "";
   const rawImages = Array.isArray(record["images"]) ? record["images"] : [];
 
-  if (text === "" && rawImages.length === 0) {
-    sendError(response, 400, "empty_message", "a message needs text or at least one image", null);
+  // THE SAME VALIDATION THE TICKET FORM USES, from the same function, because
+  // two intakes with independently-editable rules is how one of them quietly
+  // stops accepting what the other documents — the reason the image caps were
+  // moved into `ticket-refs.ts` in the first place.
+  const documentIntake = readReferenceDocuments(record["documents"]);
+  if (!documentIntake.ok) {
+    sendError(response, documentIntake.status, documentIntake.code, documentIntake.message, documentIntake.remediation);
+    return;
+  }
+  const rawDocuments = documentIntake.documents;
+
+  if (text === "" && rawImages.length === 0 && rawDocuments.length === 0) {
+    sendError(
+      response,
+      400,
+      "empty_message",
+      "a message needs text, at least one image, or at least one document",
+      null,
+    );
     return;
   }
   if (text.length > MAX_CHAT_TEXT_CHARS) {
@@ -647,12 +961,12 @@ async function postMessage(
     );
     return;
   }
-  if (rawImages.length > MAX_CHAT_IMAGES) {
+  if (rawImages.length > MAX_REFERENCE_IMAGES) {
     sendError(
       response,
       400,
       "too_many_images",
-      `${String(rawImages.length)} images; the limit is ${String(MAX_CHAT_IMAGES)}`,
+      `${String(rawImages.length)} images; the limit is ${String(MAX_REFERENCE_IMAGES)}`,
       null,
     );
     return;
@@ -666,13 +980,13 @@ async function postMessage(
 
   const written: string[] = [];
   for (const [index, raw] of rawImages.entries()) {
-    const decoded = decodeDataUrl(raw);
+    const decoded = decodeReferenceDataUrl(raw);
     if (decoded === null) {
       sendError(
         response,
         400,
         "invalid_image",
-        `image ${String(index + 1)} is not a base64 data URL of a supported type, or exceeds ${String(MAX_CHAT_IMAGE_BYTES)} bytes`,
+        `image ${String(index + 1)} is not a base64 data URL of a supported type, or exceeds ${String(MAX_REFERENCE_IMAGE_BYTES)} bytes`,
         "Supported: png, jpeg, webp, gif.",
       );
       return;
@@ -683,6 +997,28 @@ async function postMessage(
     const path = join(chatDir, name);
     writeFileSync(path, decoded.bytes);
     written.push(path);
+  }
+
+  /*
+   * THE DOCUMENTS GO TO `runs/<id>/chat/`, NOT `runs/<id>/documents/`.
+   *
+   * `documents/` holds the TICKET's attachments, whose digests are in the ticket
+   * id. A mid-run attachment is not and must not become part of that identity —
+   * the row's `ticketId` was written when the run was created and the frozen
+   * suite is addressed by it — so keeping the two directories apart means a
+   * future pass that folds "everything under documents/" into an id cannot
+   * silently swallow a chat attachment and re-point a live run at a different
+   * suite. `ticket-refs.ts#documentDirFor` states the same split from the other
+   * side.
+   *
+   * `-doc-` IS IN THE NAME so a directory listing distinguishes these from the
+   * chat images, which use the same timestamp-and-ordinal scheme.
+   */
+  const writtenDocuments: string[] = [];
+  for (const [index, decoded] of rawDocuments.entries()) {
+    const path = join(chatDir, `${String(Date.now())}-doc-${String(index + 1)}.${decoded.extension}`);
+    writeFileSync(path, decoded.bytes);
+    writtenDocuments.push(path);
   }
 
   const message = deps.store.appendMessage(runId, { role: "owner", text, images: written });
@@ -720,10 +1056,43 @@ async function postMessage(
       `: ${text.slice(0, 200)}`,
   });
 
+  /*
+   * THE DOCUMENTS GET THEIR OWN LINE, AND IT IS A `warn`.
+   *
+   * Not folded into the sentence above, which reports a DELIVERY. These were not
+   * delivered: they are on disk and no seat has been told they exist. Reporting
+   * that as part of "owner message delivered into the running session" would be
+   * the message claiming more than the mechanism does, which is precisely what
+   * the run's own trace exists to prevent.
+   *
+   * `warn` RATHER THAN `info` because a stored-but-unread attachment is a
+   * degraded outcome the owner needs to see: they attached a scope expecting the
+   * run to act on it. The paths are printed so it can be handed over by hand
+   * (`@path` in the chat box, or a `Read` the owner asks for in words) until the
+   * wiring exists.
+   */
+  if (writtenDocuments.length > 0) {
+    deps.bus.emit(runId, {
+      type: "log",
+      level: "warn",
+      text:
+        `${String(writtenDocuments.length)} document(s) attached to this message were STORED, NOT ` +
+        "DELIVERED. The chat channel carries text and image paths — the messages table has no " +
+        "documents column and the live-session message shape has no field for one — so this message " +
+        "did not hand them to the run, and no agent has been told they exist. Name the path in a " +
+        "follow-up message if you need this run to open one. They are at: " +
+        writtenDocuments.join(", "),
+    });
+  }
+
   // `live` lets the UI say "delivered now" instead of "waiting". Re-read so the
   // response carries the stamp the push just wrote.
+  //
+  // `documents` IS ON THE RESPONSE AND NOT ON `message`. The stored row has no
+  // such column, and inventing one on the way out would show the owner a message
+  // that the next `GET /api/runs/:id/messages` does not agree with.
   const stored = deps.store.messages(runId).find((m) => m.seq === message.seq) ?? message;
-  sendJson(response, 202, { message: stored, live });
+  sendJson(response, 202, { message: stored, live, documents: writtenDocuments });
 }
 
 function graphSnapshot(store: RunStore, runId: string): RunGraphResponse {
@@ -744,11 +1113,165 @@ function graphSnapshot(store: RunStore, runId: string): RunGraphResponse {
   return { atSeq: rows[rows.length - 1]?.seq ?? 0, ...state };
 }
 
+/**
+ * Everything a create-run request said about references, validated.
+ *
+ * A DISCRIMINATED RESULT RATHER THAN A THROW, because every branch here is a
+ * 400 with its own wording and `createRun` is already a wall of them.
+ */
+type ReferenceIntake =
+  | { readonly ok: true; readonly images: readonly { readonly ext: string; readonly bytes: Buffer }[] }
+  | { readonly ok: false; readonly status: number; readonly code: string; readonly message: string; readonly remediation: string | null };
+
+function readReferenceImages(raw: unknown): ReferenceIntake {
+  if (raw === undefined || raw === null) return { ok: true, images: [] };
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_body",
+      message: "references must be an array of base64 image data URLs when present",
+      remediation: "Omit it entirely if the ticket has no reference images.",
+    };
+  }
+  if (raw.length > MAX_REFERENCE_IMAGES) {
+    return {
+      ok: false,
+      status: 400,
+      code: "too_many_images",
+      message: `${String(raw.length)} reference images; the limit is ${String(MAX_REFERENCE_IMAGES)}`,
+      remediation: null,
+    };
+  }
+  const images: { readonly ext: string; readonly bytes: Buffer }[] = [];
+  for (const [index, value] of raw.entries()) {
+    const decoded = decodeReferenceDataUrl(value);
+    if (decoded === null) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_image",
+        message:
+          `reference ${String(index + 1)} is not a base64 data URL of a supported type, ` +
+          `or exceeds ${String(MAX_REFERENCE_IMAGE_BYTES)} bytes`,
+        remediation: "Supported: png, jpeg, webp, gif.",
+      };
+    }
+    images.push(decoded);
+  }
+  return { ok: true, images };
+}
+
+/**
+ * The same shape for DOCUMENTS, used by BOTH intake routes.
+ *
+ * ONE FUNCTION FOR TWO ROUTES, and it decodes through `document-intake.ts`
+ * rather than re-stating any cap: the count, the per-file size, the accepted
+ * media types and the base64 alphabet are that module's, and a second copy here
+ * is how the ticket form and the chat box end up disagreeing about what a
+ * document is.
+ *
+ * THE REFUSAL SENTENCE IS THE MODULE'S OWN. `decodeDocumentDataUrl` returns a
+ * NAMED code with a sentence naming the actual cap or the actual type — "the
+ * application/pdf payload is 18874368 bytes decoded; the limit is 12582912" —
+ * and re-wording it here would produce a second, vaguer explanation of the same
+ * refusal. Only the ordinal ("document 2") and the remediation are added.
+ *
+ * IT DOES NOT WRITE ANYTHING. Both callers need every document validated BEFORE
+ * any bytes hit the disk, so that a request refused on its third attachment
+ * leaves no half-written intake behind.
+ */
+type DocumentIntake =
+  | { readonly ok: true; readonly documents: readonly DecodedDocument[] }
+  | {
+      readonly ok: false;
+      readonly status: number;
+      readonly code: string;
+      readonly message: string;
+      readonly remediation: string | null;
+    };
+
+function readReferenceDocuments(raw: unknown): DocumentIntake {
+  if (raw === undefined || raw === null) return { ok: true, documents: [] };
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_body",
+      message: "documents must be an array of base64 data URLs when present",
+      remediation: "Omit it entirely if there are no documents.",
+    };
+  }
+  if (raw.length > MAX_REFERENCE_DOCUMENTS) {
+    return {
+      ok: false,
+      status: 400,
+      code: "too_many_documents",
+      message: `${String(raw.length)} documents; the limit is ${String(MAX_REFERENCE_DOCUMENTS)}`,
+      remediation: null,
+    };
+  }
+  const documents: DecodedDocument[] = [];
+  for (const [index, value] of raw.entries()) {
+    const decoded = decodeDocumentDataUrl(value);
+    if (!decoded.ok) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_document",
+        message: `document ${String(index + 1)}: ${decoded.detail}`,
+        remediation:
+          decoded.code === "unsupported-media-type"
+            ? `Accepted: ${ACCEPTED_DOCUMENT_MEDIA_TYPES.join(", ")}.`
+            : null,
+      };
+    }
+    documents.push(decoded);
+  }
+  return { ok: true, documents };
+}
+
+/**
+ * Decide which page, if any, this request wants captured.
+ *
+ * THREE INPUTS COLLAPSE TO ONE ANSWER. An explicit `captureUrl` string names a
+ * page; an explicit `null` is the OPT-OUT and suppresses the scan entirely;
+ * absent means "look in the ticket text", which is the case the owner's ask is
+ * about ("make a copy of kamilborzecki.dev" carries no separate field).
+ *
+ * THE OPT-OUT EXISTS BECAUSE THE SCAN HAS A REAL FALSE-POSITIVE COST. A brief
+ * that merely cites a URL would otherwise spend up to half a minute capturing a
+ * documentation page, and — because the outline lands in the brief — would mint
+ * a ticket id that moves whenever that page does.
+ */
+function requestedCaptureTarget(body: Record<string, unknown>, ticketText: string): ReturnType<typeof captureTargetIn> {
+  const explicit = body["captureUrl"];
+  if (explicit === null) return { kind: "none" };
+  if (typeof explicit === "string" && explicit.trim().length > 0) return captureTargetFor(explicit.trim());
+  return captureTargetIn(ticketText);
+}
+
 async function createRun(deps: HttpDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
   let payload: unknown;
   try {
-    payload = JSON.parse(await readBody(request));
+    // THE ATTACHMENT CAP. This route carries reference images AND documents, so
+    // it needs the same envelope the chat route needs — the SUM of the two, not
+    // the larger; see MAX_ATTACHMENT_BODY_BYTES.
+    payload = JSON.parse(await readBody(request, MAX_ATTACHMENT_BODY_BYTES));
   } catch (error) {
+    // THE ENVELOPE REFUSAL IS ITS OWN CODE, so a client can tell "your JSON is
+    // malformed" from "your attachments are 130 MB" without parsing prose.
+    if (error instanceof BodyTooLargeError) {
+      sendError(
+        response,
+        400,
+        "body_too_large",
+        error.message,
+        `A ticket may carry ${String(MAX_REFERENCE_IMAGES)} image(s) and ` +
+          `${String(MAX_REFERENCE_DOCUMENTS)} document(s). Send fewer, or smaller ones.`,
+      );
+      return;
+    }
     sendError(response, 400, "invalid_body", describeError(error), "POST a JSON object.");
     return;
   }
@@ -795,6 +1318,36 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
     );
     return;
   }
+  const captureUrl = body["captureUrl"];
+  if (captureUrl !== undefined && captureUrl !== null && typeof captureUrl !== "string") {
+    sendError(
+      response,
+      400,
+      "invalid_body",
+      "captureUrl must be a string, null or absent",
+      "null suppresses the capture; absent means the first URL in the ticket text is captured.",
+    );
+    return;
+  }
+  const intake = readReferenceImages(body["references"]);
+  if (!intake.ok) {
+    sendError(response, intake.status, intake.code, intake.message, intake.remediation);
+    return;
+  }
+  // BOTH INTAKES RUN BEFORE ANY BYTES ARE WRITTEN. A ticket refused on its
+  // second document must leave nothing behind: the run id below is minted after
+  // this point, so a refusal here costs no directory and no row.
+  const documentIntake = readReferenceDocuments(body["documents"]);
+  if (!documentIntake.ok) {
+    sendError(
+      response,
+      documentIntake.status,
+      documentIntake.code,
+      documentIntake.message,
+      documentIntake.remediation,
+    );
+    return;
+  }
 
   const entry = await deps.catalog.resolve(modelId);
   if (entry === null) {
@@ -826,8 +1379,96 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
     return;
   }
 
-  const ticket = ticketFromText(ticketText);
+  /*
+   * THE RUN ID IS MINTED BEFORE THE TICKET, WHICH IS A REVERSAL.
+   *
+   * References are bytes, and bytes need a directory. The directory is the run's
+   * own (`runs/<id>/references/`, the shape the chat images already use), so the
+   * run id has to exist first — and it can, because it is a timestamp plus a
+   * uuid and depends on nothing about the ticket. The TICKET is then minted from
+   * the prose plus whatever those references turned out to be, and its id covers
+   * them.
+   */
   const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+  const referenceDir = referenceDirFor(deps.paths.runs, runId);
+  const images: ReferenceImage[] = [];
+  if (intake.images.length > 0) mkdirSync(referenceDir, { recursive: true });
+  for (const [index, decoded] of intake.images.entries()) {
+    // Ordinal-named, so the manifest order and the on-disk order are the same
+    // reading, and a builder listing the directory sees the owner's sequence.
+    const path = join(referenceDir, `reference-${String(index + 1)}.${decoded.ext}`);
+    writeFileSync(path, decoded.bytes);
+    images.push({ path, sha256: digestBytes(decoded.bytes), bytes: decoded.bytes.byteLength });
+  }
+
+  /*
+   * THE DOCUMENTS, IN THEIR OWN DIRECTORY, AS PATHS AND DIGESTS.
+   *
+   * `runs/<id>/documents/` rather than beside the images, which is the owner's
+   * ask spelled literally and costs nothing because the manifest records
+   * ABSOLUTE paths — see `documentDirFor` for the second reason (the chat's
+   * documents must not be able to land in the same place).
+   *
+   * ONLY THE PATH, THE DIGEST, THE SIZE AND THE MEDIA TYPE ARE RECORDED. The
+   * bytes stay on disk: a 12 MB PDF has no business in a JSON manifest that is
+   * re-read on every build, and `document-intake.ts` additionally states that a
+   * document's base64 cannot be redacted — persisting it would persist any
+   * credential the file happens to contain, in a form `redactForPersistence`
+   * cannot see into.
+   */
+  const documentDir = documentDirFor(deps.paths.runs, runId);
+  const documents: ReferenceDocument[] = [];
+  if (documentIntake.documents.length > 0) mkdirSync(documentDir, { recursive: true });
+  for (const [index, decoded] of documentIntake.documents.entries()) {
+    const path = join(documentDir, `document-${String(index + 1)}.${decoded.extension}`);
+    writeFileSync(path, decoded.bytes);
+    documents.push({
+      path,
+      sha256: digestBytes(decoded.bytes),
+      bytes: decoded.bytes.byteLength,
+      mediaType: decoded.mediaType,
+    });
+  }
+
+  /*
+   * THE CAPTURE HAPPENS HERE, INSIDE THE POST, AND IT COULD NOT HAPPEN ANYWHERE
+   * ELSE.
+   *
+   * The outline it produces is composed into the brief, so it decides the
+   * ticket's identity — and the identity has to be settled before `createRun`
+   * writes the row that everything downstream reads. Doing it later, in the
+   * orchestrator, would mean the row's `ticketId` and the ticket the run is
+   * actually graded under were different strings.
+   *
+   * IT IS ALSO THE ONLY MOMENT THE NETWORK IS BOTH PRESENT AND ALLOWED: the
+   * builder has egress but produces nothing durable for the spec seat, and the
+   * gate runs `--network none` by design and must keep doing so. Capturing at
+   * ticket time turns one page into a durable artefact that the offline half of
+   * the pipeline can be compared against LATER — by a human reading the Verdict
+   * tab, or by a criterion the spec seat wrote from the outline. It does NOT
+   * give the gate a way to diff the build against the live site, and nothing
+   * here should be read as claiming that.
+   *
+   * THE COST IS A SLOWER POST, AND IT IS NOT SMALL. At most one capture per
+   * submission, but its bounded parts sum to `CAPTURE_BUDGET_MS` — launch plus
+   * navigation plus one screenshot per width, ~65 s today — and two DOM reads
+   * carry playwright's own default on top of that. A healthy page is a few
+   * seconds; a hanging one is most of a minute with no progress shown, because
+   * this is a plain POST with no streamed status.
+   */
+  const target = requestedCaptureTarget(body, ticketText);
+  const capture = await runCapture(deps, target, referenceDir);
+
+  const ticket = ticketWithReferences({ prose: ticketText, images, documents, capture: capture.capture });
+  if (images.length > 0 || documents.length > 0 || capture.capture !== null) {
+    // `mkdirSync` HERE TOO, and not only in the loops above: a ticket whose only
+    // attachment is a document creates `documents/` and never `references/`, and
+    // `writeReferenceManifest` deliberately does not create its own directory
+    // (`ticket-refs.test.ts` pins that). Without this line such a ticket throws
+    // ENOENT out of a route that had already decoded and written its bytes.
+    mkdirSync(referenceDir, { recursive: true });
+    writeReferenceManifest(referenceDir, { images, capture: capture.capture, documents });
+  }
   // §17.3 RULE 2'S TWO INPUTS, PERSISTED. Both are stated once, by the request
   // that created the run, and neither is patchable afterwards (db.ts says why:
   // a run whose lock policy could change halfway through is a run whose park has
@@ -857,10 +1498,142 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
   });
   deps.bus.emit(runId, { type: "status", status: "queued" });
   deps.bus.emit(runId, { type: "phase", phase: "spec" });
+
+  /*
+   * THE REFERENCE STORY, ON THE RUN'S OWN STREAM, INCLUDING THE FAILURES.
+   *
+   * Emitted AFTER `createRun` because the bus persists against a row that has to
+   * exist. This is the only place a failed capture is reported: the response is
+   * still a 201 with a run id, deliberately — a third-party site being slow is
+   * not a reason to refuse to build the ticket — so if this line is removed, a
+   * ticket that says "copy this site" silently becomes a ticket graded from the
+   * sentence alone, which is the exact failure this whole change exists to fix.
+   *
+   * `warn` FOR A FAILED CAPTURE, not `error`: the run is fine, it is just less
+   * well specified than the owner asked for.
+   */
+  for (const line of captureNotes(capture, images.length, documents)) {
+    deps.bus.emit(runId, { type: "log", level: line.level, text: line.text });
+  }
+
   deps.orchestrator.pump();
 
   const body2: CreateRunResponse = { runId };
   sendJson(response, 201, body2);
+}
+
+/** A capture attempt as `createRun` needs it: the artefact, plus why not. */
+interface CaptureAttempt {
+  readonly capture: SiteCapture | null;
+  /** null when nothing was attempted; a sentence when something went wrong. */
+  readonly failure: string | null;
+  /** The address that was tried, for the log line. */
+  readonly url: string | null;
+}
+
+/**
+ * Run the capture, or explain in one sentence why there is none.
+ *
+ * NEVER THROWS AND NEVER REFUSES THE RUN. `captureSite` already promises not to
+ * throw; the try/catch is for the injected seam and for `mkdirSync`, because a
+ * ticket must not be rejected because a directory could not be made for an
+ * optional artefact.
+ */
+async function runCapture(
+  deps: HttpDeps,
+  target: ReturnType<typeof captureTargetIn>,
+  dir: string,
+): Promise<CaptureAttempt> {
+  if (target.kind === "none") return { capture: null, failure: null, url: null };
+  if (target.kind === "refused") {
+    // The refusal reason is a clause, so it reads as one sentence in
+    // `captureNotes` ("… was NOT captured: it names this machine.").
+    return { capture: null, failure: target.reason, url: target.url };
+  }
+  try {
+    mkdirSync(dir, { recursive: true });
+    const capture = await (deps.captureSite ?? captureSite)({ url: target.url, dir });
+    if (!capture.ok) return { capture: null, failure: capture.reason, url: target.url };
+    return { capture: capture.capture, failure: null, url: target.url };
+  } catch (error) {
+    return { capture: null, failure: describeError(error), url: target.url };
+  }
+}
+
+/**
+ * What the owner is told about their references, on the run's event stream.
+ *
+ * SEPARATED FROM THE ROUTE SO IT CAN BE TESTED WITHOUT A SOCKET, and because the
+ * wording is the only thing standing between a silently-unreferenced run and a
+ * visible one.
+ */
+function captureNotes(
+  attempt: CaptureAttempt,
+  imageCount: number,
+  documents: readonly ReferenceDocument[],
+): readonly { readonly level: "info" | "warn"; readonly text: string }[] {
+  const notes: { readonly level: "info" | "warn"; readonly text: string }[] = [];
+  if (imageCount > 0) {
+    notes.push({
+      level: "info",
+      text:
+        `${String(imageCount)} reference image(s) attached to this ticket. They are part of the ` +
+        "ticket's identity, so the same words with different references are a different ticket " +
+        "with its own acceptance suite.",
+    });
+  }
+  /*
+   * THE DOCUMENT NOTE SAYS TWO THINGS, AND THE SECOND ONE IS THE UNCOMFORTABLE
+   * ONE.
+   *
+   * What this intake genuinely does: it stores the bytes and folds their digests
+   * into the ticket id, so a changed scope re-authors the suite — which is what
+   * the owner asked for and is a real, checkable behaviour.
+   *
+   * What it does NOT do, today: put the document in front of any seat. Nothing
+   * in this process reads `manifest.documents` — `builderReferenceSection` and
+   * `designReferenceSection` render images and screenshots only (and
+   * `hasReferences` deliberately does not count documents, so they cannot make
+   * an empty "READ EACH ONE" block appear), and the spec seat is text-only. So
+   * this line is a `warn` and says so in words. If it is ever demoted to `info`
+   * without the prompts being wired, the run's own trace starts claiming an
+   * attachment was used when nothing opened it — the exact failure the reference
+   * notes exist to prevent.
+   */
+  if (documents.length > 0) {
+    notes.push({
+      level: "warn",
+      text:
+        `${String(documents.length)} document(s) attached to this ticket (` +
+        documents.map((document) => `${document.mediaType}, ${String(document.bytes)} bytes`).join("; ") +
+        "). Their digests ARE part of this ticket's identity, so changing one is a different ticket " +
+        "with its own acceptance suite. STORED, NOT READ: this intake writes the bytes and records " +
+        "their paths and digests, and hands them to no agent — whether a seat is given a document is " +
+        "decided by the build and spec wiring, and if nothing later in this run quotes the document, " +
+        "that is where to look. They are on disk at: " +
+        documents.map((document) => document.path).join(", "),
+    });
+  }
+  if (attempt.capture !== null) {
+    notes.push({
+      level: "info",
+      text:
+        `captured ${attempt.capture.url} at ${String(attempt.capture.shots.length)} width(s) and read ` +
+        `${String(attempt.capture.outline.headings.length)} heading(s) off it. The written outline is ` +
+        "part of the ticket text the acceptance suite is authored from; the screenshots are for the " +
+        "builder to read. The sealed scorer still has no network and never compares the build to the " +
+        "live page.",
+    });
+  } else if (attempt.failure !== null) {
+    notes.push({
+      level: "warn",
+      text:
+        `${attempt.url ?? "the page named in this ticket"} was NOT captured: ${attempt.failure}. ` +
+        "The acceptance suite for this run will be written from your words alone, with no knowledge " +
+        "of what that page looks like.",
+    });
+  }
+  return notes;
 }
 
 /* -------------------------------------------------------------------------

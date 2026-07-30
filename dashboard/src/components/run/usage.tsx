@@ -23,9 +23,29 @@ function TokenCell({
       <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
         {label}
       </div>
+      {/*
+       * 15px → 13px, WHICH IS BODY SIZE. This figure and the one below it were
+       * two of the four largest explicit sizes in the whole client, alongside a
+       * duplicate-task count — so on a run page the biggest text was SDK
+       * bookkeeping. Nobody opens the Usage tab to be told a number loudly; they
+       * open it to read four numbers and compare them, which is a job for
+       * tabular figures at body size, and `.numeric` already supplies those.
+       *
+       * THE HIERARCHY IN THIS PANEL DID NOT COME FROM THE 15px AND STILL DOES
+       * NOT. It comes from `emphasis` — input and output in `text-ink`, the two
+       * cache rows in `text-ink-dim` — plus the 10px uppercase label above each
+       * cell. Both survive this change untouched. What is lost is only the
+       * shouting.
+       *
+       * NOT CONVERTED TO A SCALE TOKEN. 13px is `body`'s font-size, declared on
+       * `body` in `globals.css` and not exposed as a `--text-*` rung, because the
+       * two rungs added there are both ABOVE body. `text-[13px]` is the same
+       * arbitrary value 20-odd other call sites already use; naming it would be a
+       * separate, app-wide change.
+       */}
       <div
         className={cx(
-          "numeric mt-0.5 text-[15px] leading-tight",
+          "numeric mt-0.5 text-[13px] leading-tight",
           emphasis ? "text-ink" : "text-ink-dim",
         )}
       >
@@ -69,6 +89,22 @@ export function UsagePanel({
         <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
           {cost.kind === "amount" ? "Cost" : "Billing"}
         </div>
+        {/*
+         * THIS 15px IS DELIBERATELY LEFT ALONE while the token cells above drop
+         * to 13px, and the distinction is the point of the pass rather than an
+         * omission from it. `cost.headline` is the panel's LEDE — the one line
+         * that answers "what did this run cost me", and on a subscription run it
+         * is the only honest answer there is. Dropping it with the token figures
+         * would have flattened the whole panel to one size and removed the only
+         * place its hierarchy was already correct.
+         *
+         * IT IS STILL OFF-SCALE, SAID OUT LOUD. `globals.css` now defines a
+         * `--text-lede` rung at 16px whose entire purpose is this shape of
+         * element, and this call site should become `text-lede` — a 1px change.
+         * It is not made here because this pass was scoped to the run title, so
+         * the rung ships with no call site. Do not read the 15px as a considered
+         * value; it is an unconverted one.
+         */}
         <div
           className={cx(
             "mt-0.5 text-[15px] font-medium leading-tight",
@@ -128,10 +164,23 @@ export function UsagePanel({
             )}
           </dl>
 
-          <p className="mt-2 text-[10.5px] leading-snug text-ink-faint">
-            Token counts are per-vendor and are not comparable across vendors — a
-            Claude token is not a Moonshot token.
-          </p>
+          {/*
+           * THE CROSS-VENDOR CAVEAT WAS HERE AND IS GONE (2026-07-30).
+           *
+           * It read "Token counts are per-vendor and are not comparable across
+           * vendors — a Claude token is not a Moonshot token", which was worth saying
+           * while the model picker offered Kimi and DeepSeek rows. `isOfferedProvider`
+           * in `server/src/models.ts` now admits `anthropic` and nothing else, and the
+           * list is filtered by it, so every run this panel can be handed is an
+           * Anthropic run and there is no second vendor to compare against — the
+           * sentence warned about a comparison the UI can no longer produce, and named
+           * a provider nothing in the product mentions any more. Same removal as
+           * `providerLabel` in `lib/presentation.ts`.
+           *
+           * IF A SECOND VENDOR IS EVER OFFERED AGAIN, this caveat has to come back:
+           * the numbers above are raw provider counts with no normalisation anywhere
+           * in `lib/cost.ts`, so they would silently invite a false comparison.
+           */}
         </>
       )}
     </Panel>

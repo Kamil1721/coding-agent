@@ -67,6 +67,14 @@ export interface ModelOption {
  * of a long build. The run is persisted, the session id is kept, and
  * `POST /api/runs/:id/resume` continues it.
  *
+ * NOTHING RESUMES IT FOR YOU UNLESS THE HOST OPTED IN. The server's auto-resume
+ * (`DASHBOARD_RATE_LIMIT_AUTO_RESUME`, off by default) arms a timer only when
+ * the provider reported a reset instant with the refusal; with it off, or with
+ * no reported instant, the run waits for a human indefinitely. THAT DISTINCTION
+ * IS NOT ON THE WIRE — no field here says whether a timer is armed — so a client
+ * must not render a countdown or promise an automatic restart from the status
+ * alone. The run's own log carries the sentence that decided it, either way.
+ *
  * `awaiting_input` exists because doc 02 section 3d names
  * `PAUSED-AWAITING-HUMAN` as a first-class orchestrator state.
  */
@@ -281,6 +289,106 @@ export interface ApiDesignLock {
   readonly reason: string | null;
 }
 
+/**
+ * ONE human-factors finding, as the pass reported it — spec §8, /debugfix §5.
+ *
+ * `severity` IS THE FOUR-MEMBER UNION, spelled out here rather than typed
+ * `string`, and that is the opposite decision from `stop` below. The producer's
+ * parser (`parseAdversaryFindings` in adversary.ts) DROPS any entry whose
+ * severity is not one of these four, so the set is closed by the writer and a
+ * fifth value cannot arrive on this field. `stop` has no such filter.
+ *
+ * `klass` IS `string` FOR THE `gateStopReason` REASON. Its vocabulary is
+ * `FailureClass` in gate-report.ts (install, build, boot, route, visual,
+ * test-infra, logic, structure); this file imports nothing, and repeating the
+ * union here would be a second spelling needing its own compile-time join for a
+ * value every renderer needs a default branch for anyway.
+ *
+ * `detail` IS `""`, NEVER ABSENT, and empty means "the pass handed back no
+ * repro text". The collapse happened upstream, not here: `AdversaryFinding.detail`
+ * is optional in the domain and `parseAdversaryFindings` already writes `""`
+ * for a missing one, so nothing is lost at this boundary.
+ */
+export interface ApiAdversaryFinding {
+  readonly severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  readonly klass: string;
+  readonly summary: string;
+  readonly detail: string;
+}
+
+/**
+ * The human-factors adversary pass, as the run recorded it.
+ *
+ * THIS LANE HAS NEVER EXECUTED. Stated in those words because it is the most
+ * important thing about this shape: `#adversaryPhase` needs a `previewUrl`,
+ * which needs a scored run with `deploy` set, and no run on this machine has
+ * reached it. Every field below is served from a record file whose PRODUCER HAS
+ * NEVER RUN — the reader, the mapper and the mirror are tested, the writer is
+ * not. A UI must not present these findings as a proven channel, and an absent
+ * `adversary` on a finished web run is the EXPECTED state today, not a bug.
+ *
+ * THE TRUTH TABLE, AND THE WHOLE REASON `findings` IS NULLABLE:
+ *
+ *   `adversary: null`                  no record on disk. The run never reached
+ *                                      phase 5, or it predates the lane.
+ *   `ran: false`, `findings: null`     the pass was CONSIDERED AND DECLINED.
+ *                                      `stop` says why (`not-applicable` for a
+ *                                      run with no loopback preview, or one of
+ *                                      the refusals).
+ *   `ran: true`,  `findings: null`     it ran and LEFT NO REPORT. This is NOT
+ *                                      "the pass found nothing" — the session
+ *                                      writes its findings to a file, whether a
+ *                                      live session complies is untested, and a
+ *                                      missing file means this program cannot
+ *                                      see what it found.
+ *   `ran: true`,  `findings: []`       it ran, reported, and FOUND NOTHING.
+ *
+ * The last two are the pair this field exists to keep apart. Collapsing them
+ * into an empty array is the defect this codebase keeps finding, and it is the
+ * same refusal `heldOutPass: null` makes about a gate that did not run.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. The record on disk also carries `notes`,
+ * `previewUrl`, `environment`, `wallClockMs` and `agent`; none of them are on
+ * the wire. The notes are four paragraphs about what the lane does not have
+ * (no hook enforcement, no per-agent turn bound, no browser), written for the
+ * morning-after reader of `adversary.json` rather than for a panel.
+ *
+ * NON-GATING, MECHANICALLY. `withAdversaryFindings` copies `heldOutUnmet`
+ * unchanged and `#adversaryPhase` runs after the run is scored, so nothing here
+ * can move `heldOutPass`, `status` or `failureReason`. A UI that rendered these
+ * rows as failures would be inventing a second, unsealed grader.
+ */
+export interface ApiAdversaryPass {
+  /** The session was actually spawned. False for every refusal. */
+  readonly ran: boolean;
+  /**
+   * Why the lane stopped, or `ran` when it completed.
+   *
+   * A STRING, NOT A UNION, for `gateStopReason`'s reason: the vocabulary is
+   * `AdversaryStop` in adversary.ts (`ran`, `not-applicable`, `agent-missing`,
+   * `agent-denylist-drift`, `denylist-incomplete`, `workspace-not-isolated`,
+   * `timeout`, `failed`, `cancelled`) and this file imports nothing. A renderer
+   * needs a default branch either way; a reason this client has never heard of
+   * is a newer server, not a bug.
+   */
+  readonly stop: string;
+  /**
+   * The lane's own sentence about why it stopped — EMPTY on a clean run.
+   *
+   * NAMED `stopDetail` AND NOT `detail` on purpose: {@link
+   * ApiAdversaryFinding.detail} is a finding's repro text, and two different
+   * facts under one key in a nested render is how a panel ends up showing a
+   * refusal reason under a finding.
+   *
+   * TRUNCATED AT 2000 CHARACTERS by `adversaryPassFromRecord`. Reachable: a
+   * `failed` stop carries whatever the session threw, which has no bound. The
+   * untruncated text is in `results/adversary.json` and in the run's log stream.
+   */
+  readonly stopDetail: string;
+  /** `null` = no report to read; `[]` = a report that found nothing. See above. */
+  readonly findings: readonly ApiAdversaryFinding[] | null;
+}
+
 export interface RunSummary {
   readonly runId: string;
   readonly ticketTitle: string;
@@ -399,6 +507,45 @@ export interface RunDetail extends RunSummary {
    */
   readonly gateStopReason: string | null;
   /**
+   * The last thing that went wrong on this run, in the words it was recorded in.
+   *
+   * IT IS NOT A STATUS AND MUST NOT BE RENDERED AS ONE. A non-null value does
+   * NOT mean the run failed, and this is measured rather than feared: a run
+   * parked at `awaiting_input` carries `DESIGN LANE FAILED (too-few-images)`
+   * while it is still live and still resumable (`orchestrator.test.ts:1528-1540`).
+   * `rate_limited` is the same shape — stopped, not finished, not failed. Read
+   * `status` for whether the run failed; read this for WHY, and only alongside a
+   * status that already says something went wrong.
+   *
+   * LAST WRITE WINS, ACROSS FIVE WRITERS, AND IT IS NOT A HISTORY.
+   * `orchestrator.ts` writes it at :735 (a harness fault escaping `#execute`),
+   * :859 (`the sealed gate could not run …`), :881 (the held-out suite was not
+   * green — a constant string, and `null` when it WAS green, so a passed run
+   * clears the column), :1473 (the build did not complete cleanly) and :1501 (the
+   * DESIGN lane failed). A run whose design lane failed and which then reached
+   * the gate reports the GATE's answer; the lane's is durable only in
+   * `results/design-lane.json` and in the error-level event
+   * (`orchestrator.test.ts:1509-1517` documents exactly this and refuses to
+   * pretend otherwise). Do not present it as "the reason this run failed" when
+   * the two could be different sentences.
+   *
+   * WIDENING IT TO THE WIRE DISCLOSES NOTHING NEW. Every non-constant value is
+   * already an SSE `log` event on the same stream, emitted immediately before it
+   * is stored: :731 before :735, :2141 before :859, :1472 before :1473, :1500
+   * before :1501. This field moves it out of a 32,000-row trace and into the one
+   * place that says the run failed.
+   *
+   * REDACTED, BUT ONLY IN THE SENSE `redactForPersistence` MEANS. The single
+   * write site is `db.ts:746`, which runs the chokepoint over it before the
+   * column is set, so credential-shaped spans are already replaced. That is
+   * PATTERN-BASED and is not a general guarantee about content: a
+   * `suite_hash_mismatch` refusal, for instance, quotes the integrity problems it
+   * found, which name files under the sealed suite. That text has always been on
+   * the log stream (above); this field does not make it more reachable, and it
+   * does not make it safe to render somewhere new without reading it.
+   */
+  readonly failureReason: string | null;
+  /**
    * The DESIGN lane's lock, or `null` when this run has no DESIGN lane.
    *
    * ONE NULLABLE FIELD RATHER THAN FOUR FLAT ONES, AND THE NULL IS LOAD-BEARING.
@@ -410,6 +557,37 @@ export interface RunDetail extends RunSummary {
    * read as `false, null`.
    */
   readonly designLock: ApiDesignLock | null;
+  /**
+   * The human-factors adversary pass, or `null` when this run left no record.
+   *
+   * ITS PRODUCER HAS NEVER RUN. `#adversaryPhase` needs a `previewUrl` and no
+   * run on this machine has reached it, so `null` is what every existing run
+   * reports and will keep reporting until one does. Read
+   * {@link ApiAdversaryPass} before rendering any of it: the null on THIS field
+   * and the null on `findings` inside it say different things, and the second
+   * one is the distinction the whole shape exists for.
+   *
+   * SERVED FROM `results/adversary.json`, READ SERVER-SIDE. `results/` is NOT
+   * opened to the browser and must not be: it holds held-out test titles, and
+   * the workspace-only fence in `code-files.ts` is a security control rather
+   * than a routing convenience. This field carries the four values a panel needs
+   * and nothing else, on a response the client already fetches.
+   *
+   * IT IS THE REDACTED COPY, in the sense `redactForPersistence` means — the one
+   * writer (`orchestrator.ts#recordAdversary`) runs the chokepoint over the
+   * record before the file is written, so credential-shaped spans are already
+   * replaced. That is PATTERN-BASED and is not a guarantee about content: the
+   * findings are model-written prose about a live app, and this field does not
+   * make that prose safe to render somewhere new without reading it.
+   *
+   * NO SSE EVENT ANNOUNCES IT, deliberately. The record is written inside
+   * `#adversaryPhase`, which runs BEFORE `#finish` emits the terminal `status`,
+   * and the client already revalidates this response on a terminal status
+   * (`use-run-stream.ts:869-872`). A new event type would have to be added to
+   * the client's `EVENT_TYPES`, its `RunEvent` union and `parseRunEvent` to
+   * carry a fact this response already carries.
+   */
+  readonly adversary: ApiAdversaryPass | null;
 }
 
 /* -------------------------------------------------------------------------
@@ -496,7 +674,32 @@ export type SseEvent =
       readonly cacheReadTokens: number;
       readonly cacheWriteTokens: number;
     }
-  | { readonly type: "rate_limit"; readonly retryAfterSec: number | null }
+  /**
+   * The provider reported rate-limit state. NOT NECESSARILY A LIMIT.
+   *
+   * `limited` IS THE WHOLE POINT OF THIS EVENT AND WAS MISSING FOR ITS WHOLE
+   * LIFE. The Agent SDK emits `rate_limit_event` routinely with
+   * `status: 'allowed' | 'allowed_warning'` and a `resetsAt` naming when the
+   * CURRENT window rolls over — ordinary telemetry about a window that is
+   * filling, not a refusal. Only `status: 'rejected'` is a limit.
+   *
+   * Without this flag the event carried a large `retryAfterSec` and nothing to
+   * say whether it meant anything, so the client hard-coded `limited: true` and
+   * a healthy run printed `rate limited; retry after 253699s` two seconds in —
+   * a seven-day window reset 70 hours out, reported while the subscription was
+   * working perfectly. Measured on
+   * `run-2026-07-30T13-31-38-076Z-c228e63b`, whose row says `rate_limited = 0`.
+   *
+   * `retryAfterSec` is still carried when `limited` is false, deliberately: it
+   * is when the window reopens, which is worth showing as it fills rather than
+   * only once it has slammed shut. The client decides how to say that; this
+   * event's job is to stop pretending the two cases are one.
+   */
+  | {
+      readonly type: "rate_limit";
+      readonly limited: boolean;
+      readonly retryAfterSec: number | null;
+    }
   /**
    * The run wrote its verdict. Emitted once, immediately BEFORE the terminal
    * `status` event, so a client that revalidates on a terminal status already
@@ -944,10 +1147,56 @@ export interface RunGraphResponse extends GraphState {
   readonly atSeq: number;
 }
 
+/**
+ * Can the SEALED GATE be built on this machine? — `HealthResponse.gate`.
+ *
+ * THREE STATES, AND THE THIRD ONE IS THE POINT. `unknown` means no probe has
+ * completed yet: the answer is not "fine", it is absent. A renderer may treat
+ * ONLY `"ok"` as a pass; `unknown` gets its own neutral presentation and never
+ * the green one, for the same reason `heldOutPass: null` is not `false` — a
+ * check that could not run must never be indistinguishable from a check that
+ * passed. That rule is written here because the renderer lives in another
+ * package and this declaration is the only thing both sides read.
+ *
+ * WHAT `ok` MEANS, EXACTLY. The server built the gate with
+ * `createGate(gateEnv(...))` — the same call, the same environment and the same
+ * image reference the gate phase uses — and it resolved the scorer image's
+ * digest from the docker daemon. It does NOT mean a scoring container has been
+ * run, that any ticket's frozen suite exists, or that docker will still be up
+ * when the run reaches the gate ~1h45 later. `health-gate.ts` states the same
+ * limits at the probe.
+ *
+ * `detail` IS OWNER-FACING PROSE AND MAY BE MULTI-LINE. On `unavailable` it is
+ * `describeError` of whatever `createGate` threw, which for the usual cause is
+ * `[invalid_usage_shape] the scorer image … could not be resolved` followed by a
+ * `fix:` line carrying the exact `docker build` command. Render it with the
+ * newlines preserved, or the command runs into the prose.
+ *
+ * `checkedAt` IS WHEN THE ANSWER WAS TAKEN, and it is `null` exactly when
+ * `state` is `"unknown"`. The probe is cached, so an `ok` can be up to a minute
+ * old — that is what this field is for, and why `ok` is not a claim about now.
+ */
+export interface GateHealth {
+  readonly state: "ok" | "unavailable" | "unknown";
+  readonly detail: string;
+  readonly checkedAt: string | null;
+}
+
 export interface HealthResponse {
+  /**
+   * AUTH ONLY, DELIBERATELY, AND `gate` IS NOT FOLDED IN.
+   *
+   * `cron-tick.ts:261-270` treats `ok: false` as "no CLI is authenticated" and
+   * refuses to submit the tick's ticket, naming that cause. A gate outage is not
+   * that fact and does not have that remedy: a run with docker down still
+   * builds, still produces code and still ends with a verdict page — it just
+   * cannot be scored. Folding the gate in here would stop the unattended
+   * scheduler with a message that names the wrong thing.
+   */
   readonly ok: boolean;
   readonly claudeAuth: "ok" | "missing";
   readonly codexAuth: "ok" | "missing";
+  readonly gate: GateHealth;
 }
 
 export interface CreateRunRequest {
@@ -964,10 +1213,124 @@ export interface CreateRunRequest {
    * failure direction is the one it is.
    */
   readonly designLock: "auto" | "ask" | null;
+  /**
+   * Reference images for the ticket, as base64 `data:image/…` URLs.
+   *
+   * SAME CAPS AS THE CHAT'S IMAGE INTAKE, from one declaration
+   * (`ticket-refs.ts`): at most 6, at most 8 MB each decoded, png/jpeg/webp/gif.
+   * The bytes are written under `runs/<id>/references/` and only PATHS are
+   * recorded — a 2 MB PNG has no business in SQLite.
+   *
+   * THEY CHANGE THE TICKET'S IDENTITY. `ticketWithReferences` folds their sha256
+   * digests into the ticket id, so the same words with a different image is a
+   * DIFFERENT ticket with its own frozen acceptance suite. The owner chose this
+   * deliberately, accepting that re-uploading the same file mints a new ticket
+   * and re-authors a suite: the alternative is two runs with different visual
+   * briefs sharing one sealed suite, where the verdict cannot say which
+   * reference the build was graded against.
+   *
+   * WHO ACTUALLY SEES THEM: the BUILDER and the DESIGN lane, as absolute paths
+   * in their prompts. NOT the spec seat, which is constructed with `tools: []`
+   * and cannot open a file — it is not even told an image exists, because a
+   * criterion written about an unseen image grades for untraceable reasons.
+   */
+  readonly references: readonly string[] | null;
+  /**
+   * Documents for the ticket — a scope, a brief, a CV — as base64 data URLs.
+   *
+   * CAPS AND ACCEPTED TYPES COME FROM ONE DECLARATION (`document-intake.ts`): at
+   * most 4, at most 12 MB each decoded, and the accepted media types are PDF,
+   * plain text, markdown, CSV, JSON, .docx, .doc and both spellings of RTF.
+   * The bytes are written under `runs/<id>/documents/` and only PATHS, DIGESTS,
+   * SIZES and MEDIA TYPES are recorded — a 12 MB PDF has no business in SQLite,
+   * and a document's base64 cannot be redacted, so persisting it would persist
+   * whatever credential the file contains.
+   *
+   * THEY CHANGE THE TICKET'S IDENTITY, exactly as `references` do: each one's
+   * sha256 is folded into the ticket id, so amending a scope document and
+   * re-submitting the same words is a DIFFERENT ticket with its own frozen
+   * acceptance suite. That is the point rather than a side effect — a suite
+   * authored from the old scope is not a yardstick for work done against the new
+   * one — and the cost is the same one the images already carry: quota, spent
+   * re-authoring.
+   *
+   * WHAT SENDING ONE DOES NOT DO. The intake stores the document and folds its
+   * digest into the id. It does not, by itself, put the document in front of any
+   * agent: that is the build and spec wiring's decision, and the server says so
+   * on the run's event stream with a `warn` naming where the file was stored. A
+   * form offering "attach a scope" must not imply the run has read it.
+   *
+   * REFUSALS ARE NAMED: `too_many_documents`, `invalid_document` (with a sentence
+   * naming the actual type or the actual byte count), and `body_too_large` when
+   * the whole envelope is over the route's cap.
+   */
+  readonly documents: readonly string[] | null;
+  /**
+   * Which page to capture at ticket time, if any.
+   *
+   * THREE MEANINGS. A string names a page explicitly. `null` is the OPT-OUT:
+   * capture nothing, even if the ticket text contains a URL. Absent means scan
+   * the ticket text and capture the first http(s) URL in it — which is the case
+   * "make a copy of kamilborzecki.dev" falls into, and the reason the scan
+   * exists at all.
+   *
+   * The capture runs ON THE HOST, INSIDE THIS REQUEST, because that is the only
+   * moment the network is both present and permitted: the sealed scorer runs
+   * `--network none` and must keep doing so. It produces screenshots for the
+   * builder and a TEXT OUTLINE that is composed into the ticket brief, so the
+   * acceptance suite can name real sections of the real page.
+   *
+   * WHAT IT DOES NOT DO: it does not let the gate compare the build to the live
+   * site. There is no visual diff anywhere in this system.
+   *
+   * A capture failure does NOT fail the request. The run is created, a `warn`
+   * lands on its event stream saying the suite will be written from the words
+   * alone, and the ticket id is then the prose-only one.
+   *
+   * IT IS SLOW. `site-capture.ts` bounds launch, navigation and each screenshot,
+   * and those bounds sum to roughly a minute; two DOM reads are additionally
+   * bounded only by playwright's own default. The POST blocks for all of it.
+   */
+  readonly captureUrl: string | null;
 }
 
 export interface CreateRunResponse {
   readonly runId: string;
+}
+
+/**
+ * `POST /api/runs/:id/messages` — the owner↔run chat, as the server reads it.
+ *
+ * WRITTEN DOWN BECAUSE THE ROUTE GREW A SECOND ATTACHMENT KIND, and until now
+ * the body was described only in prose in `http.ts` and constructed inline by
+ * one `fetch` in the client. Two attachment arrays with no declared shape is how
+ * a client sends `document` and a server reads `documents` and nobody finds out
+ * until an owner's scope silently does nothing.
+ *
+ * EVERY FIELD IS OPTIONAL, BUT NOT ALL AT ONCE. A message needs text, at least
+ * one image, or at least one document; an entirely empty body is refused as
+ * `empty_message`.
+ *
+ * `images` — data URLs, at most 6, at most 8 MB each decoded (png/jpeg/webp/gif).
+ * Stored under `runs/<id>/chat/`, and their PATHS reach the running agent with
+ * an instruction to read them.
+ *
+ * `documents` — data URLs, the caps and types `CreateRunRequest.documents`
+ * describes, decoded by the same module so the two intakes cannot drift. Stored
+ * under `runs/<id>/chat/` as well. THEY ARE NOT PART OF THE TICKET'S IDENTITY:
+ * the run's ticket id was fixed when its row was written, and a mid-run
+ * attachment that moved it would point a live run at a different frozen suite.
+ * AND THEY ARE NOT DELIVERED TO THE AGENT — the chat channel carries text and
+ * image paths only — so the server stores them, answers with their paths on the
+ * response's additive `documents` field, and emits a `warn` on the run's event
+ * stream saying exactly that. A client that renders "sent" for a document
+ * without surfacing that warning is telling the owner something the server did
+ * not do.
+ */
+export interface SendMessageRequest {
+  readonly text?: string;
+  readonly images?: readonly string[];
+  readonly documents?: readonly string[];
 }
 
 export interface OkResponse {

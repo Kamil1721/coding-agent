@@ -1,6 +1,12 @@
 "use client";
 
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -9,6 +15,14 @@ import { ModelPicker } from "@/components/model-picker";
 import { FalseFinishBadge } from "@/components/outcome";
 import { Badge, Button, Dot, Panel, cx } from "@/components/ui";
 import { createRun, errorMessage } from "@/lib/api";
+import {
+  acceptAttribute,
+  dataUrlsOfKind,
+  documentTag,
+  planAttachmentIntake,
+  readAttachment,
+  type Attachment,
+} from "@/lib/attachments";
 import { formatRelative } from "@/lib/format";
 import { useModels, useRuns } from "@/lib/hooks";
 import { statusMeta } from "@/lib/presentation";
@@ -67,6 +81,79 @@ function RecentRuns(): ReactNode {
   );
 }
 
+/**
+ * The two answers to "who picks the mockup", in the order they are offered.
+ *
+ * THE VALUES ARE THE WIRE'S, not a local vocabulary. `CreateRunRequest.designLock`
+ * is `"auto" | "ask" | null`, `server/src/http.ts:846` refuses anything else with a
+ * 400, and `designLockPolicy` (`server/src/design-lock.ts:48-52`) compares against
+ * those two literals BEFORE it falls back to the server's own interactivity guess —
+ * which is the line that makes "auto" here a real opt-out rather than a label the
+ * backend quietly overrides back to a park for every dashboard submission.
+ *
+ * `"ask"` IS FIRST AND IS THE DEFAULT because it is what this form already sent
+ * before the row existed (`api.ts:205`); the row discloses that behaviour and adds
+ * a way out of it, and was deliberately not the occasion to change it.
+ */
+const DESIGN_CHOICES: readonly {
+  readonly value: "ask" | "auto";
+  readonly label: string;
+}[] = [
+  { value: "ask", label: "Ask me which mockup to build" },
+  { value: "auto", label: "Let ui-designer pick" },
+];
+
+/* -------------------------------------------------------------------------
+ * REFERENCES AND DOCUMENTS — the ticket's second and third inputs
+ *
+ * THE HAND COPY THIS BLOCK USED TO ANNOUNCE IS GONE. `MAX_REFERENCE_IMAGES`,
+ * `MAX_REFERENCE_IMAGE_BYTES`, `Attachment` and `readAsDataUrl` were declared
+ * here and again in `components/canvas/orchestrator-chat.tsx` with nothing
+ * keeping them in step; both files now import `@/lib/attachments`. The seam did
+ * not disappear, it MOVED and got a guard: that module transcribes its caps and
+ * media types from two server declarations it cannot import (they pull in
+ * `node:fs`), and `tests/document-intake.browser.spec.ts` reads those server
+ * files as text and fails when the transcription drifts.
+ *
+ * ONE INTAKE, TWO ARRAYS ON THE WIRE. Images go out as `references` and
+ * documents as `documents`, with independent caps (6/8 MB and 4/12 MB) and
+ * independent server-side decoders. They are ONE list in this component's state
+ * because the owner drops a folder, not a category — the split happens at
+ * submit, via `dataUrlsOfKind`.
+ *
+ * WHO READS AN ATTACHMENT IS NOT THIS FILE'S CLAIM TO MAKE, and the disclosure
+ * below is worded so it does not make one. What is certain, and is what the
+ * sentence says, is IDENTITY: the server folds every image and document digest
+ * into the ticket id (`ticketWithReferences`), so the same words with a
+ * different file address a different frozen suite. Which SEAT is then shown the
+ * bytes is decided by the server's build and spec wiring and reported on the
+ * run's own event stream — `api-types.ts#CreateRunRequest.documents` states that
+ * split, and "attached" must not be rendered as "the run has read your scope".
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Does this brief link to a page the server will go and capture?
+ *
+ * PRESENCE ONLY, AND THAT IS THE WHOLE OF THE RULE THIS FILE MAY RESTATE. The
+ * server scans for the FIRST http(s) URL (`site-capture.ts:211`) and then
+ * refuses a whole list of hosts — localhost, 127/10/192.168/172.16-31/169.254,
+ * private IPv6, and any hostname with no dot (`refuseHost`, `site-capture.ts:185`).
+ * Copying that list here was considered and rejected: it is ~15 lines with no
+ * mechanism keeping the copy honest, and a stale copy would make this form
+ * PROMISE a capture the server declines.
+ *
+ * SO THE COST OF BEING WRONG IS ONE SENTENCE, NEVER A BEHAVIOUR. This client
+ * never sends `captureUrl` — absent means "scan the ticket text", which is the
+ * behaviour wanted — so the server's scan is the only thing that decides, and
+ * this predicate only decides whether the disclosure is shown. It over-fires on
+ * `http://localhost:3000`, which is why the sentence it gates describes the
+ * policy and says what happens when the page cannot be reached, rather than
+ * claiming a capture happened.
+ */
+function linksToAPage(text: string): boolean {
+  return /https?:\/\//i.test(text);
+}
+
 function pickDefaultModel(
   models: readonly { id: string; tier: string; available: boolean }[],
 ): string | null {
@@ -85,8 +172,12 @@ export default function NewTicketPage(): ReactNode {
   const [ticketText, setTicketText] = useState("");
   const [chosenModelId, setChosenModelId] = useState<string | null>(null);
   const [deploy, setDeploy] = useState(false);
+  const [designLock, setDesignLock] = useState<"ask" | "auto">("ask");
+  const [attachments, setAttachments] = useState<readonly Attachment[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
 
   // The default is DERIVED, not written into state by an effect: an effect
   // here would render once with nothing selected and then again with a
@@ -100,6 +191,42 @@ export default function NewTicketPage(): ReactNode {
     [models, modelId],
   );
 
+  /**
+   * Take files from any of the three intakes — paste, drop, file picker.
+   *
+   * THE DECISION IS `planAttachmentIntake`'S, NOT THIS COMPONENT'S. Everything
+   * that can silently lose a file — the type filter, the two size caps, the two
+   * COUNT caps — lives in `@/lib/attachments` so that it can be exercised without
+   * a browser, which is where the specs for it are. What is left here is state.
+   *
+   * THE PLAN IS COMPUTED FROM THE CLOSURE, THE STATE IS SET FROM AN UPDATER, and
+   * the split is intentional and imperfect. `attachments` is read at event time,
+   * so two drops landing while a `FileReader` is still in flight compute their
+   * room against the same list and can attach one over the cap — the MESSAGE and
+   * the LIST would both be wrong for that instant. The server holds the real cap
+   * and answers `too_many_documents`, so the failure is a refused submit with the
+   * server's own sentence rather than a run graded against files nobody saw. A
+   * functional updater cannot be used to compute the plan because the plan must
+   * also produce a refusal string, and setState updaters must stay pure.
+   */
+  const addFiles = useCallback(
+    (files: readonly File[]): void => {
+      setAttachError(null);
+      if (files.length === 0) return;
+      const plan = planAttachmentIntake(files, attachments);
+      setAttachError(plan.refusal);
+      if (plan.take.length === 0) return;
+      void Promise.all(plan.take.map(readAttachment))
+        .then((read) => {
+          setAttachments((previous) => [...previous, ...read]);
+        })
+        .catch((cause: unknown) => {
+          setAttachError(cause instanceof Error ? cause.message : String(cause));
+        });
+    },
+    [attachments],
+  );
+
   const trimmed = ticketText.trim();
   const blockedReason: string | null =
     trimmed === ""
@@ -110,13 +237,66 @@ export default function NewTicketPage(): ReactNode {
           ? (selected.reason ?? "That model is unavailable.")
           : null;
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
+  /**
+   * ONE SUBMIT PATH, REACHED TWO WAYS.
+   *
+   * Extracted from the form's `onSubmit` so the Cmd/Ctrl-Enter accelerator below
+   * INHERITS the guard rather than restating it: the empty-brief and
+   * unavailable-model refusals, and the double-submit lock, are checked here and
+   * nowhere else. An accelerator wired straight to `createRun` would have been a
+   * second door past `blockedReason`, and the failure would only show up as a run
+   * queued against a model that cannot run.
+   *
+   * `form.requestSubmit()` from the keydown would also work and is not used: it
+   * adds a synthetic event round trip for no behaviour this needs.
+   */
+  async function submit(): Promise<void> {
     if (blockedReason !== null || modelId === null || submitting) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const { runId } = await createRun({ ticketText: trimmed, modelId, deploy });
+      // `designLock` IS NOW ALWAYS STATED, which makes `api.ts:205`'s default
+      // unreachable from the only caller this module has (`createRun` spreads the
+      // body AFTER its default, so the form wins). The default is left where it is
+      // rather than deleted from here: that file is not this change's to edit, and
+      // its comment explains why the field must be stated rather than inferred
+      // from a `Referer` the Next rewrite may not forward.
+      //
+      // `references` AND `documents` ARE OMITTED, NOT SENT EMPTY, when nothing
+      // of that kind is attached, and that is load-bearing twice over.
+      // `exactOptionalPropertyTypes` forbids assigning `undefined` to an
+      // optional field, so the spread is the only legal shape; and
+      // `model-picker.browser.spec.ts:196` asserts the WHOLE request body with
+      // `toEqual`, so an unconditional `references: []` would fail five specs
+      // that have nothing to do with references — and a `documents: []` beside
+      // it would fail the same five again. The server reads absent and `[]`
+      // identically for both (`readReferenceImages` / `readReferenceDocuments`,
+      // `http.ts:1195`), so the wire meaning is unchanged either way; the
+      // absence is for the specs and the contract, not for the server.
+      //
+      // TWO SPREADS, NOT ONE ARRAY. `documents` has its own decoder, its own
+      // caps and its own directory on disk (`runs/<id>/documents/` rather than
+      // `references/`); sending a PDF in `references` would fail
+      // `decodeReferenceDataUrl` and refuse the whole submission. `dataUrlsOfKind`
+      // is the only place the split is made.
+      //
+      // NO `captureUrl` AT ALL. Absent means "scan the ticket text for the first
+      // http(s) URL", which is exactly the behaviour this form discloses; `null`
+      // would be the opt-out and there is no control for it (see the report).
+      //
+      // THE ORDER OF `attachments` IS THE ORDER ON DISK. `http.ts:1105` names
+      // the files `reference-1`, `reference-2`… by index, so the chip order the
+      // owner sees is the sequence the builder reads them in.
+      const references = dataUrlsOfKind(attachments, "image");
+      const documents = dataUrlsOfKind(attachments, "document");
+      const { runId } = await createRun({
+        ticketText: trimmed,
+        modelId,
+        deploy,
+        designLock,
+        ...(references.length === 0 ? {} : { references }),
+        ...(documents.length === 0 ? {} : { documents }),
+      });
       router.push(`/runs/${encodeURIComponent(runId)}`);
     } catch (cause) {
       setSubmitError(errorMessage(cause));
@@ -126,7 +306,10 @@ export default function NewTicketPage(): ReactNode {
 
   return (
     <form
-      onSubmit={(event) => void onSubmit(event)}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
       className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_420px]"
     >
       <div className="flex min-w-0 flex-col gap-4">
@@ -141,19 +324,344 @@ export default function NewTicketPage(): ReactNode {
           <textarea
             value={ticketText}
             onChange={(event) => setTicketText(event.target.value)}
+            /*
+             * CMD/CTRL-ENTER SUBMITS. PLAIN ENTER DOES NOT, AND THAT IS THE
+             * DIFFERENCE FROM THE CHAT BOX.
+             *
+             * The chat's 3-row composer sends on plain Enter, which is the right
+             * convention for a message. This surface is 420px tall and its
+             * placeholder is three paragraphs on purpose — a brief is written in
+             * paragraphs, so plain Enter here would queue half-written tickets
+             * against a frozen acceptance suite that cannot be edited afterwards.
+             *
+             * `preventDefault` ONLY ON THE MODIFIER HIT. Without the guard the
+             * newline would be swallowed on every Enter; with it, the accelerator
+             * is the only key this handler consumes.
+             *
+             * The accelerator is not announced on screen — it is on the button's
+             * `title`. Named in the report as the thing a hover cannot teach a
+             * touch or keyboard user.
+             */
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            onPaste={(event) => {
+              // A pasted screenshot is the fastest way to hand over a reference,
+              // and the paste is only intercepted when it actually carries files
+              // — pasting TEXT into the brief must stay untouched.
+              const files = [...event.clipboardData.files];
+              if (files.length > 0) {
+                event.preventDefault();
+                addFiles(files);
+              }
+            }}
+            onDrop={(event) => {
+              // GUARDED THE SAME WAY THE PASTE IS, AND THE CHAT'S VERSION IS NOT.
+              // `orchestrator-chat.tsx:281` calls `preventDefault` unconditionally,
+              // which is harmless on a 3-row message box and is not harmless here:
+              // this is the app's primary prose surface, and cancelling the default
+              // on a TEXT drop means dragging a paragraph in from an editor
+              // silently does nothing.
+              const files = [...event.dataTransfer.files];
+              if (files.length === 0) return;
+              event.preventDefault();
+              addFiles(files);
+            }}
+            onDragOver={(event) => {
+              // Unconditional, and it has to be: cancelling dragover is what makes
+              // an element a drop target at all. A textarea still takes text drops
+              // regardless — that is `onDrop`'s decision above, not this one's.
+              event.preventDefault();
+            }}
             spellCheck
             placeholder={
               "A one-page site for a photographer.\n\nHero image, a grid of 12 photos that opens a lightbox, an about section, and a contact form that validates the email field.\n\nMust work at 1280px and on a phone."
             }
             className="h-[420px] w-full resize-y bg-transparent px-3 py-2.5 text-[13.5px] leading-relaxed text-ink placeholder:text-ink-faint/70 focus:outline-none"
           />
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-3 py-1.5 text-[11px] text-ink-faint">
-            <span>
-              The acceptance criteria are authored from this text before any code is
-              written. Ambiguity here becomes an untestable criterion later.
-            </span>
+
+          {/*
+            * REFERENCES — the visual half of a brief, which until now had no way in.
+            *
+            * THE ONLY IMAGE INTAKE THIS APP HAD WAS THE CHAT, and the chat mounts on
+            * a graph node that does not exist for the first ~80 minutes of a run
+            * (UX-GAPS item 5), by which time the suite is frozen and the design
+            * lane has already invented its five references. So a picture of what
+            * the owner wanted could not reach either of the two seats that can
+            * read one.
+            *
+            * WHO ACTUALLY SEES AN IMAGE, since it is not obvious and it is the
+            * reason the disclosure below is worded the way it is: the BUILDER and
+            * the DESIGN lane get absolute paths in their prompts and are told to
+            * read them. The SPEC seat does not — `ticket-refs.ts` is where that
+            * split is made and says why: a criterion authored about an unseen
+            * image grades green or red for reasons nothing can trace.
+            *
+            * THAT PARAGRAPH USED TO END "it is text-only BY CONSTRUCTION", citing
+            * `tools: []` and `settingSources: []`. THAT REASONING IS WRONG AND THE
+            * SERVER NOW CONTRADICTS IT: a document is CONTENT, not a tool call, so
+            * `tools: []` does not stop the spec seat being handed one, and
+            * `subscription-caller.ts` carries PDF document blocks into that seat's
+            * first user message. Its own header is careful about how far that
+            * goes — "wired and type-checked, not observed", never yet run end to
+            * end against a real ticket with a real PDF — so this form claims
+            * nothing about it. A DOCUMENT IS NOT AN IMAGE HERE: the seat split for
+            * documents is the server's to make and to report, and it is not the
+            * one stated above.
+            *
+            * THE SENTENCE IS A HAND COPY, LIKE THE GATE NOTE BELOW IT. The
+            * canonical wording is the server's own `captureNotes`
+            * (`server/src/http.ts:1250-1252`), which says the same thing on the
+            * run's event stream after the fact. NOTHING KEEPS THEM IN SYNC — the
+            * parity test covers SSE event NAMES, not prose — and this one is
+            * shortened to a single sentence at the owner's request, so the two are
+            * deliberately not identical strings.
+            */}
+          <div className="flex flex-col gap-1.5 border-t border-line px-3 py-2">
+            {attachments.length > 0 && (
+              <ul className="flex flex-wrap gap-1">
+                {attachments.map((attachment, index) => (
+                  /*
+                   * A DOCUMENT CHIP IS NOT AN IMAGE CHIP, and the difference is
+                   * the filename plus a tag, not an icon. "scope.pdf" is the
+                   * whole content of the reassurance the owner is looking for
+                   * after a drop — a generic paperclip says a file is attached
+                   * and not WHICH file, which is exactly the doubt that makes
+                   * someone submit twice. The tag comes from the server's own
+                   * media-type → extension map, so a `.docx` reads DOCX rather
+                   * than the first 12 characters of a 71-character OOXML type.
+                   *
+                   * `title` CARRIES THE FULL NAME because the visible span
+                   * truncates at 160px, and two long exports of the same deck
+                   * differ in their tail.
+                   */
+                  <li
+                    key={`${attachment.name}:${String(index)}`}
+                    className={cx(
+                      "flex items-center gap-1 rounded-sm border px-1.5 py-[2px] text-[10.5px] text-ink-dim",
+                      attachment.kind === "document"
+                        ? "border-line-strong bg-surface-raised"
+                        : "border-line",
+                    )}
+                  >
+                    {attachment.kind === "document" && (
+                      <span className="numeric text-[9px] font-semibold tracking-[0.08em] text-ink-faint">
+                        {documentTag(attachment)}
+                      </span>
+                    )}
+                    <span className="max-w-[160px] truncate" title={attachment.name}>
+                      {attachment.name}
+                    </span>
+                    <button
+                      // `type="button"` IS NOT DECORATION. This markup sits inside
+                      // the ticket `<form>`, where a button's default type is
+                      // `submit` — removing a chip would start the run.
+                      type="button"
+                      onClick={() =>
+                        setAttachments((previous) =>
+                          previous.filter((_unused, i) => i !== index),
+                        )
+                      }
+                      className="text-ink-faint hover:text-fail"
+                      aria-label={`remove ${attachment.name}`}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {attachError !== null && (
+              <p role="alert" className="text-[11px] text-fail">
+                {attachError}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                className="text-[11.5px] text-ink-dim underline-offset-2 hover:text-ink hover:underline"
+              >
+                Attach images or documents
+              </button>
+              <span className="text-[11px] text-ink-faint">
+                or paste and drop them into the brief above.
+              </span>
+              {/*
+                * ONE INPUT FOR BOTH KINDS, NOT TWO, and the reason is a test
+                * rather than tidiness: `ticket-references.browser.spec.ts:131`
+                * attaches through `input[type="file"]` `.first()`, so a second
+                * input added above this one would silently retarget an existing
+                * spec at a control it was not written for. One input also
+                * matches how the files arrive — a drop is a drop, and the
+                * classification happens in `planAttachmentIntake` either way.
+                */}
+              <input
+                ref={fileInput}
+                type="file"
+                accept={acceptAttribute()}
+                multiple
+                hidden
+                onChange={(event) => {
+                  addFiles([...(event.target.files ?? [])]);
+                  // Cleared so that picking the SAME file twice still fires
+                  // `change` the second time.
+                  event.target.value = "";
+                }}
+              />
+            </div>
+
+            {/*
+              * THE DISCLOSURE, WIDENED RATHER THAN DOUBLED. A document is part of
+              * the ticket's identity on exactly the same terms as an image —
+              * `ticketWithReferences` folds both digests into the id — so a
+              * second near-identical sentence beside this one would cost the
+              * owner (who has been cutting text off this form all week) a line to
+              * learn nothing new. "File" is the word that covers both.
+              *
+              * WHAT IT DELIBERATELY DOES NOT SAY: that a seat READS the
+              * attachment. That is decided server-side per seat and reported on
+              * the run's own event stream, and no sentence on this form claims it
+              * for images either.
+              */}
+            <p className="text-[11px] leading-snug text-ink-faint">
+              A reference or a document is part of the ticket&rsquo;s identity: the same
+              words with a different file is a different ticket, with its own frozen
+              acceptance suite.
+            </p>
+
+            {/*
+              * THE CAPTURE SENTENCE, SHOWN ONLY WHEN THE BRIEF LINKS SOMEWHERE.
+              *
+              * It states the POLICY and never a result: `linksToAPage` is a
+              * presence test that cannot know whether the server will refuse the
+              * host or the page will time out, and both of those end with a `warn`
+              * on the run's stream rather than a refused submission. The clause
+              * about being unreachable is what keeps the sentence true on those
+              * paths.
+              *
+              * "NEVER A COMPARISON" IS THE LOAD-BEARING HALF. The capture produces
+              * an outline that enters the ticket text and screenshots the builder
+              * can read; there is no visual diff anywhere in this system, and the
+              * sealed scorer runs with no network, so it never sees the live page
+              * at all. A form that offered "capture the site" without that clause
+              * would be read as promising fidelity grading.
+              */}
+            {linksToAPage(ticketText) && (
+              <p className="text-[11px] leading-snug text-ink-faint">
+                The first link in this brief is captured before the suite is written —
+                an outline into the ticket text, screenshots for the builder, and never
+                a comparison against the live page; if the page cannot be reached the
+                run says so and the ticket is your words alone.
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 border-t border-line px-3 py-1.5 text-[11px] text-ink-faint">
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span>
+                The acceptance criteria are authored from this text before any code is
+                written. Ambiguity here becomes an untestable criterion later.
+              </span>
+              {/*
+               * THE GATE'S ONE LIMIT, SAID BEFORE THE TICKET IS WRITTEN rather than
+               * discovered after the run. The sealed scorer runs `--network=none`
+               * and `gateEnv` (`server/src/paths.ts:183-195`) builds its environment
+               * from a fixed allowlist — two paths, two result directories and two
+               * optional scorer settings, no credential among them, by construction
+               * rather than by policy — so a story about payments, a hosted database
+               * or third-party login is graded against whatever the builder stubbed.
+               *
+               * NOT "IT WILL FAIL". A stub that satisfies the criterion passes, and a
+               * false pass is the worse outcome and the one worth naming — the run
+               * reports green for something that was never verified. Saying "fail"
+               * would also be a claim this file cannot support: nothing here knows
+               * what the builder wrote.
+               *
+               * HAND-COPIED SUBSTANCE, NOT AN IMPORT, and that is a real seam: the
+               * canonical wording is `GATE_LIMIT_NOTE` in
+               * `server/src/secret-intake.ts:612-615`, which reaches the wire as
+               * `SecretIntakeStatus.gateNote` on `GET /api/secrets`. This client has
+               * no type, fetch or route for that endpoint (grep: zero hits for
+               * `gateNote` under `src/`), and the two packages do not share code, so
+               * this sentence is a restatement. NOTHING KEEPS THEM IN SYNC — the
+               * parity test covers SSE event names, not prose — so an edit to the
+               * server's note will not be reflected here by any mechanism.
+               */}
+              <span>
+                Grading happens with no network and no credentials, so a criterion that
+                needs Stripe, a hosted database or third-party login is judged against
+                whatever stub gets built — which can pass as easily as fail.
+              </span>
+            </div>
             <span className="numeric shrink-0">{trimmed.length} chars</span>
           </div>
+        </Panel>
+
+        {/*
+         * THE RUN STOPS, AND UNTIL NOW THE FORM NEVER SAID SO. Every submission
+         * from this page went out as `"ask"` and a dashboard submission is
+         * interactive by both of the server's tests, so the DESIGN lane's mockups
+         * park the run at `awaiting_input` mid-build (`orchestrator.ts:1505-1509`)
+         * and it waits for a click the ticket form gave no warning about — on a run
+         * the owner had every reason to leave unattended. The row discloses the
+         * stop and, with `"auto"`, is the way past it.
+         *
+         * WHAT THIS ROW DOES NOT COVER, since it reads like a promise that every
+         * run stops: the park needs the lane to have RUN and to have produced
+         * mockups with none locked. `designLaneMode` returns "off" for a ticket
+         * with no UI surface and "degraded" when the stills capability is missing,
+         * and neither produces a mockup to choose between — so on those tickets
+         * "Ask" changes nothing at all. This form cannot tell which it is: the
+         * surface is classified server-side from the brief, after submit, and no
+         * endpoint predicts it. The wording below therefore says what happens
+         * "once the mockups exist" rather than "every run".
+         *
+         * NO DURATION IS NAMED, DELIBERATELY. The wait is
+         * `DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN` minutes
+         * (`design-lock.ts:54-57`), the env var overrides the built-in default,
+         * and no route on this API exposes the resolved value — so any number
+         * printed here would be a guess that goes silently wrong the day the
+         * variable is set. "The window closes" is the phrase the mockup deck
+         * already uses for the same event (`design-lock.tsx`'s `SUBTITLE.pending`),
+         * kept identical so the two screens are one vocabulary.
+         */}
+        <Panel title="Design">
+          <div
+            role="radiogroup"
+            aria-label="Design"
+            className="flex flex-wrap gap-x-5 gap-y-1.5"
+          >
+            {DESIGN_CHOICES.map((choice) => (
+              <label
+                key={choice.value}
+                className="flex cursor-pointer items-center gap-2"
+              >
+                <input
+                  type="radio"
+                  // A SHARED `name` IS THE GROUPING, which is what gives arrow-key
+                  // navigation and one-tab-stop behaviour for free. It is never
+                  // read off the form — the value goes to `createRun` from state —
+                  // so it only has to be unique within this form.
+                  name="designLock"
+                  value={choice.value}
+                  checked={designLock === choice.value}
+                  onChange={() => setDesignLock(choice.value)}
+                  className="size-3.5 shrink-0 accent-[var(--color-accent)]"
+                />
+                <span className="text-[13px] font-medium text-ink">{choice.label}</span>
+              </label>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
+            Asking stops the run once the mockups exist and waits for your pick; if the
+            window closes before you answer, ui-designer picks and the run carries on.
+          </p>
         </Panel>
 
         <Panel title="Delivery">
@@ -177,15 +685,51 @@ export default function NewTicketPage(): ReactNode {
         </Panel>
 
         <div className="flex flex-wrap items-center gap-3">
+          {/*
+            * `size="lg"` IS THE ONE CALL SITE THE AXIS WAS ADDED FOR — UX-GAPS
+            * item 17's other half. `BUTTON_SIZE.lg` (`components/ui.tsx:179`)
+            * takes this from ~28px to ~38px, which is what stops the submit
+            * button of the page whose whole purpose is starting a run from being
+            * the same size as `run detail` and the same size as a canvas filter
+            * chip that happens to be on. The size axis is another agent's edit,
+            * landed mid-pass; that file's comment states the convention nothing
+            * enforces — at most one `lg` per screen — and this is that one.
+            *
+            * THE `title` IS THE ONLY PLACE THE ACCELERATOR IS NAMED. A hover
+            * tooltip teaches nobody on a touch screen and nobody driving the form
+            * from the keyboard, which is precisely the population the shortcut is
+            * for. A visible hint was left out because the owner has been cutting
+            * text off this form all week; that trade-off is his to reverse.
+            */}
           <Button
             type="submit"
             variant="primary"
+            size="lg"
+            title="⌘ / Ctrl + Enter"
             disabled={blockedReason !== null || submitting}
           >
             {submitting ? "Submitting…" : "Start run"}
           </Button>
           {blockedReason !== null && (
             <span className="text-[12px] text-ink-faint">{blockedReason}</span>
+          )}
+          {/*
+            * WHY THIS SUBMIT IS SLOW, SAID WHILE IT IS BEING SLOW.
+            *
+            * The capture runs INSIDE the POST (`http.ts:1136-1137`) because the
+            * outline it produces decides the ticket id, and the route's own bounds
+            * sum to roughly a minute in the worst case. No duration is printed —
+            * same rule the design row follows — because nothing on this wire
+            * exposes the resolved budget, and a number here would go quietly wrong
+            * the day it changes. It is phrased as the policy rather than as
+            * progress: this client cannot see whether a capture is actually
+            * running, and on a refused host the answer is that none is.
+            */}
+          {submitting && linksToAPage(ticketText) && (
+            <span className="text-[12px] text-ink-faint">
+              A link in the brief is captured before the run is created, so this
+              submit is slower than one without.
+            </span>
           )}
           {submitError !== null && (
             <span

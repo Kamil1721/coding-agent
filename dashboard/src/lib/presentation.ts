@@ -10,7 +10,19 @@ export type Tone = "pass" | "fail" | "warn" | "info" | "neutral" | "accent";
 export interface StatusMeta {
   readonly label: string;
   readonly tone: Tone;
-  /** One line, shown under the badge on the run view. Never marketing copy. */
+  /**
+   * One line explaining the status. WRITTEN LOCATION-AGNOSTIC, DELIBERATELY.
+   *
+   * All three LIVE callers render it as the badge's `title` tooltip and nothing
+   * else — the run HUD (`run-hud.tsx`), the home list (`app/page.tsx`) and the run
+   * list (`app/runs/page.tsx`) — so a sentence pointing at a panel is true on at
+   * most one of the three surfaces. (`components/run/header.tsx` also prints it as
+   * a line of body text, but nothing imports that component; it is not a fourth
+   * surface until something does.) `running` said "the trace below is live" until
+   * 2026-07-30, by which point the trace had moved into a sheet tab and the
+   * sentence pointed at nothing on any of them. Click paths belong in the
+   * component that owns the click. Never marketing copy.
+   */
   readonly meaning: string;
   /** True while the run can still change on its own. */
   readonly live: boolean;
@@ -42,15 +54,37 @@ export function statusMeta(status: RunStatus): StatusMeta {
       return {
         label: "running",
         tone: "accent",
-        meaning: "The agent is working. The trace below is live.",
+        meaning: "The agent is working. New events are still arriving.",
         live: true,
       };
     case "awaiting_input":
+      /*
+       * TWO DIFFERENT PARKS SHARE THIS STATUS, and one sentence has to be true of
+       * both — which is why it names no channel and no place on the screen.
+       *
+       *   · A DESIGN park: the mockup cards ARE the answer, and choosing one
+       *     resumes the run in the same click (`resume(runId, chosenMockup)`,
+       *     `server/src/http.ts`).
+       *   · A plain park, including the one `reconcileOnBoot` sets for a run whose
+       *     builder died with the server: the answer is typed into the chat.
+       *
+       * `AwaitingInputNotice` names the click path, because it renders only in the
+       * second case (`runs/[runId]/page.tsx` suppresses it while a design lock is
+       * pending). This string renders on three surfaces and cannot know which.
+       *
+       * SEQUENCING, WHICH THE OLD SENTENCE GOT BACKWARDS BY OMISSION — it said the
+       * API "exposes no channel to answer", which stopped being true when the chat
+       * shipped. A message sent to a PARKED run is not delivered: `pushLiveMessage`
+       * returns false with no open segment, the row stays pending, and the
+       * segment-boundary drain folds it into the next prompt (`orchestrator.ts`,
+       * `store.pendingMessages`). So answer first, then resume. The other order
+       * composes the next prompt without the answer in it.
+       */
       return {
         label: "awaiting input",
         tone: "warn",
         meaning:
-          "The run stopped and wants something from you. The dashboard API exposes no channel to answer — resume to let it continue, or cancel.",
+          "The run stopped for a decision from you. Answer it first, then resume — a message sent while it is parked is queued, not read, until the run restarts. Cancelling is the other move.",
         live: false,
       };
     case "rate_limited":

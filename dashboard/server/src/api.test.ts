@@ -36,6 +36,7 @@ import type { StoredEvent } from "./db.js";
 import { DESIGN_MOCKUP_LABEL, designLockPolicy, writeDesignLock } from "./design-lock.js";
 import type { DesignLockRecord } from "./design-lock.js";
 import type { DesignLockedBy } from "./design-manifest.js";
+import { GateProbe } from "./health-gate.js";
 import { LOOPBACK_HOST, createDashboardServer, designLockInteractive } from "./http.js";
 import type { RunController } from "./http.js";
 import { CODEX_DEFAULT_MODEL_ID, ModelCatalog } from "./models.js";
@@ -124,7 +125,23 @@ async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
     pushLiveMessage: () => false,
   };
 
-  const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths });
+  const server = createDashboardServer({
+    store,
+    bus,
+    orchestrator,
+    catalog,
+    auth,
+    paths,
+    // INJECTED SO A ROUTING TEST CANNOT TOUCH THE DAEMON. Without this the
+    // health route cold-starts a real `createGate`, which shells out to
+    // `docker image inspect` — so this test's outcome would depend on whether
+    // the machine running it happens to have Docker up, and it would spawn a
+    // child process a routing test has no business spawning.
+    gate: new GateProbe({
+      paths,
+      makeGate: () => Promise.reject(new Error("no docker in a routing test")),
+    }),
+  });
   await new Promise<void>((resolve) => server.listen({ host: LOOPBACK_HOST, port: 0 }, resolve));
   const address = server.address() as AddressInfo;
 
@@ -148,9 +165,17 @@ test("GET /api/health reports each CLI's login state, and nothing else about it"
     const response = await fetch(`${harness.base}/api/health`);
     assert.equal(response.status, 200);
     const body = (await response.json()) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(body).sort(), ["claudeAuth", "codexAuth", "ok"]);
+    assert.deepEqual(Object.keys(body).sort(), ["claudeAuth", "codexAuth", "gate", "ok"]);
     assert.equal(body["claudeAuth"], "ok");
     assert.equal(body["codexAuth"], "missing", "codex is genuinely not logged in on this machine");
+    // THE GATE IS REPORTED, AND `ok` DELIBERATELY STILL MEANS AUTH ONLY.
+    // `cron-tick.ts` journals "no CLI is authenticated" on `ok: false`; folding
+    // a down daemon into that flag would stop the scheduler while naming the
+    // wrong cause.
+    const gate = body["gate"] as Record<string, unknown>;
+    assert.equal(gate["state"], "unavailable", "the injected gate refuses, and that must surface as a state");
+    assert.match(String(gate["detail"]), /no docker in a routing test/, "with the REASON, not a bare flag");
+    assert.equal(body["ok"], true, "a down gate is not an auth failure and must not flip `ok`");
     // The stub printed an email. It must not appear anywhere in the response.
     assert.doesNotMatch(JSON.stringify(body), /example\.com/);
   } finally {

@@ -3,19 +3,22 @@
  */
 
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { redactForPersistence } from "bakeoff/dist/redact.js";
 import { shortlistFor } from "./agent-shortlist.js";
 import type { Surface } from "./agent-shortlist.js";
 import {
   ADVERSARY_AGENT,
   ADVERSARY_DISALLOWED_TOOLS,
   ADVERSARY_MAX_FINDINGS,
+  ADVERSARY_RECORD_FILE,
   ADVERSARY_WRITE_TOOLS,
   adversaryCall,
   adversaryOptions,
+  adversaryPassFromRecord,
   adversaryRecord,
   adversaryRefusal,
   parseAdversaryFindings,
@@ -491,6 +494,245 @@ test("THE RECORD IS WRITTEN FOR A REFUSAL TOO, and it never claims what it does 
     silent.notes.join("\n"),
     /left no report file/u,
     "'the session said nothing' and 'the pass found nothing' are different statements",
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * THE WIRE — `RunDetail.adversary`, and the distinction it exists to preserve
+ *
+ * WHAT IS UNDER TEST AND WHAT IS NOT. `adversaryPassFromRecord` is the mapper
+ * `http.ts#toDetail` calls; these arms drive it through the REAL WRITE PATH —
+ * `adversaryRecord(...)` → `redactForPersistence` → `JSON.stringify` — because
+ * that is the byte sequence `#recordAdversary` produces, and a bit that the
+ * redactor dropped would be invisible to a test that hand-built the JSON. What
+ * is NOT under test, here or anywhere: whether a live adversary session ever
+ * writes a report at all. THIS LANE HAS NEVER EXECUTED. Every arm below is a
+ * reader proven against a writer that has never run in anger.
+ *
+ * THE ONE ASSERTION THAT MATTERS is that arms 1 and 2 DIFFER. A mapper that
+ * returned `null` for everything passes arm 1; a mapper that returned `[]` for
+ * everything passes arm 2; only the comparison catches both. Collapsing "the
+ * pass left no report" into "the pass found nothing" is the defect this shape
+ * was built to refuse, so it is asserted as a difference and not as two facts.
+ * ---------------------------------------------------------------------- */
+
+/** Exactly what `#recordAdversary` writes to `results/adversary.json`. */
+function persisted(result: Awaited<ReturnType<typeof runAdversaryLane>>): string {
+  const record = adversaryRecord({ result, surface: "web-ui", previewUrl: "http://127.0.0.1:4180" });
+  return JSON.stringify(redactForPersistence(record), null, 2);
+}
+
+test("THE WIRE KEEPS 'no report' APART FROM 'no findings' — they must not be one value", async () => {
+  const silent = await runAdversaryLane(
+    laneDeps({ spawn: async () => ({ findings: [], failure: null, reportWritten: false }) }),
+  );
+  const reported = await runAdversaryLane(
+    laneDeps({ spawn: async () => ({ findings: [], failure: null, reportWritten: true }) }),
+  );
+
+  const noReport = adversaryPassFromRecord(persisted(silent));
+  const nothingFound = adversaryPassFromRecord(persisted(reported));
+
+  assert.ok(noReport !== null && nothingFound !== null, "a written record must map to a pass, not to null");
+  assert.equal(noReport.ran, true, "the session was spawned in both arms");
+  assert.equal(nothingFound.ran, true);
+
+  // ARM 1: it ran and filed nothing. `null` is "this program cannot see what it
+  // found", which is not a statement about the app.
+  assert.equal(noReport.findings, null);
+  // ARM 2: it ran, filed, and found nothing. An EMPTY LIST is a measurement.
+  assert.deepEqual(nothingFound.findings, [], "a report that found nothing is [], never null");
+
+  // THE DISCRIMINATOR. Without this, a mapper hard-coded to either value passes
+  // one arm above and looks correct.
+  assert.notEqual(
+    noReport.findings === null,
+    nothingFound.findings === null,
+    "the two cases produced the same wire value — the UI can no longer tell them apart",
+  );
+
+  // AND THE BIT IS A FIELD, NOT A SENTENCE. `notes` has always carried this in
+  // prose; prose does not reach a renderer.
+  const record = adversaryRecord({ result: silent, surface: "web-ui", previewUrl: "http://127.0.0.1:4180" });
+  assert.equal(record.reportWritten, false);
+  assert.match(record.notes.join("\n"), /left no report file/u, "the prose stays too, for the file's reader");
+});
+
+test("A REFUSAL IS 'declined', NOT 'found nothing' — ran:false with a null findings list", async () => {
+  // The lane never spawned, so there is no report and there are no findings, and
+  // both of those are the SAME fact here: nothing was measured. `stop` is what
+  // says why, and a panel keying on `ran` cannot print "no usability problems".
+  const refused = await runAdversaryLane(laneDeps({ previewUrl: null }));
+  const pass = adversaryPassFromRecord(persisted(refused));
+  assert.ok(pass !== null);
+  assert.equal(pass.ran, false);
+  assert.equal(pass.stop, "not-applicable");
+  assert.equal(pass.findings, null, "a pass that never ran must never present an empty findings list");
+  assert.match(pass.stopDetail, /loopback preview URL/u, "and it carries the lane's own sentence");
+});
+
+test("the findings themselves cross the wire — severity, class, sentence and repro", async () => {
+  const result = await runAdversaryLane(
+    laneDeps({
+      spawn: async () => ({
+        findings: [
+          { severity: "HIGH", klass: "logic", summary: "double submit books twice", detail: "10/10 attempts" },
+          // No `detail` at all: `AdversaryFinding.detail` is optional and
+          // `exactOptionalPropertyTypes` is on, so the mapper must CONVERT it
+          // rather than pass it through.
+          { severity: "MEDIUM", klass: "visual", summary: "the error text is invisible on dark" },
+        ],
+        failure: null,
+        reportWritten: true,
+      }),
+    }),
+  );
+  const pass = adversaryPassFromRecord(persisted(result));
+  assert.ok(pass?.findings != null, "a report with findings must not map to null");
+  assert.equal(pass.findings.length, 2);
+  assert.deepEqual(
+    { ...pass.findings[0] },
+    {
+      severity: "HIGH",
+      klass: "logic",
+      summary: "double submit books twice",
+      detail: "10/10 attempts",
+    },
+    "the sentence is the whole point of this field — it must arrive intact",
+  );
+  assert.equal(pass.findings[1]?.detail, "", "a finding with no repro carries '', never undefined");
+  assert.equal(pass.stop, "ran");
+  assert.equal(pass.stopDetail, "", "a clean pass has no stop sentence");
+});
+
+test("the record reader refuses what it cannot read, and never invents a pass", () => {
+  // EVERY ONE OF THESE IS `null` = "no pass on this run". A default-shaped pass
+  // (`ran: false`, `stop: ""`) would render as a refusal that never happened.
+  assert.equal(adversaryPassFromRecord("not json at all"), null);
+  assert.equal(adversaryPassFromRecord("[]"), null, "an array is not a record");
+  assert.equal(adversaryPassFromRecord("null"), null);
+  assert.equal(adversaryPassFromRecord('{"ran":true}'), null, "no stop, so nothing can be said about it");
+  assert.equal(adversaryPassFromRecord('{"stop":"ran"}'), null, "and `ran` is not defaulted either");
+  assert.equal(adversaryPassFromRecord('{"ran":true,"stop":""}'), null, "an empty stop names nothing");
+
+  // A RECORD FROM AN OLDER BUILD HAS NO `reportWritten` KEY. Unknown is carried
+  // as "no report", never as "found nothing" — the same direction the rest of
+  // this file fails in.
+  assert.equal(
+    adversaryPassFromRecord('{"ran":true,"stop":"ran","detail":"","findings":[]}')?.findings,
+    null,
+    "an old record with no reportWritten and no findings must not read as 'found nothing'",
+  );
+  // …unless it carries findings, which are themselves proof a report existed.
+  const legacy = adversaryPassFromRecord(
+    '{"ran":true,"stop":"ran","detail":"","findings":[{"severity":"LOW","klass":"visual","summary":"x"}]}',
+  );
+  assert.equal(legacy?.findings?.length, 1, "a non-empty list is proof of a report, whatever the flag says");
+});
+
+/* -------------------------------------------------------------------------
+ * THE TWO ENDS THAT NOTHING ELSE JOINS
+ *
+ * TEXT, NOT BEHAVIOUR, and that is stated rather than implied. These read source
+ * files and prove that a call site and a mirror EXIST and name each other. They
+ * cannot prove the route serves a correct value — `toDetail` is module-private
+ * and its own suite is `http.test.ts` — and they cannot prove anything renders.
+ *
+ * WHY THEY ARE HERE AT ALL. Item 18's original defect is a producer whose output
+ * reaches "two files no route serves": a mapper that nothing calls, and a server
+ * field with no client mirror, are both invisible to every typecheck in this
+ * repo — the two packages are separate TypeScript programs. `contract-parity.ts`
+ * is where the client-mirror leg belongs and it is outside this change's file
+ * list; it is written here so the check exists, and it should MOVE there rather
+ * than be duplicated.
+ * ---------------------------------------------------------------------- */
+
+/** Block comments first, then line comments — the contract-parity idiom. */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+}
+
+function readSource(file: string, what: string): string {
+  assert.ok(
+    existsSync(file),
+    `this check reads ${what} and it is not at ${file}. The file moved, or this test is running ` +
+      "from an outDir that is not directly under dashboard/server.",
+  );
+  return withoutComments(readFileSync(file, "utf8"));
+}
+
+test("CONTRACT: the run response actually carries the pass — the mapper is called, not merely exported", () => {
+  // Comments are stripped first, so the explanation ABOVE the line in http.ts is
+  // not what satisfies this. `import.meta.dirname` is `dashboard/server/<outDir>`
+  // at run time, so the sources sit one directory up.
+  const http = readSource(join(import.meta.dirname, "..", "src", "http.ts"), "this package's http.ts");
+  assert.match(
+    http,
+    /adversary: readAdversaryPass\(results\),/u,
+    "toDetail does not put the pass on RunDetail: the mapper exists, the record is written, and no " +
+      "route serves it — which is exactly the gap this change was made to close",
+  );
+  assert.match(
+    http,
+    /adversaryPassFromRecord\(readFileSync\(path, "utf8"\)\)/u,
+    "the reader no longer goes through adversaryPassFromRecord, so the null-vs-empty rule it owns " +
+      "is not the one the wire obeys",
+  );
+  // THE FILENAME IS ONE CONSTANT, NOT TWO LITERALS. `#recordAdversary` writes
+  // `join(runPaths.results, ADVERSARY_RECORD_FILE)`; a reader that hardcoded
+  // "adversary.json" would work today and go quietly blank the day the writer's
+  // name changed.
+  assert.match(
+    http,
+    /join\(resultsDir, ADVERSARY_RECORD_FILE\)/u,
+    "the reader spells the record's filename itself instead of taking the writer's constant",
+  );
+  assert.doesNotMatch(
+    http,
+    new RegExp(`"${ADVERSARY_RECORD_FILE.replace(/\./gu, "\\.")}"`, "u"),
+    "http.ts contains the record's filename as a literal, which is the drift the constant prevents",
+  );
+});
+
+test("CONTRACT: the client mirrors the pass, or the field arrives and never renders", () => {
+  // The two packages are separate TypeScript programs with no path between them.
+  // A field on the server's RunDetail with no client mirror compiles clean on
+  // BOTH sides, is serialised, arrives at the browser, and is unreachable.
+  const client = readSource(
+    join(import.meta.dirname, "..", "..", "src", "lib", "api-types.ts"),
+    "the client's api-types.ts",
+  );
+  assert.match(
+    client,
+    /readonly adversary: AdversaryPass \| null;/u,
+    "the client's RunDetail has no adversary field: the server sends it and the UI cannot see it",
+  );
+  for (const field of [
+    /readonly ran: boolean;/u,
+    /readonly stop: string;/u,
+    /readonly stopDetail: string;/u,
+    // THE NULLABLE LIST IS THE CONTRACT. A client that typed this
+    // `readonly AdversaryFinding[]` would compile, render, and silently say "no
+    // usability problems found" for a pass that filed no report.
+    /readonly findings: readonly AdversaryFinding\[\] \| null;/u,
+  ]) {
+    assert.match(client, field, `the client's AdversaryPass is missing ${String(field)}`);
+  }
+  for (const field of [
+    /readonly severity: "CRITICAL" \| "HIGH" \| "MEDIUM" \| "LOW";/u,
+    /readonly klass: string;/u,
+    /readonly summary: string;/u,
+    /readonly detail: string;/u,
+  ]) {
+    assert.match(client, field, `the client's AdversaryFinding is missing ${String(field)}`);
+  }
+  // THE CAVEAT TRAVELS WITH THE TYPE. The brief for this field is that its
+  // producer has never run; a mirror that dropped that sentence would hand the
+  // next reader a channel that looks proven.
+  assert.match(
+    readFileSync(join(import.meta.dirname, "..", "..", "src", "lib", "api-types.ts"), "utf8"),
+    /THIS LANE HAS NEVER EXECUTED/u,
+    "the client mirror no longer states that the producer of this field has never run",
   );
 });
 

@@ -89,3 +89,66 @@ export function lockedMockup(lock: DesignLockState): Screenshot | null {
   return lock.mockups.find((shot) => isPublishedAs(shot.path, locked)) ?? null;
 }
 
+/**
+ * A run's captures, split into THE SITE THE RUN BUILT and the design references
+ * it was built from.
+ *
+ * WHY THE SPLIT IS POSSIBLE AT ALL. `RunDetail.screenshots` is one flat list
+ * holding both, because a published mockup IS a screenshot row: the orchestrator
+ * has exactly two writers of `addScreenshot` — `#recordDesignMockups`
+ * (orchestrator.ts:1715, the five design refs copied into the served directory)
+ * and `#recordScreenshots` (orchestrator.ts:2286, the scorer's captures of the
+ * built site, labelled `<flowId> @ <breakpoint>`). Nothing else adds a row, so
+ * "not a mockup" means "a capture of the artefact" on every run this code has
+ * been read against.
+ *
+ * THE PRIMARY TEST IS PATH MEMBERSHIP IN THE SERVER'S OWN ANSWER. `http.ts:272`
+ * builds `designLock.mockups` as `screenshots.filter(label.startsWith(
+ * DESIGN_MOCKUP_LABEL))` — the same rows, so the path strings are identical and
+ * a `Set` of them partitions the flat list exactly, with no string parsing on
+ * this side and no second definition of what a mockup is.
+ *
+ * `MOCKUP_LABEL` IS A FAIL-SOFT SECONDARY, AND IT COVERS ONE REAL HOLE. The
+ * server sends `designLock: null` when the lane wrote no `design-lock.json`
+ * (http.ts's `readDesignLock` returns null), while `#recordDesignMockups` may
+ * already have published the copies and written their rows — a lane that
+ * produced images and then died before recording. In that state the primary set
+ * is empty and only the label tells a mockup from a capture, so the two are
+ * OR-ed rather than the label being ignored.
+ *
+ * WHAT THIS DOES NOT COVER, stated rather than implied: if the server's label
+ * constant ever drifts from `MOCKUP_LABEL` *and* `designLock` is null on the
+ * same run, a mockup lands in the product group and is shown under a heading
+ * that calls it the owner's site. Both halves have to fail together for that,
+ * and the authoritative half does not depend on a mirrored literal at all.
+ *
+ * ORDER IS PRESERVED WITHIN EACH GROUP — the list arrives `captured_at ASC`
+ * (`db.ts:929`) and nothing here re-sorts it. The panel changes which GROUP
+ * comes first, not the order of the captures inside one.
+ */
+export interface CaptureSplit {
+  /** Captures of the artefact this run built. */
+  readonly product: readonly Screenshot[];
+  /** The DESIGN lane's published mockups. */
+  readonly references: readonly Screenshot[];
+}
+
+export function splitCaptures(
+  screenshots: readonly Screenshot[],
+  mockups: readonly Screenshot[],
+): CaptureSplit {
+  const published = new Set(mockups.map((shot) => shot.path));
+  const product: Screenshot[] = [];
+  const references: Screenshot[] = [];
+
+  for (const shot of screenshots) {
+    if (published.has(shot.path) || shot.label.startsWith(MOCKUP_LABEL)) {
+      references.push(shot);
+    } else {
+      product.push(shot);
+    }
+  }
+
+  return { product, references };
+}
+

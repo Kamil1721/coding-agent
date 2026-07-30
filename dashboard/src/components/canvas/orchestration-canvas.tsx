@@ -66,7 +66,7 @@ import {
   type ReactNode,
 } from "react";
 
-import type { GraphState } from "@/lib/api-types";
+import type { GraphState, RunStatus } from "@/lib/api-types";
 import { Button, cx } from "@/components/ui";
 import {
   AgentNode,
@@ -164,6 +164,77 @@ const RESIZE_REFIT_THRESHOLD_PX = 24;
 const SWEEP_STEP_MS = 190;
 const SWEEP_TAIL_MS = 1_200;
 
+interface EmptyCopy {
+  readonly title: string;
+  readonly body: string;
+}
+
+/**
+ * FOUR EMPTY STATES, AND THEY WERE ONE — corrected 2026-07-30, extended the same day.
+ *
+ * A run 57 seconds old, in the SPEC phase, on Claude, was shown "This run emitted no
+ * graph events. Runs recorded before the canvas existed, and runs on the Codex
+ * provider, contain none." Every clause of that is false about that run, and the
+ * owner reasonably read it as a bug: "when you start a new run why is there no
+ * orchestator showing?"
+ *
+ * THE ACTUAL REASON, which nothing on screen said: the orchestrator node is minted by
+ * the BUILD segment. While the spec is being authored, audited and frozen there is no
+ * builder session, so there are no `graph_*` events to fold — measured on the live run
+ * as 0 `graph_agent` of 6 total events. Nothing is wrong; the graph has not started
+ * yet.
+ *
+ * THE FOURTH CASE IS A RUN THAT HAS NOT STARTED AT ALL. `queued` is non-terminal, so
+ * the three-way version handed it the spec-phase sentence and told a run that is doing
+ * nothing that its acceptance suite was being written. It is not: `pump()` starts the
+ * head of the queue only when nothing is active, so a queued run has no process, no
+ * segment and no events.
+ *
+ * IT DOES NOT NAME A POSITION, ON PURPOSE. `queuePosition` is persisted on the row and
+ * deliberately kept off `RunSummary`/`RunDetail` — "a frozen contract with no position
+ * field" (`server/src/orchestrator.ts:537-544`) — so this component is never given one.
+ * The orchestrator does EMIT the number as a log line ("queued: position N of M",
+ * `orchestrator.ts:572`) on the run's own stream, and the client parses `log` events —
+ * whether that particular line survives replay and reaches the Trace tab for a run
+ * opened later was NOT checked here, so nothing in this file may promise it. Either
+ * way this component is not handed the value, and restating it from something it does
+ * not hold would mean inventing it. So the copy states the property that IS known from
+ * the code — the queue is serial — and stops there.
+ *
+ * Pure and module-scope so the four sentences are one lookup rather than a four-deep
+ * ternary written twice. Called only when the PLACEMENT is empty; `graphNodeCount` is
+ * the unfiltered count, so `> 0` here means every node on the run was filtered out as
+ * housekeeping.
+ */
+function emptyCanvasCopy(state: {
+  readonly graphNodeCount: number;
+  readonly runStatus: RunStatus | undefined;
+  readonly runIsActive: boolean;
+}): EmptyCopy {
+  if (state.graphNodeCount > 0) {
+    return {
+      title: "Only housekeeping so far",
+      body: "Every agent on this run is housekeeping. Use the housekeeping toggle to show them.",
+    };
+  }
+  if (state.runStatus === "queued") {
+    return {
+      title: "Waiting for the run ahead of it",
+      body: "This run is queued. The orchestrator runs one at a time, so nothing is drawn here until the runs ahead of it finish. When it starts, the acceptance suite is written and frozen first — the graph appears once the build begins.",
+    };
+  }
+  if (state.runIsActive) {
+    return {
+      title: "The agents have not started yet",
+      body: "The acceptance suite is being written and frozen first — that happens before any agent is spawned, so there is nothing to draw yet. The graph appears as soon as the build starts.",
+    };
+  }
+  return {
+    title: "No delegation recorded",
+    body: "This run emitted no graph events. Runs recorded before the canvas existed, and runs on the Codex provider, contain none — the run sheet's trace is their full record.",
+  };
+}
+
 export interface CanvasProps {
   readonly graph: GraphState;
   /** False while the snapshot is still in flight. Drives the loading overlay. */
@@ -183,6 +254,26 @@ export interface CanvasProps {
    * facts. Conflating them is what made a healthy new run look broken.
    */
   readonly runIsActive?: boolean;
+  /**
+   * The run's status, when the caller knows it.
+   *
+   * WHY `runIsActive` IS NOT ENOUGH. `queued` and `running` are both non-terminal,
+   * so `!isTerminalStatus(status)` folds them to one `true` — and the empty-state
+   * copy keyed on that told a run WAITING BEHIND ANOTHER that its acceptance suite
+   * was being written, which is a sentence about a run that has not begun. The
+   * server's `pump()` starts `queued[0]` only when `#active === null`
+   * (`server/src/orchestrator.ts:545-557`), so exactly one run executes at a time
+   * and a queued run is doing nothing at all.
+   *
+   * NOT WIRED YET — SO THE QUEUED BRANCH BELOW CANNOT RENDER TODAY, AND THIS PROP
+   * CHANGES NO PIXEL ON ITS OWN. The one call site,
+   * `src/app/runs/[runId]/page.tsx:297`, passes `runIsActive={!isTerminalStatus(run.status)}`
+   * and nothing else; that file belongs to a different change in this pass and was
+   * not touched here. Until `runStatus={run.status}` is added beside it, a queued
+   * run keeps getting the spec-phase copy exactly as before. Optional rather than
+   * required for the same reason: making it required would break that call site.
+   */
+  readonly runStatus?: RunStatus;
   /**
    * How many pixels of the pane's right edge the page has covered with a sheet.
    *
@@ -211,6 +302,7 @@ function CanvasInner({
   hud,
   rightInset: requestedInset = 0,
   runIsActive = false,
+  runStatus,
 }: CanvasProps): ReactNode {
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
@@ -923,6 +1015,17 @@ function CanvasInner({
 
   const empty = placement.nodes.length === 0;
 
+  /*
+   * Derived unconditionally rather than inside the overlay's branch: it is four
+   * string literals and a chain of comparisons, so memoising it would cost more
+   * than it saves, and computing it here keeps the JSX to two lines.
+   */
+  const emptyCopy = emptyCanvasCopy({
+    graphNodeCount: graph.nodes.length,
+    runStatus,
+    runIsActive,
+  });
+
   return (
     <div ref={shell} className="relative h-full w-full">
       <ReactFlow
@@ -1037,11 +1140,19 @@ function CanvasInner({
           </Button>
         )}
         {ambientCount > 0 && (
+          /*
+           * `skip_transcript` IS GONE FROM THE TOOLTIP — 2026-07-30. It is the CLI
+           * field this filter reads (`GraphNode.ambient`, see `layout.ts`), and
+           * naming it here asked the reader to know an SDK flag to understand a
+           * button. The sentence now says what the agents ARE, in the same words the
+           * run sheet uses; the two are hand-kept copies of one string and nothing
+           * compares them, so change both together.
+           */
           <Button
             variant={showAmbient ? "primary" : "default"}
             className="pointer-events-auto"
             onClick={() => onShowAmbient(!showAmbient)}
-            title="Agents the CLI marked skip_transcript — housekeeping work that does not belong to the ticket."
+            title="These agents are housekeeping — not an agent step. Show or hide them on the canvas."
           >
             housekeeping {ambientCount}
           </Button>
@@ -1102,37 +1213,16 @@ function CanvasInner({
             </div>
           ) : (
             /*
-             * THREE EMPTY STATES, AND THEY WERE ONE — corrected 2026-07-30.
-             *
-             * A run 57 seconds old, in the SPEC phase, on Claude, was shown "This run
-             * emitted no graph events. Runs recorded before the canvas existed, and runs
-             * on the Codex provider, contain none." Every clause of that is false about
-             * that run, and the owner reasonably read it as a bug: "when you start a new
-             * run why is there no orchestator showing?"
-             *
-             * THE ACTUAL REASON, which nothing on screen said: the orchestrator node is
-             * minted by the BUILD segment. While the spec is being authored, audited and
-             * frozen there is no builder session, so there are no `graph_*` events to
-             * fold — measured on the live run as 0 `graph_agent` of 6 total events.
-             * Nothing is wrong; the graph has not started yet.
-             *
-             * So a run that is still WORKING says so and names what it is doing, and only
-             * a run that is genuinely over falls through to the historical explanation.
+             * A run that has not STARTED, a run that is working, a run whose agents are
+             * all housekeeping and a run that is genuinely over are four different
+             * facts. `emptyCanvasCopy` holds the four sentences and the reasoning for
+             * each; note that the queued one cannot be reached until the run page
+             * passes `runStatus` (see the prop).
              */
             <div className="max-w-[420px] rounded border border-line bg-surface/90 px-5 py-4 text-center">
-              <p className="text-[13px] font-semibold text-ink">
-                {graph.nodes.length > 0
-                  ? "Only housekeeping so far"
-                  : runIsActive
-                    ? "The agents have not started yet"
-                    : "No delegation recorded"}
-              </p>
+              <p className="text-[13px] font-semibold text-ink">{emptyCopy.title}</p>
               <p className="mt-1.5 text-[12px] leading-relaxed text-ink-dim">
-                {graph.nodes.length > 0
-                  ? "Every agent on this run is housekeeping. Use the housekeeping toggle to show them."
-                  : runIsActive
-                    ? "The acceptance suite is being written and frozen first — that happens before any agent is spawned, so there is nothing to draw yet. The graph appears as soon as the build starts."
-                    : "This run emitted no graph events. Runs recorded before the canvas existed, and runs on the Codex provider, contain none — the run sheet's trace is their full record."}
+                {emptyCopy.body}
               </p>
             </div>
           )}

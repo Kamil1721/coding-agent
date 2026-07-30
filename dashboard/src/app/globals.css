@@ -39,6 +39,73 @@
   --font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
     monospace;
+
+  /*
+   * TWO RUNGS ABOVE BODY, AND THAT IS THE ENTIRE SCALE THIS FILE OWNS.
+   *
+   * WHAT WAS MEASURED, not felt —
+   *
+   *     grep -rho 'text-\[[0-9.]*px\]' src/ | sort | uniq -c
+   *
+   * — on 2026-07-30 returned 9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5 and
+   * then exactly THREE call sites above that in the whole client: a 15px cost
+   * headline, a 16px title in `run/header.tsx` (a file with no importer), and a
+   * 22px count of collapsed duplicate tasks. Body is 13px (see `body` below).
+   *
+   * So the app had a dense, well-judged sub-scale of LABEL sizes and no headroom
+   * at all — the run title in the canvas chip was 13.5px, the same size as the
+   * ticket textarea's body copy, while the largest live figures on any screen
+   * were a token count and a housekeeping count. The biggest text on screen was
+   * its least important text, which is a hierarchy inversion rather than a taste
+   * preference.
+   *
+   * Re-run that grep before trusting the numbers: it counts comments too — this
+   * one included — and the tree moves.
+   *
+   * SMALL STEP, THEN BIG STEP — 13 → 16 → 24, ratios 1.23 and 1.5. This is
+   * deliberate and not a geometric scale: a lede that sits close to body reads as
+   * emphasis inside a panel, and a title that clears both by half again reads as
+   * the name of the screen. An even 1.35 ratio (13 → 17.5 → 23.7) would have put
+   * the lede close enough to the title to compete with it, and this app stacks
+   * both inside 360px docks.
+   *
+   * 16px IS THE BROWSER'S OWN DEFAULT BODY SIZE. In a 13px app it is the
+   * smallest step that unambiguously reads as "larger", which is what a lede has
+   * to do; 14px and 15px read as a rendering inconsistency.
+   *
+   * `--text-lede` HAS NO CALL SITE YET. Stated plainly rather than implied: this
+   * pass was scoped to the run title, so only `--text-title` is spent, in
+   * `components/canvas/run-hud.tsx`. The rung is defined here so the next
+   * hierarchy fix picks a NAMED size instead of a fresh arbitrary one — its two
+   * obvious first call sites are `run/usage.tsx:74` (the cost/billing headline,
+   * an off-scale `text-[15px]`, a 1px change) and `canvas/agent-node.tsx:619`
+   * (the 22px duplicate-task count, which should come DOWN to this rung because
+   * a housekeeping figure is not display type). Neither is touched here. If you
+   * are reading this and `text-lede` still has zero call sites, deleting it is a
+   * legitimate outcome — an unused token is not a scale.
+   *
+   * `--font-weight` IS NOT SET ON EITHER RUNG. Tailwind v4 supports it as a
+   * `--text-<name>--font-weight` modifier, and it is left off so that `text-title`
+   * changes exactly one thing a reader can predict from the class name. Weight
+   * stays an explicit `font-semibold` at the call site.
+   *
+   * These land as `text-lede` / `text-title` utilities: in Tailwind v4 a
+   * `--text-*` theme variable generates a font-size utility, and the
+   * `--line-height` / `--letter-spacing` suffixes ride along with it (verified
+   * against `node_modules/tailwindcss/theme.css:347-372`, where the built-in
+   * `--text-xs … --text-9xl` are declared the same way). `@theme` MERGES, so the
+   * built-in `text-sm`/`text-base` scale is still there and unused; clearing it
+   * would need `--text-*: initial`, which is not done because nothing here is
+   * hurt by an unused utility and a hard clear breaks any future call site that
+   * reaches for `text-xs` out of habit.
+   */
+  --text-lede: 16px;
+  --text-lede--line-height: 1.3;
+  --text-lede--letter-spacing: -0.005em;
+
+  --text-title: 24px;
+  --text-title--line-height: 1.15;
+  --text-title--letter-spacing: -0.015em;
 }
 
 :root {

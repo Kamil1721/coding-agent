@@ -77,6 +77,7 @@ import {
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
 import {
   ADVERSARY_AGENT,
+  ADVERSARY_RECORD_FILE,
   adversaryRecord,
   parseAdversaryFindings,
   parseAgentDenylist,
@@ -165,8 +166,19 @@ import { PreviewHost } from "./preview.js";
 import { writeAssumptions, writeRunVerdict } from "./run-report.js";
 import { describeTokens, mergeTokenTotals, toApiTokens, zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
-import { SubscriptionSeatCaller } from "./subscription-caller.js";
-import { ticketFromText } from "./ticket.js";
+import { SubscriptionSeatCaller, describeSeatDocuments, seatDocumentsFor } from "./subscription-caller.js";
+import type { SeatDocument } from "./subscription-caller.js";
+import { extractorIsUsable, probeDocumentCapability } from "./document-capability.js";
+import { routeFor } from "./document-intake.js";
+import { ticketFromStoredReferences } from "./ticket.js";
+import {
+  builderReferenceSection,
+  designReferenceSection,
+  manifestDocuments,
+  readReferenceManifest,
+  referenceDirFor,
+  ticketProse,
+} from "./ticket-refs.js";
 import { classifySurface } from "./surface.js";
 
 const exec = promisify(execFile);
@@ -311,6 +323,48 @@ interface ActiveRun {
 }
 
 /**
+ * WHY AN ABORT CARRIES A REASON.
+ *
+ * Two very different events call `abort()` on the same controller — the owner
+ * cancelling one run, and the server stopping — and the thrown error cannot
+ * tell them apart. What surfaces is the CLI's own wording, "Claude Code process
+ * aborted by user", which is wrong about a SIGTERM and blames the operator
+ * either way. The controller's `reason` is the only thing that still knows.
+ *
+ * The two demand OPPOSITE terminal handling, which is why guessing was never
+ * an option:
+ *
+ * - `cancelled` — the owner asked. Terminal, and `#cancelled` records it.
+ * - `shutdown` — the process is going away. **Nothing terminal may be
+ *   written.** The row stays `running` so `reconcileOnBoot` moves it to
+ *   `awaiting_input` on the next boot, which is what makes the stop banner's
+ *   promise — "In-flight builds are aborted and stay resumable" — true.
+ *
+ * Before this, an abort during the SPEC phase escaped as a thrown
+ * `SeatCallError`, sailed past the `signal.aborted` check below it, and was
+ * caught by `#start` as a harness fault: status `failed`, which `resume()`
+ * refuses outright. A server restart permanently killed the run and told the
+ * owner a user had done it.
+ */
+export const ABORT_CANCELLED = "cancelled" as const;
+export const ABORT_SHUTDOWN = "shutdown" as const;
+type AbortReason = typeof ABORT_CANCELLED | typeof ABORT_SHUTDOWN;
+
+/**
+ * Read the reason back off a signal.
+ *
+ * Defaults to `cancelled` when the reason is absent or unrecognised — an abort
+ * from a path that predates this, or a future one that forgets to pass a
+ * reason, is treated as the owner cancelling. That is the SAFE default: it
+ * writes a terminal `cancelled` the owner can see and re-run, rather than
+ * leaving a row `running` that no reconciliation will ever revisit because the
+ * process is still alive.
+ */
+export function abortReasonOf(signal: AbortSignal): AbortReason {
+  return signal.reason === ABORT_SHUTDOWN ? ABORT_SHUTDOWN : ABORT_CANCELLED;
+}
+
+/**
  * What one gate attempt produced.
  *
  * Three states, kept apart on purpose: a `record` with a verdict, a `container`
@@ -440,6 +494,191 @@ export const DASHBOARD_SANDBOX: SandboxSpec = Object.freeze({
   networkPolicy: recordedNetworkPolicy(undefined),
 });
 
+/* -------------------------------------------------------------------------
+ * The rate-limit park: opt-in auto-resume, OFF by default
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The environment variable that turns automatic resume on. Nothing else does.
+ *
+ * WHAT WAS BROKEN. Nothing armed anything on `rate_limited`. The status is not
+ * terminal, `pump()` only ever picks up `queued`, and the sole exit was a human
+ * pressing Resume — while `cron/cron-policy.ts` skipped every tick saying "That
+ * run resumes when the window drains", describing a resume NO CODE PERFORMED.
+ * An unattended overnight queue therefore stopped at the first refusal and
+ * stayed stopped until morning.
+ *
+ * WHY OPT-IN AND NOT THE DEFAULT. Every automatic resume spends the owner's
+ * subscription with nobody watching, and the number the decision rests on comes
+ * from the provider: `retryAfterSec` is derived from ONE `resetsAt`
+ * (claude-common.ts), which names when the CURRENT window rolls over and cannot
+ * distinguish the 5-hour window from the weekly cap. A resume timed off that
+ * number can be wrong, repeatedly, in the direction of spending. Default OFF
+ * means a wrong number costs nothing.
+ *
+ * UNRECOGNISED VALUES ARE OFF, WHICH INVERTS `designLockPolicy`'s RULE. There
+ * the safe direction is the one that FINISHES a park; here the safe direction is
+ * the one that does not spend, so a typo in a launchd plist cannot enrol a
+ * machine into unattended quota burn.
+ */
+export const RATE_LIMIT_AUTO_RESUME_ENV = "DASHBOARD_RATE_LIMIT_AUTO_RESUME";
+
+const RATE_LIMIT_AUTO_RESUME_ON: readonly string[] = ["1", "true", "yes", "on"];
+
+export function rateLimitAutoResume(env: NodeJS.ProcessEnv): boolean {
+  return RATE_LIMIT_AUTO_RESUME_ON.includes((env[RATE_LIMIT_AUTO_RESUME_ENV] ?? "").trim().toLowerCase());
+}
+
+/**
+ * The longest wait this will arm, and the reason a longer one is REFUSED rather
+ * than clamped.
+ *
+ * `setTimeout` stores its delay in a signed 32-bit integer: a delay above
+ * 2_147_483_647 ms does not wait longer, it FIRES IMMEDIATELY (Node prints
+ * `TimeoutOverflowWarning` and substitutes 1 ms). For this feature that is the
+ * worst possible inversion — a run that should wait 115 days would resume in a
+ * millisecond, unattended, into a window that is certainly still shut. A wait
+ * this program cannot represent is a wait it must not claim, so it is disabled
+ * with a reason instead.
+ *
+ * Real windows sit far below the ceiling (a seven-day cap is 604_800_000 ms), so
+ * only a nonsense `resetsAt` reaches it.
+ */
+export const RATE_LIMIT_RESUME_MAX_DELAY_MS = 2_147_483_647;
+
+/**
+ * How many times a run may have been resumed before auto-resume stops offering.
+ *
+ * IT COUNTS THE OWNER'S RESUMES TOO, and that is a limitation rather than a
+ * design: `RunRow.resumeCount` is one integer and does not record who pressed
+ * it. The bound is therefore on TOTAL re-entries into a run, not on automatic
+ * ones, and a run an owner has already resumed three times will not arm.
+ *
+ * It exists because one `resetsAt` cannot tell a 5-hour rollover from the weekly
+ * cap. Under a weekly cap the reported instant is minutes away while the real
+ * refusal is days long, so an unbounded arm would resume, be refused, re-arm,
+ * and grind through the quota in short steps for a week. Three re-entries, then
+ * a human.
+ */
+export const RATE_LIMIT_AUTO_RESUME_MAX_RESUMES = 3;
+
+export type RateLimitResumePlan =
+  | { readonly kind: "armed"; readonly delayMs: number }
+  | { readonly kind: "due" }
+  | { readonly kind: "disabled"; readonly reason: string };
+
+export interface RateLimitResumeInput {
+  readonly enabled: boolean;
+  /**
+   * When the provider REFUSED — `RunRow.rateLimitedAt`, written only by
+   * `#rateLimited`. NOT the last `rate_limit` telemetry event: that one fires
+   * routinely with `limited: false` to report a window filling, and arming off
+   * it would resume runs nothing ever refused.
+   */
+  readonly rateLimitedAt: string | null;
+  readonly retryAfterSec: number | null;
+  readonly resumeCount: number;
+  readonly now: string;
+}
+
+/**
+ * Should this run resume itself, when, and if not — WHY NOT.
+ *
+ * PURE, for `cron-policy.ts`'s stated reason: a decision that can only be
+ * observed by spending the owner's quota is a decision nobody checks. Every arm
+ * below is reachable from a unit test with no timer and no clock.
+ *
+ * THE `disabled` REASON IS THE PRODUCT, not an afterthought. It is emitted onto
+ * the run's own log at the moment of the refusal, so a run that is going to sit
+ * there until morning SAYS so when it stops instead of going quiet.
+ *
+ * TWO DELIBERATE INVERSIONS OF `designLockExpired`, WHICH IS THE PRECEDENT THIS
+ * OTHERWISE FOLLOWS:
+ *
+ *  - An ABSENT OR UNPARSEABLE instant is `disabled` here, where `designLockExpired`
+ *    returns "expired" and ends the park. Ending a park costs nothing; resuming a
+ *    build spends. If we do not know WHEN the refusal happened we do not know what
+ *    remains of the wait, and arming from `now` would be a FRESH window wearing the
+ *    old one's name — the exact thing re-arming from the original instant exists to
+ *    prevent.
+ *
+ *  - `retryAfterSec === 0` is `disabled` rather than "already drained".
+ *    `claude-common.ts` produces it via `Math.max(0, ...)` when the provider
+ *    refused a call while naming a reset instant already in the past: a refusal
+ *    with no wait attached, which answered immediately walks straight back into
+ *    itself. NOTE that the CLIENT conflates 0 with "not reported"
+ *    (`use-run-stream.ts:349` maps a null to 0); on this side, reading `RunRow`,
+ *    the two are separate values and stay separate.
+ *
+ * WHAT IT DOES NOT DO: it does not establish that the window actually drained.
+ * Nothing here can — the only evidence is the next call being accepted. It
+ * computes the wait the provider itself reported, and stops there.
+ */
+export function planRateLimitResume(input: RateLimitResumeInput): RateLimitResumePlan {
+  if (!input.enabled) {
+    return {
+      kind: "disabled",
+      reason:
+        `automatic resume is opt-in and is off. Set ${RATE_LIMIT_AUTO_RESUME_ENV}=1 to let a rate-limited ` +
+        `run restart itself; until then a human has to resume this run — nothing will do it for them.`,
+    };
+  }
+  if (input.retryAfterSec === null) {
+    return {
+      kind: "disabled",
+      reason:
+        "the provider reported no reset instant with this refusal, so nothing here knows when the window " +
+        "reopens. A countdown from a number nobody reported is an invention, so no timer is armed and a " +
+        "human has to resume this run.",
+    };
+  }
+  if (!Number.isFinite(input.retryAfterSec) || input.retryAfterSec <= 0) {
+    return {
+      kind: "disabled",
+      reason:
+        `the provider refused the call while reporting a reset instant that is not in the future ` +
+        `(retryAfterSec ${String(input.retryAfterSec)}). A resume with no wait attached re-enters the same ` +
+        `refusal, so no timer is armed and a human has to resume this run.`,
+    };
+  }
+  const refusedAt = input.rateLimitedAt === null ? Number.NaN : Date.parse(input.rateLimitedAt);
+  const at = Date.parse(input.now);
+  if (!Number.isFinite(refusedAt) || !Number.isFinite(at)) {
+    return {
+      kind: "disabled",
+      reason:
+        `there is no usable record of when the provider refused (${input.rateLimitedAt ?? "none recorded"}), ` +
+        `so the remaining wait cannot be computed. Arming from now would restart the whole window on every ` +
+        `boot, which is the one thing this must never do; a human has to resume this run.`,
+    };
+  }
+  if (input.resumeCount >= RATE_LIMIT_AUTO_RESUME_MAX_RESUMES) {
+    return {
+      kind: "disabled",
+      reason:
+        `this run has been resumed ${String(input.resumeCount)} time(s) and the cap is ` +
+        `${String(RATE_LIMIT_AUTO_RESUME_MAX_RESUMES)}. The cap counts the owner's own resumes too — the row ` +
+        `does not record who pressed it — so it bounds total re-entries rather than automatic ones.`,
+    };
+  }
+  // ELAPSED IS FLOORED AT ZERO, exactly as `#parkForDesignLock` floors it: a
+  // clock that moved backwards must not lengthen the wait beyond what was
+  // reported.
+  const elapsed = Math.max(0, at - refusedAt);
+  const delayMs = input.retryAfterSec * 1000 - elapsed;
+  if (delayMs <= 0) return { kind: "due" };
+  if (delayMs > RATE_LIMIT_RESUME_MAX_DELAY_MS) {
+    return {
+      kind: "disabled",
+      reason:
+        `the reported wait is ${String(Math.round(delayMs / 86_400_000))} day(s), longer than a timer on this ` +
+        `platform can hold — setTimeout keeps its delay in 32 bits and a longer one fires IMMEDIATELY. ` +
+        `Refused rather than clamped, because firing immediately is the opposite of waiting.`,
+    };
+  }
+  return { kind: "armed", delayMs };
+}
+
 export class Orchestrator {
   readonly #deps: OrchestratorDeps;
   #active: ActiveRun | null = null;
@@ -455,6 +694,21 @@ export class Orchestrator {
    * the window. Neither half alone bounds anything.
    */
   readonly #designLockTimers = new Map<string, NodeJS.Timeout>();
+
+  /**
+   * The live half of the RATE-LIMIT park, one timer per auto-resuming run.
+   *
+   * Same two-halves shape as {@link Orchestrator.#designLockTimers} and for the
+   * same reason: a timer lives in a process a restart destroys, so
+   * `reconcileOnBoot` re-arms from `RunRow.rateLimitedAt` — the ORIGINAL instant,
+   * never `now` — and neither half alone bounds anything.
+   *
+   * ONE DIFFERENCE FROM THE DESIGN PARK: this map is EMPTY BY DESIGN on a default
+   * install. Auto-resume is opt-in ({@link RATE_LIMIT_AUTO_RESUME_ENV}), and with
+   * it off a rate-limited run waits for a human — which the run's log says, at
+   * the moment it stops, rather than leaving the owner to infer it.
+   */
+  readonly #rateLimitTimers = new Map<string, NodeJS.Timeout>();
 
   /**
    * Open input channels, by run id — one per in-flight build segment.
@@ -539,7 +793,7 @@ export class Orchestrator {
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
     if (this.#active !== null && this.#active.runId === runId) {
-      this.#active.abort.abort();
+      this.#active.abort.abort(ABORT_CANCELLED);
       return true;
     }
     this.#finish(runId, "cancelled", { queuePosition: null, endedAt: new Date().toISOString() });
@@ -604,11 +858,17 @@ export class Orchestrator {
       }
     }
     this.#clearDesignLockTimer(runId);
+    // THE RATE-LIMIT PARK ENDS HERE TOO, whichever way it was ended. A timer
+    // left armed across a manual resume would fire mid-build and requeue a
+    // RUNNING run; the row's `rateLimitedAt` is cleared with it so a later boot
+    // cannot re-arm from an instant that no longer describes anything.
+    this.#clearRateLimitTimer(runId);
 
     this.#deps.store.updateRun(runId, {
       status: "queued",
       resumeCount: row.resumeCount + 1,
       rateLimited: false,
+      rateLimitedAt: null,
       rateLimitRetryAfterSec: null,
     });
     this.#emit(runId, { type: "status", status: "queued" });
@@ -659,6 +919,27 @@ export class Orchestrator {
         this.#parkForDesignLock(row.runId, paths, park.parkedAt);
       }
     }
+    // THE DURABLE HALF OF THE RATE-LIMIT PARK. Same argument as the loop above:
+    // the timer died with the process and `rate_limited` has no other automatic
+    // exit, so without this a restart during an armed wait is a run that waits
+    // forever — the very defect this feature was added to remove, reintroduced
+    // by the restart.
+    //
+    // GATED ON THE FLAG BEFORE THE SWEEP, not inside it, so a default install
+    // does nothing and says nothing here. The "no timer is armed, a human has to
+    // resume this" sentence was already emitted onto each of these runs' logs
+    // when they stopped; repeating it on every boot would bury the one that
+    // mattered. `#armRateLimitResume` re-checks the flag anyway — it is also the
+    // refusal-time path, where the off-reason IS the thing worth saying.
+    if (rateLimitAutoResume(this.#deps.env)) {
+      for (const row of this.#deps.store.listByStatus("rate_limited")) {
+        // RE-ARMED FOR THE REMAINDER: the row's ORIGINAL `rateLimitedAt` goes in,
+        // so a dashboard that restarts every few minutes cannot push the deadline
+        // forward each time. A row that predates the column carries `null` and is
+        // refused rather than restarted — see `planRateLimitResume`.
+        this.#armRateLimitResume(row.runId, row);
+      }
+    }
     this.pump();
   }
 
@@ -668,7 +949,16 @@ export class Orchestrator {
     // covers process exit and nothing else — a host that shuts the orchestrator
     // down and closes the database still has these armed.
     for (const runId of [...this.#designLockTimers.keys()]) this.#clearDesignLockTimer(runId);
-    this.#active?.abort.abort();
+    // Same argument for the rate-limit timers: `unref()` covers process exit and
+    // nothing else, and a callback that calls `resume()` against a closed store
+    // is a crash on a host that stops the orchestrator without stopping the
+    // process. The next boot re-arms them from `rateLimitedAt`.
+    for (const runId of [...this.#rateLimitTimers.keys()]) this.#clearRateLimitTimer(runId);
+    // REASONED, so the run being torn down is not recorded as a failure. See
+    // ABORT_SHUTDOWN: this path must leave the row `running` for
+    // `reconcileOnBoot`. `#stopped` is already set above, so the `pump()` in
+    // `#start`'s finally cannot start the next queued run on the way out.
+    this.#active?.abort.abort(ABORT_SHUTDOWN);
     await this.#deps.preview.stop();
   }
 
@@ -703,7 +993,54 @@ export class Orchestrator {
     const runPaths = runPathsFor(this.#deps.paths, runId);
     ensureRunDirs(runPaths);
 
-    const ticket = ticketFromText(row0.ticketText);
+    /*
+     * THE TICKET IS DERIVED, NOT READ OFF THE ROW — AND NOW IT NEEDS THE
+     * REFERENCE MANIFEST TO DERIVE THE SAME ANSWER THE INTAKE DID.
+     *
+     * `ticketFromText(row.ticketText)` was enough until a ticket could carry
+     * reference IMAGES. Their sha256 digests are part of the ticket's identity
+     * (the owner's explicit decision — see `ticketWithReferences`) and they are
+     * not recoverable from the text, so the digests have to come off the
+     * manifest `http.ts` wrote beside the run.
+     *
+     * WHY NOT SIMPLY `row.ticketId`, WHICH HOLDS EXACTLY THIS STRING. Because
+     * the orchestrator has never trusted that column, and two sequencing tests
+     * depend on not trusting it: they seed `ticketId: "seeded-at-create"` and
+     * hand-freeze the suite under `ticketFromText(row.ticketText)`, which is
+     * their guard that no test spends quota. `#specPhase` swallows a suite
+     * mismatch and falls through to `authorAndFreezeSuite`, which spawns the
+     * real CLI — so reading the row here would have turned a green test suite
+     * into a quota bill.
+     *
+     * A MISSING MANIFEST DEGRADES TO THE PROSE-ONLY ID, which for a run that had
+     * reference images is the WRONG ticket and would author a second suite. That
+     * is worth a loud line rather than a silent divergence, so the two ids are
+     * compared below when a manifest exists.
+     *
+     * THE WHOLE MANIFEST GOES IN, NOT `manifest.images` — CHANGED 2026-07-30 WITH
+     * ATTACHED DOCUMENTS. Document digests now enter the ticket id exactly as
+     * image digests do (`referenceIdentityMaterial`, and the owner's rule that a
+     * different reference is a different ticket). `ticketFromStoredBrief` takes
+     * images ALONE and so cannot see them: keeping it here would have computed a
+     * prose+images id at run time against a prose+images+documents id computed at
+     * intake, which does not fail to compile and does not throw — it silently
+     * misses `assertSuiteIntact`, authors a SECOND suite on the owner's quota,
+     * and grades the run against a yardstick the row's own `ticketId` does not
+     * name. `ticketFromStoredReferences` is the read-back path ticket.ts declares
+     * for exactly this, and folding a future manifest list in stays a one-place
+     * change there rather than a fifth argument here.
+     */
+    const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
+    const ticket: Ticket = ticketFromStoredReferences(row0.ticketText, manifest);
+    if (manifest !== null && ticket.id !== row0.ticketId) {
+      this.#emitLog(
+        runId,
+        "warn",
+        `this run's ticket derives to ${ticket.id} but was recorded as ${row0.ticketId}. Its reference ` +
+          "manifest has changed or been lost since the ticket was submitted, so the run will be graded " +
+          "against a suite authored for a different set of references.",
+      );
+    }
     const log = new BuildLog(runPaths.buildLog);
 
     store.updateRun(runId, {
@@ -719,21 +1056,44 @@ export class Orchestrator {
     try {
       // ---- PHASE 1: the sealed acceptance suite ------------------------
       this.#setPhase(runId, "spec");
-      const suite = await this.#specPhase(runId, ticket, signal);
+      let suite: AcceptanceSuite;
+      try {
+        suite = await this.#specPhase(runId, ticket, signal);
+      } catch (error) {
+        // AN ABORT IS NOT A FAILURE, AND THIS IS WHERE THAT WAS LOST.
+        //
+        // `#specPhase` reaches the model through `SubscriptionSeatCaller`, which
+        // THROWS on abort — the SDK's own `Claude Code process aborted by user`,
+        // wrapped as a `SeatCallError`. A throw skips the `signal.aborted` check
+        // below, so the abort was caught by `#start` as a harness fault and the
+        // run was finished `failed`: terminal, refused by `resume()`, with a
+        // message blaming a user who did nothing. The BUILD phase never had this
+        // hole because it returns a `{kind: "cancelled"}` discriminant instead of
+        // throwing; the spec phase had no equivalent.
+        //
+        // The order matters: check the SIGNAL, not the message. The CLI's wording
+        // is identical whoever aborted, and matching on it would be a guess about
+        // a vendor string that is free to change.
+        if (signal.aborted) return this.#aborted(runId, log, signal);
+        throw error;
+      }
       // SPEC-PHASE EXIT. Written here, above the abort check, for two reasons:
       // a run cancelled during the spec phase has still had criteria inferred on
       // its behalf and the record of them is exactly as useful, and this is the
       // last moment before the build starts — everything in that file is a
       // sentence the owner can add to the TICKET, which is the cheap correction.
       this.#recordAssumptions(runId, ticket, runPaths);
-      if (signal.aborted) return this.#cancelled(runId, log);
+      if (signal.aborted) return this.#aborted(runId, log, signal);
 
       // ---- PHASE 2: build ---------------------------------------------
       // TWO SEGMENTS, ONE SESSION. `#buildPhase` runs the DESIGN segment and the
       // BUILD segment against one `session_id`, with the lock between them.
       this.#setPhase(runId, "build");
       const built = await this.#buildPhase(runId, ticket, runPaths, log, signal);
-      if (built.kind === "cancelled") return this.#cancelled(runId, log);
+      // SAME SPLIT AS THE SPEC PHASE. `kind: "cancelled"` only says the signal
+      // fired; a build torn down by a server stop is resumable and must not be
+      // finished `cancelled`, which is terminal.
+      if (built.kind === "cancelled") return this.#aborted(runId, log, signal);
       if (built.kind === "parked") {
         // NOT TERMINAL, AND NOT A VERDICT. The run is `awaiting_input` with its
         // mockups registered; segment 2 starts when `resume` applies a lock. No
@@ -850,6 +1210,22 @@ export class Orchestrator {
         "exists, then auditing it adversarially",
     );
 
+    /*
+     * THE ATTACHED DOCUMENTS, READ ONLY NOW — AFTER THE REUSE BRANCH ABOVE HAS
+     * DECLINED. Two spawns for the capability probe plus one extraction per
+     * document is real work, and a resumed or repeated run that reuses its
+     * frozen suite makes no seat call for them to reach.
+     *
+     * SKIPPING THEM ON THE REUSE PATH IS SAFE ONLY BECAUSE DOCUMENT DIGESTS ARE
+     * PART OF THE TICKET ID (`referenceIdentityMaterial`, via
+     * `ticketFromStoredReferences` at the top of `#start`). A reused suite is a
+     * suite authored under the same id, therefore under the same document bytes.
+     * If that identity rule is ever relaxed, this becomes a suite authored from
+     * one scope being reused for a run carrying another, and the fetch has to
+     * move above the reuse branch with a loud line attached.
+     */
+    const documents = await this.#seatDocuments(runId);
+
     const specSeat = this.#seat(SPEC_SEAT);
     const judgeSeat = this.#seat(JUDGE_SEAT);
     const abortController = childAbort(signal);
@@ -861,6 +1237,10 @@ export class Orchestrator {
       env: this.#deps.env,
       abortController,
       onRateLimit: (state) => this.#noteRateLimit(runId, state),
+      // EVERY CALL THIS SEAT MAKES CARRIES THEM — the first authoring attempt
+      // and every regeneration after it. An empty list is the pre-document
+      // path, byte for byte; see `seatPrompt`.
+      documents,
     });
     const judgeCaller = new SubscriptionSeatCaller(judgeSeat, {
       budget: DASHBOARD_BUDGET,
@@ -872,7 +1252,23 @@ export class Orchestrator {
       env: this.#deps.env,
       abortController,
       onRateLimit: (state) => this.#noteRateLimit(runId, state),
+      // NO DOCUMENTS, DELIBERATELY, AND IT HAS A COST. The audit seat runs the
+      // deterministic bad-test checks and the adversarial judge pass over the
+      // DRAFT SUITE; giving it the PDF too would re-send those bytes on a call
+      // that grades the suite's shape rather than its fidelity to the document.
+      // What that buys in quota it gives up in coverage: a criterion the spec
+      // seat mis-derived from page 4 of the owner's scope is not something the
+      // auditor can catch, because the auditor never sees page 4.
     });
+
+    if (documents.length > 0) {
+      this.#emitLog(
+        runId,
+        "info",
+        `the spec seat will see ${String(documents.length)} attached document(s) on every call it ` +
+          `makes: ${specCaller.documentPlan.notes.join("; ")}`,
+      );
+    }
 
     const { suiteSha256 } = await authorAndFreezeSuite(ticket, {
       acceptanceRoot,
@@ -891,6 +1287,17 @@ export class Orchestrator {
     judgeCaller.assertUnused();
     this.#emitLog(runId, "info", `spec seat — ${describeTokens(specCaller.tokens)}`);
     this.#emitLog(runId, "info", `audit seat — ${describeTokens(judgeCaller.tokens)}`);
+    if (specCaller.documentPlan.notes.length > 0) {
+      // THE REPEAT COST, AS A MEASUREMENT. `describeTokens` above already says
+      // what the seat spent; this says how much of it was the same attachment
+      // sent again, which is the number nobody agreed to in advance. Both
+      // figures are counted by the caller, not estimated here.
+      this.#emitLog(
+        runId,
+        "info",
+        `spec seat documents — ${describeSeatDocuments(specCaller.documentPlan, specCaller.documentCalls)}`,
+      );
+    }
 
     const record = readFrozenSuite(ticket.id, acceptanceRoot);
     this.#deps.store.updateRun(runId, { suiteSha256 });
@@ -905,6 +1312,55 @@ export class Orchestrator {
   }
 
   /**
+   * The documents this run's owner attached, in the form the spec seat takes.
+   *
+   * OFF DISK, NOT OUT OF THE ROW — the same decision the reference images take
+   * (`#buildPhase` says why): a 4 MB PDF has no business in SQLite, so the bytes
+   * are files under the run and the manifest beside them is the record. This is
+   * therefore the ONE place the spec seat's attachments come from, and a run
+   * whose manifest was lost carries none rather than half.
+   *
+   * THE PROBE HAPPENS ONLY WHEN SOMETHING IS ATTACHED, and it happens EVERY time
+   * something is: `probeDocumentCapability` spawns two version flags and
+   * `document-capability.ts` deliberately keeps no TTL cache, so the cost is
+   * ~two spawns per run with documents and exactly zero for every run without.
+   *
+   * AN UNUSABLE EXTRACTOR IS NAMED HERE RATHER THAN LEFT TO THE PROMPT. The
+   * per-document consequence still reaches the seat (`documentPromptText`
+   * renders the degradation), but the owner reading a run's log needs the
+   * machine-level cause once, at the top, in the probe's own words —
+   * `brew install poppler` is not something the model can tell them.
+   *
+   * `ReferenceDocument` IS PASSED STRAIGHT THROUGH. It carries `path` and
+   * `mediaType`, which is exactly `AttachedDocument`; its `sha256` and `bytes`
+   * are identity and provenance that the seat has no use for. No mapping step
+   * means no place for one to drift.
+   */
+  async #seatDocuments(runId: string): Promise<readonly SeatDocument[]> {
+    const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
+    const attached = manifestDocuments(manifest);
+    if (attached.length === 0) return [];
+
+    const capability = await probeDocumentCapability();
+    for (const [route, health] of [
+      ["pdftotext", capability.pdftotext] as const,
+      ["textutil", capability.textutil] as const,
+    ]) {
+      const needed = attached.some((document) => routeFor(document.mediaType) === route);
+      if (needed && !extractorIsUsable(health)) {
+        this.#emitLog(
+          runId,
+          "warn",
+          `${route} is not usable on this machine, so text extraction is unavailable for at least one ` +
+            `attached document: ${health.detail}`,
+        );
+      }
+    }
+
+    return seatDocumentsFor(attached, { capability });
+  }
+
+  /**
    * `assumptions.md`, plus the count the API reports.
    *
    * READ FROM THE STORE, NOT FROM THE SUITE, and that is a boundary rather than
@@ -914,12 +1370,42 @@ export class Orchestrator {
    *
    * A failure to write it must NOT take the run down — this is the record of the
    * run, not the run — so it is logged as a warning, which is itself a record.
+   *
+   * MEASURED AGAINST THE OWNER'S PROSE, NOT THE COMPOSED BRIEF, AND THIS IS A
+   * DELIBERATE CHOICE WITH A COST. `writeAssumptions` counts a criterion as
+   * inferred when it is not traceable to the ticket, and the sentence it feeds
+   * says "not stated in YOUR TICKET". Once a captured page's headings are part
+   * of `ticket.brief`, passing the brief here would silently reclassify every
+   * criterion the spec seat derived from that capture as something the owner
+   * wrote — and the whole value of this document is that it lists what was
+   * assumed ON THEIR BEHALF, which a machine reading of somebody's nav bar
+   * squarely is.
+   *
+   * THE COST: a run whose ticket named a site will now report MORE inferred
+   * criteria than one whose ticket spelled the same structure out by hand, even
+   * though the capture is what made those criteria good. That is the honest
+   * direction to be wrong in — it over-reports what the owner did not say — but
+   * it does mean `RunDetail.inferredCriteria` is not comparable between a
+   * captured ticket and a hand-written one.
+   *
+   * ATTACHED DOCUMENTS MAKE THAT COST BIGGER AND SHARPER (2026-07-30). A scope
+   * or a brief now reaches the spec seat as a PDF or as extracted text, and NONE
+   * of it is in `ticketProse(ticket.brief)` — the manifest holds the document,
+   * the brief does not. So every criterion the seat derived from the owner's own
+   * scope counts as INFERRED, and the sentence below tells the owner it was "not
+   * stated in YOUR TICKET" about a requirement they wrote down and attached.
+   * The input is still deliberately the prose: folding document text in would
+   * reclassify a machine reading of a 40-page PDF as something the owner said,
+   * which is the failure this record exists to prevent, and it is the larger of
+   * the two wrongs. The consequence to carry forward is that
+   * `RunDetail.inferredCriteria` is now non-comparable across THREE cases, not
+   * two: prose-only, prose+capture, and prose+attached documents.
    */
   #recordAssumptions(runId: string, ticket: Ticket, runPaths: RunPaths): void {
     try {
       const record = writeAssumptions(
         runPaths.results,
-        ticket.brief,
+        ticketProse(ticket.brief),
         this.#deps.store.listCriteria(runId),
       );
       this.#deps.store.updateRun(runId, { inferredCriteria: record.inferredCriteria });
@@ -1028,15 +1514,23 @@ export class Orchestrator {
     // can never succeed, and one allowed but unnamed is a specialist the
     // orchestrator never learns it has.
     //
-    // Classified from `ticket.brief` — the same string the prompt is built from
-    // on the next line, so what the surface was decided from is exactly what the
-    // builder is asked to deliver. `classifySurface` is pure, total and keyword
-    // -based on purpose (see surface.ts): it runs before the build session
-    // exists, on the path that builds a permission boundary, and a boundary that
-    // can time out or be refused is not a boundary. An unrecognisable ticket
-    // classifies `fullstack`, the widest set, because under-delegation is the
-    // failure nobody sees.
-    const surface = classifySurface(ticket.brief);
+    // Classified from THE OWNER'S OWN WORDS, which is `ticket.brief` minus the
+    // capture block `ticket-refs.ts` may have composed into it. It used to be the
+    // whole brief, on the grounds that the surface should be decided from exactly
+    // the string the builder is handed; that reasoning stops holding the moment
+    // part of the brief is a machine reading of somebody else's page. A captured
+    // navigation carrying "Blog", "API" and "CLI" is precisely the input that
+    // flips this keyword classifier — and the surface decides the delegation
+    // shortlist AND the design lane, so a nav bar would be choosing the run's
+    // agents. `ticketProse` returns the brief unchanged when there is no capture,
+    // so every run without one classifies byte-identically to before.
+    //
+    // `classifySurface` is pure, total and keyword-based on purpose (see
+    // surface.ts): it runs before the build session exists, on the path that
+    // builds a permission boundary, and a boundary that can time out or be
+    // refused is not a boundary. An unrecognisable ticket classifies `fullstack`,
+    // the widest set, because under-delegation is the failure nobody sees.
+    const surface = classifySurface(ticketProse(ticket.brief));
     const laneMode = await this.#designLaneFor(runId, ticket, runPaths, surface);
     // NOW WITH THE LANE MODE, AT BOTH CALL SITES. `agent-shortlist.ts` says the
     // one-argument form defaults to `off` and under-delegates on purpose, which
@@ -1152,6 +1646,26 @@ export class Orchestrator {
       const pending = store.pendingMessages(runId);
       const ownerNote = ownerMessageBlock(pending);
 
+      /* ---- THE TICKET'S REFERENCE IMAGES AND SITE CAPTURE ------------------
+       *
+       * READ OFF DISK, NOT OUT OF THE ROW. The bytes live under
+       * `runs/<id>/references/` and the manifest beside them; SQLite holds
+       * neither, for the same reason the chat images are files. Re-read on every
+       * segment because a park can outlive the process, so there is no in-memory
+       * state from segment 1 to carry forward.
+       *
+       * TWO AUDIENCES, TWO WORDINGS, AND NEITHER GOES NEAR THE SPEC SEAT. The
+       * spec seat has already run by the time this line executes, and what it saw
+       * was `ticket.brief` — TEXT ONLY, containing the captured outline and no
+       * path. These blocks carry ABSOLUTE PATHS and exist only in the build and
+       * design prompts, where the agent has a filesystem.
+       *
+       * `null` MANIFEST AND EMPTY MANIFEST BOTH RENDER "", so this appends
+       * unconditionally: the same shape `videoPrompt` and `ownerNote` use, and
+       * the reason there is no `if` here to forget.
+       */
+      const references = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
+
       const prompt = designSegment
         ? designSegmentPrompt({
             ticketText: ticket.brief,
@@ -1159,12 +1673,15 @@ export class Orchestrator {
             mode: laneMode,
             capability: this.#capability(),
             autoChoose: policy === "auto",
-          }) + ownerNote
+          }) +
+          designReferenceSection(references) +
+          ownerNote
         : // APPENDED UNCONDITIONALLY. `videoPrompt` is "" whenever there are no
           // legs, so a degraded lane adds nothing; §7.3 mechanism 2 is why the
           // ABSOLUTE paths have to be in the prompt at all — a path in a prompt
           // is what makes a `Read`/`fetch` actually happen.
           this.#buildSegmentPrompt(row, ticket, runPaths, manifest, laneMode, fullShortlist) +
+          builderReferenceSection(references) +
           (videoPrompt === "" ? "" : `\n\n${videoPrompt}\n`) +
           ownerNote;
       // REDACTED ON THE WAY TO DISK. The prompt embeds the ticket text, and here
@@ -1870,10 +2387,10 @@ export class Orchestrator {
     // count is a fact about work already done. It is patched again when the run
     // resumes and the loop runs to a new outcome.
     this.#deps.store.updateRun(runId, { gateAttempts: result.attempts, gateStopReason: result.reason });
-    // NOT ON A RATE LIMIT. That run is not terminal — the window drains and it
-    // resumes — and a backlog headed "Stopped: cancelled" for a run that is
-    // going to continue is a false statement about work that is not finished.
-    // The next attempt writes it.
+    // NOT ON A RATE LIMIT. That run is not terminal — it stops until something
+    // resumes it, whether that is the owner or the opt-in timer — and a backlog
+    // headed "Stopped: cancelled" for a run that is going to continue is a false
+    // statement about work that is not finished. The next attempt writes it.
     if (rateLimit === null) {
       this.#recordBacklog(runId, runPaths, {
         reason: result.reason,
@@ -2323,15 +2840,50 @@ export class Orchestrator {
     this.#emit(runId, {
       type: "graph_agent",
       node,
-      // PARENTLESS, AND NOT PARENTED ONTO THE BUILD'S ROOT. This is a separate
-      // session that the HARNESS started, not an agent the builder delegated to,
-      // and an edge from the build root would be a claim no message made.
-      parent: null,
+      // PARENTED ONTO THE RUN'S ROOT, AS AN INFERENCE. This was `parent: null`
+      // with `attribution: "exact"`, on the reasoning that the harness started
+      // this session so an edge from the build root would be a claim no message
+      // made. That reasoning was right about the edge and wrong about the cost of
+      // omitting it, in two places that were only visible on the client:
+      //
+      //   · `layout.ts#columnOf` reads `parent === null` as "this is the root"
+      //     and puts the node in the column captioned "The run's own session" —
+      //     so a review pass rendered as a SECOND orchestrator session sitting
+      //     beside the real one. Parentless is not a neutral value on this
+      //     canvas; it is a specific claim, and a louder one than the edge.
+      //   · The chat composer mounts only for `parent === null`
+      //     (`runs/[runId]/page.tsx:410`), so selecting this node offered a text
+      //     box that could not reach anything: this session has already ended by
+      //     the time the node is selectable, and it was never the run's own
+      //     session to inject into.
+      //
+      // `attribution: "inferred"` is what keeps the edge honest. It is the exact
+      // idiom `graph-emit.ts:276-278` already uses for "we know the node, we
+      // worked out its parent" — the edge is drawn as a guess (dashed, no bloom,
+      // `flow-edge.tsx:20-25`) rather than as a delegation the builder reported.
+      // WHAT IT COSTS: the node also gets the client's `inferred` chip, whose
+      // tooltip explains itself with "Hook messages carry no task identity" —
+      // true of every other inferred node and not of this one. That copy lives in
+      // `agent-node.tsx:337-344` and is not touched here.
+      //
+      // IT ALSO RESTORES AN INVARIANT ANOTHER FILE ALREADY DEPENDS ON.
+      // `build-segment.ts:139-149` states that `parent === null` names exactly
+      // one node per segment, says no branch could produce a second one, and
+      // names itself as the line that must change if one ever appears. This was
+      // that second branch — latent only because the lane has never executed on a
+      // real run (it needs a `previewUrl`, which needs a scored run).
+      //
+      // `base.rootNode` IS NULL ONLY WHEN NO BUILD NODE EXISTS AT ALL, which is a
+      // run whose build emitted no `graph_agent`. There is nothing to point at
+      // then, so the node stays parentless and `exact` — the pre-existing
+      // behaviour, in the one case where "the only session on the canvas" is not
+      // a false statement.
+      parent: base.rootNode,
       agent: ADVERSARY_AGENT,
       lane: "review",
       description: "the /debugfix --web --max human-factors pass — read-only, non-gating",
       ambient: false,
-      attribution: "exact",
+      attribution: base.rootNode === null ? "exact" : "inferred",
       sdk: null,
     });
 
@@ -2534,6 +3086,24 @@ export class Orchestrator {
    * reason `#recordBacklog` writes on every exit — so a refusal gets a record
    * naming its reason. A failure to write it is logged and swallowed: this is the
    * record of a run that has already produced its verdict.
+   *
+   * IT IS ALSO NOW THE UI'S SOURCE, AND THAT RAISES THE COST OF THIS `catch`.
+   * `http.ts#toDetail` reads this file into `RunDetail.adversary`, so a write
+   * that fails here is a run whose pass ran, logged its findings to the trace,
+   * and then reports `adversary: null` — "no pass on this run" — to the browser.
+   * The swallow is still correct (a record-keeping failure must not fail a run
+   * that already has its verdict) and the warning below is still the only signal,
+   * but the consequence is no longer confined to a file nobody opens.
+   *
+   * THE FILENAME COMES FROM {@link ADVERSARY_RECORD_FILE} rather than a literal:
+   * the reader in `http.ts` spells it from the same constant, and a writer and a
+   * reader that spell a filename twice eventually spell it differently.
+   *
+   * WHY NO SSE EVENT ACCOMPANIES IT. This runs inside `#adversaryPhase`, which
+   * `#execute` awaits BEFORE `#finish` emits the terminal status, and the client
+   * revalidates the run response on a terminal status — so the record is on disk
+   * before the fetch that reads it. An event type would need three additions in
+   * the client package and would carry nothing this file does not.
    */
   #recordAdversary(
     runId: string,
@@ -2544,7 +3114,7 @@ export class Orchestrator {
   ): void {
     const record = adversaryRecord({ result, surface, previewUrl });
     try {
-      const path = join(runPaths.results, "adversary.json");
+      const path = join(runPaths.results, ADVERSARY_RECORD_FILE);
       writeFileSync(path, `${JSON.stringify(redactForPersistence(record), null, 2)}\n`, "utf8");
       this.#emitLog(
         runId,
@@ -2585,7 +3155,16 @@ export class Orchestrator {
       rateLimitRetryAfterSec: state.retryAfterSec,
       rateLimitKind: state.kind,
     });
-    this.#emit(runId, { type: "rate_limit", retryAfterSec: state.retryAfterSec });
+    // `limited` GOES ON THE WIRE. It is the difference between "the provider
+    // refused this call" and "the window you are in reopens at T", and the two
+    // arrive through the same SDK event. Emitting without it made every routine
+    // window reading render as a refusal. See the `rate_limit` docblock in
+    // api-types.ts for the run that proved it.
+    this.#emit(runId, {
+      type: "rate_limit",
+      limited: state.limited,
+      retryAfterSec: state.retryAfterSec,
+    });
     if (state.limited) {
       this.#emitLog(
         runId,
@@ -2597,11 +3176,22 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * The provider REFUSED. Park the run, record when, and decide about a resume.
+   *
+   * THE ONLY WRITER OF `rateLimitedAt`, and that is what makes the field mean
+   * "the instant a call was refused" rather than "the last time the SDK
+   * mentioned a window". `#noteRateLimit` also writes `rateLimited`, from
+   * routine `limited: false` telemetry, so THAT boolean is not the refusal and
+   * nothing arms off it.
+   */
   #rateLimited(runId: string, state: RateLimitState, sessionId: string | null): void {
-    this.#deps.store.updateRun(runId, {
+    const at = new Date().toISOString();
+    const row = this.#deps.store.updateRun(runId, {
       status: "rate_limited",
       queuePosition: null,
       rateLimited: true,
+      rateLimitedAt: at,
       rateLimitRetryAfterSec: state.retryAfterSec,
       rateLimitKind: state.kind,
       ...(sessionId === null ? {} : { builderSessionId: sessionId }),
@@ -2613,6 +3203,131 @@ export class Orchestrator {
       "the build stopped on the provider's rate limit. The workspace, the session and the frozen suite " +
         "are all intact; resume the run when the window resets and it continues the same session.",
     );
+    // AFTER the sentence above, never instead of it: whether or not a timer is
+    // armed, the owner is told what happened first and what will (or will not)
+    // happen about it second.
+    this.#armRateLimitResume(runId, row, at);
+  }
+
+  /**
+   * Decide, SAY the decision on the run's own log, and arm a timer if there is
+   * one to arm.
+   *
+   * WHY THE LOG IS NOT OPTIONAL. The failure this feature exists to remove is a
+   * run that stops with nobody able to tell whether anything will pick it up
+   * again. Both outcomes are therefore announced: an armed wait names the
+   * instant it will fire, and a refusal names the reason it will not. Silence is
+   * the one thing this must never produce.
+   *
+   * THE TIMER'S ONLY ACTION IS `resume()` — the same path the owner's button
+   * takes, with the same refusals (terminal runs, the active run) and the same
+   * `resumeCount` increment. Nothing here shortcuts into `#start`.
+   *
+   * THE `due` ARM IS UNREACHABLE FROM `#rateLimited` AND THAT IS LOAD-BEARING.
+   * At a refusal `rateLimitedAt` is `now`, so the remaining wait is the whole
+   * reported window and cannot be <= 0; only the boot sweep, where real time has
+   * passed, can reach it. If it were reachable at the refusal, `resume()` would
+   * be called while this run is still `#active` and would return FALSE — an
+   * announced resume that silently did nothing.
+   *
+   * `#stopped` IS NOT CHECKED, deliberately. `shutdown()` clears the map, and
+   * `resume()`'s `pump()` is already a no-op once stopped — so a decision taken
+   * during teardown moves a row and starts no subprocess. That is also what lets
+   * a test call `shutdown()` first and then observe `reconcileOnBoot` without
+   * spending the owner's subscription.
+   */
+  #armRateLimitResume(runId: string, row: RunRow, now = new Date().toISOString()): void {
+    this.#clearRateLimitTimer(runId);
+    const plan = planRateLimitResume({
+      enabled: rateLimitAutoResume(this.#deps.env),
+      rateLimitedAt: row.rateLimitedAt,
+      retryAfterSec: row.rateLimitRetryAfterSec,
+      resumeCount: row.resumeCount,
+      now,
+    });
+    if (plan.kind === "disabled") {
+      this.#emitLog(runId, "warn", `no automatic resume is armed: ${plan.reason}`);
+      return;
+    }
+    if (plan.kind === "due") {
+      // The wait was served in wall-clock time while the dashboard was down.
+      this.#emitLog(
+        runId,
+        "info",
+        "the rate-limit window the provider reported has already elapsed, so this run is resuming " +
+          "automatically. Nothing checked that the window really reopened — that is the provider's own " +
+          "reported instant, and if it was wrong the run comes straight back here.",
+      );
+      this.resume(runId);
+      return;
+    }
+    const firesAt = new Date(Date.parse(now) + plan.delayMs).toISOString();
+    this.#emitLog(
+      runId,
+      "info",
+      `automatic resume armed: this run restarts itself in ${String(Math.round(plan.delayMs / 60_000))} min ` +
+        `(${firesAt}), because ${RATE_LIMIT_AUTO_RESUME_ENV} is set. That instant is the provider's own ` +
+        `reported reset, not a verified one; a refusal on the way back parks the run again.`,
+    );
+    const timer = setTimeout(() => {
+      this.#rateLimitTimers.delete(runId);
+      this.#emitLog(runId, "info", "the reported rate-limit window has elapsed; resuming automatically");
+      this.resume(runId);
+    }, plan.delayMs);
+    // `unref` so an armed wait never holds the process open — which is NOT the
+    // same as cancelling it, hence `shutdown()` clearing the map as well.
+    timer.unref();
+    this.#rateLimitTimers.set(runId, timer);
+  }
+
+  #clearRateLimitTimer(runId: string): void {
+    const timer = this.#rateLimitTimers.get(runId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.#rateLimitTimers.delete(runId);
+  }
+
+  /**
+   * An abort fired. Route on WHO aborted, not on what was thrown.
+   *
+   * The single place that reads {@link abortReasonOf}, so the two outcomes stay
+   * one decision rather than being re-derived at every call site.
+   */
+  #aborted(runId: string, log: BuildLog, signal: AbortSignal): void {
+    if (abortReasonOf(signal) === ABORT_SHUTDOWN) {
+      this.#abandonedForShutdown(runId, log);
+      return;
+    }
+    this.#cancelled(runId, log);
+  }
+
+  /**
+   * The server is stopping mid-run. WRITES NO TERMINAL STATE, ON PURPOSE.
+   *
+   * The row is deliberately left `running`, because that is the exact set
+   * `reconcileOnBoot` scans on the next start — it moves those rows to
+   * `awaiting_input` and tells the owner `resume` continues them. Writing
+   * `failed` or `cancelled` here would hide the run from that sweep forever
+   * (`isTerminal` covers both) and make the stop banner's "In-flight builds are
+   * aborted and stay resumable" a false statement.
+   *
+   * NO BACKLOG IS RECORDED EITHER. `#recordUnmeasuredBacklog` writes "what this
+   * run did not close", which is a statement about a run that ENDED. This one
+   * has not ended; it is being picked up again.
+   *
+   * The log is closed because the file handle dies with the process regardless,
+   * and the warning is emitted before that so the reason is durable in the event
+   * stream the next boot will replay.
+   */
+  #abandonedForShutdown(runId: string, log: BuildLog): void {
+    this.#emitLog(
+      runId,
+      "warn",
+      "the dashboard stopped while this run was in flight, so its subprocess was aborted. Nothing is " +
+        "lost: the run stays resumable and the next start moves it to awaiting_input with a resume " +
+        "button. This is a clean stop, not a failure of the run.",
+    );
+    log.close();
   }
 
   #cancelled(runId: string, log: BuildLog): void {
@@ -2628,10 +3343,12 @@ export class Orchestrator {
    * The single funnel every terminal status passes through — and therefore the
    * one place `verdict.md` is written.
    *
-   * `rate_limited` deliberately does not come through here: it is not terminal,
-   * the window drains and the run resumes, and a verdict written for it would be
-   * a verdict on a run that has not finished. `#rateLimited` writes its own
-   * patch for exactly that reason.
+   * `rate_limited` deliberately does not come through here: it is not terminal
+   * and a verdict written for it would be a verdict on a run that has not
+   * finished. `#rateLimited` writes its own patch for exactly that reason.
+   * (WHO resumes it is a separate question with two answers — a human, or the
+   * opt-in timer in `#armRateLimitResume` — and this funnel is correct under
+   * both, because neither has happened yet at the moment it is skipped.)
    *
    * ORDER IS LOAD-BEARING. The patch is persisted FIRST so the verdict is
    * rendered from the run's final recorded state — the status it is ending in

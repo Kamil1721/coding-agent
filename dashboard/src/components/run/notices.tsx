@@ -88,10 +88,31 @@ export function RateLimitNotice({
 }
 
 /**
- * AWAITING INPUT — stalled on something the frozen API exposes no channel for.
+ * AWAITING INPUT — parked on a question, and there IS now a way to answer it.
  *
- * There is no answer/reply endpoint in the contract. Saying so plainly beats a
- * grey badge that leaves the owner hunting for an input box that does not exist.
+ * CORRECTED 2026-07-30. This notice used to say "this dashboard's API has no
+ * channel to answer a mid-run question", which was true when it was written and
+ * has been false since the chat shipped (`POST /api/runs/:id/messages`,
+ * `server/src/http.ts`; the composer is `components/canvas/orchestrator-chat.tsx`).
+ * A tool telling its owner that the feature it ships does not exist is the exact
+ * defect class this file's other notices exist to avoid, so the copy now names
+ * the click path instead.
+ *
+ * THE ORDER IS THE WHOLE POINT, AND IT IS EASY TO STATE BACKWARDS. A message sent
+ * while the run is parked is NOT delivered: `Orchestrator.pushLiveMessage` returns
+ * false when the run has no open segment, the row stays pending, and it is folded
+ * into the prompt only when `resume` composes the next segment (`store.pendingMessages`
+ * → `ownerMessageBlock` in `orchestrator.ts`). So it is "answer, THEN resume" —
+ * never "answer OR resume", and never "resume, then answer": resuming first
+ * composes the prompt without the answer in it, and the message then arrives
+ * mid-flight at the agent's next step rather than at the top of its instructions.
+ *
+ * WHAT IT DOES NOT COVER. This renders only for a NON-design park —
+ * `runs/[runId]/page.tsx` suppresses it while a design lock is pending, because
+ * there the mockup cards are the channel and this text would contradict them. And
+ * the click path it names needs a card on the canvas to exist; a run that parked
+ * before emitting its first agent has nowhere to type, which the last paragraph
+ * says rather than leaving the owner hunting for a composer that has not mounted.
  */
 export function AwaitingInputNotice({
   onResume,
@@ -118,13 +139,28 @@ export function AwaitingInputNotice({
       }
     >
       <p>
-        The run paused for something it wanted from you. This dashboard&rsquo;s API has
-        no channel to answer a mid-run question — the two moves available are resume,
-        which lets the agent proceed on its own judgement, and cancel.
+        The run paused for something it wanted from you and will not move again on its
+        own. You can answer it: open the run&rsquo;s own session card — the one under
+        the <strong className="text-ink">Session</strong> heading on the canvas — and
+        the chat is at the top of the panel that opens.{" "}
+        <span className="text-ink-faint">
+          If the canvas has no cards at all, this run parked before it emitted its
+          first agent and there is nowhere to type; resume and cancel are then the only
+          two moves.
+        </span>
+      </p>
+      <p className="mt-1.5">
+        Then press <strong className="text-ink">Resume</strong>, in that order. A
+        message sent to a parked run is queued rather than delivered; it is read when
+        Resume composes the next prompt. Resume first and that prompt is written
+        without your answer — the agent carries on using its own judgement, and
+        anything typed afterwards reaches it mid-step instead of up front.
       </p>
       <p className="mt-1.5 text-ink-faint">
-        If it stalls here again on the same ticket, the brief is ambiguous. Tighten it
-        and start a new run rather than resuming repeatedly.
+        Resuming with nothing typed is a real choice, not a failure: it means
+        &ldquo;carry on, decide it yourself&rdquo;. If it stalls here again on the same
+        ticket, the brief is ambiguous — tighten it and start a new run rather than
+        resuming repeatedly.
       </p>
     </Notice>
   );
@@ -168,11 +204,60 @@ export function OutcomeNotice({ run }: { run: RunDetail }): ReactNode {
   if (run.status === "failed") {
     return (
       <Notice tone="fail" title="Failed">
+        {/*
+         * THE FRAMING SENTENCE STAYS, and it is the part that matters most on the
+         * `heldOutPass === null` branch: a run that died before the suite could
+         * answer says nothing about the artefact, and an owner who reads a harness
+         * fault as a verdict throws away work that was never judged.
+         *
+         * WHAT IT COULD NOT SAY WAS *WHY*. `failureReason` is written at five sites
+         * in `orchestrator.ts` and until now reached no screen — the cause existed
+         * only in the raw trace. It is appended below rather than folded into the
+         * sentence because it is MACHINE TEXT: one writer passes `describeError(error)`
+         * straight through (`orchestrator.ts` `#start`'s catch), and that function
+         * returns `[CODE] message\nfix: remediation` for a `BakeoffError` — a
+         * multi-line, bracketed error string, not a sentence written for a reader.
+         * Prose styling would dress it up as one.
+         */}
         <p>
           {run.heldOutPass === null
             ? "The run ended without the held-out suite returning a verdict — this is a harness or infrastructure failure, not a judgement about the artefact."
             : "The run finished and the held-out suite did not go green."}
         </p>
+        {/*
+         * CONDITIONED ON THE FIELD, NOT ON THE BRANCH — and the cost of that is
+         * visible, so it is named here.
+         *
+         * On the ordinary gate-failure path (`heldOutPass === false`) the server
+         * currently writes the fixed string "the frozen held-out suite did not go
+         * green in the sealed container", which restates the sentence directly above
+         * it. That reads as a near-duplicate. It is kept anyway: suppressing it by
+         * comparing the two strings would silently break the first time either is
+         * reworded, and gating on `heldOutPass` would hide the cause the moment a
+         * sixth writer sets a reason alongside a gate verdict. Labelled as a record
+         * of what the server wrote, a restatement reads as provenance rather than
+         * repetition.
+         *
+         * "LAST", NOT "THE": one column, five writers — see the `failureReason`
+         * docblock in `lib/api-types.ts`. A run whose design lane failed and which
+         * then reached the gate reports the gate's answer and nothing about the lane,
+         * so this is the last cause recorded, not a history and not necessarily the
+         * worst thing that happened.
+         *
+         * SCROLLED AND WRAPPED because the string is unbounded and provably contains
+         * newlines (the `\nfix:` above), and an unwrapped `pre` inside this notice's
+         * `min-w-0` column would push the whole HUD sideways.
+         */}
+        {run.failureReason !== null && (
+          <div className="mt-2">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+              Last recorded cause
+            </div>
+            <pre className="mt-1 max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-sm border border-line bg-surface-raised px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink-dim">
+              {run.failureReason}
+            </pre>
+          </div>
+        )}
       </Notice>
     );
   }

@@ -13,10 +13,27 @@
  * bake-off enforces with `ticketDigestMatches`: a changed brief invalidates its
  * suite, because a suite authored from a different brief is not comparable to
  * one authored from this brief.
+ *
+ * FOUR WAYS IN, AND THE OLDEST ONE IS UNTOUCHED. `ticketFromText` is exactly
+ * what it was — every existing caller and every suite already frozen on disk
+ * keeps its id. `ticketWithReferences` is the INTAKE path for a ticket that also
+ * carries reference images, attached documents or a captured page; with an empty
+ * reference set it produces the same five field values as `ticketFromText`, byte
+ * for byte, which is the only reason it is safe to add at all.
+ * `ticketFromStoredReferences` is the READ-BACK path for a caller holding the
+ * manifest, and `ticketFromStoredBrief` is its predecessor, kept for callers
+ * outside this file and honest in its docblock about the digests it cannot see.
+ *
+ * Read `ticketWithReferences` before changing any of them: the id and the
+ * `sha256` deliberately cover DIFFERENT material, and the bake-off refuses a
+ * ticket that gets that backwards.
  */
 
 import type { Ticket, TicketTier } from "bakeoff/dist/contracts.js";
 import { ticketDigest } from "bakeoff/dist/hash.js";
+import { composeBrief, manifestDocuments, referenceIdentityMaterial } from "./ticket-refs.js";
+import type { ReferenceDocument, ReferenceImage, ReferenceManifest } from "./ticket-refs.js";
+import type { SiteCapture } from "./site-capture.js";
 
 /** Longest title kept. Titles are for the UI list; they are never sent anywhere. */
 const MAX_TITLE = 80;
@@ -76,4 +93,191 @@ export function ticketFromText(brief: string): Ticket {
     brief,
     sha256: ticketDigest(brief),
   };
+}
+
+/**
+ * What a ticket carries besides its words.
+ *
+ * `prose` IS WHAT THE OWNER TYPED, verbatim and untouched. `capture` is the
+ * dashboard's reading of a page the prose names, which becomes TEXT inside the
+ * brief; `images` are files only an agent with a filesystem can look at, and
+ * they never become text.
+ */
+export interface TicketReferences {
+  readonly prose: string;
+  readonly images: readonly ReferenceImage[];
+  readonly capture: SiteCapture | null;
+  /**
+   * Documents the owner attached — a scope, a brief, a CV.
+   *
+   * OPTIONAL, AND THE OMITTED CASE IS THE OLD BEHAVIOUR EXACTLY. Callers written
+   * before documents existed (including `ticket-refs.test.ts`, which pins the
+   * golden id) pass three fields and get the id they have always got, because an
+   * empty document list contributes nothing to the identity material. With
+   * `exactOptionalPropertyTypes` on, a caller that has none must OMIT this key or
+   * pass `[]` — never `undefined`.
+   *
+   * THEY ARE IDENTITY, NOT TEXT. Their digests enter the id, exactly as an
+   * image's does. Their CONTENTS do not enter `brief`: this module never opens a
+   * file, and whether a document's extracted text is put in front of a seat is a
+   * decision made elsewhere (`document-intake.ts` produces the text; nothing in
+   * this file consumes it).
+   */
+  readonly documents?: readonly ReferenceDocument[];
+}
+
+/**
+ * A ticket whose identity covers its references as well as its words.
+ *
+ * THE OWNER MADE THIS CALL EXPLICITLY: the same sentence with a different
+ * reference image is a DIFFERENT ticket with its OWN frozen suite. The
+ * alternative — one id for both — means two runs with different visual briefs
+ * share one sealed suite, and the verdict then cannot say which reference the
+ * build was graded against. The accepted cost is that re-uploading the same file
+ * mints a new ticket and re-authors a suite, spending quota.
+ *
+ * THREE FIELDS, THREE DIFFERENT ANSWERS, AND THE SPLIT IS THE WHOLE FUNCTION:
+ *
+ *   `brief`  = prose + the captured outline. TEXT ONLY. This is what the spec
+ *              seat receives (`spec-agent.ts:712` sends the brief verbatim and
+ *              nothing else) and what the builder is handed as the ticket.
+ *   `sha256` = `ticketDigest(brief)` and NOTHING ELSE. It cannot cover the image
+ *              digests: `spec-agent.ts:632` and `runner.ts:1124` both refuse a
+ *              ticket whose `sha256` is not exactly the digest of its `brief`,
+ *              so widening this field would fail the run at the first seat.
+ *   `id`     = sha256(brief + the image digests + the document digests). Nothing
+ *              in bakeoff recomputes an id from a brief — it is used as a path
+ *              segment (`spec-freeze.ts:80`) and as a label — which is precisely
+ *              why the extra material can live here and nowhere else. Grepped
+ *              this session across `bakeoff/src` and `dashboard/server/src`; the
+ *              only recomputation sites were `http.ts` and `orchestrator.ts`,
+ *              both of which now take the id from the persisted row.
+ *
+ * WITH NO REFERENCES THIS IS BYTE-IDENTICAL TO `ticketFromText(prose)`. Not
+ * approximately: `composeBrief` returns the prose unchanged when there is no
+ * capture, and `referenceIdentityMaterial` returns the brief unchanged when
+ * there are no images AND no documents, so all five fields are the same values.
+ * That property is load-bearing — a silent id change would orphan every frozen
+ * suite already on disk — and `ticket-refs.test.ts` asserts it, including
+ * against a hardcoded golden id so that a change to either helper cannot move it
+ * unnoticed.
+ *
+ * DOCUMENTS RIDE THE IMAGE RULE, AND THE OWNER ASKED FOR THAT SPECIFICALLY: a
+ * changed scope document must re-author the suite, because a suite written from
+ * the old scope is not a yardstick for work done against the new one. What that
+ * costs is the same as for images and is not hidden — a re-uploaded PDF whose
+ * bytes changed by one character mints a new ticket and spends quota authoring a
+ * new suite.
+ *
+ * THE TITLE COMES FROM THE PROSE, not from the composed brief. They are the same
+ * string in every reachable case (`http.ts` refuses an empty ticket), but a
+ * title lifted out of a machine-written capture block would be a run list
+ * labelled with somebody else's page title, and that is worth one line to
+ * prevent.
+ */
+export function ticketWithReferences(references: TicketReferences): Ticket {
+  const brief = composeBrief(references.prose, references.capture);
+  return {
+    ...ticketOver(brief, references.images, references.documents ?? []),
+    title: titleFromBrief(references.prose),
+  };
+}
+
+/**
+ * THE ONE PLACE A `Ticket`'S FIVE FIELDS ARE BUILT, for both ways in.
+ *
+ * Not extracted for tidiness: `id` and `sha256` cover deliberately DIFFERENT
+ * material (see `ticketWithReferences`), and two constructions of that pair are
+ * two chances for one of them to drift into covering the other's material — a
+ * drift that shows up as `spec-agent.ts:632` refusing the ticket at the first
+ * seat, or worse, as a silently different id that authors a second suite.
+ */
+function ticketOver(
+  brief: string,
+  images: readonly ReferenceImage[],
+  documents: readonly ReferenceDocument[],
+): Ticket {
+  return {
+    id: ticketIdFor(referenceIdentityMaterial(brief, images, documents)),
+    tier: DASHBOARD_TICKET_TIER,
+    title: titleFromBrief(brief),
+    brief,
+    sha256: ticketDigest(brief),
+  };
+}
+
+/**
+ * THE READ-BACK PATH, AND THE ONE TO USE: rebuild a ticket from the brief stored
+ * on the run row plus the WHOLE manifest written beside the run.
+ *
+ * WHY IT TAKES THE MANIFEST AND NOT A LIST. {@link ticketFromStoredBrief} takes
+ * images alone and therefore cannot see documents; a caller holding a manifest
+ * and passing `manifest.images` gets an id that silently disagrees with the one
+ * the intake persisted, which sends the run to `authorAndFreezeSuite` — real
+ * quota, and a suite the row's own `ticketId` does not name. Taking the manifest
+ * itself removes the opportunity: every list it holds is folded in here, and a
+ * list added to the manifest later is a change in ONE place.
+ *
+ * A `null` MANIFEST IS THE PROSE-ONLY TICKET, deliberately and unchanged: an
+ * absent, corrupt or unreadable manifest all read as `null` (`ticket-refs.ts`
+ * says why it flattens them), and the caller — `orchestrator.ts` — already
+ * compares the derived id against `row.ticketId` and emits a `warn` when they
+ * differ, which is the visible half of this failure.
+ *
+ * IT DOES NOT READ `row.ticketId`, for the reason stated on
+ * {@link ticketFromStoredBrief}.
+ */
+export function ticketFromStoredReferences(brief: string, manifest: ReferenceManifest | null): Ticket {
+  return ticketOver(brief, manifest?.images ?? [], manifestDocuments(manifest));
+}
+
+/**
+ * The READ-BACK path, IMAGES ONLY — superseded by
+ * {@link ticketFromStoredReferences} and kept because its callers are outside
+ * this file.
+ *
+ * WHAT IT DOES NOT DO, SAID PLAINLY: it does not fold DOCUMENT digests. A run
+ * whose ticket carried an attached document derives a DIFFERENT id through this
+ * function than the intake wrote to `runs.ticket_id`, so the run will not find
+ * that ticket's frozen suite and will author a second one. That is not a
+ * hypothetical — `orchestrator.ts` still derives its ticket with
+ * `ticketFromStoredBrief(row0.ticketText, manifest?.images ?? [])`, and the
+ * outstanding change is to make that expression
+ * `ticketFromStoredReferences(row0.ticketText, manifest)`. Until it lands, a
+ * documents-bearing run is visible rather than silent — the orchestrator's own
+ * id comparison emits a `warn` naming both ids — but it does cost a re-authored
+ * suite.
+ *
+ * WHY THIS SIGNATURE WAS NOT SIMPLY WIDENED. A defaulted third parameter would
+ * let that call site keep compiling while computing the wrong id with no warning
+ * anywhere, and changing the parameter type outright breaks files this change is
+ * not allowed to edit. A second, correct function that the old one points at is
+ * the only option that neither lies nor breaks someone else's build.
+ *
+ * WHY THIS EXISTS AND WHY IT DOES NOT RE-COMPOSE. `ticketWithReferences` builds
+ * the brief from prose + capture at intake. The orchestrator, later, has the
+ * COMPOSED brief in `row.ticketText` and must arrive at the same ticket. It
+ * could strip the capture block back off and re-compose — and that would be a
+ * second composition site that has to agree with the first byte for byte, which
+ * it would not: a prose ending in blank lines does not survive the round trip,
+ * and the symptom would be a run authoring a fresh suite under an id nobody can
+ * see is wrong.
+ *
+ * So the stored brief IS the brief. Only the id needs the extra material, and
+ * the image digests are exactly what the manifest on disk holds.
+ *
+ * WITH NO IMAGES THIS IS `ticketFromText(brief)`, value for value —
+ * `referenceIdentityMaterial` returns its input unchanged for an empty list. So
+ * the orchestrator's behaviour on every run recorded before references existed,
+ * and on every run that attaches none, is unchanged.
+ *
+ * IT DOES NOT READ `row.ticketId`. That column is written by the intake and is
+ * the same string this produces, but the orchestrator has never trusted it — the
+ * sequencing tests seed it with a placeholder precisely to prove the run finds
+ * its frozen suite by derivation. Trusting it would send those tests (and any
+ * row whose id was seeded by something other than the intake) to
+ * `authorAndFreezeSuite`, which spawns the real CLI and spends quota.
+ */
+export function ticketFromStoredBrief(brief: string, images: readonly ReferenceImage[]): Ticket {
+  return ticketOver(brief, images, []);
 }

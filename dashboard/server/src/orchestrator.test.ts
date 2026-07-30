@@ -50,8 +50,11 @@ import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import { ModelCatalog } from "./models.js";
 import type { CatalogEntry } from "./models.js";
 import {
+  ABORT_CANCELLED,
+  ABORT_SHUTDOWN,
   DASHBOARD_SANDBOX,
   Orchestrator,
+  abortReasonOf,
   highestArchivedAttempt,
   recordedNetworkPolicy,
   renderEvidence,
@@ -129,6 +132,154 @@ test("a run left running by a dead server becomes awaiting_input, not failed", a
     const text = logs.map((entry) => (entry.event.type === "log" ? entry.event.text : "")).join(" ");
     assert.match(text, /resume/, "and how to continue it");
   } finally {
+    h.cleanup();
+  }
+});
+
+/**
+ * Poll a run's log stream until it says something.
+ *
+ * The run under test is driven by `pump()`, which is fire-and-forget by design
+ * (`void this.#start(...)`), so there is no promise to await. A distinctive log
+ * line is the run telling us it reached the branch, and polling for it is the
+ * only handle a caller has.
+ */
+async function waitForLog(
+  store: RunStore,
+  runId: string,
+  pattern: RegExp,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const text = store
+      .eventsSince(runId, 0)
+      .map((entry) => (entry.event.type === "log" ? entry.event.text : ""))
+      .join(" | ");
+    if (pattern.test(text)) return;
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for ${String(pattern)}. The run said: ${text}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/**
+ * Wait until the run has stopped executing, WHICHEVER WAY IT WENT.
+ *
+ * Deliberately not `waitForLog` on the abandonment message: that message only
+ * exists when the fix is present, so a regression would fail this test by
+ * TIMING OUT after 30s instead of by saying what went wrong. Measured — with the
+ * abort routing removed, the log-based wait failed at 30,069ms with "timed out",
+ * while this settles in under a second and reports `status: failed`, which is
+ * the actual defect. A slow, vague red is a red nobody reads.
+ */
+async function waitForRunToStop(store: RunStore, runId: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const row = store.getRun(runId);
+    if (row !== null) {
+      if (isTerminal(row.status)) return;
+      const text = store
+        .eventsSince(runId, 0)
+        .map((entry) => (entry.event.type === "log" ? entry.event.text : ""))
+        .join(" | ");
+      if (/the dashboard stopped while this run was in flight/.test(text)) return;
+    }
+    if (Date.now() > deadline) throw new Error(`run ${runId} never stopped`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/**
+ * THE REGRESSION FOR `run-2026-07-30T13-31-38-076Z-c228e63b`.
+ *
+ * That run died in the SPEC phase with status `failed` and
+ * `"Claude Code process aborted by user"` — nobody had aborted anything, and
+ * `failed` is terminal, so `resume()` refused it and the owner's only button was
+ * dead. The cause was that `#specPhase` THROWS on abort while the build phase
+ * returns a discriminant, so the abort check below it never ran.
+ *
+ * NO QUOTA IS SPENT. The harness environment is `{}`, so the spec seat cannot
+ * reach a CLI and fails almost immediately. That failure is not what is under
+ * test — what is under test is that an abort OUTRANKS whatever was thrown.
+ */
+test("a shutdown during the spec phase leaves the run resumable, not failed", async () => {
+  const h = harness();
+  try {
+    seed(h.store, "run-spec-abort", 1);
+
+    // `#start` records the active run synchronously before it awaits, so the
+    // shutdown that follows lands on a live signal rather than on nothing.
+    h.orchestrator.pump();
+    await h.orchestrator.shutdown();
+    await waitForRunToStop(h.store, "run-spec-abort");
+
+    const row = h.store.getRun("run-spec-abort");
+    assert.ok(row !== null);
+    assert.equal(
+      row.status,
+      "running",
+      "a server stop must write NO terminal state — `running` is the exact set reconcileOnBoot scans",
+    );
+    assert.equal(isTerminal(row.status), false, "and terminal is the one thing it must never be");
+    assert.equal(row.endedAt, null, "the run has not ended; it is being picked up again");
+    assert.equal(row.failureReason, null, "a clean stop is not a failure and must not be recorded as one");
+
+    const text = h.store
+      .eventsSince("run-spec-abort", 0)
+      .map((entry) => (entry.event.type === "log" ? entry.event.text : ""))
+      .join(" | ");
+    assert.doesNotMatch(
+      text,
+      /aborted by user/,
+      "the CLI's wording blames the operator for a SIGTERM; it must not be the story the run tells",
+    );
+
+    // THE PROMISE THE STOP BANNER MAKES, ACTUALLY EXERCISED. "In-flight builds
+    // are aborted and stay resumable" is only true if the next boot recovers it
+    // AND resume() then accepts it. Asserting the status alone would prove the
+    // button appears, not that it works.
+    h.orchestrator.reconcileOnBoot();
+    const recovered = h.store.getRun("run-spec-abort");
+    assert.equal(recovered?.status, "awaiting_input", "the next boot must offer it back");
+    assert.equal(
+      h.orchestrator.resume("run-spec-abort"),
+      true,
+      "and resume must accept it — an enabled button that refuses is the same defect in a new hat",
+    );
+    assert.equal(h.store.getRun("run-spec-abort")?.status, "queued", "resume requeues it for the spec phase");
+  } finally {
+    await h.orchestrator.shutdown();
+    h.cleanup();
+  }
+});
+
+/**
+ * The other branch of the same signal, kept honest.
+ *
+ * `#abandonedForShutdown` must NOT swallow a real cancel: an owner who cancels
+ * gets a terminal `cancelled` run, exactly as before. Without this, "never write
+ * a terminal state on abort" would be over-applied and cancel would silently
+ * leave runs `running` forever — no reconciliation revisits them, because the
+ * process is still alive.
+ */
+test("an owner cancel during the spec phase still finishes the run cancelled", async () => {
+  const h = harness();
+  try {
+    seed(h.store, "run-spec-cancel", 1);
+
+    h.orchestrator.pump();
+    assert.equal(h.orchestrator.cancel("run-spec-cancel"), true, "the active run must be cancellable");
+    await waitForLog(h.store, "run-spec-cancel", /backlog|did not close/i);
+
+    const row = h.store.getRun("run-spec-cancel");
+    assert.ok(row !== null);
+    assert.equal(row.status, "cancelled", "the owner asked; that IS terminal");
+    assert.equal(isTerminal(row.status), true);
+    assert.equal(row.heldOutPass, null, "no verdict was reached, and none may be invented");
+  } finally {
+    await h.orchestrator.shutdown();
     h.cleanup();
   }
 });
@@ -315,6 +466,15 @@ interface FakeBuilderOptions {
    * manifest it has always seen.
    */
   readonly animateRefs: boolean;
+  /**
+   * Reach the orchestrator's own callbacks the way a real driver does.
+   *
+   * `BuildRequest.rateLimit` is how a provider reports window state mid-build,
+   * and it lands in `#noteRateLimit` — the only emitter of the `rate_limit` SSE
+   * event. Without a seam, the only way to observe what that event carries is a
+   * real rate-limited run, which is not a test anyone can schedule.
+   */
+  readonly onRequest?: (request: BuildRequest) => void;
 }
 
 class FakeBuilder implements SubscriptionBuilder {
@@ -328,6 +488,7 @@ class FakeBuilder implements SubscriptionBuilder {
   }
 
   async build(request: BuildRequest): Promise<BuildOutcome> {
+    this.#options.onRequest?.(request);
     const index = this.calls.length;
     const resumeSessionId = request.resumeSessionId;
     const sessionId = resumeSessionId ?? `session-${String(index)}`;
@@ -640,6 +801,7 @@ async function designRun(options: {
   videoScript?: boolean;
   segmentTokens?: readonly number[];
   env?: NodeJS.ProcessEnv;
+  onRequest?: (request: BuildRequest) => void;
 }): Promise<DesignHarness> {
   const dir = mkdtempSync(join(tmpdir(), "dash-design-"));
   const home = join(dir, "home");
@@ -672,6 +834,7 @@ async function designRun(options: {
     segmentTokens: options.segmentTokens ?? [],
     writeManifest: options.writeManifest ?? true,
     animateRefs: options.animateRefs ?? false,
+    ...(options.onRequest === undefined ? {} : { onRequest: options.onRequest }),
   });
 
   const env: NodeJS.ProcessEnv = {
@@ -1974,4 +2137,111 @@ test("the builder is denied the score records, not just the scorer output", asyn
   } finally {
     await h.cleanup();
   }
+});
+
+/**
+ * THE OTHER HALF OF `run-2026-07-30T13-31-38-076Z-c228e63b`.
+ *
+ * Two seconds into that run the dashboard announced a rate limit with a
+ * 253,699-second wait — 70.5 hours — while the subscription was working and the
+ * run's own row recorded `rate_limited = 0`. The number was CORRECT: it is when
+ * the seven-day window rolls over, which the SDK reports routinely with nothing
+ * refused. The event simply had no field for "this is not a refusal", so one was
+ * emitted for both cases and the client assumed the worse one.
+ *
+ * `SseEvent` now requires `limited`, so a missing field is a compile error. What
+ * a compiler cannot check is whether the RIGHT value goes on it — hard-coding
+ * `true` here would type-check perfectly and reproduce the bug exactly. That is
+ * what this test is for, and it reaches the real emitter rather than asserting
+ * on a private method.
+ *
+ * WHICH CALLBACK THIS ACTUALLY DRIVES, SAID PLAINLY. It reports through
+ * `BuildRequest.sink.rateLimit` — the BUILD phase. The run named above never
+ * reached a builder; it died in the SPEC phase, whose report arrives through
+ * `SubscriptionSeatCaller`'s `onRateLimit` instead. BOTH are one-line lambdas
+ * closing over the same `#noteRateLimit`, which is the only emitter of this
+ * event and is what is under test — but the spec-phase lambda itself is reached
+ * by no test, because driving it needs a live seat call. Stating that is the
+ * point: this proves the emitter, not the spec phase's wiring to it.
+ */
+test("a rate-limit report that refused nothing is not announced as a refusal", async () => {
+  const seen: { limited: boolean; retryAfterSec: number | null }[] = [];
+  const h = await designRun({
+    designLock: "auto",
+    onRequest: (request) => {
+      // Exactly what the Agent SDK reports at session start on a healthy
+      // subscription: the current window's reset instant, status `allowed`.
+      request.sink.rateLimit({
+        limited: false,
+        retryAfterSec: 253_699,
+        kind: "seven_day",
+        utilization: 0.4,
+      });
+    },
+  });
+  try {
+    await h.settle();
+
+    for (const entry of h.store.eventsSince("run-design", 0)) {
+      if (entry.event.type === "rate_limit") {
+        seen.push({ limited: entry.event.limited, retryAfterSec: entry.event.retryAfterSec });
+      }
+    }
+
+    assert.equal(seen.length > 0, true, "the report must still reach the stream — silence is not the fix");
+    for (const event of seen) {
+      assert.equal(
+        event.limited,
+        false,
+        "the provider refused nothing; an event that cannot say so is what printed `rate limited` on a healthy run",
+      );
+    }
+    assert.equal(
+      seen[0]?.retryAfterSec,
+      253_699,
+      "and the reset instant is still carried — worth showing as a window fills, just not as a refusal",
+    );
+
+    // THE ROW AGREES WITH THE WIRE. `rate_limited = 0` is what the recorded run
+    // already said while its event stream said the opposite.
+    assert.equal(h.store.getRun("run-design")?.rateLimited, false, "the row must not record a limit either");
+    assert.notEqual(
+      h.store.getRun("run-design")?.status,
+      "rate_limited",
+      "a run that was never refused must not be PARKED as rate limited either",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/**
+ * THE DEFAULT IN `abortReasonOf`, WHICH IS LOAD-BEARING AND EASY TO GET BACKWARDS.
+ *
+ * An `abort()` with no reason — a path that predates the reasons, or a future one
+ * that forgets to pass one — must be read as a CANCEL, not as a shutdown. The
+ * asymmetry is the whole argument: a wrongly-terminal run is visible and
+ * re-runnable, while a row wrongly left `running` is invisible forever, because
+ * `reconcileOnBoot` only sweeps at boot and the process is still alive.
+ *
+ * TESTED ON THE FUNCTION, NOT THROUGH `cancel()`. Both real callers now pass a
+ * reason, so neither can produce the unreasoned signal this guards — driving one
+ * of them would assert the default while never reaching it.
+ */
+test("an abort signal with no reason is read as a cancel, never as a shutdown", () => {
+  const bare = new AbortController();
+  bare.abort();
+  assert.equal(
+    abortReasonOf(bare.signal),
+    ABORT_CANCELLED,
+    "the safe direction is terminal and visible, not a row left `running` that nothing revisits",
+  );
+
+  const garbage = new AbortController();
+  garbage.abort(new Error("something threw"));
+  assert.equal(abortReasonOf(garbage.signal), ABORT_CANCELLED, "an unrecognised reason defaults the same way");
+
+  const stopping = new AbortController();
+  stopping.abort(ABORT_SHUTDOWN);
+  assert.equal(abortReasonOf(stopping.signal), ABORT_SHUTDOWN, "and the one reason that IS recognised still is");
 });

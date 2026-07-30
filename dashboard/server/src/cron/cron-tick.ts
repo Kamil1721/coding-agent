@@ -334,6 +334,12 @@ export async function runTick(deps: TickDeps): Promise<TickResult> {
       modelId: config.modelId,
       deploy: config.deploy,
       designLock: "auto",
+      // NEVER CAPTURE ON AN UNATTENDED TICK. Absent means "scan the ticket text
+      // for a URL and capture it", and a scheduled ticket that merely CITES a
+      // page would then drive a browser at it with nobody watching — worse, the
+      // captured outline enters the brief, so drift on that page moves the
+      // TICKET ID and silently re-authors a frozen suite. `null` is the opt-out.
+      captureUrl: null,
     });
     let response: TickResponse;
     try {

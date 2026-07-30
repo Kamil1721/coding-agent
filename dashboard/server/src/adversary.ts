@@ -87,20 +87,39 @@
  *   (`DEFAULT_MAX_TURNS`) plus {@link ADVERSARY_WALL_CLOCK_MS}, which this lane
  *   enforces itself with a timer and an abort — the one bound it can prove.
  *
- *   NO FINDINGS FIELD ON THE WIRE. `BuildOutcome` is sessionId/tokens/rateLimit/
- *   completed/failure and carries no findings, and the adversary itself has no
- *   Write tool, so it cannot leave a file. The harvest channel is therefore the
- *   SESSION writing {@link ADVERSARY_FINDINGS_FILE} into its scratch dir, parsed
- *   by {@link parseAdversaryFindings}. Whether a live session complies is
- *   UNTESTED — no test here spends quota — so a run whose file is absent records
- *   zero findings and says which of the two happened.
+ *   NO FINDINGS FIELD ON THE BUILDER'S OUTCOME. `BuildOutcome` is sessionId/
+ *   tokens/rateLimit/completed/failure and carries no findings, and the adversary
+ *   itself has no Write tool, so it cannot leave a file. The harvest channel is
+ *   therefore the SESSION writing {@link ADVERSARY_FINDINGS_FILE} into its
+ *   scratch dir, parsed by {@link parseAdversaryFindings}. Whether a live session
+ *   complies is UNTESTED — no test here spends quota — so a run whose file is
+ *   absent records zero findings and says which of the two happened.
+ *   (The HTTP wire is a different question and the answer changed: the run's
+ *   RECORD now reaches `RunDetail.adversary` through
+ *   {@link adversaryPassFromRecord}. That is the last paragraph of this header.)
  *
  *   NO BROWSER. No agent in the registry carries browser tools and the scratch cwd
  *   has no workspace-installed Playwright, so /debugfix §5's "No MCP: instruct
  *   Static mode (repros returned as text)" is the arm this lane is on.
+ *
+ * THE FINDINGS NOW REACH THE UI, AND THE PRODUCER OF THEM HAS NEVER RUN. Said in
+ * those words rather than softened: {@link adversaryPassFromRecord} maps
+ * {@link AdversaryRecord} onto `RunDetail.adversary` (api-types.ts), so the
+ * sentences this pass writes stop being log-wall-only — but this lane has never
+ * executed on a real run, so that field is a channel whose WRITER is unproven and
+ * whose reader is tested. What the mapping refuses to do is collapse "the pass
+ * left no report" into "the pass found nothing": the first is `findings: null`,
+ * the second is `findings: []`, and {@link AdversaryRecord.reportWritten} is the
+ * bit that tells them apart. It is a FIELD, not a sentence in `notes`, because a
+ * distinction that only exists in prose cannot be rendered.
+ *
+ * STILL FS-FREE. The record is read from disk by `http.ts#toDetail` (the same
+ * shape `readDesignLock` already has) and parsed here from TEXT, so every part of
+ * this module that can be wrong is still a pure function a test can drive.
  */
 
 import type { Surface } from "./agent-shortlist.js";
+import type { ApiAdversaryFinding, ApiAdversaryPass } from "./api-types.js";
 import type { AgentVisibleReport, FailureClass, FixableFailure } from "./gate-report.js";
 
 export const ADVERSARY_AGENT = "human-factors-adversary";
@@ -529,6 +548,19 @@ export function parseAdversaryFindings(text: string): readonly AdversaryFinding[
   } catch {
     return [];
   }
+  return findingsFrom(parsed);
+}
+
+/**
+ * The validation half of {@link parseAdversaryFindings}, over an ALREADY-PARSED
+ * value.
+ *
+ * SPLIT OUT SO THE RECORD READER SHARES IT. `adversary.json` embeds the findings
+ * as JSON already — re-stringifying them just to hand them back to a text parser
+ * would be a second decoding of the same bytes, and the two could then disagree
+ * about which entries are usable. One validator, two entry points.
+ */
+function findingsFrom(parsed: unknown): readonly AdversaryFinding[] {
   if (!Array.isArray(parsed)) return [];
   const severities = new Set<AdversarySeverity>(["CRITICAL", "HIGH", "MEDIUM", "LOW"]);
   const classes = new Set<FailureClass>([
@@ -721,12 +753,31 @@ export async function runAdversaryLane(deps: AdversaryLaneDeps): Promise<Adversa
 }
 
 /**
+ * The record's filename, inside the run's `results/` directory.
+ *
+ * NOT {@link ADVERSARY_FINDINGS_FILE}, and the two are one letter apart in
+ * meaning. That one is `adversary-findings.json` in the session's SCRATCH dir —
+ * model-written, transient, read once by the spawner. This one is
+ * `adversary.json` in the run's RESULTS dir — written by this program on every
+ * exit, and now read back by `http.ts#toDetail`. Declared here so the writer and
+ * the reader cannot spell it differently; that is how `readDesignLock`'s pair is
+ * kept honest too.
+ */
+export const ADVERSARY_RECORD_FILE = "adversary.json";
+
+/**
  * The run's record of the pass — written whether it ran or not.
  *
  * A MISSING FILE CANNOT BE TOLD APART FROM A STEP THAT NEVER RAN, which is why a
  * refusal produces a record too. `notes` carries what this lane does NOT have, in
  * the file rather than only in a docblock, because the file is what a cron report
  * or a morning-after reader actually opens.
+ *
+ * IT IS ALSO THE UI'S SOURCE. `http.ts#toDetail` reads this file and
+ * {@link adversaryPassFromRecord} maps it onto `RunDetail.adversary`. The record
+ * is written through `redactForPersistence` at its one call site
+ * (`orchestrator.ts#recordAdversary`), so the copy that reaches the browser is
+ * the redacted one — pattern-based, which is not a guarantee about content.
  */
 export interface AdversaryRecord {
   readonly agent: string;
@@ -739,6 +790,20 @@ export interface AdversaryRecord {
   readonly gating: false;
   readonly wallClockMs: number | null;
   readonly findings: readonly AdversaryFinding[];
+  /**
+   * Did the session leave its report file? A FIELD, NOT A SENTENCE IN `notes`.
+   *
+   * `notes` has carried this fact as prose since the lane was written, and prose
+   * is unrenderable: a reader — human or `toDetail` — cannot tell `findings: []`
+   * "the pass reported nothing" from `findings: []` "there was no report to
+   * parse" by grepping a paragraph. This bit is what
+   * {@link adversaryPassFromRecord} keys the wire's `findings: null` on, and it
+   * is `false` for every refusal (nothing was spawned, so nothing could write).
+   *
+   * A RECORD WRITTEN BY AN OLDER BUILD HAS NO SUCH KEY. The reader treats an
+   * absent one as "no report", never as "found nothing" — see that function.
+   */
+  readonly reportWritten: boolean;
   readonly notes: readonly string[];
 }
 
@@ -778,7 +843,88 @@ export function adversaryRecord(input: {
     gating: false,
     wallClockMs: input.result.call?.wallClockMs ?? null,
     findings: input.result.findings,
+    reportWritten: input.result.reportWritten,
     notes,
+  };
+}
+
+/**
+ * The record on disk, as the one thing the HTTP layer may say about this pass.
+ *
+ * THE PRODUCER OF THIS RECORD HAS NEVER RUN. In those words, because everything
+ * below is a reader for a file no real run has ever written: `#adversaryPhase`
+ * requires a `previewUrl`, which requires a scored run with a preview, and no run
+ * on this machine has reached it. This function, its callers and its tests are
+ * exercised; THE WRITER IS NOT. Nothing here may be described as proven.
+ *
+ * WHY A MAPPER AND NOT THE RECORD ITSELF. The record carries `notes`,
+ * `previewUrl`, `environment`, `wallClockMs`, `agent` and `surface`. None of them
+ * belong on a run response — `notes` alone is four paragraphs of what the lane
+ * does not have — and `results/` must NOT become browsable, because it holds
+ * held-out test titles and the workspace-only fence in `code-files.ts` is a
+ * security control. So four values cross, and no route is opened.
+ *
+ * THE ONE DECISION THIS FUNCTION MAKES, AND ITS TRUTH TABLE:
+ *
+ *   `reportWritten: true`                 → `findings: [...]`, possibly EMPTY.
+ *                                           Empty then means the pass reported
+ *                                           and found nothing.
+ *   `reportWritten: false`, no findings   → `findings: null`. There was no
+ *                                           report to read, or nothing was
+ *                                           spawned at all. NOT "found nothing".
+ *   key absent, findings non-empty        → `findings: [...]`. A non-empty list
+ *                                           is itself proof a report existed;
+ *                                           this is the arm that keeps a record
+ *                                           written by an older build readable.
+ *   key absent, no findings               → `findings: null`. UNKNOWN IS CARRIED
+ *                                           AS "no report", never as "found
+ *                                           nothing" — the collapse this whole
+ *                                           shape exists to prevent.
+ *
+ * A RECORD IT CANNOT READ IS REPORTED AS ABSENT (`null`), and that IS a
+ * collapse: "there is no record" and "the record is corrupt" become one wire
+ * value. Stated rather than hidden. It is deliberate — a third state for a file
+ * this program itself writes would be modelling for its own sake, and both cases
+ * leave a panel with nothing true to render — but it is a real loss of
+ * information, and the record's own text remains on disk for whoever needs it.
+ */
+export function adversaryPassFromRecord(text: string): ApiAdversaryPass | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  const ran = record["ran"];
+  const stop = record["stop"];
+  // BOTH OR NOTHING. `ran` and `stop` are the pair that says what happened; a
+  // record missing either is not a pass this program can describe, and a default
+  // (`ran: false`, `stop: ""`) would render as a refusal that never occurred.
+  if (typeof ran !== "boolean" || typeof stop !== "string" || stop.length === 0) return null;
+  const findings = findingsFrom(record["findings"]);
+  const reportWritten = record["reportWritten"] === true;
+  const detail = record["detail"];
+  return {
+    ran,
+    stop,
+    stopDetail: typeof detail === "string" ? detail.slice(0, 2000) : "",
+    findings:
+      reportWritten || findings.length > 0
+        ? findings.map(
+            (finding): ApiAdversaryFinding => ({
+              severity: finding.severity,
+              klass: finding.klass,
+              summary: finding.summary,
+              // `AdversaryFinding.detail` is optional and
+              // `exactOptionalPropertyTypes` is on, so this is a real conversion
+              // and not a cast. `""` is what `findingsFrom` already writes for a
+              // finding with no repro text, so nothing is lost here.
+              detail: finding.detail ?? "",
+            }),
+          )
+        : null,
   };
 }
 

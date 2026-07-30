@@ -58,6 +58,10 @@ function detail(over: Partial<RunDetail> = {}): RunDetail {
     ticketTitle: "a portfolio",
     modelId: "opus[1m]",
     status: "failed",
+    // Non-null does NOT mean failed, and null does not mean healthy — see
+    // `RunDetail.failureReason`. The fixture states the absence explicitly so a
+    // cron-report test never reads a stale reason from a previous shape.
+    failureReason: null,
     startedAt: "2026-07-30T02:00:00.000Z",
     endedAt: "2026-07-30T02:20:00.000Z",
     heldOutPass: null,
@@ -76,6 +80,9 @@ function detail(over: Partial<RunDetail> = {}): RunDetail {
     gateAttempts: 0,
     gateStopReason: null,
     designLock: null,
+    // Never reached phase 5. `null` is "no pass record on this run" — NOT an
+    // empty findings array, which would mean the pass ran and found nothing.
+    adversary: null,
     ...over,
   };
 }

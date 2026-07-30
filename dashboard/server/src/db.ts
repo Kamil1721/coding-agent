@@ -96,6 +96,22 @@ export interface RunRow {
   readonly agentDeclaredDone: boolean;
   readonly tokens: ApiTokens | null;
   readonly rateLimited: boolean;
+  /**
+   * When a call was actually REFUSED — the durable half of the rate-limit park.
+   *
+   * NOT THE SAME THING AS {@link RunRow.rateLimited}. That boolean is also
+   * written from routine `limited: false` telemetry (`#noteRateLimit`), so it
+   * says what the last SDK event reported; this column is written only by
+   * `#rateLimited`, alongside `status = 'rate_limited'`, so it says when the
+   * provider actually said no.
+   *
+   * It exists so an opt-in auto-resume survives a restart: the remaining wait is
+   * `rateLimitRetryAfterSec` measured from HERE, never from boot time, which is
+   * what stops a dashboard that restarts every few minutes from renewing the
+   * window each time. NULL on every row written before this column existed, and
+   * `planRateLimitResume` refuses to arm on a null rather than assuming `now`.
+   */
+  readonly rateLimitedAt: string | null;
   readonly rateLimitRetryAfterSec: number | null;
   /** e.g. "five_hour" / "seven_day". Recorded verbatim from the provider. */
   readonly rateLimitKind: string | null;
@@ -157,6 +173,8 @@ export interface RunPatch {
   readonly agentDeclaredDone?: boolean;
   readonly tokens?: ApiTokens | null;
   readonly rateLimited?: boolean;
+  /** See {@link RunRow.rateLimitedAt}: the refusal instant, not the telemetry. */
+  readonly rateLimitedAt?: string | null;
   readonly rateLimitRetryAfterSec?: number | null;
   readonly rateLimitKind?: string | null;
   readonly artifactPath?: string | null;
@@ -382,6 +400,7 @@ CREATE TABLE IF NOT EXISTS runs (
   cache_read_tokens          INTEGER,
   cache_write_tokens         INTEGER,
   rate_limited               INTEGER NOT NULL DEFAULT 0,
+  rate_limited_at            TEXT,
   rate_limit_retry_after_sec INTEGER,
   rate_limit_kind            TEXT,
   artifact_path              TEXT,
@@ -517,6 +536,7 @@ const RUN_COLUMNS = [
   "cache_read_tokens",
   "cache_write_tokens",
   "rate_limited",
+  "rate_limited_at",
   "rate_limit_retry_after_sec",
   "rate_limit_kind",
   "artifact_path",
@@ -588,6 +608,16 @@ const ADDED_RUN_COLUMNS: readonly { readonly name: string; readonly ddl: string 
   {
     name: "gate_stop_reason",
     ddl: "ALTER TABLE runs ADD COLUMN gate_stop_reason TEXT",
+  },
+  // The rate-limit park's durable half. NULLABLE AND WITHOUT A DEFAULT, on
+  // `gate_stop_reason`'s reasoning rather than `gate_attempts`': there is no
+  // value that means "we know when this run was refused" for a historical row,
+  // and a default of the migration's own timestamp would hand every old
+  // rate-limited run a fresh window it never waited. Null is refused by
+  // `planRateLimitResume`, which is the correct treatment of "unknown".
+  {
+    name: "rate_limited_at",
+    ddl: "ALTER TABLE runs ADD COLUMN rate_limited_at TEXT",
   },
 ];
 
@@ -725,6 +755,10 @@ export class RunStore {
       push("cache_write_tokens", t === null ? null : t.cacheWriteTokens);
     }
     if (patch.rateLimited !== undefined) push("rate_limited", flag(patch.rateLimited));
+    // NOT REDACTED, like `started_at` and `ended_at` above it: an ISO instant
+    // this program generated has nothing in it to redact, and running it through
+    // the redactor would cost a cast for a guaranteed no-op.
+    if (patch.rateLimitedAt !== undefined) push("rate_limited_at", patch.rateLimitedAt);
     if (patch.rateLimitRetryAfterSec !== undefined) {
       push("rate_limit_retry_after_sec", patch.rateLimitRetryAfterSec);
     }
@@ -1191,6 +1225,7 @@ function toRunRow(row: Row): RunRow {
     agentDeclaredDone: bool(row, "agent_declared_done"),
     tokens,
     rateLimited: bool(row, "rate_limited"),
+    rateLimitedAt: strOrNull(row, "rate_limited_at"),
     rateLimitRetryAfterSec: numOrNull(row, "rate_limit_retry_after_sec"),
     rateLimitKind: strOrNull(row, "rate_limit_kind"),
     artifactPath: strOrNull(row, "artifact_path"),

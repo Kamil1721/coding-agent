@@ -119,8 +119,80 @@ const BUTTON_VARIANT: Readonly<Record<ButtonVariant, string>> = {
   ghost: "border-transparent bg-transparent text-ink-dim hover:text-ink hover:bg-surface-raised",
 };
 
+/**
+ * THE SIZE AXIS, AND WHY `variant` COULD NOT CARRY THIS.
+ *
+ * All 21 button call sites in this app rendered at `px-2.5 py-1 text-[12px]` — a
+ * ~28px tall control — and `primary` differed from `default` by HUE ALONE. That
+ * is not enough signal, and the reason is what `--color-accent` is ALREADY spent
+ * on elsewhere, grepped rather than recalled: a selected node's ring and card
+ * border (`agent-node.tsx:112,462`), a selected roster row (`roster.tsx:90`), the
+ * live pulse dot on the canvas legend (`orchestration-canvas.tsx:1210`), an
+ * owner's own chat bubble (`orchestrator-chat.tsx:133`), and the app-wide
+ * `:focus-visible` outline (`globals.css`). So an accent-tinted 28px rectangle
+ * already meant "this is selected" and "this is live" before it could mean "this
+ * is the action the screen exists for". Hue was carrying five jobs and therefore
+ * carrying none of them decisively. `Start run` — the submit button of the page
+ * whose entire purpose is starting a run — was the same 28px as `run detail`.
+ *
+ * A CORRECTION TO THE GAP NOTE THIS CAME FROM, since restating it would have
+ * been the easy thing: it says the canvas uses accent "for a filter's on-state".
+ * Grep finds no accent-tinted filter chip on the canvas — the list above is what
+ * is actually there. The conclusion survives the correction; the specific claim
+ * did not, so it is not repeated.
+ *
+ * SIZE IS THE AXIS THAT WAS FREE, so size is the axis that now carries "this is
+ * the primary action". It is orthogonal to `variant` by construction: the two
+ * maps touch disjoint CSS properties, so `size` cannot change a colour and
+ * `variant` cannot change a metric.
+ *
+ * `default` EMITS THE SAME UTILITIES IT ALWAYS DID. The four moved out of the
+ * base string — `gap-1.5 px-2.5 py-1 text-[12px]` plus `font-medium` — are
+ * reproduced verbatim in `BUTTON_SIZE.default`, so every existing call site
+ * renders identically and none of them had to be touched. The class ATTRIBUTE
+ * order changed (the moved utilities now follow `border` instead of straddling
+ * it); the computed style did not, because no two utilities in the moved set
+ * target the same property as each other or as anything left in the base.
+ *
+ * WHY `font-medium` MOVED TOO, when it looks like it belongs in the base:
+ * `lg` wants `font-semibold`, and leaving `font-medium` in the base would have
+ * put two font-weight utilities on the same element and made the outcome depend
+ * on the order Tailwind emits its font-weight rules in. That order is real and
+ * knowable, but relying on it is a silent-breakage bet across a Tailwind upgrade
+ * for no benefit. Disjoint maps mean there is nothing to resolve.
+ *
+ * `rounded-sm` STAYS IN THE BASE FOR BOTH SIZES. One corner-radius system: a
+ * bigger button here is a bigger rectangle, not a differently-shaped object.
+ *
+ * WHAT THIS AXIS DOES NOT ADD, stated rather than implied:
+ *   - No pressed/`:active` feedback. Neither size has any, same as before. It
+ *     was left out because adding it to the base restyles all 21 existing call
+ *     sites, and adding it to `lg` alone would make press feedback a property of
+ *     bigness, which is worse than not having it. It is the obvious next thing
+ *     this component wants and it is not here.
+ *   - No `min-h`. Height comes from padding plus the inherited 1.5 line-height,
+ *     which is stable for the single-line labels every call site uses, and a
+ *     `min-h` would silently start fighting the padding on a wrapped label.
+ *   - Nothing enforces "at most one `lg` per screen". That is a convention this
+ *     comment states and no mechanism checks.
+ */
+type ButtonSize = "default" | "lg";
+
+const BUTTON_SIZE: Readonly<Record<ButtonSize, string>> = {
+  /* ~28px tall. The app's control size, unchanged, and still the default so that
+     adding this axis moved nothing. */
+  default: "gap-1.5 px-2.5 py-1 text-[12px] font-medium",
+  /* ~38px tall: 2px border + 16px padding + a 13px label on the inherited 1.5
+     line-height. 13px is BODY size — the label is one step up from a control
+     label, not a display size. The presence is meant to come from geometry and
+     weight, because a CTA that is merely a larger font is still a small
+     rectangle. */
+  lg: "gap-2 px-4 py-2 text-[13px] font-semibold",
+};
+
 export function Button({
   variant = "default",
+  size = "default",
   type = "button",
   disabled = false,
   onClick,
@@ -129,6 +201,7 @@ export function Button({
   title,
 }: {
   variant?: ButtonVariant;
+  size?: ButtonSize;
   type?: "button" | "submit";
   disabled?: boolean;
   onClick?: () => void;
@@ -143,7 +216,8 @@ export function Button({
       disabled={disabled}
       onClick={onClick}
       className={cx(
-        "inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[12px] font-medium transition-colors",
+        "inline-flex items-center rounded-sm border transition-colors",
+        BUTTON_SIZE[size],
         "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line-strong disabled:hover:bg-surface-raised",
         BUTTON_VARIANT[variant],
         className,

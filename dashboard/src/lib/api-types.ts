@@ -6,7 +6,8 @@
  * here to make a component easier to write. Nullable fields are `T | null`,
  * never optional `T?`, matching the harness house style.
  *
- *   POST   /api/runs            {ticketText, modelId, deploy?} -> {runId}
+ *   POST   /api/runs            {ticketText, modelId, deploy?, designLock?,
+ *                                references?, captureUrl?} -> {runId}
  *   GET    /api/runs            -> RunSummary[]   (newest first)
  *   GET    /api/runs/:id        -> RunDetail
  *   GET    /api/runs/:id/events -> text/event-stream
@@ -15,7 +16,7 @@
  *   POST   /api/runs/:id/cancel -> {ok:true}
  *   POST   /api/runs/:id/resume -> {ok:true}
  *   GET    /api/models          -> ModelOption[]
- *   GET    /api/health          -> {ok, claudeAuth, codexAuth}
+ *   GET    /api/health          -> {ok, claudeAuth, codexAuth, gate}
  */
 
 /**
@@ -219,6 +220,86 @@ export interface DesignLockState {
   readonly reason: string | null;
 }
 
+/**
+ * ONE human-factors finding — the server's `ApiAdversaryFinding`, mirrored by
+ * hand. Nothing but `contract-parity.test.ts` and `adversary.test.ts` compare
+ * the two files.
+ *
+ * `severity` IS A CLOSED UNION and may be relied on for ordering and colour: the
+ * server's parser drops any entry whose severity is not one of these four, so a
+ * fifth value cannot arrive. `klass` is NOT closed — it is the server's
+ * `FailureClass` vocabulary (install, build, boot, route, visual, test-infra,
+ * logic, structure), typed `string` on both sides so every renderer keeps a
+ * default branch.
+ *
+ * `detail` IS `""` WHEN THE PASS GAVE NO REPRO, never absent. Empty is a
+ * statement — "it reported a finding and no evidence text" — and should render
+ * as the absence it is rather than as a blank line.
+ */
+export interface AdversaryFinding {
+  readonly severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  readonly klass: string;
+  readonly summary: string;
+  readonly detail: string;
+}
+
+/**
+ * The human-factors adversary pass — the server's `ApiAdversaryPass`, mirrored
+ * by hand.
+ *
+ * THIS LANE HAS NEVER EXECUTED. Said in those words because it is the first
+ * thing anyone building a panel on it needs to know: the pass needs a running
+ * preview URL, which needs a scored run, and no run has reached it. The read
+ * path, the mapper and this mirror are tested; THE PRODUCER HAS NEVER RUN. Do
+ * not write copy that implies these findings are a proven channel, and do not
+ * treat `null` as an error state — it is what every run reports today.
+ *
+ * THE TRUTH TABLE. `RunDetail.adversary === null` means no record at all: the
+ * run never reached the pass. Inside a record:
+ *
+ *   `ran: false`, `findings: null`   considered and DECLINED — `stop` says why
+ *                                    (`not-applicable` when the run has no
+ *                                    loopback preview; the rest are refusals).
+ *   `ran: true`,  `findings: null`   it ran and LEFT NO REPORT. NOT "found
+ *                                    nothing" — the report is a file the
+ *                                    session writes, and a missing file means
+ *                                    the server cannot see what it found.
+ *   `ran: true`,  `findings: []`     it ran, reported, and FOUND NOTHING.
+ *
+ * The last two must never render as the same sentence. "No usability problems
+ * found" for a pass that filed no report is a claim nothing measured.
+ *
+ * NON-GATING. These findings cannot move `heldOutPass`, `status` or
+ * `failureReason` — the server folds them into the backlog only. Render them as
+ * judgement, never as failures, and never beside a criterion result.
+ */
+export interface AdversaryPass {
+  /** The session was actually spawned. False for every refusal. */
+  readonly ran: boolean;
+  /**
+   * Why it stopped, or `ran` when it completed. The server's vocabulary is
+   * `ran`, `not-applicable`, `agent-missing`, `agent-denylist-drift`,
+   * `denylist-incomplete`, `workspace-not-isolated`, `timeout`, `failed`,
+   * `cancelled` — typed `string` on both sides deliberately, so ANY renderer
+   * needs a default branch. A stop this build has never heard of is a newer
+   * server, not a bug.
+   */
+  readonly stop: string;
+  /**
+   * The lane's sentence about why it stopped — EMPTY on a clean run. NOT a
+   * finding's repro text; that is `AdversaryFinding.detail`, and the two keys
+   * are spelled differently so a nested render cannot swap them.
+   *
+   * THE SERVER TRUNCATES IT AT 2000 CHARACTERS — a `failed` stop carries an
+   * unbounded error message — so this can arrive cut off mid-sentence. Do not
+   * present it as the complete cause; the full text is only in the run's own
+   * record file and log stream.
+   */
+  readonly stopDetail: string;
+  /** `null` = no report to read; `[]` = a report that found nothing. */
+  readonly findings: readonly AdversaryFinding[] | null;
+}
+
 export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: RunPhase;
@@ -271,6 +352,25 @@ export interface RunDetail extends RunSummary {
    */
   readonly gateStopReason: string | null;
   /**
+   * The last thing that went wrong, in the words the server recorded it in.
+   *
+   * A NON-NULL VALUE IS NOT A FAILED RUN. `awaiting_input` and `rate_limited`
+   * are stopped, not finished: a run parked for a mockup choice carries
+   * `DESIGN LANE FAILED (too-few-images)` while it is still live and still
+   * resumable. Gate this on `status` before you render it, and never let it
+   * become a second, contradicting status badge.
+   *
+   * IT IS THE LAST WRITE, NOT THE FIRST OR THE WORST. One column, five writers
+   * on the server; a run whose design lane failed and which then reached the gate
+   * reports the gate's answer and nothing about the lane. So "why this run
+   * failed" is the honest framing only when the status already says it failed,
+   * and even then it is the last recorded cause rather than a history.
+   *
+   * `null` on a passed run is written deliberately, not left over — the server
+   * clears it when the held-out suite goes green.
+   */
+  readonly failureReason: string | null;
+  /**
    * The DESIGN lane's lock, or `null` when this run has no DESIGN lane.
    *
    * THE NULL IS LOAD-BEARING AND IS NOT THE SAME AS AN EMPTY LOCK. `null` means
@@ -280,12 +380,70 @@ export interface RunDetail extends RunSummary {
    * the case the whole lane's reporting exists to make visible.
    */
   readonly designLock: DesignLockState | null;
+  /**
+   * The human-factors adversary pass, or `null` when the run left no record.
+   *
+   * `null` IS THE ORDINARY CASE TODAY — the lane has never executed, so every
+   * run reports it. Two different nulls live here and {@link AdversaryPass}
+   * spells out both: this one is "no pass record on this run", the one on
+   * `findings` inside it is "the pass filed no report", and neither of them is
+   * "the pass found nothing" (that is `findings: []`).
+   *
+   * The server reads it from the run's own `results/adversary.json` and puts
+   * only these four values on the wire; `results/` is not browsable and must not
+   * become browsable, because it holds held-out test titles.
+   */
+  readonly adversary: AdversaryPass | null;
+}
+
+/**
+ * Can the sealed gate be built on the server's machine? — the server's
+ * `GateHealth`, mirrored by hand.
+ *
+ * ONLY `"ok"` MAY RENDER AS A PASS. `"unknown"` means no probe has completed
+ * yet — the answer is absent, not fine — and it gets its own neutral state, the
+ * same refusal `heldOutPass: null` makes against being drawn as `false`. A
+ * three-state field rendered as a boolean is how a gate nobody checked becomes a
+ * green tick.
+ *
+ * WHAT `ok` BUYS: the server built the gate with the same call and the same
+ * environment the run's gate phase uses, and docker resolved the scorer image's
+ * digest. It does NOT mean a scoring container has run, and it is not a promise
+ * about the future — the gate phase happens ~1h45 later on a real run, which is
+ * the whole reason this is worth showing before the ticket is submitted.
+ *
+ * `detail` MAY BE MULTI-LINE: on `unavailable` it is the server's error text
+ * plus a `fix:` line carrying the exact `docker build …` command. Preserve the
+ * newlines (`whitespace-pre-line`) or the command runs into the sentence.
+ *
+ * `checkedAt` is `null` exactly when `state` is `"unknown"`. The probe is cached
+ * for at least a minute, so an `ok` describes that instant and not this one.
+ *
+ * READ IT DEFENSIVELY UNTIL THE FIXTURES CATCH UP. `dashboard/tests/fixtures/api-server.ts`
+ * and the health stubs in `design-lock.browser.spec.ts` / `model-picker.browser.spec.ts`
+ * still serve a health body with NO `gate` key, so `health.gate.state` WOULD
+ * throw a TypeError under those specs even though this type says it cannot —
+ * nothing reads the field yet, so that is a trap set for the first renderer and
+ * not a live break. The type is right about the real server; the fixtures are
+ * the thing that has to change.
+ */
+export interface GateHealth {
+  readonly state: "ok" | "unavailable" | "unknown";
+  readonly detail: string;
+  readonly checkedAt: string | null;
 }
 
 export interface HealthState {
+  /**
+   * AUTH ONLY. The gate is NOT folded into this boolean: a run with docker down
+   * still builds and still produces code, it just cannot be scored, and the
+   * unattended cron tick refuses to submit anything when this is false —
+   * naming authentication as the cause. Read `gate` for the gate.
+   */
   readonly ok: boolean;
   readonly claudeAuth: "ok" | "missing";
   readonly codexAuth: "ok" | "missing";
+  readonly gate: GateHealth;
 }
 
 export interface CreateRunRequest {
@@ -301,10 +459,112 @@ export interface CreateRunRequest {
    * submission — read the comment there before removing it.
    */
   readonly designLock?: "auto" | "ask" | null;
+  /**
+   * Reference images for the ticket, as base64 `data:image/…` URLs.
+   *
+   * The same shape and the same caps as the chat's image intake: at most 6, at
+   * most 8 MB each decoded, png/jpeg/webp/gif. Build them the way the chat box
+   * does — `FileReader.readAsDataURL` — and send them alongside the text.
+   *
+   * SENDING ONE CHANGES WHICH TICKET THIS IS. The server folds each image's
+   * sha256 into the ticket id, so the same words with a different image address
+   * a DIFFERENT frozen acceptance suite, and re-submitting the same file mints a
+   * new ticket rather than reusing the old one. That is the owner's explicit
+   * decision, not an accident of the encoding: without it, two runs with
+   * different visual briefs would share one sealed suite and the verdict could
+   * not say which reference the build was graded against. A form that offers
+   * "attach a reference" should not imply the run is otherwise unchanged.
+   *
+   * OPTIONAL HERE, REQUIRED-BUT-NULLABLE ON THE SERVER — the same asymmetry
+   * `deploy` and `designLock` already have.
+   */
+  readonly references?: readonly string[];
+  /**
+   * Documents for the ticket — a scope, a brief, a CV — as base64 data URLs.
+   *
+   * Built the same way the images are (`FileReader.readAsDataURL`), sent in the
+   * same POST. At most 4, at most 12 MB each decoded; the server accepts PDF,
+   * plain text, markdown, CSV, JSON, .docx, .doc and both spellings of RTF, and
+   * refuses anything else as `invalid_document` with a sentence naming the type
+   * it was given. A whole body over the route's envelope is `body_too_large`,
+   * which is a different failure from a single file being too big.
+   *
+   * SENDING ONE CHANGES WHICH TICKET THIS IS, exactly as a reference image does:
+   * the server folds each document's sha256 into the ticket id, so an amended
+   * scope with unchanged words addresses a DIFFERENT frozen acceptance suite and
+   * pays to have it authored. A form that offers "attach a scope" should not
+   * imply the run is otherwise unchanged.
+   *
+   * AND SENDING ONE IS NOT THE SAME AS THE RUN READING IT. The intake stores the
+   * bytes, records their paths and digests, and emits a `warn` on the run's
+   * event stream saying so; whether a seat is given the document is decided by
+   * the server's build and spec wiring, not by this field. Do not render
+   * "attached" as "the run has read your scope" — the run's own log is where the
+   * truth for a given run is.
+   *
+   * OPTIONAL HERE, REQUIRED-BUT-NULLABLE ON THE SERVER — the same asymmetry
+   * `deploy`, `designLock` and `references` already have.
+   */
+  readonly documents?: readonly string[];
+  /**
+   * Which page the server should capture before authoring the suite.
+   *
+   * ABSENT means "scan my ticket text and capture the first http(s) URL you
+   * find" — the behaviour "make a copy of kamilborzecki.dev" needs. `null` is
+   * the opt-out for a ticket that merely cites a URL. A string names one
+   * explicitly.
+   *
+   * WHY A FORM WOULD OFFER THE OPT-OUT: the capture is SLOW and it moves the
+   * ticket id. A healthy page costs a few seconds, but the server's own bounds
+   * add up to roughly a minute in the worst case (browser launch, navigation,
+   * one full-page screenshot per width) and the POST returns nothing until it
+   * finishes — so a submit button wired to this needs a pending state, not a
+   * spinner-free wait. Its extracted outline also becomes part of the ticket
+   * text, so it changes which frozen suite the run is graded against. A brief
+   * that merely links to documentation wants neither.
+   *
+   * A FAILED CAPTURE STILL CREATES THE RUN. The reason arrives as a `warn` on
+   * the run's event stream; there is no field on the response for it, and there
+   * is no field on `RunDetail` for the references either — what the owner sees
+   * of the capture is the outline, which is part of `RunDetail.ticketText`.
+   */
+  readonly captureUrl?: string | null;
 }
 
 export interface CreateRunResponse {
   readonly runId: string;
+}
+
+/**
+ * `POST /api/runs/:id/messages` — the body the chat box sends.
+ *
+ * MIRRORS THE SERVER'S `SendMessageRequest`, and is written down here for the
+ * same reason that one is: the route now takes two kinds of attachment, and a
+ * body built inline in one `fetch` with no declared shape is how a client comes
+ * to send `document` where the server reads `documents` and nobody finds out
+ * until an owner's scope silently does nothing.
+ *
+ * NOT YET IMPORTED BY `api.ts`. `sendRunMessage` there takes `(runId, text,
+ * images)` and constructs `{text, images}` by hand; wiring a document picker
+ * into the chat box means widening that function and typing its body with this.
+ * The server accepts `documents` today either way.
+ *
+ * A MESSAGE NEEDS TEXT, AN IMAGE, OR A DOCUMENT. All three absent is refused as
+ * `empty_message`.
+ *
+ * WHAT THE SERVER DOES WITH `documents`: stores them under `runs/<id>/chat/`,
+ * returns their paths on the response's additive `documents` field, and emits a
+ * `warn` on the run's event stream saying they were STORED, NOT DELIVERED — the
+ * chat channel to a running agent carries text and image paths only, and no
+ * document reaches the run through it. They are also NOT part of the ticket's
+ * identity, unlike `CreateRunRequest.documents`: this run's ticket id was fixed
+ * when it was created. A chat box that shows a document as "sent" without
+ * surfacing that warning is claiming something the server did not do.
+ */
+export interface SendMessageRequest {
+  readonly text?: string;
+  readonly images?: readonly string[];
+  readonly documents?: readonly string[];
 }
 
 export interface OkResponse {
@@ -498,7 +758,19 @@ export type RunEvent =
     }
   | { readonly type: "screenshot"; readonly path: string; readonly label: string }
   | ({ readonly type: "tokens" } & TokenCounts)
-  | { readonly type: "rate_limit"; readonly retryAfterSec: number }
+  /**
+   * Provider rate-limit state. `limited` SAYS WHETHER IT IS ACTUALLY A LIMIT.
+   *
+   * The SDK emits this routinely to report when the current window rolls over,
+   * with nothing refused. Treating every one as a refusal is what printed
+   * `rate limited; retry after 253699s` on a run whose subscription was fine.
+   * `retryAfterSec` is 0 when the provider did not report a reset instant.
+   */
+  | {
+      readonly type: "rate_limit";
+      readonly limited: boolean;
+      readonly retryAfterSec: number;
+    }
   /**
    * The run wrote its verdict. Emitted once, immediately before the terminal
    * `status` event. A path and a count; never the verdict's text.
@@ -644,6 +916,15 @@ export function isTerminalStatus(status: RunStatus): boolean {
  * a subscription plan, not an error: the 5-hour rolling window has to drain.
  * `awaiting_input` is stalled on something the frozen API exposes no channel
  * for, so the only moves are resume and cancel.
+ *
+ * STOPPED DOES NOT MEAN "WILL RESTART ITSELF". The server can be started with an
+ * opt-in auto-resume for `rate_limited` (off by default, and it refuses to arm
+ * when the provider reported no reset instant), but NOTHING ON THIS WIRE SAYS
+ * WHETHER IT DID — there is no armed flag and no deadline field, and
+ * `RateLimitState.retryAfterSec` is the provider's reported window, not a
+ * promise that anything is counting it down. So the UI must not print a
+ * countdown-to-resume or claim the run will come back on its own; the truthful
+ * rendering is "stopped, resumable", with Resume as the move the owner has.
  */
 export function isStalledStatus(status: RunStatus): boolean {
   return status === "rate_limited" || status === "awaiting_input";

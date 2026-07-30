@@ -188,6 +188,10 @@ const SUMMARY: RunSummary = {
 
 export const RUN_DETAIL: RunDetail = {
   ...SUMMARY,
+  // The default fixture is a HEALTHY run, so it carries no failure reason. A
+  // spec that wants the failure notice's detail line sets this explicitly
+  // rather than inheriting one nobody asked for.
+  failureReason: null,
   ticketText: "Add a test suite to the dashboard client.",
   phase: "build",
   criteria: [
@@ -216,6 +220,9 @@ export const RUN_DETAIL: RunDetail = {
   // locked: null}` would say something different: that a lane ran and locked
   // nothing.
   designLock: null,
+  // No human-factors pass on this fixture. `null` = the pass left no report;
+  // `[]` would claim it ran and found nothing. The UI renders those differently.
+  adversary: null,
 };
 
 /** The same run under a second id, served with a replaying stream. */

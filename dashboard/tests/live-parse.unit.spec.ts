@@ -14,7 +14,7 @@
 
 import { expect, test } from "@playwright/test";
 
-import { parseRunEvent } from "@/lib/use-run-stream";
+import { parseRunEvent, traceRowFor } from "@/lib/use-run-stream";
 
 /** One SSE `data:` frame, as the server now writes it (`SseWireEvent`). */
 const TOOL_FRAME = JSON.stringify({
@@ -82,4 +82,84 @@ test("a non-string `at` is refused rather than trusted", () => {
   });
   const event = parseRunEvent(frame, "graph_tool");
   expect(Object.hasOwn(event as object, "at")).toBe(false);
+});
+
+/* -------------------------------------------------------------------------
+ * rate_limit — the event that told a healthy run it was rate limited
+ * ---------------------------------------------------------------------- */
+
+/**
+ * THE REGRESSION FOR `run-2026-07-30T13-31-38-076Z-c228e63b`.
+ *
+ * Two seconds into that run the timeline printed `rate limited; retry after
+ * 253699s` — a 70.5-hour wait, on a subscription that was working. The run's own
+ * row says `rate_limited = 0`: the provider had refused NOTHING. What the SDK
+ * actually reported was when the seven-day window rolls over, which it does
+ * routinely with `status: 'allowed'`.
+ *
+ * The number was never wrong. The event simply had no way to say "this is not a
+ * refusal", so the server emitted it for both cases and this parser hard-coded
+ * `limited: true` for whatever arrived.
+ */
+test("a LIVE rate_limit frame that refused nothing does not claim a limit", () => {
+  const frame = JSON.stringify({ type: "rate_limit", limited: false, retryAfterSec: 253699 });
+  const event = parseRunEvent(frame, "rate_limit");
+  expect(event).not.toBeNull();
+  expect(
+    (event as { limited?: boolean }).limited,
+    "the client read `limited: true` off every rate_limit frame, so window telemetry read as a refusal",
+  ).toBe(false);
+  expect(
+    (event as { retryAfterSec?: number }).retryAfterSec,
+    "the reset instant is still carried — it is worth showing as a window fills, just not as a refusal",
+  ).toBe(253699);
+});
+
+test("a LIVE rate_limit frame that IS a refusal still says so", () => {
+  const frame = JSON.stringify({ type: "rate_limit", limited: true, retryAfterSec: 900 });
+  const event = parseRunEvent(frame, "rate_limit");
+  expect((event as { limited?: boolean }).limited).toBe(true);
+  expect((event as { retryAfterSec?: number }).retryAfterSec).toBe(900);
+});
+
+test("a rate_limit frame with no `limited` field is read as NOT limited", () => {
+  /*
+   * A frame from a server that predates the flag reports a window reset instant
+   * and nothing about a refusal, so "not limited" is what it actually said. The
+   * old default was the opposite, and that default IS the bug.
+   */
+  const frame = JSON.stringify({ type: "rate_limit", retryAfterSec: 253699 });
+  const event = parseRunEvent(frame, "rate_limit");
+  expect((event as { limited?: boolean }).limited).toBe(false);
+});
+
+/* -------------------------------------------------------------------------
+ * The words the reader sees
+ * ---------------------------------------------------------------------- */
+
+/**
+ * WHY THIS IS A UNIT TEST AND NOT A BROWSER ONE, STATED PLAINLY.
+ *
+ * The trace is LIVE-ONLY. Opening the recorded run that produced this defect
+ * shows "This run finished before the page was opened, so there is no live trace
+ * to replay" — verified in a real browser this session. The row the owner saw
+ * existed only while the run was in flight, so there is no finished-run render
+ * that can be inspected after the fact, and this function is the last thing
+ * between the event and the sentence.
+ */
+test("a report that refused nothing does not get the word `rate limited`", () => {
+  const row = traceRowFor({ type: "rate_limit", limited: false, retryAfterSec: 253_699 });
+  expect(row).not.toBeNull();
+  expect(
+    row?.text,
+    "`rate limited; retry after 253699s` on a healthy subscription is the sentence this fixes",
+  ).not.toMatch(/rate limited/i);
+  expect(row?.text).toMatch(/nothing refused/i);
+  expect(row?.level, "and it is not a warning — nothing went wrong").toBe("info");
+});
+
+test("a real refusal still reads as one, and still warns", () => {
+  const row = traceRowFor({ type: "rate_limit", limited: true, retryAfterSec: 900 });
+  expect(row?.text).toMatch(/rate limited; retry after 900s/);
+  expect(row?.level).toBe("warn");
 });
