@@ -814,6 +814,21 @@ export class RunStore {
    * reporting 10 left the run claiming 10. `ON CONFLICT DO UPDATE SET x = x +
    * excluded.x` puts that arithmetic in the one place a caller cannot skip.
    *
+   * SO CALL IT ONCE PER COMPLETED CALL OR ROUND, FROM THE RETURNED OUTCOME — AND
+   * NEVER FROM A `BuildEventSink.tokens` CALLBACK. That callback fires repeatedly
+   * with a total that is already cumulative WITHIN the call (`claude-builder.ts`
+   * builds it with `addTokens(running, …)`, which is why orchestrator.ts:1003
+   * captures `carried` BEFORE the segment rather than re-reading the row), so
+   * ADDING from it records T1 + (T1+T2) + (T1+T2+T3) and inflates the run by a
+   * multiple — the mirror image of the defect this table closes, and the harder one
+   * to notice, because that number only ever looks too big. The right sources are
+   * `outcome.tokens` after `builder.build()` RETURNS (the `builder` seat, once per
+   * segment; the `fix` seat, once per round — orchestrator.ts:1101 and :1643),
+   * `caller.tokens` after `assertUnused()` (the `spec` and `audit` seats, whose
+   * `SubscriptionSeatCaller` totals are already cumulative across that seat's own
+   * calls — subscription-caller.ts:312 — which is exactly why orchestrator.ts:679
+   * and :680 log them once), and `report.tokens` from the judge at :1952.
+   *
    * THE KEY IS (run, seat, provider, model) AND EVERY PART OF IT IS LOAD-BEARING.
    * Seat, because the attribution is the point. Provider, because a run whose
    * builder is OpenAI still has three Anthropic seats and their counts must never

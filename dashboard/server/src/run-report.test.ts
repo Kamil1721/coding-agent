@@ -70,6 +70,7 @@ import {
   ASSUMPTIONS_FILE,
   NOT_PRICED_SENTENCE,
   NO_VERDICT_HEADING,
+  PRICING_FOOTER,
   SPEND_FILE,
   SPEND_HEADING,
   VERDICT_FILE,
@@ -835,4 +836,74 @@ test("writeRunSpend lands spend.md in the results directory", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/* -------------------------------------------------------------------------
+ * The pricing footer — the one delivery path for "0 is not free" that IS wired
+ *
+ * `writeRunSpend` above has no caller. `writeRunVerdict` DOES:
+ * `Orchestrator.#writeVerdict` (orchestrator.ts:2205) calls it on every terminal
+ * run, persists the path onto the row and emits it — which is what the
+ * "cancelling a queued run writes a verdict" test above reads off disk. So the
+ * footer reaches the owner today, on the page they actually open, and these tests
+ * are about the page rather than about a writer nobody calls.
+ * ---------------------------------------------------------------------- */
+
+test("EVERY terminal page carries the footer — the scored one and both no-verdict arms", () => {
+  // ALL THREE ARMS, because the footer is appended once outside the branch and a
+  // test that read only one arm could not tell that from three copies with one
+  // dropped.
+  const scored = renderRunVerdict({
+    ticketText: TICKET,
+    criteria: SCORED,
+    status: "failed",
+    failureReason: "the frozen held-out suite did not go green",
+  });
+  const cancelled = renderRunVerdict({
+    ticketText: TICKET,
+    criteria: SCORED,
+    status: "cancelled",
+    failureReason: null,
+  });
+  const beforeTheGate = renderRunVerdict({
+    ticketText: TICKET,
+    criteria: UNSCORED,
+    status: "failed",
+    failureReason: "docker is not running",
+  });
+  for (const [label, page] of [
+    ["the scored verdict", scored],
+    ["the cancelled page", cancelled],
+    ["the ended-before-the-gate page", beforeTheGate],
+  ] as const) {
+    assert.ok(page.includes(PRICING_FOOTER), `${label} does not carry the pricing footer`);
+  }
+});
+
+test("the footer says a run with no price is not a run that was free", () => {
+  // THE REQUIREMENT, IN THE ONE PLACE A TERMINAL RUN IS CERTAIN TO BE READ.
+  // `costUsd: null` and `totalCostUsd: 0` are both correct and both read as zero;
+  // this is the sentence that makes that reading impossible.
+  assert.match(PRICING_FOOTER, /WHAT THIS RUN COST IS NOT ZERO/);
+  assert.match(PRICING_FOOTER, /totalCostUsd: 0/);
+  assert.match(PRICING_FOOTER, /THERE IS NO PRICE FOR THIS/);
+  assert.match(PRICING_FOOTER, /Neither of them means the run was\nfree/);
+  // NO INVENTED BILL, and no figure of its own: the seat totals live in the spend
+  // record and a second source for them here is a second number to go stale.
+  assert.doesNotMatch(PRICING_FOOTER, /\$/, "a dollar sign on the verdict page is a fabricated bill");
+  assert.doesNotMatch(PRICING_FOOTER, /\d{3}/, "the footer states no figure — spend.md carries those");
+  // IT NAMES NO FILE. `writeRunSpend` has no caller, so pointing at spend.md would
+  // be a path to a file that does not exist — the same lie as a `heldOutPass:
+  // false` for a gate that never ran.
+  assert.doesNotMatch(PRICING_FOOTER, /spend\.md/);
+});
+
+test("the footer cannot be read as a verdict — it carries none of the vocabulary", () => {
+  // The three `doesNotMatch` checks on the cancelled page above are what a careless
+  // footer would break: one sentence containing "DID NOT PASS" would turn
+  // "cancelled is not failed" red for a reason that has nothing to do with
+  // cancelling, and one opening `# PASSED` would satisfy a headline check.
+  assert.doesNotMatch(PRICING_FOOTER, /PASSED/);
+  assert.doesNotMatch(PRICING_FOOTER, /DID NOT PASS/);
+  assert.doesNotMatch(PRICING_FOOTER, /^#/m, "the footer opens no heading");
 });

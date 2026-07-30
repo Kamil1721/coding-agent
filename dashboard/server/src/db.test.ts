@@ -382,6 +382,19 @@ test("a model id that looks like a credential is redacted on the way in", () => 
     });
     assert.notEqual(stored.modelId, looksLikeAKey, "the raw token reached the database");
     assert.match(stored.modelId, /REDACTED/);
+
+    // BOTH WRITE PATHS, NOT JUST THE ONE. `metered_spend.model` is the design
+    // lane's model name and goes through the same chokepoint; a test that covered
+    // only the seat table would leave the second path's redaction asserted nowhere.
+    const metered = store.recordMeteredSpend("run-secret", {
+      kind: "image",
+      model: looksLikeAKey,
+      calls: 1,
+      deliveredSecondsFloor: null,
+    });
+    assert.notEqual(metered.model, looksLikeAKey);
+    assert.match(metered.model, /REDACTED/);
+    assert.match(store.listMeteredSpend("run-secret")[0]?.model ?? "", /REDACTED/);
   });
 });
 

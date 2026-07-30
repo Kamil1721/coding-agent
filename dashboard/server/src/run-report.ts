@@ -278,13 +278,57 @@ function renderNoVerdict(source: RunVerdictSource, why: string): string {
 }
 
 /**
+ * THE FOOTER EVERY TERMINAL RUN CARRIES, and the one claim it makes.
+ *
+ * `verdict.md` IS THE PAGE THE OWNER OPENS, and until this footer nothing they
+ * opened contradicted the two zeros sitting beside it: `costUsd: null` on the API
+ * and a literal `totalCostUsd: 0` in `run.json`. Both are correct — a
+ * subscription seat has no per-token price — and both are read as "this run was
+ * free" at the end of a long build. So the sentence is written here, on the one
+ * page a run always leaves behind.
+ *
+ * IT NAMES NO FILE AND NO NUMBER, DELIBERATELY. Pointing at `spend.md` would be a
+ * path to a file that may not exist — the same lie as reporting `heldOutPass:
+ * false` for a gate that never ran — because `writeRunSpend` has no caller yet
+ * (see the spend section below). And it carries no figure of its own: the seat
+ * totals live in the spend record, and a second source for them here is a second
+ * number to go stale. What it states is true today and stays true after the
+ * recorder is wired.
+ *
+ * NO HEADING, NO `$`, AND NONE OF THE VERDICT VOCABULARY. `PASSED`, `PASSED WITH
+ * NOTES` and `DID NOT PASS` are asserted ABSENT on the no-verdict page by three
+ * `doesNotMatch` checks in run-report.test.ts, and a footer that used any of those
+ * words — or opened a heading a headline regex could match — would turn the
+ * cancelled-run tests red for a reason that has nothing to do with cancelling.
+ */
+export const PRICING_FOOTER = [
+  "---",
+  "",
+  "WHAT THIS RUN COST IS NOT ZERO, AND IT IS NOT ON THIS PAGE. A subscription seat",
+  "consumes quota and is not billed per token, so no dollar figure exists for this",
+  "run: the API reports `costUsd: null` and the run record carries `totalCostUsd: 0`.",
+  "Both of those mean THERE IS NO PRICE FOR THIS. Neither of them means the run was",
+  "free — it spent tokens on every seat it used, the spec and audit seats among them,",
+  "and the run's own log names each seat and what it spent.",
+].join("\n");
+
+/**
  * The verdict page, or the page that says there is no verdict.
  *
  * THE BRANCH LIVES HERE and not at the call site, so that both arms are reached
  * through the same exported function the orchestrator calls. A caller that could
  * pick the arm would leave the choice itself untested.
+ *
+ * AND THE FOOTER IS APPENDED ONCE, OUTSIDE THE BRANCH, for the same reason the
+ * branch is inside this function: three return statements each carrying their own
+ * copy is three places for one of them to be dropped, and the arm that lost it
+ * would be the arm no test happened to read.
  */
 export function renderRunVerdict(source: RunVerdictSource): string {
+  return `${verdictPageFor(source)}\n${PRICING_FOOTER}\n`;
+}
+
+function verdictPageFor(source: RunVerdictSource): string {
   if (source.status === "cancelled") {
     return renderNoVerdict(source, "This run was cancelled before the sealed gate scored it.");
   }
