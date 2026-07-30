@@ -14,7 +14,8 @@ import { GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { shortlistFor } from "./agent-shortlist.js";
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
-import { DEFAULT_MAX_ATTEMPTS, maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
+import { DEFAULT_MAX_ATTEMPTS, fingerprint, maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
+import type { AgentVisibleReport, FailureClass, FixableFailure } from "./gate-report.js";
 import type { FixTask } from "./fix-triage.js";
 
 const HELD_OUT_TITLE = "renders the hero heading";
@@ -343,4 +344,82 @@ test("work routed to an agent this run may not use stops the loop instead of spi
   assert.equal(calls.length, 1, "it did not re-gate to discover the same denial again");
   assert.equal(r.deniedTasks.length, 1);
   assert.equal(r.deniedTasks[0]?.agent, "taste-frontend-expert");
+});
+
+/* -------------------------------------------------------------------------
+ * THE FIELD SEPARATOR — the property the NUL bytes were carrying, and the
+ * property the escape that replaced them has to carry too.
+ *
+ * `fingerprint` concatenates `klass`, `id` and `detail` into one hash input.
+ * `detail` is FREE TEXT a gate wrote, so without a separator that cannot occur
+ * inside it two different reports can produce one hash input: `{id: "a",
+ * detail: "bc"}` and `{id: "ab", detail: "c"}`. Equal fingerprints there means
+ * the loop calls `not-converging` on a fixer that changed something real.
+ *
+ * The separator moved from three RAW NUL BYTES to the source escape for U+001F
+ * on 2026-07-30, because a NUL makes the whole FILE binary to `grep`, which then
+ * skips it without saying so. That is a tooling fix, and these tests are what
+ * makes it a safe one: every digest VALUE changed, so what is asserted here is
+ * the EQUALITY RELATION, which is the only thing any caller observes.
+ * `fingerprint` is called at one site, compared against a local variable holding
+ * the previous round's value, and never logged, returned or persisted — there is
+ * no stored digest for a new one to disagree with.
+ * ---------------------------------------------------------------------- */
+
+function reportWith(
+  failures: readonly FixableFailure[],
+  unmet: Record<"BLOCKING" | "FUNCTIONAL" | "QUALITY", number> = { BLOCKING: 0, FUNCTIONAL: 0, QUALITY: 0 },
+): AgentVisibleReport {
+  return { failures, heldOutUnmet: unmet, infraFailure: null };
+}
+
+function failure(id: string, detail: string, klass: FailureClass = "logic"): FixableFailure {
+  return { id, klass, summary: "s", detail, command: null, exitCode: null };
+}
+
+test("the field separator keeps two differently-split reports apart", () => {
+  // The collision the separator exists to prevent, at the id/detail boundary.
+  const split = fingerprint(reportWith([failure("GATE:x", "detail")]));
+  const run = fingerprint(reportWith([failure("GATE:xdetail", "")]));
+  assert.notEqual(split, run, "id and detail ran together: the separator is not separating");
+
+  // And at the klass/id boundary. The cast is the point: `klass` is a union in
+  // TypeScript and a string in the hash input, and the hash cannot rely on the
+  // union to keep the fields apart.
+  const klassSplit = fingerprint(reportWith([failure("y", "d", "build")]));
+  const klassRun = fingerprint(reportWith([failure("", "d", "buildy" as FailureClass)]));
+  assert.notEqual(klassSplit, klassRun, "klass and id ran together");
+
+  // A detail that ENDS where the next field begins is the shape that collides
+  // most easily, so it gets its own pair rather than being implied.
+  assert.notEqual(
+    fingerprint(reportWith([failure("a", "b"), failure("c", "d")])),
+    fingerprint(reportWith([failure("a", "bc"), failure("", "d")])),
+  );
+});
+
+test("the fingerprint is a function of what the loop compares, and nothing else", () => {
+  // Identical input, twice: the relation the loop's `previous === current` check
+  // reads. Without this the collision test above could pass over a hash that is
+  // simply unstable, which would fail `not-converging` open forever.
+  const r = reportWith([failure("GATE:a", "one"), failure("GATE:b", "two")], {
+    BLOCKING: 1,
+    FUNCTIONAL: 0,
+    QUALITY: 2,
+  });
+  assert.equal(fingerprint(r), fingerprint(reportWith([...r.failures], { ...r.heldOutUnmet })));
+  // Order of arrival is not state: the loop sorts before hashing.
+  assert.equal(fingerprint(r), fingerprint(reportWith([...r.failures].reverse(), { ...r.heldOutUnmet })));
+  // Each of the three inputs moves it.
+  assert.notEqual(fingerprint(r), fingerprint(reportWith([failure("GATE:a", "one")], { ...r.heldOutUnmet })));
+  assert.notEqual(
+    fingerprint(r),
+    fingerprint(reportWith([...r.failures], { BLOCKING: 1, FUNCTIONAL: 0, QUALITY: 1 })),
+  );
+  assert.notEqual(
+    fingerprint(r),
+    fingerprint(reportWith([failure("GATE:a", "ONE"), failure("GATE:b", "two")], { ...r.heldOutUnmet })),
+  );
+  // 64 hex characters, so a truncated or empty digest cannot read as agreement.
+  assert.match(fingerprint(reportWith([])), /^[0-9a-f]{64}$/);
 });
