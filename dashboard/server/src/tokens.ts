@@ -268,6 +268,19 @@ export function toSeatSpend(entry: SeatContribution): ApiSeatSpend {
  * VENDOR ORDER IS FIRST-SEEN, for the reason `mergeModelRows` gives: a reader
  * asking "what did this run spend" reads the vendors in the order the run
  * acquired them, and the seats list inside each row is in that same order.
+ *
+ * MEASURED 2026-07-30, AND ONE HALF OF THE ABOVE IS NOT OBSERVABLE — recorded
+ * here rather than tightened away. Hardcoding the group KEY (`groups.get(
+ * "anthropic")` for every row) turns three tests red across two files with
+ * `addTokens`' own words: "refusing to add openai tokens to anthropic tokens".
+ * Hardcoding the CONTRIBUTION's `provider` instead SURVIVES every test in this
+ * repo. That is not a hole in the tests: the emitted row's provider comes from
+ * the map key, and a group total's own `provider` is never read on the way out, so
+ * that one expression's only effect is keeping the refusal REACHABLE if a future
+ * edit ever makes the key and the contribution diverge. A test that could kill it
+ * would have to build an `ApiSeatSpend` whose provider disagrees with itself,
+ * which the type forbids. Whoever changes the key and the contribution to
+ * different expressions is the one who makes this line load-bearing.
  */
 export function spendByVendor(rows: readonly ApiSeatSpend[]): readonly ApiVendorSpend[] {
   const groups = new Map<ApiProvider, { total: TokenTotals; readonly seats: ApiSpendSeat[] }>();
