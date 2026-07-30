@@ -118,7 +118,7 @@ import { defaultVideoCapabilityDeps, videoCapability } from "./design/video-capa
 import { defaultSpawnLeg, runVideoLane } from "./design/video-lane.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
 import type { FixTask } from "./fix-triage.js";
-import { archiveAttempt, readAttempt, scorerOutRoot } from "./gate-attempts.js";
+import { archiveAttempt, readAttempt, scorerOutRoot, scoresRoot } from "./gate-attempts.js";
 // THE ONE DOOR. `renderEvidence` routes the judge's evidence bundle through the
 // same allowlist the fix loop's prompts go through, rather than through a second
 // copy of the same decision. See the docblock on `renderEvidence`.
@@ -1183,6 +1183,14 @@ export class Orchestrator {
           // later attempt directory ends up outside the deny it was supposed to
           // inherit.
           scorerOutRoot(this.#deps.paths),
+          // AND the score records. `ScoreRecord.criterionCoverage[].testRefs`
+          // carries held-out test titles verbatim — measured on the live run,
+          // 24 of them in one file — and the suite is frozen per ticket and
+          // reused across attempts, so a builder reading a PREVIOUS run's score
+          // would learn the titles it is about to be graded against while
+          // `heldOutPass` stayed true and meant nothing. Named 2026-07-30; it
+          // was in no deny layer before that.
+          scoresRoot(this.#deps.paths),
         ],
         // THE DELEGATION BOUNDARY. `settingSources: ["user"]` makes 144 agents
         // visible to the builder; this is the far smaller set it may actually
@@ -1747,7 +1755,11 @@ export class Orchestrator {
       runId,
       prompt,
       workspace: runPaths.workspace,
-      sealedRoots: [this.#deps.paths.acceptance, scorerOutRoot(this.#deps.paths)],
+      sealedRoots: [
+        this.#deps.paths.acceptance,
+        scorerOutRoot(this.#deps.paths),
+        scoresRoot(this.#deps.paths),
+      ],
       allowedAgents: fixAllowedAgents(task),
       modelId: row.modelId,
       effort: entry.effort,

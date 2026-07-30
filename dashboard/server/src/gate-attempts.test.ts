@@ -10,7 +10,7 @@ import { isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 import { containerFixture, tier0Fixture } from "./container-fixture.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
-import { archiveAttempt, attemptPath, readAttempt, scorerOutRoot } from "./gate-attempts.js";
+import { archiveAttempt, attemptPath, readAttempt, scorerOutRoot, scoresRoot } from "./gate-attempts.js";
 import { ensureDirs, resolvePaths } from "./paths.js";
 import type { DashboardPaths } from "./paths.js";
 
@@ -86,4 +86,31 @@ test("an unparseable attempt is null, not a half-read result", () => {
   writeFileSync(join(dir, "result.json"), "{ not json", "utf8");
   assert.equal(archiveAttempt(paths, "r-bad", 1), true, "the bytes were archived; reading them is a separate question");
   assert.equal(readAttempt(paths, "r-bad", 1), null);
+});
+
+/* -------------------------------------------------------------------------
+ * The score records are sealed too
+ *
+ * FOUND 2026-07-30 by reading a real run's output. The live end-to-end run's
+ * committed ScoreRecord carries 24 held-out test titles verbatim in
+ * `criterionCoverage[].testRefs`, and `results/scores` was named in NO deny layer:
+ * `sealedRoots` was `[acceptance, scorer-out]`.
+ *
+ * The suite is frozen per ticket and reused across attempts, so a builder reading a
+ * PREVIOUS run's score record would learn the titles it is about to be graded
+ * against — and `heldOutPass` would stay true while meaning nothing. It is a read
+ * the builder was permitted to make, in a directory whose name says "results"
+ * rather than "answers".
+ * ---------------------------------------------------------------------- */
+
+test("the score-record root is a SEPARATE root from the scorer output, and neither contains the other", () => {
+  const paths = tmpPaths();
+  const scores = scoresRoot(paths);
+  const scorerOut = scorerOutRoot(paths);
+  assert.notEqual(scores, scorerOut, "two roots, two directories");
+  // Sealing `scorer-out` never covered `scores`, which is exactly why the leak
+  // survived: a containment check would have found it.
+  assert.ok(!scores.startsWith(scorerOut), "scores is NOT inside scorer-out");
+  assert.ok(!scorerOut.startsWith(scores), "scorer-out is NOT inside scores");
+  assert.equal(scores, join(paths.results, "scores"));
 });

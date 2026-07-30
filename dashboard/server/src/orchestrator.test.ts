@@ -56,7 +56,7 @@ import {
   recordedNetworkPolicy,
   renderEvidence,
 } from "./orchestrator.js";
-import { attemptPath, liveResultPath, readAttempt } from "./gate-attempts.js";
+import { attemptPath, liveResultPath, readAttempt, scorerOutRoot, scoresRoot } from "./gate-attempts.js";
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
@@ -281,6 +281,12 @@ const DESIGN_TICKET = "a portfolio page with a considered visual design";
 interface SegmentCall {
   readonly prompt: string;
   readonly allowedAgents: readonly string[];
+  /**
+   * Captured 2026-07-30. Its absence is WHY the score-record leak survived: the
+   * deny set the orchestrator hands each driver was never observable from a test,
+   * so no assertion could name a root that was missing from it.
+   */
+  readonly sealedRoots: readonly string[];
   readonly resumeSessionId: string | null;
   readonly observedSessionId: string;
   readonly env: NodeJS.ProcessEnv;
@@ -379,6 +385,7 @@ class FakeBuilder implements SubscriptionBuilder {
     this.calls.push({
       prompt: request.prompt,
       allowedAgents: [...request.allowedAgents],
+      sealedRoots: [...request.sealedRoots],
       resumeSessionId,
       observedSessionId: sessionId,
       env: request.env,
@@ -1922,6 +1929,48 @@ test("run.json's held constants are all present, so none can quietly go missing"
       h.store.getRun(h.runId)?.suiteSha256,
       "the record's suite digest must be the one the run actually froze",
     );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * The score records are denied to the builder
+ *
+ * FOUND 2026-07-30 by looking at a real run's output instead of the code. The live
+ * end-to-end run's committed ScoreRecord carries held-out test titles VERBATIM —
+ * 24 of them, e.g. `criterionCoverage[0].testRefs[0]` =
+ * `holdout/coglane-delivery.test.mjs › [REQ-001] T-1 the root document answers 200
+ * …` — and `results/scores` appeared in NO deny layer. `sealedRoots` was
+ * `[acceptance, scorer-out]`.
+ *
+ * The suite is frozen per ticket and reused across attempts, so a builder that read
+ * a PREVIOUS run's score record would learn the titles it is about to be graded
+ * against, and `heldOutPass` would stay `true` while meaning nothing. There is no
+ * detector for that: it is a read the builder was permitted to make, in a directory
+ * whose name says "results" rather than "answers".
+ *
+ * This asserts the SET THE ORCHESTRATOR PASSES, because that is what the drivers
+ * enforce. Asserting a literal here would pass forever and measure nothing — the
+ * same trap the egress tests above call out.
+ * ---------------------------------------------------------------------- */
+
+test("the builder is denied the score records, not just the scorer output", async () => {
+  const h = await designRun({ designLock: "auto" });
+  try {
+    const call = h.builderCalls[0];
+    assert.ok(call !== undefined, "a build must have started, or this asserts nothing");
+    const sealed = call.sealedRoots;
+
+    const scores = scoresRoot(h.paths);
+    assert.ok(
+      sealed.includes(scores),
+      `results/scores must be sealed — it carries held-out test titles verbatim. Got: ${sealed.join(", ")}`,
+    );
+    // And the two older roots are still there. A "fix" that replaced rather than
+    // added would trade one leak for two.
+    assert.ok(sealed.includes(h.paths.acceptance), "the suite store is still sealed");
+    assert.ok(sealed.includes(scorerOutRoot(h.paths)), "the scorer output is still sealed");
   } finally {
     await h.cleanup();
   }

@@ -38,6 +38,31 @@ export function scorerOutRoot(paths: DashboardPaths): string {
   return join(paths.results, "scorer-out");
 }
 
+/**
+ * The score-record root, and it is SEALED for the same reason `scorer-out` is.
+ *
+ * FOUND 2026-07-30 by inspecting a real run's output rather than the code. The
+ * committed `ScoreRecord` for the live end-to-end run carries held-out test titles
+ * VERBATIM — `criterionCoverage[].testRefs[0]` reads
+ * `holdout/coglane-delivery.test.mjs › [REQ-001] T-1 the root document answers 200
+ * …`, 24 such strings in one file — and `results/scores` was named in NO deny
+ * layer. `sealedRoots` was `[acceptance, scorer-out]`.
+ *
+ * WHY THAT IS WORSE THAN IT LOOKS. The suite is frozen per ticket and reused
+ * across attempts, so a builder that read a PREVIOUS run's score record would
+ * learn the titles it is about to be graded against — and `heldOutPass` would
+ * stay `true` while meaning nothing. Nothing detects that: the leak is a read the
+ * builder is permitted to make, in a directory whose name suggests results rather
+ * than answers.
+ *
+ * One definition, like `scorerOutRoot` above, and for the reason its comment
+ * gives: spelling the path a second time at the deny site is how a later writer
+ * lands outside the deny it was supposed to inherit.
+ */
+export function scoresRoot(paths: DashboardPaths): string {
+  return join(paths.results, "scores");
+}
+
 /** Where the scorer itself writes, and therefore where every attempt starts. */
 export function liveResultPath(paths: DashboardPaths, runId: string): string {
   return join(scorerOutRoot(paths), safeSegment(runId), "result.json");
