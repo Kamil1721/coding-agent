@@ -748,9 +748,23 @@ export interface RunGraphResponse extends GraphState {
 export type LogLevel = "info" | "warn" | "error";
 
 export type RunEvent =
-  | { readonly type: "phase"; readonly phase: RunPhase }
-  | { readonly type: "log"; readonly level: LogLevel; readonly text: string }
-  | { readonly type: "tool"; readonly name: string; readonly summary: string }
+  | { readonly type: "phase"; readonly phase: RunPhase; readonly at?: string }
+  /**
+   * `at` IS THE SERVER'S INSTANT, NOT THE CLIENT'S RECEIPT TIME.
+   *
+   * Optional because a run recorded before the wire carried `at` has none. The
+   * distinction is load-bearing and has been got wrong twice in this codebase:
+   * stamping receipt time looks perfect while you watch a run and is silently
+   * wrong on REPLAY, where a page refresh re-delivers an hour of history in one
+   * burst and every row claims to have just happened.
+   */
+  | {
+      readonly type: "log";
+      readonly level: LogLevel;
+      readonly text: string;
+      readonly at?: string;
+    }
+  | { readonly type: "tool"; readonly name: string; readonly summary: string; readonly at?: string }
   | {
       readonly type: "criterion";
       readonly id: string;
@@ -770,6 +784,7 @@ export type RunEvent =
       readonly type: "rate_limit";
       readonly limited: boolean;
       readonly retryAfterSec: number;
+      readonly at?: string;
     }
   /**
    * The run wrote its verdict. Emitted once, immediately before the terminal
@@ -780,7 +795,7 @@ export type RunEvent =
       readonly verdictPath: string;
       readonly inferredCriteria: number;
     }
-  | { readonly type: "status"; readonly status: RunStatus }
+  | { readonly type: "status"; readonly status: RunStatus; readonly at?: string }
   /* ---- the orchestration canvas, spec §9.1 ---------------------------- */
   /**
    * A node exists. ALWAYS FIRST FOR ITS NODE — the invariant is that a node id

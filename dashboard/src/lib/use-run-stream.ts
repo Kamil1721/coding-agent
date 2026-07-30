@@ -295,7 +295,7 @@ export function parseRunEvent(
     case "phase": {
       const phase = asString(record["phase"]);
       if (phase === null) return null;
-      return { type: "phase", phase: phase as RunDetail["phase"] };
+      return { type: "phase", phase: phase as RunDetail["phase"], ...atOf(record) };
     }
     case "log": {
       const text = asString(record["text"]);
@@ -303,12 +303,15 @@ export function parseRunEvent(
       const rawLevel = asString(record["level"]);
       const level: LogLevel =
         rawLevel === "warn" || rawLevel === "error" ? rawLevel : "info";
-      return { type: "log", level, text };
+      // SPREAD, NOT ASSIGNED, so a frame with no `at` yields a MISSING key rather
+      // than an explicit undefined — what `exactOptionalPropertyTypes` requires,
+      // and what lets `traceRowFor` tell "no server time" from "time is now".
+      return { type: "log", level, text, ...atOf(record) };
     }
     case "tool": {
       const name = asString(record["name"]);
       if (name === null) return null;
-      return { type: "tool", name, summary: asString(record["summary"]) ?? "" };
+      return { type: "tool", name, summary: asString(record["summary"]) ?? "", ...atOf(record) };
     }
     case "criterion": {
       const id = asString(record["id"]);
@@ -347,6 +350,7 @@ export function parseRunEvent(
         type: "rate_limit",
         limited: record["limited"] === true,
         retryAfterSec: retryAfterSec ?? 0,
+        ...atOf(record),
       };
     }
     case "verdict": {
@@ -364,7 +368,7 @@ export function parseRunEvent(
     case "status": {
       const status = asString(record["status"]);
       if (status === null || !isRunStatus(status)) return null;
-      return { type: "status", status };
+      return { type: "status", status, ...atOf(record) };
     }
 
     /* ---- the canvas, spec §9.1 -------------------------------------- */
@@ -621,7 +625,24 @@ export function applyRunEvent(
  * here, it is the only reachable check.
  */
 export function traceRowFor(event: RunEvent): Omit<TraceEntry, "seq"> | null {
-  const base = { atMs: Date.now(), name: null, result: null } as const;
+  /*
+   * THE SERVER'S INSTANT WHEN THERE IS ONE, RECEIPT TIME ONLY AS A FALLBACK.
+   *
+   * `Date.now()` alone was wrong in the one case that matters: on REPLAY the
+   * whole history arrives in a burst, so every row claimed to have just
+   * happened. That is fine to look at while a run streams and a lie the moment
+   * the page is refreshed on a run that has been silent for forty minutes —
+   * which is precisely the state this timestamp is read in.
+   *
+   * A non-string or absent `at` falls back rather than reaching `Date.parse`,
+   * and an unparseable one does too: a NaN here would render "NaN min ago".
+   */
+  const serverAt = "at" in event && typeof event.at === "string" ? Date.parse(event.at) : Number.NaN;
+  const base = {
+    atMs: Number.isNaN(serverAt) ? Date.now() : serverAt,
+    name: null,
+    result: null,
+  } as const;
   switch (event.type) {
     case "log":
       return { ...base, kind: "log", level: event.level, text: event.text };

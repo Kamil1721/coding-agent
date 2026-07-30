@@ -416,6 +416,25 @@ export default function RunPage(): ReactNode {
         // An empty graph on a live run and on a dead one are the same value and
         // different facts; only this page knows which.
         runIsActive={!isTerminalStatus(run.status)}
+        /*
+         * THE ~80 MINUTES BEFORE ANY NODE EXISTS. Measured on the run that
+         * passed: the spec phase took 79.5 minutes of a 105-minute run, and for
+         * all of it the canvas was a static box that looked the same whether the
+         * run was working or dead. The trace is already streaming by then, so
+         * the newest line is a liveness signal that costs no new plumbing.
+         *
+         * `trace` is capped and append-only, so the last entry is the newest.
+         * `null` when nothing has arrived — the canvas renders nothing rather
+         * than an empty row implying a message that did not come.
+         */
+        latestActivity={
+          trace.length === 0
+            ? null
+            : {
+                text: trace[trace.length - 1]?.text ?? "",
+                atMs: trace[trace.length - 1]?.atMs ?? Date.now(),
+              }
+        }
         rightInset={selected === null ? 0 : 420}
         hud={
           /*

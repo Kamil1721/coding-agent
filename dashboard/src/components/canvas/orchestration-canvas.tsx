@@ -67,6 +67,7 @@ import {
 } from "react";
 
 import type { GraphState, RunStatus } from "@/lib/api-types";
+import { useNow } from "@/lib/use-run-stream";
 import { Button, cx } from "@/components/ui";
 import {
   AgentNode,
@@ -235,6 +236,43 @@ function emptyCanvasCopy(state: {
   };
 }
 
+
+/**
+ * "3 min ago", ticking, for the live-activity line.
+ *
+ * A SEPARATE COMPONENT so the 10-second clock re-renders THIS and not the whole
+ * canvas. `useNow` at the canvas level would re-run the node builder and the
+ * layout every tick, for a string nobody looks at while nodes exist.
+ */
+function RelativeSince({ atMs }: { atMs: number }): ReactNode {
+  const nowMs = useNow(10_000);
+  const seconds = Math.max(0, Math.round((nowMs - atMs) / 1000));
+  if (seconds < 45) return <>just now</>;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return <>{`${String(minutes)} min ago`}</>;
+  const hours = Math.floor(minutes / 60);
+  return <>{`${String(hours)}h ${String(minutes % 60)}m ago`}</>;
+}
+
+
+/**
+ * Explains a long gap, once there is one to explain.
+ *
+ * Its own component for the same reason as {@link RelativeSince}: the ticking
+ * clock must not re-render the canvas.
+ */
+function QuietNote({ atMs }: { atMs: number }): ReactNode {
+  const nowMs = useNow(10_000);
+  if (nowMs - atMs < 3 * 60_000) return null;
+  return (
+    <p className="mt-2 text-[10px] leading-relaxed text-ink-dim/70">
+      Long gaps are normal here. The spec seat reports when it starts and when it
+      finishes, not while it works — on the last run that passed, this phase took
+      about 80 minutes and went quiet for 43 of them.
+    </p>
+  );
+}
+
 export interface CanvasProps {
   readonly graph: GraphState;
   /** False while the snapshot is still in flight. Drives the loading overlay. */
@@ -254,6 +292,22 @@ export interface CanvasProps {
    * facts. Conflating them is what made a healthy new run look broken.
    */
   readonly runIsActive?: boolean;
+  /**
+   * The newest thing the run has SAID, for the ~80 minutes before any node exists.
+   *
+   * WHY THIS EXISTS. Measured on the run that passed: the spec phase ran
+   * 23:28:46 -> 00:48:16, **79 minutes 30 seconds**, of a 105-minute run. For all
+   * of it the canvas was a static box, so a working run and a hung one looked
+   * identical — the owner's words were "there should be some animation or
+   * something happening", and he was right: nothing on this screen distinguished
+   * progress from death.
+   *
+   * IT IS THE LAST LINE, NOT A PROGRESS BAR, AND THAT IS DELIBERATE. Nothing
+   * here knows how many authoring or audit passes remain, so any percentage or
+   * ETA would be invented. What IS known is what it last said and when — which
+   * is enough to tell "working" from "stopped", and claims nothing else.
+   */
+  readonly latestActivity?: { readonly text: string; readonly atMs: number } | null;
   /**
    * The run's status, when the caller knows it.
    *
@@ -302,6 +356,7 @@ function CanvasInner({
   hud,
   rightInset: requestedInset = 0,
   runIsActive = false,
+  latestActivity = null,
   runStatus,
 }: CanvasProps): ReactNode {
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
@@ -1224,6 +1279,47 @@ function CanvasInner({
               <p className="mt-1.5 text-[12px] leading-relaxed text-ink-dim">
                 {emptyCopy.body}
               </p>
+              {runIsActive && latestActivity !== null && (
+                /*
+                 * SHOWN ONLY WHILE THE RUN IS LIVE. On a terminal run the last
+                 * line is a fact about the past and a pulsing dot beside it would
+                 * say the opposite of what is true.
+                 */
+                <div className="mt-3 border-t border-line pt-3">
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span
+                      aria-hidden
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-run motion-safe:animate-pulse"
+                    />
+                    <span className="text-[10px] uppercase tracking-wide text-ink-dim">
+                      still working
+                    </span>
+                  </div>
+                  {/*
+                    * `aria-live="polite"`: a screen reader should hear the run move
+                    * on, but must not have every log line interrupt it.
+                    */}
+                  <p aria-live="polite" className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-ink-dim">
+                    {latestActivity.text}
+                  </p>
+                  <p className="mt-1 text-[10px] text-ink-dim/70">
+                    <RelativeSince atMs={latestActivity.atMs} />
+                  </p>
+                  {/*
+                    * THE SILENCE IS EXPECTED, AND SAYING SO IS THE WHOLE POINT.
+                    * Measured on the run that passed: across its 79.5-minute spec
+                    * phase only SIX events fired, five of them routine quota
+                    * telemetry, with gaps of 32 and 43 minutes between them. So a
+                    * long "N min ago" here is the normal shape of this phase, not
+                    * a stall — and without this sentence the honest timestamp
+                    * above reads as the opposite of what it means.
+                    *
+                    * It appears only once the gap is real, so it does not shout
+                    * about a silence that has not happened yet.
+                    */}
+                  <QuietNote atMs={latestActivity.atMs} />
+                </div>
+              )}
             </div>
           )}
         </div>

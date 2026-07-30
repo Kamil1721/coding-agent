@@ -163,3 +163,60 @@ test("a real refusal still reads as one, and still warns", () => {
   expect(row?.text).toMatch(/rate limited; retry after 900s/);
   expect(row?.level).toBe("warn");
 });
+
+/* -------------------------------------------------------------------------
+ * The trace's clock — receipt time is not event time
+ * ---------------------------------------------------------------------- */
+
+/**
+ * THIS REPOSITORY'S SIGNATURE DEFECT, CAUGHT BEFORE IT SHIPPED A THIRD TIME.
+ *
+ * `traceRowFor` stamped `Date.now()` — the moment the CLIENT received the frame.
+ * That looks perfect while you watch a run stream and is silently wrong on
+ * REPLAY, where refreshing the page re-delivers an hour of history in one burst
+ * and every row claims to have just happened.
+ *
+ * It matters because the canvas now renders "last heard N min ago" during the
+ * spec phase. MEASURED on the run that passed: that phase ran 79.5 minutes and
+ * emitted six events, with gaps of 32 and 43 minutes. So the exact state this
+ * clock is read in is "a run that has been silent for a long time" — and with
+ * receipt time, a refresh would have reported "just now" about a forty-minute
+ * silence. The reassuring answer, and the false one.
+ */
+test("a log row carries the SERVER's instant, not the moment it arrived", () => {
+  const frame = JSON.stringify({
+    type: "log",
+    level: "info",
+    text: "authoring the held-out acceptance suite",
+    at: "2026-07-29T23:28:46.000Z",
+  });
+  const event = parseRunEvent(frame, "log");
+  expect(event).not.toBeNull();
+  expect((event as { at?: string }).at).toBe("2026-07-29T23:28:46.000Z");
+
+  const row = traceRowFor(event as Parameters<typeof traceRowFor>[0]);
+  expect(
+    row?.atMs,
+    "receipt time makes a 43-minute silence read as `just now` after any page refresh",
+  ).toBe(Date.parse("2026-07-29T23:28:46.000Z"));
+});
+
+test("a log frame with NO `at` still folds, and falls back to receipt time", () => {
+  // Every run recorded before the wire carried `at`. It must not vanish, and it
+  // must not produce NaN — "NaN min ago" is worse than an approximate time.
+  const before = Date.now();
+  const event = parseRunEvent(JSON.stringify({ type: "log", level: "info", text: "old" }), "log");
+  const row = traceRowFor(event as Parameters<typeof traceRowFor>[0]);
+  expect(Object.hasOwn(event as object, "at")).toBe(false);
+  expect(Number.isNaN(row?.atMs ?? Number.NaN)).toBe(false);
+  expect(row?.atMs ?? 0).toBeGreaterThanOrEqual(before);
+});
+
+test("an UNPARSEABLE `at` falls back rather than rendering NaN", () => {
+  const event = parseRunEvent(
+    JSON.stringify({ type: "log", level: "info", text: "x", at: "not-a-date" }),
+    "log",
+  );
+  const row = traceRowFor(event as Parameters<typeof traceRowFor>[0]);
+  expect(Number.isNaN(row?.atMs ?? Number.NaN)).toBe(false);
+});
