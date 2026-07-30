@@ -1839,3 +1839,90 @@ test("recordedNetworkPolicy reports a configured restriction WITHOUT promoting i
   assert.match(String(recordedNetworkPolicy({ deniedDomains: ["*"] }).egress), /unmeasured/);
   assert.doesNotMatch(String(recordedNetworkPolicy({ deniedDomains: ["*"] }).egress), /\bdenied\b/i);
 });
+
+/* -------------------------------------------------------------------------
+ * `run.json` — the artefact nobody was asserting on
+ *
+ * FOUND BY AN INDEPENDENT VERIFICATION PASS, 2026-07-30, and it is the one fix in
+ * that wave that turned out to be decoration. `recordedNetworkPolicy` and
+ * `DASHBOARD_SANDBOX` are both well pinned, and the WRITE SITE was not: mutating
+ * `#runRecord`'s `sandbox:` back to a literal `{egress: "denied", allowedHosts: []}`
+ * left the whole suite GREEN at 850/848/0. The verifier measured that the site
+ * executes 23 times per suite run and writes the live value to disk each time — so
+ * the record was being produced under test, with the false value in it, and
+ * nothing looked.
+ *
+ * The gap covered the ENTIRE `heldConstants` block, not just the network policy:
+ * `harness`, `imageRef`, `imageDigest`, `acceptanceSuiteSha256` and
+ * `tokenAccountingRule` were equally unasserted.
+ *
+ * WHY THIS TEST READS THE FILE rather than calling a helper. Extracting the
+ * assembly into an exported function and testing that would move the hole one
+ * line — instance 6 of this repo's signature defect, where a fix was reverted at
+ * its sole production call site and the suite stayed byte-identical because every
+ * assertion lived where the function was called directly. `run.json` on disk is
+ * what a later reader, `score-run.ts`, and any audit actually consume, so that is
+ * what gets asserted.
+ * ---------------------------------------------------------------------- */
+
+test("run.json cannot claim an egress denial the builder does not configure", async () => {
+  const h = await designRun({ designLock: "auto" });
+  try {
+    const recordPath = join(runPathsFor(h.paths, h.runId).results, "run.json");
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as {
+      heldConstants: { sandbox: { networkPolicy: { egress: string; allowedHosts: string[] } } };
+    };
+    const policy = record.heldConstants.sandbox.networkPolicy;
+
+    // The builder sets no `sandbox.network` — asserted separately by the
+    // `buildOptions` test — so the only honest recorded value is the unrestricted
+    // one. `deepEqual` against the function rather than against a literal, so the
+    // label can be reworded in one place without this going stale.
+    assert.deepEqual(
+      policy,
+      recordedNetworkPolicy(undefined),
+      "the written record disagrees with what the builder actually configures",
+    );
+
+    // Belt as well as braces, and NOT redundant: the deepEqual above would also
+    // pass if `recordedNetworkPolicy` itself started returning a denial. This
+    // clause is about the WORD, and it is the one an auditor greps for.
+    assert.doesNotMatch(
+      policy.egress,
+      /^denied$/,
+      "run.json claims a measured egress denial; six live Gemini calls from inside " +
+        "the sandboxed build disproved that on 2026-07-29",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("run.json's held constants are all present, so none can quietly go missing", async () => {
+  // The network policy above is one field of a block that was wholly unasserted.
+  // A record whose `acceptanceSuiteSha256` or `tokenAccountingRule` vanished would
+  // have been just as invisible, and both are load-bearing for comparing scores.
+  const h = await designRun({ designLock: "auto" });
+  try {
+    const record = JSON.parse(
+      readFileSync(join(runPathsFor(h.paths, h.runId).results, "run.json"), "utf8"),
+    ) as { heldConstants: Record<string, unknown> };
+    const hc = record.heldConstants;
+    for (const field of [
+      "harness",
+      "sandbox",
+      "repeatCount",
+      "acceptanceSuiteSha256",
+      "tokenAccountingRule",
+    ]) {
+      assert.ok(hc[field] !== undefined, `heldConstants.${field} is missing from run.json`);
+    }
+    assert.equal(
+      hc["acceptanceSuiteSha256"],
+      h.store.getRun(h.runId)?.suiteSha256,
+      "the record's suite digest must be the one the run actually froze",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
