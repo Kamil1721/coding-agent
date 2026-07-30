@@ -893,3 +893,26 @@ definitely is.
 
 **NOT STARTED. Out of context this session — recorded so the next one starts here
 rather than re-deriving it.**
+
+## Abort investigation — where it stopped
+
+Narrowed, not solved. Facts established:
+
+- `"Claude Code process aborted by user"` does **not** appear in `bakeoff/src` or
+  `dashboard/server/src` — `grep -rn` over both is empty. It is the **CLI's own**
+  message, so the subprocess was terminated, not our code throwing.
+- `bakeoff/src/anthropic-seat.ts` imports `@anthropic-ai/sdk` (the API SDK) and
+  contains **no** abort, AbortController, signal, or rate-limit handling.
+- But the dashboard runs on SUBSCRIPTION auth with no API key, so it cannot be using
+  that seat directly — there must be a subscription seat adapter between
+  `spec-agent.ts:877` (which sets the `suite-authoring …` purpose) and the CLI.
+
+**NEXT STEP, precisely:** find the subscription spec-seat adapter — the thing that
+turns `spec-agent`'s seat call into a Claude Code CLI invocation — and look for what
+terminates it. The 9m37s gap between the rate-limit event and the abort is the shape of
+a timeout, not an immediate refusal. Then check whether `retryAfterSec: 253699` is a
+retry-after or a window length being misread (`orchestrator.ts:2585-2605` is the only
+emitter).
+
+**Then fix the terminal branch:** a rate-limited spec seat must land `rate_limited`
+(resumable, with a countdown), never `failed` with a dead Resume button.
