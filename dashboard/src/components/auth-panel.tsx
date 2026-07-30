@@ -31,13 +31,11 @@ const SUBSCRIPTION_PROVIDERS = [
   {
     key: "claudeAuth",
     name: "Anthropic",
-    detail: "Claude Agent SDK, driven as a subprocess",
     command: "claude setup-token",
   },
 ] as const satisfies readonly {
   key: keyof Pick<HealthState, "claudeAuth">;
   name: string;
-  detail: string;
   command: string;
 }[];
 
@@ -45,10 +43,13 @@ export function AuthPanel(): ReactNode {
   const { data, error, isLoading } = useHealth();
 
   return (
-    <Panel
-      title="Subscription auth"
-      subtitle="Claude runs from your own plan login. No API key is involved."
-    >
+    /*
+     * SUBTITLE REMOVED 2026-07-30. It read "Claude runs from your own plan login. No
+     * API key is involved." — addressed to the person who ran `claude setup-token`
+     * himself. The panel's job is the signed-in/not-signed-in state and the command
+     * to fix it; everything else here was reassurance nobody needed.
+     */
+    <Panel title="Subscription auth">
       {isLoading && data === undefined ? (
         <Skeleton rows={2} />
       ) : error !== undefined && data === undefined ? (
@@ -71,7 +72,6 @@ export function AuthPanel(): ReactNode {
                 <Badge tone={ok ? "pass" : "warn"}>
                   {ok ? "signed in" : "not signed in"}
                 </Badge>
-                <span className="text-[11.5px] text-ink-faint">{provider.detail}</span>
                 {!ok && (
                   <span className="ml-auto flex items-center gap-2">
                     <span className="text-[11.5px] text-ink-dim">run</span>

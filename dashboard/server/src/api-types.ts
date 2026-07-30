@@ -635,6 +635,29 @@ export type SseEvent =
 export type SseEventType = SseEvent["type"];
 
 /**
+ * An `SseEvent` as it appears ON THE WIRE: the event, plus the instant the server
+ * recorded it.
+ *
+ * WHY THIS TYPE EXISTS — 2026-07-30. `events.at` has been written for every event
+ * since the table was created, and `attachSse` serialised `stored.event` only, so
+ * the column was written and never served. Nothing downstream could say WHEN
+ * anything happened, which is what the owner asked the node panel for: "what it
+ * was looking at in order… with time stamps".
+ *
+ * THE FIELD IS THE SERVER'S RECORDED TIME AND MUST STAY THAT WAY. The tempting
+ * shortcut is for the client to stamp `Date.now()` as events arrive. That is
+ * correct on a live run and SILENTLY WRONG on every historical one: `attachSse`
+ * replays durable rows as fast as the socket takes them, so all 388 events of a
+ * finished run arrive inside a few milliseconds and every row would report the
+ * same time — a timeline that looks perfect and measures nothing. `at` comes from
+ * the row, live or replayed, so the two paths cannot disagree.
+ *
+ * ADDITIVE ON PURPOSE. No `SseEvent` member has an `at` field, so widening the
+ * payload cannot collide with one and an older client ignores it.
+ */
+export type SseWireEvent = SseEvent & { readonly at: string };
+
+/**
  * EVERY MEMBER OF `SseEvent`, AS A VALUE — one of the two runtime exports in this
  * file, and it exists so that the CLIENT can be checked against it.
  *
@@ -788,6 +811,55 @@ export interface GraphResult {
   readonly durationMs: number | null;
 }
 
+/*
+ * `ACTIVITY_CAP` AND `ACTIVITY_DETAIL_CHARS` LIVE IN `graph.ts`, NOT HERE, and
+ * that placement is load-bearing rather than tidy.
+ *
+ * This file is imported by the browser through `src/lib/graph.ts` — which
+ * re-exports the server's reducer so there is only one of it — and it is imported
+ * there with `import type` ONLY, so the statement is erased and Turbopack never
+ * resolves the specifier. Exporting a runtime VALUE from here and using it in
+ * `graph.ts` turns that erased import into a real one, with a `.js` specifier that
+ * `moduleResolution: "bundler"` maps onto the neighbouring `.ts` and TURBOPACK DOES
+ * NOT:
+ *
+ *   Module not found: Can't resolve './api-types.js'
+ *       ./server/src/graph.ts [Client Component Browser]
+ *
+ * That is the same failure `src/lib/graph.ts` documents at length, and it was
+ * re-created and observed on 2026-07-30 by putting these two constants here. It
+ * type-checks clean and the dev server 500s, which is why the note is a warning
+ * rather than a preference. `PILL_KINDS_CAP` was already in `graph.ts` for exactly
+ * this reason; the new caps join it there.
+ */
+
+/**
+ * One thing an agent did, in the order it did it.
+ *
+ * WHY THIS EXISTS ALONGSIDE `tools`. `tools` is a SET with counts —
+ * `[{name:"Bash",count:60}]` — which answers "what did it use" and destroys "in
+ * what order". The owner asked for the other question: "what it was looking at in
+ * order, what he is looking at right now, with time stamps… designing the hero
+ * image or text boxes". That cannot be recovered from a counted pill, so it is
+ * recorded separately rather than derived.
+ *
+ * `at` IS NULLABLE AND THE NULL MEANS SOMETHING. Rows written before the wire
+ * carried `events.at` (see {@link SseWireEvent}) fold to `null` here, and a null
+ * renders as "time not recorded" — never as a guess and never as the fold's own
+ * clock, which would date a two-year-old run to the moment somebody opened it.
+ */
+export interface GraphActivityEntry {
+  /** ISO instant the SERVER recorded the event. Null when the row predates it. */
+  readonly at: string | null;
+  readonly kind: "tool" | "skill";
+  /** Tool or skill name, e.g. `Bash`, `Read`, `imagegen-frontend-web`. */
+  readonly name: string;
+  /** The event's own summary, truncated to {@link ACTIVITY_DETAIL_CHARS}. */
+  readonly detail: string;
+  /** True when `detail` was cut. Stops a clipped path reading as a whole one. */
+  readonly truncated: boolean;
+}
+
 export interface GraphNode {
   readonly id: string;
   readonly parent: string | null;
@@ -804,6 +876,18 @@ export interface GraphNode {
   /** Every tool call, even the ones whose name did not fit in `tools`. */
   readonly toolCalls: number;
   readonly result: GraphResult | null;
+  /**
+   * What this agent did, oldest first, capped at {@link ACTIVITY_CAP}.
+   *
+   * The chronology `tools` cannot hold. Empty for a node that only ever reported
+   * a status.
+   */
+  readonly activity: readonly GraphActivityEntry[];
+  /**
+   * Entries past the cap. Non-zero means `activity` is a PREFIX of what happened,
+   * not the whole of it — the same honesty rule as `toolCalls` vs `tools`.
+   */
+  readonly activityDropped: number;
 }
 
 /**

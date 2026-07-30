@@ -165,6 +165,7 @@ async function startHarness(): Promise<Harness> {
     pump: () => undefined,
     cancel: () => false,
     resume: () => false,
+    pushLiveMessage: () => false,
   };
 
   const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths });

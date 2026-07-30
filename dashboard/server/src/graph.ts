@@ -44,7 +44,16 @@
  * lesson `build-environment.ts` and `build-context.ts` were written from.
  */
 
+/*
+ * `import type`, AND IT MUST STAY THAT WAY. The browser reaches this module through
+ * `src/lib/graph.ts`, and a type-only import is erased before Turbopack resolves
+ * anything. Import a VALUE from `./api-types.js` here and the run page 500s with
+ * `Module not found: Can't resolve './api-types.js'` while `tsc` stays green —
+ * observed on 2026-07-30, and the reason `ACTIVITY_CAP` is declared below rather
+ * than beside the interface it caps.
+ */
 import type {
+  GraphActivityEntry,
   GraphEdge,
   GraphHookPill,
   GraphNode,
@@ -52,6 +61,7 @@ import type {
   GraphState,
   GraphToolPill,
   SseEvent,
+  SseWireEvent,
 } from "./api-types.js";
 
 /**
@@ -67,6 +77,24 @@ import type {
  * exactly the runs where the list had stopped being readable anyway.
  */
 export const PILL_KINDS_CAP = 64;
+
+/**
+ * How many ordered activity entries one node keeps.
+ *
+ * NOT A DISPLAY LIMIT — a wire-size one. `RunGraphResponse` is already 7.01 MB on a
+ * 32,000-row run, and `activity` is the first field on `GraphNode` that grows with
+ * the LENGTH of a run rather than with its number of distinct names. The busiest
+ * node of the one real run recorded 109 calls, so this holds a run several times
+ * that size whole; past it `activityDropped` says how much is missing rather than
+ * the list quietly ending.
+ *
+ * Declared here beside `PILL_KINDS_CAP` and not in `api-types.ts` — see the import
+ * note above; a runtime export from that file breaks the browser bundle.
+ */
+export const ACTIVITY_CAP = 400;
+
+/** How much of a tool's summary one activity entry keeps. */
+export const ACTIVITY_DETAIL_CHARS = 220;
 
 /** An empty canvas. What every run before this phase folds to. */
 export function emptyGraph(): GraphState {
@@ -127,12 +155,67 @@ function bump<T extends { readonly count: number }>(
 }
 
 /**
+ * Append one ordered activity entry, respecting the cap.
+ *
+ * OVER THE CAP THE COUNTER RISES AND THE LIST DOES NOT — the same shape as
+ * `toolCalls` vs `tools`, and for the same reason: a list that silently stops
+ * growing reads as "this is everything it did".
+ */
+function record(
+  node: GraphNode,
+  entry: GraphActivityEntry,
+): Pick<GraphNode, "activity" | "activityDropped"> {
+  if (node.activity.length >= ACTIVITY_CAP) {
+    return { activity: node.activity, activityDropped: node.activityDropped + 1 };
+  }
+  return {
+    activity: [...node.activity, entry],
+    activityDropped: node.activityDropped,
+  };
+}
+
+/** Cut a summary to the wire budget, and say so when it was cut. */
+function clip(detail: string): { detail: string; truncated: boolean } {
+  if (detail.length <= ACTIVITY_DETAIL_CHARS) {
+    return { detail, truncated: false };
+  }
+  return { detail: detail.slice(0, ACTIVITY_DETAIL_CHARS), truncated: true };
+}
+
+/**
+ * The instant an event was recorded, or null when it carries none.
+ *
+ * WHY IT IS SNIFFED RATHER THAN A REQUIRED PARAMETER. Both real callers hand this
+ * a {@link SseWireEvent} — the browser gets `at` from the SSE frame, the server's
+ * snapshot route gets it from the `events` row — while the tests fold bare
+ * `SseEvent` literals. A required third argument would have meant editing forty
+ * fixtures to pass a value none of them assert on, and an OPTIONAL one is this
+ * repository's best-documented defect shape: a parameter the production path
+ * forgets to pass while every test still passes (`auditSuite` never passing its
+ * own `ticketBrief`).
+ *
+ * So the type carries it instead of the signature, and the guard against the
+ * production path losing it is an executed check on the REAL fold, not a comment:
+ * `graph.test.ts` asserts a wire event folds to a non-null `at`, and
+ * `http.ts`'s snapshot is asserted to produce timed entries for the recorded run.
+ */
+function instantOf(event: SseEvent | SseWireEvent): string | null {
+  return "at" in event && typeof event.at === "string" ? event.at : null;
+}
+
+/**
  * Fold one event into the canvas.
  *
  * Returns the SAME object when nothing changed. Never throws: this runs over
  * rows written by every previous version of this program.
+ *
+ * Accepts a bare `SseEvent` or an {@link SseWireEvent}; the latter is what both
+ * production callers pass, and is what puts a time on the ordered activity.
  */
-export function foldGraph(state: GraphState, event: SseEvent): GraphState {
+export function foldGraph(
+  state: GraphState,
+  event: SseEvent | SseWireEvent,
+): GraphState {
   switch (event.type) {
     case "graph_agent": {
       // A repeat of a node id is IGNORED rather than merged. Two `graph_agent`
@@ -155,6 +238,8 @@ export function foldGraph(state: GraphState, event: SseEvent): GraphState {
         hooks: [],
         toolCalls: 0,
         result: null,
+        activity: [],
+        activityDropped: 0,
       };
       // The edge is drawn only when the parent is already a node — same
       // invariant, other end. An edge to nothing is not a lighter-weight edge,
@@ -188,7 +273,19 @@ export function foldGraph(state: GraphState, event: SseEvent): GraphState {
       );
       // `toolCalls` rises even when the pill did not fit, so a capped node is
       // visibly capped rather than quietly under-reported.
-      return withNode(state, index, { ...node, tools, toolCalls: node.toolCalls + 1 });
+      const clipped = clip(event.summary);
+      return withNode(state, index, {
+        ...node,
+        tools,
+        toolCalls: node.toolCalls + 1,
+        ...record(node, {
+          at: instantOf(event),
+          kind: "tool",
+          name: event.name,
+          detail: clipped.detail,
+          truncated: clipped.truncated,
+        }),
+      });
     }
 
     case "graph_skill": {
@@ -200,7 +297,23 @@ export function foldGraph(state: GraphState, event: SseEvent): GraphState {
         (pill) => pill.skill === event.skill && pill.source === event.source,
         () => ({ skill: event.skill, source: event.source, count: 1 }),
       );
-      return withNode(state, index, { ...node, skills });
+      return withNode(state, index, {
+        ...node,
+        skills,
+        /*
+         * A SKILL LOADING IS A TIMELINE EVENT, not just a pill. On the one real run
+         * `imagegen-frontend-web` loading is the moment the design work starts —
+         * the thing the owner wants to read first — and a counted pill cannot say
+         * when it happened.
+         */
+        ...record(node, {
+          at: instantOf(event),
+          kind: "skill",
+          name: event.skill,
+          detail: event.source,
+          truncated: false,
+        }),
+      });
     }
 
     case "graph_hook": {
@@ -279,8 +392,15 @@ export function foldGraph(state: GraphState, event: SseEvent): GraphState {
   }
 }
 
-/** Fold a whole stream. The snapshot's own body, and the fixture's. */
-export function foldGraphAll(events: Iterable<SseEvent>): GraphState {
+/**
+ * Fold a whole stream. The snapshot's own body, and the fixture's.
+ *
+ * Takes wire events too, so the snapshot route can pass `{...row.event, at:
+ * row.at}` and get a timed activity list out.
+ */
+export function foldGraphAll(
+  events: Iterable<SseEvent | SseWireEvent>,
+): GraphState {
   let state = emptyGraph();
   for (const event of events) state = foldGraph(state, event);
   return state;

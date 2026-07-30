@@ -12,8 +12,15 @@
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import type { GraphState, SseEvent } from "./api-types.js";
-import { PILL_KINDS_CAP, emptyGraph, foldGraph, foldGraphAll } from "./graph.js";
+import type { GraphState, SseEvent, SseWireEvent } from "./api-types.js";
+import {
+  ACTIVITY_CAP,
+  ACTIVITY_DETAIL_CHARS,
+  PILL_KINDS_CAP,
+  emptyGraph,
+  foldGraph,
+  foldGraphAll,
+} from "./graph.js";
 import { CANVAS_FIXTURE } from "./graph-fixture.js";
 
 /** A node declaration, with only the interesting fields spelled out. */
@@ -211,4 +218,100 @@ test("THE MIRROR CONTRACT: the fixture folds to exactly the state it documents",
   // document. It is the only thing that makes "one reducer" checkable across two
   // files that cannot import each other — see graph-fixture.ts.
   assert.deepEqual(foldGraphAll(CANVAS_FIXTURE.events), CANVAS_FIXTURE.expected);
+});
+
+/* ==================================================================
+ * The ordered activity — the timeline `tools` cannot hold.
+ * ================================================================== */
+
+/** A tool event carrying the wire's recorded instant. */
+function timedTool(node: string, name: string, summary: string, at: string): SseWireEvent {
+  return { type: "graph_tool", node, name, mcpServer: null, summary, attribution: "exact", at };
+}
+
+test("ACTIVITY: the order survives, and the duplicate `tools` collapses does not", () => {
+  /*
+   * THE POINT OF THE FIELD, in one assertion. `Read` twice then `Write` is three
+   * things that happened in an order; `tools` reports it as
+   * `[{Read,count:2},{Write,count:1}]`, which answers a different question. The
+   * owner asked for "what it was looking at in order", so the ordering and the
+   * repeat both have to survive.
+   *
+   * MUTATION THIS CATCHES: building `activity` from `node.tools` (the tempting
+   * derivation) yields two entries in name order, not three in time order.
+   */
+  const state = foldGraphAll([
+    agent("n1"),
+    timedTool("n1", "Read", "file_path: /w/hero.png", "2026-07-29T23:49:22.000Z"),
+    timedTool("n1", "Read", "file_path: /w/services.png", "2026-07-29T23:49:56.000Z"),
+    timedTool("n1", "Write", "file_path: /w/index.html", "2026-07-29T23:50:15.000Z"),
+  ]);
+  const node = state.nodes[0];
+  assert.ok(node !== undefined);
+
+  assert.equal(node.tools.length, 2, "`tools` should still aggregate by name");
+  assert.equal(node.activity.length, 3, "`activity` must keep every call, including the repeat");
+  assert.deepEqual(
+    node.activity.map((entry) => entry.detail),
+    ["file_path: /w/hero.png", "file_path: /w/services.png", "file_path: /w/index.html"],
+    "the entries are in the order they happened",
+  );
+  assert.deepEqual(
+    node.activity.map((entry) => entry.at),
+    [
+      "2026-07-29T23:49:22.000Z",
+      "2026-07-29T23:49:56.000Z",
+      "2026-07-29T23:50:15.000Z",
+    ],
+    "each entry carries the SERVER's recorded instant",
+  );
+});
+
+test("ACTIVITY: a bare event folds to `at: null` rather than a fabricated time", () => {
+  /*
+   * EVERY RUN RECORDED BEFORE 2026-07-30 IS THIS SHAPE — the wire carried no `at`
+   * — and the only honest answer for those is "not recorded". The failure this
+   * guards is the one that would look perfect in a demo: stamping the fold's own
+   * clock, which dates a two-hour-old run to the moment somebody opened the page.
+   */
+  const state = foldGraphAll([agent("n1"), tool("n1", "Bash")]);
+  const entry = state.nodes[0]?.activity[0];
+  assert.ok(entry !== undefined, "a bare tool event must still produce an entry");
+  assert.equal(entry.at, null, "no recorded time must read as null, never as `now`");
+});
+
+test("ACTIVITY: past the cap the list stops and the DROPPED COUNT rises", () => {
+  /*
+   * Same honesty rule as `toolCalls` vs `tools`: a list that silently stops
+   * growing reads as "this is everything it did". `activityDropped` is what makes
+   * a truncated timeline legible as truncated.
+   */
+  const events: (SseEvent | SseWireEvent)[] = [agent("n1")];
+  const overshoot = 5;
+  for (let i = 0; i < ACTIVITY_CAP + overshoot; i += 1) {
+    events.push(tool("n1", `Tool${String(i)}`));
+  }
+  const node = foldGraphAll(events).nodes[0];
+  assert.ok(node !== undefined);
+
+  assert.equal(node.activity.length, ACTIVITY_CAP, "the list is held at the cap");
+  assert.equal(node.activityDropped, overshoot, "everything past the cap is counted");
+  assert.equal(
+    node.toolCalls,
+    ACTIVITY_CAP + overshoot,
+    "`toolCalls` stays exact regardless of the activity cap",
+  );
+});
+
+test("ACTIVITY: a long summary is cut AND says it was cut", () => {
+  // A clipped path that does not admit to being clipped is a wrong path.
+  const long = "command: ".concat("x".repeat(ACTIVITY_DETAIL_CHARS + 50));
+  const state = foldGraphAll([
+    agent("n1"),
+    timedTool("n1", "Bash", long, "2026-07-29T23:49:22.000Z"),
+  ]);
+  const entry = state.nodes[0]?.activity[0];
+  assert.ok(entry !== undefined);
+  assert.equal(entry.detail.length, ACTIVITY_DETAIL_CHARS);
+  assert.equal(entry.truncated, true, "a cut summary must be flagged as cut");
 });

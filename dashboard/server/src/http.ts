@@ -53,7 +53,7 @@
 
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
@@ -77,6 +77,7 @@ import { foldGraphAll } from "./graph.js";
 import type { AuthProbe } from "./auth.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
+import { isTerminal } from "./db.js";
 import type { RunRow, RunStore } from "./db.js";
 import { DESIGN_MOCKUP_LABEL, readDesignLock } from "./design-lock.js";
 import { isOfferedProvider } from "./models.js";
@@ -135,6 +136,15 @@ export interface RunController {
    * the orchestrator holds the manifest that could.
    */
   resume(runId: string, chosenMockup?: string | null): boolean;
+  /**
+   * Push an owner message into a RUNNING segment's session.
+   *
+   * Returns false when there is no open segment — parked, queued, or between
+   * segments — and the router then leaves the message pending for the boundary
+   * drain. `true` means the text is in the live session's input queue, so the
+   * router stamps it delivered.
+   */
+  pushLiveMessage(runId: string, message: { text: string; images: readonly string[] }): boolean;
 }
 
 export interface HttpDeps {
@@ -426,6 +436,34 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
     return;
   }
 
+  /* GET /api/runs/:id/messages — the owner↔run chat, oldest first.
+   *
+   * Served from the durable table, like everything else here. `deliveredAt: null`
+   * on a message means the run has not folded it into a prompt yet — and on a
+   * FINISHED run it means it never did, which the UI renders as such rather than
+   * implying the instruction landed. */
+  if (segments.length === 4 && segments[3] === "messages" && method === "GET") {
+    sendJson(response, 200, { messages: deps.store.messages(runId) });
+    return;
+  }
+
+  /* POST /api/runs/:id/messages — say something to a run that is already going.
+   *
+   * Accepts `{ text, images? }` as JSON, where `images` is an array of data URLs.
+   *
+   * WHY DATA URLs AND NOT MULTIPART. The only client is one fetch in this app's own
+   * chat box, `secret-intake.ts` is the only multipart parser here and it is
+   * deliberately narrow, and a hand-rolled second one is a boundary parser written
+   * for one caller. `FileReader.readAsDataURL` on the browser side costs 33% in
+   * base64 over a loopback socket for images that are screenshots, not video.
+   *
+   * The bytes are written under `runs/<id>/chat/` and the ROW STORES PATHS: the
+   * builder needs a path to `Read`, and a 2MB PNG does not belong in SQLite. */
+  if (segments.length === 4 && segments[3] === "messages" && method === "POST") {
+    await postMessage(deps, runId, row, request, response);
+    return;
+  }
+
   // POST /api/runs/:id/cancel
   if (segments.length === 4 && segments[3] === "cancel" && method === "POST") {
     const cancelled = deps.orchestrator.cancel(runId);
@@ -528,9 +566,181 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
  * and `foldGraph` returns those unchanged — so an old run answers 200 with an
  * empty canvas and `inventory: null`, with no feature flag to forget to remove.
  */
+/** How much one attached image may be, decoded. Screenshots, not video. */
+const MAX_CHAT_IMAGE_BYTES = 8 * 1024 * 1024;
+/** How many images one message may carry. */
+const MAX_CHAT_IMAGES = 6;
+/** How long one message may be. Generous; a paste of a spec is legitimate. */
+const MAX_CHAT_TEXT_CHARS = 8_000;
+
+/** `data:image/png;base64,…` → the extension and the bytes, or null if not that. */
+function decodeDataUrl(value: unknown): { ext: string; bytes: Buffer } | null {
+  if (typeof value !== "string") return null;
+  const match = /^data:image\/(png|jpeg|jpg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(value);
+  if (match === null) return null;
+  const ext = match[1] === "jpeg" ? "jpg" : (match[1] ?? "png");
+  const bytes = Buffer.from(match[2] ?? "", "base64");
+  /*
+   * THE MIME TYPE IS NOT TRUSTED — the magic bytes are checked below by the caller
+   * only insofar as size is bounded. This is a loopback, single-user tool and the
+   * bytes go to a file the builder Reads, not to a renderer that could be tricked;
+   * the size cap is the control that matters, because an unbounded base64 body is
+   * the one way this endpoint could hurt the machine it runs on.
+   */
+  if (bytes.length === 0 || bytes.length > MAX_CHAT_IMAGE_BYTES) return null;
+  return { ext, bytes };
+}
+
+/**
+ * Accept one owner message, with optional images, and queue it for the run.
+ *
+ * REFUSED ON A TERMINAL RUN, and that refusal is the honest part. A finished run has
+ * no further segment boundary to drain at, so accepting the message would store an
+ * instruction nothing will ever read while showing the owner a sent message. Better
+ * to say the run is over.
+ */
+async function postMessage(
+  deps: HttpDeps,
+  runId: string,
+  row: RunRow,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  if (isTerminal(row.status)) {
+    sendError(
+      response,
+      409,
+      "run_finished",
+      `run ${runId} is ${row.status}, so it has no remaining segment to read a message at`,
+      "Start a new run with the revised brief instead.",
+    );
+    return;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await readBody(request));
+  } catch {
+    sendError(response, 400, "invalid_body", "body must be JSON", null);
+    return;
+  }
+  if (typeof payload !== "object" || payload === null) {
+    sendError(response, 400, "invalid_body", "body must be a JSON object", null);
+    return;
+  }
+
+  const record = payload as Record<string, unknown>;
+  const text = typeof record["text"] === "string" ? record["text"].trim() : "";
+  const rawImages = Array.isArray(record["images"]) ? record["images"] : [];
+
+  if (text === "" && rawImages.length === 0) {
+    sendError(response, 400, "empty_message", "a message needs text or at least one image", null);
+    return;
+  }
+  if (text.length > MAX_CHAT_TEXT_CHARS) {
+    sendError(
+      response,
+      400,
+      "message_too_long",
+      `text is ${String(text.length)} characters; the limit is ${String(MAX_CHAT_TEXT_CHARS)}`,
+      null,
+    );
+    return;
+  }
+  if (rawImages.length > MAX_CHAT_IMAGES) {
+    sendError(
+      response,
+      400,
+      "too_many_images",
+      `${String(rawImages.length)} images; the limit is ${String(MAX_CHAT_IMAGES)}`,
+      null,
+    );
+    return;
+  }
+
+  // `runPathsFor` is how every other route resolves a run directory; there is no
+  // `paths.runDir`, and inventing a second way to join `runs/<id>` is how two
+  // places end up disagreeing about where a run lives.
+  const chatDir = join(deps.paths.runs, runId, "chat");
+  mkdirSync(chatDir, { recursive: true });
+
+  const written: string[] = [];
+  for (const [index, raw] of rawImages.entries()) {
+    const decoded = decodeDataUrl(raw);
+    if (decoded === null) {
+      sendError(
+        response,
+        400,
+        "invalid_image",
+        `image ${String(index + 1)} is not a base64 data URL of a supported type, or exceeds ${String(MAX_CHAT_IMAGE_BYTES)} bytes`,
+        "Supported: png, jpeg, webp, gif.",
+      );
+      return;
+    }
+    // Named by message time and ordinal so the directory sorts chronologically and
+    // an owner uploading `Screenshot.png` twice cannot overwrite the first one.
+    const name = `${String(Date.now())}-${String(index + 1)}.${decoded.ext}`;
+    const path = join(chatDir, name);
+    writeFileSync(path, decoded.bytes);
+    written.push(path);
+  }
+
+  const message = deps.store.appendMessage(runId, { role: "owner", text, images: written });
+
+  /*
+   * TRY THE LIVE SESSION FIRST — the switch away from boundary-only delivery.
+   *
+   * The SDK takes `prompt: string | AsyncIterable<SDKUserMessage>`, and a segment that
+   * is running right now has an open channel (`LiveInput`) whose iterator is parked
+   * waiting for exactly this. `shouldQuery: false` has the CLI fold the text into the
+   * agent's next turn rather than interrupt a tool call — the behaviour of typing into
+   * the interactive CLI while it works.
+   *
+   * STAMPED HERE ONLY IF IT LANDED. `pushLiveMessage` returns false for a parked,
+   * queued or between-segments run; the row then stays pending and the boundary drain
+   * carries it. Exactly one of the two paths stamps `delivered_at`, which is what
+   * makes delivery at-most-once across both.
+   */
+  const live = deps.orchestrator.pushLiveMessage(runId, { text, images: written });
+  if (live) deps.store.markMessagesDelivered(runId, [message.seq]);
+
+  /*
+   * ON THE EVENT STREAM TOO, so the trace shows the redirection in the same
+   * timeline as the work it changed. Without this the run record would show the
+   * behaviour changing with no visible cause.
+   */
+  deps.bus.emit(runId, {
+    type: "log",
+    level: "info",
+    text:
+      (live
+        ? "owner message delivered into the running session"
+        : "owner message queued for the next segment boundary") +
+      (written.length > 0 ? ` with ${String(written.length)} image(s)` : "") +
+      `: ${text.slice(0, 200)}`,
+  });
+
+  // `live` lets the UI say "delivered now" instead of "waiting". Re-read so the
+  // response carries the stamp the push just wrote.
+  const stored = deps.store.messages(runId).find((m) => m.seq === message.seq) ?? message;
+  sendJson(response, 202, { message: stored, live });
+}
+
 function graphSnapshot(store: RunStore, runId: string): RunGraphResponse {
   const rows = store.eventsSince(runId, 0);
-  const state = foldGraphAll(rows.map((row) => row.event));
+  /*
+   * `row.at` TRAVELS INTO THE FOLD, and this line used to drop it.
+   *
+   * It was `rows.map((row) => row.event)`, which threw away the one column that
+   * makes `GraphNode.activity` a timeline rather than a list. The row already had
+   * it — `eventsSince` selects `at` — so the timestamp was read from SQLite and
+   * discarded two expressions later.
+   *
+   * This is the SNAPSHOT path, which is what a reader of a FINISHED run gets;
+   * the live path is `attachSse`. Both have to carry the time or the canvas shows
+   * times on a running run and none on a completed one.
+   */
+  const state = foldGraphAll(rows.map((row) => ({ ...row.event, at: row.at })));
   return { atSeq: rows[rows.length - 1]?.seq ?? 0, ...state };
 }
 

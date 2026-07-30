@@ -101,6 +101,42 @@ export function designSegmentPrompt(input: {
     );
   } else {
     lines.push(
+      /*
+       * WHO AUTHORS THE ART DIRECTION — ADDED 2026-07-30, AND IT WAS MISSING.
+       *
+       * `VISUAL_GATE_AUTHOR` has been exported from this file since it was written,
+       * and `design-prompt.test.ts` asserts it differs from `VISUAL_GATE_AGENT`. It
+       * was never put into a prompt. Its only non-declaration reader was that test.
+       *
+       * The consequence, measured on `run-2026-07-29T23-28-46-665Z-3d4d1ccb`: the
+       * whole `IMAGE GENERATION` block below addresses the orchestrator in the second
+       * person ("Use the local tool", "Read the image file and critique it"), so the
+       * orchestrator ran all six `gemini-image.sh` calls itself. `taste-frontend-expert`
+       * appeared only in `graph_inventory.allowedAgents` — permitted, never spawned —
+       * and `ui-designer` then scored images the orchestrator had authored. Zero
+       * `graph_agent` events named the author seat; the run made exactly two Agent
+       * calls, `context-manager` and `ui-designer`.
+       *
+       * That is the "author does not grade its own work" rule holding in the letter
+       * and failing in fact, and it is this repository's signature defect precisely:
+       * the assertion and the production path were never connected. The paragraph
+       * below is the connection.
+       *
+       * IT MIRRORS THE `CHOOSING THE DESIGN` WORDING ON PURPOSE — "Delegate to X, not
+       * to yourself" is the phrasing the orchestrator already demonstrably obeys for
+       * the choosing step, which is the one delegation this pipeline has been observed
+       * to perform correctly.
+       */
+      "WHO AUTHORS THIS. The art direction is authored by",
+      `\`${VISUAL_GATE_AUTHOR}\` — delegate to it, not to yourself. Carry the whole of`,
+      "the IMAGE GENERATION brief below into its prompt verbatim, including the exact",
+      "tool path, the sequential -i rule and the closed-loop critique. It owns the",
+      "prompts, the retries and the critique; you own the manifest and the dials.",
+      "",
+      `\`${VISUAL_GATE_AGENT}\` MUST NOT be the author. It is the visual gate and the`,
+      "design-lock chooser later in this run, and an agent that grades what it wrote is",
+      "not a gate. That separation is why there are two seats and not one.",
+      "",
       "IMAGE GENERATION",
       "",
       `Use the local tool at ${String(input.capability.imageScript)} — that exact absolute`,

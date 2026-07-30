@@ -132,7 +132,10 @@ export default function NewTicketPage(): ReactNode {
       <div className="flex min-w-0 flex-col gap-4">
         <Panel
           title="Ticket"
-          subtitle="Plain prose. Describe what you want built and how you will know it works."
+          // KEPT, TRIMMED. "Plain prose" was obvious; how you will know it works is
+          // not — that sentence is what the acceptance suite is authored from, so it
+          // changes the output rather than describing the input.
+          subtitle="Describe what you want built, and how you will know it works."
           bodyClassName="p-0"
         >
           <textarea
@@ -203,7 +206,12 @@ export default function NewTicketPage(): ReactNode {
         <AuthPanel />
         <Panel
           title="Model"
-          subtitle="Claude, from your own plan login. A subscription consumes quota, so no run here carries a dollar cost."
+          /*
+           * SUBTITLE REMOVED 2026-07-30 — the third restatement of "this uses your
+           * plan, not an API key" on one screen (the auth panel said it, its provider
+           * row said it, this said it). The cost invariant is real and enforced in the
+           * database; it did not need repeating above a dropdown.
+           */
         >
           <ModelPicker
             models={models}

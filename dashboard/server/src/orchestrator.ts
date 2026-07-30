@@ -94,6 +94,8 @@ import { DELIVERY_LANES, shortlistFor } from "./agent-shortlist.js";
 import { writeBacklog } from "./backlog.js";
 import type { BacklogInput } from "./backlog.js";
 import { graphResumeState, makeSegmentRemap, nextBuildSegment } from "./build-segment.js";
+import { LiveInput } from "./live-input.js";
+import { ownerMessageBlock } from "./owner-message.js";
 import {
   canWriteDir,
   designPreflight,
@@ -453,6 +455,32 @@ export class Orchestrator {
    * the window. Neither half alone bounds anything.
    */
   readonly #designLockTimers = new Map<string, NodeJS.Timeout>();
+
+  /**
+   * Open input channels, by run id — one per in-flight build segment.
+   *
+   * A run appears here only while a segment is actually executing, which is exactly
+   * the window in which a mid-run message can be delivered live. `pushLiveMessage`
+   * returns false outside it, and the caller falls back to the queue.
+   */
+  readonly #liveInputs = new Map<string, LiveInput>();
+
+  /**
+   * Deliver an owner message into a RUNNING session.
+   *
+   * Returns false when this run has no open segment — a parked, queued or finished
+   * run — in which case the message stays pending and the segment-boundary drain
+   * picks it up. The two paths together are why a message is never lost and never
+   * delivered twice: `delivered_at` is stamped by whichever one takes it.
+   */
+  pushLiveMessage(
+    runId: string,
+    message: { text: string; images: readonly string[] },
+  ): boolean {
+    const channel = this.#liveInputs.get(runId);
+    if (channel === undefined || channel.closed) return false;
+    return channel.push(message);
+  }
 
   constructor(deps: OrchestratorDeps) {
     this.#deps = deps;
@@ -1103,6 +1131,27 @@ export class Orchestrator {
             fileExists: (path) => existsSync(path),
           });
 
+      /* ---- THE OWNER'S MID-FLIGHT MESSAGES, DRAINED AT THIS BOUNDARY ------
+       *
+       * This is the one place in the run where a new instruction can be handed to
+       * the builder without interrupting a subprocess mid-thought: the segment
+       * boundary, where the prompt is composed fresh from durable rows anyway.
+       *
+       * WHY NOT MID-SEGMENT. There is no supported way to push a turn into a
+       * running Claude Agent SDK session from outside it, and killing the
+       * subprocess to restart it with more text would throw away the session the
+       * two build segments deliberately share (the token totals SUM across them,
+       * which is how the shared session was proved). So "mid-flight" means
+       * "between agents", which is what the owner is shown.
+       *
+       * READ HERE, MARKED DELIVERED AFTER THE PROMPT IS WRITTEN. If the process
+       * dies between the two, the message stays pending and the next attempt
+       * re-injects it — losing a stamp is recoverable, losing an instruction is
+       * not.
+       */
+      const pending = store.pendingMessages(runId);
+      const ownerNote = ownerMessageBlock(pending);
+
       const prompt = designSegment
         ? designSegmentPrompt({
             ticketText: ticket.brief,
@@ -1110,13 +1159,14 @@ export class Orchestrator {
             mode: laneMode,
             capability: this.#capability(),
             autoChoose: policy === "auto",
-          })
+          }) + ownerNote
         : // APPENDED UNCONDITIONALLY. `videoPrompt` is "" whenever there are no
           // legs, so a degraded lane adds nothing; §7.3 mechanism 2 is why the
           // ABSOLUTE paths have to be in the prompt at all — a path in a prompt
           // is what makes a `Read`/`fetch` actually happen.
           this.#buildSegmentPrompt(row, ticket, runPaths, manifest, laneMode, fullShortlist) +
-          (videoPrompt === "" ? "" : `\n\n${videoPrompt}\n`);
+          (videoPrompt === "" ? "" : `\n\n${videoPrompt}\n`) +
+          ownerNote;
       // REDACTED ON THE WAY TO DISK. The prompt embeds the ticket text, and here
       // the ticket text is FREE-FORM OWNER INPUT typed into a web form — not a
       // frozen, harness-authored brief as in the bake-off. Every other persisted
@@ -1127,6 +1177,30 @@ export class Orchestrator {
       // the time this line runs. Not masking it here as well would simply leave a
       // second copy lying in the run directory.
       writeFileSync(runPaths.promptFile, redactForPersistence(prompt), "utf8");
+
+      /*
+       * MARKED ONLY NOW — after the text is in the prompt AND the prompt is on disk.
+       *
+       * The ordering is the whole guarantee. Stamped at read time, a crash between
+       * read and prompt would leave a message recorded as delivered that no builder
+       * ever saw, and the owner would believe a redirection landed. Stamped here, the
+       * worst case is re-injecting an instruction, which is visible and harmless.
+       */
+      if (pending.length > 0) {
+        store.markMessagesDelivered(runId, pending.map((message) => message.seq));
+        /*
+         * `bus.emit` RATHER THAN `sink.log`: `sink` is declared below this point and a
+         * `sink.log` here is a use-before-declaration (caught by tsc, not by a test).
+         * The event is the same shape either way — the sink is a thin wrapper over
+         * this bus — and the owner needs this line in the trace, because it is the
+         * only durable record that the instruction was actually taken up.
+         */
+        this.#deps.bus.emit(runId, {
+          type: "log",
+          level: "info",
+          text: `${String(pending.length)} owner message(s) folded into the ${designSegment ? "DESIGN" : "BUILD"} segment prompt`,
+        });
+      }
 
       let tokens: TokenTotals = zeroTokens(entry.option.provider === "openai" ? "openai" : "anthropic");
       // WHAT THE ROW ALREADY HELD, CAPTURED BEFORE THIS SEGMENT WRITES TO IT.
@@ -1235,9 +1309,26 @@ export class Orchestrator {
           `${entry.effort === null ? "" : ` at effort ${entry.effort}`}`,
       );
 
+      /*
+       * THE LIVE CHANNEL FOR THIS SEGMENT.
+       *
+       * Registered against the run id so `POST /api/runs/:id/messages` can push into
+       * the RUNNING session — the switch from boundary-only delivery. It is torn down
+       * in the `finally` below; the builder also closes the iterable itself, which is
+       * what lets the subprocess exit.
+       *
+       * Both paths stay live and that is deliberate, not redundant: a message typed
+       * while a segment RUNS goes down this channel, and a message that arrives while
+       * the run is PARKED (awaiting_input, rate_limited) or between segments has no
+       * open session to push into, so the boundary drain above still carries it.
+       */
+      const liveInput = new LiveInput(prompt);
+      this.#liveInputs.set(runId, liveInput);
+
       const outcome = await builder.build({
         runId,
         prompt,
+        liveInput,
         workspace: runPaths.workspace,
         // The sealed suite store, named so each driver can deny reads of it.
         // See builders/claude-builder.ts and builders/codex-builder.ts: the two
@@ -1286,6 +1377,18 @@ export class Orchestrator {
           motionBar: !designSegment && laneMode !== "off",
         }),
       });
+
+      /*
+       * THE SEGMENT'S CHANNEL IS DONE. The builder already closed the iterable in its
+       * own `finally` (which is what let the subprocess exit); this drops the map
+       * entry so the next segment installs a fresh one.
+       *
+       * A LEAKED ENTRY WOULD BE INERT RATHER THAN WRONG — `pushLiveMessage` refuses a
+       * channel whose `closed` flag is set, so a message would fall through to the
+       * queue exactly as it does for a parked run. Removed anyway: a map that grows
+       * with every segment of every run is a leak even when each entry is harmless.
+       */
+      this.#liveInputs.delete(runId);
 
       last = outcome;
       if (outcome.sessionId !== null) store.updateRun(runId, { builderSessionId: outcome.sessionId });

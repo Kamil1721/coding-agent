@@ -144,8 +144,22 @@ against a **real** file, because a missing path returns nothing and reads exactl
 broken rule. Same for `code-files.ts`'s traversal refusals and its sealed-root exclusions.
 
 **The canvas redesign is half done.** `roles.ts`, `run-hud.tsx`, `sheet.tsx` and the role
-test are in. The fullscreen restructure is not — `tests/run-layout.browser.spec.ts` still
-asserts *"the rail sits beside it"* and still passes. Also outstanding: draggable nodes,
+test are in.
+
+> **CORRECTION, 2026-07-30.** This section said the fullscreen restructure was not done and
+> that `tests/run-layout.browser.spec.ts` "still asserts *the rail sits beside it* and still
+> passes". **It did not pass** — all three of its tests failed on
+> `locator('section:has(.react-flow)')  Expected: 1  Received: 0`, because the canvas root
+> became a `<div>`. A dead spec that fails loudly is recoverable; the belief that something
+> there was still being checked was the actual hazard.
+>
+> The fullscreen page structure *was* in place, but `AppShell` capped `main` at
+> `max-w-[1440px]`, and **no child can cancel a parent's `max-width`** — so on a 2000px
+> window the "fullscreen canvas" was 1440px with 280px of dead gutter each side. Fixed via
+> `AppShell.isFullBleed` (scoped to `/runs/<id>`; the list and the ticket form keep the cap),
+> `--run-chrome` deleted in favour of flex fill, and a resize re-fit that latches off once
+> the reader pans. `run-layout.browser.spec.ts` is rewritten as that guard and is green.
+> See `docs/FINDINGS-2026-07-30-canvas-asks.md`. Also outstanding: draggable nodes,
 fit-to-view on load, collapsing the ten sibling `session` nodes into one group, and the
 edge-quality raise. **The owner's words on that last one, which matter:** a sliding
 stroke-dash is not the deliverable — *"they look mega basic"*. The bar is layered strokes,
@@ -195,12 +209,31 @@ claiming anything about quality.
 ## 8. OPERATIONAL
 
 ```
-dashboard/server   907 tests / 905 pass / 0 fail / 2 skipped   (2 are DASHBOARD_LIVE_SMOKE)
+dashboard/server   911 tests / 901 pass / 0 fail / 2 skipped   (2 are DASHBOARD_LIVE_SMOKE)
 bakeoff            112 / 112
-client             53 unit, 73 with the browser project
+client             10 FAILED / 94 passed          <-- see the correction below
 npm run test:harness   22 / 22   (NOT in npm test — spawns bash, binds a port)
 tsc --noEmit       clean, both packages
 ```
+
+> **CORRECTION, 2026-07-30. THE CLIENT SUITE IS NOT GREEN AND WAS NOT GREEN.** This block
+> read "client — 53 unit, 73 with the browser project", which states what passes and omits
+> what fails. Measured before any edit this session: **13 failed / 73 passed.** Now 10 failed
+> / 94 passed — the 3 `run-layout` failures are fixed and 21 tests were added.
+>
+> The remaining 10 are **specs the canvas redesign left behind**, not product defects:
+>
+> - `canvas-edges.browser.spec.ts` (6) — the redesign renamed every edge class to the
+>   `conduit-*` vocabulary (`conduit-rim`, `conduit-casing`, `conduit-core`,
+>   `conduit-comet`). The spec still waits on `path.edge-core--flowing`, which **matches
+>   nothing in the source**.
+> - `code-browser.browser.spec.ts` (4) — `CodeBrowser` moved into `RunSheet`'s Code tab; the
+>   spec still expects it inline on the run page.
+>
+> Also: the 8 errors from `calibration.test.js` are the **Docker daemon being down**, not a
+> regression. That suite fails deliberately rather than report a green it did not earn.
+>
+> **When quoting a suite, quote the failures too.** A count of passes is not a status.
 
 Build to a **private outDir** when agents share the tree: `--outDir dist-<label>`, a
 **sibling** of `dist` at `dashboard/server/<outDir>` — `contract-parity.test.ts` resolves

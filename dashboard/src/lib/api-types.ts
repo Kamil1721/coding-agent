@@ -394,6 +394,24 @@ export interface GraphResult {
   readonly durationMs: number | null;
 }
 
+/**
+ * One thing an agent did, in the order it did it. Mirrors the server's
+ * `GraphActivityEntry`; the two are checked against each other at the `foldGraph`
+ * call site in `use-run-graph.ts`, which is the only place they meet.
+ *
+ * `at` is the SERVER's recorded instant, or null for a row written before the wire
+ * carried one. Null renders as "time not recorded" and is never filled in with the
+ * browser's clock — on a replayed run that would date every step of a two-hour run
+ * to the moment the page opened.
+ */
+export interface GraphActivityEntry {
+  readonly at: string | null;
+  readonly kind: "tool" | "skill";
+  readonly name: string;
+  readonly detail: string;
+  readonly truncated: boolean;
+}
+
 export interface GraphNode {
   readonly id: string;
   readonly parent: string | null;
@@ -410,6 +428,10 @@ export interface GraphNode {
   /** Every tool call, including ones whose name did not fit in `tools`. */
   readonly toolCalls: number;
   readonly result: GraphResult | null;
+  /** What this agent did, oldest first. The chronology `tools` cannot hold. */
+  readonly activity: readonly GraphActivityEntry[];
+  /** Entries past the cap: non-zero means `activity` is a prefix, not the whole. */
+  readonly activityDropped: number;
 }
 
 /** `attribution` is the CHILD's: an edge to a guessed parent renders differently. */

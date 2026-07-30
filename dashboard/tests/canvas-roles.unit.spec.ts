@@ -137,6 +137,8 @@ function node(overrides: Partial<GraphNode> & { id?: string } = {}): GraphNode {
     hooks: [],
     toolCalls: 0,
     result: null,
+    activity: [],
+    activityDropped: 0,
     ...overrides,
   };
 }

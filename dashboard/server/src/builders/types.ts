@@ -19,6 +19,7 @@
  * starting the ticket again from nothing.
  */
 
+import type { LiveInput } from "../live-input.js";
 import type { AnthropicEffort } from "bakeoff/dist/contracts.js";
 import type { GraphSseEvent } from "../api-types.js";
 import type { CompactionRecord, ContextSample } from "../build-context.js";
@@ -94,6 +95,19 @@ export interface BuildRequest {
   readonly runId: string;
   /** The builder prompt. Recorded verbatim to the run directory. */
   readonly prompt: string;
+  /**
+   * An open channel for messages the OWNER sends while this segment is running.
+   *
+   * When present, the builder hands the SDK a streaming input built from it instead
+   * of the bare `prompt` string, so an instruction typed into the dashboard reaches
+   * the live session — the behaviour the interactive CLI has when you type while it
+   * works. Absent means the old single-shot behaviour, which is what every test and
+   * the bake-off harness want.
+   *
+   * The BUILDER owns closing it: the SDK ends a session when its input iterable
+   * completes, so `close()` runs in the build's `finally` and nowhere else.
+   */
+  readonly liveInput?: LiveInput;
   /** The git-initialised workspace. The builder's cwd and its only write root. */
   readonly workspace: string;
   /**

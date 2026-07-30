@@ -27,7 +27,7 @@ import type {
 import { shortlistFor } from "../agent-shortlist.js";
 import type { GraphSseEvent } from "../api-types.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
 import type { RunEnvironment } from "../build-environment.js";
 import type { RateLimitState, ResultUsageEnvelope } from "../claude-common.js";
@@ -2338,7 +2338,7 @@ test("THE LOOP: the prompt and the built Options are what the session is started
   // no hooks. What `buildOptions` returns is asserted exhaustively elsewhere in
   // this file; what THIS says is that the object handed to the SDK is that one,
   // for this request, with the abort controller attached.
-  let seen: { prompt: string; options: Options } | null = null;
+  let seen: { prompt: string | AsyncIterable<SDKUserMessage>; options: Options } | null = null;
   const builder = new ClaudeSubscriptionBuilder((params) => {
     seen = params;
     return sessionOf([]);
@@ -2346,7 +2346,7 @@ test("THE LOOP: the prompt and the built Options are what the session is started
   const request = req({ prompt: "build the ticket", allowedAgents: ["code-reviewer"] });
   await builder.build(request);
 
-  const params = seen as { prompt: string; options: Options } | null;
+  const params = seen as { prompt: string | AsyncIterable<SDKUserMessage>; options: Options } | null;
   assert.ok(params, "the session was never started");
   assert.equal(params.prompt, "build the ticket");
   assert.equal(params.options.cwd, canonicaliseForDecision(WORKSPACE));
@@ -2680,14 +2680,14 @@ test("THE LOOP: a hook DECISION reaches the canvas, and says it was inferred", a
   // THE CASE THE REQUIRED `attribution` FIELD EXISTS FOR. A PreToolUse input
   // carries the tool name and the tool input and NO TASK IDENTITY AT ALL, so
   // which agent a hook decision belongs to is worked out on this side.
-  let seen: { prompt: string; options: Options } | null = null;
+  let seen: { prompt: string | AsyncIterable<SDKUserMessage>; options: Options } | null = null;
   const record = loopSink();
   const builder = new ClaudeSubscriptionBuilder((params) => {
     seen = params;
     return sessionOf([]);
   });
   await builder.build(req({ sink: record.sink, allowedAgents: ["code-reviewer"] }));
-  const params = seen as { prompt: string; options: Options } | null;
+  const params = seen as { prompt: string | AsyncIterable<SDKUserMessage>; options: Options } | null;
   assert.ok(params);
 
   await ask(params.options, "Agent", { subagent_type: "wordpress-master", run_in_background: false });

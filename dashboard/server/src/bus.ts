@@ -19,7 +19,7 @@
  */
 
 import type { ServerResponse } from "node:http";
-import type { SseEvent } from "./api-types.js";
+import type { SseEvent, SseWireEvent } from "./api-types.js";
 import type { RunStore, StoredEvent } from "./db.js";
 
 /** Heartbeat interval. An SSE comment, which EventSource ignores. */
@@ -109,7 +109,21 @@ export function attachSse(
     watermark = stored.seq;
     response.write(`id: ${String(stored.seq)}\n`);
     response.write(`event: ${stored.event.type}\n`);
-    response.write(`data: ${JSON.stringify(stored.event)}\n\n`);
+    /*
+     * `stored.at` TRAVELS, and until 2026-07-30 it did not.
+     *
+     * This line serialised `stored.event` alone. `events.at` was written on every
+     * insert and read back by `eventsSince`, so the server knew the instant of all
+     * 388 events of a finished run and told the client none of them.
+     *
+     * It matters that the time comes from HERE rather than from the client's clock
+     * on arrival: replay pushes a whole finished run down the socket at once, so a
+     * client-side stamp would give every event of a two-hour run the same
+     * timestamp — and would look perfectly correct on a live run, which is the
+     * only one anybody would have tested. See {@link SseWireEvent}.
+     */
+    const wire: SseWireEvent = { ...stored.event, at: stored.at };
+    response.write(`data: ${JSON.stringify(wire)}\n\n`);
   };
 
   // 1. Subscribe FIRST. Everything that arrives during the replay is buffered.

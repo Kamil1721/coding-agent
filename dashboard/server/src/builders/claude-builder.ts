@@ -142,6 +142,7 @@ import type {
   Options,
   PermissionResult,
   SDKMessage,
+  SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   NOT_RATE_LIMITED,
@@ -1251,8 +1252,27 @@ export function recordResultTokens(
  */
 export type BuildSession = AsyncIterable<SDKMessage> & ContextUsageSource;
 
-/** How a build obtains its session. `query` is the production value. */
-export type SessionFactory = (params: { prompt: string; options: Options }) => BuildSession;
+/**
+ * How a build obtains its session. `query` is the production value.
+ *
+ * `prompt` TAKES THE STREAMING FORM AS WELL AS A STRING — widened 2026-07-30.
+ *
+ * The SDK's own signature is `prompt: string | AsyncIterable<SDKUserMessage>`, and
+ * this type had narrowed it to `string`. That narrowing — not any SDK limitation —
+ * is why an owner's mid-run instruction could only be applied at a segment boundary:
+ * a single-shot string has nowhere to put a second message.
+ *
+ * With the iterable form the session stays open and the host can yield further user
+ * messages into a RUNNING turn, which is exactly what the interactive CLI does when
+ * you type while it works. `SDKUserMessage` carries the queue controls that make it
+ * behave: `priority: 'now' | 'next' | 'later'`, and `shouldQuery`, documented as
+ * "appended to the transcript without triggering an assistant turn. It will be
+ * merged into the next user message that does query."
+ */
+export type SessionFactory = (params: {
+  prompt: string | AsyncIterable<SDKUserMessage>;
+  options: Options;
+}) => BuildSession;
 
 export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
   readonly provider = "anthropic" as const;
@@ -1363,8 +1383,21 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
     request.signal.addEventListener("abort", onAbort, { once: true });
 
     try {
+      /*
+       * STREAMING INPUT WHEN THE HOST OPENED A CHANNEL, the bare string otherwise.
+       *
+       * `request.liveInput` is present only for a dashboard run whose owner can type
+       * at it. When it is, the SDK gets an iterable that yields this prompt first and
+       * then STAYS OPEN, so a message sent mid-run reaches the running session instead
+       * of waiting for the next segment. When it is absent — every test, and the
+       * bake-off harness — the call is byte-identical to before.
+       *
+       * THE `finally` BELOW CLOSES IT, and that is not optional: the SDK ends a
+       * session when its input iterable completes, so an unclosed channel leaves the
+       * subprocess alive after the segment is done.
+       */
       const session = this.startSession({
-        prompt: request.prompt,
+        prompt: request.liveInput ?? request.prompt,
         options: { ...options, abortController },
       });
 
@@ -1472,6 +1505,18 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
       sink.log("error", failure);
     } finally {
       request.signal.removeEventListener("abort", onAbort);
+      /*
+       * CLOSE THE LIVE CHANNEL HERE AND NOWHERE ELSE.
+       *
+       * The SDK ends a session when its input iterable completes, so this is what
+       * lets the subprocess exit. In `finally` because it has to run on the abort and
+       * the throw paths too — a cancelled run that leaves the channel open leaves the
+       * builder process alive with nothing reading it.
+       *
+       * Idempotent (`close()` just sets a flag and wakes the parked iterator), so a
+       * second call from a caller that also cleans up is harmless.
+       */
+      request.liveInput?.close();
     }
 
     return {

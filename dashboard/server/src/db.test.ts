@@ -484,3 +484,101 @@ test("a database written before these columns existed gains them on open", () =>
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/* ==================================================================
+ * The owner→run chat queue, and the at-most-once guarantee.
+ *
+ * There was no owner→run channel before 2026-07-30 beyond `resume(chosenMockup)`.
+ * The property that matters is NOT that a message can be stored — it is that a
+ * message is delivered to a prompt exactly once, and that "never delivered" stays
+ * distinguishable from "delivered", because the owner will believe a redirection
+ * landed if the UI cannot tell the difference.
+ * ================================================================== */
+
+test("a queued message is pending until it is stamped, and then never again", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-chat-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-chat");
+
+    const first = store.appendMessage("run-chat", {
+      role: "owner",
+      text: "make the hero warmer",
+      images: [],
+    });
+    const second = store.appendMessage("run-chat", {
+      role: "owner",
+      text: "and use this reference",
+      images: ["/w/chat/1-1.png", "/w/chat/1-2.png"],
+    });
+
+    assert.equal(first.seq, 1);
+    assert.equal(second.seq, 2, "seq is allocated per run, in order");
+    assert.equal(first.deliveredAt, null, "a new message has not been delivered");
+    assert.deepEqual(second.images, ["/w/chat/1-1.png", "/w/chat/1-2.png"]);
+
+    // BOTH pending before a drain.
+    assert.equal(store.pendingMessages("run-chat").length, 2);
+
+    // The drain stamps them.
+    store.markMessagesDelivered("run-chat", [first.seq, second.seq]);
+
+    assert.equal(
+      store.pendingMessages("run-chat").length,
+      0,
+      "a stamped message must never be injected a second time",
+    );
+
+    // And the record still shows both, now with a delivery instant.
+    const all = store.messages("run-chat");
+    assert.equal(all.length, 2, "delivery is a stamp, not a deletion");
+    for (const message of all) {
+      assert.ok(
+        message.deliveredAt !== null,
+        "a delivered message must carry WHEN, so the UI can say so",
+      );
+    }
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a message the RUN wrote is never re-injected into the run's own prompt", () => {
+  /*
+   * `pendingMessages` filters on `role = 'owner'`. Without that filter the
+   * orchestrator's own messages would be folded back into its next prompt, and the
+   * run would spend a segment answering itself.
+   */
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-chat-role-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-role");
+    store.appendMessage("run-role", { role: "run", text: "I have locked 01-hero.png", images: [] });
+    assert.equal(store.messages("run-role").length, 1, "it is still in the transcript");
+    assert.equal(store.pendingMessages("run-role").length, 0, "but it is not an instruction");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("re-stamping an already-delivered message does not move its delivery time", () => {
+  // The UPDATE carries `AND delivered_at IS NULL`. Without it, a second drain would
+  // rewrite the instant and the record would claim a later delivery than happened.
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-chat-idem-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-idem");
+    const message = store.appendMessage("run-idem", { role: "owner", text: "x", images: [] });
+    store.markMessagesDelivered("run-idem", [message.seq]);
+    const firstStamp = store.messages("run-idem")[0]?.deliveredAt;
+    assert.ok(firstStamp !== null && firstStamp !== undefined);
+
+    store.markMessagesDelivered("run-idem", [message.seq]);
+    assert.equal(store.messages("run-idem")[0]?.deliveredAt, firstStamp);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

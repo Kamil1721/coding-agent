@@ -138,9 +138,19 @@ function Sheet({
 export function DetailSheet({
   node,
   onClose,
+  chat,
 }: {
   node: GraphNode;
   onClose: () => void;
+  /**
+   * The chat panel, or undefined for a node that has no session to steer.
+   *
+   * PASSED IN RATHER THAN BUILT HERE, because deciding WHICH node is steerable
+   * needs the run's status and its message list, and this sheet has neither. It
+   * renders what it is given, above everything else — the owner asked for the chat
+   * at the top of the panel.
+   */
+  chat?: ReactNode;
 }): ReactNode {
   const role = roleOf(node.agent, node.lane);
   return (
@@ -153,6 +163,7 @@ export function DetailSheet({
       <div className="border-b border-line px-3 py-2">
         <RoleChip role={role} />
       </div>
+      {chat}
       <div className="px-3 py-2.5">
         {/* `header={false}`: the sheet's own chrome already carries this agent's
             name and its close button. */}

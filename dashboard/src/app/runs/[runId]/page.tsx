@@ -49,13 +49,22 @@
  * owner made, and `design-lock.browser.spec.ts` asserts the panel is visible
  * without a click in all four of the shapes `RunDetail.designLock` arrives in.
  *
- * FULL BLEED WITHOUT TOUCHING `AppShell`. The shell is not this task's file, so
- * the wrapper below cancels `main`'s horizontal padding and its top padding with
- * negative margins and takes `100dvh` minus `--run-chrome` — the three boxes it
- * cannot remove (the 44px sticky header, `main`'s bottom padding, the footer).
- * That number is defended rather than trusted: `run-canvas.browser.spec.ts` fails
- * if this page ever acquires a vertical scrollbar, which is what a wrong
- * subtraction produces.
+ * FULL BLEED IS NOW THE SHELL'S JOB, AND HAD TO BECOME IT — 2026-07-30.
+ *
+ * This file used to say "the shell is not this task's file", and cancelled `main`'s
+ * padding with `-mx-4 -mt-4` plus `100dvh - var(--run-chrome)`. That cannot work
+ * and the reason is simple: `main` also carried `max-w-[1440px] mx-auto`, and NO
+ * CHILD CAN CANCEL A max-width ON ITS PARENT. On the owner's 2000px window the
+ * result was a 1440px canvas with 280px of dead gutter down each side — measured
+ * in the browser, `mainLeft: 280, mainRight: 1720` — which is precisely the
+ * "fullscreen canvas" this redesign claimed to have shipped.
+ *
+ * So `AppShell.isFullBleed` now drops the cap and the padding for `/runs/<id>`
+ * only, and this wrapper is a plain `h-full`. The `--run-chrome` subtraction is
+ * gone with it: it was a measured constant ("94px still produced a 1px document
+ * overflow") whose defence — `run-canvas.browser.spec.ts` — DID NOT EXIST. Flex
+ * fill has no constant to get wrong. `run-layout.browser.spec.ts` now measures the
+ * bleed and the absence of a scrollbar, which is the guard that comment described.
  *
  * THE MOUNT ORDER STILL MATTERS. `run === undefined` early-returns above the
  * canvas, which is the boundary spec §9.3 requires the canvas to live below:
@@ -77,9 +86,19 @@ import { OrchestrationCanvas } from "@/components/canvas/orchestration-canvas";
 import { RunHud } from "@/components/canvas/run-hud";
 import { DetailSheet, RunSheet } from "@/components/canvas/sheet";
 import { Notice, Panel, Skeleton, cx } from "@/components/ui";
-import { ApiError, cancelRun, errorMessage, resumeRun } from "@/lib/api";
+import {
+  ApiError,
+  cancelRun,
+  errorMessage,
+  resumeRun,
+  runMessages,
+  sendRunMessage,
+  type ChatMessage,
+} from "@/lib/api";
+import { OrchestratorChat } from "@/components/canvas/orchestrator-chat";
 import { findModel } from "@/lib/cost";
 import { useModels } from "@/lib/hooks";
+import { isTerminalStatus } from "@/lib/api-types";
 import { designLockPhase } from "@/lib/mockups";
 import { useLiveRun, useNow } from "@/lib/use-run-stream";
 
@@ -103,6 +122,37 @@ export default function RunPage(): ReactNode {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showAmbient, setShowAmbient] = useState(false);
   const [runSheetOpen, setRunSheetOpen] = useState(false);
+
+  /*
+   * THE OWNER↔RUN CHAT.
+   *
+   * Polled rather than pushed, and that is a deliberate scope line: the SSE stream
+   * carries a `log` line when a message is queued and another when it is folded into
+   * a prompt, so the trace is already live — but `deliveredAt` lives on the message
+   * row, not on an event, and adding a message event type to the frozen `SseEvent`
+   * union to save one fetch is not a trade worth making. The refetch runs on send and
+   * on selection, which is every moment the panel is visible and could be stale.
+   */
+  const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
+  const loadMessages = useCallback((): void => {
+    if (runId === null) return;
+    void runMessages(runId)
+      .then((response) => setMessages(response.messages))
+      // A failed poll must not blank the transcript the owner is reading.
+      .catch(() => undefined);
+  }, [runId]);
+
+  const onSendMessage = useCallback(
+    async (text: string, images: readonly string[]): Promise<void> => {
+      if (runId === null) return;
+      await sendRunMessage(runId, text, images);
+      loadMessages();
+      // The queued message also lands on the event stream, so pull the trace forward
+      // rather than waiting for the next tick to explain the change in behaviour.
+      refresh();
+    },
+    [runId, loadMessages, refresh],
+  );
 
   const act = useCallback(
     (action: (id: string) => Promise<unknown>) => (): void => {
@@ -152,6 +202,19 @@ export default function RunPage(): ReactNode {
   const clearSelection = useCallback((): void => {
     setSelectedId(null);
   }, []);
+
+  /*
+   * FETCH ON SELECT rather than on mount. The chat only exists inside the detail
+   * sheet, so a run whose nodes are never opened should not pull a transcript — and
+   * re-fetching on each open is what keeps `deliveredAt` current without a timer.
+   */
+  const selectNode = useCallback(
+    (nodeId: string | null): void => {
+      setSelectedId(nodeId);
+      if (nodeId !== null) loadMessages();
+    },
+    [loadMessages],
+  );
 
   const openRunSheet = useCallback((): void => {
     setRunSheetOpen(true);
@@ -210,17 +273,17 @@ export default function RunPage(): ReactNode {
   return (
     <div
       className={cx(
-        // Cancel `main`'s px-4 and pt-4; take the viewport minus the chrome that
-        // is not this file's to remove.
-        "relative -mx-4 -mt-4 overflow-hidden border-y border-line bg-canvas",
-        "h-[calc(100dvh-var(--run-chrome))] min-h-[460px]",
+        // `AppShell` gives this route a full-bleed `main` with no cap and no
+        // padding (see `isFullBleed`), so there is nothing left to cancel and
+        // nothing to subtract: fill the parent.
+        "relative h-full overflow-hidden border-y border-line bg-canvas",
       )}
     >
       <OrchestrationCanvas
         graph={graph}
         ready={graphReady}
         selectedId={selectedId}
-        onSelect={setSelectedId}
+        onSelect={selectNode}
         showAmbient={showAmbient}
         onShowAmbient={setShowAmbient}
         /*
@@ -229,6 +292,9 @@ export default function RunPage(): ReactNode {
          * viewport narrower than 420px the sheet IS the pane and there is nowhere
          * to pan a card to.
          */
+        // An empty graph on a live run and on a dead one are the same value and
+        // different facts; only this page knows which.
+        runIsActive={!isTerminalStatus(run.status)}
         rightInset={selected === null ? 0 : 420}
         hud={
           /*
@@ -299,7 +365,21 @@ export default function RunPage(): ReactNode {
                    */
                   lockIsBlocking
                     ? "ring-2 ring-accent/50"
-                    : "max-h-[132px] opacity-90 min-[900px]:max-h-[200px]",
+                    /*
+                     * RAISED 132/200 → 200/380 ON 2026-07-30, because the cap was
+                     * doing two jobs and only one of them was wanted.
+                     *
+                     * It exists so a SETTLED record cannot cover the graph, which is
+                     * right. But 200px also clipped `ui-designer`'s 480-character
+                     * reason mid-word, and clipping is what made it read as a wall of
+                     * text rather than a paragraph. The reason is now clamped to three
+                     * lines with its own unfold (`ReasonBlock`), so the panel is short
+                     * BY DEFAULT and this cap only has to be big enough for the
+                     * unfolded state to be readable instead of a 200px peephole.
+                     *
+                     * Still capped, still `overflow-y-auto`: the graph stays visible.
+                     */
+                    : "max-h-[200px] opacity-90 min-[900px]:max-h-[380px]",
                 )}
               >
                 <DesignLockPanel
@@ -314,7 +394,29 @@ export default function RunPage(): ReactNode {
         }
       />
 
-      {selected !== null && <DetailSheet node={selected} onClose={clearSelection} />}
+      {selected !== null && (
+        <DetailSheet
+          node={selected}
+          onClose={clearSelection}
+          /*
+           * THE CHAT IS THE ROOT SESSION'S ONLY.
+           *
+           * `parent === null` is the run's own orchestrator session — the one thing
+           * with a session to inject into. A sub-agent is spawned with a prompt and
+           * ends; a chat box on one would be a control that cannot do anything, which
+           * is the category of thing this dashboard is supposed to refuse.
+           */
+          chat={
+            selected.parent === null ? (
+              <OrchestratorChat
+                messages={messages}
+                runIsOver={isTerminalStatus(run.status)}
+                onSend={onSendMessage}
+              />
+            ) : undefined
+          }
+        />
+      )}
 
       {runSheetOpen && (
         <RunSheet

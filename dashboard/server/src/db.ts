@@ -212,6 +212,25 @@ export interface StoredEvent {
   readonly event: SseEvent;
 }
 
+/** Who wrote a chat message. `run` is the orchestrator, `owner` is the human. */
+export type ChatRole = "owner" | "run";
+
+export interface ChatMessage {
+  readonly seq: number;
+  readonly at: string;
+  readonly role: ChatRole;
+  readonly text: string;
+  /** Absolute paths under `runs/<id>/chat/`. Empty when none were attached. */
+  readonly images: readonly string[];
+  /**
+   * When the run folded this into a prompt, or null while it is still waiting.
+   *
+   * NULL ON A FINISHED RUN MEANS IT WAS NEVER SEEN, and the UI must say so rather
+   * than imply the redirection landed.
+   */
+  readonly deliveredAt: string | null;
+}
+
 /* -------------------------------------------------------------------------
  * Narrowing helpers
  *
@@ -409,6 +428,44 @@ CREATE TABLE IF NOT EXISTS screenshots (
   label       TEXT NOT NULL,
   captured_at TEXT NOT NULL,
   PRIMARY KEY (run_id, path)
+) WITHOUT ROWID;
+
+/*
+ * THE OWNER-TO-RUN CHANNEL. Until 2026-07-30 there was none: the only way to say
+ * anything to a run was POST /api/runs/:id/resume with an optional chosenMockup,
+ * which is one string from a fixed set of five.
+ *
+ * NOTE FOR EDITORS: this comment sits inside a template literal, so it must contain
+ * no backticks. An earlier draft quoted identifiers the way the rest of the codebase
+ * does and terminated the SCHEMA string mid-sentence.
+ *
+ * delivered_at IS THE WHOLE DESIGN. It is NULL while a message waits and is stamped
+ * when the run has actually folded it into a prompt. That keeps three states apart
+ * that a boolean would collapse:
+ *
+ *   - queued and not yet seen (the UI says it is waiting for the next boundary),
+ *   - taken up at a known instant (the UI can say when),
+ *   - never taken up, because the run ended first -- which must not read as
+ *     "delivered", or the owner believes a redirection landed that the build never
+ *     saw.
+ *
+ * Stamping at pickup rather than at insert is also what makes delivery AT MOST ONCE
+ * across a resume: the drain selects on delivered_at IS NULL, so a run that restarts
+ * cannot re-inject an instruction it already acted on.
+ *
+ * images is newline-joined ABSOLUTE paths, not blobs. The bytes live under
+ * runs/<id>/chat/, the same shape the screenshots table already uses: a SQLite row is
+ * the wrong place for a 2MB PNG, and the builder needs a path to Read anyway.
+ */
+CREATE TABLE IF NOT EXISTS messages (
+  run_id       TEXT NOT NULL,
+  seq          INTEGER NOT NULL,
+  at           TEXT NOT NULL,
+  role         TEXT NOT NULL,
+  text         TEXT NOT NULL,
+  images       TEXT NOT NULL DEFAULT '',
+  delivered_at TEXT,
+  PRIMARY KEY (run_id, seq)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS seat_spend (
@@ -728,6 +785,78 @@ export class RunStore {
       .prepare("INSERT INTO events (run_id, seq, at, payload) VALUES (?, ?, ?, ?)")
       .run(runId, seq, at, JSON.stringify(safe));
     return { seq, at, event: safe };
+  }
+
+  /**
+   * Record one chat message. `seq` is allocated in the same synchronous block that
+   * inserts, exactly as `appendEvent` does, so messages are totally ordered.
+   */
+  appendMessage(
+    runId: string,
+    message: { role: ChatRole; text: string; images: readonly string[] },
+  ): ChatMessage {
+    const at = new Date().toISOString();
+    const row = this.#db
+      .prepare("SELECT COALESCE(MAX(seq), 0) AS m FROM messages WHERE run_id = ?")
+      .get(runId);
+    const seq = (row === undefined ? 0 : num(row, "m")) + 1;
+    /*
+     * REDACTED LIKE ANY OTHER PERSISTED TEXT. An owner typing a redirection may
+     * paste a key into it — that is exactly the mistake `secret-intake.ts` exists to
+     * prevent elsewhere — and this text is written to SQLite AND folded into a
+     * subprocess prompt. Running it through the same redactor the event stream uses
+     * means a pasted token cannot reach either.
+     */
+    const safe = redactForPersistence({ type: "log", level: "info", text: message.text });
+    const text = safe.type === "log" ? safe.text : message.text;
+    this.#db
+      .prepare(
+        "INSERT INTO messages (run_id, seq, at, role, text, images, delivered_at) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+      )
+      .run(runId, seq, at, message.role, text, message.images.join("\n"));
+    return { seq, at, role: message.role, text, images: [...message.images], deliveredAt: null };
+  }
+
+  /** Every message on a run, oldest first. What the chat panel renders. */
+  messages(runId: string): readonly ChatMessage[] {
+    const rows = this.#db
+      .prepare(
+        "SELECT seq, at, role, text, images, delivered_at FROM messages WHERE run_id = ? ORDER BY seq ASC",
+      )
+      .all(runId);
+    return rows.map((row) => ({
+      seq: num(row, "seq"),
+      at: str(row, "at"),
+      role: str(row, "role") === "run" ? "run" : "owner",
+      text: str(row, "text"),
+      images: str(row, "images") === "" ? [] : str(row, "images").split("\n"),
+      deliveredAt: row["delivered_at"] === null ? null : str(row, "delivered_at"),
+    }));
+  }
+
+  /**
+   * Owner messages the run has not folded into a prompt yet, oldest first.
+   *
+   * `role = 'owner'` matters: a message the RUN wrote is already in its own context
+   * and re-injecting it would have the orchestrator answering itself.
+   */
+  pendingMessages(runId: string): readonly ChatMessage[] {
+    return this.messages(runId).filter(
+      (message) => message.role === "owner" && message.deliveredAt === null,
+    );
+  }
+
+  /**
+   * Stamp messages as taken up. Called by the run AFTER they are in a prompt, never
+   * before — a crash between the two must lose the stamp, not the instruction.
+   */
+  markMessagesDelivered(runId: string, seqs: readonly number[]): void {
+    if (seqs.length === 0) return;
+    const at = new Date().toISOString();
+    const update = this.#db.prepare(
+      "UPDATE messages SET delivered_at = ? WHERE run_id = ? AND seq = ? AND delivered_at IS NULL",
+    );
+    for (const seq of seqs) update.run(at, runId, seq);
   }
 
   /** Persisted events with `seq > after`, oldest first. */

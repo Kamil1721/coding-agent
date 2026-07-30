@@ -78,11 +78,72 @@ function AuthGlance(): ReactNode {
   );
 }
 
+/**
+ * WHICH ROUTES GET THE 1440px CAP, AND WHY THE RUN VIEW DOES NOT.
+ *
+ * `main` used to cap every route at 1440px and centre it. On a 2000px window that
+ * is a 1440px canvas with 280px of dead gutter down each side — measured, not
+ * guessed — and the owner's verdict was "make the canvas actually full screen not
+ * cut off on the sides".
+ *
+ * The cap could not simply be deleted: it is what stops the NEW TICKET screen
+ * becoming a 2000px-wide textarea, and `/runs` is a list that wants it too. So the
+ * escape is scoped to the one route whose content is a viewport-filling graph.
+ *
+ * `/runs/<id>` ONLY, not `/runs`. The regex takes exactly one path segment after
+ * `/runs`, so the list keeps the cap and the run view loses it.
+ *
+ * THE PREVIOUS ATTEMPT AT THIS LIVED IN THE PAGE and could not work. The run page
+ * cancels `main`'s PADDING with `-mx-4 -mt-4`, which is 16px; nothing a child can
+ * do cancels a `max-width` on its parent. That is why the gutters survived a
+ * redesign whose whole stated purpose was a fullscreen canvas.
+ */
+function isFullBleed(pathname: string): boolean {
+  return /^\/runs\/[^/]+$/.test(pathname);
+}
+
 export function AppShell({ children }: { children: ReactNode }): ReactNode {
+  const pathname = usePathname();
+  const fullBleed = isFullBleed(pathname);
+
   return (
-    <div className="flex min-h-full flex-col">
-      <header className="sticky top-0 z-20 border-b border-line bg-canvas/95 backdrop-blur">
-        <div className="mx-auto flex h-11 w-full max-w-[1440px] items-center gap-4 px-4">
+    /*
+     * TWO SHELL MODES, and the difference is where the scrollbar lives.
+     *
+     * Normally the document scrolls: `min-h-full` lets `main` grow past the
+     * viewport and the page scrolls as one. That is correct for a form or a list.
+     *
+     * Full bleed pins the shell to exactly one viewport (`h-dvh`, `overflow-hidden`)
+     * and gives `main` `flex-1 min-h-0`, so the canvas simply fills what the header
+     * and footer leave. `min-h-0` is load-bearing: without it a flex child refuses
+     * to shrink below its content and the footer gets pushed off-screen.
+     *
+     * THIS REPLACES AN ARITHMETIC THAT WAS NEVER GUARDED. The page used to take
+     * `100dvh - var(--run-chrome)` where `--run-chrome: 100px` was a MEASURED fudge
+     * ("94px still produced a 1px document overflow"), and globals.css claimed
+     * `run-canvas.browser.spec.ts` went red if it drifted. That file does not exist.
+     * Flex fill needs no constant, so there is no number left to drift.
+     */
+    <div
+      className={cx(
+        "flex flex-col",
+        fullBleed ? "h-dvh overflow-hidden" : "min-h-full",
+      )}
+    >
+      <header className="sticky top-0 z-20 shrink-0 border-b border-line bg-canvas/95 backdrop-blur">
+        {/*
+          * The header and footer carry their OWN cap, separate from `main`'s. Left
+          * alone on a full-bleed route they inset the nav to 1440px while the canvas
+          * below ran edge to edge — visible in the first screenshot of the fix as a
+          * header that looked misaligned against its own page. So the bleed carries
+          * through all three boxes or none of them.
+          */}
+        <div
+          className={cx(
+            "flex h-11 w-full items-center gap-4 px-4",
+            fullBleed ? "" : "mx-auto max-w-[1440px]",
+          )}
+        >
           <Link href="/" className="flex items-center gap-2">
             <span className="text-[13px] font-semibold tracking-tight text-ink">
               agent console
@@ -102,17 +163,37 @@ export function AppShell({ children }: { children: ReactNode }): ReactNode {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-4">{children}</main>
+      <main
+        className={cx(
+          "w-full flex-1",
+          fullBleed
+            ? // No cap, no padding, and allowed to shrink so the canvas can own
+              // exactly the space between header and footer.
+              "min-h-0"
+            : "mx-auto max-w-[1440px] px-4 py-4",
+        )}
+      >
+        {children}
+      </main>
 
-      <footer className="border-t border-line px-4 py-2">
-        <div className="mx-auto flex w-full max-w-[1440px] items-center gap-3 text-[11px] text-ink-faint">
-          <span>Bound to 127.0.0.1. Single user. Not reachable off-machine.</span>
-          <span aria-hidden="true">·</span>
-          <span>
-            Work is produced by an autonomous AI agent, not a human.
-          </span>
-        </div>
-      </footer>
+      {/*
+        * THE FOOTER IS GONE — 2026-07-30, at the owner's request.
+        *
+        * It read "Bound to 127.0.0.1. Single user. Not reachable off-machine. · Work
+        * is produced by an autonomous AI agent, not a human." — on every screen,
+        * forever, to an audience of exactly one person who runs the server himself.
+        * Both sentences are the kind of disclosure a PUBLISHED tool owes strangers.
+        * This one has no strangers: "there is no point in this bar at the bottom this
+        * is only used by me".
+        *
+        * NEITHER FACT IS LOST WHERE IT MATTERS. The bind is enforced in code — the
+        * process exits 2 if `DASHBOARD_HOST` is anything but `127.0.0.1` — and stated
+        * in the README, which is where someone who has not run it yet looks. The AI
+        * provenance is on every artefact the run produces, not just on this chrome.
+        *
+        * Removing it also gives the canvas its ~34px back, which on the run route is
+        * pure graph.
+        */}
     </div>
   );
 }

@@ -530,7 +530,13 @@ async function startHarness(): Promise<Harness> {
     env: {},
   });
   const catalog = new ModelCatalog(auth, {}, async () => []);
-  const orchestrator: RunController = { pump: () => {}, cancel: () => false, resume: () => false };
+  const orchestrator: RunController = {
+    pump: () => {},
+    cancel: () => false,
+    resume: () => false,
+    // No live segment in a routing test: a message falls through to the queue.
+    pushLiveMessage: () => false,
+  };
   const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths });
   await new Promise<void>((resolve) => server.listen({ host: LOOPBACK_HOST, port: 0 }, resolve));
   const info = server.address() as AddressInfo;

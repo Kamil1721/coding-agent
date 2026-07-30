@@ -152,6 +152,14 @@ function fitOptionsFor(paneWidth: number, hasHud: boolean) {
  *  it answers "show me the whole run" and the reader has asked for it explicitly. */
 const MANUAL_FIT_OPTIONS = { padding: 0.08, maxZoom: 1, minZoom: MIN_ZOOM } as const;
 
+/**
+ * How much the pane has to change before a re-fit is worth animating.
+ *
+ * Below this, a resize is jitter — a scrollbar inside the sheet, a subpixel
+ * reflow — and re-fitting on it would move the graph while the reader is reading.
+ */
+const RESIZE_REFIT_THRESHOLD_PX = 24;
+
 /** How long the arrival sweep runs before every edge settles. */
 const SWEEP_STEP_MS = 190;
 const SWEEP_TAIL_MS = 1_200;
@@ -166,6 +174,15 @@ export interface CanvasProps {
   readonly onShowAmbient: (next: boolean) => void;
   /** The run-level affordance. Rendered top-left, over the canvas. */
   readonly hud?: ReactNode;
+  /**
+   * True while the run can still produce agents.
+   *
+   * The canvas cannot derive this: it is handed a `GraphState`, and an empty graph on
+   * a RUNNING run ("the spec is still being written") and an empty graph on a finished
+   * one ("this run never emitted graph events") are the same value and different
+   * facts. Conflating them is what made a healthy new run look broken.
+   */
+  readonly runIsActive?: boolean;
   /**
    * How many pixels of the pane's right edge the page has covered with a sheet.
    *
@@ -193,6 +210,7 @@ function CanvasInner({
   onShowAmbient,
   hud,
   rightInset: requestedInset = 0,
+  runIsActive = false,
 }: CanvasProps): ReactNode {
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
@@ -269,6 +287,31 @@ function CanvasInner({
   const nodesInitialized = useNodesInitialized();
   const hasFitted = useRef(false);
   const shell = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Latches true the first time the READER moves the view or a node.
+   *
+   * Read by the resize re-fit below, which stops re-fitting forever once this is
+   * set: after a deliberate pan, zoom or drag, the viewport belongs to the reader
+   * and a resize is not permission to take it back.
+   */
+  const viewAdjusted = useRef(false);
+  const markViewAdjusted = useCallback((): void => {
+    viewAdjusted.current = true;
+  }, []);
+
+  /**
+   * `onMoveEnd` fires for this component's own `fitView` too. React Flow passes
+   * the triggering event for a user gesture and `null` when the move was
+   * programmatic, so the null check is what keeps our own fit from latching the
+   * flag and disabling the next re-fit.
+   */
+  const onMoveEnd = useCallback(
+    (event: MouseEvent | TouchEvent | null): void => {
+      if (event !== null) viewAdjusted.current = true;
+    },
+    [],
+  );
 
   /**
    * The sheet's inset, clamped to something that leaves a canvas behind it.
@@ -430,11 +473,51 @@ function CanvasInner({
    * Nodes
    * ------------------------------------------------------------- */
 
+  /*
+   * WHY AN EPOCH AND NOT JUST CLEARING THE MAP.
+   *
+   * `draggedRef` is a REF — deliberately, so a drag does not re-run the node builder
+   * sixty times a second. The cost is that emptying it changes nothing on screen:
+   * React has no idea the map it never subscribed to is now different, and the memo
+   * below keeps returning its cached nodes at the dragged positions.
+   *
+   * So "tidy" clears the map AND bumps this, which is in the memo's dependency list
+   * and is the only thing that makes the rebuild happen.
+   */
+  const [layoutEpoch, setLayoutEpoch] = useState(0);
+
+  /** How many cards the reader has dragged. Drives the tidy button's presence. */
+  const [moved, setMoved] = useState(0);
+
   const positionOf = useCallback(
     (entry: PlacedNode): XYPosition =>
       draggedRef.current.get(entry.key) ?? { x: entry.x, y: entry.y },
-    [],
+    // `layoutEpoch` is not read here — it is what invalidates this callback, and
+    // through it the node memo, after `draggedRef` is emptied.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layoutEpoch],
   );
+
+  /**
+   * Put every card back where the layout says it goes, and re-fit.
+   *
+   * THE OWNER'S ASK: "there should also be a auto organise button where it puts a the
+   * workflow in a lined up state instead of being messy when i organised it
+   * incorrectly." Dragging is permanent by design — `draggedRef` is never cleared by a
+   * re-fold, an expand, or a new agent arriving — which is right for a deliberate
+   * arrangement and leaves no way back from an accidental one. This is the way back.
+   *
+   * IT ALSO CLEARS `viewAdjusted`. That latch exists so a resize cannot steal a
+   * viewport the reader positioned themselves; but asking to tidy IS asking for the
+   * automatic view again, so the latch is released and the resize re-fit resumes.
+   */
+  const tidy = useCallback((): void => {
+    draggedRef.current.clear();
+    viewAdjusted.current = false;
+    setMoved(0);
+    setLayoutEpoch((previous) => previous + 1);
+    void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, hudRef.current));
+  }, [flow]);
 
   const firstKey = placement.nodes[0]?.key ?? null;
   const tabStop = tabbable ?? selectedId ?? firstKey;
@@ -633,6 +716,68 @@ function CanvasInner({
     setSweeping(true);
   }, [nodesInitialized, placement.nodes.length, flow]);
 
+  /*
+   * RE-FIT WHEN THE PANE CHANGES SIZE — and only while the view is still the
+   * one this component chose.
+   *
+   * WHY THIS IS NEEDED NOW. The fit above runs exactly once, against the pane
+   * width it saw on mount, and `fitOptionsFor` reserves 388px on the left for the
+   * HUD. That was survivable while `main` capped every route at 1440px, because
+   * the pane was 1440px on mount and 1440px forever. It is not survivable now
+   * that `/runs/<id>` is full bleed: the pane is as wide as the window, so
+   * dragging the window — or opening the app on one monitor and moving it to
+   * another — left a transform computed for a pane that no longer exists. The
+   * graph stayed bunched at its old scale in the corner of a larger canvas, which
+   * is the same complaint as the gutters wearing different clothes.
+   *
+   * WHY IT CANNOT JUST RE-FIT UNCONDITIONALLY. This file's contract is that a
+   * dragged node keeps its position forever and "`fitView` runs exactly once and
+   * never after a drag, so the two cannot fight". A resize-triggered fit would
+   * fight it — and would also throw away a pan or zoom the reader performed
+   * deliberately, which is worse than a stale fit because the reader chose the
+   * thing being discarded.
+   *
+   * So `viewAdjusted` latches on the first USER-initiated change and this effect
+   * gives up permanently once it does. The two signals:
+   *
+   *   - a node drag stopping (`onNodeDragStop`);
+   *   - `onMoveEnd` with a non-null event. React Flow passes the triggering
+   *     MouseEvent/TouchEvent for a user pan or zoom and `null` when the movement
+   *     was programmatic — confirmed against the API reference, not assumed, and
+   *     it is the whole reason this can tell its own `fitView` apart from a drag
+   *     of the pane.
+   *
+   * WIDTH AND HEIGHT BOTH MATTER, but only a MATERIAL change re-fits. A 1px
+   * jitter — a scrollbar appearing inside the sheet, a subpixel reflow — would
+   * otherwise animate the graph for no reason.
+   */
+  useEffect(() => {
+    const element = shell.current;
+    if (element === null) return;
+
+    let last = { width: element.clientWidth, height: element.clientHeight };
+
+    const observer = new ResizeObserver(() => {
+      if (viewAdjusted.current) return;
+      if (!hasFitted.current) return;
+      const next = {
+        width: element.clientWidth,
+        height: element.clientHeight,
+      };
+      if (
+        Math.abs(next.width - last.width) < RESIZE_REFIT_THRESHOLD_PX &&
+        Math.abs(next.height - last.height) < RESIZE_REFIT_THRESHOLD_PX
+      ) {
+        return;
+      }
+      last = next;
+      void flow.fitView(fitOptionsFor(next.width, hudRef.current));
+    });
+
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [flow]);
+
   /** The sweep's off switch, keyed on nothing but the flag it turns off. */
   useEffect(() => {
     if (!sweeping) return;
@@ -714,6 +859,10 @@ function CanvasInner({
       if (change.type !== "position") continue;
       if (change.position === undefined) continue;
       draggedRef.current.set(change.id, change.position);
+      // Mirrors the ref's SIZE into state so the tidy button can appear. The ref
+      // stays the source of truth for positions — this is only a count, so it
+      // re-renders once per newly-moved card rather than once per pointer move.
+      setMoved(draggedRef.current.size);
     }
     setNodes((current) => applyNodeChanges([...changes], current));
   }, []);
@@ -804,6 +953,12 @@ function CanvasInner({
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
         onPaneClick={onPaneClick}
+        /*
+         * The two "the reader has taken the wheel" signals. Both feed one ref that
+         * permanently disables the resize re-fit — see `viewAdjusted`.
+         */
+        onNodeDragStop={markViewAdjusted}
+        onMoveEnd={onMoveEnd}
         proOptions={{ hideAttribution: true }}
         minZoom={MIN_ZOOM}
         maxZoom={MAX_ZOOM}
@@ -863,6 +1018,22 @@ function CanvasInner({
             {allExpanded
               ? `fold ${String(placement.groupKeys.length)}`
               : `unfold ${String(foldedMembers)}`}
+          </Button>
+        )}
+
+        {/*
+          * AUTO-ORGANISE. Shown only once something has actually been moved: a button
+          * that tidies an untouched graph does nothing, and a control that does nothing
+          * teaches the reader to distrust the others.
+          */}
+        {moved > 0 && (
+          <Button
+            variant="default"
+            className="pointer-events-auto"
+            onClick={tidy}
+            title="Put every card back where the layout puts it, and frame the whole run again."
+          >
+            tidy up
           </Button>
         )}
         {ambientCount > 0 && (
@@ -930,12 +1101,38 @@ function CanvasInner({
               Reading the delegation graph…
             </div>
           ) : (
+            /*
+             * THREE EMPTY STATES, AND THEY WERE ONE — corrected 2026-07-30.
+             *
+             * A run 57 seconds old, in the SPEC phase, on Claude, was shown "This run
+             * emitted no graph events. Runs recorded before the canvas existed, and runs
+             * on the Codex provider, contain none." Every clause of that is false about
+             * that run, and the owner reasonably read it as a bug: "when you start a new
+             * run why is there no orchestator showing?"
+             *
+             * THE ACTUAL REASON, which nothing on screen said: the orchestrator node is
+             * minted by the BUILD segment. While the spec is being authored, audited and
+             * frozen there is no builder session, so there are no `graph_*` events to
+             * fold — measured on the live run as 0 `graph_agent` of 6 total events.
+             * Nothing is wrong; the graph has not started yet.
+             *
+             * So a run that is still WORKING says so and names what it is doing, and only
+             * a run that is genuinely over falls through to the historical explanation.
+             */
             <div className="max-w-[420px] rounded border border-line bg-surface/90 px-5 py-4 text-center">
-              <p className="text-[13px] font-semibold text-ink">No delegation recorded</p>
+              <p className="text-[13px] font-semibold text-ink">
+                {graph.nodes.length > 0
+                  ? "Only housekeeping so far"
+                  : runIsActive
+                    ? "The agents have not started yet"
+                    : "No delegation recorded"}
+              </p>
               <p className="mt-1.5 text-[12px] leading-relaxed text-ink-dim">
                 {graph.nodes.length > 0
                   ? "Every agent on this run is housekeeping. Use the housekeeping toggle to show them."
-                  : "This run emitted no graph events. Runs recorded before the canvas existed, and runs on the Codex provider, contain none — the run sheet's trace is their full record."}
+                  : runIsActive
+                    ? "The acceptance suite is being written and frozen first — that happens before any agent is spawned, so there is nothing to draw yet. The graph appears as soon as the build starts."
+                    : "This run emitted no graph events. Runs recorded before the canvas existed, and runs on the Codex provider, contain none — the run sheet's trace is their full record."}
               </p>
             </div>
           )}

@@ -120,6 +120,8 @@ async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
       if (chosenMockup === null || chosenMockup === undefined) return true;
       return store.listScreenshots(runId).some((shot) => shot.path === chosenMockup);
     },
+    // No live segment in a routing test, so every message falls to the queue.
+    pushLiveMessage: () => false,
   };
 
   const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths });

@@ -47,7 +47,7 @@ import {
   type DesignLockPhase,
 } from "@/lib/mockups";
 import { screenshotSrc } from "@/lib/screenshots";
-import { Badge, EmptyState, MonoPath, Panel, cx } from "@/components/ui";
+import { Badge, EmptyState, Lightbox, MonoPath, Panel, cx } from "@/components/ui";
 import type { Tone } from "@/lib/presentation";
 
 /* ------------------------------------------------------------------ */
@@ -162,6 +162,7 @@ function MockupCard({
 }): ReactNode {
   const src = screenshotSrc(runId, shot.path);
   const [failed, setFailed] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
   const showImage = src !== null && !failed;
   const section = mockupSection(shot.label);
   const interactive = onChoose !== null;
@@ -199,13 +200,39 @@ function MockupCard({
       )}
 
       {showImage ? (
-        <img
-          src={src}
-          alt={`Design mockup of the ${section} section`}
-          loading="lazy"
-          onError={() => setFailed(true)}
-          className="block h-[156px] w-full bg-canvas object-cover object-top"
-        />
+        /*
+         * CLICK TO ENLARGE — but only when the deck is NOT asking for a choice.
+         *
+         * While `interactive`, an invisible full-card button above this one means
+         * "build to this mockup", and two overlapping click targets on one card is
+         * how an owner locks a design when they meant to look at it. So the zoom is
+         * the settled-record affordance; during the choice, the card's job is the
+         * choice.
+         */
+        interactive ? (
+          <img
+            src={src}
+            alt={`Design mockup of the ${section} section`}
+            loading="lazy"
+            onError={() => setFailed(true)}
+            className="block h-[156px] w-full bg-canvas object-cover object-top"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setZoomed(true)}
+            aria-label={`Enlarge the ${section} mockup`}
+            className="block w-full cursor-zoom-in"
+          >
+            <img
+              src={src}
+              alt={`Design mockup of the ${section} section`}
+              loading="lazy"
+              onError={() => setFailed(true)}
+              className="block h-[156px] w-full bg-canvas object-cover object-top"
+            />
+          </button>
+        )
       ) : (
         <div className="flex h-[156px] items-center justify-center bg-canvas px-3 text-center text-[11px] leading-snug text-ink-faint">
           {src === null
@@ -225,6 +252,15 @@ function MockupCard({
        * a screenshot. Nothing was lost from the page, and the card now reads at a
        * glance.
        */}
+      {zoomed && src !== null && (
+        <Lightbox
+          src={src}
+          alt={`Design mockup of the ${section} section`}
+          caption={section}
+          onClose={() => setZoomed(false)}
+        />
+      )}
+
       <figcaption className="flex min-w-0 items-center justify-between gap-2 border-t border-line px-2.5 py-2">
         <span className="min-w-0 truncate text-[13px] text-ink" title={section}>
           {section}
@@ -250,6 +286,74 @@ const SUBTITLE: Readonly<Record<DesignLockPhase, string>> = {
   settled: "The design this run was built to, and graded against.",
   unlocked: "The DESIGN lane finished without a design to lock.",
 };
+
+/**
+ * Where a paragraph break belongs in a string nobody formatted.
+ *
+ * `ui-designer` writes `reason` as prose, and on the recorded run that is one
+ * 480-character sentence chained with semicolons and parentheses. Split on sentence
+ * ends only — `. ` followed by a capital — which is the one break that cannot invent
+ * structure the author did not write. A semicolon split reads better and would be
+ * this component deciding where the argument turns, which is not its call.
+ *
+ * The lookbehind is deliberately narrow so `ui-designer.` or `01-hero.png` cannot
+ * open a paragraph: it requires whitespace after the stop and a capital after that.
+ */
+function paragraphs(reason: string): readonly string[] {
+  return reason
+    .split(/(?<=\.)\s+(?=[A-Z])/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+/**
+ * The chooser's verbatim reason: clamped, with an unfold that shows all of it.
+ *
+ * WHY IT IS CLAMPED RATHER THAN JUST WRAPPED. This panel is DOCKED over the canvas
+ * and capped (132px, 200px above 900px) precisely so a settled record cannot cover
+ * the graph — a cap that was added after an unconstrained version covered it
+ * completely. So the text cannot simply be allowed to run: the fix for the wall of
+ * text must not reintroduce the takeover the cap exists to prevent.
+ *
+ * Hence three lines by default and a control that says how much more there is. The
+ * owner asked for "a unfold button where i see the whole lot", so open state is the
+ * WHOLE string — no second clamp, no inner scroll to hunt through.
+ */
+function ReasonBlock({ reason }: { reason: string }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const parts = paragraphs(reason);
+
+  return (
+    <div className="rounded-sm border-l-2 border-line-strong bg-canvas/40 pl-2.5 pr-2 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
+        ui-designer's recorded reason
+      </p>
+      <div
+        className={cx(
+          "mt-1 max-w-[68ch] space-y-1.5 text-[12px] leading-relaxed text-ink-dim",
+          // `line-clamp` needs a single block to clamp, so the collapsed state
+          // renders ONE paragraph; the split only applies once it is open.
+          !open && "line-clamp-3",
+        )}
+      >
+        {open ? (
+          parts.map((part, index) => <p key={String(index)}>{part}</p>)
+        ) : (
+          <p>{reason}</p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => setOpen((previous) => !previous)}
+        className="mt-1.5 text-[11px] text-accent underline-offset-2 hover:underline"
+      >
+        {open
+          ? "fold"
+          : `unfold the whole reason${parts.length > 1 ? ` (${String(parts.length)} sentences)` : ""}`}
+      </button>
+    </div>
+  );
+}
 
 export function DesignLockPanel({
   run,
@@ -324,8 +428,10 @@ export function DesignLockPanel({
         )}
 
         {phase === "settled" && (
-          <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-            {chooser.sentence}{" "}
+          <div className="space-y-2">
+            <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
+              {chooser.sentence}
+            </p>
             {/*
              * THE VERBATIM REASON IS SHOWN FOR `ui-designer` ONLY, and that is
              * not the record being hidden. §17.3 rule 4's "why" reaches the
@@ -337,11 +443,19 @@ export function DesignLockPanel({
              * word for word and dresses a host-composed string as testimony.
              * `ui-designer`'s comes out of the choice file it wrote and is the
              * only one carrying a judgement the page does not already make.
+             *
+             * IT IS NO LONGER INLINED INTO THE SENTENCE ABOVE. It was
+             * `{chooser.sentence} <span>Recorded reason: {lock.reason}</span>` in one
+             * `<p>`, and on the real run that string is 480 characters of
+             * semicolon-joined clauses. Run together with the host's own sentence and
+             * clipped by the dock's 132px cap it came out as a wall of grey text
+             * ending mid-word — the owner's words were "either too much text or its
+             * formated poorly causing it to be just a wall of text".
              */}
-            {lock.reason === null || lock.lockedBy !== "ui-designer" ? null : (
-              <span className="text-ink-faint">Recorded reason: {lock.reason}</span>
+            {lock.reason !== null && lock.lockedBy === "ui-designer" && (
+              <ReasonBlock reason={lock.reason} />
             )}
-          </p>
+          </div>
         )}
 
         {phase === "unlocked" && (

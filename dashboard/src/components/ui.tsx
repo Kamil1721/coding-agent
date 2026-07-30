@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { TONE_BADGE, TONE_DOT, TONE_TEXT, type Tone } from "@/lib/presentation";
 import { shortenPath } from "@/lib/format";
@@ -317,5 +318,107 @@ export function CommandLine({ command }: { command: string }): ReactNode {
       <code className="font-mono text-[11.5px] text-ink">{command}</code>
       <CopyButton value={command} />
     </span>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Lightbox — one image, big, over everything                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A full-screen image viewer.
+ *
+ * WHY IT EXISTS. The design mockups render at 156px tall with `object-cover`, which
+ * is the right size for comparing five of them at a glance and useless for judging
+ * one. The owner asked for the obvious thing: "when i click on these images they
+ * should come up bigger in the middle of the screen im currently on ontop the the
+ * canva and i can dismiss them by pressing x or outside of them."
+ *
+ * THREE WAYS OUT, and all three are conventions rather than inventions: the ×, a
+ * click on the backdrop, and Escape. Escape was not asked for and is included
+ * because a modal that traps a keyboard user is broken regardless of what was asked.
+ *
+ * `object-contain`, NOT `cover`. The card crops deliberately; this must not — a
+ * viewer that crops the thing you opened it to see has no reason to exist.
+ *
+ * IT IS A PORTAL, AND THE FIRST VERSION WASN'T — corrected after measuring.
+ *
+ * That version said "not a portal, and that is a deliberate limit: `fixed inset-0`
+ * with a high z-index escapes the canvas without one". `z-50` does not escape a
+ * STACKING CONTEXT. This is rendered from a mockup card inside the run page's HUD
+ * wrapper, which is `absolute … z-10`, so the backdrop's `z-50` was resolved WITHIN
+ * that z-10 context and lost to the shell's `sticky top-0 z-20` header.
+ *
+ * Measured, not reasoned about: `elementFromPoint(15, 15)` returned the header's
+ * div, so a click on the top strip never reached the backdrop and the image was drawn
+ * under the nav. Clicks lower down closed it correctly, which is exactly the kind of
+ * half-working that a spot check passes.
+ *
+ * `createPortal` to `document.body` puts it outside every app stacking context, so
+ * `fixed inset-0` means the viewport and nothing can be painted over it. React state
+ * and events still flow from the owning component — a portal moves the DOM node, not
+ * the tree.
+ */
+export function Lightbox({
+  src,
+  alt,
+  caption,
+  onClose,
+}: {
+  src: string;
+  alt: string;
+  caption?: string;
+  onClose: () => void;
+}): ReactNode {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  /*
+   * `document` IS NOT AVAILABLE DURING SSR. Next renders this component on the server
+   * first, so the portal target has to be guarded — without the check the run page
+   * throws `document is not defined` at build time.
+   */
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      // The backdrop IS the dismiss target. `onClick` here plus
+      // `stopPropagation` on the figure is what makes "outside" mean outside.
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={alt}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/90 p-6 backdrop-blur-sm"
+    >
+      <figure
+        onClick={(event) => event.stopPropagation()}
+        className="relative flex max-h-full max-w-full flex-col overflow-hidden rounded border border-line-strong bg-surface shadow-2xl"
+      >
+        <img
+          src={src}
+          alt={alt}
+          className="block max-h-[calc(100vh-9rem)] max-w-[calc(100vw-6rem)] object-contain"
+        />
+        {caption !== undefined && caption !== "" && (
+          <figcaption className="border-t border-line px-3 py-2 text-[12px] text-ink-dim">
+            {caption}
+          </figcaption>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-2 top-2 rounded-sm border border-line-strong bg-canvas/85 px-2 py-[2px] text-[13px] leading-none text-ink-dim backdrop-blur hover:text-ink"
+        >
+          ×
+        </button>
+      </figure>
+    </div>,
+    document.body,
   );
 }

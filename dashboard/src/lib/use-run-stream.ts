@@ -257,6 +257,26 @@ function asMcpServers(value: unknown): readonly GraphMcpServer[] {
  * `message` events; both spellings are accepted because guessing wrong here
  * silently blanks the entire live trace.
  */
+export /**
+ * The server's recorded instant, if the frame carried one.
+ *
+ * Spread rather than assigned so a frame WITHOUT `at` produces an object with no `at`
+ * key at all — `exactOptionalPropertyTypes` refuses an explicit `undefined`, and a
+ * missing key is also what `instantOf` expects for a pre-timestamp row.
+ */
+function atOf(record: Record<string, unknown>): { at?: string } {
+  const at = record["at"];
+  return typeof at === "string" ? { at } : {};
+}
+
+/**
+ * EXPORTED FOR TESTING, and the reason is a bug it let through.
+ *
+ * The live timeline lost every timestamp because this function dropped `at`, and the
+ * only check that existed exercised the SERVER's fold over a finished run. Nothing
+ * could reach this path from a test, so nothing did. `use-run-stream.unit.spec.ts`
+ * now drives it directly.
+ */
 export function parseRunEvent(
   raw: string,
   fallbackType: RunEventType | null,
@@ -385,6 +405,22 @@ export function parseRunEvent(
       const name = asString(record["name"]);
       const attribution = asAttribution(record["attribution"]);
       if (node === null || name === null || attribution === null) return null;
+      /*
+       * `at` IS CARRIED, AND DROPPING IT MADE THE LIVE TIMELINE USELESS.
+       *
+       * This parser rebuilds each event field by field — which is right, it is
+       * validating untrusted wire data — and `at` was simply not in the list. The
+       * server put it on the wire (`SseWireEvent`), `foldGraph` reads it via
+       * `instantOf`, and this line threw it away in between. Result: every step that
+       * arrived WHILE YOU WATCHED folded to `at: null` and the timeline printed an em
+       * dash for it. Only steps already durable at page load — folded server-side by
+       * `graphSnapshot` — had times.
+       *
+       * THE CHECK THAT MISSED IT: "388/388 events carry `at`, 304 distinct timestamps"
+       * was run against the SNAPSHOT path on a finished run. It exercised the server
+       * fold and never this function, so it could not have caught this no matter how
+       * green it went. A property proved on one of two paths is proved on one path.
+       */
       return {
         type: "graph_tool",
         node,
@@ -392,6 +428,7 @@ export function parseRunEvent(
         mcpServer: asString(record["mcpServer"]),
         summary: asString(record["summary"]) ?? "",
         attribution,
+        ...atOf(record),
       };
     }
     case "graph_skill": {
@@ -401,7 +438,7 @@ export function parseRunEvent(
       const attribution = asAttribution(record["attribution"]);
       if (node === null || skill === null || attribution === null) return null;
       if (source !== "preloaded" && source !== "invoked") return null;
-      return { type: "graph_skill", node, skill, source, attribution };
+      return { type: "graph_skill", node, skill, source, attribution, ...atOf(record) };
     }
     case "graph_hook": {
       const node = asNode(record["node"]);

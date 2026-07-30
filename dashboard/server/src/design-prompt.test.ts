@@ -470,3 +470,62 @@ test("with no written direction either, the handoff points at nothing rather tha
     assert.match(p, /no design input/i);
   }
 });
+
+/* ==================================================================
+ * WHO AUTHORS THE ART DIRECTION.
+ *
+ * These exist because `VISUAL_GATE_AUTHOR` was exported, asserted below to differ
+ * from `VISUAL_GATE_AGENT`, and NEVER PUT IN A PROMPT. That assertion passed for
+ * the whole life of the file while the production path ignored the constant — the
+ * exact "the assertion and the production path were never connected" shape
+ * HANDOVER §3 catalogues.
+ *
+ * Measured consequence on `run-2026-07-29T23-28-46-665Z-3d4d1ccb`: zero
+ * `graph_agent` events named `taste-frontend-expert`, the run made two Agent calls
+ * (`context-manager`, `ui-designer`), and the orchestrator ran all six
+ * `gemini-image.sh` calls itself — so `ui-designer` scored images the orchestrator
+ * had authored.
+ *
+ * WHAT THESE CANNOT DO, said plainly: they assert the prompt ASKS. Whether the
+ * model then delegates can only be established by a real run, which spends
+ * subscription quota and needs a Docker daemon for the gate. Read-verified, never
+ * executed — the same honesty STATUS §7 applies to `orchestrator.ts:1663-1665`.
+ * ================================================================== */
+
+test("the prompt DELEGATES authoring to the author seat, not to the orchestrator", () => {
+  const p = full();
+  assert.match(p, /WHO AUTHORS THIS/);
+  assert.match(
+    p,
+    new RegExp(`${VISUAL_GATE_AUTHOR}\`? — delegate to it, not to yourself`),
+    "the prompt must name the author seat as the delegate",
+  );
+});
+
+test("the author seat's NAME reaches the prompt — the constant is wired, not decorative", () => {
+  // The regression that matters: renaming the constant without updating the prompt,
+  // or reverting the prompt block, must turn this red rather than pass quietly.
+  assert.match(full(), new RegExp(VISUAL_GATE_AUTHOR));
+});
+
+test("the prompt forbids the GATE from authoring, in the same breath", () => {
+  // Without this sentence "delegate the art direction" is satisfiable by delegating
+  // it to `ui-designer`, which reintroduces the author-grades-itself problem the
+  // two seats exist to prevent.
+  assert.match(
+    full(),
+    new RegExp(`${VISUAL_GATE_AGENT}\`? MUST NOT be the author`),
+  );
+});
+
+test("the delegation instruction is absent when there is no image capability", () => {
+  /*
+   * A DEGRADED LANE HAS NO STILLS TO AUTHOR. Asking for a delegation that has
+   * nothing to do would spend a seat and a turn cap on an empty task — and spec §6.5
+   * already says the lane degrades rather than blocks.
+   */
+  // The branch is keyed on `mode`, not on a capability flag: `mode: "degraded"` is
+  // the no-stills path, where the prompt asks for WRITTEN art direction instead.
+  const degraded = full({ mode: "degraded" });
+  assert.doesNotMatch(degraded, /WHO AUTHORS THIS/);
+});

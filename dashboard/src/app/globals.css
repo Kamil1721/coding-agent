@@ -139,23 +139,24 @@ body {
   --role-unmapped: oklch(0.63 0.012 258);
 
   /*
-   * THE CHROME THE RUN CANVAS HAS TO SUBTRACT, IN ONE PLACE.
+   * `--run-chrome` WAS HERE AND IS DELETED — 2026-07-30.
    *
-   * The run view is a full-viewport canvas living inside `AppShell`, which is
-   * not this task's file to change. So it takes the viewport and removes the
-   * three boxes above and below it: the 44px sticky header, the 16px bottom
-   * padding `main` applies, and the ~34px footer. If the shell's chrome ever
-   * changes, `run-canvas.browser.spec.ts` goes red on the page acquiring a
-   * scrollbar — the number is defended rather than trusted.
+   * It was the run canvas's `100dvh - <chrome>` subtraction: a MEASURED constant
+   * ("94px still produced a 1px document overflow… 100px is a measured value that
+   * does not"), justified by the claim that `run-canvas.browser.spec.ts` "goes red
+   * on the page acquiring a scrollbar — the number is defended rather than
+   * trusted".
+   *
+   * THAT SPEC FILE NEVER EXISTED. `ls tests/run-canvas.browser.spec.ts` → no such
+   * file. The number was trusted, not defended, and its comment is what made it
+   * look otherwise.
+   *
+   * `AppShell` now gives `/runs/<id>` an `h-dvh` shell with a `flex-1 min-h-0`
+   * main, so the canvas fills what the header and footer leave with no arithmetic
+   * at all. There is no constant left to drift, which is a better outcome than a
+   * guarded one. The bleed and the absence of a scrollbar are asserted in
+   * `run-layout.browser.spec.ts`.
    */
-  /*
-   * MEASURED, NOT ADDED UP. The three boxes come to 85.75px in Chromium (a 45px
-   * header including its border, 16px of `main` padding, a 24.75px footer), and
-   * 94px still produced a 1px document overflow — sub-pixel rounding somewhere in
-   * the flex column above. 100px is a measured value that does not, with room for
-   * a rounding step either way, and it costs 14px of canvas.
-   */
-  --run-chrome: 100px;
 }
 
 /* ------------------------------------------------------------------ */

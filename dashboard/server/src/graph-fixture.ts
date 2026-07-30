@@ -14,9 +14,12 @@
  * own against the same values. Two implementations that both satisfy this
  * document are two implementations that agree about everything the canvas shows.
  *
- * IT IS TYPED, NOT JSON, ON PURPOSE. `events` is `readonly SseEvent[]`, so a
- * fixture event that is not a legal contract event is a COMPILE error here
- * rather than a fold of something the wire will never carry.
+ * IT IS TYPED, NOT JSON, ON PURPOSE. `events` is
+ * `readonly (SseEvent | SseWireEvent)[]`, so a fixture event that is not a legal
+ * contract event is a COMPILE error here rather than a fold of something the wire
+ * will never carry. The union is what lets the same array hold both the timed form
+ * the wire now carries and the bare form every pre-2026-07-30 run is made of —
+ * which is a case worth folding, not a legacy to paper over.
  *
  * THE SEQUENCE IS CHOSEN FOR THE CASES THAT BREAK QUIETLY, not for coverage:
  *
@@ -33,13 +36,13 @@
  * and a fixture updated to match a regression is how a broken fold ships green.
  */
 
-import type { GraphState, SseEvent } from "./api-types.js";
+import type { GraphState, SseEvent, SseWireEvent } from "./api-types.js";
 
 /** What `redactForPersistence` turns EVERY long high-entropy id into. */
 const REDACTED = "[REDACTED:HIGH_ENTROPY_TOKEN]";
 
 export const CANVAS_FIXTURE: {
-  readonly events: readonly SseEvent[];
+  readonly events: readonly (SseEvent | SseWireEvent)[];
   readonly expected: GraphState;
 } = {
   events: [
@@ -95,6 +98,19 @@ export const CANVAS_FIXTURE: {
       sdk: { taskId: REDACTED, toolUseId: "toolu_2" },
     },
     { type: "graph_agent_status", node: "n3", state: "running", attribution: "exact" },
+    /*
+     * THESE FOUR CARRY `at`, AND THE REST DELIBERATELY DO NOT.
+     *
+     * `at` is what `SseWireEvent` adds on the wire, and it is what turns
+     * `GraphNode.activity` from a list into a timeline. Putting it on the tool and
+     * skill events — the only two kinds that produce an activity entry — makes this
+     * fixture exercise the TIMED path, so the browser specs render real clock times
+     * and `graph.test.ts` can assert the ordering is chronological.
+     *
+     * Leaving it off every other event is the other half of the check: it proves a
+     * bare `SseEvent` still folds (every run recorded before 2026-07-30 is one) and
+     * that the absence surfaces as `at: null` rather than as a fabricated time.
+     */
     {
       type: "graph_tool",
       node: "n2",
@@ -102,6 +118,7 @@ export const CANVAS_FIXTURE: {
       mcpServer: null,
       summary: "file_path: /w/a.ts",
       attribution: "exact",
+      at: "2026-07-29T23:41:02.000Z",
     },
     {
       type: "graph_tool",
@@ -110,6 +127,7 @@ export const CANVAS_FIXTURE: {
       mcpServer: null,
       summary: "file_path: /w/b.ts",
       attribution: "exact",
+      at: "2026-07-29T23:41:19.000Z",
     },
     {
       type: "graph_tool",
@@ -118,8 +136,16 @@ export const CANVAS_FIXTURE: {
       mcpServer: "context7",
       summary: "library: react",
       attribution: "inferred",
+      at: "2026-07-29T23:41:44.000Z",
     },
-    { type: "graph_skill", node: "n3", skill: "superpowers:brainstorming", source: "invoked", attribution: "exact" },
+    {
+      type: "graph_skill",
+      node: "n3",
+      skill: "superpowers:brainstorming",
+      source: "invoked",
+      attribution: "exact",
+      at: "2026-07-29T23:42:08.000Z",
+    },
     {
       type: "graph_hook",
       node: "n1",
@@ -170,6 +196,10 @@ export const CANVAS_FIXTURE: {
         hooks: [{ event: "PreToolUse", tool: "Agent", decision: "deny", count: 1 }],
         toolCalls: 0,
         result: null,
+        // n1 only ever produced a hook and a status, and neither is an activity
+        // entry. An empty timeline is the correct answer, not a missing one.
+        activity: [],
+        activityDropped: 0,
       },
       {
         id: "n2",
@@ -195,6 +225,36 @@ export const CANVAS_FIXTURE: {
           toolUses: 9,
           durationMs: 42_000,
         },
+        /*
+         * THREE ENTRIES WHERE `tools` HAS TWO, which is the whole point of the
+         * field. `Read` was used twice and collapses to one counted pill; the
+         * timeline keeps both, in order, because "it read a.ts then b.ts then
+         * fetched the react docs" is the thing a counted pill cannot say.
+         */
+        activity: [
+          {
+            at: "2026-07-29T23:41:02.000Z",
+            kind: "tool",
+            name: "Read",
+            detail: "file_path: /w/a.ts",
+            truncated: false,
+          },
+          {
+            at: "2026-07-29T23:41:19.000Z",
+            kind: "tool",
+            name: "Read",
+            detail: "file_path: /w/b.ts",
+            truncated: false,
+          },
+          {
+            at: "2026-07-29T23:41:44.000Z",
+            kind: "tool",
+            name: "mcp__context7__get-library-docs",
+            detail: "library: react",
+            truncated: false,
+          },
+        ],
+        activityDropped: 0,
       },
       {
         id: "n3",
@@ -211,6 +271,18 @@ export const CANVAS_FIXTURE: {
         hooks: [],
         toolCalls: 0,
         result: null,
+        // A skill load is a timeline entry: on a real run it is the moment the
+        // work changes character, which is what the reader is looking for.
+        activity: [
+          {
+            at: "2026-07-29T23:42:08.000Z",
+            kind: "skill",
+            name: "superpowers:brainstorming",
+            detail: "invoked",
+            truncated: false,
+          },
+        ],
+        activityDropped: 0,
       },
     ],
     edges: [

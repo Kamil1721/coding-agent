@@ -241,6 +241,42 @@ export function resumeRun(
   );
 }
 
+/** One message on the owner↔run channel. Mirrors the server's `ChatMessage`. */
+export interface ChatMessage {
+  readonly seq: number;
+  readonly at: string;
+  readonly role: "owner" | "run";
+  readonly text: string;
+  readonly images: readonly string[];
+  /** Null while waiting; on a finished run, null means it was never read. */
+  readonly deliveredAt: string | null;
+}
+
+export function runMessages(runId: string): Promise<{ messages: readonly ChatMessage[] }> {
+  return request<{ messages: readonly ChatMessage[] }>(
+    `/api/runs/${encodeURIComponent(runId)}/messages`,
+  );
+}
+
+/**
+ * Queue an instruction for the run's next segment boundary.
+ *
+ * `images` are `data:image/…;base64,…` URLs. The server decodes them to files under
+ * `runs/<id>/chat/` and stores PATHS, because the builder needs a path to `Read` and
+ * a PNG has no business in a SQLite row. Base64 over loopback costs 33% on
+ * screenshots, which is cheaper than a second multipart parser in this codebase.
+ */
+export function sendRunMessage(
+  runId: string,
+  text: string,
+  images: readonly string[],
+): Promise<{ message: ChatMessage }> {
+  return request<{ message: ChatMessage }>(
+    `/api/runs/${encodeURIComponent(runId)}/messages`,
+    { method: "POST", body: JSON.stringify({ text, images }) },
+  );
+}
+
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
