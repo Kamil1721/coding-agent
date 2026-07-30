@@ -20,6 +20,10 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+// The classifier is imported by the count's own test on purpose: the number is
+// only interesting because four failure branches compare against it, and a test
+// that stopped at the integer would not have caught what the integer decided.
+import { classifyDesignLane } from "./design-outcome.js";
 import {
   DESIGN_MANIFEST_FILE,
   countDesignPngs,
@@ -204,15 +208,104 @@ test("pruneMissingRefs keeps the prompt honest, and drops a lock that points at 
   assert.equal(pruneMissingRefs({ ...manifest, refs: [manifest.refs[0]!], lockedMockup: present }).lockedMockup, present);
 });
 
+/** A minimal file that really is a PNG by content: the 8-byte signature + IHDR. */
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+/** SOI + APP0, which is what every file the image chain actually emitted starts with. */
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00]);
+
+function countDir(entries: Record<string, Buffer | string>): number {
+  const ws = mkdtempSync(join(tmpdir(), "design-count-"));
+  const refsDir = join(ws, "design-refs");
+  mkdirSync(refsDir, { recursive: true });
+  for (const [name, body] of Object.entries(entries)) {
+    if (typeof body === "string") writeFileSync(join(refsDir, name), body, "utf8");
+    else writeFileSync(join(refsDir, name), body);
+  }
+  return countDesignPngs(refsDir);
+}
+
 test("countDesignPngs counts DISK, not the manifest's claims", () => {
   // classifyDesignLane compares the two. A count taken from the manifest would
   // make "the manifest lists 5 refs over 3 files" undetectable by construction.
   const ws = mkdtempSync(join(tmpdir(), "design-count-"));
   const refsDir = join(ws, "design-refs");
   mkdirSync(refsDir, { recursive: true });
-  writeFileSync(join(refsDir, "01.png"), "x", "utf8");
-  writeFileSync(join(refsDir, "02.PNG"), "x", "utf8");
+  writeFileSync(join(refsDir, "01.png"), PNG_BYTES);
+  writeFileSync(join(refsDir, "02.PNG"), PNG_BYTES);
   writeFileSync(join(refsDir, "manifest.json"), "{}", "utf8");
+  writeFileSync(join(refsDir, "direction.md"), "# art direction", "utf8");
   assert.equal(countDesignPngs(refsDir), 2);
   assert.equal(countDesignPngs(join(ws, "nope")), 0);
+});
+
+/* -------------------------------------------------------------------------
+ * The count is CONTENT, and both halves of that were measured wrong first.
+ *
+ * The old body was `readdirSync(...).filter(n => n.endsWith(".png")).length`.
+ * All four of `classifyDesignLane`'s failure branches compare against this
+ * number, so each assertion below is the standing version of a control that was
+ * executed against the old implementation and returned the wrong answer:
+ *
+ *   - five ZERO-BYTE files named `*.png` counted 5, so a lane that produced
+ *     nothing usable classified `failure: null`;
+ *   - five real PNGs named `*.jpg` counted 0, so a lane that produced a full
+ *     set classified `no-images`.
+ * ---------------------------------------------------------------------- */
+
+test("NEGATIVE CONTROL: five zero-byte files named .png are not five images", () => {
+  const empty = { "01.png": "", "02.png": "", "03.png": "", "04.png": "", "05.png": "" };
+  assert.equal(countDesignPngs(join(mkdtempSync(join(tmpdir(), "design-count-")), "absent")), 0);
+  assert.equal(countDir(empty), 0, "a zero-byte file has no signature and cannot be an image");
+
+  // AND THE BRANCH IT DECIDES. The count alone is a number; this is the loud
+  // failure the old count silently defeated.
+  const refs = Object.keys(empty).map((name, index) => ({
+    path: `${WS}/design-refs/${name}`,
+    section: `section-${String(index + 1)}`,
+    aspect: "16:9" as const,
+    intent: "x",
+  }));
+  const classified = classifyDesignLane({
+    mode: "full",
+    manifest: { version: 1, refs, lockedMockup: null, lockedBy: null, lockedReason: null, lockedAt: null },
+    pngCount: countDir(empty),
+    imageCalls: 5,
+    keySource: "env",
+    preflight: [],
+  });
+  assert.equal(classified.failure, "no-images", "five empty files must reach a failure branch, not `failure: null`");
+});
+
+test("the run's real stills count: JPEG bytes count, and the extension never decides", () => {
+  // MEASURED, not assumed: every `design-0*.png` in
+  // dashboard/results/screenshots/run-2026-07-29T23-28-46-665Z-3d4d1ccb is
+  // `JPEG image data, JFIF standard 1.01, 1376x768`. A PNG-only content test
+  // would score that working lane `no-images`.
+  const jpegsNamedPng = {
+    "01-hero.png": JPEG_BYTES,
+    "02-services.png": JPEG_BYTES,
+    "03-hours.png": JPEG_BYTES,
+    "04-booking-modal.png": JPEG_BYTES,
+    "05-confirmation.png": JPEG_BYTES,
+  };
+  assert.equal(countDir(jpegsNamedPng), 5, "the run's five real stills are JPEG; they must still count as five");
+
+  // The other direction of the same defect: content wins over a wrong suffix.
+  assert.equal(countDir({ "01.jpg": PNG_BYTES, "02.jpeg": PNG_BYTES }), 2, "a real PNG named .jpg is an image");
+  assert.equal(countDir({ "01.webp": JPEG_BYTES }), 1);
+
+  // Non-images are still non-images however they are named.
+  assert.equal(countDir({ "manifest.json": "{}", "direction.md": "# hi", "notes.png": "TODO: generate" }), 0);
+  // Truncated to fewer bytes than the signature: not an image.
+  assert.equal(countDir({ "half.png": Buffer.from([0x89, 0x50]) }), 0);
+
+  // A DIRECTORY named like an image. Reading it throws EISDIR, and a count that
+  // let the throw escape would return 0 for the whole lane — a real set of stills
+  // reported as `no-images` because someone left a folder in the refs directory.
+  const ws = mkdtempSync(join(tmpdir(), "design-count-"));
+  const refsDir = join(ws, "design-refs");
+  mkdirSync(join(refsDir, "old.png"), { recursive: true });
+  writeFileSync(join(refsDir, "01-hero.png"), JPEG_BYTES);
+  writeFileSync(join(refsDir, "02-services.png"), PNG_BYTES);
+  assert.equal(countDesignPngs(refsDir), 2, "a subdirectory must be skipped, not counted and not fatal");
 });

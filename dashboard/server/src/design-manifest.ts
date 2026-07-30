@@ -34,7 +34,7 @@
  * this is the file a 2c author will open.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 
 export const DESIGN_REFS_DIR = "design-refs";
@@ -273,16 +273,78 @@ export function readDesignDirection(workspace: string): string {
 }
 
 /**
+ * The first bytes of the two formats the image chain demonstrably emits.
+ *
+ * PNG: the 8-byte signature from the spec. JPEG: SOI + the first marker byte,
+ * which is `FF D8 FF` for every JFIF and Exif file (the fourth byte varies —
+ * `E0` for JFIF, `E1` for Exif — so it is not part of the test).
+ */
+const PNG_SIGNATURE = Object.freeze([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_SIGNATURE = Object.freeze([0xff, 0xd8, 0xff]);
+
+function startsWith(bytes: Buffer, signature: readonly number[]): boolean {
+  if (bytes.length < signature.length) return false;
+  return signature.every((byte, index) => bytes[index] === byte);
+}
+
+/**
+ * Is this file an image, by its CONTENT?
+ *
+ * The name is not consulted at all. A zero-byte file has no signature and is
+ * therefore not an image, which is the case that matters: `writeFileSync(p, "")`
+ * is what a broken generator leaves behind.
+ */
+export function isDesignImageFile(path: string): boolean {
+  let handle: number;
+  try {
+    handle = openSync(path, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const head = Buffer.alloc(8);
+    const read = readSync(handle, head, 0, 8, 0);
+    const bytes = head.subarray(0, read);
+    return startsWith(bytes, PNG_SIGNATURE) || startsWith(bytes, JPEG_SIGNATURE);
+  } catch {
+    return false;
+  } finally {
+    closeSync(handle);
+  }
+}
+
+/**
  * How many stills actually exist.
  *
  * COUNTED FROM DISK, NEVER FROM THE MANIFEST, and that is the whole point: the
  * manifest is a claim an agent wrote, and `classifyDesignLane` compares the two
  * to catch a manifest that lists five refs over three files.
+ *
+ * COUNTED BY CONTENT, NEVER BY FILENAME, and that half was a measured defect
+ * rather than a preference. Until 2026-07-30 this was
+ * `readdirSync(...).filter(n => n.endsWith(".png")).length`, and the executed
+ * control is what condemns it: a directory of FIVE ZERO-BYTE FILES named
+ * `*.png` counted 5, and five real PNGs named `*.jpg` counted 0. Every one of
+ * `classifyDesignLane`'s four failure branches is a comparison against this
+ * number, so a lane that wrote five empty files classified `failure: null` — the
+ * loud branch defeated by a suffix.
+ *
+ * JPEG COUNTS, AND THAT IS NOT GENEROSITY. Measured on the 2026-07-29 live run
+ * (dashboard/results/screenshots/run-2026-07-29T23-28-46-665Z-3d4d1ccb): all
+ * five `design-0*.png` stills are `JPEG image data, JFIF standard 1.01,
+ * 1376x768`. The generator emits JPEG under a `.png` name, so a PNG-only content
+ * test would have flipped a working lane to `no-images` — the suffix was doing
+ * all the work in BOTH directions.
+ *
+ * THE NAME STILL SAYS `Png` and the count no longer does. Renaming the export
+ * reaches `orchestrator.ts` (two sites) and three test files, which is outside
+ * the grant this change was made under; it is recorded here and in the findings
+ * as a follow-up rather than left for a reader to discover.
  */
 export function countDesignPngs(refsDir: string): number {
   if (!existsSync(refsDir)) return 0;
   try {
-    return readdirSync(refsDir).filter((name) => name.toLowerCase().endsWith(".png")).length;
+    return readdirSync(refsDir).filter((name) => isDesignImageFile(join(refsDir, name))).length;
   } catch {
     return 0;
   }
