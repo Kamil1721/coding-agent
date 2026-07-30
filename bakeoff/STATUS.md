@@ -1,24 +1,60 @@
-# STATUS — what actually works, what does not, what to do before spending
+# STATUS — the campaign: what works, what does not, what to do before spending
 
 Written by the integrator on 2026-07-27, after wiring five independently-built
-modules together and running the pipeline end to end.
+modules together and running the pipeline end to end. **Corrected twice on
+2026-07-30** — the first pass found four stale claims; the second folded in a
+fourth digest move, a second dry run, and one sentence that had been **outright
+false since 2026-07-27** (§1.2's "a blank page is not a pass"). Each correction is
+dated in place and no measurement was deleted. The dashboard half of the system has
+its own file, `dashboard/STATUS.md`, and the two do not repeat each other.
 
-**Both section-1 blockers are RESOLVED as of 2026-07-27 (owner decisions D1 and
-D2) and each is proved by execution; section 1 now records what was decided, why,
-and what residual risk each fix leaves. Read it before anything else — one of
-these defects would have presented in the final report as "every model failed".
-The scorer image was rebuilt for both fixes, so its digest moved. IT HAS MOVED
-AGAIN SINCE: `sha256:c7f5e1a4…` before 2026-07-27, `sha256:1c06aa11…` on
-2026-07-27, and `sha256:bcd01771…` on 2026-07-29 when the QUALITY-gate fix landed
-in `scorer-container.ts` / `scorer-protocol.ts`. **Every digest written into this
-file is a dated record of what ran, never a statement about what is installed
-now — including the ones below, which still say `1c06aa11…` because that is the
-image those measurements were taken on.** The dated chain, and what each move
-means for the calibration records, is in `dashboard/STATUS.md` §1.3.
-RE-RESOLVE IT YOURSELF with `docker image inspect bakeoff-scorer:1 --format
+**AND THE PIPELINE HAS NOW RUN END TO END ON A REAL MODEL BUILD — on the DASHBOARD
+path, not this one.** `dashboard/STATUS.md` §1.0: a one-page site, 1 h 44 m, sealed
+gate, 20 of 21 tests, verdict PASSED WITH NOTES, with the held-out half catching a
+defect the builder did not know about. **What it gives this file:** the sealed
+scorer, the tier-0 gates, the QUALITY-gate fix and the frozen-suite path all ran
+against an artefact nobody staged for them, and a dry run went green beside it.
+**What it does not give this file:** anything about the campaign — no vendor call,
+no ledger, no proxy, no four-arm matrix, and its scoring belongs to image
+`c98bad3a…`. Neither pass on 2026-07-30 had a shell, so nothing on this page was
+re-executed by either of them.
+
+## SUMMARY — thirty seconds
+
+| Question | Answer |
+|---|---|
+| Can the campaign start? | **Not as five arms.** Config E cannot run: OpenAI does not speak the Anthropic Messages API and the budget proxy implements nothing else (§1.3). `screen` over all five configs refuses to start, correctly. Run four arms deliberately (`--configs A,B,C,D`) and record that the matrix was reduced. |
+| Are the blockers cleared? | Yes, all three, each proved by execution: **1.1** `node --test` now runs as a second pass in the sealed scorer (D1); **1.2** a static artefact is served and scored (D2); **1.4** authored suites carry REQ-ids so criteria can be attributed. Any of the three would have produced the same headline — *"every model shipped broken apps"* — from a harness fault. |
+| What has NEVER touched a vendor? | Every real API call; the spec agent's model-call half; every non-Anthropic vendor's usage-payload shape; the DeepSeek substitution guard; `DEFAULT_BUILDER_COMMAND`'s flags and `modelAliasFor`; and the real Claude Code CLI inside the sandbox image. §4, and none of it may be described as working. |
+| What is the money risk? | The full matrix is ~$2,100. Two defects in this file (§6 item 4, §1.1) would each have spent all of it measuring a harness bug. `preflight` refuses an unpriced model; confirm every `PRICE_TABLE` entry on the vendor's own page before the first dollar (§8 item 4). |
+| The single most dangerous thing | **The scorer image digest is held-constant variable 3 and it has now moved FOUR times** — the newest on 2026-07-30, reported by the lane that rebuilt it and not re-resolved by anyone since. Score records taken either side of a move are not comparable, and nothing inside a record announces that. |
+
+**THE DIGEST — one home, and it is not this file.** The dated chain — four values,
+what moved each, and what each move means for the calibration records already
+committed — is **`dashboard/STATUS.md` §1.2**. The values written into the
+sections below still say `1c06aa11…` because that is the image those measurements
+were taken on; **every digest in this file is a dated record of what ran, never a
+statement about what is installed now.** Since those measurements the chain has
+added `bcd01771…` (2026-07-29 am, the QUALITY-gate fix in `scorer-container.ts` /
+`scorer-protocol.ts`), `c98bad3a…` (2026-07-29 pm, three tier-0 gate fixes) and
+**`fae56a4e…` (2026-07-30, a `tier0.ts` wording fix — see below)** — so a section
+below saying the digest "remains valid" means *valid for that measurement*, and is
+corrected in place where it read otherwise.
+**RE-RESOLVE IT YOURSELF** with `docker image inspect bakeoff-scorer:1 --format
 '{{.Id}}'` immediately before the campaign, pin that value, and do not rebuild
-again: the digest is held-constant variable 3, and score records taken either
-side of a move are not comparable with each other.**
+again.
+
+**TWO THINGS ABOUT THE 2026-07-30 MOVE, added the same day.** First, the value
+`fae56a4e…` is **REPORTED and was not re-resolved** — the pass that wrote this
+paragraph had no shell — so it is one agent's `docker image inspect` output agreed
+with by a second agent, which is not independent resolution. The previous image was
+preserved as `bakeoff-scorer:pre-readmech`, which is what makes the move auditable.
+Second, and more useful: **`sha256:c98bad3a…` is now a MEASURED value rather than a
+transcribed one**, because it is stamped inside a real run's committed score record
+(`dashboard/results/scores/run-2026-07-29T23-28-46-665Z-3d4d1ccb.json`, field
+`scorerImageDigest`, read off disk 2026-07-30). **Everything that run measured —
+including its green dry run — belongs to `c98bad3a…` and is on the far side of a
+move.** `dashboard/STATUS.md` §1.0 is that run.
 
 Nothing in this file is aspirational. Where something is untested, it says so.
 
@@ -76,7 +112,8 @@ that produced the fix, not history to be deleted. What changed:
    node:test fixture in this tree uses that name; nothing was plumbing it, so a
    node:test suite could only ever have reached an app on the hardcoded default
    port. Proved with a fixture app on **4173** and a test with no default.
-8. **The scorer image was rebuilt.** Held-constant variable 3 is now
+8. **The scorer image was rebuilt.** Held-constant variable 3 was, **on
+   2026-07-27 and for this measurement**,
    `sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353`
    (`linux/arm64`, `--provenance=false --sbom=false`, identical across two
    consecutive builds), recorded in `docker/README.md` §2.2. Stage 1 of the
@@ -203,7 +240,20 @@ What changed:
   `not_applicable` (which `gateToCriterion` would map to `passed: true`). In
   static mode it asserts the root document answers **HTTP 200 with a non-empty
   body** — stricter than the server-mode probe, which accepts anything below
-  500. A blank page is not a pass.
+  500. ~~A blank page is not a pass.~~ **THAT LAST SENTENCE IS FALSE and was
+  corrected 2026-07-30.** The threshold is `text.trim().length > 0`, so a
+  **one-byte** body passes, `<!-- nothing -->` passes, and
+  `calibration/blank-page/index.html` — 199 bytes, **zero rendered glyphs** —
+  passes. Only an empty or whitespace-only *response* fails. Six tests now pin the
+  arm and the mutation `> 0` → `true` reddens exactly the two that check the
+  threshold; the survival of the one-byte case is recorded as **data**, and the
+  threshold was deliberately **not** tightened because a failed boot makes the
+  scorer skip every acceptance criterion, which would fail `blank-page` at the door
+  and evaluate none of the content criteria it exists to exercise. Full
+  measurement, including a zero-false-positive candidate rule across all eight
+  fixtures: `dashboard/STATUS.md` §1.5 and §6 instance **16**. `tier0.ts`'s own
+  overstatements are fixed; three strings in `scorer-container.ts` (lines
+  399/421/444, 427, 448) still overstate.
 - The manifest is now parsed by `parseSuiteManifest` at **authoring** time as
   well (`src/spec-validate.ts`), so a suite the container could not execute is
   regenerated instead of frozen. This closes the other half of §6 item 3: the
@@ -227,6 +277,14 @@ blank   GATE:boot FAIL — "answered HTTP 200 with an empty body (8 byte(s)).
                           A blank document is not a pass."
         heldOutPass=false falseFinish=true    ← the negative control
 ```
+
+**Read that transcript narrowly, corrected 2026-07-30.** The control that failed
+served an **8-byte** body, i.e. an effectively empty *response* — which is the only
+thing this gate rejects. Its quoted message ("A blank document is not a pass") was
+the string in `tier0.ts`, and it has since been changed to "A zero-byte or
+whitespace-only RESPONSE is not a pass." because it was claiming more than the
+check does. The transcript is left exactly as the tool printed it; the correction is
+this paragraph.
 
 **Residual, and it is a real one.** The mode is chosen from ticket text before
 the builder exists, so a mismatch is still possible in both directions: a static
@@ -270,6 +328,34 @@ BLOCKING boot gate for a reason that has nothing to do with its ability.
 
 That workaround is no longer needed, but the reasoning is why the builder prompt
 now names the simple case explicitly rather than leaving it implied.
+
+### 1.3 Config E cannot run — ONE reason now, not two
+
+1. ~~**Unpriced.**~~ **CLEARED 2026-07-27 by owner decision D3.** `PRICE_TABLE`
+   carries verified per-MTok prices for `openai/gpt-5.6-luna` ($1.00 input /
+   $0.10 cache read / $6.00 output, cache write at 1.25x input), plus
+   `gpt-5.6-sol` and `gpt-5.6-terra` so neither can be added later unpriced,
+   i.e. uncapped. `preflight` no longer reports `unpriced_model` for any seat.
+   Provenance is split by field in the entry's own `notes`: input, cache read
+   and output are double-confirmed in
+   `docs/research/01-verification-corrections.md`; the 1.25x **write** rate is
+   not in that summary line and rests on D3's live check of the pricing page.
+   **Follow-on exposure, recorded in `src/adapters.ts`:** OpenAI reports no
+   cache-write count, so the adapter records `cacheWriteTokens: 0` and costs
+   those tokens at the 1.00x input rate. Now that the model is priced, that
+   understates the bill by 25% of whatever share of a run is cache writes.
+   Check one real response for a write field before config E ever runs.
+2. **Wrong wire protocol.** OpenAI does not speak the Anthropic Messages API,
+   which is the only protocol the budget proxy implements. `proxy.ts` refuses
+   the seat with `not_implemented`. A translator would be a second harness, and
+   the harness is held-constant variable 2. **This still blocks config E**, as
+   does the fact that the API model id `gpt-5.6-luna` is a display name that
+   has never been confirmed against the vendor's model list.
+
+`screen` over all five configs therefore still **refuses to start**. That
+refusal is correct and is the first thing you will see. Run four arms
+deliberately (`--configs A,B,C,D`) and record in the write-up that the matrix
+was reduced.
 
 ### 1.4 RESOLVED — an authored suite's test titles carried no REQ-id, so every criterion scored `unasserted`
 
@@ -330,42 +416,24 @@ titles → blocking finding) and a positive one (a `describe()` wrapper satisfie
 it). The reference fixture was updated to the correct convention — it is the
 same fixture that would have scored zero.
 
-**No image rebuild.** `spec-agent.ts` and `spec-validate.ts` run host-side; the
-scorer container only executes tests. Held-constant variable 3 is unmoved and
-`sha256:1c06aa11…` remains valid. `npm run bakeoff -- dry-run` is still green
-against it, and `test/scorer-modes.e2e.mjs` is still 29/29.
+**No image rebuild** — for THIS fix. `spec-agent.ts` and `spec-validate.ts` run
+host-side; the scorer container only executes tests. So held-constant variable 3
+was unmoved **by this change**, `sha256:1c06aa11…` was still the installed image,
+`npm run bakeoff -- dry-run` was green against it and `test/scorer-modes.e2e.mjs`
+was 29/29. **Corrected 2026-07-30: the present tense was false by 2026-07-29.**
+Two later changes DID rebuild the image (chain: `dashboard/STATUS.md` §1.2), so
+`1c06aa11…` is valid for the measurements on this page and for nothing else, and
+neither the dry run nor the e2e is recorded against the current image — see §3.
+**Corrected again later on 2026-07-30, and the arithmetic is now three deep:** a
+dry run IS recorded against `c98bad3a…` (green, alongside the end-to-end run in
+`dashboard/STATUS.md` §1.0); `test/scorer-modes.e2e.mjs`'s 29/29 is recorded up to
+`bcd01771…` and no further; and **nothing at all is recorded against `fae56a4e…`,
+the image reported installed now.** Each of the three sentences names a different
+image, which is the whole reason this variable is dangerous.
 
 **`authoringPromptSha256` has moved again.** Harmless for the same reason D2 was
 harmless — no campaign suite has been authored yet. Author every suite after
 this change, not before.
-
-### 1.3 Config E cannot run — ONE reason now, not two
-
-1. ~~**Unpriced.**~~ **CLEARED 2026-07-27 by owner decision D3.** `PRICE_TABLE`
-   carries verified per-MTok prices for `openai/gpt-5.6-luna` ($1.00 input /
-   $0.10 cache read / $6.00 output, cache write at 1.25x input), plus
-   `gpt-5.6-sol` and `gpt-5.6-terra` so neither can be added later unpriced,
-   i.e. uncapped. `preflight` no longer reports `unpriced_model` for any seat.
-   Provenance is split by field in the entry's own `notes`: input, cache read
-   and output are double-confirmed in
-   `docs/research/01-verification-corrections.md`; the 1.25x **write** rate is
-   not in that summary line and rests on D3's live check of the pricing page.
-   **Follow-on exposure, recorded in `src/adapters.ts`:** OpenAI reports no
-   cache-write count, so the adapter records `cacheWriteTokens: 0` and costs
-   those tokens at the 1.00x input rate. Now that the model is priced, that
-   understates the bill by 25% of whatever share of a run is cache writes.
-   Check one real response for a write field before config E ever runs.
-2. **Wrong wire protocol.** OpenAI does not speak the Anthropic Messages API,
-   which is the only protocol the budget proxy implements. `proxy.ts` refuses
-   the seat with `not_implemented`. A translator would be a second harness, and
-   the harness is held-constant variable 2. **This still blocks config E**, as
-   does the fact that the API model id `gpt-5.6-luna` is a display name that
-   has never been confirmed against the vendor's model list.
-
-`screen` over all five configs therefore still **refuses to start**. That
-refusal is correct and is the first thing you will see. Run four arms
-deliberately (`--configs A,B,C,D`) and record in the write-up that the matrix
-was reduced.
 
 ---
 
@@ -378,11 +446,11 @@ observed — not reviewed.
 |---|---|
 | Typecheck | `npx tsc --noEmit` exits 0 across the whole tree |
 | Ticket freeze + drift detection | `node test/tickets.smoke.mjs` — 45 assertions |
-| Spec authoring, 28-check bad-test audit, freeze, 4 tamper modes | `node test/spec-agent.smoke.mjs` — 105 assertions |
+| Spec authoring, 28-check bad-test audit, freeze, 4 tamper modes | `node test/spec-agent.smoke.mjs` — **107** assertions. **Corrected 2026-07-30:** this row read `105`, which was the count before §1.4's REQ-id fix added the two controls that same day (a negative control stripping the REQ-ids, a positive one for a `describe()` wrapper). §1.4 and `dashboard/STATUS.md` both recorded 107; this row lagged. |
 | Ledger, pre-call ceiling, per-vendor usage, adapters | `node test/ledger.smoke.mjs` — 104 assertions |
-| Statistics, aggregation, decision rule, report rendering | `npm test` — 32 tests |
+| Statistics, aggregation, decision rule, report rendering | `npm test` — 32 tests. **Stale as a total, corrected 2026-07-30:** this tree's `node --test` count is now **112 / 112** (REPORTED by two agents in the 2026-07-30 wave; +6 of them are the new `probeStaticRoot` tests behind §1.2's correction, and this pass had no shell to re-measure). The 32 is what the statistics/aggregation half was when this row was written. |
 | **Sealed gate over a STATIC artefact, a SERVER artefact and a blank page** | `node test/scorer-modes.e2e.mjs` — 29 checks, real `--network=none` containers (see 1.2) |
-| **Whole pipeline, stages 1-5** | `npm run bakeoff -- dry-run` (see section 3) |
+| **Whole pipeline, stages 1-5** | `npm run bakeoff -- dry-run` (see section 3). Twice now: 2026-07-27 against `1c06aa11…` (24/24, EXECUTED here) and 2026-07-30 against `c98bad3a…` (GREEN, REPORTED — §3). Neither is the image installed today. |
 
 Specifically proved by the dry run, against real containers:
 
@@ -444,6 +512,25 @@ makes the other twenty-odd meaningful — a gate that fails every artefact is
 indistinguishable, in the final report, from five models that all failed.
 
 `--no-docker` runs stages 1, 2 and 5 only and **leaves the seal unproved**.
+
+**WHAT "GREEN" IS AND IS NOT, corrected 2026-07-30.** The 24/24 above was
+measured on **2026-07-27 against image `1c06aa11…`**. The image has moved twice
+since (header, and `dashboard/STATUS.md` §1.2) and **no dry run is recorded
+against the current image.** The scorer's own e2e (`test/scorer-modes.e2e.mjs`)
+WAS re-run across the 2026-07-29 am change and stayed 29/29, so this is not a
+suspicion about that change — it is the absence of the one cheap whole-pipeline
+check on the image you would actually campaign with. Re-run it after you pin the
+digest, per §8 item 6.
+
+**A SECOND DRY RUN NOW EXISTS — and it does not close item 6. Added 2026-07-30.**
+`npm run bakeoff -- dry-run` was run **GREEN against the installed image** during
+the dashboard's first end-to-end run (`dashboard/STATUS.md` §1.0). That is the
+first dry run recorded since 2026-07-27 and it is worth having. **But the image
+installed at that moment was `c98bad3a…`** — pinned by that run's own score record,
+which is a primary source — **and the image was rebuilt again later the same day**
+to a reported `fae56a4e…`. So the sentence above survives, with a smaller gap and a
+new reason: **a dry run exists, against an image that is already superseded.**
+REPORTED — this pass had no shell and did not re-run it.
 
 ---
 
@@ -541,6 +628,16 @@ is why none was caught before the modules were run together.
 7. **`src/runner.ts` contained a raw NUL byte** (an argv separator written
    literally). `git`, `grep` and most editors treated the file as binary — it
    was invisible to the seal audit until fixed. The digest is unchanged.
+   **THE SAME CLASS RECURRED IN THE OTHER TREE and was fixed 2026-07-30:**
+   `dashboard/server/src/gate-fix-loop.ts` carried three raw NULs as hash-template
+   separators, so `grep -c "" ` printed nothing while `grep -ac "" ` printed 215 —
+   i.e. **every claim of absence made about that file with a plain `grep` was
+   vacuous**, and `git diff` rendered it as `Bin 9683 -> 11166 bytes` so no reviewer
+   could read a change to it. Now written as a source escape for U+001F; the file is
+   plain ASCII and zero NUL-carrying `.ts` files remain in either tree. The
+   transferable rule, which this tree paid for twice: **a separator belongs in the
+   source as an escape, never as a byte** — and until you know a tree is clean, make
+   every absence claim with `grep -a` or node.
 8. **Key-shaped literals in test fixtures** were replaced with runtime-assembled
    equivalents. Same values, same assertions, no credential shape anywhere in
    the tree.
@@ -575,12 +672,22 @@ is in the pixels permanently. `results/screenshots/` is gitignored.
 
 ## 8. Before the first real run — checklist
 
-1. ~~Decide blocker 1.1 and blocker 1.2.~~ **Both decided and fixed
-   (D1, D2), and the scorer image rebuilt for both.** Re-resolve the digest with
+1. ~~Decide blocker 1.1 and blocker 1.2.~~ **The three FIXABLE §1 blockers are
+   decided and fixed (D1, D2, and the §1.4 REQ-id fix); §1.3 — config E — remains
+   open deliberately, so plan for four arms, not five.** Re-resolve the digest with
    `docker image inspect bakeoff-scorer:1 --format '{{.Id}}'`, pin that value,
-   and do not rebuild until the campaign finishes. The last build of this tree
-   resolved to `sha256:1c06aa11…`, and both `dry-run` and
-   `test/scorer-modes.e2e.mjs` were green against it.
+   and do not rebuild until the campaign finishes. **Corrected 2026-07-30:** this
+   item used to end "the last build of this tree resolved to `sha256:1c06aa11…`,
+   and both `dry-run` and `test/scorer-modes.e2e.mjs` were green against it."
+   That was true on 2026-07-27 and is no longer a statement about the last build —
+   two later rebuilds moved the digest (chain: `dashboard/STATUS.md` §1.2). What
+   was green against `1c06aa11…` stays recorded in §3 and in §1.2 of this file
+   (the 29-check e2e); what is green against the image you pin is for you to
+   measure (item 6). **Corrected again 2026-07-30: a THIRD rebuild has happened**
+   (`fae56a4e…`, reported — a `tier0.ts` wording fix, header), so the count of moves
+   is four and the newest value in the chain has never been independently resolved.
+   If what you resolve is not that value, something rebuilt again and every score
+   record on the other side belongs to a different held-constant world.
 2. Re-verify `DEFAULT_BUILDER_COMMAND` flags and `modelAliasFor` against the
    Claude Code CLI **in the pinned sandbox image**.
 3. Replace the six reference tickets in `tickets/` with your own, then
@@ -592,11 +699,59 @@ is in the pixels permanently. `results/screenshots/` is gitignored.
    verdict. The three OpenAI entries added by D3 carry a per-field provenance
    note: input/cacheRead/output are double-confirmed, the 1.25x cache-WRITE rate
    is single-sourced to D3's live check — re-confirm that line specifically.
-5. Build the scorer image with `--provenance=false --sbom=false` (without them
-   BuildKit's attestation moves the digest on every rebuild from an identical
-   context, and the digest in every `ScoreRecord` certifies nothing). Pin it by
-   digest.
-6. Run `npm run bakeoff -- dry-run` until it is **green**. It is currently red
-   for a real reason.
+5. Build the scorer image with `--provenance=false --sbom=false`, then pin it by
+   digest. Without those flags BuildKit's attestation moves the digest on every
+   rebuild from an identical context and the digest in every `ScoreRecord`
+   certifies nothing. (Measured both ways — two consecutive builds from an
+   identical context reproduced the same digest with the flags; the reasoning and
+   the chain live once, in `dashboard/STATUS.md` §1.2.)
+6. **Run `npm run bakeoff -- dry-run` against the image you just pinned, and do
+   not start until it is green. Corrected 2026-07-30:** this item read *"It is
+   currently red for a real reason"*, which was written while blocker 1.1 was open
+   and was **false from 2026-07-27**, when the fix landed and the dry run went
+   24/24 — §3 has that transcript, and §1.1 is the fix. Do not read the
+   correction as "it is green now" either: that green was measured against
+   `1c06aa11…` and **no dry run is recorded against the current image.** The
+   assertion to watch is *"the gate PASSES an honest artefact"* — a gate that can
+   never pass is indistinguishable, in the final report, from five models that all
+   failed. **Corrected once more 2026-07-30, and the item stays OPEN:** a second dry
+   run is now recorded, GREEN, against `c98bad3a…` (§3) — and the image moved again
+   the same day. So the honest state is "a dry run exists for a superseded image",
+   not "no dry run exists" and not "the dry run is green".
 7. Set credentials. Run `preflight`. Expect config E blocked; decide
    deliberately whether to proceed with four arms and record it.
+8. **NEW 2026-07-30 — do not read `GATE:boot` as a content check, and do not read
+   `GATE:screenshots-present` as one either.** Both gate names overstate what they
+   measure, and the campaign's headline will be read off them. `GATE:boot`'s static
+   arm passes a one-byte body and passes a 199-byte page with zero rendered glyphs
+   (§1.2, corrected the same day); `GATE:screenshots-present` calls a capture
+   "non-blank" at 1024 bytes while a blank page renders 2541
+   (`dashboard/STATUS.md` §6 instances 16 and 12). Both are BLOCKING, both are green
+   on an empty page, and **nothing else in this harness measures whether an artefact
+   says anything.** If a config's arms come back green and thin, that combination is
+   expected rather than surprising.
+
+**If what you are actually deciding is whether to leave the DASHBOARD running
+unattended**, the plain answer — with the residual risks in the order they bite —
+is `dashboard/STATUS.md` **§7**, added 2026-07-30. It is about that path, not this
+one; the campaign's equivalent is this checklist plus §1.3's four-arm decision.
+
+**This checklist owns the CAMPAIGN path — the money, the prices, config E, the
+frozen tickets.** The dashboard's own path (authenticating the CLIs, the
+loopback bind, the ticket-as-prompt secret rule) is `dashboard/STATUS.md` §5, and
+the two share exactly three items: re-resolve the digest, use the build flags,
+and read the held-out-boundary section before trusting a `heldOutPass`. They are
+written once each — items 1 and 5 here, and `dashboard/STATUS.md` §0 — rather than
+kept in sync in two places.
+
+**And if you are about to add a check to either tree, read
+`dashboard/STATUS.md` §6 first.** It tabulates **seventeen** checks in this
+repository that shipped green over something that did nothing — three of them
+inside `bakeoff/src`: `auditSuite`'s unpassed `ticketBrief` (instance 11);
+`GATE:screenshots-present`, whose name claims it fails a blank page while its
+`nonBlank` floor is 1024 bytes and a blank page renders 2541 (instance 12); and
+**`GATE:boot`'s static arm, added 2026-07-30 (instance 16)** — the same disease in
+the gate one door up, found by measuring a sentence this file had asserted since
+2026-07-27. That table is the one place the shape is catalogued; this file does not
+repeat it. **Two of the three are still open**, and both are BLOCKING gates whose
+names are stronger than their checks.
