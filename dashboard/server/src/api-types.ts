@@ -79,6 +79,153 @@ export interface ApiTokens {
   readonly cacheWriteTokens: number;
 }
 
+/* -------------------------------------------------------------------------
+ * SPEND, ATTRIBUTED BY SEAT — the 16.8% problem
+ *
+ * MEASURED ON THE LIVE END-TO-END RUN. One ticket's OUTPUT tokens were
+ *
+ *     spec 416,111 · audit 17,603 · judge 3,228 · builder 88,529
+ *
+ * and the only figure the owner was shown was 88,529 — the BUILDER's, which is
+ * 16.8% of the 525,471 that ticket actually spent. The other four hundred
+ * thousand were written to the run's log stream (orchestrator.ts:679, :680,
+ * :1643, :1952) and accumulated nowhere at all.
+ *
+ * `RunDetail.tokens` IS NOT WRONG, AND THAT IS WHY THIS IS A SEPARATE SHAPE
+ * RATHER THAN A FIX TO THAT FIELD. It is the builder's row, in the builder's
+ * vendor, and tokens.ts's header says so at length. It is simply not the run's
+ * spend, and it was the only number on offer. The seat rows below are the run's
+ * spend; that field stays exactly what it claims to be.
+ *
+ * NO DOLLAR FIGURE APPEARS ANYWHERE IN HERE. See this file's header on `costUsd`
+ * — the rule is not "we have not priced it yet", it is that a subscription seat
+ * HAS no per-token price, and {@link ApiRunSpend.pricing} states that in a field
+ * so that a reader cannot arrive at "$0.00" instead.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Which SEAT spent it.
+ *
+ * FIVE NAMES, AND DELIBERATELY NOT `SeatRole`'s FOUR. contracts.ts declares
+ * `SeatRole = "orchestrator" | "subagent" | "spec" | "judge"`, and it cannot be
+ * this vocabulary: it has no name for the GATE/FIX rounds, its
+ * orchestrator/subagent split is a bake-off variable rather than a dashboard one
+ * — and, the case that actually breaks, THE DASHBOARD RUNS ONE SEAT CONSTANT FOR
+ * TWO JOBS. `JUDGE_SEAT` is the AUDIT at orchestrator.ts:680 (the adversarial
+ * bad-test pass over the frozen suite, before a line is built) and the JUDGE at
+ * orchestrator.ts:1952 (the code-reading pass after the gate). Keyed by seat
+ * CONSTANT those two collapse into one row, and 17,603 + 3,228 becomes a single
+ * 20,831 belonging to neither job. Keyed by ROLE, as here, they stay apart.
+ *
+ * THERE IS NO `design` MEMBER, ON PURPOSE. The DESIGN segment is a
+ * `builder.build()` call against the builder's own session (build-segment.ts),
+ * so its tokens ARE the builder's and a separate seat would double-count them.
+ * What the design lane spends of its own is metered image and video, which is
+ * counted in {@link ApiMeteredSpend} — in calls and seconds, never tokens.
+ */
+export type ApiSpendSeat = "spec" | "audit" | "builder" | "fix" | "judge";
+
+/**
+ * The pricing basis of a dashboard run. ONE MEMBER, AND IT IS NOT A NUMBER.
+ *
+ * A LITERAL RATHER THAN A NULL, BECAUSE NULL IS WHAT WAS ALREADY THERE AND WAS
+ * ALREADY MISREAD. `costUsd: null` is the system-wide invariant and it stays
+ * (see this file's header), but `null` and `0` are both READ as "nothing was
+ * spent" by a tired owner at the end of a long build — and `run.json` carries a
+ * literal `totalCostUsd: 0` next to it. This field cannot be read that way: it
+ * does not say "zero", it says WHY there is no number.
+ */
+export type ApiPricingBasis = "not-priced-subscription-seat";
+
+/** One seat's token spend. Never a dollar figure. */
+export interface ApiSeatSpend {
+  readonly seat: ApiSpendSeat;
+  readonly provider: ApiProvider;
+  /**
+   * The model this seat was CONFIGURED with, verbatim.
+   *
+   * NOT A CLAIM THAT ONE MODEL DID THE WORK. Delegation is the architecture: a
+   * haiku orchestrator hands work to opus subagents, and tokens.ts's
+   * {@link ModelTokens} rows carry that split for the log line. This row carries
+   * the seat's TOTAL, which is the quantity that must never come out smaller
+   * than what was spent — a per-model breakdown persisted here instead would
+   * lose whatever remainder no model claimed (`unattributedTokens`), and the
+   * total is the whole point of this record.
+   */
+  readonly modelId: string;
+  readonly tokens: ApiTokens;
+  /** Model calls (or turns) folded into this row. */
+  readonly callCount: number;
+}
+
+/**
+ * One VENDOR's total, and the reason `ApiRunSpend` has no single scalar.
+ *
+ * TOKEN COUNTS ARE PER VENDOR AND ARE NEVER SUMMED ACROSS VENDORS — tokenizers
+ * differ, and `TOKEN_ACCOUNTING_RULE` in contracts.ts is the rule this obeys. On
+ * a Codex run the builder is OpenAI while spec, audit and judge are Anthropic,
+ * so "the run's tokens" is TWO numbers and reporting one would be a quantity
+ * nobody measured. `seats` names what was folded in, so a reader can see at a
+ * glance that the builder is one seat of four rather than the whole run.
+ */
+export interface ApiVendorSpend {
+  readonly provider: ApiProvider;
+  readonly tokens: ApiTokens;
+  readonly callCount: number;
+  /** The seats folded into this row, in the order the run acquired them. */
+  readonly seats: readonly ApiSpendSeat[];
+}
+
+/**
+ * Spend billed by the CALL or by the SECOND against a metered key.
+ *
+ * IT CARRIES NO `provider`, AND THAT IS NOT AN OMISSION. `ApiProvider` names the
+ * four vendors the dashboard can BUILD with; the design lane's image and video
+ * calls go to Gemini and Veo through a key read from `~/.gemini/api_key`, which
+ * is not one of them. Widening `ApiProvider` for a row that has no tokens would
+ * add a fifth member to every provider guard in db.ts and models.ts and to the
+ * client's mirror of it. `model` is the vendor's own key for the model, verbatim
+ * (`DESIGN_IMAGE_MODEL` in design-outcome.ts, or the Veo model in
+ * video-legs.ts).
+ */
+export interface ApiMeteredSpend {
+  readonly kind: "image" | "video";
+  readonly model: string;
+  /** Calls ATTEMPTED, retries included. A COUNT, never money. */
+  readonly calls: number;
+  /**
+   * Seconds DELIVERED — A FLOOR ON WHAT WAS BILLED, AND THE NAME SAYS SO.
+   *
+   * `video-legs.ts:220` had to explain at length that its own `meteredSeconds`
+   * counts `produced × durationSeconds`: a leg that was generated and billed and
+   * then failed its download lands as ZERO. Carrying that number here under a
+   * name like `seconds` would reproduce the same defect one layer out, where
+   * there is no docblock next to the reader.
+   *
+   * `null` WHEN THE UNIT IS NOT TIME — an image call is billed per call — and
+   * null is not 0. Zero seconds is a measurement; "this is not a duration" is
+   * not.
+   */
+  readonly deliveredSecondsFloor: number | null;
+}
+
+/**
+ * EVERYTHING ONE RUN SPENT, and the field that stops it reading as free.
+ *
+ * `bySeat` is the record, `byVendor` is the total (one row per vendor — see
+ * {@link ApiVendorSpend}), `metered` is the spend that has no tokens at all, and
+ * `pricing` is why none of it is a dollar figure. An EMPTY `bySeat` means NOTHING
+ * WAS RECORDED, never "this run spent nothing": a run cancelled out of the queue
+ * spent nothing and also recorded nothing, and the two are told apart by the rest
+ * of the run row, not by pretending an empty list is a measurement of zero.
+ */
+export interface ApiRunSpend {
+  readonly bySeat: readonly ApiSeatSpend[];
+  readonly byVendor: readonly ApiVendorSpend[];
+  readonly metered: readonly ApiMeteredSpend[];
+  readonly pricing: ApiPricingBasis;
+}
+
 export interface ApiRateLimit {
   readonly limited: boolean;
   readonly retryAfterSec: number | null;
@@ -135,8 +282,33 @@ export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: ApiPhase;
   readonly criteria: readonly ApiCriterion[];
+  /**
+   * THE BUILDER'S ROW, IN THE BUILDER'S VENDOR. NOT THE RUN'S SPEND.
+   *
+   * tokens.ts's header states the rule that makes it so: counts are per vendor
+   * and are never summed across them, and on a Codex run the spec, audit and
+   * judge seats are Anthropic while this field is OpenAI's. Measured on the live
+   * run, it reported 88,529 output tokens for a ticket that spent 525,471 across
+   * all seats — 16.8% of it, correct about the builder and silent about the rest.
+   *
+   * THE RUN'S SPEND IS {@link ApiRunSpend}, one row per seat and one total per
+   * vendor. WHO SERVES IT IS STILL OPEN, and it is stated here rather than left
+   * to be discovered: `RunStore.runSpend` builds it from persisted rows and is
+   * tested from `recordSeatSpend` outward, `run-report.ts` renders it to
+   * `spend.md`, and the client mirrors every shape — but this interface is
+   * CONSTRUCTED by an object literal in `http.ts#toDetail`, which belongs to
+   * another wave, so a required field here would not compile. The five
+   * `recordSeatSpend` call sites are named in {@link ApiSpendSeat}'s docblock.
+   */
   readonly tokens: ApiTokens | null;
-  /** ALWAYS null for a subscription run. See the file header. */
+  /**
+   * ALWAYS null for a subscription run. See the file header.
+   *
+   * AND `null` HERE IS NOT "not measured yet". There is no number to measure.
+   * {@link ApiRunSpend.pricing} carries that statement in a field, because both
+   * `null` and `run.json`'s literal `totalCostUsd: 0` get read as "this run was
+   * free".
+   */
   readonly costUsd: number | null;
   readonly rateLimit: ApiRateLimit | null;
   readonly screenshots: readonly ApiScreenshot[];
@@ -442,8 +614,12 @@ export type SseEvent =
 export type SseEventType = SseEvent["type"];
 
 /**
- * EVERY MEMBER OF `SseEvent`, AS A VALUE — the only runtime export in this file,
- * and it exists so that the CLIENT can be checked against it.
+ * EVERY MEMBER OF `SseEvent`, AS A VALUE — one of the two runtime exports in this
+ * file, and it exists so that the CLIENT can be checked against it.
+ *
+ * (The other is {@link SPEND_SEATS}, which exists for exactly the same reason and
+ * carries the same `satisfies` + `Exclude` pair. Two runtime exports, both of
+ * them a union projected onto an array so a test in another package can read it.)
  *
  * A type cannot be read from another package's test: `SseEvent` is erased, and
  * `dashboard/src` and `dashboard/server` cannot import each other. So the union's
@@ -500,6 +676,37 @@ export const SSE_EVENT_TYPES = [
 type UnlistedSseEvent = Exclude<SseEventType, (typeof SSE_EVENT_TYPES)[number]>;
 const _sseEventTypesComplete: UnlistedSseEvent extends never ? true : never = true;
 void _sseEventTypesComplete;
+
+/**
+ * EVERY MEMBER OF {@link ApiSpendSeat}, AS A VALUE, for the same two consumers the
+ * array above has.
+ *
+ * ONE: `db.ts` reads it as its `oneOf` vocabulary, so the store's guard and the
+ * wire union cannot name different seats — a hand-copied list there is a second
+ * declaration site, and a seat missing from it throws `spend seat "fix" is not
+ * one of …` on a row this server itself wrote.
+ *
+ * TWO: `contract-parity.test.ts` imports it as the GROUND TRUTH for the client's
+ * hand-written `SpendSeat` mirror. A type cannot be read from another package's
+ * test — `ApiSpendSeat` is erased — and both sides read as text can agree by
+ * matching nothing on both sides.
+ *
+ * The `satisfies` rejects a name that is not a seat; the `Exclude` guard below
+ * rejects a seat that is not in the array, so adding a member to `ApiSpendSeat`
+ * and nothing else FAILS `tsc` rather than shipping a seat the store refuses to
+ * read back.
+ */
+export const SPEND_SEATS = [
+  "spec",
+  "audit",
+  "builder",
+  "fix",
+  "judge",
+] as const satisfies readonly ApiSpendSeat[];
+
+type UnlistedSpendSeat = Exclude<ApiSpendSeat, (typeof SPEND_SEATS)[number]>;
+const _spendSeatsComplete: UnlistedSpendSeat extends never ? true : never = true;
+void _spendSeatsComplete;
 
 /**
  * The canvas half of the union, by construction rather than by hand.

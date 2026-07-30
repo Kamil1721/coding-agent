@@ -42,7 +42,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import { SSE_EVENT_TYPES } from "./api-types.js";
+import { SPEND_SEATS, SSE_EVENT_TYPES } from "./api-types.js";
 
 /**
  * The client package, from the COMPILED location of this file.
@@ -54,6 +54,16 @@ import { SSE_EVENT_TYPES } from "./api-types.js";
  * purest can't-fail check there is.
  */
 const CLIENT_SRC = join(import.meta.dirname, "..", "..", "src");
+/**
+ * THIS package's own source, for the three-way check on the spend record below.
+ *
+ * Same depth argument as `CLIENT_SRC`: `import.meta.dirname` is
+ * `dashboard/server/<outDir>`, so the sources sit one directory up. Reading this
+ * side as TEXT is only ever an ADDITION to a hardcoded expectation, never a
+ * replacement for it — see the header on why two parsed sides can agree by
+ * matching nothing.
+ */
+const SERVER_TYPES = join(import.meta.dirname, "..", "src", "api-types.ts");
 const CLIENT_LIB = join(CLIENT_SRC, "lib");
 const CLIENT_TYPES = join(CLIENT_LIB, "api-types.ts");
 const CLIENT_STREAM = join(CLIENT_LIB, "use-run-stream.ts");
@@ -353,5 +363,213 @@ test("CONTRACT: the client asks for the lock policy its cards can answer", () =>
     page,
     /resumeRun\(runId, chosenMockup\)/,
     "a card click resumes without carrying the chosen mockup, putting ui-designer's name on the owner's decision",
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * The seat-attributed spend record — five shapes, two packages
+ *
+ * WHY IT IS HERE AND NOT ONLY IN A TYPE. `ApiRunSpend` and its four companions
+ * are hand-mirrored in `dashboard/src/lib/api-types.ts` as `RunSpend`,
+ * `SeatSpend`, `VendorSpend`, `MeteredSpend` and `SpendSeat`. The two packages are
+ * separate TypeScript programs with no path between them, so a field added on the
+ * server and forgotten on the client compiles clean on BOTH sides — measured for
+ * `designLock` and for the gate/fix pair above, and there is no reason this record
+ * would be luckier.
+ *
+ * THREE LEGS, AND EACH ONE CLOSES A HOLE THE OTHER TWO LEAVE OPEN.
+ *   · The seat UNION is compared against `SPEND_SEATS`, IMPORTED as a value and
+ *     proven complete against `ApiSpendSeat` by an `Exclude` guard beside it. No
+ *     regex can fake that side.
+ *   · The four INTERFACES are compared field-name-set against a HARDCODED list
+ *     here. Deleting a field from both packages fails this leg — which is exactly
+ *     what a both-sides-textual comparison cannot see.
+ *   · The same field sets are then compared SERVER TEXT against CLIENT TEXT, so a
+ *     field added to the server and to this test but forgotten on the client is
+ *     red, and so is the reverse.
+ *
+ * WHAT IT STILL CANNOT SEE: types. The two packages spell the same types
+ * differently on purpose (`ApiTokens`/`TokenCounts`, `ApiProvider`/`Provider`), so
+ * the per-field type assertions are hand-written client-side regexes below and
+ * there is no mechanical comparison available.
+ * ---------------------------------------------------------------------- */
+
+function readSource(file: string, what: string): string {
+  assert.ok(
+    existsSync(file),
+    `this check reads ${what} and it is not at ${file}. The file moved, or this test is ` +
+      `running from an outDir that is not directly under dashboard/server.`,
+  );
+  return readFileSync(file, "utf8");
+}
+
+/**
+ * The `readonly` field names of one interface, in declaration order.
+ *
+ * COMMENTS ARE STRIPPED BEFORE THE CLOSING BRACE IS FOUND, and that ordering is
+ * not cosmetic — it is why this does not use `region` above. `region` slices the
+ * RAW text and only then strips comments, so a docblock containing `{@link Foo}`
+ * closes the region on the brace inside the comment. MEASURED, not theorised: the
+ * first version of this check read `seat, provider` out of `ApiSeatSpend`'s five
+ * fields, because `modelId`'s docblock mentions `{@link ModelTokens}`, and went
+ * red naming the wrong cause — "the server and the client have drifted" for two
+ * files that agreed exactly.
+ *
+ * A PARSE OF ZERO FIELDS THROWS. An interface that yielded no names would make
+ * every comparison below trivially agree with any other empty parse, which is the
+ * can't-fail shape this whole file exists to avoid.
+ */
+function fieldNames(source: string, file: string, open: string): readonly string[] {
+  const stripped = withoutComments(source);
+  const start = stripped.indexOf(open);
+  assert.notEqual(
+    start,
+    -1,
+    `${file}: the anchor \`${open}\` is gone. This check parses that declaration; re-point it at ` +
+      `whatever replaced it rather than deleting the check.`,
+  );
+  const from = start + open.length;
+  const end = stripped.indexOf("}", from);
+  assert.notEqual(end, -1, `${file}: \`${open}\` has no closing brace.`);
+  const names = literals(stripped.slice(from, end), /readonly\s+([A-Za-z][A-Za-z0-9]*)\s*[?:]/g);
+  assert.notEqual(
+    names.length,
+    0,
+    `${file}: \`${open}\` parsed as ZERO fields — re-point this parser, do not delete it.`,
+  );
+  return names;
+}
+
+/** Server interface -> client interface, and the fields both must declare. */
+const SPEND_SHAPES: readonly {
+  readonly server: string;
+  readonly client: string;
+  readonly fields: readonly string[];
+}[] = [
+  {
+    server: "ApiSeatSpend",
+    client: "SeatSpend",
+    fields: ["seat", "provider", "modelId", "tokens", "callCount"],
+  },
+  {
+    server: "ApiVendorSpend",
+    client: "VendorSpend",
+    fields: ["provider", "tokens", "callCount", "seats"],
+  },
+  {
+    server: "ApiMeteredSpend",
+    client: "MeteredSpend",
+    fields: ["kind", "model", "calls", "deliveredSecondsFloor"],
+  },
+  {
+    server: "ApiRunSpend",
+    client: "RunSpend",
+    fields: ["bySeat", "byVendor", "metered", "pricing"],
+  },
+];
+
+test("CONTRACT: the client's SpendSeat union names exactly the server's seats", () => {
+  // THE ATTRIBUTION IS THE FEATURE, so a missing member is not a cosmetic gap: a
+  // client that has never heard of `fix` renders a run's fix-round spend nowhere,
+  // and a client that has never heard of `audit` merges 17,603 tokens into
+  // whichever seat its renderer defaults to.
+  const union = region(
+    readClient(CLIENT_TYPES),
+    CLIENT_TYPES,
+    "export type SpendSeat =",
+    ";",
+  );
+  const found = literals(union, /"([a-z_]+)"/g);
+  assert.deepEqual(
+    sorted(found),
+    sorted([...SPEND_SEATS]),
+    `spend-seat drift: the server accumulates ${SPEND_SEATS.join(", ")} and the client's SpendSeat ` +
+      `names ${found.join(", ")}. The server's union is api-types.ts::ApiSpendSeat, proven complete ` +
+      "against SPEND_SEATS by the Exclude guard beside it; the client mirrors it by hand.",
+  );
+});
+
+test("CONTRACT: the client mirrors every field of the spend record, in both directions", () => {
+  const client = readClient(CLIENT_TYPES);
+  const server = readSource(SERVER_TYPES, "this package's own api-types.ts");
+
+  for (const shape of SPEND_SHAPES) {
+    const onServer = fieldNames(server, SERVER_TYPES, `export interface ${shape.server} {`);
+    const onClient = fieldNames(client, CLIENT_TYPES, `export interface ${shape.client} {`);
+
+    // LEG ONE: the hardcoded expectation. Deleting a field from BOTH packages is
+    // red here and is invisible to the comparison below.
+    assert.deepEqual(
+      sorted(onClient),
+      sorted(shape.fields),
+      `${shape.client} in the client does not declare ${shape.fields.join(", ")} — it declares ` +
+        `${onClient.join(", ")}. The server sends the full shape and the UI cannot see what it omits.`,
+    );
+    // LEG TWO: the two packages against each other. A field added to the server
+    // and to the list above, with the client untouched, is red here.
+    assert.deepEqual(
+      sorted(onServer),
+      sorted(onClient),
+      `${shape.server} and ${shape.client} have drifted: the server declares ${onServer.join(", ")} ` +
+        `and the client ${onClient.join(", ")}. Nothing but this test compares them.`,
+    );
+  }
+});
+
+test("CONTRACT: the client's spend fields carry the server's types, and pricing is the literal", () => {
+  const client = readClient(CLIENT_TYPES);
+
+  const seat = region(client, CLIENT_TYPES, "export interface SeatSpend {", "}");
+  for (const field of [
+    /readonly seat: SpendSeat;/,
+    /readonly provider: Provider;/,
+    /readonly modelId: string;/,
+    /readonly tokens: TokenCounts;/,
+    /readonly callCount: number;/,
+  ]) {
+    assert.match(seat, field, `the client's SeatSpend is missing ${String(field)}`);
+  }
+
+  const vendor = region(client, CLIENT_TYPES, "export interface VendorSpend {", "}");
+  assert.match(
+    vendor,
+    /readonly seats: readonly SpendSeat\[\];/,
+    "the client's VendorSpend does not name the seats folded into a vendor total, so a reader " +
+      "cannot see that the builder is one seat of four",
+  );
+
+  const metered = region(client, CLIENT_TYPES, "export interface MeteredSpend {", "}");
+  assert.match(
+    metered,
+    /readonly kind: "image" \| "video";/,
+    "the client's MeteredSpend narrowed or widened the kind away from the server's two",
+  );
+  // `number | null`, and the NULL is the field's meaning: an image call is not
+  // billed by time. A client that typed this `number` would render "0s of video"
+  // for every image-only run.
+  assert.match(
+    metered,
+    /readonly deliveredSecondsFloor: number \| null;/,
+    "the client's MeteredSpend lost the nullable floor, or narrowed it to a number",
+  );
+
+  const run = region(client, CLIENT_TYPES, "export interface RunSpend {", "}");
+  assert.match(run, /readonly bySeat: readonly SeatSpend\[\];/);
+  assert.match(run, /readonly byVendor: readonly VendorSpend\[\];/);
+  assert.match(run, /readonly metered: readonly MeteredSpend\[\];/);
+  // THE FIELD THAT STOPS A RUN READING AS FREE. `pricing: string` would compile,
+  // mirror, render — and let a UI print an em dash beside a run that spent half a
+  // million tokens, which is the failure the field was added to prevent.
+  assert.match(
+    run,
+    /readonly pricing: PricingBasis;/,
+    "the client's RunSpend does not carry the pricing basis as PricingBasis",
+  );
+  const basis = region(client, CLIENT_TYPES, "export type PricingBasis =", ";");
+  assert.match(
+    basis,
+    /"not-priced-subscription-seat"/,
+    "the client's PricingBasis is not the server's literal: `costUsd: null` and `totalCostUsd: 0` " +
+      "are both already read as free, and this literal is the only thing that says otherwise",
   );
 });

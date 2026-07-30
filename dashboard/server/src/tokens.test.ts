@@ -24,13 +24,19 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import type { ApiSeatSpend, ApiSpendSeat } from "./api-types.js";
 import {
+  NOT_PRICED,
   addTokens,
   describeTokens,
   mergeTokenTotals,
   modelRows,
+  runSpend,
+  spendByVendor,
   toApiTokens,
+  toSeatSpend,
   unattributedTokens,
+  vendorSpend,
   zeroTokens,
 } from "./tokens.js";
 import type { ModelTokens, TokenTotals } from "./tokens.js";
@@ -331,6 +337,116 @@ test("the merge is field-wise, so no field borrows another's number", () => {
     cacheReadTokens: 901,
     cacheWriteTokens: 60,
   });
+});
+
+/* -------------------------------------------------------------------------
+ * Spend, attributed by seat
+ *
+ * The four measured OUTPUT figures from the live run — spec 416,111, audit
+ * 17,603, judge 3,228, builder 88,529 — are used as fixtures throughout, so a
+ * failure names the seat that was dropped rather than reporting that 6 is not 4.
+ * ---------------------------------------------------------------------- */
+
+function seatRow(seat: ApiSpendSeat, provider: "anthropic" | "openai", output: number): ApiSeatSpend {
+  return toSeatSpend({
+    seat,
+    modelId: `${provider}-model`,
+    totals: { ...zeroTokens(provider), inputTokens: 5, outputTokens: output, callCount: 1 },
+  });
+}
+
+const MEASURED_SEATS: readonly ApiSeatSpend[] = [
+  seatRow("spec", "anthropic", 416_111),
+  seatRow("audit", "anthropic", 17_603),
+  seatRow("judge", "anthropic", 3_228),
+  seatRow("builder", "anthropic", 88_529),
+];
+
+test("a contribution carries its seat's VENDOR — the row cannot be filed under another", () => {
+  const row = toSeatSpend({
+    seat: "builder",
+    modelId: "gpt-6-codex",
+    totals: { ...zeroTokens("openai"), outputTokens: 88_529, callCount: 2 },
+  });
+  assert.equal(row.provider, "openai", "the vendor comes from the totals, not from a caller's argument");
+  assert.equal(row.callCount, 2);
+  assert.equal(row.tokens.outputTokens, 88_529);
+});
+
+test("THE TOTAL IS EVERY SEAT: 525,471 output, and 88,529 is one seat of four", () => {
+  const vendors = spendByVendor(MEASURED_SEATS);
+  assert.equal(vendors.length, 1);
+  assert.equal(vendors[0]?.tokens.outputTokens, 525_471);
+  assert.notEqual(vendors[0]?.tokens.outputTokens, 88_529, "that is the builder's row, not the run's total");
+  assert.equal(vendors[0]?.callCount, 4);
+  assert.deepEqual([...(vendors[0]?.seats ?? [])], ["spec", "audit", "judge", "builder"]);
+});
+
+test("two vendors are two rows — the cross-vendor sum is never produced", () => {
+  // A Codex run: OpenAI builder, three Anthropic control seats. `addTokens`
+  // THROWS on a vendor mismatch, so a reduce over this list would not return a
+  // wrong number — it would take down whatever was writing the record. Grouping
+  // first is why this returns at all, and the assertions pin both halves.
+  const mixed: readonly ApiSeatSpend[] = [
+    seatRow("spec", "anthropic", 416_111),
+    seatRow("builder", "openai", 88_529),
+    seatRow("audit", "anthropic", 17_603),
+    seatRow("judge", "anthropic", 3_228),
+  ];
+  const vendors = spendByVendor(mixed);
+  assert.equal(vendors.length, 2);
+  // FIRST-SEEN ORDER, the same rule `mergeModelRows` follows: anthropic appeared
+  // first in the list, so it is first here.
+  assert.deepEqual(
+    vendors.map((row) => row.provider),
+    ["anthropic", "openai"],
+  );
+  assert.equal(vendors[0]?.tokens.outputTokens, 436_942);
+  assert.equal(vendors[1]?.tokens.outputTokens, 88_529);
+  for (const row of vendors) {
+    assert.notEqual(row.tokens.outputTokens, 525_471, "the two vendors were added together");
+  }
+});
+
+test("a seat that reports on two models is named ONCE in its vendor row", () => {
+  const vendors = spendByVendor([
+    seatRow("spec", "anthropic", 400_000),
+    { ...seatRow("spec", "anthropic", 16_111), modelId: "claude-haiku-4-5" },
+  ]);
+  assert.equal(vendors[0]?.tokens.outputTokens, 416_111, "both models are in the total");
+  assert.deepEqual([...(vendors[0]?.seats ?? [])], ["spec"], "one seat, however many models it ran on");
+});
+
+test("an empty seat list produces NO vendor row — never a zeroed one", () => {
+  // A zeroed row would read as "this vendor was measured and spent nothing",
+  // which is the claim `ApiRunSpend`'s docblock refuses: an empty record means
+  // nothing was recorded.
+  assert.deepEqual(spendByVendor([]), []);
+  const spend = runSpend([], []);
+  assert.deepEqual(spend.byVendor, []);
+  assert.deepEqual(spend.bySeat, []);
+  assert.equal(vendorSpend(spend, "anthropic"), null, "and asking for one answers null, not a zero row");
+});
+
+test("the record's per-vendor totals are DERIVED, so they cannot disagree with the seats", () => {
+  const spend = runSpend(MEASURED_SEATS, [
+    { kind: "image", model: "gemini-3.1-flash-image-preview", calls: 5, deliveredSecondsFloor: null },
+  ]);
+  const fromSeats = spend.bySeat.reduce((total, row) => total + row.tokens.outputTokens, 0);
+  assert.equal(vendorSpend(spend, "anthropic")?.tokens.outputTokens, fromSeats);
+  assert.equal(fromSeats, 525_471);
+  // The metered rows carry no tokens and are folded into no token total.
+  assert.equal(spend.metered.length, 1);
+  assert.equal(spend.metered[0]?.deliveredSecondsFloor, null, "an image call is not billed by time");
+});
+
+test("the pricing basis is a STATEMENT, not a zero", () => {
+  // `costUsd: null` and `run.json`'s `totalCostUsd: 0` are both read as "free" at
+  // the end of a long build. This literal is the only thing on the wire that says
+  // otherwise, so it is pinned verbatim here and in the client's mirror.
+  assert.equal(NOT_PRICED, "not-priced-subscription-seat");
+  assert.equal(runSpend(MEASURED_SEATS, []).pricing, NOT_PRICED);
+  assert.notEqual(String(runSpend([], []).pricing), "0");
 });
 
 test("a run with nothing recorded yet takes the incoming row verbatim, never zeroes", () => {

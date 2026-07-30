@@ -79,6 +79,98 @@ export interface TokenCounts {
   readonly cacheWriteTokens: number;
 }
 
+/* -------------------------------------------------------------------------
+ * SPEND, ATTRIBUTED BY SEAT
+ *
+ * `RunDetail.tokens` IS THE BUILDER'S ROW, NOT THE RUN'S SPEND. Measured on one
+ * live run: the builder reported 88,529 output tokens while the spec, audit and
+ * judge seats spent 416,111, 17,603 and 3,228 — so the figure this UI renders
+ * beside a run is 16.8% of what that run actually spent. These shapes are the
+ * whole of it, one row per seat and ONE TOTAL PER VENDOR.
+ *
+ * TRANSCRIBED FROM `ApiSeatSpend`, `ApiVendorSpend`, `ApiMeteredSpend` and
+ * `ApiRunSpend` in `dashboard/server/src/api-types.ts`, which carry the full
+ * reasoning. Nothing but `contract-parity.test.ts` compares the two files —
+ * forgetting a field here compiles clean on both sides and simply never renders.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Which SEAT spent it. NOT the bake-off's `SeatRole`.
+ *
+ * `audit` and `judge` are ONE seat constant doing two jobs — the adversarial
+ * bad-test pass before the build, and the code-reading pass after the gate — and
+ * they are separate members here because collapsing them puts 17,603 + 3,228
+ * under a name that belongs to neither. There is no `design` member: the design
+ * segment spends on the BUILDER's session, and the design lane's own spend is
+ * metered image/video below.
+ */
+export type SpendSeat = "spec" | "audit" | "builder" | "fix" | "judge";
+
+/**
+ * Why a run has no dollar figure, as a value rather than an absence.
+ *
+ * DO NOT RENDER THIS AS AN EM DASH OR AS `$0.00`. `costUsd: null` already reads
+ * as "missing data" and `run.json`'s `totalCostUsd: 0` already reads as "free";
+ * this field is the statement that neither is true. `describeCost` in
+ * `src/lib/cost.ts` is the only sanctioned way to turn cost into pixels and its
+ * `included` branch says the same thing in prose.
+ */
+export type PricingBasis = "not-priced-subscription-seat";
+
+/** One seat's token spend. Never a dollar figure. */
+export interface SeatSpend {
+  readonly seat: SpendSeat;
+  readonly provider: Provider;
+  /** The model the seat was CONFIGURED with — not a claim that one model ran. */
+  readonly modelId: string;
+  readonly tokens: TokenCounts;
+  readonly callCount: number;
+}
+
+/**
+ * One VENDOR's total. There is no single scalar, and there must not be: token
+ * counts are never summed across vendors, because tokenizers differ. On a Codex
+ * run this list has two rows and "the run's tokens" is two numbers.
+ */
+export interface VendorSpend {
+  readonly provider: Provider;
+  readonly tokens: TokenCounts;
+  readonly callCount: number;
+  /** The seats folded into this row, in the order the run acquired them. */
+  readonly seats: readonly SpendSeat[];
+}
+
+/**
+ * Spend billed by the call or by the second against a metered key.
+ *
+ * NO `provider`: the design lane's image and video calls go to a vendor that is
+ * not one of the four the dashboard can build with. `deliveredSecondsFloor` is a
+ * FLOOR on what was billed — video that was generated, billed and then failed
+ * its download counts as zero — and it is `null`, never `0`, for a call that is
+ * not billed by time at all.
+ */
+export interface MeteredSpend {
+  readonly kind: "image" | "video";
+  readonly model: string;
+  /** Calls ATTEMPTED, retries included. A count, never money. */
+  readonly calls: number;
+  readonly deliveredSecondsFloor: number | null;
+}
+
+/**
+ * Everything one run spent.
+ *
+ * AN EMPTY `bySeat` MEANS NOTHING WAS RECORDED, never "this run spent nothing".
+ * Render it as the absence it is; a row of zeros for a run that burned four
+ * hundred thousand tokens before the recorder ran is worse than no row.
+ */
+export interface RunSpend {
+  readonly bySeat: readonly SeatSpend[];
+  readonly byVendor: readonly VendorSpend[];
+  readonly metered: readonly MeteredSpend[];
+  readonly pricing: PricingBasis;
+}
+
 export interface RateLimitState {
   readonly limited: boolean;
   readonly retryAfterSec: number | null;

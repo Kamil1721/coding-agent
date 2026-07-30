@@ -14,8 +14,18 @@
  * A consequence the API contract inherits: `RunDetail.tokens` reports the
  * BUILDER's vendor only — the model the owner actually picked. On a Codex run
  * the spec and judge seats are Claude, and adding those counts to OpenAI's
- * would produce a number that means nothing. Spec and judge token counts are
- * reported in the run's log stream instead, with their vendor named.
+ * would produce a number that means nothing.
+ *
+ * THAT RULE WAS RIGHT AND THE PLACE IT LEFT THE OTHER SEATS WAS NOT. Until
+ * {@link spendByVendor} below, "reported in the run's log stream instead" was
+ * the whole of it: the spec seat's 416,111 output tokens, the audit seat's
+ * 17,603 and the judge's 3,228 were printed by {@link describeTokens} and
+ * accumulated NOWHERE, so a run that spent 525,471 output tokens reported the
+ * builder's 88,529 as its figure — 16.8% of itself. A log line is not a record.
+ * The per-vendor rule is kept exactly as it was: the seats are accumulated PER
+ * VENDOR, one row each, and no cross-vendor scalar is produced anywhere in this
+ * file. `ApiRunSpend` in api-types.ts is the shape, `RunStore.runSpend` is where
+ * it is assembled from persisted rows.
  *
  * WITHIN ONE VENDOR, THE SPLIT IS PER MODEL, AND THAT IS NOT COSMETIC. Delegation
  * is the architecture: a haiku orchestrator hands the work to opus subagents, and
@@ -36,7 +46,16 @@
 
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import type { Provider } from "bakeoff/dist/contracts.js";
-import type { ApiTokens } from "./api-types.js";
+import type {
+  ApiMeteredSpend,
+  ApiPricingBasis,
+  ApiProvider,
+  ApiRunSpend,
+  ApiSeatSpend,
+  ApiSpendSeat,
+  ApiTokens,
+  ApiVendorSpend,
+} from "./api-types.js";
 
 /** One model's share of a vendor's token spend. */
 export interface ModelTokens extends ApiTokens {
@@ -191,6 +210,118 @@ export function toApiTokens(totals: TokenTotals): ApiTokens {
     cacheReadTokens: totals.cacheReadTokens,
     cacheWriteTokens: totals.cacheWriteTokens,
   };
+}
+
+/* -------------------------------------------------------------------------
+ * Spend, attributed by seat
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The one value of `ApiRunSpend.pricing`, typed so it cannot drift from the
+ * contract.
+ *
+ * IT LIVES HERE AND NOT IN api-types.ts BECAUSE THAT FILE IS A TYPE FILE. Its
+ * only runtime export is `SSE_EVENT_TYPES`, which exists so the CLIENT can be
+ * compared against it; a second runtime constant there would be a second reason
+ * for the wire contract to be imported at run time. The annotation is the join:
+ * changing the literal in either place stops compiling.
+ */
+export const NOT_PRICED: ApiPricingBasis = "not-priced-subscription-seat";
+
+/** One seat's contribution, as its caller knows it before it is persisted. */
+export interface SeatContribution {
+  readonly seat: ApiSpendSeat;
+  /** The seat's configured model. See `ApiSeatSpend.modelId`. */
+  readonly modelId: string;
+  readonly totals: TokenTotals;
+}
+
+/** A contribution flattened into the wire row. The vendor rides along. */
+export function toSeatSpend(entry: SeatContribution): ApiSeatSpend {
+  return {
+    seat: entry.seat,
+    provider: entry.totals.provider,
+    modelId: entry.modelId,
+    tokens: toApiTokens(entry.totals),
+    callCount: entry.totals.callCount,
+  };
+}
+
+/**
+ * The seats folded into ONE ROW PER VENDOR. This is the run's total.
+ *
+ * GROUPED FIRST, ADDED SECOND, AND THE ORDER OF THOSE TWO IS THE WHOLE
+ * CORRECTNESS ARGUMENT. `addTokens` THROWS on a vendor mismatch — deliberately,
+ * see its docblock — so `rows.reduce(addTokens)` over a mixed list takes down
+ * whatever was writing the record on every Codex run, where the builder is
+ * OpenAI and three other seats are Anthropic. Grouping by provider before adding
+ * means the refusal can only fire if the grouping itself is broken, which is the
+ * one occasion it MUST fire rather than be engineered away.
+ *
+ * AND IT GOES THROUGH `addTokens` RATHER THAN ADDING FOUR NUMBERS IN A LOOP,
+ * because that function is the only place in this program where token counts are
+ * summed and the vendor rule is enforced. A local sum here would be a second
+ * adder with no guard — `mergeTokenTotals` is exactly that (it takes `ApiTokens`,
+ * which carries no vendor at all) and routing seats through it would silently
+ * produce the cross-vendor figure this file's header forbids.
+ *
+ * VENDOR ORDER IS FIRST-SEEN, for the reason `mergeModelRows` gives: a reader
+ * asking "what did this run spend" reads the vendors in the order the run
+ * acquired them, and the seats list inside each row is in that same order.
+ */
+export function spendByVendor(rows: readonly ApiSeatSpend[]): readonly ApiVendorSpend[] {
+  const groups = new Map<ApiProvider, { total: TokenTotals; readonly seats: ApiSpendSeat[] }>();
+  for (const row of rows) {
+    const contribution: TokenTotals = {
+      provider: row.provider,
+      inputTokens: row.tokens.inputTokens,
+      outputTokens: row.tokens.outputTokens,
+      cacheReadTokens: row.tokens.cacheReadTokens,
+      cacheWriteTokens: row.tokens.cacheWriteTokens,
+      callCount: row.callCount,
+    };
+    const group = groups.get(row.provider);
+    if (group === undefined) {
+      groups.set(row.provider, { total: contribution, seats: [row.seat] });
+      continue;
+    }
+    groups.set(row.provider, {
+      total: addTokens(group.total, contribution),
+      seats: group.seats.includes(row.seat) ? group.seats : [...group.seats, row.seat],
+    });
+  }
+  return [...groups.entries()].map(([provider, group]) => ({
+    provider,
+    tokens: toApiTokens(group.total),
+    callCount: group.total.callCount,
+    seats: [...group.seats],
+  }));
+}
+
+/**
+ * The whole spend record, assembled from rows that were already persisted.
+ *
+ * `byVendor` IS DERIVED HERE AND NEVER STORED, so it cannot disagree with the
+ * seat rows it totals — the same argument `addTokens` makes about `byModel`. A
+ * persisted total is a second source of truth that goes stale the moment one
+ * seat is recorded and the other is not, which is the state every interrupted
+ * run is in.
+ */
+export function runSpend(
+  seats: readonly ApiSeatSpend[],
+  metered: readonly ApiMeteredSpend[],
+): ApiRunSpend {
+  return {
+    bySeat: [...seats],
+    byVendor: spendByVendor(seats),
+    metered: [...metered],
+    pricing: NOT_PRICED,
+  };
+}
+
+/** One vendor's row out of a spend record, or null when it spent nothing. */
+export function vendorSpend(spend: ApiRunSpend, provider: ApiProvider): ApiVendorSpend | null {
+  return spend.byVendor.find((row) => row.provider === provider) ?? null;
 }
 
 function describeCounts(counts: ApiTokens): string {

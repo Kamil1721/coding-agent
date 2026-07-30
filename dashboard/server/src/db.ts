@@ -11,6 +11,10 @@
  *    nullable one. A column that exists gets filled; a column that does not
  *    exist cannot leak a fabricated dollar figure into the UI. Subscription
  *    runs consume quota and are not billed per token — see api-types.ts.
+ *    THIS APPLIES TO `seat_spend` AND `metered_spend` TOO, and it is the reason
+ *    the metered table counts CALLS and DELIVERED SECONDS: those are quantities
+ *    this program actually knows, and no price table exists to turn them into a
+ *    bill.
  *
  * 3. A RUN SURVIVES A SERVER RESTART. Everything needed to resume — phase,
  *    builder session id, suite digest, workspace path — is a column, not
@@ -26,17 +30,32 @@ import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { redactForPersistence } from "bakeoff/dist/redact.js";
+import { SPEND_SEATS } from "./api-types.js";
 import type {
   ApiCriterion,
   ApiCriterionResult,
   ApiCriterionTier,
+  ApiMeteredSpend,
   ApiPhase,
   ApiProvider,
+  ApiRunSpend,
   ApiRunStatus,
   ApiScreenshot,
+  ApiSeatSpend,
+  ApiSpendSeat,
   ApiTokens,
   SseEvent,
 } from "./api-types.js";
+/**
+ * RUNTIME, NOT TYPE-ONLY, AND THAT IS THE POINT OF ROUTING THROUGH IT.
+ *
+ * `runSpend` derives the per-vendor totals with `addTokens`, which REFUSES to sum
+ * two vendors. A store that assembled the record itself would be a second adder
+ * with no such refusal — and the cross-vendor number it produced would be
+ * indistinguishable from a real one.
+ */
+import { runSpend, toSeatSpend } from "./tokens.js";
+import type { SeatContribution } from "./tokens.js";
 /**
  * TYPE-ONLY, AND IT NARROWS THE WRITE AND NOTHING ELSE.
  *
@@ -276,6 +295,23 @@ const PHASES: readonly ApiPhase[] = ["spec", "build", "gate", "judge", "done"];
 const PROVIDERS: readonly ApiProvider[] = ["anthropic", "openai", "moonshot", "deepseek"];
 const TIERS: readonly ApiCriterionTier[] = ["BLOCKING", "FUNCTIONAL", "QUALITY"];
 const CRITERION_RESULTS: readonly ApiCriterionResult[] = ["pass", "fail", "pending"];
+/**
+ * THE SEAT VOCABULARY IS IMPORTED, NOT RETYPED — the one list above that is.
+ *
+ * Every other list in this block is a hand-written copy of a union, which is a
+ * declaration site that can drift; `api-types.ts` exports `SPEND_SEATS` as a
+ * value precisely so this guard and the wire union cannot name different seats. A
+ * copy here that missed `fix` would throw `spend seat "fix" is not one of …` on a
+ * row THIS STORE ITSELF WROTE, and only on the seat that reports last.
+ *
+ * AND IT IS GUARDED ON THE WAY OUT, unlike `gate_stop_reason` two guards below.
+ * The difference is who owns the vocabulary: a stop reason's words live in
+ * `gate-fix-loop.ts` and a row written by a newer server must READ rather than
+ * throw, while a seat name is this contract's own and IS the attribution. An
+ * unrecognised seat read through as a plain string would file spend under a name
+ * no renderer has a line for, which is the silent drop this record exists to end.
+ */
+const METERED_KINDS: readonly ApiMeteredSpend["kind"][] = ["image", "video"];
 
 function oneOf<T extends string>(values: readonly T[], raw: string, label: string): T {
   const found = values.find((v) => v === raw);
@@ -368,6 +404,32 @@ CREATE TABLE IF NOT EXISTS screenshots (
   label       TEXT NOT NULL,
   captured_at TEXT NOT NULL,
   PRIMARY KEY (run_id, path)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS seat_spend (
+  run_id             TEXT NOT NULL,
+  seat               TEXT NOT NULL,
+  provider           TEXT NOT NULL,
+  model_id           TEXT NOT NULL,
+  ordinal            INTEGER NOT NULL,
+  input_tokens       INTEGER NOT NULL,
+  output_tokens      INTEGER NOT NULL,
+  cache_read_tokens  INTEGER NOT NULL,
+  cache_write_tokens INTEGER NOT NULL,
+  call_count         INTEGER NOT NULL,
+  updated_at         TEXT NOT NULL,
+  PRIMARY KEY (run_id, seat, provider, model_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS metered_spend (
+  run_id                  TEXT NOT NULL,
+  kind                    TEXT NOT NULL,
+  model                   TEXT NOT NULL,
+  ordinal                 INTEGER NOT NULL,
+  calls                   INTEGER NOT NULL,
+  delivered_seconds_floor INTEGER,
+  updated_at              TEXT NOT NULL,
+  PRIMARY KEY (run_id, kind, model)
 ) WITHOUT ROWID;
 `;
 
@@ -738,6 +800,215 @@ export class RunStore {
       capturedAt: str(row, "captured_at"),
     }));
   }
+
+  /* ---- spend, attributed by seat ------------------------------------ */
+
+  /**
+   * Add one seat's spend to what this run has already recorded for that seat.
+   *
+   * IT ADDS. IT DOES NOT ASSIGN, AND THE DIFFERENCE IS THE DEFECT THIS TABLE
+   * EXISTS TO CLOSE. Every seat here reports more than once — the builder is two
+   * `builder.build()` calls against one session, the GATE/FIX loop runs a round
+   * per attempt, and `mergeTokenTotals`'s docblock records what assignment did to
+   * the run row: a design segment that spent 1000 followed by a build segment
+   * reporting 10 left the run claiming 10. `ON CONFLICT DO UPDATE SET x = x +
+   * excluded.x` puts that arithmetic in the one place a caller cannot skip.
+   *
+   * THE KEY IS (run, seat, provider, model) AND EVERY PART OF IT IS LOAD-BEARING.
+   * Seat, because the attribution is the point. Provider, because a run whose
+   * builder is OpenAI still has three Anthropic seats and their counts must never
+   * meet. Model, because a seat whose model changed mid-run — a resumed run
+   * against a different `DASHBOARD_SPEC_MODEL` — spent on two models and one row
+   * would label all of it with whichever was written last.
+   *
+   * `ordinal` IS FIRST-SEEN ORDER AND IT IS A COLUMN RATHER THAN THE PRIMARY
+   * KEY'S ORDER BECAUSE THE PRIMARY KEY IS ALPHABETICAL. A `WITHOUT ROWID` table
+   * scans in key order, which would list `audit` before `spec` — reversing the
+   * only two seats whose order a reader can check against the log — and `builder`
+   * before `fix`, which is right by luck rather than by construction. The
+   * conflict path deliberately does NOT touch it: a seat keeps the position it
+   * first appeared in, however many times it reports.
+   */
+  recordSeatSpend(runId: string, entry: SeatContribution): ApiSeatSpend {
+    const row = toSeatSpend(entry);
+    // ONE redaction call, matching `createRun`: `modelId` is redacted there and
+    // is redacted here. `seat`, `provider` and `kind` are short enum literals —
+    // `redactForPersistence` on one is a no-op that would still cost a cast on
+    // the way in and a widened type on the way out, exactly as `design_lock` and
+    // `gate_stop_reason` argue above.
+    const safeModelId = redactForPersistence(row.modelId);
+    const now = new Date().toISOString();
+    const seen = this.#db
+      .prepare("SELECT COALESCE(MAX(ordinal), 0) AS m FROM seat_spend WHERE run_id = ?")
+      .get(runId);
+    const ordinal = (seen === undefined ? 0 : num(seen, "m")) + 1;
+    this.#db
+      .prepare(
+        `INSERT INTO seat_spend (run_id, seat, provider, model_id, ordinal, input_tokens, output_tokens,
+           cache_read_tokens, cache_write_tokens, call_count, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (run_id, seat, provider, model_id) DO UPDATE SET
+           input_tokens       = seat_spend.input_tokens       + excluded.input_tokens,
+           output_tokens      = seat_spend.output_tokens      + excluded.output_tokens,
+           cache_read_tokens  = seat_spend.cache_read_tokens  + excluded.cache_read_tokens,
+           cache_write_tokens = seat_spend.cache_write_tokens + excluded.cache_write_tokens,
+           call_count         = seat_spend.call_count         + excluded.call_count,
+           updated_at         = excluded.updated_at`,
+      )
+      .run(
+        runId,
+        row.seat,
+        row.provider,
+        safeModelId,
+        ordinal,
+        row.tokens.inputTokens,
+        row.tokens.outputTokens,
+        row.tokens.cacheReadTokens,
+        row.tokens.cacheWriteTokens,
+        row.callCount,
+        now,
+      );
+    const stored = this.#seatSpendRow(runId, row.seat, row.provider, safeModelId);
+    if (stored === null) {
+      throw new BakeoffError(
+        "invalid_usage_shape",
+        `seat spend for ${runId}/${row.seat} vanished after insert`,
+        "Retry.",
+      );
+    }
+    return stored;
+  }
+
+  #seatSpendRow(
+    runId: string,
+    seat: ApiSpendSeat,
+    provider: ApiProvider,
+    modelId: string,
+  ): ApiSeatSpend | null {
+    const row = this.#db
+      .prepare(
+        `SELECT seat, provider, model_id, input_tokens, output_tokens, cache_read_tokens,
+           cache_write_tokens, call_count
+         FROM seat_spend WHERE run_id = ? AND seat = ? AND provider = ? AND model_id = ?`,
+      )
+      .get(runId, seat, provider, modelId);
+    return row === undefined ? null : toSeatSpendRow(row);
+  }
+
+  /**
+   * Add one metered image/video contribution.
+   *
+   * SAME ADDITION, DIFFERENT UNITS. `calls` is attempts including retries — the
+   * count that makes a zero-image lane say "after 3 generation attempts" rather
+   * than "after 0", which are two sentences about completely different faults
+   * (design-outcome.ts). `delivered_seconds_floor` sums the same way, and
+   * NULL + NULL STAYS NULL: an image call is not a duration, and turning that
+   * into `0` would report "zero seconds of video" for a run that generated no
+   * video at all — a measurement where there was none.
+   */
+  recordMeteredSpend(runId: string, entry: ApiMeteredSpend): ApiMeteredSpend {
+    const safeModel = redactForPersistence(entry.model);
+    const now = new Date().toISOString();
+    const seen = this.#db
+      .prepare("SELECT COALESCE(MAX(ordinal), 0) AS m FROM metered_spend WHERE run_id = ?")
+      .get(runId);
+    const ordinal = (seen === undefined ? 0 : num(seen, "m")) + 1;
+    this.#db
+      .prepare(
+        `INSERT INTO metered_spend (run_id, kind, model, ordinal, calls, delivered_seconds_floor, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (run_id, kind, model) DO UPDATE SET
+           calls = metered_spend.calls + excluded.calls,
+           delivered_seconds_floor =
+             CASE
+               WHEN metered_spend.delivered_seconds_floor IS NULL
+                 AND excluded.delivered_seconds_floor IS NULL THEN NULL
+               ELSE COALESCE(metered_spend.delivered_seconds_floor, 0)
+                  + COALESCE(excluded.delivered_seconds_floor, 0)
+             END,
+           updated_at = excluded.updated_at`,
+      )
+      .run(runId, entry.kind, safeModel, ordinal, entry.calls, entry.deliveredSecondsFloor, now);
+    const row = this.#db
+      .prepare(
+        `SELECT kind, model, calls, delivered_seconds_floor FROM metered_spend
+         WHERE run_id = ? AND kind = ? AND model = ?`,
+      )
+      .get(runId, entry.kind, safeModel);
+    if (row === undefined) {
+      throw new BakeoffError(
+        "invalid_usage_shape",
+        `metered spend for ${runId}/${entry.kind} vanished after insert`,
+        "Retry.",
+      );
+    }
+    return toMeteredSpendRow(row);
+  }
+
+  /** Seat rows in the order the run acquired them. Empty means NOTHING RECORDED. */
+  listSeatSpend(runId: string): readonly ApiSeatSpend[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT seat, provider, model_id, input_tokens, output_tokens, cache_read_tokens,
+           cache_write_tokens, call_count
+         FROM seat_spend WHERE run_id = ? ORDER BY ordinal ASC`,
+      )
+      .all(runId);
+    return rows.map(toSeatSpendRow);
+  }
+
+  listMeteredSpend(runId: string): readonly ApiMeteredSpend[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT kind, model, calls, delivered_seconds_floor FROM metered_spend
+         WHERE run_id = ? ORDER BY ordinal ASC`,
+      )
+      .all(runId);
+    return rows.map(toMeteredSpendRow);
+  }
+
+  /**
+   * EVERYTHING THIS RUN SPENT, per seat and per vendor.
+   *
+   * The per-vendor totals are derived by `tokens.ts#runSpend` on every read and
+   * are stored nowhere, so they cannot disagree with the rows they total. A run
+   * with no recorded seats returns empty lists and the `pricing` literal — which
+   * is "nothing was recorded", not "this run was free"; `ApiRunSpend`'s docblock
+   * is where that distinction is written down.
+   */
+  runSpend(runId: string): ApiRunSpend {
+    return runSpend(this.listSeatSpend(runId), this.listMeteredSpend(runId));
+  }
+}
+
+function toSeatSpendRow(row: Row): ApiSeatSpend {
+  return {
+    seat: oneOf(SPEND_SEATS, str(row, "seat"), "spend seat"),
+    provider: oneOf(PROVIDERS, str(row, "provider"), "provider"),
+    modelId: str(row, "model_id"),
+    // NOT the all-or-nothing treatment `toRunRow` gives the run row's tokens:
+    // every column here is `NOT NULL`, so a partially reported set cannot exist
+    // to be misread. `num` throws if one is ever absent, which would mean the
+    // schema and this reader had diverged rather than that a count was unknown.
+    tokens: {
+      inputTokens: num(row, "input_tokens"),
+      outputTokens: num(row, "output_tokens"),
+      cacheReadTokens: num(row, "cache_read_tokens"),
+      cacheWriteTokens: num(row, "cache_write_tokens"),
+    },
+    callCount: num(row, "call_count"),
+  };
+}
+
+function toMeteredSpendRow(row: Row): ApiMeteredSpend {
+  return {
+    kind: oneOf(METERED_KINDS, str(row, "kind"), "metered spend kind"),
+    model: str(row, "model"),
+    calls: num(row, "calls"),
+    // `numOrNull`, and the null is the field's meaning rather than a missing
+    // value: an image call is billed per call and has no duration at all.
+    deliveredSecondsFloor: numOrNull(row, "delivered_seconds_floor"),
+  };
 }
 
 function toRunRow(row: Row): RunRow {

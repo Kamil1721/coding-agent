@@ -68,14 +68,21 @@ import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import {
   ASSUMPTIONS_FILE,
+  NOT_PRICED_SENTENCE,
   NO_VERDICT_HEADING,
+  SPEND_FILE,
+  SPEND_HEADING,
   VERDICT_FILE,
   assumptionsFor,
   countInferredAssumptions,
   gateProducedResults,
+  groupDigits,
+  renderRunSpend,
   renderRunVerdict,
+  writeRunSpend,
 } from "./run-report.js";
 import { ticketFromText } from "./ticket.js";
+import { runSpend, toSeatSpend, zeroTokens } from "./tokens.js";
 import { renderVerdict } from "./verdict.js";
 
 /* -------------------------------------------------------------------------
@@ -688,6 +695,143 @@ test("a database written before these columns existed gains them on open", () =>
     } finally {
       migrated.close();
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * spend.md
+ *
+ * THESE ARE NOT WIRING TESTS, AND THIS FILE'S HEADER SAYS WHY THAT MATTERS.
+ * Every other page here is proved by driving `Orchestrator.pump()` and then
+ * looking on disk, because a test that calls the writer directly stays green when
+ * the call site is deleted — this repo has shipped that twice. `writeRunSpend`
+ * HAS NO CALL SITE YET: the run's five seat spends are logged at
+ * orchestrator.ts:679, :680, :1101, :1643 and :1952 and nothing calls
+ * `RunStore.recordSeatSpend`, and orchestrator.ts belongs to another wave. So the
+ * tests below cover the page and the arithmetic, and they claim NOTHING about a
+ * run emitting it. When the call sites land, the test that proves them belongs
+ * beside "a run that reaches a terminal state writes assumptions.md and
+ * verdict.md", driving `pump()` and reading `results/spend.md` off disk.
+ * ---------------------------------------------------------------------- */
+
+/** The measured run: spec 416,111 · audit 17,603 · judge 3,228 · builder 88,529. */
+function measuredSpend(builderProvider: "anthropic" | "openai" = "anthropic") {
+  const seat = (
+    name: "spec" | "audit" | "judge" | "builder",
+    provider: "anthropic" | "openai",
+    output: number,
+  ) =>
+    toSeatSpend({
+      seat: name,
+      modelId: provider === "openai" ? "gpt-6-codex" : "claude-opus-5",
+      totals: { ...zeroTokens(provider), inputTokens: 1_000, outputTokens: output, callCount: 2 },
+    });
+  return runSpend(
+    [
+      seat("spec", "anthropic", 416_111),
+      seat("audit", "anthropic", 17_603),
+      seat("judge", "anthropic", 3_228),
+      seat("builder", builderProvider, 88_529),
+    ],
+    [],
+  );
+}
+
+test("the spend page reports the RUN's total, and names the builder's share of it", () => {
+  const page = renderRunSpend(measuredSpend());
+  assert.ok(page.startsWith(SPEND_HEADING));
+
+  // THE DEFECT, AT THE PAGE LEVEL. The vendor line is the run's total and it must
+  // be 525,471. A page whose total reads 88,529 is the run reporting the builder's
+  // figure as its own, which is the whole reason this file grew a third page.
+  assert.match(page, /- anthropic: 525,471 output/);
+  assert.doesNotMatch(
+    page,
+    /- anthropic: 88,529 output/,
+    "the vendor total is the builder's figure — three seats were dropped",
+  );
+
+  // Every seat is named, and the builder's share is stated in the number the
+  // owner was shown: 88,529 of 525,471 is 16.8% of this run's anthropic output.
+  for (const seat of ["spec", "audit", "judge", "builder"]) {
+    assert.match(page, new RegExp(`- ${seat} \\(anthropic, `), `the page does not account for the ${seat} seat`);
+  }
+  assert.match(page, /- spec \(anthropic, claude-opus-5\): 416,111 output/);
+  assert.match(page, /- builder \(anthropic, claude-opus-5\): 88,529 output.*16\.8% of anthropic's output/);
+  assert.match(page, /- spec \(anthropic, claude-opus-5\): 416,111 output.*79\.2% of anthropic's output/);
+});
+
+test("the page says NOT PRICED IS NOT FREE, in those words", () => {
+  // Requirement: a reader must not be able to conclude the run was free. `costUsd:
+  // null` and run.json's literal `totalCostUsd: 0` are both correct and both read
+  // as zero, so the sentence is a constant and this asserts the rendered page
+  // carries it verbatim rather than some later paraphrase of it.
+  const page = renderRunSpend(measuredSpend());
+  assert.ok(page.includes(NOT_PRICED_SENTENCE), "the page no longer states why there is no dollar figure");
+  assert.match(NOT_PRICED_SENTENCE, /NOT PRICED IS NOT THE SAME AS FREE/);
+  assert.match(NOT_PRICED_SENTENCE, /totalCostUsd: 0/);
+  assert.match(page, /`not-priced-subscription-seat`/, "the machine-readable basis is on the page too");
+  assert.doesNotMatch(page, /\$/, "no dollar sign may appear on this page at all");
+});
+
+test("a CODEX run's page shows two vendor totals and no number spanning both", () => {
+  const page = renderRunSpend(measuredSpend("openai"));
+  assert.match(page, /- anthropic: 436,942 output/, "the three control seats");
+  assert.match(page, /- openai: 88,529 output/, "the Codex builder, alone");
+  assert.doesNotMatch(
+    page,
+    /525,471/,
+    "a cross-vendor sum appeared on the page: tokenizers differ, so that number is not a quantity",
+  );
+});
+
+test("an empty record SAYS SO — it is not rendered as a run that spent zero", () => {
+  const page = renderRunSpend(runSpend([], []));
+  assert.match(page, /NOTHING WAS RECORDED for this run, and that is not a measurement of zero/);
+  assert.doesNotMatch(page, /0 output/, "a zeroed vendor line would look measured");
+  assert.doesNotMatch(page, /% of/, "and no share can be computed from nothing");
+  // It still says why there is no dollar figure: that is a property of the run,
+  // not of whether any seat reported.
+  assert.ok(page.includes(NOT_PRICED_SENTENCE));
+});
+
+test("metered rows are calls and a FLOOR of seconds, and an image call is neither", () => {
+  const page = renderRunSpend(
+    runSpend([], [
+      { kind: "image", model: "gemini-3.1-flash-image-preview", calls: 5, deliveredSecondsFloor: null },
+      { kind: "video", model: "veo-3.1", calls: 2, deliveredSecondsFloor: 16 },
+    ]),
+  );
+  assert.match(page, /- image \(gemini-3\.1-flash-image-preview\): 5 call\(s\) attempted, not billed by time/);
+  assert.match(page, /- video \(veo-3\.1\): 2 call\(s\) attempted, at least 16s delivered/);
+  // The word the field name cannot carry on its own. `video-legs.ts:220` had to
+  // explain that a leg which was generated, billed and then failed its download
+  // counts as zero; the page carries that where the reader is.
+  assert.match(page, /A FLOOR: a leg that was generated and billed and then failed its download counts as zero/);
+});
+
+test("digit grouping is deterministic, not the test runner's locale", () => {
+  // `toLocaleString` would render 525.471 on a machine with a German locale and
+  // the assertions above would be testing the environment.
+  assert.equal(groupDigits(525_471), "525,471");
+  assert.equal(groupDigits(0), "0");
+  assert.equal(groupDigits(999), "999");
+  assert.equal(groupDigits(1_000), "1,000");
+  assert.equal(groupDigits(-1_234_567), "-1,234,567");
+});
+
+test("writeRunSpend lands spend.md in the results directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-spend-"));
+  try {
+    const results = join(dir, "results");
+    const path = writeRunSpend(results, measuredSpend());
+    assert.equal(path, join(results, SPEND_FILE));
+    const written = readFileSync(path, "utf8");
+    assert.ok(written.startsWith(SPEND_HEADING));
+    assert.ok(written.endsWith("\n"));
+    assert.match(written, /525,471 output/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

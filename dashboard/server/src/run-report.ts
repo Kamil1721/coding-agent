@@ -1,13 +1,15 @@
 /**
- * run-report.ts — the two files a run leaves behind for the person who was not
+ * run-report.ts — the three files a run leaves behind for the person who was not
  * watching it.
  *
  * `assumptions.md` at spec-phase exit, `verdict.md` when the run reaches a
- * terminal state. Both land in `runs/<runId>/results/`, beside `run.json` and
- * the build log. This module owns the JOIN between the three Phase 2e modules
- * and the run's own persisted state; it renders nothing itself beyond the
- * no-verdict page below, and it decides no outcome — `verdict.ts` does the
- * arithmetic, `spec-assumptions.ts` does the tracing.
+ * terminal state, and `spend.md` beside it. All three land in
+ * `runs/<runId>/results/`, beside `run.json` and the build log. This module owns
+ * the JOIN between the three Phase 2e modules and the run's own persisted state;
+ * it renders nothing itself beyond the no-verdict page and the spend page below,
+ * and it decides no outcome — `verdict.ts` does the arithmetic,
+ * `spec-assumptions.ts` does the tracing, and `tokens.ts#runSpend` does the
+ * per-vendor addition.
  *
  * THREE STATES, NOT TWO, AND THAT IS THE WHOLE DESIGN OF `renderRunVerdict`.
  * orchestrator.ts states the rule this file obeys: "a gate that cannot run must
@@ -64,7 +66,15 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AcceptanceCriterion, CriterionResult } from "bakeoff/dist/contracts.js";
-import type { ApiCriterion, ApiRunStatus } from "./api-types.js";
+import type {
+  ApiCriterion,
+  ApiMeteredSpend,
+  ApiRunSpend,
+  ApiRunStatus,
+  ApiSeatSpend,
+  ApiTokens,
+  ApiVendorSpend,
+} from "./api-types.js";
 import { extractAssumptions, isGateAssumption, renderAssumptions } from "./spec-assumptions.js";
 import type { Assumption } from "./spec-assumptions.js";
 import { renderVerdict } from "./verdict.js";
@@ -73,6 +83,7 @@ import type { VerdictInput } from "./verdict.js";
 /** Filenames, exported so tests and the API agree on one spelling. */
 export const ASSUMPTIONS_FILE = "assumptions.md";
 export const VERDICT_FILE = "verdict.md";
+export const SPEND_FILE = "spend.md";
 
 /**
  * How many criteria the owner did not state.
@@ -302,5 +313,168 @@ export function writeRunVerdict(resultsDir: string, source: RunVerdictSource): s
   mkdirSync(resultsDir, { recursive: true });
   const path = join(resultsDir, VERDICT_FILE);
   writeFileSync(path, `${renderRunVerdict(source)}\n`, "utf8");
+  return path;
+}
+
+/* -------------------------------------------------------------------------
+ * spend.md — what the run cost, in the units it was actually spent in
+ *
+ * THE DEFECT, MEASURED. One live run spent 525,471 output tokens across four
+ * seats and reported 88,529 — the builder's — because that was the only figure
+ * anything accumulated. The other 436,942 went to a log line and nowhere else.
+ * This page is the record: every seat, one total per vendor, and the metered
+ * image/video calls in calls and seconds.
+ *
+ * AND IT SAYS, IN THE OWNER'S WORDS, WHY THERE IS NO DOLLAR FIGURE. `costUsd:
+ * null` on the API and `totalCostUsd: 0` in `run.json` are both correct and both
+ * get read as "this run was free" at the end of a long build. A number is not
+ * invented to fix that — api-types.ts's header forbids it, and a made-up rate is
+ * a fabricated bill. The sentence is written out instead.
+ * ---------------------------------------------------------------------- */
+
+/** The first line of the spend page. Asserted verbatim in the tests. */
+export const SPEND_HEADING = "# WHAT THIS RUN SPENT";
+
+/**
+ * The sentence that has to survive every future edit to this page.
+ *
+ * It is a CONSTANT rather than prose in the template because it is the one claim
+ * this file exists to make, and a test that greps the rendered page for it would
+ * otherwise be matching a string someone can reword into "no cost recorded".
+ */
+export const NOT_PRICED_SENTENCE =
+  "NOT PRICED IS NOT THE SAME AS FREE. This run ran on subscription seats: quota is consumed, " +
+  "not billed per token. The API reports `costUsd: null` and `run.json` carries `totalCostUsd: 0` " +
+  "— both mean THERE IS NO PRICE FOR THIS, never that the run cost nothing. What it spent is " +
+  "below, in tokens, calls and seconds.";
+
+/**
+ * Thousands separators, done here rather than by `toLocaleString`.
+ *
+ * `toLocaleString` reads the host's locale, so the same run would render
+ * `525,471` on one machine and `525.471` on another, and a test asserting either
+ * one would be asserting the test runner's environment. This is deterministic.
+ */
+export function groupDigits(value: number): string {
+  const negative = value < 0;
+  const digits = Math.abs(Math.trunc(value)).toString();
+  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return negative ? `-${grouped}` : grouped;
+}
+
+/** The four counts, output first: it is the one the reader came for. */
+function spendCounts(tokens: ApiTokens): string {
+  return (
+    `${groupDigits(tokens.outputTokens)} output, ${groupDigits(tokens.inputTokens)} input, ` +
+    `${groupDigits(tokens.cacheReadTokens)} cache read, ${groupDigits(tokens.cacheWriteTokens)} cache write`
+  );
+}
+
+/**
+ * A seat's share of ITS OWN VENDOR's output, or null when there is none to take.
+ *
+ * WITHIN ONE VENDOR, DELIBERATELY. A share of "the run's tokens" would need a
+ * cross-vendor denominator, which is the quantity tokens.ts refuses to produce;
+ * this divides Anthropic by Anthropic. Null when the vendor's output is 0 —
+ * `0/0` renders as `NaN%` and a share of nothing is not 0%.
+ */
+function shareOfVendorOutput(seat: ApiSeatSpend, vendors: readonly ApiVendorSpend[]): string | null {
+  const vendor = vendors.find((row) => row.provider === seat.provider);
+  if (vendor === undefined || vendor.tokens.outputTokens === 0) return null;
+  const share = (seat.tokens.outputTokens / vendor.tokens.outputTokens) * 100;
+  return `${share.toFixed(1)}% of ${seat.provider}'s output`;
+}
+
+function meteredLine(row: ApiMeteredSpend): string {
+  const unit =
+    row.deliveredSecondsFloor === null
+      ? "not billed by time"
+      : `at least ${groupDigits(row.deliveredSecondsFloor)}s delivered (A FLOOR: a leg that was ` +
+        "generated and billed and then failed its download counts as zero here)";
+  return `- ${row.kind} (${row.model}): ${groupDigits(row.calls)} call(s) attempted, ${unit}`;
+}
+
+/**
+ * The spend page.
+ *
+ * AN EMPTY RECORD IS SAID OUT LOUD RATHER THAN RENDERED AS ZEROS, and that is the
+ * same refusal `heldOutPass: null` makes one field over: a run that recorded no
+ * seats is not a run that spent nothing. A page of `0 output, 0 input` for a run
+ * whose spec seat burned 416,111 tokens before the recorder was wired up would be
+ * a worse lie than the one this file exists to fix, because it would look
+ * measured.
+ */
+export function renderRunSpend(spend: ApiRunSpend): string {
+  const lines: string[] = [SPEND_HEADING, "", NOT_PRICED_SENTENCE, ""];
+
+  lines.push("## Per vendor — this is the run's total", "");
+  if (spend.byVendor.length === 0) {
+    lines.push(
+      "NOTHING WAS RECORDED for this run, and that is not a measurement of zero. Every seat writes",
+      "its own row as it finishes, so an empty record means no seat reported: a run cancelled out of",
+      "the queue, a run that never reached the spec phase, or a server that is not calling",
+      "`recordSeatSpend`. Read the run's log stream for the seat lines before concluding anything",
+      "about what this run spent.",
+      "",
+    );
+  } else {
+    lines.push(
+      "Token counts are per vendor and are never summed across vendors — tokenizers differ, so one",
+      "number spanning two of them is not a quantity. Each line below is a total.",
+      "",
+    );
+    for (const vendor of spend.byVendor) {
+      lines.push(
+        `- ${vendor.provider}: ${spendCounts(vendor.tokens)}, over ` +
+          `${groupDigits(vendor.callCount)} call(s), from ${String(vendor.seats.length)} seat(s) — ` +
+          vendor.seats.join(", "),
+      );
+    }
+    lines.push("");
+  }
+
+  if (spend.bySeat.length > 0) {
+    lines.push("## Per seat — where it actually went", "");
+    for (const seat of spend.bySeat) {
+      const share = shareOfVendorOutput(seat, spend.byVendor);
+      lines.push(
+        `- ${seat.seat} (${seat.provider}, ${seat.modelId}): ${spendCounts(seat.tokens)}, over ` +
+          `${groupDigits(seat.callCount)} call(s)${share === null ? "" : ` — ${share}`}`,
+      );
+    }
+    lines.push("");
+  }
+
+  lines.push("## Metered image and video — counted, never priced", "");
+  if (spend.metered.length === 0) {
+    lines.push("No metered image or video call was recorded for this run.", "");
+  } else {
+    lines.push(
+      "These are billed against a metered key, per call or per second of output. This program has no",
+      "price table for them and does not invent one: the counts below are what it actually knows.",
+      "",
+    );
+    for (const row of spend.metered) lines.push(meteredLine(row));
+    lines.push("");
+  }
+
+  lines.push(
+    "## What this page cannot tell you",
+    "",
+    "Which model inside a seat did the work. A seat's row carries the model it was CONFIGURED with,",
+    "and delegation is the architecture here: an orchestrator on one model hands work to subagents on",
+    "another, and three quarters of a measured build ran on a model the run never named. The run's log",
+    "stream names the split per call; this page carries each seat's TOTAL, which is the number that",
+    `must never come out smaller than what was spent. The pricing basis is \`${spend.pricing}\`.`,
+    "",
+  );
+  return lines.join("\n");
+}
+
+/** Write `spend.md` and return its path. */
+export function writeRunSpend(resultsDir: string, spend: ApiRunSpend): string {
+  mkdirSync(resultsDir, { recursive: true });
+  const path = join(resultsDir, SPEND_FILE);
+  writeFileSync(path, `${renderRunSpend(spend)}\n`, "utf8");
   return path;
 }
