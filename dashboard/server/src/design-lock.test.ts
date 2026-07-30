@@ -6,11 +6,13 @@ import { test } from "node:test";
 import type { DesignManifest } from "./design-manifest.js";
 import {
   DEFAULT_DESIGN_LOCK_TIMEOUT_MIN,
+  chosenMockupRef,
   designLockExpired,
   designLockPolicy,
   designLockTimeoutMin,
   fallbackChoice,
   lockManifest,
+  publishedMockupPath,
   readChoiceFile,
   readDesignLock,
   writeDesignLock,
@@ -77,6 +79,80 @@ test("a chosen path that is not one of the refs is REFUSED", () => {
   assert.equal(forged.ok, false);
   assert.match(String(!forged.ok && forged.error), /not one of/iu);
   assert.equal(lockManifest(MANIFEST, { path: "/etc/passwd", by: "owner", reason: "x", at: AT }).ok, false);
+});
+
+/* -------------------------------------------------------------------------
+ * THE TRANSLATION THAT MAKES A CLICK LOCKABLE
+ *
+ * `lockManifest` accepts a workspace ref by exact equality, and the only mockup
+ * path any client can send is the PUBLISHED COPY (`designLock.mockups[].path`,
+ * which is what the screenshot route serves). `chosenMockupRef` is the one
+ * mapping between them, and everything below is about the two directions it must
+ * NOT be loose in.
+ * ---------------------------------------------------------------------- */
+
+const SHOTS = "/results/screenshots/r1";
+
+test("a click on a published card resolves to the ref, and THAT is what locks", () => {
+  const published = `${SHOTS}/design-02-work.png`;
+  assert.equal(publishedMockupPath(SHOTS, B), published, "this is the path #recordDesignMockups writes");
+  assert.notEqual(published, B, "the two strings differ, which is why a translation has to exist at all");
+
+  const ref = chosenMockupRef(MANIFEST, SHOTS, published);
+  assert.equal(ref, B);
+  const locked = lockManifest(MANIFEST, { path: ref, by: "owner", reason: "chosen", at: AT });
+  assert.equal(locked.ok, true, "the published copy the wire carries now reaches a lock");
+  // AND THE LOCK IS ON THE WORKSPACE REF, not the served copy: that is the path
+  // the build agents and the visual gate `Read`.
+  assert.ok(locked.ok && locked.manifest.lockedMockup === B);
+});
+
+test("a ref passes through unchanged — the host's own choosers are not translated", () => {
+  // `readChoiceFile`, `fallbackChoice` and `reconcileOnBoot` all produce refs.
+  assert.equal(chosenMockupRef(MANIFEST, SHOTS, A), A);
+  assert.equal(chosenMockupRef(MANIFEST, SHOTS, B), B);
+});
+
+test("a path that is NEITHER survives unchanged, so lockManifest still refuses it", () => {
+  // THE SECURITY PROPERTY. The locked path is injected into every build prompt
+  // and `Read` by the visual gate, so an arbitrary path must never become the
+  // gate's reference. The translation maps one exact string to one exact string;
+  // it may not become a substring or basename match.
+  for (const forged of [
+    "/etc/passwd",
+    `${SHOTS}/design-99-nope.png`,
+    // THE NEAR MISS, and it is the case that separates this exact-path rule from
+    // the client's basename-only `isPublishedAs`: the right file name in a
+    // directory this run never published into.
+    "/tmp/design-01-hero.png",
+    // A prefix that was added twice, and a ref path with the prefix stripped off:
+    // neither is a real card.
+    `${SHOTS}/design-design-01-hero.png`,
+    `${WS}/design-refs/01-hero.png.bak`,
+  ]) {
+    assert.equal(chosenMockupRef(MANIFEST, SHOTS, forged), forged, `${forged} must not be translated into a ref`);
+    const attempt = lockManifest(MANIFEST, { path: chosenMockupRef(MANIFEST, SHOTS, forged), by: "owner", reason: "x", at: AT });
+    assert.equal(attempt.ok, false, `${forged} must not be lockable`);
+    assert.match(String(!attempt.ok && attempt.error), /not one of/iu);
+  }
+});
+
+test("PREFIX-ADD, NEVER PREFIX-STRIP: a ref that is itself named design-… maps to its own copy", () => {
+  // A ref genuinely called `design-hero.png` is published as
+  // `design-design-hero.png`. Stripping one prefix off a click would send the
+  // owner's choice to whichever sibling shares the shortened name — here, a
+  // second ref that really is called `hero.png`.
+  const plain = `${WS}/design-refs/hero.png`;
+  const prefixed = `${WS}/design-refs/design-hero.png`;
+  const manifest: DesignManifest = {
+    ...MANIFEST,
+    refs: [
+      { path: plain, section: "hero", aspect: "21:9", intent: "opening" },
+      { path: prefixed, section: "hero, second take", aspect: "21:9", intent: "opening" },
+    ],
+  };
+  assert.equal(chosenMockupRef(manifest, SHOTS, `${SHOTS}/design-hero.png`), plain);
+  assert.equal(chosenMockupRef(manifest, SHOTS, `${SHOTS}/design-design-hero.png`), prefixed);
 });
 
 test("locking twice is refused — a run has one chosen design", () => {

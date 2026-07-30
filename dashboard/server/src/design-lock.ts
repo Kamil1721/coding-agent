@@ -24,7 +24,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { DesignLockedBy, DesignManifest } from "./design-manifest.js";
 import { DESIGN_CHOICE_FILE } from "./design-prompt.js";
 
@@ -112,6 +112,64 @@ export function lockManifest(manifest: DesignManifest, attempt: LockAttempt): Lo
       lockedAt: attempt.at,
     },
   };
+}
+
+/* ---- the click, translated back into a ref ----------------------------- */
+
+/**
+ * The prefix `#recordDesignMockups` publishes each ref under, DECLARED ONCE.
+ *
+ * `orchestrator.ts` builds the served copy's name with it and
+ * {@link chosenMockupRef} rebuilds that same name to translate a click back into
+ * the ref it names. Two spellings of this literal is a lock that refuses every
+ * real click — while a unit test that constructs both sides from one string stays
+ * green — so both sides go through {@link publishedMockupPath}.
+ *
+ * The client mirrors it as `MOCKUP_COPY_PREFIX` (dashboard/src/lib/mockups.ts)
+ * for its own "which card was built to" ring. That copy cannot be checked from
+ * here: the prefix is not on the wire, which is exactly why the browser has to
+ * know it too.
+ */
+export const DESIGN_MOCKUP_COPY_PREFIX = "design-";
+
+/**
+ * Where `#recordDesignMockups` puts the SERVED copy of a workspace ref.
+ *
+ * The copy exists because `GET /api/runs/:id/screenshots/:file` resolves inside
+ * `results/screenshots/<runId>/` and the workspace is the artefact, not a served
+ * directory; the prefix keeps a mockup clear of a gate capture's basename.
+ */
+export function publishedMockupPath(screenshotsDir: string, refPath: string): string {
+  return join(screenshotsDir, `${DESIGN_MOCKUP_COPY_PREFIX}${basename(refPath)}`);
+}
+
+/**
+ * The workspace ref a chosen path names — or the chosen path, unchanged.
+ *
+ * THIS IS THE ONLY REASON A CLICK CAN LOCK A RUN. `DesignLockState.mockups[].path`
+ * carries the PUBLISHED COPY, because that is the path the screenshot route can
+ * serve, so the published copy is the only value any client can send. `lockManifest`
+ * accepts only a manifest ref, by exact equality. Without a translation between
+ * the two, every real click is refused and an `"ask"` run parks until its timeout
+ * and then fallback-locks — which is strictly worse than never asking.
+ *
+ * PREFIX-ADD, NEVER PREFIX-STRIP, the same rule the client's `isPublishedAs`
+ * states: the candidate copy's full path is BUILT from the ref and compared, so a
+ * ref genuinely named `design-hero.png` (published as `design-design-hero.png`)
+ * matches its own copy and nothing else's.
+ *
+ * A PATH THAT MATCHES NEITHER IS RETURNED UNCHANGED, and that is deliberate:
+ * `lockManifest` stays the ONE place a choice is refused, and its refusal then
+ * names the path the client actually sent instead of a translation of it. This
+ * function must never widen that refusal — it maps one exact string to one exact
+ * string, so an arbitrary path still cannot become the gate's reference.
+ */
+export function chosenMockupRef(manifest: DesignManifest, screenshotsDir: string, chosen: string): string {
+  // A REF WINS OVER A COPY, so the host's own paths (`readChoiceFile`,
+  // `fallbackChoice`, `reconcileOnBoot`) travel through here unchanged.
+  if (manifest.refs.some((ref) => ref.path === chosen)) return chosen;
+  const published = manifest.refs.find((ref) => publishedMockupPath(screenshotsDir, ref.path) === chosen);
+  return published?.path ?? chosen;
 }
 
 /**

@@ -56,7 +56,9 @@ import type {
   AnthropicSeat,
   BudgetPolicy,
   HeldConstants,
+  NetworkPolicy,
   RunRecord,
+  SandboxSpec,
   ScoreRecord,
   Ticket,
 } from "bakeoff/dist/contracts.js";
@@ -89,11 +91,13 @@ import { designLaneMode, designSurfaceGate } from "./design-lane.js";
 import type { DesignLaneMode } from "./design-lane.js";
 import {
   DESIGN_MOCKUP_LABEL,
+  chosenMockupRef,
   designLockPolicy,
   designLockTimeoutMin,
   designLockExpired,
   fallbackChoice,
   lockManifest,
+  publishedMockupPath,
   readChoiceFile,
   readDesignLock,
   writeDesignLock,
@@ -260,6 +264,122 @@ interface GateOutcome {
   readonly failure: string | null;
 }
 
+/* -------------------------------------------------------------------------
+ * THE RECORDED NETWORK POLICY — derived from the builder's sandbox, never
+ * asserted about it.
+ *
+ * `run.json`'s `heldConstants.sandbox.networkPolicy.egress` read `"denied"`
+ * until 2026-07-30, and that was FALSE — disproved by execution, not by
+ * reading: in the 2026-07-29 live run six `gemini-image.sh` calls made from
+ * inside the sandboxed build reached `generativelanguage.googleapis.com` and
+ * came back with image bytes. `builders/claude-builder.ts` configures
+ * `sandbox.filesystem` and NO `sandbox.network` clause at all, so nothing
+ * restricted egress and nothing ever had.
+ *
+ * It was the strongest claim in the record and the only one nobody had checked.
+ * The two fields beside it go out of their way to say "not a container digest";
+ * this one quietly certified a boundary that did not exist, and every score
+ * taken with it carried that certification.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The part of the CLI's `sandbox` settings that decides egress.
+ *
+ * Structurally typed against `SandboxSettings["network"]` from the agent SDK
+ * rather than imported from it: this module records what the builder
+ * configured, and a structural parameter keeps the recording independent of the
+ * SDK's option surface while still accepting the real object (asserted in
+ * orchestrator.test.ts, which passes `buildOptions(...).sandbox?.network`).
+ */
+export interface BuilderNetworkClause {
+  readonly allowedDomains?: readonly string[];
+  readonly deniedDomains?: readonly string[];
+  readonly strictAllowlist?: boolean;
+}
+
+/**
+ * NOT ONE OF THE CONTRACT'S TWO VALUES, DELIBERATELY.
+ *
+ * `NetworkPolicy["egress"]` is `"denied" | "pinned-mirror-only"`
+ * (bakeoff/src/contracts.ts) — a union in which BOTH members assert a
+ * restriction. The dashboard builder enforces neither, so every value the type
+ * offers is a false statement, and a false "denied" is exactly the defect being
+ * fixed. The cast writes the truth instead and is safe here for a reason that
+ * was checked rather than assumed: the dashboard writes `run.json` at ONE site
+ * and NOTHING reads it back. `bakeoff`'s `loadRunRecords` discovers work by
+ * scanning for `run.jsonl` (score-run.ts), `results-io.parseHeldConstants` is
+ * never pointed at a dashboard record, and paths.ts keeps the dashboard's tree
+ * outside `bakeoff/` so a campaign `score` cannot find one. Should that ever
+ * change, `parseHeldConstants` REFUSING this value is the correct outcome — a
+ * dashboard run must not aggregate into the bake-off's metrics, and the sibling
+ * `imageDigest: "not-a-container-digest"` is already refused by
+ * `assertSandboxSealed` for the same reason.
+ */
+const UNRESTRICTED_EGRESS_LABEL: string = "unrestricted-host-network (NOT a measured denial)";
+const CONFIGURED_BUT_UNVERIFIED_LABEL: string = "restriction-configured-but-unmeasured";
+
+/**
+ * Does this clause restrict anything?
+ *
+ * AN EMPTY CLAUSE RESTRICTS NOTHING, and it must take the same branch as no
+ * clause at all. Every field on `sandbox.network` is optional, so `{}` configures
+ * no allow-list, no deny-list and no strict mode; reporting that as "a
+ * restriction is configured" would be this module committing the exact defect it
+ * exists to undo, one level down.
+ */
+function restrictsEgress(clause: BuilderNetworkClause): boolean {
+  return (
+    (clause.deniedDomains?.length ?? 0) > 0 ||
+    (clause.allowedDomains?.length ?? 0) > 0 ||
+    clause.strictAllowlist === true
+  );
+}
+
+/**
+ * What the run record may say about egress, given what the builder configured.
+ *
+ * IT CANNOT RETURN `"denied"`, and that is the point rather than an oversight.
+ * A denial is a MEASUREMENT: `bakeoff`'s runner earns the word by running
+ * `docker run --network none` and then probing a public address from inside the
+ * container and requiring the probe to FAIL (runner.ts, `egressDenied`). This
+ * function sees a configuration object, so the strongest thing it can honestly
+ * report about a configured restriction is that one is configured and nobody
+ * has probed it. A reader must not be able to mistake either return value for a
+ * measured denial.
+ */
+export function recordedNetworkPolicy(clause: BuilderNetworkClause | undefined): NetworkPolicy {
+  if (clause === undefined || !restrictsEgress(clause)) {
+    return {
+      egress: UNRESTRICTED_EGRESS_LABEL as NetworkPolicy["egress"],
+      // NOT EMPTY, because "no hosts allowed" is how an empty list reads next to
+      // an egress field, and the contract says as much ("Empty when egress is
+      // `denied`"). The pseudo-entry follows `imageRef`/`imageDigest`'s
+      // convention of saying plainly that the field does not hold what its name
+      // promises.
+      allowedHosts: ["<no allow-list: the build reaches any host the host machine can reach>"],
+    };
+  }
+  return {
+    egress: CONFIGURED_BUT_UNVERIFIED_LABEL as NetworkPolicy["egress"],
+    allowedHosts: [...(clause.allowedDomains ?? [])],
+  };
+}
+
+/**
+ * The sandbox the dashboard builder actually runs in.
+ *
+ * `undefined` is the claim that `builders/claude-builder.ts` sets no
+ * `sandbox.network`, and it is not left as a comment: orchestrator.test.ts calls
+ * `buildOptions(...)` and requires `sandbox?.network === undefined`, so adding a
+ * network clause to the builder turns this line red instead of leaving the
+ * record behind.
+ */
+export const DASHBOARD_SANDBOX: SandboxSpec = Object.freeze({
+  imageRef: "host-subprocess (no container: the dashboard builder runs on the host)",
+  imageDigest: "not-a-container-digest",
+  networkPolicy: recordedNetworkPolicy(undefined),
+});
+
 export class Orchestrator {
   readonly #deps: OrchestratorDeps;
   #active: ActiveRun | null = null;
@@ -375,7 +495,23 @@ export class Orchestrator {
           chosenMockup === null
             ? (readChoiceFile(refsDirFor(runPaths.workspace), manifest, at) ??
               fallbackChoice(manifest, at, "no owner choice arrived before the timeout"))
-            : { path: chosenMockup, by: "owner", reason: "chosen by the owner in the dashboard", at };
+            : // TRANSLATED, BECAUSE A CLICK CANNOT CARRY A REF. What the owner
+              // clicks is `designLock.mockups[].path` — the PUBLISHED COPY, which
+              // is the only mockup path the screenshot route can serve and so the
+              // only one on the wire — while `lockManifest` accepts a workspace
+              // ref by exact equality. Passing the wire value straight through is
+              // how this route came to refuse every real click.
+              //
+              // A PATH THAT IS NEITHER SURVIVES UNCHANGED and `lockManifest`
+              // refuses it below, naming the path the client sent. The refusal is
+              // the security property (an arbitrary path must never become the
+              // gate's reference), so it stays in one place.
+              {
+                path: chosenMockupRef(manifest, this.#mockupDir(runId), chosenMockup),
+                by: "owner",
+                reason: "chosen by the owner in the dashboard",
+                at,
+              };
         // A REFUSED CHOICE LEAVES THE RUN PARKED. Resuming anyway would build to
         // no design at all while the API had just answered 200.
         if (!this.#applyDesignLock(runId, runPaths, manifest, attempt)) return false;
@@ -1279,6 +1415,24 @@ export class Orchestrator {
   }
 
   /**
+   * The one directory a mockup is published into, DERIVED IN ONE PLACE.
+   *
+   * `#recordDesignMockups` writes the copies here and `resume` reconstructs their
+   * paths from here to translate a click back into a ref. Deriving it twice is a
+   * lock that refuses every click again the moment the two expressions drift — a
+   * missing `safeSegment` on one side would be enough — and the symptom is a run
+   * that parks for the full timeout, not an error.
+   *
+   * `safeSegment` because `serveScreenshot` in http.ts resolves the same directory
+   * that way; a copy written outside it is a card the browser cannot load.
+   * (`#recordScreenshots` builds the GATE captures' directory without it — a
+   * pre-existing inconsistency this method deliberately does not silently change.)
+   */
+  #mockupDir(runId: string): string {
+    return join(this.#deps.paths.results, "screenshots", safeSegment(runId));
+  }
+
+  /**
    * Every mockup, as a screenshot the EXISTING route already serves (§17.1).
    *
    * COPIED rather than referenced: `serveScreenshot` resolves under
@@ -1295,7 +1449,7 @@ export class Orchestrator {
    */
   #recordDesignMockups(runId: string, manifest: DesignManifest | null): void {
     if (manifest === null || manifest.refs.length === 0) return;
-    const dir = join(this.#deps.paths.results, "screenshots", safeSegment(runId));
+    const dir = this.#mockupDir(runId);
     try {
       mkdirSync(dir, { recursive: true });
     } catch (error) {
@@ -1303,7 +1457,7 @@ export class Orchestrator {
       return;
     }
     for (const ref of manifest.refs) {
-      const target = join(dir, `design-${basename(ref.path)}`);
+      const target = publishedMockupPath(dir, ref.path);
       try {
         copyFileSync(ref.path, target);
       } catch (error) {
@@ -1801,15 +1955,16 @@ export class Orchestrator {
      * container digest. A dashboard run is therefore NOT comparable with a
      * bake-off run, which is also why nothing the dashboard writes is stored
      * where the campaign's `score`/`report` would find it (paths.ts).
+     *
+     * THE NETWORK POLICY IS DERIVED, NOT WRITTEN HERE. It said `egress:
+     * "denied"` inline until 2026-07-30 and that was false; see
+     * `DASHBOARD_SANDBOX` and `recordedNetworkPolicy` above for what replaced it
+     * and for the live-run evidence that condemned it.
      */
     const heldConstants: HeldConstants = {
       efforts: [],
       harness: { id: "dashboard-server", version: "0.1.0", commit: "unversioned" },
-      sandbox: {
-        imageRef: "host-subprocess (no container: the dashboard builder runs on the host)",
-        imageDigest: "not-a-container-digest",
-        networkPolicy: { egress: "denied", allowedHosts: [] },
-      },
+      sandbox: DASHBOARD_SANDBOX,
       repeatCount: 1,
       acceptanceSuiteSha256: suite.sha256,
       tokenAccountingRule: TOKEN_ACCOUNTING_RULE,

@@ -33,7 +33,7 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import type { StoredEvent } from "./db.js";
-import { DESIGN_MOCKUP_LABEL, writeDesignLock } from "./design-lock.js";
+import { DESIGN_MOCKUP_LABEL, designLockPolicy, writeDesignLock } from "./design-lock.js";
 import type { DesignLockRecord } from "./design-lock.js";
 import type { DesignLockedBy } from "./design-manifest.js";
 import { LOOPBACK_HOST, createDashboardServer, designLockInteractive } from "./http.js";
@@ -778,10 +778,21 @@ interface JsonResponse {
   readonly body: unknown;
 }
 
-async function postJson(harness: Harness, path: string, body: unknown): Promise<JsonResponse> {
+async function postJson(
+  harness: Harness,
+  path: string,
+  body: unknown,
+  /**
+   * Extra request headers, for the ONE route that reads one: `createRun` derives
+   * `interactive` from `Referer` (§17.3 rule 2). Node's `fetch` forwards it —
+   * browsers forbid setting it, undici does not — which is what makes the
+   * dashboard shape and the cron shape distinguishable from a test.
+   */
+  headers: Record<string, string> = {},
+): Promise<JsonResponse> {
   const response = await fetch(`${harness.base}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
@@ -1125,17 +1136,16 @@ test("CONTRACT: the wire's lockedBy union names exactly the domain's DesignLocke
   assert.deepEqual(Object.keys(back).sort(), ["fallback", "owner", "ui-designer"]);
 });
 
-test("designLockInteractive is §17.3 rule 2's missing definition — and has NO caller yet", () => {
+test("designLockInteractive is §17.3 rule 2's missing definition", () => {
   // CONCERN 6: "not interactive" is undefined in the spec, so it is defined
   // narrowly — an explicit `designLock`, or a `Referer` from a loopback page.
   // Everything else (curl, cron, a script) is non-interactive and therefore
   // `auto`, because a mis-classified cron request would park forever.
   //
-  // IT IS DELIBERATELY UNCALLED. Its only consumer is `store.createRun`'s
-  // `interactive` column, which Phase 2b Task 10 adds to db.ts — another wave's
-  // file. Computing it inside `createRun` and throwing the result away would be
-  // worse than not computing it: it would read as wired. See the docblock in
-  // http.ts.
+  // ITS CALLER IS `createRun`, which writes the result into the `interactive`
+  // column; the test below drives that end of it over real HTTP. This one is the
+  // unit, and it is kept separate because the two failures are different: a
+  // wrong rule here, a dropped field there.
   assert.equal(designLockInteractive("ask", undefined), true, "an explicit designLock is a deliberate caller");
   assert.equal(designLockInteractive("auto", undefined), true);
   assert.equal(designLockInteractive(null, undefined), false, "curl sends no Referer and asks for nothing");
@@ -1144,6 +1154,72 @@ test("designLockInteractive is §17.3 rule 2's missing definition — and has NO
   assert.equal(designLockInteractive(null, "http://localhost:4176/"), true);
   assert.equal(designLockInteractive(null, "https://evil.example.com/"), false);
   assert.equal(designLockInteractive(null, "not a url"), false, "an unparseable Referer is not a dashboard");
+});
+
+test("POST /api/runs PERSISTS the lock policy, and the two request shapes resolve DIFFERENTLY", async () => {
+  // WRITTEN AS AN INEQUALITY BECAUSE THE PREVIOUS VERSION OF THIS CHECK WAS
+  // VACUOUS. While the route discarded `designLock`, every shape stored `''` /
+  // `0` and `designLockPolicy` answered `"auto"` for all of them — so a test that
+  // asserted "a cron request gets auto" passed for a reason that had nothing to
+  // do with cron, and could not have failed. The three shapes are resolved here
+  // through the SAME function the build segment calls, and the assertion is that
+  // two of them DISAGREE: that cannot hold if the field is thrown away again.
+  const harness = await startHarness(true);
+  const policyOf = (runId: string): string => {
+    const row = harness.store.getRun(runId);
+    assert.ok(row !== null);
+    return designLockPolicy(row.designLock, row.interactive);
+  };
+  try {
+    // (1) THE CRON SHAPE: no `designLock`, no `Referer`. `curl`, cron, a script.
+    const cron = await newRun(harness, "a cli that renames files in place");
+    // (2) THE DASHBOARD SHAPE: the page's own submission. `dashboard/src/lib/api.ts`
+    // states `designLock: "ask"` rather than leaning on the header, because the
+    // `/api/*` rewrite in front of this server may not forward `Referer`.
+    const asked = await newRun(harness, "a one-page portfolio", { designLock: "ask" });
+
+    // THE INEQUALITY COMES FIRST, so that a route which drops the field again
+    // fails HERE — on the claim that cannot be satisfied by a discarded field —
+    // rather than on one of the per-shape assertions below, which would report a
+    // missing column and leave this line unexecuted.
+    assert.notEqual(policyOf(asked), policyOf(cron), "the two shapes must genuinely differ, or nothing is wired");
+
+    const cronRow = harness.store.getRun(cron);
+    assert.equal(cronRow?.designLock, "", "nothing was stated, which is not the same fact as `auto`");
+    assert.equal(cronRow?.interactive, false);
+    assert.equal(policyOf(cron), "auto", "a scheduled run that parks waiting for a click is rule 2's whole point");
+    assert.equal(harness.store.getRun(asked)?.designLock, "ask");
+    assert.equal(harness.store.getRun(asked)?.interactive, true, "stating a policy IS a deliberate caller");
+    assert.equal(policyOf(asked), "ask");
+
+    // (3) A LOOPBACK `Referer` ALONE, with no stated policy — the browser
+    // submission the header path is for.
+    const fromPage = await postJson(harness, "/api/runs", {
+      ticketText: "a landing page for a bakery",
+      modelId: MODEL,
+    }, { Referer: `${harness.base}/` });
+    assert.equal(fromPage.status, 201);
+    const pageRunId = (fromPage.body as CreateRunResponse).runId;
+    assert.equal(harness.store.getRun(pageRunId)?.designLock, "", "the page stated nothing; the header carried it");
+    assert.equal(harness.store.getRun(pageRunId)?.interactive, true);
+    assert.equal(policyOf(pageRunId), "ask");
+
+    // (4) THE FIELD WINS OVER THE HEADER. An explicit `auto` from the dashboard
+    // page is a person choosing not to be asked, and it must not be upgraded to
+    // `ask` by the `Referer` that request also carries.
+    const explicitAuto = await postJson(harness, "/api/runs", {
+      ticketText: "a status page",
+      modelId: MODEL,
+      designLock: "auto",
+    }, { Referer: `${harness.base}/` });
+    assert.equal(explicitAuto.status, 201);
+    const autoRunId = (explicitAuto.body as CreateRunResponse).runId;
+    assert.equal(harness.store.getRun(autoRunId)?.designLock, "auto");
+    assert.equal(harness.store.getRun(autoRunId)?.interactive, true, "it is interactive — it simply asked for auto");
+    assert.equal(policyOf(autoRunId), "auto", "a stated policy is not overridden by the header");
+  } finally {
+    await harness.close();
+  }
 });
 
 /* -------------------------------------------------------------------------

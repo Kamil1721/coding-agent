@@ -16,6 +16,7 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
@@ -26,21 +27,35 @@ import { acceptanceSuiteDigest, sha256Hex } from "bakeoff/dist/hash.js";
 import { freezeSuite, verifySuiteIntact } from "bakeoff/dist/spec-freeze.js";
 import { criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
 import type { SuiteDraft } from "bakeoff/dist/spec-types.js";
-import type { ApiScreenshot, ApiTokens, GraphSseEvent } from "./api-types.js";
+import type { ApiErrorResponse, ApiScreenshot, ApiTokens, GraphSseEvent, RunDetail } from "./api-types.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
-import { MOTION_BAR_ENV } from "./builders/claude-builder.js";
+import { MOTION_BAR_ENV, buildOptions } from "./builders/claude-builder.js";
 import type { BuildOutcome, BuildRequest, SubscriptionBuilder } from "./builders/types.js";
 import { NOT_RATE_LIMITED } from "./claude-common.js";
 import { RunStore, isTerminal } from "./db.js";
-import { DESIGN_MOCKUP_LABEL, readDesignLock, writeDesignLock } from "./design-lock.js";
+import {
+  DESIGN_MOCKUP_LABEL,
+  chosenMockupRef,
+  publishedMockupPath,
+  readDesignLock,
+  writeDesignLock,
+} from "./design-lock.js";
 import type { DesignLockRecord } from "./design-lock.js";
 import { readDesignManifest, writeDesignManifest } from "./design-manifest.js";
+import type { DesignManifest } from "./design-manifest.js";
 import { readDesignLaneRecord } from "./design-outcome.js";
 import { foldGraphAll } from "./graph.js";
+import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import { ModelCatalog } from "./models.js";
 import type { CatalogEntry } from "./models.js";
-import { Orchestrator, highestArchivedAttempt, renderEvidence } from "./orchestrator.js";
+import {
+  DASHBOARD_SANDBOX,
+  Orchestrator,
+  highestArchivedAttempt,
+  recordedNetworkPolicy,
+  renderEvidence,
+} from "./orchestrator.js";
 import { attemptPath, liveResultPath, readAttempt } from "./gate-attempts.js";
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
@@ -385,7 +400,12 @@ class FakeBuilder implements SubscriptionBuilder {
     const refs = [];
     for (let n = 0; n < this.#options.pngCount; n += 1) {
       const path = join(refsDir, `0${String(n + 1)}-section.png`);
-      writeFileSync(path, `not really a png ${String(n)}`, "utf8");
+      // A REAL PNG SIGNATURE, because `countDesignPngs` counts content and no
+      // longer counts the suffix. `"not really a png"` here used to make the
+      // orchestrator's design arms pass over files that were not images — the
+      // fixture agreed with the defect. The trailing byte keeps the files
+      // distinguishable without making them decodable, which nothing reads.
+      writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, n]));
       refs.push({
         path,
         section: `section-${String(n + 1)}`,
@@ -503,6 +523,17 @@ interface DesignHarness {
   tokens(): ApiTokens | null;
   /** One line per `gemini-video.sh` invocation the stub saw. See `writeVideoStub`. */
   videoStubLog(): readonly string[];
+  /**
+   * THE REAL ROUTER OVER THIS REAL ORCHESTRATOR, which is the only shape that can
+   * answer "does a click lock the run".
+   *
+   * `api.test.ts` cannot: its `resume` is a fixture whose rule is "is this one of
+   * the run's screenshot rows", and a published mockup path IS one — so that
+   * harness answers 200 to the exact request production refuses. The two halves of
+   * this feature (a wire value, and a manifest that only accepts refs) live on
+   * opposite sides of that stub, so they are joined here instead.
+   */
+  serve(): Promise<{ readonly base: string; close(): Promise<void> }>;
   settle(timeoutMs?: number): Promise<void>;
   waitFor(ready: () => boolean, timeoutMs: number, what: string): Promise<void>;
   rewindParkTime(ms: number): void;
@@ -723,6 +754,18 @@ async function designRun(options: {
         : [],
     settle: (timeoutMs = 30_000) => waitUntil(settled, timeoutMs, "the run never settled"),
     waitFor: waitUntil,
+    serve: async () => {
+      // THE SAME `orchestrator` THIS HARNESS BUILT, handed to the real router as
+      // its `RunController`. Nothing here is stubbed: `POST /resume` reaches
+      // `Orchestrator.resume` -> `#applyDesignLock` -> `lockManifest`.
+      const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths });
+      await new Promise<void>((resolve) => server.listen({ host: LOOPBACK_HOST, port: 0 }, resolve));
+      const port = (server.address() as AddressInfo).port;
+      return {
+        base: `http://${LOOPBACK_HOST}:${String(port)}`,
+        close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+      };
+    },
     rewindParkTime: (ms) => {
       const results = runPathsFor(paths, runId).results;
       const park = readDesignLock(results);
@@ -806,65 +849,132 @@ test("resuming with a path that is not a mockup is REFUSED and the run stays par
 });
 
 /* -------------------------------------------------------------------------
- * PHASE 4 TASK 6'S BLOCKING GATE, EXECUTED. The two tests below are the record
- * of why `POST /api/runs` still does not persist `designLock` / `interactive`.
+ * THE DESIGN LOCK, END TO END — the assertion this feature never had
  *
- * Phase 4 Task 6 would have wired those two columns, which are already migrated
- * and already accepted by `NewRun`, and which nothing writes. Doing so makes
- * `designLockPolicy` return `"ask"` for the first time in production — and the
- * unpark channel for an `"ask"` run is broken, so such a run would park with no
- * exit but the 30-minute timeout and a `fallback` lock. That is strictly worse
- * than today's behaviour, so the task is BLOCKED rather than skipped, and these
- * are the measurements that block it.
+ * These three replace the two measurements that BLOCKED Phase 4 Task 6. That
+ * block was real and both halves of it were true at once: `POST /api/runs`
+ * discarded `designLock`, so `designLockPolicy` never returned `"ask"` in
+ * production; and had it been wired alone, every real click would have been
+ * refused, because the only mockup path a client can send is the PUBLISHED COPY
+ * and `lockManifest` accepts only a workspace ref. Wiring the route by itself
+ * would have replaced "never asks" with "asks and cannot be answered", which is
+ * strictly worse — a 30-minute park ending in a `fallback` lock.
+ *
+ * BOTH SEAMS ARE NOW CLOSED, so the pair of tests that recorded the block is
+ * replaced by the pair that measures the behaviour, plus the one nobody could
+ * write before: a real click, over the real router, on the real orchestrator.
  * ---------------------------------------------------------------------- */
 
-test("SEAM: a published mockup path can NEVER be a path lockManifest accepts", () => {
-  // A PURE COMPARISON OF TWO STRING CONSTRUCTIONS, no fixture and no HTTP,
-  // because the obvious check is circular: "drive resume against a parked run"
-  // needs the very columns Task 6 would add.
+test("the published path and the ref are still DIFFERENT strings — the translation is why a click works", () => {
+  // THE MEASUREMENT THAT BLOCKED TASK 6, KEPT VERBATIM, because it is the reason
+  // `chosenMockupRef` has to exist and it stays true forever:
   //
   //   #recordDesignMockups publishes  join(results, "screenshots", runId, `design-${basename(ref.path)}`)
   //     (orchestrator.ts — `path: target` is what reaches addScreenshot, and
   //      http.ts's toDetail reports those same rows as designLock.mockups[].path)
   //   lockManifest accepts ONLY       manifest.refs.some((r) => r.path === attempt.path)
-  //     (design-lock.ts, exact equality)
-  const results = join("/somewhere", "results");
+  //     (design-lock.ts, exact equality — deliberately not loosened)
+  const shots = join("/somewhere", "results", "screenshots", "r1");
   const ref = join("/somewhere", "runs", "r1", "workspace", "design-refs", "01-hero.png");
-  const published = join(results, "screenshots", "r1", `design-${basename(ref)}`);
-  assert.notEqual(published, ref, "if these can be equal, the seam is closed and Task 6 may proceed");
+  const published = publishedMockupPath(shots, ref);
+  assert.notEqual(published, ref, "if these were ever equal, no translation would be needed");
   // AND IT IS NOT AN ARTEFACT OF THIS FIXTURE'S DIRECTORIES. The `design-`
   // prefix alone makes the basenames differ, so no choice of results root,
   // run id or ref path can make the two equal.
   assert.notEqual(basename(published), basename(ref), "the design- prefix alone is enough to refuse every ref");
+
+  // WHAT CHANGED: the wire value now resolves to the ref, and only to the ref.
+  const manifest: DesignManifest = {
+    version: 1,
+    refs: [{ path: ref, section: "hero", aspect: "21:9", intent: "opening" }],
+    lockedMockup: null,
+    lockedBy: null,
+    lockedReason: null,
+    lockedAt: null,
+  };
+  assert.equal(chosenMockupRef(manifest, shots, published), ref, "the click resolves to the path the gate reads");
+  assert.equal(chosenMockupRef(manifest, shots, "/etc/passwd"), "/etc/passwd", "and nothing else is translated");
 });
 
-test("SEAM, MEASURED THROUGH THE REAL ORCHESTRATOR: the path the WIRE offers is refused", async () => {
-  // THE CORROBORATION, AND IT IS DELIBERATELY NOT THE ONE THE PLAN ASKED FOR.
-  // The plan wanted a `POST /api/runs/:id/resume` in api.test.ts recording a
-  // 409. That harness's `resume` is a FIXTURE whose rule is
-  // `store.listScreenshots(runId).some((shot) => shot.path === chosenMockup)` —
-  // and a path from `designLock.mockups[].path` IS a screenshot path, so that
-  // probe answers 200 and would read as "the seam is closed". A check that can
-  // only observe the answer it was hoping for is the defect this whole phase is
-  // written against, so the measurement is taken against the REAL
-  // `Orchestrator.resume` -> `#applyDesignLock` -> `lockManifest` instead.
+test("A REAL CLICK LOCKS THE RUN: the wire path, through the real router, ends the park", async () => {
+  // THE ASSERTION NOBODY COULD MAKE BEFORE. Every layer here is the production
+  // one: `createDashboardServer`'s route parses the body, the REAL
+  // `Orchestrator.resume` translates and applies it, `lockManifest` decides, and
+  // the chosen path is read back off `GET /api/runs/:id` — the same document the
+  // browser's cards are built from.
   //
-  // IT DOES NOT DEPEND ON TASK 6, and that is what breaks the circularity: this
-  // harness seeds `designLock: "ask"` straight into `store.createRun`, so the
-  // park exists without the route persisting anything.
+  // THE FORGED PATH IS SENT FIRST, ON PURPOSE. A 200 for the real click means
+  // nothing on its own — a route that answered 200 to everything would pass it —
+  // so the same server refuses a path it does not own, on the same parked run,
+  // moments earlier. The two answers together are the measurement.
   const h = await designRun({ designLock: "ask" });
+  const api = await h.serve();
   try {
-    const wirePath = h.mockups()[1]?.path ?? "";
-    assert.ok(wirePath.length > 0, "the API lists mockups for the owner to click");
+    assert.equal(h.status(), "awaiting_input", "the run is parked, which is the only state a click applies to");
+
+    const parked = (await (await fetch(`${api.base}/api/runs/${h.runId}`)).json()) as RunDetail;
+    const cards = parked.designLock?.mockups ?? [];
+    assert.equal(cards.length, 5, "the owner cannot click what the API does not list");
+    const wirePath = cards[1]?.path ?? "";
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    const ref = manifest?.refs[1]?.path ?? "";
+    assert.ok(wirePath.length > 0 && ref.length > 0);
+    assert.notEqual(wirePath, ref, "the wire carries the published copy, which is the whole difficulty");
+
+    // AND THE CARD IS LOADABLE, which is the other half of publishing into the
+    // directory `serveScreenshot` resolves. A mockup written anywhere else is a
+    // card that shows the fallback text — clickable, but blank — so the one
+    // derivation in `#mockupDir` is checked against the ROUTE, not against itself.
+    const image = await fetch(`${api.base}/api/runs/${h.runId}/screenshots/${basename(wirePath)}`);
+    assert.equal(image.status, 200, "the published copy must be servable by the route that serves it");
+    assert.equal(image.headers.get("content-type"), "image/png");
+
+    const post = async (chosenMockup: string): Promise<{ status: number; body: unknown }> => {
+      const response = await fetch(`${api.base}/api/runs/${h.runId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chosenMockup }),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+
+    // (1) A path this run does not own — INCLUDING the near miss, which is the
+    // case that says the translation is not a basename match: the right file
+    // name, in a directory this run never published into.
+    for (const forged of ["/etc/passwd", join(tmpdir(), `design-${basename(ref)}`)]) {
+      const refused = await post(forged);
+      assert.equal(refused.status, 409, `${forged} must not be lockable`);
+      assert.equal((refused.body as ApiErrorResponse).error, "not_resumable");
+      assert.match(String((refused.body as ApiErrorResponse).message), /is not one of its mockups/u);
+      assert.equal(h.status(), "awaiting_input", "a refused choice leaves the run parked");
+      assert.equal(h.lock()?.awaiting, true);
+      assert.equal(h.builderCalls.length, 1, "and starts no build segment behind the refusal");
+    }
+
+    // (2) THE OWNER'S CLICK, byte-for-byte what `design-lock.tsx` sends.
+    const accepted = await post(wirePath);
+    assert.equal(accepted.status, 200, "the published path a card carries must lock the run");
+    assert.deepEqual(accepted.body, { ok: true });
+
+    await h.settle();
+    assert.notEqual(h.status(), "awaiting_input", "and the run LEAVES the park rather than waiting for the timeout");
+    const park = h.lock();
+    assert.equal(park?.awaiting, false);
+    assert.equal(park?.locked, ref, "the lock is on the WORKSPACE ref: the path the build and the gate read");
+    assert.equal(park?.lockedBy, "owner", "not `fallback` — a click is not a timeout");
     assert.equal(
-      h.orchestrator.resume(h.runId, wirePath),
-      false,
-      "the ONLY path a client can send is refused; the route turns this false into a 409",
+      readDesignManifest(runPathsFor(h.paths, h.runId).workspace)?.lockedMockup,
+      ref,
+      "and the manifest the build agents read carries it too",
     );
-    assert.equal(h.status(), "awaiting_input", "and the run is still parked, with no way for a click to end it");
-    assert.equal(h.lock()?.awaiting, true);
-    assert.equal(h.builderCalls.length, 1, "no build segment started behind the refusal");
+    assert.equal(h.builderCalls.length, 2, "the build segment ran: two build() calls, not one and not three");
+
+    // The card the browser will ring, resolved the way `lockedMockup()` does it.
+    const after = (await (await fetch(`${api.base}/api/runs/${h.runId}`)).json()) as RunDetail;
+    assert.equal(after.designLock?.locked, ref);
+    assert.equal(after.designLock?.lockedBy, "owner");
   } finally {
+    await api.close();
     await h.cleanup();
   }
 });
@@ -1622,4 +1732,110 @@ test("the archive slot and the READ slot move together, or attempt 3 reports att
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/* -------------------------------------------------------------------------
+ * THE RECORDED NETWORK POLICY — a field that asserted a boundary nobody had
+ * configured.
+ *
+ * `run.json` carried `heldConstants.sandbox.networkPolicy.egress: "denied"`
+ * until 2026-07-30. Disproved by EXECUTION: in the 2026-07-29 live run six
+ * `gemini-image.sh` calls from inside the sandboxed build reached
+ * `generativelanguage.googleapis.com` and returned image bytes.
+ *
+ * THESE TESTS READ THE BUILDER'S OWN OBJECT, not this file's idea of it, which
+ * is the only version that can go red for the right reason. `claude-builder.ts`
+ * builds `Options.sandbox` in `buildOptions`, so a future `sandbox.network`
+ * clause fails the first assertion below and forces the record to follow rather
+ * than leaving it behind. A test that asserted `egress !== "denied"` against the
+ * literal in orchestrator.ts would pass forever and measure nothing.
+ * ---------------------------------------------------------------------- */
+
+/** The minimum BuildRequest `buildOptions` needs. No build is started. */
+function egressProbeRequest(): BuildRequest {
+  return {
+    runId: "egress-probe",
+    prompt: "build it",
+    workspace: join(tmpdir(), "egress-probe-ws"),
+    sealedRoots: [join(tmpdir(), "egress-probe-sealed")],
+    allowedAgents: [],
+    modelId: "claude-opus-5",
+    effort: null,
+    resumeSessionId: null,
+    signal: new AbortController().signal,
+    sink: {
+      log() {},
+      tool() {},
+      tokens() {},
+      rateLimit() {},
+      session() {},
+      environment() {},
+      graph() {},
+      contextUsage() {},
+      compaction() {},
+      raw() {},
+    },
+    env: {},
+  };
+}
+
+test("the builder configures NO egress restriction, and the run record says so", () => {
+  const sandbox = buildOptions(egressProbeRequest(), false).sandbox;
+
+  // 1. THE MECHANISM, from the object the SDK is handed. The filesystem clause is
+  //    asserted alongside it so "no network clause" cannot be read as "no sandbox
+  //    at all" — the sandbox is on, and it restricts writes and not hosts.
+  assert.equal(sandbox?.enabled, true);
+  assert.ok(sandbox?.filesystem, "the sandbox restricts the filesystem");
+  assert.equal(sandbox?.network, undefined, "the builder now configures egress; the run record must be updated to match");
+
+  // 2. THE RECORD, DERIVED FROM (1). Not a copy of the constant: the same
+  //    function applied to the builder's real sandbox must produce what the
+  //    record holds, so the two cannot drift apart silently.
+  assert.deepEqual(DASHBOARD_SANDBOX.networkPolicy, recordedNetworkPolicy(sandbox?.network));
+
+  // 3. WHAT IT MAY NOT SAY. `"denied"` is a MEASURED property in this project —
+  //    bakeoff earns it with `--network none` plus a probe that must fail — and
+  //    nothing here measured anything.
+  const egress = String(DASHBOARD_SANDBOX.networkPolicy.egress);
+  assert.notEqual(egress, "denied", "the record claims a denial the builder does not configure");
+  assert.notEqual(egress, "pinned-mirror-only", "no mirror is configured either");
+  //    The value must not read as a denial to a careless reader either. It is
+  //    allowed to CONTAIN the disclaimer ("NOT a measured denial"); what it may
+  //    not contain is the bare claim.
+  assert.doesNotMatch(egress, /\bdenied\b/i, "a reader must not be able to read this as a denial");
+  assert.doesNotMatch(egress, /\bsealed\b/i);
+  assert.match(egress, /^unrestricted/i, "it must say what is true, first");
+  // An empty allow-list next to an egress field reads as "no hosts permitted",
+  // which is the same false denial by another route.
+  assert.ok(DASHBOARD_SANDBOX.networkPolicy.allowedHosts.length > 0);
+
+  // The two sibling fields still say plainly that they are not a container's.
+  assert.match(DASHBOARD_SANDBOX.imageDigest, /not-a-container-digest/);
+  assert.match(DASHBOARD_SANDBOX.imageRef, /runs on the host/);
+});
+
+test("recordedNetworkPolicy reports a configured restriction WITHOUT promoting it to a denial", () => {
+  // The negative control for the test above: a function that always returned the
+  // unrestricted label would pass every assertion there while being blind to its
+  // input. This is the branch a builder with a network clause would take.
+  const configured = recordedNetworkPolicy({ allowedDomains: ["registry.npmjs.org"], strictAllowlist: true });
+  assert.notDeepEqual(configured, DASHBOARD_SANDBOX.networkPolicy, "the input is not being read");
+  assert.deepEqual([...configured.allowedHosts], ["registry.npmjs.org"]);
+  const egress = String(configured.egress);
+  assert.match(egress, /unmeasured/, "a configured restriction is still not a measured one");
+  assert.notEqual(egress, "denied");
+  assert.doesNotMatch(egress, /denied|denial/i);
+
+  // AN EMPTY CLAUSE IS NOT A RESTRICTION. `sandbox.network = {}` configures no
+  // allow-list, no deny-list and no strict mode, so it must report exactly what
+  // no clause at all reports. Calling it "configured" would be the same
+  // overstatement one level down.
+  assert.deepEqual(recordedNetworkPolicy({}), recordedNetworkPolicy(undefined));
+  assert.deepEqual(recordedNetworkPolicy({ allowedDomains: [] }), recordedNetworkPolicy(undefined));
+  // A strict allow-list with nothing on it restricts everything, and is still not
+  // a MEASURED denial — nobody probed it.
+  assert.match(String(recordedNetworkPolicy({ strictAllowlist: true }).egress), /unmeasured/);
+  assert.match(String(recordedNetworkPolicy({ deniedDomains: ["*"] }).egress), /unmeasured/);
+  assert.doesNotMatch(String(recordedNetworkPolicy({ deniedDomains: ["*"] }).egress), /\bdenied\b/i);
 });

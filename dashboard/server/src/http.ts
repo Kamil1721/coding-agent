@@ -213,14 +213,11 @@ const DASHBOARD_ORIGIN_HOSTS: readonly string[] = [LOOPBACK_HOST, "localhost"];
  * a mis-classified cron request would park forever, which is the failure rule 2
  * exists to prevent.
  *
- * IT HAS NO CALLER YET, AND THAT IS RECORDED RATHER THAN HIDDEN. Its only
- * consumer is the `interactive` column on `runs`, which Phase 2b Task 10 adds
- * to `db.ts` along with `design_lock`; that file belongs to another wave and is
- * not edited here. Calling this from `createRun` and discarding the result
- * would be worse than not calling it — a computed-and-thrown-away value on the
- * production path reads as wiring. When the columns land, `createRun` passes
- * `designLockPolicy(body["designLock"], designLockInteractive(...))` through
- * `store.createRun`, and this comment goes with it.
+ * ITS ONE CONSUMER IS THE `interactive` COLUMN, written by `createRun` below
+ * from the request's own `Referer`. It is persisted BESIDE the requested policy
+ * rather than folded into it, because `designLockPolicy` needs both and the two
+ * say different things: an empty `design_lock` is "the request stated nothing",
+ * which is not the same fact as "the request asked for auto".
  */
 export function designLockInteractive(requested: unknown, referer: string | undefined): boolean {
   if (requested === "auto" || requested === "ask") return true;
@@ -536,14 +533,16 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
 
   const ticket = ticketFromText(ticketText);
   const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-  // `designLock` IS VALIDATED ABOVE AND NOT YET PERSISTED, stated here rather
-  // than left to be discovered. It belongs in the `design_lock` and
-  // `interactive` columns on `runs`, which Phase 2b Task 10 adds to `db.ts`
-  // through `RUN_MIGRATIONS` — another wave's file, so this route stops at the
-  // seam instead of inventing a second store for one field. Until then a
-  // request that says `"ask"` is accepted and the lane's policy comes from
-  // `designLockPolicy`'s default. The two lines that close it are `designLock:`
-  // and `interactive:` on the input below, fed by `designLockInteractive`.
+  // §17.3 RULE 2'S TWO INPUTS, PERSISTED. Both are stated once, by the request
+  // that created the run, and neither is patchable afterwards (db.ts says why:
+  // a run whose lock policy could change halfway through is a run whose park has
+  // no explanation). `designLockPolicy` reads them together at the top of each
+  // build segment.
+  //
+  // THE TERNARY IS THE NARROWING, not a second validation: the check above has
+  // already refused everything that is not one of these, and `body["designLock"]`
+  // is `unknown` until something compares it to a literal.
+  const requestedLock: "auto" | "ask" | null = designLock === "auto" || designLock === "ask" ? designLock : null;
   deps.store.createRun({
     runId,
     ticketId: ticket.id,
@@ -555,6 +554,11 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
     deploy: deploy === true,
     startedAt: new Date().toISOString(),
     queuePosition: deps.store.listQueued().length + 1,
+    designLock: requestedLock,
+    // FROM THIS REQUEST'S OWN HEADER. A run submitted from the dashboard page is
+    // interactive and therefore asks; `curl` and cron carry neither an explicit
+    // policy nor a loopback `Referer`, and get `auto` — the whole point of rule 2.
+    interactive: designLockInteractive(designLock, request.headers.referer),
   });
   deps.bus.emit(runId, { type: "status", status: "queued" });
   deps.bus.emit(runId, { type: "phase", phase: "spec" });
