@@ -46,9 +46,19 @@ function Section({
 export function AgentInspector({
   node,
   onClose,
+  /**
+   * `false` when the caller has already drawn a header for this agent.
+   *
+   * `DetailSheet` puts the agent's name, its role chip and a close button in the
+   * sheet's own chrome, so leaving this on printed "context-manager" and "close"
+   * twice, twelve pixels apart. Default `true` so this stays the component's own
+   * complete rendering for any caller that is not wrapping it.
+   */
+  header = true,
 }: {
   node: GraphNode | null;
   onClose: () => void;
+  header?: boolean;
 }): ReactNode {
   if (node === null) {
     return (
@@ -63,27 +73,41 @@ export function AgentInspector({
 
   return (
     <div className="-mx-3 -my-2.5">
-      <header className="flex items-start justify-between gap-2 px-3 py-2.5">
-        <div className="min-w-0">
-          <p className="truncate text-[13.5px] font-semibold text-ink">
-            {node.agent ?? "session"}
-          </p>
-          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint">
-            <span className="font-mono">{node.id}</span>
-            <span aria-hidden="true">·</span>
-            <span>{node.lane ?? "no lane"}</span>
-            {node.ambient && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span title="The CLI marked this skip_transcript.">housekeeping</span>
-              </>
-            )}
-          </p>
-        </div>
-        <Button variant="ghost" onClick={onClose} title="Clear the selection">
-          close
-        </Button>
-      </header>
+      {header ? (
+        <header className="flex items-start justify-between gap-2 px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="truncate text-[13.5px] font-semibold text-ink">
+              {node.agent ?? "session"}
+            </p>
+            <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint">
+              <span className="font-mono">{node.id}</span>
+              <span aria-hidden="true">·</span>
+              <span>{node.lane ?? "no lane"}</span>
+              {node.ambient && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span title="The CLI marked this skip_transcript.">housekeeping</span>
+                </>
+              )}
+            </p>
+          </div>
+          <Button variant="ghost" onClick={onClose} title="Clear the selection">
+            close
+          </Button>
+        </header>
+      ) : (
+        <p className="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[11px] text-ink-faint">
+          <span className="font-mono">{node.id}</span>
+          <span aria-hidden="true">·</span>
+          <span>{node.lane ?? "no lane"}</span>
+          {node.ambient && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span title="The CLI marked this skip_transcript.">housekeeping</span>
+            </>
+          )}
+        </p>
+      )}
 
       <div className="px-3 pb-2.5">
         <p

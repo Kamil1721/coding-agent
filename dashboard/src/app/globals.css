@@ -148,7 +148,14 @@ body {
    * changes, `run-canvas.browser.spec.ts` goes red on the page acquiring a
    * scrollbar — the number is defended rather than trusted.
    */
-  --run-chrome: 94px;
+  /*
+   * MEASURED, NOT ADDED UP. The three boxes come to 85.75px in Chromium (a 45px
+   * header including its border, 16px of `main` padding, a 24.75px footer), and
+   * 94px still produced a 1px document overflow — sub-pixel rounding somewhere in
+   * the flex column above. 100px is a measured value that does not, with room for
+   * a rounding step either way, and it costs 14px of canvas.
+   */
+  --run-chrome: 100px;
 }
 
 /* ------------------------------------------------------------------ */
@@ -255,23 +262,32 @@ body {
 }
 
 /*
- * The inferred connector: a guess, drawn as one.
+ * The inferred connector: an EMPTY conduit.
  *
- * Thinner than the conduit, dotted, dim, grey rather than role-tinted, no
- * casing, no core, no bloom, and never animated. Hook messages carry no task
- * identity, so hook->agent attribution is a server-side GUESS, and a guess drawn
- * with the same ceremony as a fact is the canvas lying about how much it knows.
- * It is thicker than the 1.25px it used to be — the owner asked for thicker
- * edges and that applies to this one too — and still, by construction, thinner
- * and dimmer than the connector it must not be mistaken for.
+ * It keeps the rim and the casing, so it is as thick and as well organised as
+ * every other wire on the canvas — the owner asked for thicker edges and four of
+ * the six on the run this was built against are inferred, so exempting them would
+ * have meant most of the graph staying a hairline. What it does not get is the
+ * part that means "something went through here": no role gradient, no specular
+ * core, no bloom, no comet, ever, not even when its child is running.
+ *
+ * The groove is there and nothing is flowing in it, which is exactly what an
+ * inferred edge is: hook messages carry no task identity, so hook->agent
+ * attribution is a server-side GUESS, and a guess drawn with a fact's ceremony is
+ * the canvas lying about how much it knows.
+ *
+ * FOUR PROPERTIES STILL SEPARATE IT FROM A SETTLED CONNECTOR, in the same
+ * direction as before: grey rather than a gradient, thinner, dashed rather than
+ * solid, and dimmer. `canvas-edges.browser.spec.ts` asserts all four and the sign
+ * of each, so a restyle that closed the gap goes red.
  */
 .conduit-guess {
   fill: none;
   stroke: var(--color-ink-faint);
-  stroke-width: 1.75;
+  stroke-width: 2.5;
   stroke-linecap: round;
-  stroke-dasharray: 1 5;
-  opacity: 0.45;
+  stroke-dasharray: 2 7;
+  opacity: 0.55;
 }
 
 .conduit-comet {
