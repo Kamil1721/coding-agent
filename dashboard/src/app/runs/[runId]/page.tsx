@@ -131,6 +131,7 @@ import { useModels } from "@/lib/hooks";
 import { isTerminalStatus, type RunDetail } from "@/lib/api-types";
 import { designLockPhase } from "@/lib/mockups";
 import { useLiveRun, useNow } from "@/lib/use-run-stream";
+import { specPipelineFrom } from "@/lib/spec-pipeline";
 
 /**
  * What actually happens to a message typed RIGHT NOW — or null when
@@ -427,6 +428,18 @@ export default function RunPage(): ReactNode {
          * `null` when nothing has arrived — the canvas renders nothing rather
          * than an empty row implying a message that did not come.
          */
+        /*
+         * The spec phase's stages, derived from the trace the page already holds.
+         * Pure and tested (`spec-pipeline.unit.spec.ts`) so the honesty rules —
+         * never advance a stage on a timer, never light one the run has not
+         * reported — are checkable rather than a matter of trust.
+         */
+        specStages={specPipelineFrom(
+          trace,
+          run.phase,
+          run.ticketText,
+          !isTerminalStatus(run.status),
+        )}
         latestActivity={
           trace.length === 0
             ? null

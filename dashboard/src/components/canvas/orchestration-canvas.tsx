@@ -68,6 +68,7 @@ import {
 
 import type { GraphState, RunStatus } from "@/lib/api-types";
 import { useNow } from "@/lib/use-run-stream";
+import type { SpecStage } from "@/lib/spec-pipeline";
 import { Button, cx } from "@/components/ui";
 import {
   AgentNode,
@@ -273,6 +274,58 @@ function QuietNote({ atMs }: { atMs: number }): ReactNode {
   );
 }
 
+
+const STAGE_TONE: Readonly<Record<SpecStage["state"], { dot: string; label: string }>> = {
+  done: { dot: "bg-pass", label: "text-ink" },
+  running: { dot: "bg-accent", label: "text-ink" },
+  pending: { dot: "bg-line", label: "text-ink-dim" },
+  skipped: { dot: "bg-line", label: "text-ink-dim" },
+};
+
+/**
+ * One stage of the spec phase, drawn in the agent cards' visual language.
+ *
+ * The connector is a plain border between cards rather than a React Flow edge:
+ * these are not graph nodes and must not be reachable by the canvas's selection,
+ * keyboard or edge machinery, all of which are keyed on real node ids.
+ */
+function SpecStageCard({ stage, isLast }: { stage: SpecStage; isLast: boolean }): ReactNode {
+  const tone = STAGE_TONE[stage.state];
+  return (
+    <li className="relative pb-3 pl-5 text-left">
+      {/*
+        * THE PULSE IS A HALO, NOT THE DOT. `animate-pulse` drives opacity to
+        * near zero, so pulsing the dot itself leaves the running stage with no
+        * marker at all for part of every cycle — the one stage a reader is
+        * looking for, intermittently invisible. The dot stays solid; a ring
+        * around it breathes.
+        */}
+      <span aria-hidden className={cx("absolute left-0 top-[6px] h-2 w-2 rounded-full", tone.dot)} />
+      {stage.state === "running" && (
+        <span
+          aria-hidden
+          className="absolute left-[-3px] top-[3px] h-3.5 w-3.5 rounded-full bg-accent/30 motion-safe:animate-pulse"
+        />
+      )}
+      {!isLast && <span aria-hidden className="absolute left-[3.5px] top-[14px] h-full w-px bg-line" />}
+      <div className={cx("text-[12px] font-medium", tone.label)}>
+        {stage.label}
+        {stage.state === "skipped" && (
+          <span className="ml-1.5 text-[10px] font-normal text-ink-dim">not needed</span>
+        )}
+      </div>
+      {/*
+        * CLAMPED, AND THE PADDING IS ON THE `li` RATHER THAN HERE. `line-clamp`
+        * is `overflow: hidden` on a `-webkit-box`, and padding on the clamped
+        * element itself is INSIDE that box — so the clipped fourth line renders
+        * into the padding and collides with the next stage's heading. Measured
+        * on this very card before the padding moved.
+        */}
+      <p className="mt-0.5 line-clamp-3 text-[11px] leading-relaxed text-ink-dim">{stage.detail}</p>
+    </li>
+  );
+}
+
 export interface CanvasProps {
   readonly graph: GraphState;
   /** False while the snapshot is still in flight. Drives the loading overlay. */
@@ -308,6 +361,15 @@ export interface CanvasProps {
    * is enough to tell "working" from "stopped", and claims nothing else.
    */
   readonly latestActivity?: { readonly text: string; readonly atMs: number } | null;
+  /**
+   * The spec phase's four stages, for the ~80 minutes before a node exists.
+   *
+   * Empty outside the spec phase, where the REAL graph takes over. See
+   * `src/lib/spec-pipeline.ts` for why these are layout constructs and never
+   * `graph_agent` events, and for the rule that every state is read off a log
+   * line the run actually wrote rather than advanced on a timer.
+   */
+  readonly specStages?: readonly SpecStage[];
   /**
    * The run's status, when the caller knows it.
    *
@@ -357,6 +419,7 @@ function CanvasInner({
   rightInset: requestedInset = 0,
   runIsActive = false,
   latestActivity = null,
+  specStages = [],
   runStatus,
 }: CanvasProps): ReactNode {
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
@@ -1275,10 +1338,50 @@ function CanvasInner({
              * passes `runStatus` (see the prop).
              */
             <div className="max-w-[420px] rounded border border-line bg-surface/90 px-5 py-4 text-center">
-              <p className="text-[13px] font-semibold text-ink">{emptyCopy.title}</p>
-              <p className="mt-1.5 text-[12px] leading-relaxed text-ink-dim">
-                {emptyCopy.body}
-              </p>
+              {specStages.length > 0 && (
+                /*
+                 * THE SPEC PHASE HAS A SHAPE, AND THIS DRAWS IT. Before this the
+                 * screen said only "not started" for ~80 minutes of a ~105-minute
+                 * run — true, and useless: it named what was ABSENT instead of what
+                 * was happening. These four stages are what the run is actually
+                 * doing, in order, with the states it has actually reported.
+                 */
+                <>
+                <p className="mb-2.5 text-left text-[10px] uppercase tracking-wide text-ink-dim">
+                  Before the build
+                </p>
+                <ol className="mb-3 space-y-0">
+                  {specStages.map((stage, index) => (
+                    <SpecStageCard
+                      key={stage.id}
+                      stage={stage}
+                      isLast={index === specStages.length - 1}
+                    />
+                  ))}
+                </ol>
+                </>
+              )}
+              {specStages.length > 0 ? (
+                /*
+                 * THE STAGES ARE THE EXPLANATION, so the old copy is not merely
+                 * redundant beneath them — it CONTRADICTS them. "The agents have
+                 * not started yet" printed under a list of things visibly
+                 * happening reads as a bug in the display. What still needs
+                 * saying is only the part the stages do not: why there is no
+                 * graph, and when one appears.
+                 */
+                <p className="text-[11px] leading-relaxed text-ink-dim">
+                  These run before any agent is spawned, so there is no delegation graph yet. It
+                  appears as soon as the build starts.
+                </p>
+              ) : (
+                <>
+                  <p className="text-[13px] font-semibold text-ink">{emptyCopy.title}</p>
+                  <p className="mt-1.5 text-[12px] leading-relaxed text-ink-dim">
+                    {emptyCopy.body}
+                  </p>
+                </>
+              )}
               {runIsActive && latestActivity !== null && (
                 /*
                  * SHOWN ONLY WHILE THE RUN IS LIVE. On a terminal run the last
@@ -1289,7 +1392,7 @@ function CanvasInner({
                   <div className="flex items-center justify-center gap-1.5">
                     <span
                       aria-hidden
-                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-run motion-safe:animate-pulse"
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent motion-safe:animate-pulse"
                     />
                     <span className="text-[10px] uppercase tracking-wide text-ink-dim">
                       still working
