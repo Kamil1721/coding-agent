@@ -891,7 +891,18 @@ test("the footer says a run with no price is not a run that was free", () => {
   // NO INVENTED BILL, and no figure of its own: the seat totals live in the spend
   // record and a second source for them here is a second number to go stale.
   assert.doesNotMatch(PRICING_FOOTER, /\$/, "a dollar sign on the verdict page is a fabricated bill");
-  assert.doesNotMatch(PRICING_FOOTER, /\d{3}/, "the footer states no figure — spend.md carries those");
+  // A GROUPED TOKEN COUNT, not "any three digits". `/\d{3}/` would forbid a spec
+  // reference or a date and would then go red saying "the footer states no
+  // figure" — a check whose message names a cause it did not measure, which is
+  // the defect `fieldNames` in contract-parity.test.ts was just fixed for.
+  // `groupDigits` renders every count in this codebase as 1-3 digits then groups
+  // of three, so this catches a pasted 525,471 or 88,529 and nothing else.
+  assert.doesNotMatch(
+    PRICING_FOOTER,
+    /\d,\d{3}/,
+    "a token count was pasted into the footer: the seat totals belong in the spend record, and a " +
+      "second copy here is a second number to go stale",
+  );
   // IT NAMES NO FILE. `writeRunSpend` has no caller, so pointing at spend.md would
   // be a path to a file that does not exist — the same lie as a `heldOutPass:
   // false` for a gate that never ran.
