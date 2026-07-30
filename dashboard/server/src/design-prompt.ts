@@ -17,11 +17,31 @@
  * (§7.1a). The flag gates what is ASKED FOR; it never removes an accepted
  * satisfier from the Layer-2 gate. Those are different things and conflating them
  * would make the gate stricter, which is the opposite of degrade-don't-block.
+ *
+ * THIS FILE IS PHASE 2C'S ONLY PRODUCTION TRIGGER, and until 2026-07-30 it was
+ * not one. `planVideoLegs` gates every leg on `animate === true` in the manifest
+ * and `orchestrator.ts:855` says the DESIGN segment writes it — while the branch
+ * below said only "Sections you mark for animation", naming the capability and
+ * never the field, the value or the file. Seven committed 2c commits were
+ * therefore unreachable: the live run's `results/video.json` read
+ * `available: true, legsAttempted: 0`, indistinguishable from a manifest that
+ * marked nothing, which is exactly what it was. The mark now lives in the
+ * TEMPLATE the agent copies, so what pins it is not a grep for a word but
+ * `design-prompt.test.ts` parsing that template with `parseDesignManifest` and
+ * planning it with `planVideoLegs` — measured red at 0 legs before this change.
  */
 
 import { join } from "node:path";
 
 import type { DesignCapability } from "./design-capability.js";
+// THE CAP AND THE ASPECT SET ARE IMPORTED FROM THE PLANNER THAT ENFORCES THEM.
+// A `2` and a `"16:9" or "9:16"` typed into this file would be a second
+// declaration site for numbers `video-legs.ts` owns, and the failure would be
+// silent in the worst direction: a prompt that invites 3 marks while the planner
+// drops the third, or invites 21:9 while the planner rejects it. Nothing else is
+// imported from the video lane here — the prompt asks for the mark, it does not
+// know what is done with it.
+import { DEFAULT_VIDEO_LEG_CAP, VEO_ASPECTS } from "./design/video-legs.js";
 import type { DesignLaneMode } from "./design-lane.js";
 import type { DesignManifest } from "./design-manifest.js";
 import { manifestPathFor, refsDirFor } from "./design-manifest.js";
@@ -112,8 +132,19 @@ export function designSegmentPrompt(input: {
       '    "refs": [',
       `      { "path": "${join(refsDir, "01-hero.png")}",`,
       '        "section": "hero",',
-      '        "aspect": "16:9",',
-      '        "intent": "what this image is FOR, in one sentence" }',
+      `        "aspect": "${VEO_ASPECTS[0]}",`,
+      // THE MARK IS IN THE TEMPLATE, NOT ONLY IN THE PROSE, and the second ref
+      // exists so the template can show the mark being WITHHELD. A one-ref
+      // example carrying `"animate": true` is copied five times by an agent
+      // asked for five sections — the cap violated by the example rather than
+      // by the agent. `02-work` also carries a non-Veo aspect on purpose: it is
+      // the shape of a ref that is free to be any aspect BECAUSE it is unmarked.
+      ...(input.capability.video ? ['        "animate": true,'] : []),
+      '        "intent": "what this image is FOR, in one sentence" },',
+      `      { "path": "${join(refsDir, "02-work.png")}",`,
+      '        "section": "work",',
+      '        "aspect": "3:2",',
+      '        "intent": "as above, for this section" }',
       "    ]",
       "  }",
       "",
@@ -124,9 +155,26 @@ export function designSegmentPrompt(input: {
     );
     if (input.capability.video) {
       lines.push(
-        "MOTION LEGS ARE AVAILABLE ON THIS RUN. Sections you mark for animation may be",
-        "given a scrubbable .mp4 and a .webp poster; generate those stills at 16:9 or",
-        "9:16, which is all the video model accepts.",
+        'MOTION LEGS ARE AVAILABLE ON THIS RUN, and `"animate": true` on a ref — exactly as',
+        "in the manifest above — is the ONLY thing that asks for one. A marked ref is turned",
+        "into a scrubbable .mp4 and a .webp poster, driven from that still as its first",
+        "frame. The host does that between this segment and the build, so there is no video",
+        "tool for you to run here and you must not go looking for one.",
+        "",
+        `MARK AT MOST ${String(DEFAULT_VIDEO_LEG_CAP)} REFS, and mark none where the motion does not earn it. ${String(DEFAULT_VIDEO_LEG_CAP)} is a`,
+        "cost cap rather than a target: a leg spends on a metered key rather than subscription",
+        "quota and takes minutes rather than seconds. A mark past the cap is planned and then",
+        "dropped, so marking five buys nothing and records a request nobody honoured. Earlier",
+        `refs win, so order the ${String(DEFAULT_VIDEO_LEG_CAP)} you choose ahead of the rest.`,
+        "",
+        `A MARKED REF MUST BE GENERATED AT ${VEO_ASPECTS.join(" OR ")}. Those two are all the video model`,
+        "takes, and the aspect is decided when you generate the still, not when you write the",
+        "manifest: a 21:9 still marked for animation is rejected at planning time and yields",
+        "no video at all. Leave the mark off the others and they may use any aspect above.",
+        "",
+        "Mark only a ref whose PNG you have already generated and critiqued. The mark is",
+        "resolved against the file on disk, so a mark on a still that does not exist is a",
+        "failed leg rather than a skipped one.",
         "",
       );
     } else {

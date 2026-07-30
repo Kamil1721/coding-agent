@@ -2,8 +2,11 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
 import type { DesignCapability } from "./design-capability.js";
+import { legPlannerInput } from "./design/video-lane.js";
+import type { VideoLegPlan } from "./design/video-legs.js";
+import { DEFAULT_VIDEO_LEG_CAP, planVideoLegs, resolveLegCap, VEO_ASPECTS } from "./design/video-legs.js";
 import type { DesignManifest } from "./design-manifest.js";
-import { toVisualManifest } from "./design-manifest.js";
+import { parseDesignManifest, toVisualManifest } from "./design-manifest.js";
 import {
   designHandoffSection,
   designSegmentPrompt,
@@ -111,6 +114,155 @@ test("2b NEVER asks for video — the capability flag is false and the ask is ga
 test("with the video capability present, the ask appears — the flag is load-bearing", () => {
   const p = full({ capability: { ...CAP, video: true } });
   assert.match(p, /\.mp4/);
+});
+
+/* ---- PHASE 2C'S PRODUCTION TRIGGER -------------------------------------
+ *
+ * WHY THE ASSERTION IS A PLAN AND NOT A GREP. Until this test existed, the only
+ * thing pinned about the video branch was that the string `.mp4` appears in it —
+ * and an auditor's mutation proved that: rewriting the branch to instruct
+ * `"animate": true` left the whole suite green, because `.mp4` survived the
+ * rewrite. Grepping for the word `animate` would have the same defect in reverse.
+ * The question is not "does the prompt contain a string", it is "does the file an
+ * agent produces by copying this template plan a leg", and that is answerable
+ * only by running the HOST'S OWN parser and the HOST'S OWN planner over the
+ * template, through the same `refs`→`sections` join production uses
+ * (`legPlannerInput` — imported, never re-implemented here, because a hand-rolled
+ * `{ sections: refs }` in this file would pin the join to itself).
+ *
+ * MEASURED RED BEFORE IT WAS MEASURED GREEN. Against the prompt as shipped in
+ * Phase 2b this test failed at `legs.length` — expected 1, got 0 — which is the
+ * live defect and a better negative control than any mutation, because nobody
+ * designed the code to be caught by it.
+ */
+function manifestTemplate(prompt: string): string {
+  const anchor = prompt.indexOf('"version": 1');
+  assert.notEqual(anchor, -1, "the prompt must hand the agent a manifest template");
+  const start = prompt.lastIndexOf("{", anchor);
+  let depth = 0;
+  for (let index = start; index < prompt.length; index += 1) {
+    if (prompt[index] === "{") depth += 1;
+    else if (prompt[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return prompt.slice(start, index + 1);
+    }
+  }
+  return assert.fail("the manifest template's braces do not balance — an agent cannot copy it");
+}
+
+function templateRefs(prompt: string): DesignManifest {
+  const parsed = parseDesignManifest(manifestTemplate(prompt), WS);
+  assert.notEqual(
+    parsed,
+    null,
+    "the template the agent is told to copy must itself survive the host's parser — " +
+      "`readRef` is all-or-nothing, so one malformed example ref rejects the whole file",
+  );
+  return parsed as DesignManifest;
+}
+
+function planFromTemplate(prompt: string): VideoLegPlan {
+  return planVideoLegs(legPlannerInput(templateRefs(prompt)), WS, resolveLegCap({}));
+}
+
+test("THE VIDEO BRANCH IS 2C'S TRIGGER: the template, copied literally, PLANS A LEG", () => {
+  const p = full({ capability: { ...CAP, video: true } });
+
+  // THE PLAN IS ASSERTED BEFORE THE COUNTS, AND THE ORDER WAS CHOSEN BY A
+  // MEASUREMENT. With `marked.length === 1` first, two of the controls below
+  // (a 21:9 marked example; a second ref marked at a rejected aspect) died on
+  // the count and never reached `rejected`, so `rejected` and `droppedByCap`
+  // were assertions no mutation could turn red — dominated lines that read as
+  // checks. Planning first makes each of the three separately observable.
+  const plan = planFromTemplate(p);
+  assert.equal(
+    plan.legs.length,
+    1,
+    "the mark reaches the planner: parseDesignManifest -> legPlannerInput -> planVideoLegs. " +
+      "0 here is Phase 2c unreachable — the manifest marked nothing, which is exactly what " +
+      "the live run's video.json recorded (available: true, legsAttempted: 0)",
+  );
+  assert.deepEqual(
+    [...plan.rejected],
+    [],
+    "and NOTHING the template marks is refused: an example ref that is itself rejected " +
+      "teaches the agent to produce a manifest the lane throws away (spec §7.6.3.1)",
+  );
+  // TWO ASSERTIONS STOOD HERE AND BOTH WERE DELETED FOR THE SAME REASON: no
+  // mutation of this file can turn either red, so each read as a check while
+  // being true by construction.
+  //
+  //   `plan.droppedByCap === 0` — the template carries two refs against a cap of
+  //   2, so nothing can be dropped, and a template that grew a third marked ref
+  //   is caught by `legs.length === 1` one assertion earlier. The cap is observed
+  //   where it is ENFORCED, by `video-legs.test.ts` counting invocations.
+  //
+  //   `VEO_ASPECTS.includes(plan.legs[0].aspect)` — `planVideoLegs` pushes a leg
+  //   only after `isVeoAspect` (video-legs.ts:127), so every element of
+  //   `plan.legs` has a Veo aspect by construction. What the template's aspect is
+  //   actually pinned by is `rejected` being empty, which control (i) turned red.
+
+  const refs = templateRefs(p);
+  const marked = refs.refs.filter((ref) => ref.animate === true);
+  assert.equal(marked.length, 1, "exactly one ref in the template carries the mark");
+  assert.ok(
+    refs.refs.length > marked.length,
+    "AND AT LEAST ONE DOES NOT. A template whose every ref is marked is an instruction to " +
+      "mark every section — the cap violated by the example rather than by the agent",
+  );
+});
+
+test("NO VIDEO CAPABILITY, NO MARK — the field does not appear and the template plans nothing", () => {
+  // Requirement 1 of §7.6.3, and the control that makes the test above about the
+  // FLAG rather than about the prompt: instructing `animate` on a run with no
+  // gemini-video.sh invites a manifest the lane must then reject, and a rejection
+  // the host prints for a capability the run never had reads as a design fault.
+  const p = full();
+  assert.doesNotMatch(p, /"animate"/, "not the field name");
+  assert.doesNotMatch(p, /animate/i, "not the word, in any casing");
+  assert.equal(planFromTemplate(p).legs.length, 0);
+});
+
+/**
+ * The prose half, sliced to the block it belongs to.
+ *
+ * Asserting these strings against the WHOLE prompt would let the aspect pair be
+ * satisfied by the `-a` flag list — which names `16:9` and `9:16` on every run,
+ * video or not — so the restriction would be "pinned" by a line that predates
+ * this feature and says nothing about animation.
+ */
+function motionBlock(prompt: string): string {
+  const start = prompt.indexOf("MOTION LEGS ARE AVAILABLE");
+  assert.notEqual(start, -1, "the video branch must announce itself");
+  const end = prompt.indexOf("THE THREE DIALS", start);
+  assert.notEqual(end, -1, "and the dials block must follow it");
+  return prompt.slice(start, end);
+}
+
+test("the motion instruction carries the cap, the two legal aspects, and no tool to run", () => {
+  const block = motionBlock(full({ capability: { ...CAP, video: true } }));
+  assert.match(block, /"animate": true/, "the field and its value, spelled the way the file wants it");
+  assert.match(
+    block,
+    new RegExp(`at most ${String(DEFAULT_VIDEO_LEG_CAP)}`, "i"),
+    "spec §7.6.3.2 is a COST cap; an instruction that omits it invites five marks and three drops",
+  );
+  for (const aspect of VEO_ASPECTS) {
+    assert.ok(block.includes(aspect), `the restriction must name ${aspect} beside the mark`);
+  }
+  assert.match(block, /21:9/, "and name a rejected one, because that is the mistake it prevents");
+  assert.doesNotMatch(
+    block,
+    /gemini-video/,
+    "THE AGENT DOES NOT SPEND THIS MONEY. The host runs the lane between the segments; " +
+      "naming the script here is an invitation to a metered call from inside the design lane",
+  );
+  assert.doesNotMatch(
+    block,
+    /\b8 ?(s\b|seconds)/i,
+    "no 8-second assumption: 4 s at 720p with an image was measured to be accepted, and " +
+      "§7.6.1's '8 s required for reference images' attaches to config.referenceImages",
+  );
 });
 
 test("a degraded lane is told to art-direct in WRITING and NOT to fake images", () => {
