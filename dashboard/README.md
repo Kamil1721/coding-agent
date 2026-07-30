@@ -12,18 +12,24 @@ off-machine and refuses to start if you ask it to be.
 
 ## What you need first
 
-Two subscription CLIs, logged in with **your own plan**. No API key is involved
+One subscription CLI, logged in with **your own plan**. No API key is involved
 anywhere, and none is accepted:
 
 ```sh
 claude setup-token     # Anthropic — long-lived OAuth token in the Claude CLI's own store
-codex login            # OpenAI — browser OAuth, credentials under CODEX_HOME (~/.codex)
 ```
 
-`GET /api/health` tells you which of the two is missing, and the UI prints the
-exact command with a copy button. You can run the dashboard with neither: every
-model renders disabled with the reason, and submitting a ticket is refused
-cleanly instead of failing halfway through a build.
+**Claude only, since 2026-07-30.** The Codex provider was scoped out on
+2026-07-28 (spec section 14) and the owner removed the metered Kimi and DeepSeek
+rows on 2026-07-30: `GET /api/models` now serves Anthropic rows and nothing else.
+`codex login` is no longer worth running for this dashboard — the builder stays in
+the tree, no run may select it, and `POST /api/runs` says so if you ask for it by
+id. `/api/health` still reports `codexAuth`; nothing in the UI renders it.
+
+`GET /api/health` tells you when the Claude login is missing, and the UI prints
+the exact command with a copy button. You can run the dashboard with no login at
+all: the model dropdown says nothing in it can run, states why, and submitting a
+ticket is refused cleanly instead of failing halfway through a build.
 
 Also needed:
 
@@ -100,9 +106,9 @@ app with a confident summary.
   boundary"**, and read it before you trust a `heldOutPass`.
 - **It does not answer questions.** A run that needs your input has nowhere to
   put the question; it parks as `awaiting_input` and you resume it.
-- **Rate limits are expected, not errors.** Both providers enforce a 5-hour
-  rolling window plus a weekly cap. A limited run persists, shows a countdown,
-  and resumes into the same provider session.
+- **Rate limits are expected, not errors.** The Claude subscription enforces a
+  5-hour rolling window plus a weekly cap. A limited run persists, shows a
+  countdown, and resumes into the same provider session.
 
 ---
 
@@ -118,7 +124,6 @@ Every one of these is optional, and **none of them is ever a credential.**
 | `BAKEOFF_SCORER_IMAGE` | `bakeoff-scorer:1` | Scorer image. Pin it by digest. |
 | `BAKEOFF_SCORER_TIMEOUT_MIN` | harness default | Hard boundary on one scoring container. |
 | `DASHBOARD_SPEC_MODEL` | `default` | Model for the spec and judge seats. |
-| `DASHBOARD_CODEX_MODELS` | — | Comma-separated extra Codex model ids. Your assertion, not the dashboard's. |
 | `DASHBOARD_SEAT_MAX_TURNS` | `8` | Turn cap for a seat call. A measured floor, not a bound. |
 | `DASHBOARD_ALLOW_UNSANDBOXED_BUILDER` | unset | `1` lets a build run when the CLI sandbox cannot start. Deliberate opt-out. |
 | `DASHBOARD_API_ORIGIN` | `http://127.0.0.1:4176` | UI → API origin. **Build-time only.** |
