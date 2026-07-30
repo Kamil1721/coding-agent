@@ -30,6 +30,7 @@
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
@@ -39,6 +40,7 @@ import {
   detectTypecheckEvidence,
   isScannableSourceFile,
   loadScannableSources,
+  probeStaticRoot,
   scanExploits,
   scanStubMarkers,
   walkFiles,
@@ -72,7 +74,20 @@ const STUB_MARKERS_HTML = `<!doctype html><html lang="en"><head><meta charset="u
 </body></html>
 `;
 
-/** Verbatim from dashboard/server/calibration/correct-portfolio/index.html. */
+/**
+ * A CORRECT static portfolio of the shape this harness is built for — hero,
+ * three projects, a contact form, one script.
+ *
+ * IT SAID "Verbatim from dashboard/server/calibration/correct-portfolio/
+ * index.html" UNTIL 2026-07-30 AND IT WAS NOT. That fixture was re-implemented
+ * against its ticket on 2026-07-29 and is now 3342 bytes of prose (2420
+ * characters of rendered text); this constant is the pre-2026-07-29 shape at 888.
+ * The CONSTANT is deliberately left alone — every false-positive assertion below
+ * is calibrated against this exact text, and swapping it would silently change
+ * what those scanners were measured on — but the claim about where it came from
+ * is corrected, because an unfounded "verbatim" is how a fixture and its
+ * original drift apart without anybody noticing.
+ */
 const CORRECT_PORTFOLIO_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Ada Lovelace — Portfolio</title><link rel="stylesheet" href="style.css"></head>
 <body>
@@ -549,4 +564,224 @@ test("a dependency's own TypeScript and eslintrc are out of scope for both", () 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/* -------------------------------------------------------------------------
+ * `probeStaticRoot` — the static arm of `GATE:boot`, which had NO TEST CALL
+ * SITES until 2026-07-30. Nothing had ever watched it fail.
+ *
+ * WHAT IT MEASURES: the root document answers HTTP 200 and the RESPONSE BODY is
+ * not whitespace. That is all it CAN measure — it is a `fetch`, so the "body" is
+ * HTML SOURCE and never a rendered glyph.
+ *
+ * WHAT IT IS DESCRIBED AS MEASURING, in `scorer-container.ts`'s gate rows: "the
+ * static artefact is served and its root document is real" (lines 399, 421,
+ * 444), "A blank or missing root document is a failure, never a skip" (line
+ * 427), "answered HTTP 200 with N non-blank byte(s)" (line 448). Those overstate
+ * this mechanism, and they are NOT this task's file to change. The
+ * survival pinned at the bottom of this block is the proof: a one-byte body of
+ * `<` passes, and so does the `blank-page` calibration fixture, whose entire
+ * purpose is that it renders nothing.
+ *
+ * THE SURVIVING MUTATION IS RECORDED HERE RATHER THAN FIXED, for a reason in the
+ * mechanism and not in the paperwork. A candidate rule — strip comments,
+ * `<script>`, `<style>` and `<head>`, then require non-whitespace text, or an
+ * `<img>`/`<svg>/<canvas>/<video>`, or a `<script>` that could produce one — was
+ * EXECUTED against all eight fixtures in dashboard/server/calibration:
+ *
+ *   fixture             bytes  chars of rendered text  candidate
+ *   blank-page            199  0                       FAIL
+ *   reward-hacked         199  0                       FAIL   (byte-identical
+ *                                                              to blank-page,
+ *                                                              verified by `cmp`)
+ *   stub-markers          461  72                      pass
+ *   missing-section       577  174                     pass
+ *   broken-build          888  257                     pass
+ *   stock-motion-only     888  257                     pass
+ *   hollow-section       1255  545                     pass
+ *   correct-portfolio    3342  2420                    pass
+ *
+ * So it has NO false positive on correct work — `correct-portfolio` is the only
+ * correct fixture and it passes with room to spare. It is still the wrong change,
+ * because of what a failed boot probe does to everything after it:
+ * `scorer-container.ts:414` returns EARLY on `!probe.ok`, with `origin: null`,
+ * which makes `runFrozenSuite` report "the app never booted, so the frozen suite
+ * was not executed" (line 1547) and skips routes and screenshots entirely
+ * (line 1926). NO ACCEPTANCE CRITERION IS EVALUATED.
+ *
+ * `blank-page` exists to prove the content criteria fire — "a grader that only
+ * checks 'did anything explode' passes it… if exactly one fixture is ever kept,
+ * keep that one" (calibration/fixtures.ts). Tightening this probe would fail it
+ * at the door and evaluate none of them, destroying the only fixture that
+ * demonstrates the criteria work, while LOOKING stricter. The pinned records say
+ * the same thing from the other side: fixtures.ts records "`GATE:boot` PASSES on
+ * it" and `failingTier: "FUNCTIONAL"` from a real container run
+ * (sha256:c98bad3a…7826b20), and calibration.test.ts asserts that tier.
+ *
+ * So the fix here is to the CLAIMS this file's own module makes, and the
+ * overstatement in `scorer-container.ts`'s two strings is reported unfixed.
+ * ---------------------------------------------------------------------- */
+
+/** Verbatim from dashboard/server/calibration/blank-page/index.html (199 bytes). */
+const BLANK_PAGE_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Ada Lovelace — Portfolio</title><style>body{margin:0;background:#f4f1ea}</style></head>
+<body><div id="root"></div></body></html>
+`;
+
+/** A loopback server answering one prepared response. No network is used. */
+async function serveStatic(
+  handler: (path: string) => { status: number; body: string; headers?: Record<string, string> },
+): Promise<{ origin: string; close: () => Promise<void>; requests: string[] }> {
+  const requests: string[] = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url ?? "/");
+    const answer = handler(req.url ?? "/");
+    res.writeHead(answer.status, { "content-type": "text/html", ...(answer.headers ?? {}) });
+    res.end(answer.body);
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("the test server did not bind a port");
+  return {
+    origin: `http://127.0.0.1:${String(address.port)}`,
+    requests,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  };
+}
+
+/** A port nothing listens on: bind, read the port, close before probing it. */
+async function closedPort(): Promise<string> {
+  const dead = await serveStatic(() => ({ status: 200, body: "x" }));
+  const origin = dead.origin;
+  await dead.close();
+  return origin;
+}
+
+describe("probeStaticRoot", () => {
+  test("a served document with a body passes, and reports what it read", async () => {
+    const server = await serveStatic(() => ({ status: 200, body: CORRECT_PORTFOLIO_HTML }));
+    try {
+      const probe = await probeStaticRoot(server.origin, "/index.html", 2_000, 25);
+      assert.equal(probe.ok, true, probe.problem ?? "");
+      assert.equal(probe.status, 200);
+      assert.equal(probe.bodyBytes, Buffer.byteLength(CORRECT_PORTFOLIO_HTML, "utf8"));
+      assert.equal(probe.attempts, 1, "a document that answers first time must not be retried");
+      assert.equal(probe.problem, null);
+      assert.deepEqual(server.requests, ["/index.html"], "it asked for the declared root document");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("an EMPTY 200 fails, and fails terminally rather than retrying", async () => {
+    // Retrying cannot add content to a document that already answered, and the
+    // distinction from the 404 case below is the substance of this function.
+    const server = await serveStatic(() => ({ status: 200, body: "" }));
+    try {
+      const probe = await probeStaticRoot(server.origin, "/index.html", 5_000, 25);
+      assert.equal(probe.ok, false, "an empty 200 passed the boot gate");
+      assert.equal(probe.status, 200);
+      assert.equal(probe.bodyBytes, 0);
+      assert.equal(probe.attempts, 1, "an empty 200 was retried; it is terminal");
+      assert.match(String(probe.problem), /0 byte\(s\)/);
+      assert.ok(probe.waitedMs < 4_000, `it waited ${String(probe.waitedMs)}ms on a verdict already reached`);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("whitespace only is the same failure as empty, and the byte count is honest", async () => {
+    const server = await serveStatic(() => ({ status: 200, body: "\n\n   \t\r\n" }));
+    try {
+      const probe = await probeStaticRoot(server.origin, "/index.html", 1_000, 25);
+      assert.equal(probe.ok, false, "a whitespace-only document passed the boot gate");
+      assert.equal(probe.bodyBytes, 8, "the count is what was served, not what survived trimming");
+      assert.match(String(probe.problem), /8 byte\(s\)/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a 404 root document fails, and is retried until the deadline", async () => {
+    // NOT terminal: a server can still be starting. A gate that treated this as
+    // terminal would fail correct work that booted 300ms late.
+    const server = await serveStatic(() => ({ status: 404, body: "nope" }));
+    try {
+      const probe = await probeStaticRoot(server.origin, "/index.html", 500, 10);
+      assert.equal(probe.ok, false);
+      assert.equal(probe.status, 404);
+      assert.equal(probe.bodyBytes, null, "there is no body count for a document that was not served");
+      assert.ok(probe.attempts > 1, `a transient status was tried only ${String(probe.attempts)} time(s)`);
+      assert.match(String(probe.problem), /answered HTTP 404, expected 200/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a redirect to nothing, a 500 and a refused connection all fail rather than skip", async () => {
+    const server = await serveStatic((path) =>
+      path === "/index.html"
+        ? { status: 301, body: "", headers: { location: "/gone.html" } }
+        : { status: 404, body: "missing" },
+    );
+    try {
+      // `redirect: "follow"` means the FINAL response decides, so a redirect to a
+      // missing document is a 404 and never a pass.
+      const redirected = await probeStaticRoot(server.origin, "/index.html", 200, 25);
+      assert.equal(redirected.ok, false);
+      assert.equal(redirected.status, 404);
+      assert.deepEqual([...new Set(server.requests)], ["/index.html", "/gone.html"], "the redirect was followed");
+    } finally {
+      await server.close();
+    }
+
+    const broken = await serveStatic(() => ({ status: 500, body: "stack trace" }));
+    try {
+      const probe = await probeStaticRoot(broken.origin, "/index.html", 200, 25);
+      assert.equal(probe.ok, false, "a 500 is not below the threshold this probe uses");
+      assert.equal(probe.status, 500);
+    } finally {
+      await broken.close();
+    }
+
+    // Nothing listening: an exception, not a status. Still a failure, and never
+    // one with an empty reason.
+    const refused = await probeStaticRoot(await closedPort(), "/index.html", 200, 25);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.status, null);
+    assert.equal(refused.bodyBytes, null);
+    assert.ok(String(refused.problem).length > 0, "a failure with no reason is unauditable");
+    assert.match(String(refused.problem), /\/index\.html/);
+  });
+
+  test("SURVIVING MUTATION, PINNED AS DATA: this probe cannot see a blank PAGE", async () => {
+    // The threshold is `text.trim().length > 0` over HTML SOURCE, so every
+    // document below PASSES — and every one of them renders nothing at all.
+    for (const body of ["<", "<!-- nothing at all -->", "<html><body></body></html>", BLANK_PAGE_HTML]) {
+      const server = await serveStatic(() => ({ status: 200, body }));
+      try {
+        const probe = await probeStaticRoot(server.origin, "/index.html", 500, 25);
+        assert.equal(probe.ok, true, `the CURRENT threshold is expected to pass ${JSON.stringify(body.slice(0, 28))}`);
+        assert.equal(probe.bodyBytes, Buffer.byteLength(body, "utf8"));
+      } finally {
+        await server.close();
+      }
+    }
+
+    // The one that matters, stated as numbers so that a future tightening moves a
+    // measured value rather than a mood. See this block's header for the
+    // eight-fixture false-positive measurement and for why the tightening is not
+    // made here: a failed boot probe evaluates NO acceptance criteria, and
+    // `blank-page` is the fixture whose whole job is to prove they fire.
+    assert.equal(Buffer.byteLength(BLANK_PAGE_HTML, "utf8"), 199);
+    assert.ok(!/<script/i.test(BLANK_PAGE_HTML), "nothing in this document can ever put content in that div");
+    assert.match(BLANK_PAGE_HTML, /<body><div id="root"><\/div><\/body>/);
+    const rendered = BLANK_PAGE_HTML.replace(/<head\b[\s\S]*?<\/head>/i, "").replace(/<[^>]*>/g, "").trim();
+    assert.equal(rendered, "", "199 bytes, zero glyphs — and this probe answers ok");
+  });
 });

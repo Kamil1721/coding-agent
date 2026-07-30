@@ -1403,14 +1403,32 @@ export interface StaticRootProbeResult {
 }
 
 /**
- * The static health gate: the root document must answer 200 with a body that is
- * not empty.
+ * The static health gate: the root document must answer 200 with a RESPONSE BODY
+ * that is not whitespace.
  *
  * STRICTER THAN {@link probeHealth} ON PURPOSE, and this is the substance of
  * decision D2 item 3. `probeHealth` accepts anything below 500, which is right
  * for a server whose health endpoint may legitimately 404 or redirect; for a
  * static site the root document IS the deliverable, so a 404, a redirect to
- * nowhere or a zero-byte index.html must fail. A blank page is not a pass.
+ * nowhere or a zero-byte index.html must fail.
+ *
+ * WHAT IT DOES NOT CHECK, stated because the sentence here read "A blank page is
+ * not a pass" until 2026-07-30 and that was false. This is a `fetch`: the body it
+ * measures is HTML SOURCE, and nothing renders it. A one-byte document of `<`
+ * passes, and so does `dashboard/server/calibration/blank-page/index.html` — 199
+ * bytes, `<body><div id="root"></div></body>`, no script anywhere, ZERO rendered
+ * glyphs, which is the fixture named for exactly this failure. A BLANK PAGE IS A
+ * PASS HERE; only an empty or whitespace RESPONSE is not.
+ *
+ * The threshold was deliberately NOT tightened when this was found, and the
+ * reason is measured rather than cautious: a failed boot probe makes
+ * `scorer-container.ts` return early with `origin: null`, which skips routes,
+ * screenshots and the entire frozen suite, so NO acceptance criterion is
+ * evaluated. `blank-page` is the one fixture whose job is to prove those criteria
+ * fire. See the `probeStaticRoot` block in tier0.test.ts for the rule that was
+ * evaluated against all eight calibration fixtures and the numbers it produced.
+ * Rendered emptiness is caught downstream, by the visual gate, which has a
+ * browser.
  */
 export async function probeStaticRoot(
   origin: string,
@@ -1447,7 +1465,8 @@ export async function probeStaticRoot(
           waitedMs: Date.now() - startedAt,
           problem:
             `${origin}${rootDocument} answered HTTP 200 with an empty body (${String(bodyBytes)} byte(s)). ` +
-            "A blank document is not a pass.",
+            "A zero-byte or whitespace-only RESPONSE is not a pass. (This check reads the response " +
+            "body, not a rendered page: see probeStaticRoot's docblock.)",
         };
       }
       lastProblem = `${origin}${rootDocument} answered HTTP ${String(response.status)}, expected 200`;
