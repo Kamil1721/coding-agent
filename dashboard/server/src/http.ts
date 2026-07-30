@@ -15,7 +15,7 @@
  * No CORS header is set anywhere, for the same reason: the only page that may
  * talk to this API is the one this server serves.
  *
- * ROUTES BEYOND THE FROZEN CONTRACT: exactly two, and both are additive.
+ * ROUTES BEYOND THE FROZEN CONTRACT: exactly five, and all five are additive.
  *
  * `GET /api/runs/:id/screenshots/:file` serves a captured screenshot, because
  * `RunDetail.screenshots[].path` is an absolute host path that a browser cannot
@@ -31,6 +31,24 @@
  * orchestrator memory, because `attachSse` replays from durable rows too, and
  * that is the only reason the window between this response and the client's
  * `EventSource(…?lastEventId=atSeq)` is not a race.
+ *
+ * `GET /api/runs/:id/files` serves the code the run produced: the whole
+ * workspace tree with no `?path`, one file's text with it. IT IS THE MOST
+ * DANGEROUS ROUTE IN THIS FILE and every refusal it makes lives in
+ * `code-files.ts`, not here — path shape, realpath containment, the credential
+ * name list, the byte cap and the redaction self-check are one module because
+ * the tree walk and the content read must not be able to disagree about what may
+ * be served. This function does routing and nothing else.
+ *
+ * `GET|POST /api/secrets` and `GET /api/runs/:id/secrets` are the secret intake:
+ * the owner pastes a credential into a form on this machine instead of into a
+ * chat, and this process writes it to a 0600 file outside every run workspace.
+ * THE VALUE TRAVELS IN ONE DIRECTION ONLY. No route returns one, no response
+ * quotes one, and `sendSecretJson` refuses to send a body that contains one.
+ * The POST answers `{ok, name}`; the GETs answer names and presence. Every
+ * refusal is authored in `secret-intake.ts` from the NAME alone, and the JSON
+ * parse failure below deliberately does not use `describeError` — a parse error
+ * quotes the offending text, and here the offending text is the credential.
  */
 
 import { createServer } from "node:http";
@@ -49,16 +67,33 @@ import type {
   RunGraphResponse,
   RunSummary,
 } from "./api-types.js";
+import {
+  isRefusal,
+  readWorkspaceFile,
+  readWorkspaceTree,
+  resolveWorkspacePath,
+} from "./code-files.js";
 import { foldGraphAll } from "./graph.js";
 import type { AuthProbe } from "./auth.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import type { RunRow, RunStore } from "./db.js";
 import { DESIGN_MOCKUP_LABEL, readDesignLock } from "./design-lock.js";
+import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
 import { describeError } from "./orchestrator.js";
 import type { DashboardPaths } from "./paths.js";
 import { runPathsFor, safeSegment } from "./paths.js";
+import {
+  containsStoredSecret,
+  declaredRuntimeMode,
+  putSecret,
+  refuseSecretName,
+  refuseSecretValue,
+  secretIntakeStatus,
+  secretStoreFile,
+} from "./secret-intake.js";
+import type { SecretIntakeStatus } from "./secret-intake.js";
 import { ticketFromText } from "./ticket.js";
 
 /**
@@ -307,6 +342,20 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
     return;
   }
 
+  // GET /api/secrets  |  POST /api/secrets   (additive; see the file header)
+  if (segments.length === 2 && segments[1] === "secrets") {
+    if (method === "GET") {
+      sendSecretStatus(deps, response, secretIntakeStatus({ file: secretStoreFile(deps.paths) }));
+      return;
+    }
+    if (method === "POST") {
+      await putSecretRoute(deps, request, response);
+      return;
+    }
+    sendError(response, 405, "method_not_allowed", `${method} is not allowed on ${path}`, null);
+    return;
+  }
+
   if (segments[1] !== "runs") {
     sendError(response, 404, "not_found", `no route for ${method} ${path}`, null);
     return;
@@ -331,6 +380,25 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
   const row = deps.store.getRun(runId);
   if (row === null) {
     sendError(response, 404, "unknown_run", `no run ${runId}`, "Check the run id in GET /api/runs.");
+    return;
+  }
+
+  // GET /api/runs/:id/secrets  (additive; see the file header)
+  //
+  // THE RUN-SCOPED FORM IS WHERE DETECTION LIVES, because both of its inputs are
+  // per-run: the frozen manifest is keyed by this run's ticket id, and the source
+  // scan needs this run's workspace. The store itself is dashboard-level and the
+  // unscoped route above reports it without either.
+  if (segments.length === 4 && segments[3] === "secrets" && method === "GET") {
+    sendSecretStatus(
+      deps,
+      response,
+      secretIntakeStatus({
+        file: secretStoreFile(deps.paths),
+        runtimeDeclared: declaredRuntimeMode(deps.paths.acceptance, row.ticketId),
+        inferredFrom: runPathsFor(deps.paths, runId).workspace,
+      }),
+    );
     return;
   }
 
@@ -417,6 +485,17 @@ async function handle(deps: HttpDeps, request: IncomingMessage, response: Server
       return;
     }
     sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  // GET /api/runs/:id/files[?path=…]  (additive; see the file header)
+  //
+  // `url.searchParams.get` HAS ALREADY PERCENT-DECODED ONCE, which is why
+  // `?path=%2e%2e%2fx` arrives here as `../x` and is refused on shape. Nothing
+  // below decodes it a second time: that would turn `%252e%252e%252f` into `../`
+  // and hand the caller the traversal the check exists to stop.
+  if (segments.length === 4 && segments[3] === "files" && method === "GET") {
+    serveCode(deps, runId, url.searchParams.get("path"), response);
     return;
   }
 
@@ -524,9 +603,15 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
       409,
       "model_unavailable",
       `${modelId} is not available: ${entry.option.reason ?? "no reason recorded"}`,
-      entry.option.tier === "metered"
-        ? "The dashboard drives only the two subscription CLIs and holds no API key."
-        : "Authenticate the provider's CLI in a terminal, then try again. No API key is required.",
+      // TWO DIFFERENT FIXES, AND ONE OF THEM IS "THERE IS NO FIX". A model whose
+      // provider is not offered at all (Codex, since the owner's 2026-07-28 scope
+      // decision) cannot be authenticated into working, so telling the caller to
+      // log a CLI in would send them after the wrong thing. The old branch here
+      // was `tier === "metered"`, which became unreachable when the Kimi and
+      // DeepSeek rows were removed on 2026-07-30.
+      isOfferedProvider(entry.option.provider)
+        ? "Authenticate the provider's CLI in a terminal, then try again. No API key is required."
+        : "Pick a Claude model. GET /api/models lists every id that can actually run.",
     );
     return;
   }
@@ -566,6 +651,183 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
 
   const body2: CreateRunResponse = { runId };
   sendJson(response, 201, body2);
+}
+
+/* -------------------------------------------------------------------------
+ * The secret intake
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Send an intake status, or refuse to send anything at all.
+ *
+ * THE GUARD IS THE POINT OF THIS FUNCTION. `SecretIntakeStatus` has no value
+ * field, so this can only fire if a future edit puts one there or smuggles a
+ * value into a `why` string — which is exactly the regression worth catching, and
+ * catching it as a 500 the owner sees beats shipping the value to a page that
+ * will be screenshotted. It is a last line, not the mechanism: the mechanism is
+ * that no code path reads a value on the way to this type.
+ *
+ * IT IS DELIBERATELY NOT IN `sendJson`. Applying it to every response in this
+ * file would mean a synchronous read of the store on every poll of every route,
+ * and the alternative — caching the values in the server heap to avoid the read —
+ * keeps credentials in memory between requests for the sake of a check. So the
+ * guard sits on the two routes that could plausibly grow one, and every OTHER
+ * path's protection is that it never holds a value: the store is outside the
+ * workspace, so `code-files.ts` cannot serve it, and `redactForPersistence`
+ * covers the database and the event stream (with the coverage limit measured in
+ * `secret-intake.test.ts`).
+ */
+function sendSecretJson(deps: HttpDeps, response: ServerResponse, status: number, body: unknown): void {
+  if (containsStoredSecret(JSON.stringify(body), secretStoreFile(deps.paths))) {
+    sendError(
+      response,
+      500,
+      "secret_value_in_response",
+      "refusing to send this response: it contains a stored credential value",
+      "This is a defect in the dashboard, not in your request. The secret intake never returns a " +
+        "value; report this.",
+    );
+    return;
+  }
+  sendJson(response, status, body);
+}
+
+/** The GET shape, through the guard above. */
+function sendSecretStatus(deps: HttpDeps, response: ServerResponse, status: SecretIntakeStatus): void {
+  sendSecretJson(deps, response, 200, status);
+}
+
+/**
+ * Hosts an `Origin` may name on a write to the intake.
+ *
+ * WHY A WRITE NEEDS THIS AND A READ DOES NOT. The read cannot leak a value —
+ * there is none in the response — but a write from a page the owner did not open
+ * could REPLACE their real credential with an attacker's while looking like a
+ * success. The server sets no CORS header, so a cross-site `fetch` can never
+ * read the reply; what it can still do, without a preflight, is a
+ * `text/plain`/form-encoded POST. Hence two refusals below: a non-JSON
+ * content-type, and an `Origin` that is present and is not loopback. An ABSENT
+ * `Origin` is allowed, because `curl` and a cron tick send none and a browser
+ * always sends one on a POST.
+ */
+function originIsDashboard(origin: string | undefined): boolean {
+  if (origin === undefined || origin.length === 0) return true;
+  try {
+    return DASHBOARD_ORIGIN_HOSTS.includes(new URL(origin).hostname);
+  } catch {
+    // Includes the literal "null" a sandboxed iframe or a file:// page sends.
+    return false;
+  }
+}
+
+/**
+ * Store one credential.
+ *
+ * THE RESPONSE CARRIES THE NAME AND NEVER THE VALUE — not echoed, not masked,
+ * not measured. Nothing in this function logs, and the value is not interpolated
+ * into any error: every refusal it can produce is authored in
+ * `secret-intake.ts` from the NAME alone.
+ */
+async function putSecretRoute(deps: HttpDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  if (!originIsDashboard(request.headers.origin)) {
+    sendError(
+      response,
+      403,
+      "cross_origin_write",
+      "a credential may only be stored from the dashboard's own page",
+      "Open the dashboard on 127.0.0.1 and use the form there. A write from another origin could " +
+        "replace your credential with someone else's and look like a success.",
+    );
+    return;
+  }
+  const contentType = (request.headers["content-type"] ?? "").toLowerCase();
+  if (!contentType.startsWith("application/json")) {
+    sendError(
+      response,
+      415,
+      "unsupported_media_type",
+      "POST a JSON body with Content-Type: application/json",
+      "A form-encoded or text/plain POST is not preflighted by a browser, so it is the one shape a " +
+        "page from another origin could send. It is refused here.",
+    );
+    return;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await readBody(request));
+  } catch {
+    // describeError is NOT used here: a JSON parse error quotes the offending
+    // text, and the offending text is the credential.
+    sendError(response, 400, "invalid_body", "the body is not valid JSON", "POST {\"name\":\"…\",\"value\":\"…\"}.");
+    return;
+  }
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    sendError(response, 400, "invalid_body", "the body must be a JSON object", null);
+    return;
+  }
+  const body = payload as Record<string, unknown>;
+  const nameRefusal = refuseSecretName(body["name"]);
+  if (nameRefusal !== null) {
+    sendError(response, 400, nameRefusal.code, nameRefusal.message, nameRefusal.remediation);
+    return;
+  }
+  const valueRefusal = refuseSecretValue(body["value"]);
+  if (valueRefusal !== null) {
+    sendError(response, 400, valueRefusal.code, valueRefusal.message, valueRefusal.remediation);
+    return;
+  }
+
+  const name = body["name"] as string;
+  const file = secretStoreFile(deps.paths);
+  putSecret(file, name, body["value"] as string);
+  // THE NAME AND A BOOLEAN. Not the value, not a masked form of it, not its
+  // length — `redact.ts` says a partial is still a leak and nothing here emits a
+  // prefix, a suffix, a last-4 or a length. The client re-reads GET /api/secrets
+  // for the rest; that response has no value field either.
+  sendSecretJson(deps, response, 200, { ok: true, name });
+}
+
+/**
+ * Serve the run's workspace: the tree, or one file.
+ *
+ * ROUTING ONLY. Every decision about what may be served is `code-files.ts`'s,
+ * and both branches below go through it — the tree walk and the content read
+ * call the SAME `denyReason`, so there is no spelling of `?path` that reaches a
+ * file the sidebar was built to hide.
+ *
+ * `runPathsFor` is what maps the run id to a directory, and it applies
+ * `safeSegment` to the id exactly as every other per-run path does. The relative
+ * path is NOT passed through `safeSegment`: that function mangles rather than
+ * rejects, and turning `../../x` into the filename `.._.._x` produces a 404 for
+ * the wrong reason while corrupting every legitimate path that contains a
+ * separator.
+ */
+function serveCode(deps: HttpDeps, runId: string, rawPath: string | null, response: ServerResponse): void {
+  const workspace = runPathsFor(deps.paths, runId).workspace;
+
+  if (rawPath === null) {
+    const tree = readWorkspaceTree(workspace, runId);
+    if (isRefusal(tree)) {
+      sendError(response, tree.status, tree.code, tree.message, tree.remediation);
+      return;
+    }
+    sendJson(response, 200, tree);
+    return;
+  }
+
+  const resolved = resolveWorkspacePath(workspace, rawPath);
+  if (!resolved.ok) {
+    const { status, code, message, remediation } = resolved.refusal;
+    sendError(response, status, code, message, remediation);
+    return;
+  }
+  const file = readWorkspaceFile(resolved.target, rawPath, runId);
+  if (isRefusal(file)) {
+    sendError(response, file.status, file.code, file.message, file.remediation);
+    return;
+  }
+  sendJson(response, 200, file);
 }
 
 /**

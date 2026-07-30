@@ -45,7 +45,6 @@
  */
 
 import { BakeoffError } from "bakeoff/dist/contracts.js";
-import type { Provider } from "bakeoff/dist/contracts.js";
 import type {
   ApiMeteredSpend,
   ApiPricingBasis,
@@ -64,7 +63,17 @@ export interface ModelTokens extends ApiTokens {
 }
 
 export interface TokenTotals extends ApiTokens {
-  readonly provider: Provider;
+  /**
+   * THE DASHBOARD'S OWN VENDOR NAMESPACE, NOT THE BAKE-OFF'S. This was
+   * `Provider` from `bakeoff/dist/contracts.js` — four vendors — until
+   * 2026-07-30, and `toSeatSpend` below assigns it straight into
+   * `ApiSeatSpend.provider`, so the wide type was the one place a `"moonshot"`
+   * could still have reached this package's wire contract. It cannot: this
+   * dashboard holds no API key and spawns only subscription CLIs, so the only
+   * vendors its token accounting can ever see are the two named by `ApiProvider`.
+   * The bake-off keeps all four, correctly, and is a separate program.
+   */
+  readonly provider: ApiProvider;
   /** Number of model calls (or turns) aggregated into this row. */
   readonly callCount: number;
   /** Per-model split of the four counts above. */
@@ -88,7 +97,7 @@ export function unattributedTokens(totals: TokenTotals): ApiTokens {
   };
 }
 
-export function zeroTokens(provider: Provider): TokenTotals {
+export function zeroTokens(provider: ApiProvider): TokenTotals {
   return {
     provider,
     inputTokens: 0,

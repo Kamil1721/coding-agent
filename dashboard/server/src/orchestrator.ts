@@ -42,7 +42,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -52,6 +52,7 @@ import {
   TOKEN_ACCOUNTING_RULE,
 } from "bakeoff/dist/contracts.js";
 import type {
+  AcceptanceGate,
   AcceptanceSuite,
   AnthropicSeat,
   BudgetPolicy,
@@ -74,6 +75,21 @@ import {
   resolveHarnessIdentity,
 } from "bakeoff/dist/spec-agent.js";
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
+import {
+  ADVERSARY_AGENT,
+  adversaryRecord,
+  parseAdversaryFindings,
+  parseAgentDenylist,
+  runAdversaryLane,
+  summariseAdversary,
+  withAdversaryFindings,
+} from "./adversary.js";
+import type {
+  AdversaryCall,
+  AdversaryFinding,
+  AdversaryLaneResult,
+  AdversarySpawnResult,
+} from "./adversary.js";
 import { DELIVERY_LANES, shortlistFor } from "./agent-shortlist.js";
 import { writeBacklog } from "./backlog.js";
 import type { BacklogInput } from "./backlog.js";
@@ -133,7 +149,7 @@ import type { AuthProbe } from "./auth.js";
 import { truncate } from "./claude-common.js";
 import type { RateLimitState } from "./claude-common.js";
 import { dashboardBuilderPrompt, resumeBuilderPrompt } from "./build-prompt.js";
-import { ClaudeSubscriptionBuilder } from "./builders/claude-builder.js";
+import { canonicaliseForDecision, ClaudeSubscriptionBuilder } from "./builders/claude-builder.js";
 import { CodexSubscriptionBuilder } from "./builders/codex-builder.js";
 import type { BuildEventSink, BuildOutcome, SubscriptionBuilder } from "./builders/types.js";
 import type { RunRow, RunStore } from "./db.js";
@@ -223,7 +239,49 @@ export interface OrchestratorDeps {
    */
   readonly designRun?: CommandRunner;
   readonly designCanWrite?: (dir: string) => boolean;
+  /**
+   * How the human-factors adversary pass is actually spawned. Defaulted to the
+   * real one (`#spawnAdversaryWithBuilder`).
+   *
+   * INJECTED BECAUSE THE REAL ONE POINTS A SUBSCRIPTION AGENT AT A LIVE APP. Every
+   * test in this repository that drove it for real would spend the owner's quota
+   * and attack a running preview, so the SEQUENCING — does the lane spawn on a run
+   * that qualifies, and does it stay silent on one that does not — is only
+   * observable through this seam. The live arm is therefore untested by design and
+   * said so in `adversary.ts`'s header rather than implied to work.
+   */
+  readonly spawnAdversary?: AdversarySpawner;
+  /**
+   * How the sealed gate is constructed. Defaulted to bakeoff's own `createGate`,
+   * which is the only thing production ever uses.
+   *
+   * WHY THE SEAM EXISTS AT ALL, STATED PLAINLY BECAUSE IT LOOKS LIKE A HOLE IN
+   * THE SEAL. `createGate` resolves a container image digest from the docker
+   * daemon before it will score anything, so a test machine with no docker — every
+   * test in this suite runs with an EMPTY `PATH` on purpose — cannot get a
+   * `ScoreRecord` at all. `#execute` returns early when `scored.record === null`,
+   * so WITHOUT this seam the phases after the gate (`#maybePreview`,
+   * `#adversaryPhase`) are unreachable from any test, and "does the adversary lane
+   * spawn on a run that qualifies" becomes a question only a live metered run
+   * could answer. That is exactly the shape of gap this repository keeps shipping.
+   *
+   * WHAT IT DOES NOT WEAKEN. Nothing in production passes it; `heldOutPass` still
+   * comes from the sealed container, the suite is still verified intact before the
+   * build, and a gate handed in here cannot reach the frozen suite store — it is
+   * given the same `gateEnv` the real one is. The bake-off CLI already treats this
+   * as a legitimate seam ("swapping it for a different gate is a visible act on
+   * the command line", bakeoff/src/gate.ts) and this is the in-process spelling of
+   * the same act.
+   */
+  readonly makeGate?: (env: NodeJS.ProcessEnv) => Promise<AcceptanceGate>;
 }
+
+/** The one thing `#adversaryPhase` cannot do without spending money. */
+export type AdversarySpawner = (input: {
+  readonly runId: string;
+  readonly call: AdversaryCall;
+  readonly signal: AbortSignal;
+}) => Promise<AdversarySpawnResult>;
 
 /**
  * What the build phase came back with.
@@ -708,6 +766,15 @@ export class Orchestrator {
       }
 
       await this.#maybePreview(runId, runPaths);
+      // ---- PHASE 5: the human-factors adversary (`/debugfix --web --max`) ----
+      //
+      // HERE AND NOWHERE EARLIER, for one mechanical reason: `#maybePreview` on
+      // the line above is where a `previewUrl` first exists, and a pass with no
+      // URL to attack is a lane that spends turns and reports nothing. It is also
+      // after the gate on purpose — the artefact it attacks is the one that was
+      // scored, and its findings are QUALITY tier, so they must not reach
+      // anything `isGreen` reads.
+      await this.#adversaryPhase(runId, ticket, runPaths, loop.result, signal);
       this.#setPhase(runId, "done");
       const passed = scored.record.heldOutPass;
       this.#finish(runId, passed ? "passed" : "failed", {
@@ -1885,7 +1952,7 @@ export class Orchestrator {
 
     let record: ScoreRecord;
     try {
-      const gate = await createGate(gateEnv(this.#deps.paths, this.#deps.env));
+      const gate = await (this.#deps.makeGate ?? createGate)(gateEnv(this.#deps.paths, this.#deps.env));
       record = await gate.score(runRecord, suite);
       this.#archiveAttempt(runId, slot);
     } catch (error) {
@@ -2099,6 +2166,290 @@ export class Orchestrator {
           `${finding.criterionId === null ? "" : ` ${finding.criterionId}`}: ${finding.detail}` +
           `${finding.evidence.length === 0 ? "" : ` — ${finding.evidence}`}`,
       );
+    }
+  }
+
+  /* ---- phase 5: the human-factors adversary ---------------------------- */
+
+  /**
+   * `/debugfix --web --max`'s adversarial phase, as a lane — the command itself
+   * declares `disable-model-invocation: true` and a subagent cannot invoke a slash
+   * command at all, so what runs is its PROCEDURE, compiled here.
+   *
+   * IT NEVER BLOCKS, AND THAT IS MECHANICAL RATHER THAN INTENDED. This method is
+   * reached AFTER the gate/fix loop has stopped and after `scored.record` was
+   * found non-null; it writes no status, no `heldOutPass` and no `failureReason`,
+   * and the only report it folds findings into is the BACKLOG. The owner's
+   * standing decision for the visual gate applies verbatim: subjective judgement
+   * informs a run, it does not false-fail one.
+   *
+   * IT IS ALSO ALLOWED TO FAIL. Everything here is the record of a run that has
+   * already produced its verdict, so every failure path logs and continues — a
+   * pass that cannot spawn must not turn a passed run into a harness fault.
+   */
+  async #adversaryPhase(
+    runId: string,
+    ticket: Ticket,
+    runPaths: RunPaths,
+    loop: GateFixLoopResult,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const surface = classifySurface(ticket.brief);
+    const previewUrl = this.#deps.store.getRun(runId)?.previewUrl ?? null;
+    // A SIBLING OF THE ARTEFACT, NEVER INSIDE IT. This is the session's `cwd`, so
+    // `buildOptions` scopes the CLI sandbox's `allowWrite` and the workspace-write
+    // guard to it — which is what makes the pass unable to edit the thing it is
+    // judging. `adversaryRefusal` re-checks the isolation through
+    // `canonicaliseForDecision` (the same resolver those two layers use) and
+    // refuses to spawn if this is ever pointed at the workspace.
+    const scratchDir = join(runPaths.results, "adversary-scratch");
+
+    // THE CANVAS NODE IS EMITTED BEFORE THE LANE RUNS, unconditionally, and both
+    // halves of that matter. BEFORE, because `foldGraph` DROPS any event naming a
+    // node it has not seen (`graph.ts:180-183`) — the session's own remapped tool
+    // pills arrive during the spawn, so a node announced afterwards would lose
+    // them. UNCONDITIONALLY, because "the pass was considered and did not apply"
+    // is a fact about the run, and a canvas that shows nothing cannot be told
+    // apart from a build of this program that never had this lane.
+    const priorGraph = this.#deps.store
+      .eventsSince(runId, 0)
+      .map((stored) => stored.event)
+      .filter((event): event is GraphSseEvent => event.type.startsWith("graph_"));
+    const base = graphResumeState(priorGraph);
+    const node = `n${String(base.minted + 1)}`;
+    this.#emit(runId, {
+      type: "graph_agent",
+      node,
+      // PARENTLESS, AND NOT PARENTED ONTO THE BUILD'S ROOT. This is a separate
+      // session that the HARNESS started, not an agent the builder delegated to,
+      // and an edge from the build root would be a claim no message made.
+      parent: null,
+      agent: ADVERSARY_AGENT,
+      lane: "review",
+      description: "the /debugfix --web --max human-factors pass — read-only, non-gating",
+      ambient: false,
+      attribution: "exact",
+      sdk: null,
+    });
+
+    const result = await runAdversaryLane({
+      surface,
+      previewUrl,
+      scratchDir,
+      artefactDir: runPaths.workspace,
+      agentDenylist: () => this.#adversaryAgentDenylist(),
+      canonicalise: canonicaliseForDecision,
+      spawn: (call, spawnSignal) =>
+        (this.#deps.spawnAdversary ?? ((input) => this.#spawnAdversaryWithBuilder(input, node)))({
+          runId,
+          call,
+          signal: spawnSignal,
+        }),
+      log: (level, text) => this.#emitLog(runId, level, text),
+      signal,
+    });
+
+    this.#emit(runId, {
+      type: "graph_result",
+      node,
+      // `stopped`, NEVER `failed`, for a refusal. A lane that declined to run
+      // because the run has no browsable preview did not fail, and this codebase
+      // refuses that conflation everywhere else (`heldOutPass: null` is not
+      // `false`).
+      state: result.stop === "ran" ? "completed" : "stopped",
+      summary: summariseAdversary(result),
+      totalTokens: null,
+      toolUses: null,
+      durationMs: null,
+      attribution: "exact",
+    });
+
+    for (const finding of result.findings) {
+      this.#emitLog(
+        runId,
+        finding.severity === "CRITICAL" || finding.severity === "HIGH" ? "warn" : "info",
+        `adversary finding [${finding.severity}/${finding.klass}] ${finding.summary}` +
+          `${finding.detail === undefined || finding.detail.length === 0 ? "" : ` — ${finding.detail}`}`,
+      );
+    }
+
+    this.#recordAdversary(runId, runPaths, result, surface, previewUrl);
+
+    // THE BACKLOG, REWRITTEN AS A STRICT SUPERSET. `#gateFixLoop` already wrote it
+    // with this loop's reason, attempts and unmet counts; this write repeats all
+    // three unchanged and appends the findings as remaining work, because the
+    // backlog is the file the owner opens the morning after and a finding only in
+    // a log line is a finding nobody reads. `withAdversaryFindings` copies
+    // `heldOutUnmet` untouched — that is the sealed verdict and this pass is not a
+    // second grader.
+    if (result.findings.length > 0) {
+      this.#recordBacklog(runId, runPaths, {
+        reason: loop.reason,
+        attempts: loop.attempts,
+        remaining: withAdversaryFindings(loop.report, result.findings).failures,
+        heldOutUnmet: loop.report.heldOutUnmet,
+        denied: loop.deniedTasks,
+        infraFailure: loop.report.infraFailure,
+      });
+    }
+  }
+
+  /**
+   * The agent file's own `disallowedTools:`, read at the call site.
+   *
+   * THE FILE IS THE MECHANISM ON THE DELEGATED ROUTE, so it is read on every pass
+   * rather than trusted once: `ADVERSARY_DISALLOWED_TOOLS` is a mirror of it, and
+   * a mirror drifts. An unreadable or denylist-free file makes
+   * `adversaryRefusal` refuse the pass outright (/debugfix §0.4).
+   */
+  #adversaryAgentDenylist(): readonly string[] | null {
+    const path = join(this.#deps.env["HOME"] ?? homedir(), ".claude", "agents", `${ADVERSARY_AGENT}.md`);
+    try {
+      return parseAgentDenylist(readFileSync(path, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The real spawn: one fresh subscription session whose only permitted delegation
+   * is the adversary.
+   *
+   * A FRESH SESSION, NOT THE BUILDER'S. `resumeSessionId` is null and
+   * `builderSessionId` is deliberately NOT written by this sink — /debugfix §5
+   * requires the adversary to run "in its own context (must NOT read the
+   * implementation first)", and resuming the build's session would hand it the
+   * whole tree it is supposed to attack blind. Writing the row's session id would
+   * be worse than useless: `resume` would then continue the ADVERSARY's session
+   * instead of the build's.
+   *
+   * THE ARTEFACT IS OUT OF REACH BY CONSTRUCTION, not by instruction. `workspace`
+   * is the scratch directory, so `buildOptions` sets `cwd` there and scopes both
+   * write layers to it; the sealed roots are still named so the held-out titles
+   * stay unreadable to a pass that has no business with them.
+   *
+   * THE FINDINGS COME BACK THROUGH A FILE because `BuildOutcome` has no field for
+   * them and the adversary has no Write tool to leave one — the SESSION writes it.
+   * Whether a live session complies is UNTESTED here (no test spends quota), so
+   * an absent file is recorded as "left no report", which is not the same
+   * statement as "found nothing".
+   */
+  async #spawnAdversaryWithBuilder(
+    input: { readonly runId: string; readonly call: AdversaryCall; readonly signal: AbortSignal },
+    node: string,
+  ): Promise<AdversarySpawnResult> {
+    const { runId, call } = input;
+    const row = this.#deps.store.getRun(runId);
+    if (row === null) return { findings: [], failure: "the run row is gone" };
+    const entry = await this.#deps.catalog.resolve(row.modelId);
+    if (entry === null || !entry.option.available) {
+      return { findings: [], failure: "no model is available to run the adversary pass" };
+    }
+    // ANTHROPIC ONLY, AND IT IS THE DELEGATION BOUNDARY THAT DECIDES. `allowedAgents`
+    // is enforced in the Anthropic driver's PreToolUse hook and the Codex driver
+    // "ignores this field completely" (builders/types.ts) — so on Codex this pass
+    // would be an unbounded session with no delegation boundary, attacking a live
+    // app. There is also no `human-factors-adversary` for it to reach.
+    if (entry.option.provider !== "anthropic") {
+      return {
+        findings: [],
+        failure:
+          `the adversary pass is not run on ${entry.option.provider}: its driver ignores allowedAgents, ` +
+          "so the delegation boundary this pass depends on would not exist",
+      };
+    }
+
+    mkdirSync(call.scratchDir, { recursive: true });
+    // ONE REMAP, ROOTED ON THE NODE ALREADY ANNOUNCED. This is a second session, so
+    // `GraphProjection` mints from `n1` again; without the remap its `graph_agent`
+    // for `n1` collides with the build's and every later pill attaches to the
+    // BUILD's first agent (`build-segment.ts` documents the same failure at the
+    // resume seam). `rootNode: node` maps this session's own parentless root onto
+    // the node emitted above — `foldGraph` ignores the duplicate — and its
+    // delegated child mints fresh ids above the run's high-water mark.
+    const remap = makeSegmentRemap({ rootNode: node, minted: Number.parseInt(node.slice(1), 10) });
+    const carried = row.tokens;
+
+    const outcome = await this.#builderFor(entry.option.provider).build({
+      runId,
+      prompt: call.sessionPrompt,
+      workspace: call.scratchDir,
+      sealedRoots: [this.#deps.paths.acceptance, scorerOutRoot(this.#deps.paths), scoresRoot(this.#deps.paths)],
+      allowedAgents: call.allowedAgents,
+      modelId: row.modelId,
+      effort: entry.effort,
+      resumeSessionId: null,
+      signal: input.signal,
+      sink: {
+        log: (level, text) => this.#emitLog(runId, level, text),
+        tool: (name, summary) => this.#emit(runId, { type: "tool", name, summary }),
+        tokens: (totals) => {
+          const merged = mergeTokenTotals(carried, toApiTokens(totals));
+          this.#deps.store.updateRun(runId, { tokens: merged });
+          this.#emit(runId, { type: "tokens", ...merged });
+        },
+        rateLimit: (state) => this.#noteRateLimit(runId, state),
+        // DELIBERATELY NOT `store.updateRun({builderSessionId})` — see the docblock.
+        session: () => undefined,
+        environment: () => undefined,
+        contextUsage: () => undefined,
+        compaction: () => undefined,
+        graph: (event) => this.#emit(runId, remap(event)),
+        // The build log is closed by the time this phase runs, so this session's
+        // raw JSONL is not persisted. Its curated lines are events on the run and
+        // its findings are the report file; said here rather than left as a
+        // surprising gap in `build.log`.
+        raw: () => undefined,
+      },
+      env: this.#deps.env,
+    });
+
+    if (outcome.tokens.callCount > 0) {
+      this.#emitLog(runId, "info", `${ADVERSARY_AGENT} — ${describeTokens(outcome.tokens)}`);
+    }
+
+    let findings: readonly AdversaryFinding[] = [];
+    let reportWritten = false;
+    let readFailure: string | null = null;
+    try {
+      if (existsSync(call.findingsPath)) {
+        reportWritten = true;
+        findings = parseAdversaryFindings(readFileSync(call.findingsPath, "utf8"));
+      } else {
+        readFailure = "the session left no report file, so this run recorded no findings";
+      }
+    } catch (error) {
+      readFailure = `the report file could not be read: ${describeError(error)}`;
+    }
+    return { findings, reportWritten, failure: outcome.failure ?? readFailure };
+  }
+
+  /**
+   * `adversary.json`, written whether the pass ran or not.
+   *
+   * A MISSING FILE CANNOT BE TOLD APART FROM A STEP THAT NEVER RAN — the same
+   * reason `#recordBacklog` writes on every exit — so a refusal gets a record
+   * naming its reason. A failure to write it is logged and swallowed: this is the
+   * record of a run that has already produced its verdict.
+   */
+  #recordAdversary(
+    runId: string,
+    runPaths: RunPaths,
+    result: AdversaryLaneResult,
+    surface: ReturnType<typeof classifySurface>,
+    previewUrl: string | null,
+  ): void {
+    const record = adversaryRecord({ result, surface, previewUrl });
+    try {
+      const path = join(runPaths.results, "adversary.json");
+      writeFileSync(path, `${JSON.stringify(redactForPersistence(record), null, 2)}\n`, "utf8");
+      this.#emitLog(
+        runId,
+        "info",
+        `the human-factors adversary pass is recorded in ${path} (QUALITY tier — it never fails a run)`,
+      );
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the adversary record could not be written: ${describeError(error)}`);
     }
   }
 

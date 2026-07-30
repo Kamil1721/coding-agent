@@ -292,7 +292,12 @@ const RUN_STATUSES: readonly ApiRunStatus[] = [
   "cancelled",
 ];
 const PHASES: readonly ApiPhase[] = ["spec", "build", "gate", "judge", "done"];
-const PROVIDERS: readonly ApiProvider[] = ["anthropic", "openai", "moonshot", "deepseek"];
+// "moonshot" and "deepseek" left this list on 2026-07-30 with the model rows the
+// owner removed. Nothing in this store can hold either: `POST /api/runs` refused
+// every metered id with 409 for as long as they existed, so no run row was ever
+// written with one, and `seat_spend.provider` comes from `TokenTotals`, whose
+// vendor is only ever "anthropic" or "openai".
+const PROVIDERS: readonly ApiProvider[] = ["anthropic", "openai"];
 const TIERS: readonly ApiCriterionTier[] = ["BLOCKING", "FUNCTIONAL", "QUALITY"];
 const CRITERION_RESULTS: readonly ApiCriterionResult[] = ["pass", "fail", "pending"];
 /**

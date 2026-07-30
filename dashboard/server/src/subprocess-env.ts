@@ -67,6 +67,55 @@ export function subscriptionSubprocessEnv(env: NodeJS.ProcessEnv): NodeJS.Proces
 }
 
 /**
+ * The environment for a subprocess that is NOT an agent and DOES need the
+ * owner's project credentials: the preview/start process that serves a SERVER
+ * artefact on this machine.
+ *
+ * WHY THIS IS A SEPARATE FUNCTION AND NOT A PARAMETER ON THE ONE ABOVE.
+ * `subscriptionSubprocessEnv` is the environment of the BUILDER, the SPEC seat
+ * and the JUDGE seat (`orchestrator.ts:766`, `:777`, `:1217`). All three are LLM
+ * agents; the builder has Bash. A value in their environment is one `env` away
+ * from a transcript, and that transcript's redaction pass knows four provider
+ * variable names by default (`redact.ts:218-223`) and is called with no options
+ * everywhere in this package — so an intake secret would be covered by the shape
+ * rules alone. Giving the value to an agent is therefore a decision with a
+ * measured leak surface, and this program does not make it: agents get NAMES
+ * (`secretsForBuildPrompt`), and this function is for the process that actually
+ * has to authenticate.
+ *
+ * THE SUBTRACTION STILL RUNS FIRST, AND THE INJECTION MAY NOT UNDO IT. Every
+ * name in {@link STRIPPED_ENV_NAMES} is refused here rather than overwritten,
+ * because the whole point of that list is that a metered credential never reaches
+ * a subprocess this program spawns; a caller re-adding one after the subtraction
+ * would silently bill the owner per token while `costUsd` stays null. The intake
+ * refuses those names too — this is the second of the two checks, deliberately,
+ * because the first one lives behind an HTTP route and this one cannot be reached
+ * without a compile.
+ *
+ * NOT WIRED BY THIS PHASE. The caller would be `preview.ts`, which this phase
+ * does not own. Until it calls this, a SERVER artefact does not receive the
+ * value at run time and the store is write-only in practice.
+ */
+export function runtimeSubprocessEnv(
+  env: NodeJS.ProcessEnv,
+  secrets: Readonly<Record<string, string>>,
+): NodeJS.ProcessEnv {
+  const out = subscriptionSubprocessEnv(env);
+  for (const [name, value] of Object.entries(secrets)) {
+    if (STRIPPED_ENV_NAMES.includes(name)) {
+      throw new Error(
+        `refusing to inject ${name}: it is stripped from every subprocess environment on purpose. ` +
+          "Injection happens after that subtraction, so re-adding it here would send a metered " +
+          "credential to a CLI that is already logged in to a subscription, and the run would be " +
+          "billed per token while the dashboard reported costUsd: null.",
+      );
+    }
+    out[name] = value;
+  }
+  return out;
+}
+
+/**
  * The same thing as `Record<string, string>`, which is what the Codex SDK's
  * `CodexOptions.env` requires. Undefined values are dropped rather than
  * stringified: `String(undefined)` in an environment variable is a value, and a

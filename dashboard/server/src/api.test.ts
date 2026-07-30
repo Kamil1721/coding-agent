@@ -169,15 +169,65 @@ test("GET /api/models is truthful about what can actually run", async () => {
     assert.equal(opus.available, true);
     assert.equal(opus.reason, null);
 
-    const codex = byId.get(CODEX_DEFAULT_MODEL_ID);
-    assert.ok(codex !== undefined);
-    assert.equal(codex.available, false, "codex login status said Not logged in");
-    assert.match(codex.reason ?? "", /codex login/);
+    // THE WHOLE LIST, BY ID. Asserted as a set rather than by probing for rows
+    // that should be present: every check below this line about what is ABSENT is
+    // a check that passes when nothing is there, and the only way to make those
+    // fail for the right reason is to pin what IS there.
+    assert.deepEqual(
+      models.map((model) => model.id).sort(),
+      ["haiku", "opus[1m]"],
+      "the offered catalog is the CLI's Anthropic rows and nothing else",
+    );
 
-    for (const metered of models.filter((model) => model.tier === "metered")) {
-      assert.equal(metered.available, false, `${metered.id} needs an API key the dashboard does not hold`);
-      assert.match(metered.reason ?? "", /API key/);
+    // CLAUDE ONLY — owner, 2026-07-30. These three are positive assertions on
+    // purpose. The version of this test before the removal said
+    // `for (const metered of models.filter(...))` and would have gone on passing
+    // over an empty array, reporting nothing about a catalog that no longer had a
+    // metered row in it.
+    assert.equal(
+      models.filter((model) => model.tier === "metered").length,
+      0,
+      "the owner removed the metered vendors: no served row carries that tier",
+    );
+    assert.equal(
+      models.filter((model) => model.provider !== "anthropic").length,
+      0,
+      "Claude only: every offered row is an Anthropic row",
+    );
+    assert.equal(
+      byId.has(CODEX_DEFAULT_MODEL_ID),
+      false,
+      "Codex is scoped out (spec section 14) and must not be offered, even though it still resolves",
+    );
+    for (const gone of ["kimi-k3", "deepseek-v4-pro"]) {
+      assert.equal(byId.has(gone), false, `${gone} was removed by the owner on 2026-07-30`);
     }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the Codex row still RESOLVES, and says it is out of scope rather than unauthenticated", async () => {
+  const harness = await startHarness(true);
+  try {
+    // Not offered by `/api/models` (asserted above) but still resolvable, so a
+    // stale caller — cron, curl, a bookmarked script — gets 409 and the reason
+    // instead of 400 "unknown model", which would read as a typo.
+    const response = await fetch(`${harness.base}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticketText: "anything", modelId: CODEX_DEFAULT_MODEL_ID }),
+    });
+    assert.equal(response.status, 409, "resolvable, therefore not unknown_model");
+    const body = (await response.json()) as Record<string, unknown>;
+    assert.equal(body["error"], "model_unavailable");
+    assert.match(String(body["message"]), /scoped the Codex provider out/);
+    assert.doesNotMatch(
+      String(body["remediation"]),
+      /Authenticate/,
+      "no login fixes a scope decision; sending the owner to `codex login` would be a wrong instruction",
+    );
+    assert.match(String(body["remediation"]), /Pick a Claude model/);
   } finally {
     await harness.close();
   }
@@ -187,10 +237,23 @@ test("every model is unavailable, with a reason, when the CLI is not logged in",
   const harness = await startHarness(false);
   try {
     const models = (await (await fetch(`${harness.base}/api/models`)).json()) as ModelOption[];
-    assert.ok(models.length > 0, "the list must not be empty: the UI needs something to explain");
+    // THE EXACT ROW, NOT A COUNT. `length > 0` plus a loop was the old shape here
+    // and it is the weaker one twice over: it passes on a one-row list that says
+    // nothing useful, and after the Claude-only removal it would also pass on a
+    // list that had lost the row this test exists to check.
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["default"],
+      "with no CLI login there is no model list to ask for, so the catalog falls back to one row",
+    );
     for (const model of models) {
       assert.equal(model.available, false);
       assert.ok((model.reason ?? "").length > 0, `${model.id} must say why`);
+      assert.match(
+        model.reason ?? "",
+        /claude/i,
+        "the reason has to name the CLI to log in to, since that is the fix",
+      );
     }
     const health = (await (await fetch(`${harness.base}/api/health`)).json()) as Record<string, unknown>;
     assert.equal(health["claudeAuth"], "missing");
@@ -236,17 +299,40 @@ test("POST /api/runs creates a queued run; costUsd is null and heldOutPass undet
 });
 
 test("POST /api/runs refuses an unavailable model rather than queueing work that cannot run", async () => {
-  const harness = await startHarness(true);
+  // 409 NEEDS A MODEL THAT IS OFFERED BUT CANNOT RUN. Before 2026-07-30 that was
+  // `kimi-k3`, which was permanently unavailable; with the metered rows gone the
+  // only remaining case is a Claude row with the CLI logged out, so this arm now
+  // runs on the logged-out harness. Losing the arm entirely would have left the
+  // 409 branch of `http.ts` unexercised.
+  const loggedOut = await startHarness(false);
   try {
-    const response = await fetch(`${harness.base}/api/runs`, {
+    const response = await fetch(`${loggedOut.base}/api/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticketText: "anything", modelId: "kimi-k3" }),
+      body: JSON.stringify({ ticketText: "anything", modelId: "default" }),
     });
     assert.equal(response.status, 409);
     const body = (await response.json()) as Record<string, unknown>;
     assert.equal(body["error"], "model_unavailable");
-    assert.match(String(body["remediation"]), /no API key/);
+    assert.match(String(body["remediation"]), /Authenticate the provider's CLI/);
+    assert.equal(loggedOut.calls.pump, 0, "a refused model must not advance the queue");
+  } finally {
+    await loggedOut.close();
+  }
+
+  const harness = await startHarness(true);
+  try {
+    // THE REMOVED IDS ARE NOW UNKNOWN, NOT DISABLED. This is the assertion that
+    // proves the removal reached the resolver and not just the served list.
+    for (const removed of ["kimi-k3", "deepseek-v4-pro"]) {
+      const gone = await fetch(`${harness.base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketText: "anything", modelId: removed }),
+      });
+      assert.equal(gone.status, 400, `${removed} is gone from the catalog, so it is an unknown id`);
+      assert.equal(((await gone.json()) as Record<string, unknown>)["error"], "unknown_model");
+    }
 
     const unknown = await fetch(`${harness.base}/api/runs`, {
       method: "POST",

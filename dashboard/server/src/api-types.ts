@@ -19,12 +19,33 @@
  * rate-limit state, which is the constraint that actually binds.
  */
 
-/** Providers the dashboard knows about. Mirrors `Provider` in contracts.ts. */
-export type ApiProvider = "anthropic" | "openai" | "moonshot" | "deepseek";
+/**
+ * Providers the DASHBOARD knows about — deliberately NARROWER than `Provider` in
+ * `bakeoff/src/contracts.ts`, which keeps all four.
+ *
+ * `"moonshot" | "deepseek"` were removed on 2026-07-30 when the owner removed the
+ * Kimi and DeepSeek rows ("we only use Claude"). This is not a mirror any more
+ * and must not be re-widened to match: the bake-off harness really does drive
+ * those two vendors over its budget proxy, and this package really does not — it
+ * holds no API key and spawns only subscription CLIs. `db.ts`'s `PROVIDERS` guard
+ * is the same list; a value outside it now throws on the way out of the store
+ * rather than being silently accepted.
+ *
+ * `"openai"` stays even though no run may select it: the Codex row is still
+ * resolvable (see `models.ts`) and `db.ts` may hold rows written before the
+ * 2026-07-28 scope decision.
+ */
+export type ApiProvider = "anthropic" | "openai";
 
 /**
  * `included` — covered by a subscription the owner already pays for.
  * `metered`  — billed per token against an API key.
+ *
+ * NO ROW SERVED BY `/api/models` CARRIES `metered` ANY MORE (2026-07-30, see
+ * `models.ts`). The member stays because it describes a RUN's billing rather than
+ * a catalog row: `src/lib/cost.ts` reads it to decide whether a run can have a
+ * dollar cost at all, and deleting it would delete that distinction for any run
+ * whose model is no longer in the list.
  */
 export type ModelTier = "included" | "metered";
 
@@ -875,3 +896,80 @@ export interface ApiErrorResponse {
   readonly message: string;
   readonly remediation: string | null;
 }
+
+/* -------------------------------------------------------------------------
+ * `GET /api/runs/:id/files` — the code the run produced
+ *
+ * ADDITIVE, and ONE route with two responses discriminated by `kind`: no
+ * `?path` returns the whole tree, `?path=<relative>` returns that file. The
+ * alternative was two routes whose deny-lists could drift apart, and a viewer
+ * whose sidebar hides `.git/config` while its content route serves it has a
+ * security control made of politeness. `code-files.ts` holds the refusals and
+ * says why each one is shaped the way it is.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * One node of the run's workspace.
+ *
+ * `path` IS THE KEY AND THE REQUEST. It is relative to the workspace root with
+ * forward slashes and no leading slash, which is exactly the spelling
+ * `?path=` accepts — one string, one meaning, so a client cannot construct a
+ * path the server has not already listed.
+ *
+ * `bytes` is `null` for a directory and the size on disk for a file. For a
+ * truncated file it stays the FULL size: the UI says "showing 256 KB of 12.4 MB",
+ * which it cannot do if the only number it has is the one it received.
+ */
+export interface CodeTreeEntry {
+  readonly path: string;
+  readonly name: string;
+  readonly type: "dir" | "file";
+  readonly bytes: number | null;
+}
+
+/**
+ * Something in the workspace that was NOT listed, and why.
+ *
+ * On the wire deliberately. A viewer that silently drops `.git` and
+ * `node_modules` is indistinguishable from a viewer that failed to read the
+ * directory, and the owner cannot tell an empty workspace from a filtered one.
+ */
+export interface CodeExclusion {
+  readonly path: string;
+  readonly reason: string;
+}
+
+export interface CodeTreeResponse {
+  readonly kind: "tree";
+  readonly runId: string;
+  /** The absolute host path, for the reader who wants a terminal. */
+  readonly root: string;
+  readonly entries: readonly CodeTreeEntry[];
+  readonly exclusions: readonly CodeExclusion[];
+  /** The entry cap was hit. Some of the workspace is not in `entries`. */
+  readonly truncated: boolean;
+}
+
+/**
+ * One file's contents.
+ *
+ * `text` IS NULL FOR THREE DIFFERENT REASONS AND THE UI MUST NOT CONFLATE THEM:
+ * `binary` true means bytes that are not text; `withheld` non-null means the
+ * redaction self-check refused the file; both false/null with `text` null cannot
+ * happen. `bytes` is always the size on disk, so `truncated` plus `bytes` says
+ * exactly how much is missing.
+ */
+export interface CodeFileResponse {
+  readonly kind: "file";
+  readonly runId: string;
+  readonly path: string;
+  readonly bytes: number;
+  readonly text: string | null;
+  readonly binary: boolean;
+  readonly truncated: boolean;
+  /** How many spans `redactForPersistence` replaced. 0 = nothing matched. */
+  readonly redactions: number;
+  readonly withheld: string | null;
+}
+
+export type CodeResponse = CodeTreeResponse | CodeFileResponse;
