@@ -41,6 +41,12 @@
  *      a group can never hide a failure, never hide a guess, and never hide a
  *      node that delegated to something else.
  *
+ * ONE BOX HERE IS NOT AN AGENT: the terminal preview (`PREVIEW_KEY`), placed one
+ * column past the last one the run used. This module is told only WHETHER to
+ * reserve it — see `PlaceOptions.withPreview` — and never what it says, because
+ * "where every node sits" is the whole of this file's job and a verdict is not a
+ * position.
+ *
  * SPACING IS DELIBERATELY LOOSE. The gutters below are wide enough that every
  * edge has visible run length rather than nodes butting into each other — the
  * one change the owner asked for against the connector reference. `estimateHeight`
@@ -195,6 +201,12 @@ export interface Placement {
   readonly groupKeys: readonly string[];
   /** How many nodes are currently folded out of sight. 0 when all are open. */
   readonly foldedCount: number;
+  /**
+   * Where the terminal preview goes, or `null` when the caller did not ask for
+   * one. It is NOT in `nodes`: every `PlacedNode` carries a real `GraphNode`, and
+   * the only way to put this in that list would be to forge one.
+   */
+  readonly preview: PlacedPreview | null;
 }
 
 /**
@@ -301,6 +313,60 @@ export function groupHeight(members: readonly GraphNode[]): number {
 /** An open group keeps only its header row; the members are placed under it. */
 export const GROUP_HEADER_HEIGHT = 46;
 
+/* ------------------------------------------------------------------
+ * The terminal preview — the built site, at the end of the flow.
+ * ---------------------------------------------------------------- */
+
+/**
+ * The React Flow id of the terminal preview card.
+ *
+ * IT CANNOT COLLIDE WITH A NODE ID. The server mints node ids as `n<number>`
+ * (`graph-emit.ts`'s `#mint`), and this canvas already reserves `group:<n>` for
+ * folds and `column:<key>` for headers. The `layout:` prefix says out loud what
+ * this thing is: something the layout added, not something the run emitted.
+ */
+export const PREVIEW_KEY = "layout:preview";
+
+/**
+ * The preview card is WIDER THAN AN AGENT CARD, deliberately.
+ *
+ * It carries a picture of a web page, and a 268px thumbnail of a desktop layout
+ * is a smudge — the same complaint the unclamped fit was fixed for. Nothing else
+ * on the canvas is this wide, which is also the point: it does not read as one
+ * more agent.
+ */
+export const PREVIEW_WIDTH = 420;
+
+/**
+ * Over-estimated, on the same rule as `estimateHeight`: a wrong guess must add
+ * whitespace, never overlap.
+ *
+ * WHAT IS IN IT, worst case, at `PREVIEW_WIDTH`, margins and rules counted: 28
+ * padding, 30 header, 232 thumbnail frame, 45 verdict row, 38 verdict detail (two
+ * lines), 40 caveat (two lines, and only on a cancelled or failed run), 89 for
+ * the "no delegation recorded" note the card carries when it is the ONLY thing on
+ * the canvas (four lines), and 30 for the link row. That is 532 — a card carrying
+ * every one of those at once, which a cancelled run with no graph events genuinely
+ * is — and the constant is above it.
+ *
+ * NOTHING MEASURES THIS AGAINST THE BROWSER. Same retraction as `estimateHeight`:
+ * the property is "this number is >= what the browser renders" and only a browser
+ * can measure the right-hand side. The consequence of being wrong here is much
+ * smaller than for an agent card — the preview is alone in its column, so an
+ * under-estimate shifts its vertical centring rather than colliding with
+ * anything.
+ */
+export const PREVIEW_HEIGHT = 560;
+
+/** Where the terminal preview sits. Content is the component's; this is a box. */
+export interface PlacedPreview {
+  readonly key: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 /**
  * Which column a node belongs to.
  *
@@ -402,6 +468,15 @@ export interface PlaceOptions {
   readonly showAmbient: boolean;
   /** Group keys the reader has opened. Everything else stays folded. */
   readonly expandedGroups?: ReadonlySet<string>;
+  /**
+   * Reserve a box for the terminal preview at the end of the flow.
+   *
+   * A BOOLEAN, NOT THE PREVIEW ITSELF, and that asymmetry is deliberate: this
+   * module places boxes and has no business reading a verdict or a URL. Whether
+   * a run HAS a terminal preview is `previewNodeFrom` in `src/lib/spec-pipeline.ts`;
+   * all that reaches here is the answer.
+   */
+  readonly withPreview?: boolean;
 }
 
 /**
@@ -699,5 +774,45 @@ export function placeGraph(graph: GraphState, options: PlaceOptions): Placement 
     .filter((entry) => entry.kind === "group" && !entry.expanded)
     .reduce((total, entry) => total + entry.members.length - 1, 0);
 
-  return { nodes, columns, edges, groupKeys, foldedCount };
+  /*
+   * THE TERMINAL PREVIEW, PAST THE LAST COLUMN.
+   *
+   * `occupied.length * COLUMN_STEP` — one step beyond whatever the run actually
+   * used, INCLUDING a lane this build has never heard of. `columnIndexOf` sends
+   * an unknown lane to `COLUMN_ORDER.length + 1` so it sorts last among the
+   * columns, and counting occupied columns rather than naming a position in
+   * `COLUMN_ORDER` is what keeps the preview to the right of it. Nothing here
+   * needs a `ColumnKey` for the preview, and it does not get one: a key in that
+   * union is a place `columnOf` could route an agent to, and no agent belongs
+   * here.
+   *
+   * IT GETS NO COLUMN HEADER. Every header carries a count of the agents in its
+   * column, and this column has none — a header reading "Result 1" would be
+   * counting a thing that never ran. The card says what it is itself.
+   *
+   * AND IT GETS NO EDGE. Every edge on this canvas means one agent delegated to
+   * another; there is no third meaning available, `inferred` already being "we
+   * guessed which agent". Drawing a wire from the last agent to this box would
+   * assert a delegation that did not happen, and this box is a fact about the
+   * WORKSPACE rather than about anything an agent returned. The gap is the honest
+   * rendering.
+   *
+   * CENTRED ON THE SAME AXIS AS THE COLUMNS, so it sits level with the middle of
+   * the flow rather than at the top of an empty column. With no visible nodes at
+   * all — an old run with a workspace and no `graph_*` events, which is exactly
+   * the run this machine has recorded — `tallest` is 0 and it lands at the origin,
+   * alone, which is the whole canvas and correct.
+   */
+  const preview: PlacedPreview | null =
+    options.withPreview === true
+      ? {
+          key: PREVIEW_KEY,
+          x: occupied.length * COLUMN_STEP,
+          y: LANE_LABEL_HEIGHT + Math.round((tallest - PREVIEW_HEIGHT) / 2),
+          width: PREVIEW_WIDTH,
+          height: PREVIEW_HEIGHT,
+        }
+      : null;
+
+  return { nodes, columns, edges, groupKeys, foldedCount, preview };
 }

@@ -230,7 +230,26 @@ export interface StoredEvent {
   readonly event: SseEvent;
 }
 
-/** Who wrote a chat message. `run` is the orchestrator, `owner` is the human. */
+/**
+ * THE DIRECTION OF ONE CHAT MESSAGE. `owner` is the human, `run` is the agent.
+ *
+ * IT IS A DIRECTION AND NOT AN AUTHOR ATTRIBUTION, and the difference decides
+ * what may be written under `run`. Only text the agent ITSELF produced may carry
+ * it — `AgentReplyWatch` in owner-message.ts stores the agent's last message of a
+ * segment verbatim, and stores NOTHING when the segment produced none. The server
+ * must never write a `run` row of its own composition ("working on it…"): the
+ * owner reads this channel as the run speaking, and a sentence the run never said
+ * is worse than the silence it replaces. Everything the SERVER wants to say about
+ * a run goes on the event stream as a `log`, which is a different surface with a
+ * different promise.
+ *
+ * BOTH MEMBERS HAVE EXISTED SINCE THE TABLE DID (2026-07-30, commit c82ad7e) —
+ * `pendingMessages` has always filtered on `owner` so the run cannot re-inject its
+ * own words — but until 2026-07-31 nothing anywhere wrote `run`, so the chat was
+ * one-way in practice while reading two-way in the type. The owner asked a live
+ * run "Give me the link to the website", it was delivered and stamped read, and
+ * nothing came back, because no producer existed.
+ */
 export type ChatRole = "owner" | "run";
 
 export interface ChatMessage {
@@ -245,6 +264,14 @@ export interface ChatMessage {
    *
    * NULL ON A FINISHED RUN MEANS IT WAS NEVER SEEN, and the UI must say so rather
    * than imply the redirection landed.
+   *
+   * IT IS A PROPERTY OF AN `owner` ROW ONLY, AND IS ALWAYS NULL ON A `run` ROW —
+   * "delivered to whom?" has no answer for a reply, this program has no signal
+   * that the owner read anything, and stamping one to make the column look
+   * uniform would be a second fabrication on top of the first. So a `run` row's
+   * null means NOTHING AT ALL, not "never read", and a renderer must not put the
+   * delivery line under one. The chat panel gates that line on `role === "owner"`
+   * (`orchestrator-chat.tsx`), which is where the rule is enforced today.
    */
   readonly deliveredAt: string | null;
 }
@@ -373,6 +400,29 @@ export function isTerminal(status: ApiRunStatus): boolean {
   return status === "passed" || status === "failed" || status === "cancelled";
 }
 
+/**
+ * The opening words of the silence watch's own warning — the ONE sentence
+ * {@link RunStore.lastRunEventAt} refuses to hear.
+ *
+ * IT LIVES HERE, NEXT TO THE QUERY THAT FILTERS ON IT, AND NOT NEXT TO THE
+ * ORCHESTRATOR THAT EMITS IT. Two spellings of this string is a filter that
+ * matches nothing: the watch would go on announcing, each announcement would
+ * reset the clock it just read, and every test that only ever checks the FIRST
+ * warning would stay green. One declaration site, imported by the emitter.
+ *
+ * A TEXT PREFIX RATHER THAN A VISIBLE `[marker]`, because this text is rendered
+ * to the owner in the run's log panel and a machine-readable tag in the middle
+ * of a sentence is noise the owner has to learn to ignore. The events table has
+ * no column that records WHO wrote a row — adding one would mean a migration
+ * plus a new argument on `RunEventBus.emit`, which every emitter in the server
+ * would have to pass — so the sentence itself is the identifier.
+ *
+ * NO `%` AND NO `_`: the query interpolates this into a `LIKE` pattern with no
+ * `ESCAPE` clause, where both are wildcards. `stall-watch.test.ts` asserts the
+ * absence rather than trusting the reader to remember it.
+ */
+export const SILENCE_NOTICE_PREFIX = "no event has been recorded on this run's stream for ";
+
 /* -------------------------------------------------------------------------
  * The store
  * ---------------------------------------------------------------------- */
@@ -475,6 +525,11 @@ CREATE TABLE IF NOT EXISTS screenshots (
  * images is newline-joined ABSOLUTE paths, not blobs. The bytes live under
  * runs/<id>/chat/, the same shape the screenshots table already uses: a SQLite row is
  * the wrong place for a 2MB PNG, and the builder needs a path to Read anyway.
+ *
+ * role IS THE DIRECTION: owner or run. It has been on this table since the table
+ * existed, and ADDED_MESSAGE_COLUMNS carries it anyway -- see that constant for what
+ * that migration does and does not defend against. delivered_at above describes an
+ * owner row only; on a run row it is always NULL and means nothing (ChatMessage).
  */
 CREATE TABLE IF NOT EXISTS messages (
   run_id       TEXT NOT NULL,
@@ -621,16 +676,67 @@ const ADDED_RUN_COLUMNS: readonly { readonly name: string; readonly ddl: string 
   },
 ];
 
-function migrateRuns(db: DatabaseSync): void {
+/**
+ * The same treatment for `messages`, ONE TABLE OVER — and read the second
+ * paragraph before believing it protects anything on this machine.
+ *
+ * WHAT IT DEFENDS AGAINST TODAY: NO DATABASE THAT HAS EVER EXISTED. The
+ * `messages` table and its `role` column shipped in the SAME COMMIT (c82ad7e,
+ * 2026-07-30), so no build of this server ever created the table without it, and
+ * the owner's own `dashboard/data/runs.db` was inspected on 2026-07-31 and has
+ * the column with its single row already reading `owner`. Saying that plainly is
+ * the point: a migration entry is not evidence that a broken database was found,
+ * and the next reader must not infer one from its presence.
+ *
+ * WHY IT IS HERE ANYWAY. `runs` had no additive hook either until a column was
+ * added and `str()` began throwing "column design_lock is absent" on the owner's
+ * machine and nowhere else — every test starts from `mkdtemp`, where
+ * `CREATE TABLE IF NOT EXISTS` always includes the newest column and the
+ * migration path is never taken. This is that hook, installed on `messages`
+ * BEFORE the first column is added to it rather than after, so the second entry
+ * in this list costs one line instead of one incident.
+ *
+ * The default is `'owner'` and it is the only defensible one: every row that
+ * could predate the column was written by `postMessage`, which passes
+ * `role: "owner"` at its single call site, and the reply producer did not exist.
+ */
+const ADDED_MESSAGE_COLUMNS: readonly { readonly name: string; readonly ddl: string }[] = [
+  {
+    name: "role",
+    ddl: "ALTER TABLE messages ADD COLUMN role TEXT NOT NULL DEFAULT 'owner'",
+  },
+];
+
+/**
+ * Add whichever of `columns` the table does not already have.
+ *
+ * ONE LOOP FOR BOTH TABLES rather than two near-identical ones: a second copy is
+ * a second place for the `PRAGMA`/`ALTER` pair to drift, and the pair is the
+ * whole mechanism. It reads the live schema rather than a version number, so it
+ * is idempotent and safe to run on every open.
+ */
+function addMissingColumns(
+  db: DatabaseSync,
+  table: string,
+  columns: readonly { readonly name: string; readonly ddl: string }[],
+): void {
   const present = new Set(
     db
-      .prepare("PRAGMA table_info(runs)")
+      .prepare(`PRAGMA table_info(${table})`)
       .all()
       .map((row) => str(row, "name")),
   );
-  for (const column of ADDED_RUN_COLUMNS) {
+  for (const column of columns) {
     if (!present.has(column.name)) db.exec(column.ddl);
   }
+}
+
+function migrateRuns(db: DatabaseSync): void {
+  addMissingColumns(db, "runs", ADDED_RUN_COLUMNS);
+}
+
+function migrateMessages(db: DatabaseSync): void {
+  addMissingColumns(db, "messages", ADDED_MESSAGE_COLUMNS);
 }
 
 export class RunStore {
@@ -649,6 +755,13 @@ export class RunStore {
     db.exec("PRAGMA busy_timeout = 5000");
     db.exec(SCHEMA);
     migrateRuns(db);
+    // AFTER the SCHEMA exec, which is what guarantees the table exists at all: a
+    // database that predates the `messages` table gets it from
+    // `CREATE TABLE IF NOT EXISTS` above, complete, and this then sees every
+    // column present and does nothing. `PRAGMA table_info` on a missing table
+    // returns no rows, so the order also decides whether an ALTER would be
+    // attempted against nothing.
+    migrateMessages(db);
     return new RunStore(db);
   }
 
@@ -891,6 +1004,83 @@ export class RunStore {
       "UPDATE messages SET delivered_at = ? WHERE run_id = ? AND seq = ? AND delivered_at IS NULL",
     );
     for (const seq of seqs) update.run(at, runId, seq);
+  }
+
+  /**
+   * How many OWNER messages this run actually took up at or after `since`.
+   *
+   * WHAT IT IS FOR: deciding whether a segment has anything to reply TO. The reply
+   * producer (`AgentReplyWatch` in owner-message.ts) stores the agent's last
+   * message of a segment only when this is non-zero, so an ordinary run — where
+   * the owner said nothing — puts no build narration in the chat, and a run that
+   * was spoken to gets an answer.
+   *
+   * IT COUNTS DELIVERY, NOT ARRIVAL, AND THAT IS WHY IT COVERS BOTH PATHS. There
+   * are two ways a message reaches a live run and they land at different moments:
+   * the boundary drain stamps a batch as the next prompt is composed
+   * (`orchestrator.ts`), and `postMessage` stamps a single message the instant it
+   * pushes it into the running session (`http.ts`). Both write `delivered_at`, so
+   * one query over that column sees both, with no cross-module signal to forget.
+   * A message that arrived and was never taken up is correctly NOT counted: there
+   * is nothing for the agent to have answered.
+   *
+   * `since` IS COMPARED AS TEXT, which is chronological only because every stamp
+   * in this store is `new Date().toISOString()` — fixed width, UTC, `Z`-suffixed.
+   * A caller passing any other spelling of an instant gets a comparison that is
+   * silently wrong rather than an error.
+   *
+   * IT IS DURABLE STATE, NOT MEMORY, so a segment that resumes after a restart
+   * still sees what it was told.
+   */
+  ownerMessagesDeliveredSince(runId: string, since: string): number {
+    return this.messages(runId).filter(
+      (message) =>
+        message.role === "owner" && message.deliveredAt !== null && message.deliveredAt >= since,
+    ).length;
+  }
+
+  /**
+   * The instant of the newest event on this run's stream that the SILENCE WATCH
+   * did not write itself. `null` when the run has no such event at all.
+   *
+   * WHY THE EXCLUSION EXISTS, AND WHY IT IS THE WHOLE POINT OF THIS METHOD.
+   * `RunEventBus.emit` PERSISTS before it delivers (bus.ts), so the watch's own
+   * warning is an event on the very stream it is measuring. Without the filter
+   * the first warning would reset the clock it just read: the run would report
+   * "quiet for 90 minutes", then "quiet for 0 minutes" one tick later, and a
+   * second minute of silence could never be reported however long the build
+   * stayed dead. That is the can't-fail shape this repository keeps finding, so
+   * the filter is here, in the one query both the watch and `toDetail` read
+   * through, rather than in either caller.
+   *
+   * IT COUNTS EVERY OTHER EVENT, INCLUDING ONES THE SERVER WROTE ABOUT THE RUN,
+   * AND THAT IS MEASURED RATHER THAN PREFERRED. Restricting this to the event
+   * types the build pipeline produces (`tool`, `graph_*`, `tokens`, …) was tried
+   * against the one finished run on this machine and made the signal WORSE: the
+   * largest legitimate quiet gap grew from 43.5 min to 79.5 min, because during
+   * that stretch the run was speaking through `log` and `rate_limit` events and
+   * nothing else. So "we have heard something" means any row on the stream.
+   *
+   * THE ONE GAP THAT LEAVES, STATED BECAUSE IT IS REACHABLE TODAY. `postMessage`
+   * in http.ts emits a `log` line when the owner types into a run, so an owner
+   * message RESETS this clock — precisely the run an owner is most likely to be
+   * typing into is the one that has gone quiet. Closing it needs a marker in a
+   * file this change does not own; `stall-watch.test.ts` pins the behaviour as it
+   * stands so a future fix has to update the test that documents it rather than
+   * discovering the gap again.
+   *
+   * `NOT LIKE` WITH NO `ESCAPE` CLAUSE IS SAFE ONLY WHILE THE PREFIX HAS NO `%`
+   * OR `_`, which {@link SILENCE_NOTICE_PREFIX} asserts of itself in its own
+   * test. An underscore added to that sentence would silently widen this filter
+   * to match one extra character in every position.
+   */
+  lastRunEventAt(runId: string): string | null {
+    const row = this.#db
+      .prepare(
+        "SELECT at FROM events WHERE run_id = ? AND payload NOT LIKE ? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(runId, `%${SILENCE_NOTICE_PREFIX}%`);
+    return row === undefined ? null : str(row, "at");
   }
 
   /** Persisted events with `seq > after`, oldest first. */

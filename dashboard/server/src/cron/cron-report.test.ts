@@ -83,6 +83,9 @@ function detail(over: Partial<RunDetail> = {}): RunDetail {
     // Never reached phase 5. `null` is "no pass record on this run" — NOT an
     // empty findings array, which would mean the pass ran and found nothing.
     adversary: null,
+    // This fixture is `failed`, so it is not watched and nothing was published.
+    silence: null,
+    publishedProject: null,
     ...over,
   };
 }

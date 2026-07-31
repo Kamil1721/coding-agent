@@ -37,6 +37,16 @@
  * An old run — every run recorded before this phase — carries no `graph_*`
  * events at all, folds to an empty graph, and lands here with zero nodes. That
  * is a first-class state with its own copy, not an error and not a feature flag.
+ *
+ * TWO THINGS ON THIS CANVAS ARE NOT AGENTS, AND BOTH SAY SO. The spec stages in
+ * the empty overlay, and the terminal preview card at the end of the flow. Both
+ * are LAYOUT CONSTRUCTS the canvas adds from what the run recorded — never
+ * `graph_agent` events, because every invariant in the server's graph is keyed on
+ * a real agent event arriving first for its node id, and a synthetic id would be
+ * a forged event. `src/lib/spec-pipeline.ts` holds the reasoning and both
+ * derivations; `PreviewSiteCard` below is the card, and it is deliberately the
+ * only thing on the canvas that is not selectable, not in the arrow-key grid, and
+ * not the width of an agent card.
  */
 
 import "@xyflow/react/dist/base.css";
@@ -54,6 +64,7 @@ import {
   type Node,
   type NodeChange,
   type NodeMouseHandler,
+  type NodeProps,
   type XYPosition,
 } from "@xyflow/react";
 import {
@@ -67,9 +78,16 @@ import {
 } from "react";
 
 import type { GraphState, RunStatus } from "@/lib/api-types";
+import { apiUrl } from "@/lib/api";
 import { useNow } from "@/lib/use-run-stream";
-import type { SpecStage } from "@/lib/spec-pipeline";
-import { Button, cx } from "@/components/ui";
+import {
+  PREVIEW_UNREACHABLE,
+  previewSiteFrom,
+  type PreviewSite,
+  type SpecStage,
+  type TerminalPreview,
+} from "@/lib/spec-pipeline";
+import { Button, Dot, cx } from "@/components/ui";
 import {
   AgentNode,
   ColumnNode,
@@ -80,7 +98,7 @@ import {
   type GroupFlowNode,
 } from "./agent-node";
 import { DelegationEdge, type FlowEdge } from "./flow-edge";
-import { NODE_WIDTH, placeGraph, type PlacedNode } from "./layout";
+import { NODE_WIDTH, PREVIEW_WIDTH, placeGraph } from "./layout";
 import { ROLE_LABEL, ROLE_MEANING, ROLE_ORDER, roleColorVar, type AgentRole } from "./roles";
 
 /**
@@ -90,7 +108,13 @@ import { ROLE_LABEL, ROLE_MEANING, ROLE_ORDER, roleColorVar, type AgentRole } fr
  * render when they are rebuilt — which is both noise and a real re-render of
  * every node on the canvas.
  */
-const NODE_TYPES = { agent: AgentNode, group: GroupNode, column: ColumnNode } as const;
+const NODE_TYPES = {
+  agent: AgentNode,
+  group: GroupNode,
+  column: ColumnNode,
+  // A function DECLARATION below, so it is hoisted and this const can name it.
+  preview: PreviewSiteCard,
+} as const;
 const EDGE_TYPES = { flow: DelegationEdge } as const;
 
 const MIN_ZOOM = 0.12;
@@ -326,6 +350,233 @@ function SpecStageCard({ stage, isLast }: { stage: SpecStage; isLast: boolean })
   );
 }
 
+/* ------------------------------------------------------------------
+ * The terminal preview card
+ * ---------------------------------------------------------------- */
+
+/**
+ * The logical viewport the site is rendered at before it is scaled down.
+ *
+ * A DESKTOP WIDTH, NOT THE CARD'S. An iframe 390 CSS pixels wide makes every
+ * responsive site serve its MOBILE layout, so the thumbnail would show a page
+ * the owner never asked for and cannot compare against the design references.
+ * The frame renders at 1280x760 and is scaled to fit, which is the same picture
+ * a laptop would show.
+ */
+const PREVIEW_FRAME_WIDTH = 1280;
+const PREVIEW_FRAME_HEIGHT = 760;
+
+/** Card width minus its 14px padding on both sides and its 1px border. */
+const PREVIEW_INNER_WIDTH = PREVIEW_WIDTH - 30;
+const PREVIEW_SCALE = PREVIEW_INNER_WIDTH / PREVIEW_FRAME_WIDTH;
+const PREVIEW_THUMB_HEIGHT = Math.round(PREVIEW_FRAME_HEIGHT * PREVIEW_SCALE);
+
+/**
+ * A type alias for the same reason `AgentNodeData` is one: React Flow's `Node<T>`
+ * constrains `T` to `Record<string, unknown>`, which only aliases satisfy.
+ */
+type PreviewCardData = {
+  readonly preview: TerminalPreview;
+  /** `null` = the dashboard has not answered yet. NOT "there is no site". */
+  readonly site: PreviewSite | null;
+  /**
+   * The empty-canvas sentence, when this card is the only thing on the canvas.
+   *
+   * A run with a workspace and no `graph_*` events is not hypothetical — it is
+   * every run recorded before the canvas existed — and suppressing the empty
+   * overlay to make room for this card would silently drop the only sentence
+   * explaining why there is no graph. It moves in here instead of being lost.
+   */
+  readonly note: EmptyCopy | null;
+};
+
+export type PreviewFlowNode = Node<PreviewCardData, "preview">;
+
+/**
+ * The site the run built, in a frame, at the end of the flow.
+ *
+ * WHAT THE FRAME IS AND IS NOT. It is an `<iframe>` on
+ * `GET /api/runs/:id/preview/`, which the dashboard serves out of the run's own
+ * workspace — live whenever anyone is looking at this page, because the
+ * dashboard is by definition running. It is NOT `RunDetail.previewUrl`: that is
+ * the loopback address a `deploy: true` run served on, the process behind it
+ * exited with the run, and it was measured dead. `TerminalPreview.previewPath` is
+ * built from the run id alone, so this component cannot reach the dead field
+ * even by accident.
+ *
+ * IT IS NOT SANDBOXED AND THE WORD IS AVOIDED ON PURPOSE. `allow-same-origin`
+ * keeps the framed document on the dashboard's origin, which is what lets ES
+ * modules load and `localStorage` work — an opaque origin breaks both and a fair
+ * number of generated sites with them. So the `sandbox` attribute here is not a
+ * security boundary; the server's `connect-src 'none'; form-action 'none'` CSP is
+ * the control. What the attribute DOES buy, and the only reason it is set, is
+ * that the framed page cannot navigate the dashboard away, open a popup, or
+ * throw a modal dialog at whoever is looking at the canvas.
+ *
+ * A 200 PROVES AN ENTRY DOCUMENT WAS SERVED, NOT THAT THE PAGE RENDERS. No copy
+ * on this card says the site works. It says the dashboard can serve it.
+ *
+ * THE PICTURE IS NOT A LINK, WHICH IS A DECISION AND NOT AN OVERSIGHT. The card
+ * is draggable, so a press that starts on the thumbnail and ends there after a
+ * drag would fire a click on release — and a tab opening because someone moved a
+ * card is worse than one more line of text. The link is that line of text.
+ *
+ * WITH `NEXT_PUBLIC_API_BASE_URL` SET, THE FRAME GOES BLANK AND NOTHING CAN TELL.
+ * The preview's `frame-ancestors 'self'` is relative to the API's origin, so a
+ * cross-origin dashboard is refused the frame — and a refused frame is an empty
+ * box with no event. The link is therefore the load-bearing affordance and the
+ * thumbnail is the nicety; that ordering is why the link is not hidden behind the
+ * picture. Not measured in that configuration, because nothing here runs it.
+ */
+function PreviewSiteCard({ data }: NodeProps<PreviewFlowNode>): ReactNode {
+  const { preview, site, note } = data;
+  const href = apiUrl(preview.previewPath);
+  const verdict = preview.verdict;
+
+  return (
+    <div
+      style={{ width: PREVIEW_WIDTH }}
+      className="rounded-[10px] border border-line-strong bg-surface p-3.5"
+    >
+      <header className="mb-2.5 flex items-baseline justify-between gap-3">
+        <h3 className="text-[12.5px] font-semibold text-ink">The site this run built</h3>
+        {/*
+          * SAYS WHAT IT IS. Every other card on this canvas is an agent the run
+          * reported; this one is the layout's own addition, and a reader who
+          * counts agents should not count it.
+          */}
+        <span
+          title="Not an agent. The canvas adds this from the run's record once the run is over."
+          className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-ink-faint"
+        >
+          not an agent
+        </span>
+      </header>
+
+      <div
+        style={{ height: PREVIEW_THUMB_HEIGHT }}
+        className="relative overflow-hidden rounded border border-line bg-canvas"
+      >
+        {site === null && (
+          <p className="absolute inset-0 grid place-items-center px-4 text-center text-[11px] leading-relaxed text-ink-faint">
+            Asking the dashboard whether this run left a site it can serve…
+          </p>
+        )}
+
+        {site?.kind === "servable" && (
+          <iframe
+            src={href}
+            title="The site this run built, as the dashboard serves it"
+            /*
+             * `nodrag` and `pointer-events-none` are BOTH needed and they do
+             * different jobs: without `pointer-events-none` a click lands in the
+             * site instead of the canvas, and without React Flow's `nodrag` a
+             * press that starts on this element is swallowed rather than panning
+             * or dragging the card.
+             *
+             * `tabIndex={-1}` takes the frame element out of the tab order.
+             * Whether a browser lets sequential navigation descend into the
+             * framed DOCUMENT anyway was NOT measured here, so this is not a
+             * claim that the thumbnail is unreachable by keyboard — the link
+             * below it is the affordance that is.
+             */
+            tabIndex={-1}
+            className="nodrag pointer-events-none absolute left-0 top-0 origin-top-left border-0"
+            style={{
+              width: PREVIEW_FRAME_WIDTH,
+              height: PREVIEW_FRAME_HEIGHT,
+              transform: `scale(${String(PREVIEW_SCALE)})`,
+            }}
+            sandbox="allow-scripts allow-same-origin"
+          />
+        )}
+
+        {site !== null && site.kind !== "servable" && (
+          /*
+           * THE SERVER'S OWN SENTENCE, NOT ONE WRITTEN HERE. `no_index_html`'s
+           * remediation names the `.html` files it DID find, which is the only
+           * thing that tells a wrongly-named entry point apart from a build that
+           * produced nothing. `nowheel` keeps a scroll here from zooming the
+           * canvas out from under the reader.
+           */
+          <div className="nodrag nowheel absolute inset-0 overflow-y-auto px-3 py-2.5 text-left">
+            <p className="text-[11px] font-medium leading-relaxed text-ink">
+              {site.kind === "no-index"
+                ? "No page to show: this build left no index.html where the preview looks."
+                : site.kind === "unreachable"
+                  ? "Could not ask."
+                  : "The dashboard would not serve this run's workspace."}
+            </p>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-ink-dim">{site.message}</p>
+            {site.kind === "no-index" && (
+              // A RUN IN THIS STATE HAS CODE WORTH OPENING, so it is pointed at
+              // rather than left as a dead end. The Code tab is real — the run
+              // sheet's `TABS` in `sheet.tsx` carries it and it renders
+              // `CodeBrowser` — and this card cannot open it itself: the sheet is
+              // the run page's, and the canvas is handed no callback to it.
+              <p className="mt-1.5 text-[11px] leading-relaxed text-ink-dim">
+                The run sheet&apos;s Code tab lists what this run actually wrote.
+              </p>
+            )}
+            {site.kind !== "unreachable" && site.remediation !== null && (
+              <p className="mt-1.5 whitespace-pre-line text-[10.5px] leading-relaxed text-ink-dim/80">
+                {site.remediation}
+              </p>
+            )}
+            {site.kind === "refused" && (
+              <p className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-ink-faint">
+                {site.code}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/*
+        * THE TWO AXES, SIDE BY SIDE AND NEVER MERGED. Above: whether a site can
+        * be served. Below: what the held-out gate said. A cancelled run with a
+        * perfectly servable site is a real state, and so is a run that passed its
+        * suite from a `site/` subdirectory this route will not guess at — so one
+        * of these must never be allowed to colour the other.
+        */}
+      <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
+        <Dot tone={verdict.tone} />
+        <span className="text-[12px] font-medium text-ink">{verdict.label}</span>
+      </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-ink-dim">{verdict.detail}</p>
+      {preview.caveat !== null && (
+        <p className="mt-1.5 text-[11px] leading-relaxed text-ink-dim">{preview.caveat}</p>
+      )}
+
+      {note !== null && (
+        <p className="mt-2.5 border-t border-line pt-2.5 text-[11px] leading-relaxed text-ink-dim">
+          <span className="font-medium text-ink">{note.title}.</span> {note.body}
+        </p>
+      )}
+
+      {site?.kind === "servable" && (
+        <p className="mt-3">
+          {/*
+            * THE TRAILING SLASH IS ALREADY IN `previewPath` and must stay: without
+            * it the document resolves its own `styles.css` one level too high and
+            * every relative asset 404s, so the site opens unstyled and reads as a
+            * broken build. `rel="noreferrer noopener"` because this opens a page
+            * the run wrote.
+            */}
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="nodrag text-[12px] text-accent underline underline-offset-2"
+          >
+            open this site in a new tab
+          </a>
+        </p>
+      )}
+    </div>
+  );
+}
+
 export interface CanvasProps {
   readonly graph: GraphState;
   /** False while the snapshot is still in flight. Drives the loading overlay. */
@@ -401,6 +652,30 @@ export interface CanvasProps {
    * card it selected.
    */
   readonly rightInset?: number;
+  /**
+   * The site this run built, as a terminal card at the end of the flow.
+   *
+   * THE OWNER'S ASK: "the website should show as a preview in a node on the
+   * canvas after it is done." Built by `previewNodeFrom(run)` in
+   * `src/lib/spec-pipeline.ts`, which returns `null` for every non-terminal run —
+   * a preview of a half-written site is a lie about what was built, and the
+   * workspace is written INTO while the run works.
+   *
+   * A PROP RATHER THAN SOMETHING THIS COMPONENT FETCHES. The canvas is handed a
+   * `GraphState` and knows no run id; reading the route params and a run detail in
+   * here would make "what is on the canvas" depend on where the canvas is mounted,
+   * which is the same mistake `rightInset` exists not to make.
+   *
+   * NOT WIRED YET — SO THIS CARD CANNOT RENDER TODAY, AND THIS PROP CHANGES NO
+   * PIXEL ON ITS OWN. The one call site, `src/app/runs/[runId]/page.tsx:404`,
+   * passes `graph`, `ready`, selection, `runIsActive`, `specStages`,
+   * `latestActivity`, `rightInset` and `hud`, and nothing else; that file belongs
+   * to a different change in this pass and was not touched here. Until
+   * `preview={previewNodeFrom(run)}` is added beside them, every branch below is
+   * dead. Optional rather than required for the same reason: making it required
+   * would break that call site.
+   */
+  readonly preview?: TerminalPreview | null;
 }
 
 interface NavCell {
@@ -421,6 +696,7 @@ function CanvasInner({
   latestActivity = null,
   specStages = [],
   runStatus,
+  preview = null,
 }: CanvasProps): ReactNode {
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
@@ -444,10 +720,148 @@ function CanvasInner({
    */
   const draggedRef = useRef<Map<string, XYPosition>>(new Map());
 
+  /* ----------------------------------------------------------------
+   * The terminal preview, taken apart so it stops churning
+   * ------------------------------------------------------------- */
+
+  /*
+   * THE PREVIEW PROP IS A FRESH OBJECT ON EVERY RENDER, AND THE RUN PAGE
+   * RE-RENDERS ONCE A SECOND.
+   *
+   * `previewNodeFrom(run)` builds a new object each call and the run clock ticks,
+   * so depending on its IDENTITY anywhere below would re-run the placement,
+   * rebuild every node and call `setNodes` once a second forever. This file has
+   * already paid for that class of mistake once: a fresh `hud` element in the fit
+   * effect's dependency list re-ran that effect every second, its cleanup killed
+   * the sweep's timer, and every connector on the canvas pulsed forever.
+   *
+   * SO IT IS TAKEN APART INTO PRIMITIVES AND PUT BACK TOGETHER, RATHER THAN HELD
+   * IN A REF. A ref read during render is what the React compiler's `react-hooks`
+   * rules forbid, and — measured with `npx eslint` on this file — the taint
+   * propagates: keying `placement` on a ref-derived value made the linter flag
+   * `placement`, `built` and every memo downstream of them. Rebuilding the object
+   * from its own fields costs seven lines and is the version the compiler can
+   * reason about.
+   *
+   * AND IT CANNOT GO STALE THE WAY A SIGNATURE STRING COULD. A new field on
+   * `TerminalPreview` makes the object literal below fail to typecheck, which is
+   * a compiler error rather than a display that quietly shows an old value.
+   */
+  const previewRunId = preview?.runId ?? null;
+  const previewPath = preview?.previewPath ?? null;
+  const previewStatus = preview?.status ?? null;
+  const verdictTone = preview?.verdict.tone ?? null;
+  const verdictLabel = preview?.verdict.label ?? null;
+  const verdictDetail = preview?.verdict.detail ?? null;
+  const previewCaveat = preview?.caveat ?? null;
+
+  const stablePreview = useMemo((): TerminalPreview | null => {
+    /*
+     * Six checks for one condition, and they are how TYPESCRIPT learns these came
+     * off a non-null `preview` — not a guard against a partly-filled one. Every
+     * field of `TerminalPreview` is required and non-nullable except `caveat`,
+     * which is legitimately null on a run that passed and is therefore carried
+     * rather than checked.
+     */
+    if (previewRunId === null || previewPath === null || previewStatus === null) return null;
+    if (verdictTone === null || verdictLabel === null || verdictDetail === null) return null;
+    return {
+      runId: previewRunId,
+      previewPath,
+      status: previewStatus,
+      verdict: { tone: verdictTone, label: verdictLabel, detail: verdictDetail },
+      caveat: previewCaveat,
+    };
+  }, [
+    previewRunId,
+    previewPath,
+    previewStatus,
+    verdictTone,
+    verdictLabel,
+    verdictDetail,
+    previewCaveat,
+  ]);
+
   const placement = useMemo(
-    () => placeGraph(graph, { showAmbient, expandedGroups }),
-    [graph, showAmbient, expandedGroups],
+    // A BOOLEAN, NOT THE PREVIEW: the layout reserves a box and never reads a
+    // verdict. Keyed on the path, so the placement does not churn per tick.
+    () => placeGraph(graph, { showAmbient, expandedGroups, withPreview: previewPath !== null }),
+    [graph, showAmbient, expandedGroups, previewPath],
   );
+
+  /* ----------------------------------------------------------------
+   * Is there a site to show? Only the dashboard's preview route knows.
+   * ------------------------------------------------------------- */
+
+  /**
+   * The route's answer, TAGGED WITH THE PATH IT IS AN ANSWER ABOUT.
+   *
+   * The tag is what makes the "still asking" state derivable instead of reset in
+   * an effect. Clearing this at the top of the effect below would have worked and
+   * costs an extra render, and — more to the point — an answer that outlives the
+   * question it was asked about is how a card ends up showing the previous run's
+   * verdict for a beat after the reader opens a different one.
+   */
+  const [previewAnswer, setPreviewAnswer] = useState<{
+    readonly path: string;
+    readonly site: PreviewSite;
+  } | null>(null);
+
+  /** `null` while the question is out. NOT "there is no site". */
+  const previewSite: PreviewSite | null =
+    previewAnswer !== null && previewAnswer.path === previewPath ? previewAnswer.site : null;
+
+  /*
+   * ONE GET, ON A PRIMITIVE KEY, AND NO POLLING.
+   *
+   * WHY IT ASKS AT ALL. Nothing in `RunDetail` says whether the workspace has an
+   * `index.html` — and it is not an academic question: of the two finished
+   * workspaces on this machine one has it at the root and one keeps its site in a
+   * `site/` subdirectory beside a `server.mjs`. Framing the second would show the
+   * reader a 409 JSON body rendered as a web page, and linking it would hand them
+   * a dead end. The route is the only thing that knows, so it is asked.
+   *
+   * WHY GET AND NOT HEAD. `http.ts` routes the preview on `method === "GET"`
+   * alone, so a HEAD would come back as the router's own `not_found` — a refusal
+   * about a route rather than about a site, which is exactly the confusion this
+   * card exists to remove.
+   *
+   * WHY NOT `request<T>()` FROM `api.ts`. It reduces the body to one string,
+   * preferring `message` over `error` and dropping `remediation` entirely — and
+   * `remediation` is the sentence that names the `.html` files the build DID
+   * produce. See `previewSiteFrom`.
+   *
+   * NO POLLING, because a terminal run's workspace does not change: the publish
+   * step COPIES out of it, nothing writes back in. If that ever stops being true,
+   * this becomes stale rather than wrong, and the card would need a reason to
+   * re-ask rather than a timer.
+   */
+  useEffect(() => {
+    const path = previewPath;
+    if (path === null) return;
+    let live = true;
+    void (async (): Promise<void> => {
+      try {
+        const response = await fetch(apiUrl(path), { cache: "no-store" });
+        let body: unknown = null;
+        if (response.ok) {
+          // The body of a 200 is the whole document and is never read; cancelling
+          // it releases the socket rather than leaving it to the collector.
+          await response.body?.cancel().catch(() => undefined);
+        } else {
+          body = await response.json().catch(() => null);
+        }
+        if (live) setPreviewAnswer({ path, site: previewSiteFrom(response.status, body) });
+      } catch {
+        // A throw here is the local backend not answering — never a refusal,
+        // which arrives as a response with a status.
+        if (live) setPreviewAnswer({ path, site: PREVIEW_UNREACHABLE });
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [previewPath]);
 
   const ambientCount = useMemo(
     () => graph.nodes.filter((node) => node.ambient).length,
@@ -699,9 +1113,15 @@ function CanvasInner({
   /** How many cards the reader has dragged. Drives the tidy button's presence. */
   const [moved, setMoved] = useState(0);
 
+  /*
+   * TAKES THREE PRIMITIVES, NOT A `PlacedNode`, and the reason is the preview
+   * card: it is placed by the same layout and dragged through the same map, but
+   * it carries no `GraphNode` and there is no honest way to hand it a
+   * `PlacedNode`. Widening the parameter list is cheaper than forging a node.
+   */
   const positionOf = useCallback(
-    (entry: PlacedNode): XYPosition =>
-      draggedRef.current.get(entry.key) ?? { x: entry.x, y: entry.y },
+    (key: string, x: number, y: number): XYPosition =>
+      draggedRef.current.get(key) ?? { x, y },
     // `layoutEpoch` is not read here — it is what invalidates this callback, and
     // through it the node memo, after `draggedRef` is emptied.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -747,7 +1167,7 @@ function CanvasInner({
     const cards: (AgentFlowNode | GroupFlowNode)[] = placement.nodes.map((entry) => {
       const shared = {
         id: entry.key,
-        position: positionOf(entry),
+        position: positionOf(entry.key, entry.x, entry.y),
         // THE OWNER'S THIRD ASK. The layout is the starting position and every
         // card can be moved off it; see `dragged` above for why a moved card
         // stays moved.
@@ -781,8 +1201,61 @@ function CanvasInner({
       } satisfies AgentFlowNode;
     });
 
-    return [...columns, ...cards];
-  }, [placement, positionOf, selectedId, tabStop, onCardKeyDown]);
+    /*
+     * THE TERMINAL PREVIEW, LAST IN THE ARRAY AND LAST IN THE FLOW.
+     *
+     * Both halves of the guard are load-bearing and neither implies the other:
+     * `placement.preview` is the box the layout reserved, `stablePreview` is what
+     * goes in it, and a card with one and not the other would be either an empty
+     * box or a card with no position.
+     *
+     * IT CARRIES THE EMPTY-CANVAS SENTENCE when it is the only thing drawn. That
+     * text is `emptyCanvasCopy`'s, called here rather than copied, so the run with
+     * a workspace and no graph events keeps its explanation instead of having the
+     * suppressed overlay take it away.
+     */
+    const previewNodes: PreviewFlowNode[] =
+      placement.preview === null || stablePreview === null
+        ? []
+        : [
+            {
+              id: placement.preview.key,
+              type: "preview",
+              position: positionOf(
+                placement.preview.key,
+                placement.preview.x,
+                placement.preview.y,
+              ),
+              data: {
+                preview: stablePreview,
+                site: previewSite,
+                note:
+                  placement.nodes.length === 0
+                    ? emptyCanvasCopy({
+                        graphNodeCount: graph.nodes.length,
+                        runStatus,
+                        runIsActive,
+                      })
+                    : null,
+              },
+              draggable: true,
+              width: placement.preview.width,
+            },
+          ];
+
+    return [...columns, ...cards, ...previewNodes];
+  }, [
+    placement,
+    positionOf,
+    selectedId,
+    tabStop,
+    onCardKeyDown,
+    stablePreview,
+    previewSite,
+    graph.nodes.length,
+    runStatus,
+    runIsActive,
+  ]);
 
   /*
    * THE NODE ARRAY IS STATE, AND `measured` IS THE REASON IT HAS TO BE.
@@ -904,10 +1377,21 @@ function CanvasInner({
   const maxDepthRef = useRef(maxDepth);
   maxDepthRef.current = maxDepth;
 
+  /*
+   * ANYTHING DRAWN COUNTS FOR THE FIT, NOT JUST AGENT CARDS.
+   *
+   * A terminal run with a workspace and no `graph_*` events draws exactly one
+   * thing — the preview card — and the old `placement.nodes.length === 0` guard
+   * returned early on it, leaving the viewport at the identity transform with the
+   * card wherever the layout put it. That run is not hypothetical: it is every run
+   * recorded before the canvas existed.
+   */
+  const drawnCount = placement.nodes.length + (placement.preview === null ? 0 : 1);
+
   useEffect(() => {
     if (hasFitted.current) return;
     if (!nodesInitialized) return;
-    if (placement.nodes.length === 0) return;
+    if (drawnCount === 0) return;
     hasFitted.current = true;
 
     void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, hudRef.current));
@@ -924,7 +1408,7 @@ function CanvasInner({
      */
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     setSweeping(true);
-  }, [nodesInitialized, placement.nodes.length, flow]);
+  }, [nodesInitialized, drawnCount, flow]);
 
   /*
    * RE-FIT WHEN THE PANE CHANGES SIZE — and only while the view is still the
@@ -1077,16 +1561,26 @@ function CanvasInner({
     setNodes((current) => applyNodeChanges([...changes], current));
   }, []);
 
+  /*
+   * COLUMNS AND THE PREVIEW ARE NOT SELECTABLE, for the same reason and by two
+   * different mechanisms downstream. Selection means "show me this agent's
+   * detail", and the sheet, the agent index and the card ring all resolve the
+   * selected key against `graph.nodes` — a key that is not in there would select
+   * nothing while switching the ring off whatever was selected before. The
+   * preview's own affordance is the link on the card.
+   */
   const onNodeClick = useCallback<NodeMouseHandler>(
     (_event, node) => {
-      if (node.type === "column") return;
+      if (node.type === "column" || node.type === "preview") return;
       activate(node.id);
     },
     [activate],
   );
 
   const onNodeMouseEnter = useCallback<NodeMouseHandler>((_event, node) => {
-    if (node.type === "column") return;
+    // `hovered` energises the edges into and out of a key; the preview has none,
+    // so hovering it would only clear whatever the reader was pointing at.
+    if (node.type === "column" || node.type === "preview") return;
     setHovered(node.id);
   }, []);
 
@@ -1132,6 +1626,18 @@ function CanvasInner({
   }, [placement.groupKeys]);
 
   const empty = placement.nodes.length === 0;
+
+  /*
+   * THE EMPTY OVERLAY STANDS DOWN WHEN THE PREVIEW CARD IS DRAWN, because the
+   * two occupy the same pixels: the overlay is a panel centred in the pane, the
+   * fit centres the one card in the pane, and a terminal run with no graph events
+   * has both. The sentence is not lost — `built` hands the same `emptyCanvasCopy`
+   * text to the card, which renders it under the verdict.
+   *
+   * THE LOADING OVERLAY IS UNAFFECTED. `!ready` is about the graph snapshot being
+   * in flight and says nothing about the workspace.
+   */
+  const showEmptyOverlay = empty && placement.preview === null;
 
   /*
    * Derived unconditionally rather than inside the overlay's branch: it is four
@@ -1312,7 +1818,7 @@ function CanvasInner({
       )}
 
       {/* Overlays. Inside the flow's box, never wrapped around it. */}
-      {(empty || !ready) && (
+      {(showEmptyOverlay || !ready) && (
         <div
           className={cx(
             "pointer-events-none absolute inset-0 grid place-items-center p-8",

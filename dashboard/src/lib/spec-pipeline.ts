@@ -1,5 +1,17 @@
 /**
- * spec-pipeline.ts — the four things that happen before any agent exists.
+ * spec-pipeline.ts — the things the canvas draws that are NOT agent events.
+ *
+ * TWO SECTIONS, ONE IDEA, AT THE TWO ENDS OF A RUN. The first is the spec
+ * pipeline: the four things that happen before any agent exists. The second is
+ * the TERMINAL PREVIEW: the site the run built, after the last agent is gone.
+ * Neither is a `graph_agent`, neither may ever become one, and the reasoning
+ * below for the first is the whole reasoning for the second — see
+ * `previewNodeFrom` at the bottom of this file, which restates only what is
+ * different about it.
+ *
+ * =========================================================================
+ * SECTION ONE — THE SPEC PIPELINE
+ * =========================================================================
  *
  * WHY THIS FILE EXISTS. The canvas draws `graph_agent` events, and those come
  * from the BUILDER's SDK projection — which does not exist until the build
@@ -42,7 +54,7 @@
  * can see rather than guessing the rest.
  */
 
-import type { RunPhase } from "./api-types";
+import { isTerminalStatus, type RunDetail, type RunPhase, type RunStatus } from "./api-types";
 import type { TraceEntry } from "./use-run-stream";
 
 export type SpecStageState = "done" | "running" | "pending" | "skipped";
@@ -223,3 +235,257 @@ export function specPipelineFrom(
     runIsActive || stage.state !== "running" ? stage : { ...stage, state: "pending" as const },
   );
 }
+
+/* =========================================================================
+ * SECTION TWO — THE TERMINAL PREVIEW
+ *
+ * The owner's ask, in his words: "the website should show as a preview in a node
+ * on the canvas after it is done."
+ *
+ * IT IS A LAYOUT CONSTRUCT, NOT A `graph_agent`, for exactly the reason the spec
+ * stages above are: no agent produced it, and every invariant in the server's
+ * `graph.ts` is keyed on a real `graph_agent` arriving first for its node id. A
+ * synthetic id in that graph would be a forged event. `FINDINGS §ITERATION 4`
+ * recorded the same decision for the "result node" this is.
+ *
+ * TWO AXES, AND THEY MUST NOT COLLAPSE INTO ONE WORD.
+ *
+ *   1. IS THERE A SERVABLE SITE — answered by the dashboard's preview route, and
+ *      only by it. See {@link previewSiteFrom}.
+ *   2. WHAT DID THE GATE SAY — `heldOutPass`, three-valued. See
+ *      {@link verdictOf}.
+ *
+ * They are independent facts and a run can be any combination of them: a
+ * cancelled run with a perfectly servable site is real, and so is a run that
+ * passed its suite from a `site/` subdirectory the preview route will not guess
+ * at. One card, two sentences, neither derived from the other. A single state
+ * word here would make a 409 read as a failed run, or a servable site read as a
+ * passed gate — which is this repository's signature defect with a thumbnail on
+ * it.
+ *
+ * NOTHING HERE TOUCHES `RunDetail.previewUrl`. Measured (FINDINGS §ITERATION 4):
+ * the recorded run's is `http://127.0.0.1:4321` and nothing listens — the process
+ * that served it exited with the run. It is a historical record, not an address.
+ * {@link TerminalPreview.previewPath} is built from the run id ALONE, so linking
+ * the dead field is not a thing this code has to remember not to do; it is
+ * unreachable from here.
+ * ====================================================================== */
+
+/**
+ * What the held-out gate said, as something drawable.
+ *
+ * `tone` is a subset of `Tone` in `src/lib/presentation.ts` — assignable to it,
+ * so `<Badge tone={verdict.tone}>` typechecks — and deliberately NOT the whole
+ * union: `warn`, `info` and `accent` would all be this display inventing a
+ * degree of concern the gate did not express.
+ */
+export interface PreviewVerdict {
+  readonly tone: "pass" | "fail" | "neutral";
+  readonly label: string;
+  /** One sentence saying what the label does and does not mean. Never empty. */
+  readonly detail: string;
+}
+
+/**
+ * `heldOutPass: null` IS NOT `false`, AND THIS IS WHERE THAT IS SPENT.
+ *
+ * The rule is load-bearing across the whole dashboard, and it is at its most
+ * dangerous next to a picture of a working site: a card that renders "not scored"
+ * with the same red as "failed" tells the owner his build was rejected by a gate
+ * that never ran, and a card that renders it green tells him a suite passed that
+ * nobody executed. Three inputs, three different values — the neutral one says
+ * out loud that it is neither.
+ */
+function verdictOf(heldOutPass: boolean | null): PreviewVerdict {
+  if (heldOutPass === true) {
+    return {
+      tone: "pass",
+      label: "Held-out suite passed",
+      detail: "The sealed suite the builder never saw scored this build green.",
+    };
+  }
+  if (heldOutPass === false) {
+    return {
+      tone: "fail",
+      label: "Held-out suite failed",
+      detail: "The sealed suite scored this build red. What is below is what was built, not what passed.",
+    };
+  }
+  return {
+    tone: "neutral",
+    label: "Not scored",
+    detail:
+      "No held-out result was recorded for this run. That is not a failure — nothing graded it either way.",
+  };
+}
+
+/**
+ * What the run's own ending says about how finished this artefact is, or `null`
+ * when the status adds nothing the verdict has not already said.
+ *
+ * READ OFF `status`, WHICH IS A RECORDED FACT, and it claims nothing about WHY.
+ * `RunDetail.failureReason` is the last write of five writers (see its docblock)
+ * so it is not "the reason the site looks like this", and it is not consulted.
+ */
+function caveatOf(status: RunStatus): string | null {
+  if (status === "cancelled") {
+    return "Cancelled part-way, so this is whatever had been written when it stopped — not a finished build.";
+  }
+  if (status === "failed") {
+    // NOT "the code is still on disk": whether anything is there is the preview
+    // route's answer, above, and a workspace can be deleted. This says only what
+    // `status` says.
+    return "The run ended in failure, so this is as far as it got.";
+  }
+  return null;
+}
+
+/**
+ * The terminal node's content, derived from `RunDetail` and nothing else.
+ *
+ * `previewPath` IS A PATH, NOT A URL, and it is the same spelling `KEY.*` in
+ * `src/lib/api.ts` uses — the caller runs it through `apiUrl()` for both the
+ * probe and the link, so a deployment that moves the API with
+ * `NEXT_PUBLIC_API_BASE_URL` moves both together.
+ *
+ * THE TRAILING SLASH IS LOAD-BEARING. Without it the browser resolves the
+ * document's own `styles.css` against `/api/runs/:id/`, one level too high, and
+ * every relative asset 404s — so the page renders unstyled and reads as a broken
+ * build. The server answers the no-slash form with a 302, so forgetting it is
+ * slow rather than wrong; carrying it is neither.
+ */
+export interface TerminalPreview {
+  readonly runId: string;
+  readonly previewPath: string;
+  /** The terminal status this was built from. `queued`/`running` never get here. */
+  readonly status: RunStatus;
+  readonly verdict: PreviewVerdict;
+  /** An extra sentence about the artefact's completeness, or null. */
+  readonly caveat: string | null;
+}
+
+/**
+ * The terminal preview for a run, or `null` when the canvas must not draw one.
+ *
+ * `null` FOR EVERY NON-TERMINAL RUN, and that is the point rather than a
+ * convenience: a preview of a half-written site is a lie about what was built.
+ * The workspace is being written INTO while the run works, so a frame opened at
+ * minute 40 shows a page mid-edit and the reader cannot tell that from a finished
+ * one. `isTerminalStatus` — `passed`, `failed`, `cancelled` — is the same gate
+ * the rest of the dashboard uses; `awaiting_input` and `rate_limited` are
+ * STOPPED, not finished, and deliberately get nothing.
+ *
+ * IT DOES NOT ASK WHETHER THE SITE EXISTS. Nothing in `RunDetail` can answer
+ * that — `publishedProject.fileCount` counts files without naming them, and a
+ * `GET /api/runs/:id/files` tree is truncatable, so an absent `index.html` there
+ * would not be proof. Only the preview route knows, and asking it is
+ * {@link previewSiteFrom}'s job.
+ */
+export function previewNodeFrom(run: RunDetail): TerminalPreview | null {
+  if (!isTerminalStatus(run.status)) return null;
+  return {
+    runId: run.runId,
+    previewPath: `/api/runs/${encodeURIComponent(run.runId)}/preview/`,
+    status: run.status,
+    verdict: verdictOf(run.heldOutPass),
+    caveat: caveatOf(run.status),
+  };
+}
+
+/**
+ * What the dashboard's preview route said when asked for the entry document.
+ *
+ * `no-index` IS ITS OWN MEMBER BECAUSE IT IS ITS OWN FACT, and it is not
+ * hypothetical: of the two finished workspaces on this machine,
+ * `run-2026-07-29…3d4d1ccb` has `index.html` at its root and
+ * `run-2026-07-30…052c6e02` does not — its site is under `site/`, beside a
+ * `server.mjs`. The second is a run with real, openable code and no entry
+ * document at the path the preview serves, and a card that offered it a link
+ * would be offering a 409.
+ *
+ * `refused` IS EVERYTHING ELSE THE SERVER MAY SAY, and it carries the server's
+ * own sentence rather than one written here. The refusal vocabulary is
+ * `code-files.ts`'s — `no_workspace`, `not_found`, `path_forbidden` and the rest
+ * — typed `string` on the server, so this deliberately does not enumerate it.
+ */
+export type PreviewSite =
+  | { readonly kind: "servable" }
+  | {
+      readonly kind: "no-index";
+      readonly message: string;
+      /** The server's sentence naming the `.html` files it DID find. */
+      readonly remediation: string;
+    }
+  | {
+      readonly kind: "refused";
+      /** The machine code, kept so a reader can search for it. */
+      readonly code: string;
+      readonly message: string;
+      readonly remediation: string | null;
+    }
+  | { readonly kind: "unreachable"; readonly message: string };
+
+/** Read one string field off an unknown body without trusting its shape. */
+function stringField(body: unknown, key: string): string | null {
+  if (typeof body !== "object" || body === null) return null;
+  const value = (body as Record<string, unknown>)[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed.slice(0, 600);
+}
+
+/**
+ * HTTP outcome -> what the card says. Pure, so the branch that must NOT offer a
+ * link is checkable without a browser.
+ *
+ * IT DOES NOT GO THROUGH `request<T>()` IN `api.ts`, and that is a mechanism
+ * decision rather than a stylistic one: `messageFromBody` there returns
+ * `message ?? error`, which DISCARDS the machine code whenever prose exists, and
+ * it never reads `remediation` at all. The `no_index_html` remediation — the
+ * sentence naming the `.html` files the server did find — is the entire content
+ * of "say so rather than offering a link that 404s", so it cannot be thrown away
+ * on the way in. The caller does its own `fetch` and hands the pieces here.
+ *
+ * KEYED ON THE CODE, NOT THE STATUS. 409 is `no_index_html` today at exactly one
+ * construction site, but the code is what the server pins and what
+ * `PreviewOwnRefusalCode` in `api-types.ts` names. Every other refusal falls to
+ * `refused`, which has a default rendering — a code this build has never heard of
+ * is a newer server, not a bug.
+ *
+ * A 2xx MEANS AN ENTRY DOCUMENT WAS SERVED. It does not mean the page renders,
+ * and no copy built on this may say that it does.
+ */
+export function previewSiteFrom(httpStatus: number, body: unknown): PreviewSite {
+  if (httpStatus >= 200 && httpStatus < 300) return { kind: "servable" };
+
+  const code = stringField(body, "error");
+  const message =
+    stringField(body, "message") ?? `the preview route answered ${String(httpStatus)}`;
+  const remediation = stringField(body, "remediation");
+
+  if (code === "no_index_html") {
+    return {
+      kind: "no-index",
+      message,
+      remediation:
+        remediation ??
+        "The preview serves the run's workspace and opens index.html; the run sheet's Code tab lists what is actually there.",
+    };
+  }
+
+  return { kind: "refused", code: code ?? String(httpStatus), message, remediation };
+}
+
+/**
+ * The dashboard's own API did not answer at all.
+ *
+ * A SEPARATE MEMBER FROM `refused` because it is a different subject: `refused`
+ * is the server declining to serve this run's site, this is nothing answering.
+ * The wording matches `api.ts`'s connection-refused sentence, which is the same
+ * failure — the local backend is not running — reached by a different route.
+ */
+export const PREVIEW_UNREACHABLE: PreviewSite = {
+  kind: "unreachable",
+  message:
+    "Could not reach the dashboard API to ask whether this run left a servable site. Is the backend process running?",
+};

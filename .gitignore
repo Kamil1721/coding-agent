@@ -49,3 +49,8 @@ dashboard/test-results/
 .env
 .env.*
 !.env.example
+
+# Published project artefacts. Copies of run workspaces, written by
+# `project-publish.ts` so the owner can find his code without a 44-character
+# run id. The run keeps its own copy under dashboard/runs/<id>/workspace/.
+/projects/

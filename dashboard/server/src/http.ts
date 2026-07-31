@@ -15,7 +15,7 @@
  * No CORS header is set anywhere, for the same reason: the only page that may
  * talk to this API is the one this server serves.
  *
- * ROUTES BEYOND THE FROZEN CONTRACT: exactly five, and all five are additive.
+ * ROUTES BEYOND THE FROZEN CONTRACT: exactly six, and all six are additive.
  *
  * `GET /api/runs/:id/screenshots/:file` serves a captured screenshot, because
  * `RunDetail.screenshots[].path` is an absolute host path that a browser cannot
@@ -39,6 +39,19 @@
  * name list, the byte cap and the redaction self-check are one module because
  * the tree walk and the content read must not be able to disagree about what may
  * be served. This function does routing and nothing else.
+ *
+ * `GET /api/runs/:id/preview/*` serves that SAME workspace as a BROWSABLE SITE —
+ * correct content types, `index.html` at the root, relative assets resolving —
+ * because `RunDetail.previewUrl` is a dead address. That field is the
+ * `http://127.0.0.1:<port>` a `deploy: true` run served on (`preview.ts`), and
+ * the process that answered it exited with the run: measured at
+ * `http://127.0.0.1:4321` with nothing listening while the artefact sat intact on
+ * disk. A preview served from HERE is live whenever anyone is looking, because
+ * the dashboard is the thing being looked at. It reuses `code-files.ts`'s
+ * refusals rather than carrying its own — a second path check on a route that
+ * streams raw bytes would be the copy that drifts, and the thing it would leak is
+ * the owner's filesystem. See `servePreview` for the trailing slash, the CSP and
+ * what neither of them covers.
  *
  * `GET|POST /api/secrets` and `GET /api/runs/:id/secrets` are the secret intake:
  * the owner pastes a credential into a form on this machine instead of into a
@@ -106,9 +119,14 @@ import type {
   RunSummary,
 } from "./api-types.js";
 import {
+  PREVIEW_INDEX_DOCUMENT,
+  decodePreviewPath,
   isRefusal,
+  previewContentType,
+  previewIndexRefusal,
   readWorkspaceFile,
   readWorkspaceTree,
+  resolvePreviewTarget,
   resolveWorkspacePath,
 } from "./code-files.js";
 import { foldGraphAll } from "./graph.js";
@@ -121,8 +139,9 @@ import type { RunRow, RunStore } from "./db.js";
 import { DESIGN_MOCKUP_LABEL, readDesignLock } from "./design-lock.js";
 import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
-import { describeError } from "./orchestrator.js";
+import { describeError, silenceOf } from "./orchestrator.js";
 import type { DashboardPaths } from "./paths.js";
+import { readPublishedProject } from "./project-publish.js";
 import { runPathsFor, safeSegment } from "./paths.js";
 import {
   containsStoredSecret,
@@ -373,7 +392,12 @@ function readAdversaryPass(resultsDir: string): ApiAdversaryPass | null {
   }
 }
 
-function toDetail(row: RunRow, store: RunStore, paths: DashboardPaths): RunDetail {
+function toDetail(
+  row: RunRow,
+  store: RunStore,
+  paths: DashboardPaths,
+  env: NodeJS.ProcessEnv,
+): RunDetail {
   const screenshots = store.listScreenshots(row.runId);
   // ABSENT MEANS "NO DESIGN LANE", AND THAT IS NOT THE SAME AS AN EMPTY LOCK.
   // The record is written by the lane itself, so a run that never had one has
@@ -394,9 +418,38 @@ function toDetail(row: RunRow, store: RunStore, paths: DashboardPaths): RunDetai
     // not become a dollar figure here or anywhere else.
     costUsd: null,
     rateLimit: { limited: row.rateLimited, retryAfterSec: row.rateLimitRetryAfterSec },
+    /*
+     * HOW LONG THIS RUN HAS BEEN QUIET — DERIVED PER REQUEST, PERSISTED NOWHERE.
+     *
+     * `silenceOf` owns every rule, including the one a call site would get wrong:
+     * it returns `null` for anything that is not `running`, and `null` MEANS "NOT
+     * WATCHED" rather than "healthy". A queued run has not started, the two parks
+     * are supposed to be quiet, and a terminal run is finished — none of them is a
+     * measurement, and none of them may render as a green tick. Read
+     * `ApiRunSilence` before rendering any of it.
+     *
+     * `deps.env ?? process.env` is the same default the gate probe takes above,
+     * and for the same reason: `main()` is invoked with no argument in the only
+     * production path, so the two are the same object.
+     */
+    silence: silenceOf(row, store, env),
     screenshots,
     artifactPath: row.artifactPath,
     previewUrl: row.previewUrl,
+    /*
+     * WHERE THE FINISHED CODE WAS COPIED, or `null` when no publish was recorded.
+     *
+     * THREE STATES, NOT TWO. `null` is "nothing was attempted, as far as this
+     * server can tell" — no record file, a run that has not gone terminal, or one
+     * that finished before the lane existed; `{published: false}` is "it was
+     * attempted and declined", with the refusal named. Collapsing them into "no
+     * folder" is the conflation `ApiPublishedProject` exists to refuse.
+     *
+     * READ SERVER-SIDE FROM `results/`, which is NOT opened to the browser and
+     * must not be: it holds held-out test titles, and the workspace-only fence in
+     * `code-files.ts` is a security control rather than a routing convenience.
+     */
+    publishedProject: readPublishedProject(results),
     // Both straight off the row, and both mean "nothing recorded yet" at their
     // zero value rather than "unknown". See api-types.ts.
     inferredCriteria: row.inferredCriteria,
@@ -677,7 +730,7 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
 
   // GET /api/runs/:id
   if (segments.length === 3 && method === "GET") {
-    sendJson(response, 200, toDetail(row, deps.store, deps.paths));
+    sendJson(response, 200, toDetail(row, deps.store, deps.paths, deps.env ?? process.env));
     return;
   }
 
@@ -701,10 +754,20 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
 
   /* GET /api/runs/:id/messages — the owner↔run chat, oldest first.
    *
+   * BOTH DIRECTIONS, IN ONE SEQUENCE. `role` is `owner` or `run`, and ordering by
+   * `seq` (which `RunStore.messages` does) is what makes a reply readable as a
+   * reply — a client sorting by `at` would be sorting two clocks that agree only
+   * by luck. `run` rows have had a producer since 2026-07-31: the agent's own last
+   * message of a segment, stored verbatim by `AgentReplyWatch` and stored only
+   * when it actually said something. A run that answered nothing has no row here,
+   * and that ABSENCE is the honest state — this route never manufactures one.
+   *
    * Served from the durable table, like everything else here. `deliveredAt: null`
-   * on a message means the run has not folded it into a prompt yet — and on a
-   * FINISHED run it means it never did, which the UI renders as such rather than
-   * implying the instruction landed. */
+   * on an OWNER message means the run has not folded it into a prompt yet — and on
+   * a FINISHED run it means it never did, which the UI renders as such rather than
+   * implying the instruction landed. On a `run` row it is always null and means
+   * NOTHING: nothing here can know whether the owner read a reply. The chat panel
+   * gates the delivery line on `role === "owner"` for exactly that reason. */
   if (segments.length === 4 && segments[3] === "messages" && method === "GET") {
     sendJson(response, 200, { messages: deps.store.messages(runId) });
     return;
@@ -797,6 +860,20 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
   // and hand the caller the traversal the check exists to stop.
   if (segments.length === 4 && segments[3] === "files" && method === "GET") {
     serveCode(deps, runId, url.searchParams.get("path"), response);
+    return;
+  }
+
+  /* GET /api/runs/:id/preview/*  (additive; see the file header)
+   *
+   * `>= 4`, NOT `=== n`: everything after `preview` is the path inside the
+   * workspace, and a site's assets are at arbitrary depth. `url` is passed whole
+   * rather than the tidied `path` computed at the top of this function, because
+   * that one has had its TRAILING SLASH STRIPPED and the trailing slash is the
+   * difference between `styles.css` resolving inside the preview and one level
+   * above it. `segments` are still percent-encoded here — `URL.pathname` does not
+   * decode — which is what `decodePreviewPath` is for. */
+  if (segments.length >= 4 && segments[3] === "preview" && method === "GET") {
+    servePreview(deps, runId, segments.slice(4), url, response);
     return;
   }
 
@@ -1811,6 +1888,159 @@ function serveCode(deps: HttpDeps, runId: string, rawPath: string | null, respon
     return;
   }
   sendJson(response, 200, file);
+}
+
+/**
+ * The policy every preview response carries.
+ *
+ * IT IS NOT A SANDBOX AND MUST NOT BE READ AS ONE. The document is served from
+ * the dashboard's OWN ORIGIN — there is only one port — so the run's JavaScript
+ * runs beside the dashboard's. What this header removes is the single capability
+ * that fact creates: `connect-src 'none'` stops fetch, XHR, EventSource,
+ * WebSocket and `sendBeacon`, and `form-action 'none'` stops a form POST, so a
+ * built page cannot call `POST /api/runs` (spending the owner's subscription),
+ * `POST /api/runs/:id/cancel`, or read any route's body. `base-uri 'none'` stops
+ * a `<base>` tag re-pointing every relative asset out of the preview.
+ *
+ * THERE IS NO `default-src`, DELIBERATELY. `default-src 'self'` would block the
+ * inline `<style>` and inline `<script>` that essentially every generated site
+ * uses, and a preview that renders blank is worse than no preview: a white page
+ * is exactly what a broken build looks like, so the two become
+ * indistinguishable. Third-party fonts and CDNs keep working for the same
+ * reason. `sandbox allow-scripts` was the other candidate and was rejected on
+ * mechanism, not taste — it puts the document on an opaque origin, which makes
+ * ES modules require CORS the dashboard does not send and makes `localStorage`
+ * THROW, killing the first script of a site that remembers a theme.
+ *
+ * WHAT IT DOES NOT COVER, stated because a reader will assume otherwise: a
+ * top-level navigation or a subresource GET (`<img src="/api/…">`) to another
+ * route is still possible. Every such route is read-only, and none returns a
+ * credential value — `sendSecretJson` refuses to send a body containing one, and
+ * the secret store lives outside every workspace. `frame-ancestors 'self'` lets
+ * the dashboard's own page frame this and nothing else; since the server binds
+ * loopback there is no other origin that could try.
+ */
+const PREVIEW_CSP =
+  "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
+
+/**
+ * Serve the run's workspace as a website.
+ *
+ * ROUTING AND HTTP ONLY. Which paths exist and which are refused is
+ * `code-files.ts`'s — `resolvePreviewTarget` runs the same shape check, deny
+ * list, realpath containment and bake-off assertion the code browser runs, which
+ * is why `results/` is unreachable from here: it is a SIBLING of the workspace
+ * (`runs/<id>/results/`) and three levels up (`<home>/results/`), so the fence
+ * that keeps everything inside `workspace/` keeps the held-out test titles out
+ * with no name-based rule to forget to extend.
+ *
+ * THE REDIRECT IS THE PART THAT LOOKS COSMETIC AND IS NOT. A document fetched at
+ * `…/preview` resolves its own `styles.css` against `…/`, i.e. `/api/runs/:id/`,
+ * where nothing lives — the page renders unstyled and scriptless and reads as a
+ * failed build rather than a mis-linked one. So a directory reached WITHOUT a
+ * trailing slash answers 302 to the same path with one, exactly as every static
+ * server does, and only then is `index.html` read. `url.search` is carried
+ * across so a query the client uses for its own bookkeeping survives the hop.
+ *
+ * A MISSING `index.html` IS A NAMED 409, not a 404 and not a blank 200; see
+ * `previewIndexRefusal` for why the status is a conflict rather than a
+ * not-found. Every other refusal arrives already worded from `code-files.ts`.
+ */
+function servePreview(
+  deps: HttpDeps,
+  runId: string,
+  rest: readonly string[],
+  url: URL,
+  response: ServerResponse,
+): void {
+  const workspace = runPathsFor(deps.paths, runId).workspace;
+
+  const decoded = decodePreviewPath(rest);
+  if (!decoded.ok) {
+    const { status, code, message, remediation } = decoded.refusal;
+    sendError(response, status, code, message, remediation);
+    return;
+  }
+
+  const resolved = resolvePreviewTarget(workspace, decoded.path);
+  if (resolved.kind === "refusal") {
+    const { status, code, message, remediation } = resolved.refusal;
+    sendError(response, status, code, message, remediation);
+    return;
+  }
+
+  if (resolved.kind === "directory") {
+    if (!url.pathname.endsWith("/")) {
+      // 302 AND NOT 301: a permanent redirect is cached by the browser for the
+      // life of the profile, and this one is a statement about a directory that
+      // a running build can turn into a file.
+      response.writeHead(302, {
+        Location: `${url.pathname}/${url.search}`,
+        "Cache-Control": "no-store",
+        "Content-Length": 0,
+      });
+      response.end();
+      return;
+    }
+    const indexPath =
+      resolved.path === "" ? PREVIEW_INDEX_DOCUMENT : `${resolved.path}/${PREVIEW_INDEX_DOCUMENT}`;
+    const index = resolvePreviewTarget(workspace, indexPath);
+    if (index.kind !== "file") {
+      // EVERY non-file answer here becomes the SAME named refusal — missing,
+      // itself a directory, or refused on its way through. The distinction the
+      // owner needs is "your build has no entry document", and reporting
+      // `not_found` for a path the client never asked for would send them
+      // looking for a file called `index.html` in a URL they never typed.
+      const { status, code, message, remediation } = previewIndexRefusal(resolved.target, resolved.path);
+      sendError(response, status, code, message, remediation);
+      return;
+    }
+    sendPreviewFile(index.target, indexPath, response);
+    return;
+  }
+
+  sendPreviewFile(resolved.target, resolved.path, response);
+}
+
+/**
+ * Stream one file of the preview.
+ *
+ * NO `Content-Length`, SO THE RESPONSE IS CHUNKED. A run's workspace is written
+ * while the run is going, so a size measured before the read can be wrong by the
+ * time the read finishes — and a body that disagrees with its own
+ * `Content-Length` is a hung tab or a truncated asset, neither of which reads as
+ * "the file changed". Chunked costs a few bytes per response on a loopback
+ * socket.
+ *
+ * NO BYTE CAP EITHER, which is the opposite of `readWorkspaceFile`'s
+ * `MAX_FILE_BYTES`. That cap exists because a 12 MB transcript rendered into a
+ * JSON string in a browser tab freezes it; a browser streaming a 12 MB image
+ * handles it natively, and truncating a PNG produces a broken image with no
+ * explanation. Nothing is buffered in this process either way.
+ *
+ * THE STREAM'S `error` IS HANDLED. Headers are already sent by then, so there is
+ * no status left to change and the only honest move is to break the connection —
+ * but an unhandled `error` on a stream takes the whole server down, and a file
+ * disappearing mid-read is a thing a live workspace genuinely does.
+ */
+function sendPreviewFile(target: string, relPath: string, response: ServerResponse): void {
+  response.writeHead(200, {
+    "Content-Type": previewContentType(relPath),
+    // The workspace changes under a running run; a cached asset would show the
+    // owner a build that no longer exists.
+    "Cache-Control": "no-store",
+    // With the octet-stream fallback in `previewContentType`, this means an
+    // extension the table has never heard of DOWNLOADS instead of rendering.
+    // That is the deliberate direction: the alternative is a browser sniffing an
+    // unknown file into HTML and running it on the dashboard's own origin.
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": PREVIEW_CSP,
+  });
+  const stream = createReadStream(target);
+  stream.on("error", () => {
+    response.destroy();
+  });
+  stream.pipe(response);
 }
 
 /**

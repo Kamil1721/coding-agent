@@ -191,6 +191,45 @@ export interface RateLimitState {
   readonly retryAfterSec: number | null;
 }
 
+/**
+ * HOW LONG A RUN HAS BEEN QUIET. NOT A DIAGNOSIS — mirrors `ApiRunSilence`.
+ *
+ * WHY IT EXISTS: a run on this machine sat `running` for eight and a half hours
+ * with an idle subprocess and a 506-minute gap between two rows of its own event
+ * stream, and no screen anywhere said so.
+ *
+ * WHAT IT IS NOT. There is no `dead`, no `hung` and no `stalled` here, because
+ * the server cannot establish any of them: a model that is thinking, a process
+ * blocked on a socket and a crashed subprocess all look exactly like this. The
+ * research this project is built on (doc 03 §7.8) records that 79% of unresolved
+ * long-horizon runs time out while STILL ACTIVELY MAKING PROGRESS, and warns
+ * against acting on stuck-detection heuristics. Render it as an observation the
+ * owner can act on — "nothing heard for 94 min" — and never as a verdict.
+ *
+ * `RunDetail.silence === null` MEANS NOT WATCHED, NOT HEALTHY. Only a `running`
+ * run is measured; `queued`, `awaiting_input`, `rate_limited` and every terminal
+ * status report `null`, and the parks are quiet on purpose.
+ */
+export interface RunSilence {
+  /** The instant the silence is measured from. See `sinceKind` for which instant. */
+  readonly since: string;
+  /**
+   * `last-event` — `since` is the newest event on the run's stream.
+   * `run-start` — the run has emitted nothing at all, so `since` is its start.
+   * Do not collapse them: the second is a run that has never spoken.
+   */
+  readonly sinceKind: "last-event" | "run-start";
+  /**
+   * Whole minutes, floored, AT RESPONSE TIME. A snapshot, not a ticking value —
+   * derive a live counter from `since`, which stays true between polls.
+   */
+  readonly quietMin: number;
+  /** The server's threshold in minutes (`DASHBOARD_SILENCE_WARN_MIN`, default 90). */
+  readonly thresholdMin: number;
+  /** `quietMin >= thresholdMin`. "Longer than expected", not "stuck". */
+  readonly overThreshold: boolean;
+}
+
 export interface Screenshot {
   readonly path: string;
   readonly label: string;
@@ -300,6 +339,68 @@ export interface AdversaryPass {
   readonly findings: readonly AdversaryFinding[] | null;
 }
 
+/**
+ * Something in the workspace that was NOT copied into the published project —
+ * the server's `ApiProjectExclusion`, mirrored by hand.
+ *
+ * RENDER IT, DO NOT HIDE IT. A folder that quietly drops `visible-acceptance/`
+ * looks exactly like a copy that failed halfway. `path` is relative to the
+ * workspace root, which is the same spelling the file viewer's `?path=` takes.
+ */
+export interface ProjectExclusion {
+  readonly path: string;
+  readonly reason: string;
+}
+
+/**
+ * Where the run's finished code was COPIED so the owner can find it — the
+ * server's `ApiPublishedProject`, mirrored by hand.
+ *
+ * THE POINT OF IT. The artefact lives at
+ * `dashboard/runs/<44-character run id>/workspace/`, which the owner said he
+ * cannot find and which does not read as his project. On a terminal run the
+ * server copies it to `projects/<slug-of-the-ticket-title>/`.
+ *
+ * IT IS A HOST PATH, NOT A LINK. A browser cannot open it — the same as
+ * `artifactPath`, `verdictPath` and `screenshots[].path`. And it is NOT
+ * `previewUrl`: that is a dead address on every run this machine has recorded
+ * (the process that served it exited with the run), so do not turn this into an
+ * anchor and do not put the two behind one button.
+ *
+ * THREE STATES. `null` = nothing recorded (not terminal yet, or older than this
+ * lane); `published: false` = ATTEMPTED AND DECLINED, with `reason` and
+ * `detail`; `published: true` = the copy exists. Rendering the first two the
+ * same way ("no folder") throws away the only sentence that says why.
+ *
+ * IT IS NOT A QUALITY SIGNAL. A FAILED run publishes too — a failed build's code
+ * is still the thing the owner asked to be able to open — so never place this
+ * next to a green badge as though it meant the run succeeded. `heldOutPass` is
+ * the field that says that.
+ */
+export type PublishedProject =
+  | {
+      readonly published: true;
+      /** Absolute host path of the copy. */
+      readonly path: string;
+      readonly publishedAt: string;
+      /** Regular files copied; directories are not counted. */
+      readonly fileCount: number;
+      readonly bytes: number;
+      /** What was left behind, and why. Empty means nothing was filtered. */
+      readonly excluded: readonly ProjectExclusion[];
+    }
+  | {
+      readonly published: false;
+      /**
+       * Which refusal. The server's vocabulary is `workspace-missing`,
+       * `workspace-empty`, `no-free-name`, `copy-failed` — typed `string` on both
+       * sides deliberately, so every renderer keeps a default branch.
+       */
+      readonly reason: string;
+      readonly detail: string;
+      readonly attemptedAt: string;
+    };
+
 export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: RunPhase;
@@ -312,9 +413,28 @@ export interface RunDetail extends RunSummary {
    */
   readonly costUsd: number | null;
   readonly rateLimit: RateLimitState | null;
+  /**
+   * How long this run has been quiet, or `null` when it is not being watched.
+   *
+   * The server derives it per request from the run's own event rows, so it is
+   * correct the instant a restarted dashboard answers — there is no timer to
+   * miss and no column to go stale. See `RunSilence` before rendering: `null` is
+   * "not watched", and `overThreshold` is "nothing heard for N minutes", not a
+   * claim that the run has died.
+   */
+  readonly silence: RunSilence | null;
   readonly screenshots: readonly Screenshot[];
   readonly artifactPath: string | null;
   readonly previewUrl: string | null;
+  /**
+   * Where the finished code was copied so the owner can find it, or `null` when
+   * no publish has been recorded for this run.
+   *
+   * See `PublishedProject`: three states, and `null` ("never attempted") is not
+   * `published: false` ("attempted and declined"). Written when the run goes
+   * terminal, so a live run legitimately reports `null`.
+   */
+  readonly publishedProject: PublishedProject | null;
   /**
    * Criteria the run was graded against that the OWNER DID NOT STATE — the
    * grader's guesses plus the house defaults. A pass against criteria nobody
@@ -1013,3 +1133,65 @@ export interface CodeFileResponse {
   readonly redactions: number;
   readonly withheld: string | null;
 }
+
+/* -------------------------------------------------------------------------
+ * `GET /api/runs/:id/preview/*` — the built site, served BY THE DASHBOARD
+ *
+ * Transcribed from `server/src/api-types.ts`.
+ *
+ * DO NOT LINK TO `RunDetail.previewUrl`. It is a HISTORICAL RECORD, not a live
+ * address: it is the `http://127.0.0.1:<port>` that a `deploy: true` run served
+ * its workspace on, and the process that answered it exited with the run.
+ * Measured on the one recorded run — `previewUrl` is `http://127.0.0.1:4321`,
+ * nothing is listening, and the code is intact on disk. Anything that links there
+ * links to nothing. This route is the live address, because the dashboard is by
+ * definition running when someone is looking at its page.
+ *
+ *   /api/runs/:id/preview/            -> the workspace's index.html
+ *   /api/runs/:id/preview/styles.css  -> that file, as text/css
+ *   /api/runs/:id/preview/docs/       -> docs/index.html
+ *   /api/runs/:id/preview             -> 302 to the form with the slash
+ *
+ * THE TRAILING SLASH IS LOAD-BEARING AND THE CLIENT MUST SEND IT. Without it the
+ * browser resolves `styles.css` inside the document against `/api/runs/:id/` —
+ * one level too high — and every relative asset 404s, so the page renders
+ * unstyled and reads as a broken build. The server does answer the no-slash form
+ * with a 302, so a link that forgets is slow rather than wrong; a link that
+ * remembers is neither.
+ *
+ * WHAT COMES BACK IS BYTES, so there is no response interface here — open it in
+ * an `<iframe>` or a tab. A REFUSAL is the same `{error, message, remediation}`
+ * body every other route answers with, so render the server's sentence: it is
+ * written to be actionable and the client has less information than it does.
+ *
+ * IT IS NOT A SANDBOX, and a client that frames it should say so to itself. The
+ * document is served from the dashboard's own origin, so the run's JavaScript
+ * runs there. The server sends `connect-src 'none'; form-action 'none'` to remove
+ * the one capability the route creates — the previewed page calling this API —
+ * and removes nothing else, because a preview that cannot render is not a
+ * preview. Opening it in a NEW TAB wants `rel="noopener"`; framing it wants a
+ * `sandbox` attribute if the client is willing to pay what that costs (an opaque
+ * origin breaks ES modules and makes `localStorage` throw, which breaks a fair
+ * number of generated sites).
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The refusal codes the preview route itself authors, and NOT the full set.
+ *
+ * Every other refusal it can answer with belongs to the server's
+ * `code-files.ts` — `path_escapes_workspace`, `path_forbidden`, `no_workspace`,
+ * `not_found` and the rest, the same ones `GET /api/runs/:id/files` answers with.
+ * They are deliberately not enumerated: the server types that field as a plain
+ * `string`, so a union claiming to list them would be a promise nothing checks.
+ * These three are pinned at their construction sites on the server.
+ *
+ * `no_index_html` — 409, the one worth a bespoke rendering. The workspace exists
+ * and has no `index.html`; the server's `remediation` names the `.html` files it
+ * DID find, which is what tells a wrongly-named entry point apart from a build
+ * that produced nothing. A run in this state has code worth opening in the file
+ * browser, so offer that rather than a dead end.
+ *
+ * `invalid_encoding` — 400, a malformed `%` escape in the path.
+ * `not_a_file` — 403, the path is neither a file nor a directory.
+ */
+export type PreviewOwnRefusalCode = "no_index_html" | "invalid_encoding" | "not_a_file";

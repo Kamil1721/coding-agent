@@ -5,7 +5,9 @@
  *
  * WHAT IT IS. The owner types an instruction (and optionally drops images) and it
  * goes into the RUNNING session, picked up at the agent's next step — the same
- * behaviour as typing into the interactive CLI while it works.
+ * behaviour as typing into the interactive CLI while it works. Since 2026-07-31
+ * the run can answer, and this panel renders both directions; see THE REPLY
+ * DIRECTION below, which is the half with the traps in it.
  *
  * CORRECTION, 2026-07-30. This file used to say "there is no supported way to push a
  * turn into a running Claude Agent SDK session from outside it". That was wrong, and
@@ -41,6 +43,53 @@
  *   - read at T   — the instant, off the server's own stamp;
  *   - never read  — the run ended first. This one MUST be visible: the owner
  *                   otherwise believes a redirection landed that no builder read.
+ *
+ * ============================================================================
+ * THE REPLY DIRECTION, ADDED 2026-07-31 — AND THE SILENCE IS THE FEATURE
+ * ============================================================================
+ *
+ * WHAT IT CLOSES, MEASURED. The owner asked a live run "Give me the link to the
+ * website". The row shows it delivered and stamped read, and NOTHING came back —
+ * not because the agent said nothing, but because no code path turned anything it
+ * said into a `messages` row. He noticed and said so. `role: "run"` had been in
+ * the type since the table existed with no producer behind it.
+ *
+ * WHAT A `run` ROW ACTUALLY IS, STATED EXACTLY, BECAUSE IT IS EASY TO OVERCLAIM.
+ * `AgentReplyWatch` (`server/src/owner-message.ts`) stores THE AGENT'S OWN LAST
+ * TEXT-BEARING TURN OF THE SEGMENT, verbatim, capped at 2000 characters. It is not
+ * a generated answer, not a transcript, and not a guarantee the question was even
+ * addressed — on a segment cut short by a cancel or a rate limit it is simply the
+ * last thing the agent happened to narrate. The copy under the composer says this
+ * in one sentence rather than letting the panel imply the run wrote back to him.
+ *
+ * NO DELIVERY LINE UNDER A `run` ROW, AND THIS FILE IS WHERE THAT RULE LIVES.
+ * `ChatMessage.deliveredAt` is a property of an OWNER row: on a `run` row it is
+ * always null and means NOTHING AT ALL — "delivered to whom?" has no answer for a
+ * reply and this program has no signal that the owner read anything.
+ * `server/src/db.ts:268-274` names `orchestrator-chat.tsx` as the enforcer, so the
+ * `role === "owner"` gate in {@link Message} is load-bearing, not cosmetic: drop it
+ * and every reply grows a "never read" line that measures nothing.
+ *
+ * "THE RUN HAS NOT ANSWERED" IS A RENDERED STATE, NOT AN EMPTY GAP — see
+ * {@link replyGap}. The server deliberately stores nothing when a segment produced
+ * no assistant text, so the absence of a reply is a designed outcome the owner
+ * would otherwise sit and wait through. The row this panel draws for it says NO
+ * REPLY WAS RECORDED and never "the agent said nothing": the client sees only the
+ * absence of a row, and at least three different things produce it — a segment
+ * with no text-bearing turn, a run that went terminal before `record` was reached,
+ * and a segment that never ended at all. Naming the mechanism keeps the sentence
+ * true under all three, the same discipline `RunSilence` uses.
+ *
+ * THIS PANEL CANNOT WATCH A REPLY ARRIVE, AND THE COPY MUST NOT PRETEND IT CAN.
+ * `runs/[runId]/page.tsx:314-340` fetches messages on exactly three paths —
+ * `openChat`, `changeRunSheetTab("chat")` and `onSendMessage`. There is no timer
+ * and no SSE hook, and a reply is written at the END of a build segment, which can
+ * be an hour after the question. So a chat left open shows the list as it was when
+ * it was opened: the waiting row tells the owner to reopen the tab, because that
+ * really does re-read, rather than promising an arrival this component cannot
+ * observe. A poll while the tab is open is a caller change and is deliberately not
+ * faked here — the server already emits `the run answered in the chat` on the event
+ * stream, which is the hook a caller would refetch on.
  *
  * IT IS SHOWN ON THE ORCHESTRATOR NODE ONLY. A sub-agent has no session to inject
  * into — it is spawned with a prompt and it ends — so a chat box on one would be a
@@ -88,14 +137,103 @@ import {
   type IntakePolicy,
 } from "@/lib/attachments";
 
-/** Mirrors the server's `ChatMessage`. */
+/**
+ * Mirrors the server's `ChatMessage` (`dashboard/server/src/db.ts:255`).
+ *
+ * IT IS THE THIRD COPY OF THIS SHAPE AND THAT IS WORTH KNOWING BEFORE EDITING IT.
+ * The server owns it, `src/lib/api.ts:245` mirrors it for the fetch layer, and this
+ * one is what the panel renders. `runs/[runId]/page.tsx` imports the api.ts one and
+ * passes it here, so the two client copies meet only STRUCTURALLY — a field added
+ * to one and not the other compiles clean and simply never arrives. NOTHING CHECKED
+ * ON 2026-07-31 COMPARES THEM: `contract-parity.test.ts` does read `src/lib/api.ts`
+ * as text, but only the `createRun` region for the design-lock policy, and neither
+ * api-types file declares a chat message at all; no test reads this file. That is a
+ * statement about the two files that were read, not a proof about the whole suite.
+ *
+ * `role` IS A DIRECTION, NOT AN AUTHOR: `run` is text the agent itself produced, and
+ * the server refuses to write a row of its own composition under it.
+ */
 export interface ChatMessage {
   readonly seq: number;
   readonly at: string;
   readonly role: "owner" | "run";
   readonly text: string;
   readonly images: readonly string[];
+  /**
+   * OWNER ROWS ONLY. Always null on a `run` row, where it means nothing — see the
+   * file header, and do not render a delivery line from it there.
+   */
   readonly deliveredAt: string | null;
+}
+
+/**
+ * The conversation is waiting on a reply that may never come.
+ *
+ * TWO KINDS, AND THE DIFFERENCE IS WHETHER ANYTHING CAN STILL CHANGE:
+ * `waiting` is a live run (a reply may yet be recorded, or may not), `unanswered`
+ * is a terminal one — nothing more will be written, so the gap is final.
+ *
+ * `read` IS TRUE IF **ANY** OWNER MESSAGE SINCE THE LAST REPLY WAS DELIVERED, not
+ * just the newest one, and that is a correctness fix rather than a nicety. Take the
+ * real shape of an unanswered conversation: "Give me the link to the website" is
+ * delivered and stamped `read at 05:49`, nothing comes back, and the owner types
+ * "hello?" which is still queued. Reading the tail alone gives `read: false` and the
+ * row says "not read yet, so there is nothing to answer" DIRECTLY UNDER a message
+ * this same panel has labelled `read at 05:49` — a self-contradiction on screen, and
+ * it buries the one fact the row exists for: a message that WAS read went
+ * unanswered. It is carried at all so the row can say WHY there is no answer;
+ * nothing reached a prompt is a different fact from read-and-silent.
+ */
+export type ReplyGap =
+  | { readonly kind: "waiting"; readonly read: boolean }
+  | { readonly kind: "unanswered"; readonly read: boolean };
+
+/**
+ * Is the last thing in this conversation an unanswered owner message? `null` when
+ * there is nothing to say.
+ *
+ * IT IS A PROPERTY OF THE TAIL, NOT OF EACH MESSAGE, and that is forced by the
+ * server rather than chosen for tidiness: `AgentReplyWatch.record` fires ONCE PER
+ * SEGMENT, gated on `ownerMessagesDeliveredSince`, so three messages sent inside one
+ * segment are answered by at most one `run` row. Marking each owner message
+ * answered/unanswered would attribute one reply to one question, which is a claim
+ * the mechanism cannot support.
+ *
+ * IT RELIES ON `messages` BEING IN SEQ ORDER, which `RunStore.messages` guarantees
+ * (`ORDER BY seq ASC`, db.ts:968) and `page.tsx` passes through untouched. Given
+ * that, every row after the last owner row is a `run` row, so the tail element
+ * decides it — and the deliberately naive `messages.some(m => m.role === "run")`
+ * would answer a NEW question with an OLD reply, which is the case a test has to
+ * cover.
+ *
+ * EXPORTED FOR A UNIT SPEC, which does not exist yet: this component's files were
+ * the whole of the change that added it, so `dashboard/tests/chat-reply.unit.spec.ts`
+ * is a handoff and the rule below is currently unwatched.
+ */
+export function replyGap(
+  messages: readonly ChatMessage[],
+  runIsOver: boolean,
+): ReplyGap | null {
+  const last = messages[messages.length - 1];
+  // An empty conversation and one that ends in a reply are both "nothing to say".
+  // The second is the whole reason this is not a `some()` over the list.
+  if (last === undefined || last.role === "run") return null;
+
+  /*
+   * WALK BACK TO THE LAST REPLY, NOT JUST TO THE TAIL. Everything after it is the
+   * unanswered run of owner messages, and one delivered message anywhere in that
+   * run is enough for "it was read": the reply the segment owed covers the whole
+   * group, so a newer queued message must not downgrade the sentence. See the
+   * worked example on {@link ReplyGap}.
+   */
+  let read = false;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message === undefined || message.role === "run") break;
+    if (message.deliveredAt !== null) read = true;
+  }
+
+  return runIsOver ? { kind: "unanswered", read } : { kind: "waiting", read };
 }
 
 const MAX_TEXT_CHARS = 8_000;
@@ -125,10 +263,17 @@ const DOCUMENTS_NOT_WIRED =
   "Attach it to the ticket when you start a run.";
 
 /**
- * One message, with its delivery state spelled out.
+ * One message in either direction, with an OWNER message's delivery state spelled
+ * out under it.
+ *
+ * ONE COMPONENT FOR BOTH ROLES, deliberately: the two rows differ by three class
+ * strings and one gated line, and splitting them would put the `role === "owner"`
+ * rule the server points at (`db.ts:268-274`) in a file where a reply row could
+ * later be built without it.
  *
  * `runIsOver` is what turns a null stamp from "waiting" into "never seen", and it is
- * a prop rather than derived here because only the caller knows the run's status.
+ * a prop rather than derived here because only the caller knows the run's status. It
+ * says nothing about a `run` row, which carries no delivery state at all.
  */
 function Message({
   message,
@@ -165,10 +310,19 @@ function Message({
         : { label: "queued — not read yet", tone: "text-ink-faint" };
 
   return (
+    /*
+     * THREE DISTINCTIONS, NOT ONE, BECAUSE COLOUR ALONE IS NOT A DISTINCTION.
+     * The two directions differ by INDENT (owner rows are pushed right, run rows
+     * left), by surface (accent tint vs raised panel) and by the role label. A
+     * reader with a colour deficiency, or reading a greyscale screenshot in a
+     * findings doc, still sees whose turn a row is.
+     */
     <li
       className={cx(
         "rounded-sm border px-2 py-1.5",
-        mine ? "border-accent/30 bg-accent/[0.06]" : "border-line bg-surface-raised",
+        mine
+          ? "ml-5 border-accent/30 bg-accent/[0.06]"
+          : "mr-5 border-line-strong bg-surface-raised",
       )}
     >
       <div className="flex items-baseline justify-between gap-2">
@@ -189,7 +343,63 @@ function Message({
           {message.images.length} image{message.images.length === 1 ? "" : "s"} attached
         </p>
       )}
+      {/*
+        * THE DELIVERY LINE IS GATED ON `owner` AND MUST STAY THAT WAY. A reply's
+        * `deliveredAt` is always null and carries no meaning (`db.ts:268-274`
+        * names this file as the enforcer); ungated, every reply would grow a
+        * "never read" line describing nothing.
+        */}
       {mine && <p className={cx("mt-1 text-[10.5px]", state.tone)}>{state.label}</p>}
+    </li>
+  );
+}
+
+/**
+ * The row that stands where a reply would be — the point of the whole feature.
+ *
+ * IT IS AN ABSENCE DRAWN AS A ROW, so it is dashed, carries the label NO REPLY
+ * rather than "the run", and sits on the run's side of the list. Nothing here may
+ * read as the run speaking: it is this panel's statement about the record, not a
+ * message.
+ *
+ * EVERY SENTENCE BELOW IS ABOUT WHAT WAS RECORDED, NEVER ABOUT WHAT THE AGENT DID.
+ * The client cannot tell a segment that produced no assistant text from a run that
+ * went terminal before the reply was written, so "no reply was recorded" is the
+ * strongest true form. "The agent said nothing" would be a diagnosis from the one
+ * bit this component has.
+ *
+ * THE REOPEN INSTRUCTION IS CHECKABLE, WHICH IS WHY IT IS THERE INSTEAD OF A
+ * PROMISE: `page.tsx` refetches on `openChat` and on `changeRunSheetTab("chat")`,
+ * so leaving the Chat tab and coming back really does re-read the list. Nothing
+ * refetches while it sits open.
+ */
+function ReplyGapRow({ gap }: { gap: ReplyGap }): ReactNode {
+  /*
+   * THE SENTENCES SAY "WHAT YOU SENT", NOT "YOUR MESSAGE". `gap.read` describes the
+   * whole unanswered run of owner messages, which can be more than one and can be
+   * mixed — read and queued — so a singular possessive would name a specific row the
+   * row above may be contradicting. Each message's own state stays under it.
+   */
+  const final = gap.kind === "unanswered";
+  const sentence = final
+    ? gap.read
+      ? "The run read what you sent and no reply was recorded before it ended. Nothing more can arrive."
+      : "The run ended without reading what you sent, so nothing was ever there to answer it."
+    : gap.read
+      ? "It reached the run, and no reply has been recorded yet. One is stored when a build segment ends, and only if the agent produced text — reopen this tab to re-read."
+      : "Not read yet, so there is nothing to answer. Reopen this tab to re-read.";
+
+  return (
+    <li className="mr-5 rounded-sm border border-dashed border-line-strong px-2 py-1.5">
+      <span
+        className={cx(
+          "text-[10px] font-semibold uppercase tracking-[0.1em]",
+          final ? "text-warn" : "text-ink-faint",
+        )}
+      >
+        {final ? "the run did not answer" : "no reply yet"}
+      </span>
+      <p className="mt-1 text-[11px] leading-relaxed text-ink-dim">{sentence}</p>
     </li>
   );
 }
@@ -231,6 +441,8 @@ export function OrchestratorChat({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+
+  const gap = replyGap(messages, runIsOver);
 
   /**
    * ONE FIELD CARRIES BOTH THE POLICY AND THE SENTENCE — `null` accepts
@@ -314,6 +526,13 @@ export function OrchestratorChat({
           {messages.map((message) => (
             <Message key={message.seq} message={message} runIsOver={runIsOver} />
           ))}
+          {/*
+            * LAST IN THE LIST, WHERE THE MISSING REPLY WOULD BE. Derived on every
+            * render rather than memoised: it is one array-tail read, and a stale
+            * "the run did not answer" under a reply that has since arrived is the
+            * exact lie this row exists to prevent.
+            */}
+          {gap !== null && <ReplyGapRow gap={gap} />}
         </ul>
       )}
 
@@ -333,9 +552,8 @@ export function OrchestratorChat({
       <div className="mt-1.5 space-y-1.5">
         {runIsOver && (
           <p className="rounded-sm border border-dashed border-line-strong px-2 py-1.5 text-[11.5px] leading-relaxed text-ink-dim">
-            This run has finished, so there is no next agent to brief — the server
-            refuses a message to a terminal run rather than queueing it into nothing.
-            Start a new run to use this.
+            This run has finished — the server refuses a message to a terminal run
+            rather than queueing it into nothing. Start a new run to use this.
           </p>
         )}
         <fieldset disabled={runIsOver} className="space-y-1.5 disabled:opacity-50">
@@ -453,33 +671,40 @@ export function OrchestratorChat({
           </div>
 
           {/*
-            * THE PROMISE, STATED ONCE, WHERE THE EXPECTATION IS SET — AND IT NOW
-            * STATES BOTH PATHS.
+            * THE PROMISE, STATED ONCE, WHERE THE EXPECTATION IS SET — AND IT STILL
+            * STATES BOTH PATHS, WHICH IS THE PART THAT MAY NOT BE CUT. `pushLiveMessage`
+            * refuses when there is no open segment and the message sits pending until a
+            * resume composes the next prompt; this composer renders on parked runs too,
+            * so a sentence describing only the live path would be a false claim on
+            * exactly the runs where the owner most needs to type. This component is not
+            * told the status (see the file header), so it describes both rather than
+            * picking one.
             *
-            * It used to say only "goes into the running session and is picked up at
-            * the agent's next step", which is true of a run mid-segment and false of
-            * a PARKED one: `pushLiveMessage` refuses when there is no open segment
-            * and the message sits pending until a resume composes the next prompt.
-            * The composer renders on parked runs too, so the unqualified sentence
-            * was a live claim on exactly the runs where the owner most needs to
-            * type. This component is not told the status (see the file header), so
-            * it describes both paths rather than picking one, and points at the
-            * per-message state line for whether a given message has been read —
-            * which is all that line knows; it does not record which path took it.
+            * TRIMMED 2026-07-31 WITH THE REPLY DIRECTION, AND THE CUTS ARE THE POINT —
+            * the panel grew a row and had to give back more than it took:
+            *
+            *   · "the same as typing into the CLI while it works" — an analogy about a
+            *     tool the reader may never have opened, next to the mechanism itself.
+            *   · "Each message you send carries its own state underneath it — queued,
+            *     read at a time, or never read." A caption for three labels that are on
+            *     screen, under the messages, in the words it was quoting.
+            *
+            * WHAT REPLACED THEM IS ONE SENTENCE, and it is here rather than in the reply
+            * row because it is true of every `run` row and the row only appears when
+            * there is none: a reply is the agent's own last turn of the segment, and
+            * saying so is what stops the panel reading as a chatbot that answers.
             */}
           <p className="text-[10.5px] leading-relaxed text-ink-faint">
             While a segment is running this goes into the open session and is picked up
-            at the agent&rsquo;s next step — the same as typing into the CLI while it works.
-            While the run is parked or between segments there is no session to
-            push into, so it is queued and folded into the next prompt when the run
-            resumes: answer first, then resume, or the prompt is composed without it.
-            Each message you send carries its own state underneath it — queued, read at
-            a time, or never read.
+            at the agent&rsquo;s next step. Parked or between segments there is no
+            session to push into, so it is queued and folded into the next prompt — send
+            before you resume, or that prompt is composed without it.
           </p>
           <p className="mt-1 text-[10.5px] leading-relaxed text-ink-faint">
-            Images are read before it acts on them. The acceptance suite is already
-            frozen, so ask for changes it is indifferent to; anything contradicting a
-            sealed criterion is reported rather than silently traded away.
+            Images are read before it acts on them. What comes back is the agent&rsquo;s
+            own last message of the segment, stored verbatim — not an answer written for
+            you. The acceptance suite is frozen, so ask for changes it is indifferent to;
+            a conflict is reported rather than silently traded away.
           </p>
           {/*
             * SHOWN ONLY WHERE IT IS TRUE, AND IT IS A WARNING RATHER THAN A

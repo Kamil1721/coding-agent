@@ -96,7 +96,7 @@ import { writeBacklog } from "./backlog.js";
 import type { BacklogInput } from "./backlog.js";
 import { graphResumeState, makeSegmentRemap, nextBuildSegment } from "./build-segment.js";
 import { LiveInput } from "./live-input.js";
-import { ownerMessageBlock } from "./owner-message.js";
+import { AgentReplyWatch, ownerMessageBlock } from "./owner-message.js";
 import {
   canWriteDir,
   designPreflight,
@@ -144,7 +144,14 @@ import { archiveAttempt, readAttempt, scorerOutRoot, scoresRoot } from "./gate-a
 import { toAgentVisible } from "./gate-report.js";
 import { maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
 import type { GateFixLoopResult, StopReason } from "./gate-fix-loop.js";
-import type { ApiCriterion, ApiPhase, ApiProvider, ApiRunStatus, GraphSseEvent } from "./api-types.js";
+import type {
+  ApiCriterion,
+  ApiPhase,
+  ApiProvider,
+  ApiRunSilence,
+  ApiRunStatus,
+  GraphSseEvent,
+} from "./api-types.js";
 import { appendContextEvent } from "./build-context.js";
 import type { ContextEvent } from "./build-context.js";
 import { writeEnvironmentRecord } from "./build-environment.js";
@@ -156,13 +163,24 @@ import { canonicaliseForDecision, ClaudeSubscriptionBuilder } from "./builders/c
 import { CodexSubscriptionBuilder } from "./builders/codex-builder.js";
 import type { BuildEventSink, BuildOutcome, SubscriptionBuilder } from "./builders/types.js";
 import type { RunRow, RunStore } from "./db.js";
-import { isTerminal } from "./db.js";
+/**
+ * RUNTIME, AND THE IMPORT IS THE MECHANISM RATHER THAN A CONVENIENCE.
+ *
+ * `SILENCE_NOTICE_PREFIX` is the sentence `RunStore.lastRunEventAt` filters out
+ * of its own measurement. Retyping it here instead of importing it would give
+ * the emitter and the filter two spellings, the filter would match nothing, and
+ * every announcement the watch made would reset the clock it had just read —
+ * silently, with the first warning still arriving and every test that only
+ * checks the first warning still green.
+ */
+import { SILENCE_NOTICE_PREFIX, isTerminal } from "./db.js";
 import { RunEventBus } from "./bus.js";
 import { judgeArtifact } from "./judge.js";
 import type { ModelCatalog } from "./models.js";
 import { ensureRunDirs, gateEnv, runPathsFor, safeSegment } from "./paths.js";
 import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
+import { publishProject } from "./project-publish.js";
 import { writeAssumptions, writeRunVerdict } from "./run-report.js";
 import { describeTokens, mergeTokenTotals, toApiTokens, zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
@@ -679,6 +697,167 @@ export function planRateLimitResume(input: RateLimitResumeInput): RateLimitResum
   return { kind: "armed", delayMs };
 }
 
+/* -------------------------------------------------------------------------
+ * THE SILENCE WATCH — report, never act
+ *
+ * WHAT WENT WRONG, MEASURED IN THIS REPOSITORY'S OWN `events` TABLE. Run
+ * `run-2026-07-30T20-16-40-242Z-052c6e02` has a 506.6-MINUTE gap between event
+ * seq 328 (2026-07-30T21:09:57Z) and seq 329 (2026-07-31T05:36:35Z). For eight
+ * and a half hours the row said `running`, the subprocess was idle, and nothing
+ * in the dashboard, the API or the log distinguished that from a working build.
+ * The cause is fixed (f01fa9f, the streaming-input session that never ended);
+ * NOTHING WATCHED FOR IT, which is the part this block is about, and the next
+ * hang will have a different cause.
+ *
+ * WHAT IT MAY NOT DO. It may not kill, requeue, restart or fail a run. doc 03
+ * §7.8: LHTB found 79% of unresolved runs time out WHILE STILL ACTIVELY MAKING
+ * PROGRESS, and the section's instruction is explicit — "Do not build 'the agent
+ * seems stuck' heuristics ... Terminate on a budget boundary, never on a guess."
+ * A silence is not evidence of death: a model thinking for an hour, a socket
+ * blocked forever and a crashed subprocess are indistinguishable from here. So
+ * this measures a gap and says so, and every string it produces is phrased as
+ * what was OBSERVED rather than what is WRONG.
+ * ---------------------------------------------------------------------- */
+
+/** Minutes of silence before the watch says so. Overrides {@link DEFAULT_SILENCE_WARN_MIN}. */
+export const SILENCE_WARN_ENV = "DASHBOARD_SILENCE_WARN_MIN";
+
+/**
+ * Ninety minutes, and the number is derived from this machine's own event rows
+ * rather than chosen for feel.
+ *
+ * THE EVIDENCE, WITH ITS SIZE STATED. There is exactly ONE finished run on this
+ * machine (`run-2026-07-29T23-28-46-665Z-3d4d1ccb`, 388 events). Its largest
+ * quiet gap is 43.5 min, at seq 8, in the spec phase — a legitimately silent
+ * stretch in which the run was working. Its second largest is 31.8 min; every
+ * other gap in that run is under 4.1 min. So this default is "a little over
+ * twice the largest gap measured on the only finished run this machine has",
+ * which is a weaker claim than "twice the largest legitimate gap" and is the one
+ * the data supports. n = 1.
+ *
+ * THE OTHER END OF THE RANGE IS THE FAILURE ITSELF: 506.6 min. Ninety minutes
+ * would have reported that hang before 23:00 instead of leaving it until
+ * morning, while leaving the measured 43.5-minute quiet spec phase alone.
+ *
+ * A SHORTER THRESHOLD IS NOT FREE AND THE COST IS TESTABLE. At 30 min the very
+ * same 43.5-minute gap — a run that was working — is reported as silence;
+ * `stall-watch.test.ts` proves exactly that, so the justification for this
+ * number can be re-run rather than believed. Raise the env var on a machine
+ * whose runs are quieter than this one's; lowering it below 43.5 buys false
+ * alarms on the only evidence available.
+ */
+export const DEFAULT_SILENCE_WARN_MIN = 90;
+
+/**
+ * The largest quiet gap MEASURED on a run that was working, in minutes.
+ *
+ * A CONSTANT SO THE DEFAULT'S JUSTIFICATION CAN BE ASSERTED. `stall-watch.test.ts`
+ * requires `DEFAULT_SILENCE_WARN_MIN > MEASURED_QUIET_GAP_MIN`, which turns red
+ * if someone lowers the default under the one measurement it rests on. Update it
+ * only with a new measurement and say which run it came from.
+ */
+export const MEASURED_QUIET_GAP_MIN = 43.5;
+
+/** How often the watch looks. Bounds how late an announcement can be, nothing else. */
+export const SILENCE_CHECK_MS = 60_000;
+
+export function silenceWarnMin(env: NodeJS.ProcessEnv): number {
+  const raw = Number.parseFloat((env[SILENCE_WARN_ENV] ?? "").trim());
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SILENCE_WARN_MIN;
+}
+
+export interface SilenceInput {
+  readonly status: ApiRunStatus;
+  readonly startedAt: string;
+  /** `RunStore.lastRunEventAt` — the watch's own notices already filtered out. */
+  readonly lastEventAt: string | null;
+  readonly now: string;
+  readonly thresholdMin: number;
+}
+
+/**
+ * How long this run has been quiet — or `null` when there is nothing to say.
+ *
+ * PURE, for the reason `planRateLimitResume` is pure: a decision that can only
+ * be observed by spending the owner's subscription is a decision nobody checks.
+ * Every branch below is reachable from a unit test with no timer and no clock,
+ * including the one that matters most — a run whose events keep arriving, which
+ * must NEVER cross the threshold however long the run lasts.
+ *
+ * IT KEYS ON THE GAP, NEVER ON THE RUN'S AGE. A four-hour run that speaks every
+ * five minutes is not quiet; a ten-minute-old run that has said nothing for nine
+ * of them is. Reading age instead of gap is how every previous attempt at this
+ * display ended up calling long silences normal.
+ *
+ * ONLY `running` IS WATCHED. `queued` has not started, `awaiting_input` and
+ * `rate_limited` are parks that are SUPPOSED to be quiet and are bounded by
+ * their own timers, and a terminal run is finished. `null` for all of them means
+ * NOT WATCHED and must never be rendered as a clean bill of health.
+ *
+ * THE ONE OTHER `null`, STATED BECAUSE IT IS THE EXCEPTION TO THAT SENTENCE: an
+ * instant this program cannot parse. `now` is ours and always parses; `since`
+ * comes from a row, so a database written by a different program could carry
+ * one. A `quietMin` computed from `NaN` would be a number where there is no
+ * measurement, which is worse than the absence.
+ *
+ * ELAPSED IS FLOORED AT ZERO, exactly as `#parkForDesignLock` and
+ * `planRateLimitResume` floor theirs: a clock that moved backwards must not
+ * invent silence that did not happen.
+ */
+export function describeSilence(input: SilenceInput): ApiRunSilence | null {
+  if (input.status !== "running") return null;
+  const sinceKind = input.lastEventAt === null ? "run-start" : "last-event";
+  const since = input.lastEventAt ?? input.startedAt;
+  const from = Date.parse(since);
+  const at = Date.parse(input.now);
+  if (!Number.isFinite(from) || !Number.isFinite(at)) return null;
+  const quietMin = Math.floor(Math.max(0, at - from) / 60_000);
+  return {
+    since,
+    sinceKind,
+    quietMin,
+    thresholdMin: input.thresholdMin,
+    // `>=`, matching `designLockExpired`'s reasoning: the instant the watch's
+    // own timer would fire is the instant this must already read as over, or the
+    // two halves of one feature disagree at exactly the boundary.
+    overThreshold: quietMin >= input.thresholdMin,
+  };
+}
+
+/**
+ * The read-only derivation, for a caller that must not emit anything.
+ *
+ * THIS IS WHAT `http.ts#toDetail` CALLS. A GET must not write to the run's event
+ * stream, so the announcing path ({@link Orchestrator.noteSilence}) is not
+ * available to it — and both go through this one function so the number on the
+ * wire and the number in the warning cannot drift apart.
+ *
+ * NOTHING IS PERSISTED. The measurement is `lastRunEventAt` plus the clock, both
+ * read at call time, which is why a restarted dashboard reports true silences
+ * immediately: there is no timer to have missed and no column to have gone
+ * stale. That is this feature's durable half, and it is a different shape from
+ * the design park's (`reconcileOnBoot` re-arming a timer) because the evidence
+ * here is already on disk in the `events` table.
+ */
+export function silenceOf(
+  row: RunRow,
+  store: RunStore,
+  env: NodeJS.ProcessEnv,
+  now: string = new Date().toISOString(),
+): ApiRunSilence | null {
+  // The store read is skipped for a run that is not watched — `toDetail` runs on
+  // every list item and a `SELECT ... ORDER BY seq DESC` per finished run is a
+  // query nobody needs.
+  if (row.status !== "running") return null;
+  return describeSilence({
+    status: row.status,
+    startedAt: row.startedAt,
+    lastEventAt: store.lastRunEventAt(row.runId),
+    now,
+    thresholdMin: silenceWarnMin(env),
+  });
+}
+
 export class Orchestrator {
   readonly #deps: OrchestratorDeps;
   #active: ActiveRun | null = null;
@@ -709,6 +888,44 @@ export class Orchestrator {
    * the moment it stops, rather than leaving the owner to infer it.
    */
   readonly #rateLimitTimers = new Map<string, NodeJS.Timeout>();
+
+  /**
+   * The SILENCE WATCH's live half — one interval per run that is actually
+   * running in THIS process.
+   *
+   * THE DURABLE HALF IS NOT A SECOND TIMER, AND THAT IS THE ONE PLACE THIS
+   * DEPARTS FROM {@link Orchestrator.#designLockTimers}. There, the park's
+   * deadline exists only in a timer, so `reconcileOnBoot` has to re-arm it from
+   * `design-lock.json` or the park never ends. Here the evidence is already
+   * durable: the silence IS the gap between rows in the `events` table, so
+   * `silenceOf` reports it correctly the first time a restarted server answers
+   * `GET /api/runs/:id`, before any timer exists.
+   *
+   * THERE IS ALSO NOTHING FOR `reconcileOnBoot` TO ARM, and the reason is
+   * mechanical rather than an omission: its first loop moves EVERY `running` row
+   * to `awaiting_input`, because a run's subprocess died with the server. A
+   * watched run cannot survive a boot, so a sweep here would be a loop over an
+   * empty set — dead code standing in for a bound. The watch is armed where a
+   * run actually starts running (`#execute`) and cleared where one stops
+   * (`#start`'s `finally`, and `shutdown()`).
+   */
+  readonly #silenceTimers = new Map<string, NodeJS.Timeout>();
+
+  /**
+   * The `since` instant of the silence already announced for a run, so one quiet
+   * stretch produces ONE warning instead of one a minute.
+   *
+   * KEYED ON THE INSTANT, NOT A BOOLEAN, so a run that speaks and then goes
+   * quiet again gets a NEW warning — the second silence is a new fact. Cleared
+   * with the timer in `#clearSilenceWatch`, so a resumed run cannot inherit a
+   * stale episode key and swallow its first announcement.
+   *
+   * IT IS NOT WHAT KEEPS THE MEASUREMENT HONEST. That is the filter in
+   * `RunStore.lastRunEventAt`: this map only bounds the LOG. Without the filter
+   * the warning would reset the very clock it reports, and this map would then
+   * be hiding the fact by never letting a second one be attempted.
+   */
+  readonly #silenceAnnounced = new Map<string, string>();
 
   /**
    * Open input channels, by run id — one per in-flight build segment.
@@ -954,6 +1171,12 @@ export class Orchestrator {
     // is a crash on a host that stops the orchestrator without stopping the
     // process. The next boot re-arms them from `rateLimitedAt`.
     for (const runId of [...this.#rateLimitTimers.keys()]) this.#clearRateLimitTimer(runId);
+    // Same argument once more: an interval whose callback reads the store is a
+    // crash on a host that stops the orchestrator and closes the database while
+    // the process lives. Nothing is lost by clearing it — the measurement lives
+    // in the events table, so the next boot's first `GET /api/runs/:id` reports
+    // the same silence without any timer having run.
+    for (const runId of [...this.#silenceTimers.keys()]) this.#clearSilenceWatch(runId);
     // REASONED, so the run being torn down is not recorded as a failure. See
     // ABORT_SHUTDOWN: this path must leave the row `running` for
     // `reconcileOnBoot`. `#stopped` is already set above, so the `pump()` in
@@ -980,6 +1203,11 @@ export class Orchestrator {
         queuePosition: null,
       });
     } finally {
+      // THE WATCH ENDS WHERE THE RUN'S TIME IN THIS PROCESS ENDS — in the
+      // `finally`, so a throw, a cancel, a rate-limit park and a design park all
+      // disarm it. A watch left running on a parked run would announce a silence
+      // that is the park working correctly.
+      this.#clearSilenceWatch(runId);
       this.#active = null;
       this.pump();
     }
@@ -1052,6 +1280,11 @@ export class Orchestrator {
       artifactPath: runPaths.workspace,
     });
     this.#emit(runId, { type: "status", status: "running" });
+    // ARMED THE MOMENT THE ROW SAYS `running`, because that is the moment the
+    // dashboard starts claiming this run is working. Everything below — the spec
+    // seat, both build segments, the gate/fix loop, the judge — is inside the
+    // window it covers.
+    this.#armSilenceWatch(runId);
 
     try {
       // ---- PHASE 1: the sealed acceptance suite ------------------------
@@ -1643,6 +1876,18 @@ export class Orchestrator {
        * re-injects it — losing a stamp is recoverable, losing an instruction is
        * not.
        */
+      /*
+       * THE WINDOW THIS SEGMENT'S REPLY IS MEASURED OVER, TAKEN BEFORE THE DRAIN.
+       *
+       * `AgentReplyWatch.record` at the end of this segment only stores a reply if
+       * the owner actually said something to it, and "said something" means an
+       * owner message whose `delivered_at` lands at or after this instant. It has to
+       * be read HERE, before `markMessagesDelivered` runs a few lines below, or the
+       * boundary drain's own stamps would fall outside the window and a boundary
+       * message would never get an answer — the live-push case would work and the
+       * queued case would silently not, which is the harder of the two to notice.
+       */
+      const segmentWindowStart = new Date().toISOString();
       const pending = store.pendingMessages(runId);
       const ownerNote = ownerMessageBlock(pending);
 
@@ -1761,6 +2006,14 @@ export class Orchestrator {
           ? (event: GraphSseEvent): GraphSseEvent => event
           : makeSegmentRemap(graphResumeState(priorGraph));
 
+      /*
+       * THE REPLY CHANNEL'S CAPTURE POINT. One watch per segment, because it holds
+       * the last thing the agent said and segment 1's last words are not segment 2's
+       * reply. It reads the raw seam below and writes at most one `messages` row at
+       * the end of this segment — or none, which is the case it exists to preserve.
+       */
+      const reply = new AgentReplyWatch();
+
       const sink: BuildEventSink = {
         log: (level, text) => this.#emitLog(runId, level, text),
         tool: (name, summary) => {
@@ -1815,7 +2068,20 @@ export class Orchestrator {
         compaction: (record) => {
           recordContextEvent(record);
         },
-        raw: (text) => log.write(text),
+        /*
+         * THE BUILD LOG FIRST, THE CHAT SECOND, AND BOTH FROM THE SAME STRING.
+         *
+         * `observe` only remembers the chunks tagged `[assistant]`; everything else
+         * on this seam (`[command]`, `[patch]`, `[reasoning]`, `[result]`) passes
+         * through to the log untouched. The log write stays first so that a chat
+         * capture that ever threw could not cost the run its transcript — the
+         * transcript is the record every other diagnosis is made from, and it is
+         * also where a truncated reply says the whole message lives.
+         */
+        raw: (text) => {
+          log.write(text);
+          reply.observe(text);
+        },
       };
 
       this.#emitLog(
@@ -1906,6 +2172,45 @@ export class Orchestrator {
        * with every segment of every run is a leak even when each entry is harmless.
        */
       this.#liveInputs.delete(runId);
+
+      /* ---- THE RUN'S REPLY, IF IT MADE ONE -------------------------------
+       *
+       * WHAT THIS CLOSES. Until 2026-07-31 the chat was one-way: the owner asked a
+       * live run "Give me the link to the website", the row shows it delivered and
+       * stamped read, and nothing came back, because nothing turned what the agent
+       * said into a message. It is stored here rather than announced, because the
+       * chat is the surface he asked the question on.
+       *
+       * NOTHING IS STORED UNLESS THE AGENT SAID SOMETHING AND THE OWNER SPOKE FIRST.
+       * `record` returns null for either, and null is a correct outcome the UI is
+       * meant to render as "the run did not answer" — there is deliberately no
+       * fallback sentence. Read `AgentReplyWatch` before adding one.
+       *
+       * BEFORE THE FOUR RETURNS BELOW, AND THAT PLACEMENT IS THE POINT. A cancelled,
+       * failed or rate-limited segment is exactly when an owner is waiting on an
+       * answer; recording after `if (outcome.cancelled) return` would answer only
+       * the runs that finished cleanly.
+       *
+       * WHAT IT STILL MISSES, STATED RATHER THAN IMPLIED: a throw OUT of
+       * `builder.build()` skips this line, because this loop has no `try`. Both
+       * drivers catch their own errors and return them as `outcome.failure`
+       * (claude-builder.ts:1526, codex-builder.ts:187), so that path is a driver
+       * bug rather than a normal ending — but it is not covered, and wrapping a
+       * 50-line call in a `try` in a file three agents are editing is a larger
+       * change than the gap it closes.
+       */
+      const stored = reply.record(
+        store,
+        runId,
+        store.ownerMessagesDeliveredSince(runId, segmentWindowStart),
+      );
+      if (stored !== null) {
+        // ON THE TRACE TOO, because the chat panel refetches on send and on tab
+        // focus rather than on an event (`page.tsx`), so a reply can sit unread in
+        // a tab the owner is not looking at. This line is the pointer, not the
+        // reply: the text is in the chat, where the question was asked.
+        this.#emitLog(runId, "info", "the run answered in the chat");
+      }
 
       last = outcome;
       if (outcome.sessionId !== null) store.updateRun(runId, { builderSessionId: outcome.sessionId });
@@ -3287,6 +3592,98 @@ export class Orchestrator {
     this.#rateLimitTimers.delete(runId);
   }
 
+  /* ---- the silence watch --------------------------------------------- */
+
+  /**
+   * Measure how long this run has been quiet and, ONCE per quiet stretch, say so
+   * on the run's own log. Returns the measurement, or `null` when the run is not
+   * watched.
+   *
+   * PUBLIC AND TAKING `now`, ON `assignQueuePositions`' PRECEDENT. The only other
+   * way to observe this behaviour is to start a real build and wait ninety
+   * minutes, which is a test nobody runs — so the timer's whole callback body is
+   * this method, and `stall-watch.test.ts` drives it directly with an instant of
+   * its own. There is no second copy of the decision for the timer to take.
+   *
+   * IT ANNOUNCES AND CHANGES NOTHING ELSE. No status write, no requeue, no
+   * abort, no `failureReason`. See the block comment above
+   * {@link DEFAULT_SILENCE_WARN_MIN}: on this project's own evidence a run that
+   * looks stuck is usually still working, and killing it on a heuristic is how
+   * real work is lost. The owner is told; the decision stays theirs.
+   *
+   * THE WARNING IT WRITES IS ITSELF AN EVENT — `RunEventBus.emit` persists before
+   * it delivers — WHICH IS WHY {@link SILENCE_NOTICE_PREFIX} LEADS THE TEXT.
+   * `lastRunEventAt` filters that sentence out of its own measurement, so the
+   * next call still sees the ORIGINAL `since` and the silence keeps growing. Take
+   * the prefix off and this method quietly becomes a one-shot: it would report
+   * the first ninety minutes of a hang and then measure its own footprints.
+   */
+  noteSilence(runId: string, now: string = new Date().toISOString()): ApiRunSilence | null {
+    const row = this.#deps.store.getRun(runId);
+    if (row === null) return null;
+    const silence = silenceOf(row, this.#deps.store, this.#deps.env, now);
+    if (silence === null || !silence.overThreshold) return silence;
+    if (this.#silenceAnnounced.get(runId) === silence.since) return silence;
+    this.#silenceAnnounced.set(runId, silence.since);
+    this.#emitLog(
+      runId,
+      "warn",
+      SILENCE_NOTICE_PREFIX +
+        `${String(silence.quietMin)} min` +
+        (silence.sinceKind === "run-start"
+          ? " — it has emitted NOTHING since it started"
+          : ` (last event ${silence.since})`) +
+        `, and this server expects to hear something within ${String(silence.thresholdMin)} min ` +
+        `(${SILENCE_WARN_ENV}). ` +
+        "THAT IS A MEASUREMENT OF SILENCE, NOT A DIAGNOSIS: nothing here can tell a model that is " +
+        "thinking from a subprocess that has died, and doc 03 §7.8 records that 79% of unresolved " +
+        "long-horizon runs time out while still actively making progress. NOTHING HAS BEEN KILLED, " +
+        "requeued or failed on account of this line — the run is untouched and this is the only thing " +
+        "that happened." +
+        (row.artifactPath === null
+          ? ""
+          : ` Look at the workspace to decide: ${row.artifactPath}.`),
+    );
+    return silence;
+  }
+
+  /**
+   * Start watching a run that is now actually running.
+   *
+   * AN INTERVAL, NOT A TIMEOUT, because a silence that has already been
+   * announced can still grow into a second one after the run speaks again, and
+   * because the threshold is a floor rather than a deadline. `SILENCE_CHECK_MS`
+   * bounds only how LATE an announcement can be; the number in it is measured
+   * from the events table at the moment it fires, so a slow tick under-reports
+   * nothing.
+   *
+   * `unref` FOR `#parkForDesignLock`'s REASON — a watch must never hold the
+   * process open — which is NOT the same as cancelling it, hence `shutdown()`
+   * clearing the map as well.
+   */
+  #armSilenceWatch(runId: string): void {
+    this.#clearSilenceWatch(runId);
+    const timer = setInterval(() => {
+      this.noteSilence(runId);
+    }, SILENCE_CHECK_MS);
+    timer.unref();
+    this.#silenceTimers.set(runId, timer);
+  }
+
+  /** Stop watching, and forget which silence was announced. Both, always. */
+  #clearSilenceWatch(runId: string): void {
+    const timer = this.#silenceTimers.get(runId);
+    if (timer !== undefined) {
+      clearInterval(timer);
+      this.#silenceTimers.delete(runId);
+    }
+    // NOT CONDITIONAL ON THE TIMER EXISTING. A run resumed after a park would
+    // otherwise carry the previous segment's announced instant into its next
+    // watch, and the first silence of the new segment — which is a new fact —
+    // would be swallowed as a repeat if it happened to start from the same event.
+    this.#silenceAnnounced.delete(runId);
+  }
+
   /**
    * An abort fired. Route on WHO aborted, not on what was thrown.
    *
@@ -3355,7 +3752,9 @@ export class Orchestrator {
    * and the failure reason that came with it, not the ones it had a moment ago.
    * The `verdict` event is then emitted BEFORE the `status` event, because a
    * client revalidates on a terminal status and must find `verdictPath` already
-   * in the read model when it does.
+   * in the read model when it does. THE PUBLISH OBEYS THE SAME RULE and for the
+   * same reason: `project-publish.json` is on disk before the terminal `status`
+   * goes out, so the revalidation finds `publishedProject` too.
    */
   #finish(runId: string, status: ApiRunStatus, patch: Parameters<RunStore["updateRun"]>[1]): void {
     const row = this.#deps.store.updateRun(runId, { ...patch, status });
@@ -3368,7 +3767,78 @@ export class Orchestrator {
         inferredCriteria: updated.inferredCriteria,
       });
     }
+    this.#publishProject(runId, row);
     this.#emit(runId, { type: "status", status });
+  }
+
+  /**
+   * COPY THE FINISHED CODE SOMEWHERE THE OWNER CAN FIND IT, and say where.
+   *
+   * WHY IT HANGS OFF `#finish` RATHER THAN OFF THE PASSED BRANCH. Every terminal
+   * status comes through here, and a FAILED or CANCELLED run's code is still the
+   * thing the owner asked to be able to open — "where is it?" is the first
+   * question about a failure, which is the same sentence `artifactPath`'s write
+   * site already carries. `rate_limited` deliberately does not reach this method,
+   * because it does not reach `#finish`: that run is stopped, not finished, and
+   * publishing it would put a half-built site in a folder named after the ticket
+   * while the run is still resumable.
+   *
+   * IT IS SYNCHRONOUS, INSIDE THE TERMINAL PATH. Measured on this machine the
+   * two non-empty workspaces are 5.6 MB and 12 MB before exclusions, so the copy
+   * is a short pause at the very end of a build that has been running for hours,
+   * on a server that runs ONE run at a time. Making it async would put the record
+   * write after the terminal `status` event and reintroduce exactly the race the
+   * verdict write is ordered to avoid.
+   *
+   * IT CANNOT FAIL THE RUN. `publishProject` returns a named decline instead of
+   * throwing for every failure it can name, and the `catch` covers the rest: a
+   * filesystem problem in the publish must never turn a passed run into a harness
+   * fault, for the same reason `#writeVerdict` swallows its own.
+   *
+   * THE LOG LINE IS THE SURFACE THAT ACTUALLY REACHES HIM. `RunDetail
+   * .publishedProject` is on the wire for the UI to render, but it needs a panel
+   * somebody has written; the run's log wall is already open on the page, so the
+   * path is stated there in full — absolute, copy-pasteable, and next to the
+   * sentence that says the folder is a copy he owns.
+   */
+  #publishProject(runId: string, row: RunRow): void {
+    const runPaths = runPathsFor(this.#deps.paths, runId);
+    try {
+      const record = publishProject({
+        runId,
+        ticketTitle: row.ticketTitle,
+        workspace: runPaths.workspace,
+        projectsDir: this.#deps.paths.projects,
+        resultsDir: runPaths.results,
+      });
+      if (record.published) {
+        this.#emitLog(
+          runId,
+          "info",
+          `YOUR CODE IS SAVED AT ${record.path} — ${String(record.fileCount)} files, ${String(record.bytes)} bytes, ` +
+            `${String(record.excluded.length)} entries left out as scaffolding. That folder is a COPY and it is ` +
+            `yours: edit it, move it, delete it. The run's own copy stays at ${runPaths.workspace} — that is the one ` +
+            "the gate scored, and editing it would not change any verdict.",
+        );
+      } else {
+        this.#emitLog(
+          runId,
+          "warn",
+          `the finished code was NOT copied to ${this.#deps.paths.projects} (${record.reason}): ${record.detail} ` +
+            `The run's own copy is still at ${runPaths.workspace}.`,
+        );
+      }
+    } catch (error) {
+      // Reached only by a bug in `publishProject` — it returns a decline for
+      // every failure it can name. The run has already ended successfully or
+      // otherwise, and one uncopied folder does not change that.
+      this.#emitLog(
+        runId,
+        "warn",
+        `the finished code could not be published: ${describeError(error)}. The run's own copy is at ` +
+          `${runPaths.workspace}.`,
+      );
+    }
   }
 
   /**

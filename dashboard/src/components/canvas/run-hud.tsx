@@ -6,9 +6,11 @@
  * THE BRIEF WAS "NOTHING AROUND THE SIDES", NOT "NOTHING". A run still has an
  * identity, a verdict and two actions that cannot wait behind a click — cancelling
  * a run that is going wrong is not a detail — so this is what stayed on screen:
- * one floating chip in the canvas's top-left corner carrying the status, the
- * ticket's title, the phase, the model and the clock, plus Cancel and Resume when
- * they are real, plus the button that opens everything else.
+ * one floating chip in the canvas's top-left corner carrying the status, a short
+ * label DERIVED from the ticket (`ticketLabel`, with the ticket itself on the
+ * heading's tooltip — see the block above the `h1`), the phase, the model and
+ * the clock, plus Cancel and Resume when they are real, plus the button that
+ * opens everything else.
  *
  * IT IS ONE OF THE FOUR THINGS ON SCREEN, AND THAT IS THE POINT. Where the
  * previous layout had five permanent panels of run-level facts, this has the
@@ -48,6 +50,7 @@ import { isTerminalStatus } from "@/lib/api-types";
 import { elapsedBetween, formatDuration } from "@/lib/format";
 import { designLockPhase } from "@/lib/mockups";
 import { phaseMeta, statusMeta } from "@/lib/presentation";
+import { ticketLabel, ticketTooltip } from "@/lib/ticket-title";
 import { FalseFinishBadge, HeldOutBadge } from "@/components/outcome";
 import { Badge, Button, Dot } from "@/components/ui";
 
@@ -197,12 +200,9 @@ export function RunHud({
        *
        * `truncate` AND THE `title` TOOLTIP WERE BOTH ALREADY HERE — this change
        * makes an existing affordance load-bearing rather than introducing a new
-       * failure mode. THE TOOLTIP IS THE ONLY PLACE THE WHOLE STRING IS, and
-       * that is worth stating because the obvious second answer is wrong: the
-       * run sheet's header renders the same `run.ticketTitle` (`sheet.tsx:287`)
-       * but it is `truncate text-[13.5px]` in a 560px panel with no `title` of
-       * its own, so it clips too — later, and silently. A long ticket title has
-       * no fully-rendered home on this screen and did not have one before.
+       * failure mode. The run sheet's header renders the same `run.ticketTitle`
+       * (`sheet.tsx:623`) as `truncate text-[13.5px]` in a 560px panel with no
+       * `title` of its own, so it clips too — later, and silently.
        *
        * WHAT THIS DOES NOT FIX, measured and named rather than left implied:
        * `canvas/agent-node.tsx:619` still renders a collapsed duplicate-task
@@ -211,11 +211,59 @@ export function RunHud({
        * has no business being display type at all. That file is outside this
        * pass; the fix is to move it down to `text-lede`.
        */}
+      {/*
+       * WHAT IS RENDERED IS NO LONGER THE TICKET — 2026-07-31, and the owner's
+       * words for the old behaviour were "it looks horrible".
+       *
+       * WHAT HE SAW. `I want you to make a copy of t…`: four words of
+       * throat-clearing followed by a cut in the middle of "this". Two separate
+       * character cuts can produce that — `titleFromBrief` at 80 characters on
+       * the server, then CSS `truncate` at ~30 in this box — and neither of them
+       * knows what a word is. `ticketLabel` (`lib/ticket-title.ts`) drops the
+       * recognised opener, keeps the first clause, reduces a URL to its host and
+       * cuts on WORD boundaries inside a character budget derived from this
+       * chip's own width. Fed that exact string it answers `Make a copy…`; fed
+       * the whole sentence it answers `Make a copy of this website…`. Which of
+       * the two the database actually holds was not read back, so neither this
+       * comment nor the spec claims to know.
+       *
+       * WHY THE INPUT IS `ticketTitle` AND NOT `ticketText`. `ticketText` is
+       * longer and would survive the server's 80-character cut, and it is safe
+       * to reduce — `composeBrief` puts the owner's prose FIRST, so the first
+       * meaningful line of the brief is the same line `titleFromBrief` reduced,
+       * uncut. It is still not used, for one reason: `RunSummary` has no
+       * `ticketText` (only `RunDetail` does), so the run LIST cannot read it,
+       * and the same run would carry two different names on two screens. The cut
+       * only bites when the subject sits past character 80 of the first line,
+       * which is a smaller loss than that.
+       *
+       * IT DELETES, IT DOES NOT WRITE. The label is always words the owner
+       * typed, in the owner's order, plus one capital letter — no model call, no
+       * paraphrase, nothing that can be wrong ABOUT the run. That is the reason
+       * it is safe to put a derived string in the largest type on the page.
+       *
+       * THE TOOLTIP GOT BIGGER, NOT SMALLER, and that is the trade this change
+       * is only acceptable with. It carried `run.ticketTitle` — the server's
+       * 80-character cut. It now carries `run.ticketText`: the owner's prose,
+       * plus the composed capture block when the ticket named a page to read, so
+       * hovering the heading recovers strictly more than the label removed.
+       * `title` is a mouse affordance and reaches neither touch nor
+       * every screen reader; the copy that does is the run sheet's ticket tab,
+       * which renders `run.ticketText` verbatim in a `<pre>` (`sheet.tsx:697`),
+       * one click away behind "run detail".
+       *
+       * THE `runId` FALLBACK IS GONE ON PURPOSE. An empty `ticketTitle` used to
+       * put the run id in 24px display type; `ticketLabel` answers "Untitled
+       * ticket" instead, which is what the SERVER already calls a wordless
+       * ticket (`titleFromBrief`). The id did not disappear — it is on the meta
+       * line below, in mono, where an identifier belongs. `runs/page.tsx` still
+       * does the id fallback for the same field and is outside this pass.
+       */}
       <h1
         className="mt-2 truncate text-title font-semibold text-ink"
-        title={run.ticketTitle}
+        title={ticketTooltip(run.ticketTitle, run.ticketText)}
       >
-        {run.ticketTitle === "" ? run.runId : run.ticketTitle}
+        {ticketLabel(run.ticketTitle)}
       </h1>
 
       {/* `mt-1` rather than `mt-0.5`: the title above it grew by 10.5px, and 2px

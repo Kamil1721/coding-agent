@@ -260,6 +260,63 @@ export interface ApiRateLimit {
   readonly retryAfterSec: number | null;
 }
 
+/**
+ * HOW LONG THIS RUN HAS BEEN QUIET. NOT A DIAGNOSIS, AND THE NAMES SAY SO.
+ *
+ * THE FAILURE IT EXISTS FOR, MEASURED ON THIS MACHINE. Run
+ * `run-2026-07-30T20-16-40-242Z-052c6e02` shows a 506.6-MINUTE gap between event
+ * seq 328 and seq 329 in the `events` table — eight and a half hours in which
+ * the row said `running`, the subprocess was idle, and nothing anywhere told the
+ * owner. The dashboard could not distinguish that from a working build, because
+ * nothing measured the gap.
+ *
+ * EVERY FIELD IS AN OBSERVATION AND NONE IS A VERDICT. There is deliberately no
+ * `dead`, no `hung` and no `stalled: boolean`: this program has no way to
+ * establish any of them. A subprocess that is thinking, a subprocess that is
+ * blocked on a network read and a subprocess that has crashed all produce the
+ * same thing here — SILENCE — and doc 03 §7.8 records the reason that matters:
+ * LHTB found 79% of unresolved runs time out WHILE STILL ACTIVELY MAKING
+ * PROGRESS, and its explicit guidance is not to build "the agent seems stuck"
+ * heuristics that terminate. Nothing kills a run on this field. It reports.
+ *
+ * `null` MEANS "NOT WATCHED", NEVER "HEALTHY". Only a `running` run is measured.
+ * A `queued` run has not started; `awaiting_input` and `rate_limited` are parks
+ * that are SUPPOSED to be quiet and carry their own timers (`#parkForDesignLock`,
+ * `#armRateLimitResume`); a terminal run is finished. A UI that renders `null`
+ * as a green tick is inventing a health check that was never performed.
+ */
+export interface ApiRunSilence {
+  /**
+   * The instant this silence is measured FROM.
+   *
+   * Read it together with {@link ApiRunSilence.sinceKind}: it is either the last
+   * event on the run's stream or, when there is none, the run's own start.
+   */
+  readonly since: string;
+  /**
+   * WHICH instant `since` is — because reporting `startedAt` as though it were
+   * an event would be a quiet lie about a run that has never emitted anything.
+   * `run-start` is the state of a run whose first event has not landed yet, and
+   * of a run whose event writes are failing.
+   */
+  readonly sinceKind: "last-event" | "run-start";
+  /**
+   * Whole minutes of silence, FLOORED, AS OF THE MOMENT THIS RESPONSE WAS
+   * ASSEMBLED. It is a snapshot and it does not tick: a client that wants a live
+   * counter must derive it from {@link ApiRunSilence.since}, which is an instant
+   * and stays true.
+   */
+  readonly quietMin: number;
+  /** The threshold in force for this server, in minutes. See `DEFAULT_SILENCE_WARN_MIN`. */
+  readonly thresholdMin: number;
+  /**
+   * `quietMin >= thresholdMin`. The strongest sentence it supports is "nothing
+   * has been heard for longer than this server expects to hear nothing" — which
+   * is the whole claim, and is not "the run is stuck".
+   */
+  readonly overThreshold: boolean;
+}
+
 export interface ApiScreenshot {
   readonly path: string;
   readonly label: string;
@@ -389,6 +446,97 @@ export interface ApiAdversaryPass {
   readonly findings: readonly ApiAdversaryFinding[] | null;
 }
 
+/**
+ * Something in the workspace that was NOT copied into the published project,
+ * and why.
+ *
+ * ON THE WIRE FOR `CodeExclusion`'s REASON, ONE LAYER OUT: a folder that
+ * silently drops `visible-acceptance/` is indistinguishable from a copy that
+ * failed halfway, and the owner cannot tell a filtered project from a broken
+ * one. `path` is relative to the workspace root, forward slashes, no leading
+ * slash — the same spelling {@link CodeTreeEntry.path} uses, so a reader can
+ * take an entry from this list straight to `GET /api/runs/:id/files?path=`.
+ *
+ * A SEPARATE DECLARATION FROM {@link CodeExclusion}, WHICH IS STRUCTURALLY
+ * IDENTICAL TODAY. They have different producers (`project-publish.ts` and
+ * `code-files.ts`), different vocabularies of reason, and no shared consumer;
+ * merging them would mean a rename made for the file viewer silently retypes
+ * the publisher's record, which is written to disk and read back by a later
+ * server.
+ */
+export interface ApiProjectExclusion {
+  readonly path: string;
+  readonly reason: string;
+}
+
+/**
+ * WHERE THE FINISHED CODE WAS PUT, outside the run directory.
+ *
+ * THE PROBLEM IT SOLVES, IN THE OWNER'S WORDS: "the code will be saved into a
+ * folder within this directory". Today the artefact is at
+ * `dashboard/runs/run-2026-07-30T20-16-40-242Z-052c6e02/workspace/` — a
+ * 44-character generated id inside a server package — and he reported he cannot
+ * find it and that it does not read as his project. `project-publish.ts` COPIES
+ * it to `projects/<slug-of-the-ticket-title>/` when the run goes terminal.
+ *
+ * IT IS NOT {@link RunDetail.previewUrl} AND MUST NOT BE RENDERED AS ONE. That
+ * field is a historical record of an address that was served by a process which
+ * died with the run: measured on this machine, the one finished run recorded
+ * `http://127.0.0.1:4321` and nothing has listened there since. This is a
+ * FILESYSTEM PATH on the host — a browser cannot open it, exactly like
+ * `artifactPath`, `verdictPath` and `screenshots[].path`.
+ *
+ * A THREE-STATE TRUTH TABLE, AND THE MIDDLE ROW IS THE POINT:
+ *
+ *   `publishedProject: null`   NO RECORD. The run has not reached a terminal
+ *                              state, or it finished before this lane existed,
+ *                              or the record file could not be read. Nothing was
+ *                              attempted, as far as this server can tell.
+ *   `published: false`         IT WAS ATTEMPTED AND DECLINED. `reason` names
+ *                              which refusal (`workspace-missing`,
+ *                              `workspace-empty`, `no-free-name`,
+ *                              `copy-failed`) and `detail` is the sentence.
+ *   `published: true`          The copy exists at `path`.
+ *
+ * Collapsing the first two into "no folder" is the defect this codebase keeps
+ * finding — the same one {@link ApiAdversaryPass} refuses between "the pass left
+ * no report" and "the pass found nothing".
+ *
+ * WHAT IT DOES NOT CLAIM. `published: true` says a copy was written at the
+ * instant `publishedAt` names. It does NOT say the folder is still there (the
+ * owner may have moved or deleted it — it is his), that the code runs, or that
+ * it passed anything: `heldOutPass` is the only field that speaks to quality,
+ * and a FAILED run publishes too, because a failed build's code is still the
+ * thing he asked to be able to open.
+ */
+export type ApiPublishedProject =
+  | {
+      readonly published: true;
+      /** Absolute HOST path of the copy, e.g. `…/coding-agent/projects/coglane-landing`. */
+      readonly path: string;
+      readonly publishedAt: string;
+      /** Regular files copied. Directories are not counted. */
+      readonly fileCount: number;
+      /** Bytes copied, summed over those files. */
+      readonly bytes: number;
+      /** What was left behind, and why. Empty means nothing was filtered. */
+      readonly excluded: readonly ApiProjectExclusion[];
+    }
+  | {
+      readonly published: false;
+      /**
+       * Which refusal, as a STRING rather than a union — {@link
+       * RunDetail.gateStopReason}'s reason. The vocabulary is `PublishDecline`
+       * in `project-publish.ts`; this file imports nothing, a renderer needs a
+       * default branch either way, and a reason a client has never heard of is a
+       * newer server rather than a bug.
+       */
+      readonly reason: string;
+      /** The refusal in a sentence, naming the path it looked at. */
+      readonly detail: string;
+      readonly attemptedAt: string;
+    };
+
 export interface RunSummary {
   readonly runId: string;
   readonly ticketTitle: string;
@@ -440,9 +588,50 @@ export interface RunDetail extends RunSummary {
    */
   readonly costUsd: number | null;
   readonly rateLimit: ApiRateLimit | null;
+  /**
+   * How long this run has been quiet, or `null` when it is not being watched.
+   *
+   * DERIVED PER REQUEST, PERSISTED NOWHERE, AND THAT IS WHAT MAKES IT SURVIVE A
+   * RESTART. It is computed from `RunStore.lastRunEventAt` and the clock at the
+   * moment the response is assembled, so a dashboard that has just booted
+   * reports the true silence of every run immediately — before any timer exists,
+   * and without a column that could disagree with the events it summarises. The
+   * watch timer in `orchestrator.ts` announces; this field measures.
+   *
+   * READ {@link ApiRunSilence} BEFORE RENDERING IT. `null` is "not watched", not
+   * "healthy", and `overThreshold` is "we have heard nothing for N minutes", not
+   * "this run is dead".
+   */
+  readonly silence: ApiRunSilence | null;
   readonly screenshots: readonly ApiScreenshot[];
   readonly artifactPath: string | null;
   readonly previewUrl: string | null;
+  /**
+   * Where the finished code was COPIED so the owner can find it, or `null` when
+   * no publish has been recorded for this run.
+   *
+   * READ {@link ApiPublishedProject} BEFORE RENDERING IT — it has three states,
+   * not two, and `null` (never attempted) is not `published: false` (attempted
+   * and declined with a reason).
+   *
+   * IT IS NOT A SECOND `artifactPath` AND NOT A `previewUrl`. `artifactPath` is
+   * the run's own workspace, which is also the scorer's input and stays exactly
+   * where it is; this is a copy of it with the scaffolding stripped, outside the
+   * run directory, which the owner may edit or delete without touching the run.
+   * `previewUrl` is a dead address on every existing run.
+   *
+   * SERVED FROM `results/project-publish.json`, READ SERVER-SIDE, like
+   * `designLock` and `adversary`. `results/` is NOT opened to the browser and
+   * must not be — it holds held-out test titles, and the workspace-only fence in
+   * `code-files.ts` is a security control.
+   *
+   * NO SSE EVENT ANNOUNCES IT. The record is written inside `#finish` BEFORE the
+   * terminal `status` event is emitted, and the client already revalidates this
+   * response on a terminal status, so a new event type would carry a fact this
+   * response already carries. The publish also announces itself as an ordinary
+   * `log` event on the run's stream, which is what the owner actually reads.
+   */
+  readonly publishedProject: ApiPublishedProject | null;
   /**
    * Criteria this run was graded against that the owner did NOT state.
    *
@@ -1420,3 +1609,85 @@ export interface CodeFileResponse {
 }
 
 export type CodeResponse = CodeTreeResponse | CodeFileResponse;
+
+/* -------------------------------------------------------------------------
+ * `GET /api/runs/:id/preview/*` — the built site, served BY THE DASHBOARD
+ *
+ * WHY THE ROUTE EXISTS: `RunDetail.previewUrl` IS A DEAD ADDRESS. It is the
+ * `http://127.0.0.1:<port>` a `deploy: true` run served its workspace on
+ * (`preview.ts`), and the process that answered it was started by the run and
+ * EXITED WITH IT. Measured on the recorded run: `previewUrl` is
+ * `http://127.0.0.1:4321`, nothing is listening, and the artefact is intact on
+ * disk at `runs/<id>/workspace/`. So the field is a historical record of an
+ * address that was once live, and a UI that links to it links to nothing.
+ * This route is the live address instead, because the dashboard is by definition
+ * running when someone is looking at its page.
+ *
+ * THE SHAPE, AND THE TRAILING SLASH IS LOAD-BEARING:
+ *
+ *   GET /api/runs/:id/preview/            -> the workspace's index.html
+ *   GET /api/runs/:id/preview/styles.css  -> that file, as text/css
+ *   GET /api/runs/:id/preview/docs/       -> docs/index.html
+ *   GET /api/runs/:id/preview             -> 302 to …/preview/
+ *
+ * A CLIENT MUST LINK TO THE FORM WITH THE SLASH. Without it the browser resolves
+ * `styles.css` in the document against `/api/runs/:id/`, one level too high, and
+ * every relative asset 404s — the page renders unstyled and looks like a broken
+ * build. The server answers the no-slash form with a 302 rather than trusting
+ * every caller to remember, but a link that takes the redirect costs a round trip
+ * on every asset-less load and is one refactor away from being emitted into an
+ * `<iframe src>` where the redirect is less obvious.
+ *
+ * WHAT COMES BACK IS BYTES, NOT JSON — that is the whole point, and it is why
+ * this section declares no response interface. A REFUSAL, by contrast, is the
+ * same {@link ApiErrorResponse} every other route in this API answers with, so a
+ * client can render the server's own sentence instead of inventing one.
+ *
+ * IT IS NOT REDACTED, AND THE CODE BROWSER IS. `GET /api/runs/:id/files` runs
+ * `redactForPersistence` over every byte; this route cannot (the high-entropy
+ * rule shreds minified JS and inline base64, the self-check's failure mode is to
+ * withhold the file, and a PNG is not text). The control that still applies is
+ * the NAME rule — `.env`, `.pem`, `id_rsa`, `.git/config` and the rest are
+ * refused here exactly as they are refused there. `code-files.ts` note 5 states
+ * the same split from the other side.
+ *
+ * IT IS NOT A SANDBOX. The document is served from the dashboard's OWN origin, so
+ * the run's JavaScript runs there. The route sends
+ * `connect-src 'none'; form-action 'none'; base-uri 'none'`, which removes the
+ * one capability this route creates — fetch/XHR/EventSource/WebSocket and form
+ * submission back into this API — and removes nothing else: inline script, inline
+ * style and third-party fonts still work, because a preview that cannot render is
+ * not a preview. A top-level navigation or a subresource GET to another `/api/`
+ * route is still possible; every one of those is read-only and none of them
+ * returns a credential value (`sendSecretJson` in `http.ts`).
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The refusal codes the PREVIEW ROUTE ITSELF authors.
+ *
+ * DELIBERATELY NOT THE FULL SET, and the name says "own" for that reason. Every
+ * other refusal this route can answer with is `code-files.ts`'s — the same
+ * `path_escapes_workspace`, `path_forbidden`, `no_workspace`, `not_found`,
+ * `invalid_path`, `path_not_relative` and `path_in_bakeoff` that `GET
+ * /api/runs/:id/files` answers with, arriving through the same
+ * `resolveWorkspacePath`. Those are NOT enumerated here because nothing would
+ * keep the enumeration true: `CodeRefusal.code` is a `string`, so a union
+ * claiming to list them would be a promise the compiler does not check, which is
+ * the exact defect this codebase keeps finding. These three ARE checked — each
+ * one is assigned to a `PreviewOwnRefusalCode`-typed const at its single
+ * construction site, so renaming the literal or the member fails the build.
+ *
+ * `no_index_html` — 409. The workspace is real and has no `index.html`. Named
+ * rather than 404'd because "the build produced no index.html" is actionable and
+ * "not found" is not; the refusal's `remediation` quotes the `.html` files that
+ * ARE there, which is what distinguishes a wrongly-named entry point from a build
+ * that wrote nothing.
+ *
+ * `invalid_encoding` — 400. A path segment is not valid percent-encoding
+ * (`%zz`). It is a refusal rather than the `URIError` that would otherwise become
+ * a 500, because a test asserting "not 200" passes on a crash and proves nothing.
+ *
+ * `not_a_file` — 403. The resolved path is neither a file nor a directory. The
+ * word is shared with the files route on purpose: same condition, same name.
+ */
+export type PreviewOwnRefusalCode = "no_index_html" | "invalid_encoding" | "not_a_file";

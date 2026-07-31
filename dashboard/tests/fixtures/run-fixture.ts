@@ -192,6 +192,12 @@ export const RUN_DETAIL: RunDetail = {
   // spec that wants the failure notice's detail line sets this explicitly
   // rather than inheriting one nobody asked for.
   failureReason: null,
+  // Both are absences, and neither means "healthy". `silence: null` on a
+  // `running` fixture means this fixture asserts NOTHING about silence — not
+  // that the run is being watched and is fine. `publishedProject: null` means
+  // no terminal publish has happened, which is true of a running run.
+  silence: null,
+  publishedProject: null,
   ticketText: "Add a test suite to the dashboard client.",
   phase: "build",
   criteria: [

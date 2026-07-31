@@ -35,6 +35,17 @@ export const DASHBOARD_ENV = Object.freeze({
   scorerImage: "BAKEOFF_SCORER_IMAGE",
   /** Hard boundary on one scoring container, in minutes. */
   scorerTimeoutMin: "BAKEOFF_SCORER_TIMEOUT_MIN",
+  /**
+   * Where finished code is PUBLISHED. Default: the sibling of `home`.
+   *
+   * An override exists because the default is derived from `home`'s PARENT and
+   * is therefore the one dashboard directory that is not under `DASHBOARD_HOME`.
+   * A test that sets `DASHBOARD_HOME` to a `mkdtemp` directory would otherwise
+   * publish into the system temp root, shared with every other test file on the
+   * machine; a test that uses the DEFAULT home would publish into the owner's
+   * real repository. Both are avoided by pointing this at a scratch directory.
+   */
+  projects: "DASHBOARD_PROJECTS_DIR",
 });
 
 /** `dashboard/server/src` at source, `dashboard/server/dist` when compiled. */
@@ -59,6 +70,25 @@ export interface DashboardPaths {
   readonly acceptance: string;
   /** `dashboard/results` — score records, screenshots, staging, tamper reports. */
   readonly results: string;
+  /**
+   * `<parent of home>/projects` — WHERE FINISHED CODE IS PUBLISHED, and the one
+   * path here that is deliberately OUTSIDE `home`.
+   *
+   * WHY IT IS NOT UNDER `home`. The owner's words were "the code will be saved
+   * into a folder within this directory", said about the repository he opens —
+   * not about `dashboard/runs/<44-character run id>/workspace/`, which is where
+   * the artefact actually lives and which he reported he cannot find. `home` is
+   * `dashboard/`, a server package; its parent is the tree the owner works in.
+   *
+   * IT IS A COPY, NOT THE ARTEFACT. `RunPaths.workspace` stays the run's own
+   * record and the scorer's input; `project-publish.ts` copies out of it and
+   * moves nothing. Two consequences follow and both are load-bearing: deleting a
+   * published folder cannot damage a run, and editing one does NOT change what
+   * was graded.
+   *
+   * NOT CREATED BY `ensureDirs`, deliberately — see there.
+   */
+  readonly projects: string;
 }
 
 function absolute(path: string, base: string): string {
@@ -90,6 +120,7 @@ export function assertOutsideBakeoff(path: string, label: string): void {
 export function resolvePaths(env: NodeJS.ProcessEnv = process.env): DashboardPaths {
   const raw = (env[DASHBOARD_ENV.home] ?? "").trim();
   const home = raw.length > 0 ? absolute(raw, process.cwd()) : DEFAULT_HOME;
+  const rawProjects = (env[DASHBOARD_ENV.projects] ?? "").trim();
   const paths: DashboardPaths = {
     home,
     data: join(home, "data"),
@@ -97,14 +128,44 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): DashboardPat
     runs: join(home, "runs"),
     acceptance: join(home, "acceptance"),
     results: join(home, "results"),
+    // DERIVED FROM `home`, NOT FROM `DEFAULT_HOME`. Deriving it from the module's
+    // own location would make every test that points `DASHBOARD_HOME` at a temp
+    // directory publish into the owner's real repository instead — a test suite
+    // that writes folders into the tree it is testing.
+    projects: rawProjects.length > 0 ? absolute(rawProjects, process.cwd()) : resolve(home, "..", "projects"),
   };
   assertOutsideBakeoff(paths.home, "home");
   assertOutsideBakeoff(paths.runs, "runs");
   assertOutsideBakeoff(paths.acceptance, "acceptance");
   assertOutsideBakeoff(paths.results, "results");
+  // THE SAME FENCE, FOR A DIRECTORY THAT IS NOT UNDER `home`. `projects` is the
+  // one path here derived from home's PARENT, so a `DASHBOARD_HOME` of
+  // `bakeoff/x/dashboard` — or a `DASHBOARD_PROJECTS_DIR` pointed straight at the
+  // bake-off tree — would land published folders inside the directory
+  // `loadRunRecords` walks. Published code carries no `run.jsonl` and so could
+  // not be aggregated as a run record, but the fence is cheaper to keep whole
+  // than to reason about per directory.
+  assertOutsideBakeoff(paths.projects, "projects");
   return paths;
 }
 
+/**
+ * `projects` IS ABSENT FROM THIS LIST ON PURPOSE.
+ *
+ * Every other directory here is harness state that the server needs before it
+ * can answer a request. `projects/` holds the owner's finished code and nothing
+ * else; creating it at boot would put an empty, permanently empty folder at the
+ * top of the tree he works in for every dashboard that never finishes a run.
+ *
+ * `publishProject` creates it on the first publish attempt THAT GETS AS FAR AS
+ * CLAIMING A FOLDER NAME — said that precisely because it is not the same moment
+ * as "the first successful publish". A `workspace-empty` decline removes it
+ * again (non-recursively, so it cannot touch a `projects/` that already holds
+ * anything); a `copy-failed` decline does NOT, so a filesystem fault can leave
+ * an empty `projects/` behind. That is the deliberate trade — the half-copy is
+ * the evidence of what went wrong, and the record says `copy-failed` rather than
+ * reporting a folder as complete.
+ */
 export function ensureDirs(paths: DashboardPaths): void {
   for (const dir of [paths.data, paths.runs, paths.acceptance, paths.results]) {
     mkdirSync(dir, { recursive: true });

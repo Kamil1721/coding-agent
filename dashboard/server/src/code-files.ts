@@ -8,6 +8,17 @@
  * This module turns that directory into two JSON shapes — a flat tree and one
  * file's text — so the run page can show the code beside the record.
  *
+ * AND, SINCE THE PREVIEW ROUTE, INTO A THIRD SHAPE: THE RAW BYTES. `RunDetail`
+ * also carries `previewUrl`, and that field is a HISTORICAL RECORD rather than a
+ * live address — the static server that answered it was started by the run and
+ * died with it (measured: `http://127.0.0.1:4321`, nothing listening, while the
+ * artefact sat intact on disk). So `GET /api/runs/:id/preview/*` re-serves the
+ * same workspace from the dashboard, which is by definition running when someone
+ * is looking at it. {@link resolvePreviewTarget} is that route's resolver and it
+ * goes through {@link resolveWorkspacePath} — the SAME five refusals below — so
+ * the browsable site and the code browser cannot disagree about what is inside
+ * the fence. What differs is what happens to the bytes afterwards; see note 5.
+ *
  * IT IS A FILE-SERVING ENDPOINT, WHICH IS THE MOST DANGEROUS KIND OF ROUTE THIS
  * PROGRAM HAS. Five things are refused, and each one is refused HERE rather than
  * at the route, so that the tree walk and the content read cannot disagree:
@@ -49,13 +60,29 @@
  *    `.git/config` from the list while serving it on request has a security
  *    control made of politeness.
  *
- * 5. CONTENT. Every byte that leaves here goes through
+ * 5. CONTENT — AND THERE ARE NOW TWO BYTE PATHS OUT OF HERE, WHICH DIFFER.
+ *
+ *    `readWorkspaceFile` (the code browser) redacts. Every byte goes through
  *    `redactForPersistence` — a build agent that committed a key into source
  *    must not get it rendered into a browser tab — and then through
  *    `assertRedacted`, which is the redactor judging its own output. If the
  *    self-check still matches a rule the text is WITHHELD rather than shown:
  *    that is what "anything the redactor would flag is not served" means when
  *    the thing doing the flagging is a content scanner and not a filename list.
+ *
+ *    THE PREVIEW ROUTE DOES NOT REDACT, AND CANNOT. Stated here rather than
+ *    left for a reader to discover, because the sentence above used to read
+ *    "every byte that leaves here" and that would now be false. Three reasons,
+ *    and the first two are mechanical rather than aesthetic: `HIGH_ENTROPY_TOKEN`
+ *    matches minified JavaScript and inline base64, so a redacted preview is a
+ *    shredded preview; `assertRedacted`'s failure mode is to WITHHOLD the file,
+ *    which for a stylesheet means a blank page rather than a warning; and the
+ *    redactor is a text scanner that has nothing to say about a PNG. What is
+ *    left standing is the NAME rule (note 4): `denyReason` runs on the preview
+ *    path too, so `.env`, `.pem`, `id_rsa` and `.git/config` are refused by the
+ *    preview exactly as they are refused by the browser. A credential committed
+ *    into `script.js` IS served verbatim by the preview and redacted by the code
+ *    browser — the same file, two routes, two answers, on purpose.
  *
  * And it is BOUNDED. This run's builder transcript is 12,369,476 bytes; a
  * response that size hangs the tab that asked for it. Files are capped at
@@ -65,10 +92,17 @@
  */
 
 import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { assertRedacted, redactForPersistence } from "bakeoff/dist/redact.js";
-import type { CodeExclusion, CodeFileResponse, CodeTreeEntry, CodeTreeResponse } from "./api-types.js";
+import { STATIC_CONTENT_TYPES } from "bakeoff/dist/tier0.js";
+import type {
+  CodeExclusion,
+  CodeFileResponse,
+  CodeTreeEntry,
+  CodeTreeResponse,
+  PreviewOwnRefusalCode,
+} from "./api-types.js";
 import { assertOutsideBakeoff } from "./paths.js";
 
 /**
@@ -551,4 +585,260 @@ export function readWorkspaceFile(target: string, relPath: string, runId: string
 /** `true` when the value is a refusal rather than a response. */
 export function isRefusal(value: CodeRefusal | { readonly kind: string }): value is CodeRefusal {
   return !("kind" in value);
+}
+
+/* -------------------------------------------------------------------------
+ * The browsable site — `GET /api/runs/:id/preview/*`
+ *
+ * Everything below decides WHAT to open and WHAT TYPE to call it. Nothing below
+ * decides containment: that is `resolveWorkspacePath` above, called once per
+ * request from `resolvePreviewTarget` and once more for a directory's index, so
+ * a traversal, a symlink out, a credential name and the bake-off fence are all
+ * refused by the same code that refuses them for the code browser. There is no
+ * second path check here, deliberately — `FINDINGS §ITERATION 4` names that as
+ * the thing to avoid, and a second one would be the copy that drifts.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The document a directory URL opens.
+ *
+ * ONE NAME, NO GUESSING. No `index.htm`, no "the only .html file in there", no
+ * SPA fallback — `bakeoff/src/tier0.ts` refuses the last of those in the scorer
+ * for the reason that applies here too: rewriting every miss to `index.html`
+ * makes a site with three broken pages look exactly like a site with three
+ * working ones. A workspace whose entry point is called something else gets the
+ * named refusal below, which says so and names what it found.
+ */
+export const PREVIEW_INDEX_DOCUMENT = "index.html";
+
+/** How many sibling `.html` names the no-index refusal is allowed to quote. */
+const PREVIEW_NAMED_SIBLINGS = 5;
+
+/**
+ * The content type for one served path.
+ *
+ * THE TABLE IS `bakeoff`'s, IMPORTED, NOT COPIED. `STATIC_CONTENT_TYPES` is what
+ * the sealed scorer's own static server answers with, which means the preview
+ * cannot describe a file differently from the server the gate screenshotted —
+ * and a type added there (a new font format, say) reaches this route with no
+ * edit here. `contentTypeFor` itself is not exported from that module, so these
+ * three lines restate the LOOKUP; the map, which is the part that drifts, has
+ * exactly one declaration.
+ *
+ * THE FALLBACK IS `application/octet-stream` AND IT IS A REAL COST. Paired with
+ * the `nosniff` header the route sends, an extension the table has never heard
+ * of will DOWNLOAD rather than render. That is the deliberate direction: the
+ * alternative is letting a browser sniff an unknown file into HTML and run it on
+ * the dashboard's own origin. The fix for a genuinely missing type is to add it
+ * to `STATIC_CONTENT_TYPES`, where the scorer gets it too.
+ */
+export function previewContentType(relPath: string): string {
+  const extension = extname(relPath).toLowerCase();
+  if (extension.length === 0) return "application/octet-stream";
+  return STATIC_CONTENT_TYPES[extension] ?? "application/octet-stream";
+}
+
+/**
+ * What one preview request resolves to.
+ *
+ * `directory` IS NOT AN ANSWER, IT IS A FORK. The route has to decide between a
+ * redirect (the URL had no trailing slash, so every relative asset in the
+ * document would resolve one level too high) and reading the index. That is an
+ * HTTP decision and lives in `http.ts`; this module only says which of the three
+ * things the path IS.
+ */
+export type PreviewTarget =
+  | { readonly kind: "file"; readonly target: string; readonly path: string }
+  | { readonly kind: "directory"; readonly target: string; readonly path: string }
+  | { readonly kind: "refusal"; readonly refusal: CodeRefusal };
+
+/**
+ * Decode a preview URL's path segments into ONE relative workspace path.
+ *
+ * DECODED EXACTLY ONCE, PER SEGMENT, AND THEN JOINED — in that order, and the
+ * order is the argument. `URL.pathname` is NOT percent-decoded (unlike
+ * `URLSearchParams.get`, which is why the `?path=` route must not decode at
+ * all), so `preview/sub%20dir/a.css` arrives here as two encoded segments and
+ * has to be decoded to reach a real filename. Decoding the JOINED string instead
+ * would be the same one decode and would still be wrong for a different reason;
+ * decoding TWICE is the classic hole, and it is closed by both this function
+ * running once and by `pathRefusal` — which the caller reaches through
+ * `resolveWorkspacePath` — refusing `.`, `..`, empty segments and backslashes on
+ * the JOINED result, i.e. after any `%2f` a segment carried has become a
+ * separator.
+ *
+ * WHAT THIS FUNCTION IS NOT DEFENDING AGAINST, said plainly because a reader
+ * will assume otherwise: `new URL(request.url, …)` in `http.ts` has already
+ * normalised `..`, `%2e%2e` and `.%2e` away per the WHATWG URL parser's
+ * double-dot rule, so a literal traversal never reaches here in the first place.
+ * That is an accident of the router, not a control — the control is
+ * `resolveWorkspacePath`'s realpath containment, which is what catches the
+ * spellings normalisation cannot see (a symlink pointing out of the workspace).
+ *
+ * A MALFORMED ESCAPE IS A NAMED REFUSAL, NOT A THROW. `decodeURIComponent("%zz")`
+ * raises `URIError`; unhandled it becomes a 500, and a test asserting "not 200"
+ * would pass on the crash while proving nothing.
+ */
+export function decodePreviewPath(
+  segments: readonly string[],
+): { readonly ok: true; readonly path: string } | { readonly ok: false; readonly refusal: CodeRefusal } {
+  const parts: string[] = [];
+  for (const segment of segments) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      const code: PreviewOwnRefusalCode = "invalid_encoding";
+      return {
+        ok: false,
+        refusal: {
+          status: 400,
+          code,
+          // Truncated before it is quoted: the whole point of echoing the
+          // segment is to let a reader see the bad escape, and a kilobyte of
+          // it in an error body helps nobody.
+          message: `the path segment ${JSON.stringify(segment.slice(0, 80))} is not valid percent-encoding`,
+          remediation:
+            "Link to a path exactly as `GET /api/runs/:id/files` listed it, percent-encoded once. " +
+            "A stray `%` in a filename must be sent as `%25`.",
+        },
+      };
+    }
+    parts.push(decoded);
+  }
+  return { ok: true, path: parts.join("/") };
+}
+
+/**
+ * Resolve one preview path inside the run's workspace, or refuse.
+ *
+ * THE EMPTY PATH IS THE WORKSPACE ROOT, and it is the one case that does not go
+ * through `resolveWorkspacePath` — that function refuses an empty path on shape
+ * and refuses the root itself by containment (`target === root`), both correct
+ * for a route that serves ONE FILE and both wrong for a route whose entry point
+ * is the directory. Nothing client-supplied is resolved in that branch: it
+ * realpaths the workspace and reports "this is a directory", so the fence is not
+ * widened by a single character. Every non-empty path goes through the full
+ * chain — shape, deny list, realpath, containment, bake-off assertion.
+ *
+ * THE PREVIEW AND THE TREE DISAGREE ABOUT SYMLINKS, AND THAT IS NOT A BUG BUT A
+ * READER WILL ASSUME THE TWO SURFACES SHOW THE SAME SET. `walk` lists no symlink
+ * at all — it records an exclusion instead, because what a link points at may be
+ * outside the workspace and a row that 403s when clicked is worse than an honest
+ * note. This resolver judges the link by WHERE IT LANDS, so a symlink whose
+ * realpath is inside the workspace IS served here while the code browser hides
+ * it. Containment holds in both; only the listing differs.
+ */
+export function resolvePreviewTarget(workspace: string, relPath: string): PreviewTarget {
+  if (relPath === "") {
+    let root: string;
+    try {
+      root = realpathSync(workspace);
+      if (!statSync(root).isDirectory()) throw new Error("not a directory");
+    } catch {
+      return {
+        kind: "refusal",
+        refusal: {
+          status: 404,
+          code: "no_workspace",
+          message: "this run has no workspace directory on disk, so there is no site to preview",
+          remediation:
+            "A run that was cancelled before its build segment wrote no files. The run record still " +
+            "has its ticket, trace and criteria.",
+        },
+      };
+    }
+    return { kind: "directory", target: root, path: "" };
+  }
+
+  const resolved = resolveWorkspacePath(workspace, relPath);
+  if (!resolved.ok) return { kind: "refusal", refusal: resolved.refusal };
+
+  let stat;
+  try {
+    stat = statSync(resolved.target);
+  } catch {
+    // `realpathSync` succeeded a moment ago, so this is a file that vanished
+    // between the two calls — which a RUNNING run's workspace can genuinely do.
+    return {
+      kind: "refusal",
+      refusal: {
+        status: 404,
+        code: "not_found",
+        message: `no such file in this run's workspace: ${relPath}`,
+        remediation: "The workspace may have changed since the page was loaded. Reload it.",
+      },
+    };
+  }
+  if (stat.isDirectory()) return { kind: "directory", target: resolved.target, path: relPath };
+  if (!stat.isFile()) {
+    const code: PreviewOwnRefusalCode = "not_a_file";
+    return {
+      kind: "refusal",
+      refusal: {
+        status: 403,
+        code,
+        message: `${relPath} is not a regular file`,
+        remediation: "Only regular files are served: a socket or device node is not part of a website.",
+      },
+    };
+  }
+  return { kind: "file", target: resolved.target, path: relPath };
+}
+
+/** Up to `PREVIEW_NAMED_SIBLINGS` `*.html` names directly inside `dir`. */
+function htmlNamesIn(dir: string): readonly string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((dirent) => dirent.isFile() && /\.html?$/i.test(dirent.name))
+      .map((dirent) => dirent.name)
+      .sort()
+      .slice(0, PREVIEW_NAMED_SIBLINGS);
+  } catch {
+    // A directory that cannot be listed still gets the refusal below; the
+    // sentence is merely shorter. This helper must never throw out of a path
+    // whose whole job is to explain a failure.
+    return [];
+  }
+}
+
+/**
+ * "The build produced no index.html" — the named refusal, with what IS there.
+ *
+ * 409 AND NOT 404, DELIBERATELY. A 404 says "no such address" and sends the
+ * reader looking for a typo in a URL the dashboard itself generated; the address
+ * is right and the workspace is real, and what is missing is an entry document
+ * the build was supposed to write. That is a conflict with the state of the
+ * resource, which is what 409 is for. A blank 200 would be worse than either: a
+ * white page is exactly what a broken build looks like, so the one rendering
+ * that must never happen is the one that cannot be told from success.
+ *
+ * IT NAMES THE HTML IT DID FIND, which is the actionable half. A builder that
+ * wrote `home.html` produced a working site with the wrong entry point, and that
+ * is a one-line fix the owner can ask for; "no index.html" alone does not
+ * distinguish it from a build that wrote nothing at all.
+ *
+ * `dir` IS THE RESOLVED, REALPATHED DIRECTORY handed back by
+ * {@link resolvePreviewTarget}, never a re-join of the client's path onto the
+ * workspace root. Re-joining would work and would put a second construction of a
+ * filesystem path from request input into a module whose entire argument is that
+ * there is exactly one.
+ */
+export function previewIndexRefusal(dir: string, dirRelPath: string): CodeRefusal {
+  const where = dirRelPath === "" ? "this run's workspace" : `${dirRelPath}/`;
+  const siblings = htmlNamesIn(dir);
+  const code: PreviewOwnRefusalCode = "no_index_html";
+  return {
+    status: 409,
+    code,
+    message: `the build produced no ${PREVIEW_INDEX_DOCUMENT}: there is none in ${where}`,
+    remediation:
+      `The preview serves the run's own workspace as a site, so it opens ${PREVIEW_INDEX_DOCUMENT} and ` +
+      "guesses nothing. " +
+      (siblings.length > 0
+        ? `There IS HTML here under other names — ${siblings.join(", ")} — so the build ran and named its ` +
+          "entry point something else. "
+        : "No HTML at all was found there. ") +
+      `The code is on disk at ${dir}, and GET /api/runs/:id/files lists all of it.`,
+  };
 }

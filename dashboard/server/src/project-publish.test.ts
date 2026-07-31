@@ -1,0 +1,481 @@
+/**
+ * project-publish.test.ts — the publish, and the three ways it must refuse.
+ *
+ * EVERY REFUSAL IS PAIRED WITH A POSITIVE CONTROL, because the failure this
+ * repository keeps finding is a check that can only observe success — and its
+ * mirror image, a check that can only observe refusal. A `publishProject` that
+ * copied NOTHING would satisfy "`.git` is not in the published folder" and every
+ * exclusion assertion below; a `publishProject` that copied everything into a
+ * fresh folder every time would satisfy "the second run got a different path"
+ * while having flattened the first run's work. So:
+ *
+ *   the exclusion test asserts `index.html` and `assets/logo.svg` ARRIVED,
+ *   the collision test asserts the earlier folder's BYTES ARE UNCHANGED,
+ *   the decline tests assert the NAMED REASON, not merely that nothing threw.
+ *
+ * NO DASHBOARD, NO SERVER, NO DATABASE. `publishProject` takes four paths and a
+ * title, which is what makes this file able to drive the failure branches at
+ * all — `workspace-missing` and `no-free-name` are unreachable from an
+ * end-to-end run without breaking the run.
+ */
+
+import { strict as assert } from "node:assert";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import test from "node:test";
+import { BAKEOFF_ROOT, resolvePaths } from "./paths.js";
+import {
+  MAX_NAME_ATTEMPTS,
+  PROJECT_EXCLUDED_ENTRIES,
+  PROJECT_PUBLISH_RECORD,
+  projectSlug,
+  publishProject,
+  publishedProjectFromRecord,
+  readPublishedProject,
+  runIdSuffix,
+} from "./project-publish.js";
+import type { PublishRequest } from "./project-publish.js";
+
+const RUN_ID = "run-2026-07-30T20-16-40-242Z-052c6e02";
+const TITLE = "Coglane landing page";
+
+/** The marker that proves a real file made it across, not just a directory. */
+const SITE_MARKER = "<h1>coglane</h1>";
+
+interface Scratch {
+  readonly root: string;
+  readonly workspace: string;
+  readonly results: string;
+  readonly projects: string;
+  readonly request: PublishRequest;
+  readonly cleanup: () => void;
+}
+
+function scratch(runId = RUN_ID, title = TITLE): Scratch {
+  const root = mkdtempSync(join(tmpdir(), "dash-publish-"));
+  const workspace = join(root, "runs", runId, "workspace");
+  const results = join(root, "runs", runId, "results");
+  const projects = join(root, "projects");
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(results, { recursive: true });
+  return {
+    root,
+    workspace,
+    results,
+    projects,
+    request: { runId, ticketTitle: title, workspace, projectsDir: projects, resultsDir: results },
+    cleanup: () => {
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+/** A workspace shaped like the one real finished run on this machine. */
+function fillWorkspace(workspace: string): void {
+  writeFileSync(join(workspace, "index.html"), SITE_MARKER, "utf8");
+  writeFileSync(join(workspace, "styles.css"), "body{}", "utf8");
+  writeFileSync(join(workspace, "TICKET.md"), "the ticket", "utf8");
+  mkdirSync(join(workspace, "assets"), { recursive: true });
+  writeFileSync(join(workspace, "assets", "logo.svg"), "<svg/>", "utf8");
+  for (const rule of PROJECT_EXCLUDED_ENTRIES) {
+    mkdirSync(join(workspace, rule.name), { recursive: true });
+    writeFileSync(join(workspace, rule.name, "inside.txt"), `must not be published: ${rule.name}`, "utf8");
+  }
+}
+
+/** Every file under `dir`, relative, forward slashes, sorted. */
+function filesUnder(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...filesUnder(join(dir, entry.name), rel));
+    else out.push(rel);
+  }
+  return out.sort();
+}
+
+test("the exclusion list actually excludes — and the site actually arrives", () => {
+  const s = scratch();
+  try {
+    fillWorkspace(s.workspace);
+    const record = publishProject(s.request);
+    assert.equal(record.published, true);
+    if (!record.published) return;
+
+    const published = filesUnder(record.path);
+    // POSITIVE CONTROL FIRST. Without these two lines every assertion below is
+    // satisfied by a publish that copied nothing at all.
+    assert.deepEqual(published, ["TICKET.md", "assets/logo.svg", "index.html", "styles.css"]);
+    assert.equal(readFileSync(join(record.path, "index.html"), "utf8"), SITE_MARKER);
+
+    // …and now the refusals. Every excluded name is gone, by name.
+    for (const rule of PROJECT_EXCLUDED_ENTRIES) {
+      assert.equal(existsSync(join(record.path, rule.name)), false, `${rule.name} was published`);
+      assert.ok(
+        record.excluded.some((entry) => entry.path === rule.name && entry.reason === rule.reason),
+        `${rule.name} was dropped without being reported`,
+      );
+    }
+    assert.equal(record.fileCount, 4);
+    assert.ok(record.bytes > 0);
+
+    // The workspace is READ ONLY. Nothing was moved out of it.
+    assert.equal(existsSync(join(s.workspace, "index.html")), true);
+    assert.equal(existsSync(join(s.workspace, ".git")), true);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("an excluded name is excluded AT ANY DEPTH, not only at the workspace root", () => {
+  const s = scratch();
+  try {
+    fillWorkspace(s.workspace);
+    // A vendored checkout three levels down: the case a root-only rule ships.
+    const nested = join(s.workspace, "assets", "vendor", "widget");
+    mkdirSync(join(nested, ".git"), { recursive: true });
+    writeFileSync(join(nested, ".git", "config"), "[core]", "utf8");
+    writeFileSync(join(nested, "widget.js"), "export {}", "utf8");
+
+    const record = publishProject(s.request);
+    assert.equal(record.published, true);
+    if (!record.published) return;
+    // Positive control: the sibling file at the same depth DID come across, so
+    // this is a name rule and not a depth cut-off.
+    assert.equal(existsSync(join(record.path, "assets", "vendor", "widget", "widget.js")), true);
+    assert.equal(existsSync(join(record.path, "assets", "vendor", "widget", ".git")), false);
+    assert.ok(record.excluded.some((entry) => entry.path === "assets/vendor/widget/.git"));
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a colliding title does NOT overwrite the project that is already there", () => {
+  const s = scratch();
+  try {
+    // Somebody's earlier work, under the exact name this title slugs to.
+    const earlier = join(s.projects, projectSlug(TITLE));
+    mkdirSync(earlier, { recursive: true });
+    writeFileSync(join(earlier, "index.html"), "EARLIER RUN — DO NOT LOSE ME", "utf8");
+    writeFileSync(join(earlier, "notes-the-owner-added.md"), "hand-written", "utf8");
+
+    fillWorkspace(s.workspace);
+    const record = publishProject(s.request);
+    assert.equal(record.published, true);
+    if (!record.published) return;
+
+    // THE ASSERTION THAT MATTERS IS THE BYTES, NOT THE PATH. A publish that
+    // clobbered the directory and then reported a different path would pass a
+    // `notEqual` on the path alone.
+    assert.equal(readFileSync(join(earlier, "index.html"), "utf8"), "EARLIER RUN — DO NOT LOSE ME");
+    assert.equal(existsSync(join(earlier, "notes-the-owner-added.md")), true);
+
+    assert.notEqual(record.path, earlier);
+    assert.equal(record.path, join(s.projects, `${projectSlug(TITLE)}-${runIdSuffix(RUN_ID)}`));
+    // And the new folder really did receive this run's code.
+    assert.equal(readFileSync(join(record.path, "index.html"), "utf8"), SITE_MARKER);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a workspace that does not exist DECLINES with a named reason, and does not throw", () => {
+  const s = scratch();
+  try {
+    rmSync(s.workspace, { recursive: true, force: true });
+    const record = publishProject(s.request);
+    assert.equal(record.published, false);
+    if (record.published) return;
+    // The NAME, not merely "it returned something". A decline whose reason was
+    // `copy-failed` here would be this module blaming the filesystem for a run
+    // that simply never built anything.
+    assert.equal(record.reason, "workspace-missing");
+    assert.ok(record.detail.includes(s.workspace), "the refusal must name the path it looked at");
+    // Nothing was created for a run with nothing to publish.
+    assert.equal(existsSync(s.projects), false);
+    // …and the refusal is DURABLE: an absent record cannot be told apart from a
+    // step that never ran, which is why a decline writes a record too.
+    const wire = readPublishedProject(s.results);
+    assert.notEqual(wire, null);
+    assert.equal(wire?.published, false);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a workspace holding only scaffolding declines `workspace-empty` and leaves NO empty folder", () => {
+  const s = scratch();
+  try {
+    // The shape of a run cancelled out of the queue, plus a design lane that got
+    // as far as writing references and no further.
+    mkdirSync(join(s.workspace, "design-refs"), { recursive: true });
+    writeFileSync(join(s.workspace, "design-refs", "ref-1.png"), "not a site", "utf8");
+
+    const record = publishProject(s.request);
+    assert.equal(record.published, false);
+    if (record.published) return;
+    assert.equal(record.reason, "workspace-empty");
+    // THE POINT OF THE TEST. A folder named after the ticket, containing
+    // nothing, is worse than no folder: it reads as "your code is here" and is
+    // empty. Both the claimed directory and `projects/` itself must be gone.
+    assert.equal(existsSync(s.projects), false);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("`projects/` is left alone when it already holds somebody else's work", () => {
+  const s = scratch();
+  try {
+    // Same empty-workspace decline as above, but this time the directory is not
+    // ours to remove. The non-recursive rmdir must fail and be ignored.
+    const other = join(s.projects, "another-project");
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, "index.html"), "someone else's work", "utf8");
+
+    const record = publishProject(s.request);
+    assert.equal(record.published, false);
+    assert.equal(readFileSync(join(other, "index.html"), "utf8"), "someone else's work");
+    assert.deepEqual(readdirSync(s.projects), ["another-project"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a ticket title that is a path traversal cannot escape `projects/`", () => {
+  const s = scratch(RUN_ID, "../../etc/passwd");
+  try {
+    fillWorkspace(s.workspace);
+    const record = publishProject(s.request);
+    assert.equal(record.published, true);
+    if (!record.published) return;
+    // The slug keeps `[a-z0-9-]` only, so the dots and separators are gone
+    // before a path is ever built.
+    assert.equal(projectSlug("../../etc/passwd"), "etc-passwd");
+    assert.equal(record.path, join(s.projects, "etc-passwd"));
+    assert.deepEqual(readdirSync(s.projects), ["etc-passwd"]);
+    // Nothing landed beside the scratch root.
+    assert.equal(existsSync(join(s.root, "passwd")), false);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a title that reduces to nothing gets a name a person can still open", () => {
+  assert.equal(projectSlug("..."), "untitled-project");
+  assert.equal(projectSlug("   "), "untitled-project");
+  assert.equal(projectSlug("🚀🚀🚀"), "untitled-project");
+  assert.equal(projectSlug("Make a COPY of kamilborzecki.dev"), "make-a-copy-of-kamilborzecki-dev");
+  // Capped, and never left ending in a dash by the cut.
+  const long = projectSlug("a".repeat(200));
+  assert.equal(long.length, 60);
+  assert.equal(projectSlug(`${"b".repeat(59)} tail`), "b".repeat(59));
+});
+
+test("symlinks are NOT followed, and the drop is reported", () => {
+  const s = scratch();
+  try {
+    fillWorkspace(s.workspace);
+    const outside = join(s.root, "outside-the-workspace");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "secret.txt"), "must not be copied", "utf8");
+    symlinkSync(outside, join(s.workspace, "escape"));
+    symlinkSync(join(s.workspace, "index.html"), join(s.workspace, "alias.html"));
+
+    const record = publishProject(s.request);
+    assert.equal(record.published, true);
+    if (!record.published) return;
+    assert.equal(existsSync(join(record.path, "escape")), false);
+    assert.equal(existsSync(join(record.path, "alias.html")), false);
+    // Reported, not silently dropped — a folder that is quietly missing a file
+    // is indistinguishable from a copy that failed halfway.
+    for (const name of ["escape", "alias.html"]) {
+      assert.ok(
+        record.excluded.some((entry) => entry.path === name && entry.reason.startsWith("symbolic link")),
+        `${name} was dropped without being reported`,
+      );
+    }
+    // Positive control: the real files still came across.
+    assert.equal(readFileSync(join(record.path, "index.html"), "utf8"), SITE_MARKER);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("re-publishing the SAME run reuses its own folder instead of minting a second one", () => {
+  const s = scratch();
+  try {
+    fillWorkspace(s.workspace);
+    const first = publishProject(s.request);
+    assert.equal(first.published, true);
+    if (!first.published) return;
+
+    writeFileSync(join(s.workspace, "index.html"), "<h1>rebuilt</h1>", "utf8");
+    const second = publishProject(s.request);
+    assert.equal(second.published, true);
+    if (!second.published) return;
+
+    assert.equal(second.path, first.path);
+    assert.deepEqual(readdirSync(s.projects), [projectSlug(TITLE)]);
+    assert.equal(readFileSync(join(second.path, "index.html"), "utf8"), "<h1>rebuilt</h1>");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a record naming a DIFFERENT run does not hand this run somebody else's folder", () => {
+  const s = scratch();
+  try {
+    fillWorkspace(s.workspace);
+    // The shape of the bug this guards: a results directory carrying a record
+    // from another run — a copied fixture, a re-used id — must not make this run
+    // write into that run's published folder.
+    const foreign = join(s.projects, "foreign-project");
+    mkdirSync(foreign, { recursive: true });
+    writeFileSync(join(foreign, "index.html"), "FOREIGN", "utf8");
+    writeFileSync(
+      join(s.results, PROJECT_PUBLISH_RECORD),
+      JSON.stringify({ published: true, runId: "run-somebody-else", path: foreign, fileCount: 1, bytes: 7 }),
+      "utf8",
+    );
+
+    const record = publishProject(s.request);
+    assert.equal(record.published, true);
+    if (!record.published) return;
+    assert.notEqual(record.path, foreign);
+    assert.equal(readFileSync(join(foreign, "index.html"), "utf8"), "FOREIGN");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("running out of folder names is a NAMED refusal, not an overwrite and not a loop", () => {
+  const s = scratch();
+  try {
+    fillWorkspace(s.workspace);
+    const slug = projectSlug(TITLE);
+    const suffix = runIdSuffix(RUN_ID);
+    // Every candidate the generator will offer, taken, each with a file in it.
+    mkdirSync(join(s.projects, slug), { recursive: true });
+    writeFileSync(join(s.projects, slug, "keep.txt"), "taken", "utf8");
+    mkdirSync(join(s.projects, `${slug}-${suffix}`), { recursive: true });
+    for (let n = 2; n <= MAX_NAME_ATTEMPTS; n += 1) {
+      mkdirSync(join(s.projects, `${slug}-${suffix}-${String(n)}`), { recursive: true });
+    }
+
+    const record = publishProject(s.request);
+    assert.equal(record.published, false);
+    if (record.published) return;
+    assert.equal(record.reason, "no-free-name");
+    // Nothing was written into any of them.
+    assert.equal(readFileSync(join(s.projects, slug, "keep.txt"), "utf8"), "taken");
+    assert.deepEqual(readdirSync(join(s.projects, `${slug}-${suffix}`)), []);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("the record round-trips onto the wire, and anything else is null", () => {
+  const s = scratch();
+  try {
+    fillWorkspace(s.workspace);
+    const record = publishProject(s.request);
+    assert.equal(record.published, true);
+    if (!record.published) return;
+
+    const wire = readPublishedProject(s.results);
+    assert.notEqual(wire, null);
+    assert.equal(wire?.published, true);
+    if (wire === null || !wire.published) return;
+    assert.equal(wire.path, record.path);
+    assert.equal(wire.fileCount, record.fileCount);
+    assert.equal(wire.excluded.length, record.excluded.length);
+    // `source` and `runId` are on the record and NOT on the wire. If that ever
+    // changes, the client's mirror has to change with it.
+    assert.deepEqual(Object.keys(wire).sort(), ["bytes", "excluded", "fileCount", "path", "published", "publishedAt"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a corrupt or foreign record reads as `null` rather than as a published project", () => {
+  // The negative control for the reader. Each of these once had a plausible
+  // failure mode where a cast would have produced `path: undefined` on a field
+  // the client's type says is a string.
+  assert.equal(publishedProjectFromRecord("{}"), null);
+  assert.equal(publishedProjectFromRecord("[]"), null);
+  assert.equal(publishedProjectFromRecord('{"published":true}'), null);
+  assert.equal(publishedProjectFromRecord('{"published":true,"path":""}'), null);
+  assert.equal(publishedProjectFromRecord('{"published":true,"path":"/x","publishedAt":"t","fileCount":"2"}'), null);
+  assert.equal(publishedProjectFromRecord('{"published":false,"reason":"x"}'), null);
+  assert.throws(() => publishedProjectFromRecord("not json at all"));
+
+  // …and the positive control, so the six nulls above are not the only outcome
+  // this function can produce.
+  const ok = publishedProjectFromRecord(
+    '{"published":true,"path":"/p","publishedAt":"t","fileCount":2,"bytes":9,"excluded":[{"path":".git","reason":"r"},{"nope":1}]}',
+  );
+  assert.equal(ok?.published, true);
+  if (ok === null || !ok.published) return;
+  // The malformed exclusion entry is dropped; the well-formed one survives.
+  assert.deepEqual(ok.excluded, [{ path: ".git", reason: "r" }]);
+});
+
+/* -------------------------------------------------------------------------
+ * WHERE `projects/` IS — the one dashboard directory outside `DASHBOARD_HOME`
+ *
+ * Tested here rather than in a paths test of its own because the failure it
+ * guards is this module's: a `projects` that ignored its override would make
+ * every test in this package publish into the system temp root, and one that
+ * ignored `DASHBOARD_HOME` would make them publish into the owner's real
+ * repository, where the folders would look exactly like his.
+ * ---------------------------------------------------------------------- */
+
+test("`projects` is the SIBLING of home, is overridable, and is inside the bake-off fence", () => {
+  const home = join(tmpdir(), "some-home", "dashboard");
+  assert.equal(resolvePaths({ DASHBOARD_HOME: home }).projects, join(tmpdir(), "some-home", "projects"));
+
+  // The DEFAULT is stated as a relationship rather than a literal, so this stays
+  // true whether it is read from `src/` or from a per-agent `dist-*/`.
+  const fromDefault = resolvePaths({});
+  assert.equal(fromDefault.projects, join(dirname(fromDefault.home), "projects"));
+
+  const overridden = resolvePaths({ DASHBOARD_HOME: home, DASHBOARD_PROJECTS_DIR: join(tmpdir(), "elsewhere") });
+  assert.equal(overridden.projects, join(tmpdir(), "elsewhere"));
+
+  // THE NEGATIVE CONTROL. `projects` is derived from home's PARENT, so it is the
+  // one path that can land inside the bake-off tree while every other one is
+  // outside it. A publish under `bakeoff/` is what the fence exists to stop.
+  assert.throws(
+    () => resolvePaths({ DASHBOARD_HOME: home, DASHBOARD_PROJECTS_DIR: join(BAKEOFF_ROOT, "results", "projects") }),
+    /inside the bake-off tree/,
+  );
+});
+
+test("an unreadable results directory loses the RECORD, not the copy", () => {
+  const s = scratch();
+  try {
+    fillWorkspace(s.workspace);
+    // A results directory that cannot be written: the record write is swallowed
+    // on purpose, and this is the test that says what that costs — the wire
+    // field is null while the folder exists on disk.
+    const request: PublishRequest = { ...s.request, resultsDir: join(s.workspace, "index.html", "not-a-dir") };
+    const record = publishProject(request);
+    assert.equal(record.published, true);
+    if (!record.published) return;
+    assert.equal(existsSync(join(record.path, "index.html")), true);
+    assert.equal(readPublishedProject(request.resultsDir), null);
+  } finally {
+    s.cleanup();
+  }
+});

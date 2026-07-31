@@ -194,6 +194,107 @@ export function Pill({
  * the code intended, and the thing that has to be true is that two roles resolve
  * to two different pixels.
  */
+/**
+ * THE BREATHING RIM — the only thing on a card that moves.
+ *
+ * The owner asked for it by name: "there will be some sort of border around the
+ * orchestration to indicate that he is doing something, for example pulsating
+ * bordering or something". The card already carried a 5px pulsing DOT inside a
+ * status chip, which is a lot of signal to put in twenty-five square pixels; this
+ * puts the same signal on the whole card edge, where it is legible at the zoom
+ * levels this canvas is actually read at.
+ *
+ * WHAT IT DOES NOT CLAIM, AND THIS IS THE IMPORTANT PARAGRAPH. It does NOT mean
+ * "work is happening now". It means "the last thing the stream said about this
+ * agent was `running`", which is exactly what the status chip and the connector's
+ * travelling comet already meant. That distinction is not pedantry: a real run in
+ * this repo sat at `running` for 7h48m with an IDLE subprocess, and no timer,
+ * watchdog or heartbeat exists anywhere in this app that could tell working from
+ * hung. A breathing border on that run would have breathed all night. It is added
+ * here because it is strictly no weaker a claim than the dot it joins — NOT
+ * because anything now detects liveness. When a stall detector lands, THIS is the
+ * element that should stop breathing and go still or amber; until then, do not
+ * write a comment anywhere that says this rim means the agent is alive.
+ *
+ * WHY `motion-safe:` AND NOT A BARE `animate-*`. Under
+ * `prefers-reduced-motion: reduce` the rim must hold still, and the two ways to
+ * get there are not equivalent. `globals.css` has a blanket
+ * `.animate-pulse { animation: none }` inside its reduced-motion block, so a bare
+ * `animate-pulse` would be stilled by that rule — but only by coincidence of
+ * sharing Tailwind's class name, and any future swap to a different keyframe
+ * would silently escape it. `motion-safe:` compiles the animation INSIDE
+ * `@media (prefers-reduced-motion: no-preference)`, so the rim is stilled by its
+ * own definition rather than by a rule in another file. Same reasoning as
+ * `orchestration-canvas.tsx:307`, which is the pattern this follows.
+ *
+ * WHY TAILWIND'S `pulse` AND NOT A PURPOSE-BUILT KEYFRAME. A named keyframe would
+ * have to live in `globals.css`, which was outside this change's file scope. That
+ * is a constraint, not a preference — if this rim is ever tuned, a dedicated
+ * `@keyframes` with a slower, asymmetric ease (in slower than out) would read more
+ * like breathing than `pulse`'s symmetric 2s cubic-bezier(.4,0,.6,1) does.
+ *
+ * WHY NOTHING HERE FORCES LAYOUT. `pulse` animates `opacity` only, and the rim's
+ * own paint is a 1px border plus two inset shadows on an element that is already
+ * `absolute inset-0`. No width, no size, no offset changes, so twenty of these on
+ * one canvas cost compositing and never reflow.
+ *
+ * THE COLOURS ARE THE ACCENT TOKEN, WRITTEN TWO WAYS, AND THAT IS DELIBERATE.
+ * `border-accent/55` is the theme utility. The two inset glows are
+ * `rgba(110, 168, 254, ...)` — the literal value of `--color-accent` (#6ea8fe),
+ * matching the two existing accent rgba call sites in this file (`stateLook`'s
+ * running shadow and the card's radial highlight), because an arbitrary Tailwind
+ * shadow cannot take a token-with-alpha. THE DEBT IS STATED RATHER THAN HIDDEN:
+ * if `--color-accent` moves in `globals.css`, these three literals do not follow
+ * it. Naming a colour that does not exist in `@theme` is the failure that has
+ * already bitten this app once — `bg-run` was written in three places, no
+ * `--color-run` existed, Tailwind emitted nothing, and the marker shipped
+ * INVISIBLE. A literal rgba cannot fail that way; it can only go stale, which is
+ * visible.
+ *
+ * GATED ON `look.live`, NOT ON A STATE STRING. `stateLook` sets `live` true for
+ * `running` and for nothing else, and the same flag already drives the connector's
+ * `is-live` handles. One flag means a card that breathes and an edge that flows
+ * cannot disagree about which agents are working. `completed`, `failed`,
+ * `stopped` and `unresolved` get no rim — a settled card that breathes is a lie
+ * about its state, and on a canvas that holds twenty cards it is also noise that
+ * would destroy the signal for the one card that is genuinely running.
+ *
+ * `aria-hidden`, because the state is already in `agentLabel` as the word
+ * "running". A screen reader gains nothing from a second, wordless assertion of
+ * the same fact.
+ */
+export function LiveRim(): ReactNode {
+  return (
+    <span
+      aria-hidden="true"
+      data-testid="live-rim"
+      className={cx(
+        // `inset-0` on a child of a 1px-bordered box lands on the parent's
+        // padding box, so this border sits flush INSIDE the card's own border and
+        // the two read as one thickening line rather than as two rules. 9px is
+        // the concentric inner radius of the card's 10px outer one, not a new
+        // radius: 10 minus the 1px border it nests inside.
+        "pointer-events-none absolute inset-0 rounded-[9px] border border-accent/55",
+        // Two inset stops, INTENDED as a tight edge-hug plus a wider, dimmer
+        // bloom behind it — the reason being that a hard line switching
+        // brightness reads as a rendering fault, while a rim with a bloom behind
+        // it reads as something being on. STATED AS INTENT, NOT AS MEASUREMENT:
+        // the blur/spread pair was reasoned about, not eyeballed, because this
+        // change shipped without a browser (a real run was building on :4176 and
+        // could not be disturbed). The blur radii and the two alphas are the
+        // numbers most likely to need one tuning pass against real pixels; the
+        // structure around them is not.
+        "shadow-[inset_0_0_9px_-3px_rgba(110,168,254,0.45),inset_0_0_26px_-10px_rgba(110,168,254,0.5)]",
+        // NO base `opacity` here on purpose: Tailwind's `pulse` keyframe declares
+        // only its 50% stop (`opacity: .5`) and inherits 0%/100% from the
+        // element. Setting `opacity-60` would make it breathe 0.6 -> 0.5 -> 0.6,
+        // which is a change nobody can see. All the alpha lives in the colours.
+        "motion-safe:animate-pulse",
+      )}
+    />
+  );
+}
+
 export function RoleSpine({ role }: { role: AgentRole }): ReactNode {
   return (
     <span
@@ -291,6 +392,13 @@ export function AgentCard({
         look.card,
       )}
     >
+      {/* BEFORE the spine, and that ordering is load-bearing. Both are
+          absolutely positioned with `z-index: auto`, so the later one paints on
+          top; the rim's glow is strongest at the edges, including the 3px strip
+          the spine occupies. Spine last keeps the role hue unmixed on a running
+          card, which matters because role hue and state chroma are the canvas's
+          two independent channels. */}
+      {look.live && <LiveRim />}
       <RoleSpine role={role} />
 
       <header className="flex items-center justify-between gap-2">
@@ -311,7 +419,7 @@ export function AgentCard({
             aria-hidden="true"
             className={cx(
               "inline-block size-[5px] rounded-full",
-              look.tone === "accent" && "bg-accent animate-pulse",
+              look.tone === "accent" && "bg-accent motion-safe:animate-pulse",
               look.tone === "pass" && "bg-pass",
               look.tone === "fail" && "bg-fail",
               look.tone === "warn" && "bg-warn",
@@ -587,6 +695,15 @@ export function GroupNode({ id, data }: NodeProps<GroupFlowNode>): ReactNode {
             look.card,
           )}
         >
+          {/* The deck breathes too, and only the FRONT card of it does. Every
+              member of a group shares a state by construction (`groupKeyOf` in
+              layout.ts keys on it), so `look.live` here is honest for all of
+              them — a folded group is running exactly when all six of its
+              members are. Leaving it off would make six running agents look
+              calmer than one, which inverts the signal the rim exists to carry.
+              The two offset cards behind stay static: they are pure shape and
+              carry no state of their own. */}
+          {look.live && <LiveRim />}
           <RoleSpine role={data.role} />
 
           <header className="flex items-center justify-between gap-2">
@@ -604,7 +721,7 @@ export function GroupNode({ id, data }: NodeProps<GroupFlowNode>): ReactNode {
                 aria-hidden="true"
                 className={cx(
                   "inline-block size-[5px] rounded-full",
-                  look.tone === "accent" && "bg-accent animate-pulse",
+                  look.tone === "accent" && "bg-accent motion-safe:animate-pulse",
                   look.tone === "pass" && "bg-pass",
                   look.tone === "fail" && "bg-fail",
                   look.tone === "warn" && "bg-warn",
