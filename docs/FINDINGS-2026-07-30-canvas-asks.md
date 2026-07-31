@@ -1073,3 +1073,71 @@ what is tested is that an abort *outranks* whatever was thrown.
    is — but every clause is still **false** about a 9-minute-old Claude run that
    died before the build segment minted a node. The terminal branch needs a
    fourth case: *terminal, and the build never started*.
+
+---
+
+# THE PLAN PHASE — designed 2026-07-31, not yet built
+
+**The owner's ask:** the chat should not be a plain reply channel. It should read the
+attachments and *ask intelligent questions separately* so the build is right even when the
+ticket is badly written — "more like a plan, like Claude has".
+
+## THE EVIDENCE THAT THIS IS THE HIGHEST-VALUE THING LEFT
+
+`run-2026-07-30T20-16-40-242Z-052c6e02`, `results/assumptions.md`, verbatim:
+
+> Of 16 criteria: 15 inferred by the grader, 1 house defaults, **0 traced to words you wrote**.
+
+The ticket was one sentence with two typos. The site capture rescued the *content* of the
+criteria — REQ-004 through REQ-007 name the real title, the real headline, the real section
+order and the four real project names — but the owner stated none of it. The run is being
+graded almost entirely against guesses.
+
+For contrast, the run that PASSED (`…3d4d1ccb`, a detailed ticket) recorded
+`inferredCriteria = 2`.
+
+**So the success measure already exists and is already recorded per run.** A plan phase that
+works makes `inferredCriteria` fall. One that does not is visibly useless. This is rare in
+this codebase: a feature whose value is measurable by a number that predates it.
+
+## WHERE IT GOES, AND WHY THERE IS ONLY ONE ANSWER
+
+**Before the spec phase.** The suite is authored from the brief and then FROZEN by digest.
+Questions asked after the freeze cannot change what the run is graded against, so they would
+be theatre. Asked before, the answers enter the brief, the criteria are authored from them,
+and the inferred count drops.
+
+This also keeps `heldOutPass` meaning exactly what it means today: the suite is still
+authored before any implementation exists, and the builder still never sees it.
+
+## SHAPE
+
+1. New `plan` phase, ahead of `spec`.
+2. The planning seat reads the ticket, the attachments (documents natively — PDFs go in as
+   `DocumentBlockParam`, proven this session) and the site capture.
+3. It emits a short plan and a RANKED list of questions — ranked by how much the answer
+   would change the build, not by how easy they are to ask.
+4. The run parks at `awaiting_input`; the questions arrive in the chat; the owner answers.
+5. Answers append to the brief. The ticket id changes, which is correct and harmless — the
+   suite is not frozen yet, so nothing is orphaned.
+6. Then the spec phase authors from the enriched brief.
+
+## THE PARK MUST BE BOUNDED, AND THE PRECEDENT IS ALREADY HERE
+
+An unattended or cron run must not wait forever for an answer nobody is there to give.
+`#parkForDesignLock` + `reconcileOnBoot` already solve exactly this: a durable `parkedAt`, a
+timer re-armed for the REMAINDER across restarts, and a defined behaviour on expiry. The
+plan park follows it. On expiry the run proceeds and records what it had to assume — which
+is what `assumptions.md` already is.
+
+## THE FAILURE MODE TO DESIGN AGAINST
+
+Questions that are generic ("what colour scheme?") are worse than none: they cost the owner
+attention and change nothing. A question earns its place only if a different answer produces
+a different acceptance criterion. The ranking is the feature; the asking is not.
+
+Cap the count. Support "you decide" without penalty — an owner who declines must land
+exactly where the run would have landed anyway, with the assumption recorded.
+
+**Not built. The reply channel now in flight is its TRANSPORT — direction on `messages`,
+replies rendered — and is a prerequisite rather than a competing design.**
