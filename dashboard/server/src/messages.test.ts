@@ -492,3 +492,78 @@ test("orchestrator.ts still feeds the raw seam into the reply watch (A WIRING RE
     "the gate no longer reads the segment's own window, so replies are counted against the wrong one",
   );
 });
+
+/**
+ * THE RECEIPT PROBLEM: A REPLY THAT ARRIVES WHEN THE SEGMENT ENDS IS NOT A REPLY.
+ *
+ * MEASURED, ON THE OWNER'S OWN RUN. He asked "Give me the link to the website",
+ * the message was delivered and stamped `read at 10:09:53`, and the chat showed
+ * "no reply has been recorded yet" — because `record()` only wrote at the segment
+ * boundary and a build segment runs for tens of minutes. He asked where his reply
+ * was, and he was right to.
+ *
+ * The text was in hand the whole time: `observe()` sees every assistant turn as it
+ * happens. Only the WRITE was deferred. So the first substantive turn after a
+ * delivered question is now written immediately.
+ */
+test("a question delivered mid-segment is answered when the agent SPEAKS, not when the segment ends", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-msg-now-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-x");
+    const watch = new AgentReplyWatch();
+    watch.expectReply(store, "run-x");
+
+    // Not a reply: the raw seam carries other records too.
+    for (const chunk of NOT_ASSISTANT) watch.observe(chunk);
+    assert.equal(store.messages("run-x").length, 0, "a command echo is not the agent answering");
+
+    watch.observe(assistantChunk("The site is served at /api/runs/run-x/preview/"));
+    const said = store.messages("run-x").filter((m: { role: string }) => m.role === "run");
+    assert.equal(said.length, 1, "the agent spoke and the owner was owed an answer — it must be stored NOW");
+    assert.match(said[0]?.text ?? "", /preview/);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unasked segment stores nothing, however much the agent says", () => {
+  // The failure watcher. Without `expectReply`, every wrap-up sentence in every
+  // run would land in a chat that has no question in it.
+  const dir = mkdtempSync(join(tmpdir(), "dash-msg-unasked-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-x");
+    const watch = new AgentReplyWatch();
+    watch.observe(assistantChunk("I have finished the build."));
+    assert.equal(
+      store.messages("run-x").filter((m: { role: string }) => m.role === "run").length,
+      0,
+      "nobody asked, so nothing belongs in the conversation",
+    );
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the boundary record does NOT duplicate a reply already written", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-msg-nodup-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-x");
+    const watch = new AgentReplyWatch();
+    watch.expectReply(store, "run-x");
+    watch.observe(assistantChunk("Here is the link."));
+    watch.record(store, "run-x", 1);
+    assert.equal(
+      store.messages("run-x").filter((m: { role: string }) => m.role === "run").length,
+      1,
+      "answering immediately and then recording again would show the owner the same reply twice",
+    );
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

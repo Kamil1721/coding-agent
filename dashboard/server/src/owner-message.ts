@@ -241,6 +241,21 @@ export interface ReplyStore {
  */
 export class AgentReplyWatch {
   #last: string | null = null;
+  /**
+   * A writer + run id, set once an owner message has been DELIVERED to this
+   * segment. Null means nobody has asked anything, so nothing is owed.
+   *
+   * WHY THIS EXISTS. The first version stored a reply only at `record()`, i.e. at
+   * the END of the segment. The owner asked "Give me the link to the website",
+   * watched the chat say "no reply has been recorded yet", and asked where his
+   * reply was — correctly. A build segment runs for tens of minutes, so a reply
+   * that waits for the segment boundary is not a conversation, it is a receipt.
+   *
+   * The text was already in hand the whole time: `observe()` sees every assistant
+   * turn as it happens and `lastSaid` exposes it. Only the WRITE was deferred.
+   */
+  #owed: { readonly store: ReplyStore; readonly runId: string } | null = null;
+  #answeredNow = false;
 
   /**
    * Take one raw chunk from `BuildEventSink.raw`.
@@ -262,6 +277,45 @@ export class AgentReplyWatch {
     const text = chunk.slice(ASSISTANT_RAW_PREFIX.length).trim();
     if (text.length === 0) return;
     this.#last = text;
+    /*
+     * ANSWER NOW IF SOMETHING IS OWED. The FIRST substantive turn after a
+     * delivered owner message becomes the reply, written immediately, so the
+     * chat behaves like a conversation rather than issuing a receipt when the
+     * segment happens to end.
+     *
+     * FIRST AND NOT LAST, DELIBERATELY. Taking the last would mean waiting for
+     * the segment to end to know which one it was — the very deferral this
+     * removes. The cost is honest and worth naming: the agent may say more
+     * afterwards, and that continuation is not carried here. It is in the
+     * transcript, and `record()` below still runs for the case where the agent
+     * said nothing at all until the wrap-up.
+     */
+    if (this.#owed !== null) {
+      const owed = this.#owed;
+      this.#owed = null;
+      this.#answeredNow = this.#write(owed.store, owed.runId, text) !== null;
+    }
+  }
+
+  /**
+   * An owner message has been delivered to this segment; the next thing the
+   * agent says is a reply to it.
+   *
+   * Idempotent by assignment: two questions before the agent speaks are answered
+   * by one turn, which is what actually happens in a conversation.
+   */
+  expectReply(store: ReplyStore, runId: string): void {
+    this.#owed = { store, runId };
+  }
+
+  /** Shared by the immediate path and `record()`, so truncation cannot diverge. */
+  #write(store: ReplyStore, runId: string, said: string): ChatMessage | null {
+    this.#last = null;
+    const text =
+      said.length <= REPLY_MAX_CHARS
+        ? said
+        : said.slice(0, REPLY_MAX_CHARS) + REPLY_TRUNCATION_NOTE;
+    return store.appendMessage(runId, { role: "run", text, images: [] });
   }
 
   /** The agent's last message so far, untruncated, or `null` if it has said nothing. */
@@ -299,16 +353,15 @@ export class AgentReplyWatch {
    */
   record(store: ReplyStore, runId: string, ownerMessages: number): ChatMessage | null {
     if (ownerMessages <= 0) return null;
+    // A FOURTH `null`, AND IT IS THE COMMON CASE NOW: the reply was already
+    // written the moment the agent spoke. Recording again at the boundary would
+    // duplicate it in the owner's chat.
+    if (this.#answeredNow) return null;
     const said = this.#last;
     if (said === null) return null;
-    this.#last = null;
-    const text =
-      said.length <= REPLY_MAX_CHARS
-        ? said
-        : said.slice(0, REPLY_MAX_CHARS) + REPLY_TRUNCATION_NOTE;
     // NO IMAGES. The agent has no way to attach one on this channel: `raw` carries
     // text, and a path it happened to mention is a path, not an attachment. An
     // empty array here is the true state rather than a placeholder.
-    return store.appendMessage(runId, { role: "run", text, images: [] });
+    return this.#write(store, runId, said);
   }
 }

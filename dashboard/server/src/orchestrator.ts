@@ -935,6 +935,15 @@ export class Orchestrator {
    * returns false outside it, and the caller falls back to the queue.
    */
   readonly #liveInputs = new Map<string, LiveInput>();
+  /**
+   * The reply watch for the segment currently running, per run.
+   *
+   * PAIRED WITH `#liveInputs` AND FOR THE SAME REASON: a message pushed into a
+   * live session has to arm the watch that is listening to that session, or the
+   * agent answers and nothing records it until the segment ends. Set and deleted
+   * on exactly the same lines as the channel, so the two cannot drift.
+   */
+  readonly #replyWatches = new Map<string, AgentReplyWatch>();
 
   /**
    * Deliver an owner message into a RUNNING session.
@@ -950,7 +959,14 @@ export class Orchestrator {
   ): boolean {
     const channel = this.#liveInputs.get(runId);
     if (channel === undefined || channel.closed) return false;
-    return channel.push(message);
+    const pushed = channel.push(message);
+    /*
+     * ARM THE REPLY ONLY IF THE MESSAGE ACTUALLY LANDED. A refused push is not a
+     * question the agent ever saw, and owing a reply for it would attribute the
+     * agent's next unrelated sentence to a message it never received.
+     */
+    if (pushed) this.#replyWatches.get(runId)?.expectReply(this.#deps.store, runId);
+    return pushed;
   }
 
   constructor(deps: OrchestratorDeps) {
@@ -2107,6 +2123,7 @@ export class Orchestrator {
        */
       const liveInput = new LiveInput(prompt);
       this.#liveInputs.set(runId, liveInput);
+      this.#replyWatches.set(runId, reply);
 
       const outcome = await builder.build({
         runId,
@@ -2172,6 +2189,7 @@ export class Orchestrator {
        * with every segment of every run is a leak even when each entry is harmless.
        */
       this.#liveInputs.delete(runId);
+      this.#replyWatches.delete(runId);
 
       /* ---- THE RUN'S REPLY, IF IT MADE ONE -------------------------------
        *
