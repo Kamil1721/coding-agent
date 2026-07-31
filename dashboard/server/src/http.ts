@@ -1946,6 +1946,44 @@ const PREVIEW_CSP =
  * `previewIndexRefusal` for why the status is a conflict rather than a
  * not-found. Every other refusal arrives already worded from `code-files.ts`.
  */
+/**
+ * Candidate document roots, in order, when the workspace root has no entry
+ * document.
+ *
+ * MEASURED, NOT GUESSED. `run-2026-07-30T20-16-40-242Z-052c6e02` — the owner's
+ * kamilborzecki.dev copy — put its site at `site/index.html` and left
+ * `package.json` and `server.mjs` at the workspace root. So the preview answered
+ * its own honest refusal, "the build produced no index.html", about a build that
+ * had produced one. Correct about the root it looked in, and useless to the
+ * owner.
+ *
+ * THIS IS A LOOKUP, NOT A SEARCH. Six conventional names, one level deep, in a
+ * fixed order — never a recursive hunt for any `index.html` anywhere, which
+ * would happily serve a fixture out of `visible-acceptance/` and call it the
+ * build.
+ *
+ * The empty string is FIRST and is the workspace root itself, so a build that
+ * does put its entry document at the top is unaffected and pays nothing.
+ */
+const PREVIEW_ROOT_CANDIDATES: readonly string[] = ["", "site", "dist", "public", "build", "out"];
+
+/**
+ * The first candidate root that actually holds an entry document, or null.
+ *
+ * Returns the PREFIX to join in front of the request path, so assets resolve
+ * against the same root the index came from — serving `site/index.html` and then
+ * reading its `styles.css` from the workspace root renders an unstyled page and
+ * reads as a broken build rather than a misrouted one.
+ */
+function previewRootPrefix(workspace: string): string | null {
+  for (const candidate of PREVIEW_ROOT_CANDIDATES) {
+    const indexPath =
+      candidate === "" ? PREVIEW_INDEX_DOCUMENT : `${candidate}/${PREVIEW_INDEX_DOCUMENT}`;
+    if (resolvePreviewTarget(workspace, indexPath).kind === "file") return candidate;
+  }
+  return null;
+}
+
 function servePreview(
   deps: HttpDeps,
   runId: string,
@@ -1962,7 +2000,23 @@ function servePreview(
     return;
   }
 
-  const resolved = resolvePreviewTarget(workspace, decoded.path);
+  /*
+   * THE DOCUMENT ROOT APPLIES TO EVERY REQUEST, NOT JUST THE INDEX.
+   *
+   * A first version prefixed only `index.html` and would have served
+   * `site/index.html` while resolving its `styles.css` against the workspace
+   * root — an unstyled page that reads as a broken build rather than a misrouted
+   * one, which is the exact failure the redirect above exists to prevent. So the
+   * root is resolved ONCE here and every path is taken relative to it, which is
+   * what a static server does.
+   *
+   * Empty prefix for a build whose entry document is at the top, so that path is
+   * byte-for-byte what it was before this existed.
+   */
+  const previewRoot = previewRootPrefix(workspace) ?? "";
+  const rooted = [previewRoot, decoded.path].filter((part) => part !== "").join("/");
+
+  const resolved = resolvePreviewTarget(workspace, rooted);
   if (resolved.kind === "refusal") {
     const { status, code, message, remediation } = resolved.refusal;
     sendError(response, status, code, message, remediation);
