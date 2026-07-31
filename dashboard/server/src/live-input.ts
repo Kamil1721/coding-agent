@@ -131,6 +131,19 @@ export class LiveInput {
     return this.#closed;
   }
 
+  /**
+   * Messages queued and not yet handed to the SDK.
+   *
+   * READ AT THE TERMINAL `result` FRAME, to decide whether the segment is over.
+   * A turn that ends with something still queued is not over — the owner spoke
+   * while the model was working and the SDK has another turn to run. A turn that
+   * ends with an empty queue IS over, and the channel must close or the session
+   * never ends. See the deadlock note in `claude-builder.ts`'s result branch.
+   */
+  get pending(): number {
+    return this.#pending.length;
+  }
+
   async *[Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
     for (;;) {
       const next = this.#pending.shift();

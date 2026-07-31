@@ -1481,6 +1481,37 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
           // injectable. It is now covered by "THE LOOP" tests, which drive a
           // skewed result envelope through `build()` and read the sink.
           tokens = recordResultTokens(tokens, message, sink);
+          /*
+           * ============================================================
+           * CLOSE THE LIVE CHANNEL HERE, OR THE BUILD NEVER RETURNS.
+           * ============================================================
+           *
+           * MEASURED, ON A REAL RUN THAT LOST EIGHT HOURS. With streaming input
+           * the SDK does NOT end a session at the result frame — it waits for
+           * the next input message, and `LiveInput`'s iterator PARKS rather than
+           * completing, by design, so that mid-run chat can reach a live agent.
+           * So this loop sat on `for await` forever: the design lane finished at
+           * 21:09:57, `build()` never returned, `design_segment_done` stayed 0,
+           * and the run read `running` all night with an IDLE subprocess (8h17m
+           * elapsed, 3m54s of CPU).
+           *
+           * The `finally` below closes the channel and says, correctly, that
+           * this is what lets the subprocess exit — but `finally` cannot run
+           * until the loop exits, and the loop cannot exit until the channel
+           * closes. That is a deadlock, and it is invisible on the single-shot
+           * path (`liveInput` absent) where the SDK ends the session itself.
+           *
+           * ONLY WHEN NOTHING IS QUEUED. A result with messages still pending
+           * means the owner spoke while the model was working; the SDK has
+           * another turn to run and closing here would cut it off. An empty
+           * queue means the segment is genuinely over. Anything sent after this
+           * point has no open session and is carried by the boundary drain,
+           * which is exactly the case that path exists for — and `delivered_at`
+           * is stamped by whichever path lands it, so at-most-once still holds.
+           */
+          if (request.liveInput !== undefined && request.liveInput.pending === 0) {
+            request.liveInput.close();
+          }
           if (message.subtype === "success") {
             completed = true;
             sink.raw(`\n[result] success after ${String(message.num_turns)} turn(s)\n`);

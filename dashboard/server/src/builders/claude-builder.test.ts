@@ -32,6 +32,7 @@ import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../b
 import type { RunEnvironment } from "../build-environment.js";
 import type { RateLimitState, ResultUsageEnvelope } from "../claude-common.js";
 import { modelRows, zeroTokens } from "../tokens.js";
+import { LiveInput } from "../live-input.js";
 import type { TokenTotals } from "../tokens.js";
 import {
   ClaudeSubscriptionBuilder,
@@ -2732,4 +2733,108 @@ test("THE LOOP: the observer cannot change, reword or break a decision", async (
     true,
     "a throwing observer turned an allowed delegation into a denial",
   );
+});
+
+/**
+ * THE EIGHT-HOUR DEADLOCK, REPRODUCED.
+ *
+ * MEASURED ON A REAL RUN. `run-2026-07-30T20-16-40-242Z-052c6e02` logged
+ * "Design lane is complete" at 21:09:57 and then did nothing for seven hours
+ * forty-eight minutes: status `running`, `design_segment_done` still 0, and a
+ * builder subprocess that was ALIVE AND IDLE — 8h17m elapsed against 3m54s of
+ * CPU, state `SN`. Nothing had crashed. `build()` had simply never returned.
+ *
+ * WHY EVERY EXISTING "THE LOOP" TEST MISSED IT. They drive `sessionOf(...)`, a
+ * finite array, so the async iterator COMPLETES on its own and the loop always
+ * exits — the one thing the real session does not do. With streaming input the
+ * SDK waits for the next input message after a result, and `LiveInput`'s
+ * iterator parks by design so mid-run chat can reach a live agent. So the loop
+ * waited forever, and the `finally` that closes the channel could not run until
+ * the loop exited, which needed the channel closed. A deadlock, invisible on the
+ * single-shot path where the SDK ends the session itself.
+ *
+ * THE ASSERTION IS PENDING-NESS, NOT OUTPUT — the same discipline
+ * `live-input.test.ts` records, and for the same reason: a hang produces no
+ * error, no output and no failing expectation. Only "did it settle?" sees it.
+ */
+test("THE LOOP: a result CLOSES the live channel, so build() actually returns", async () => {
+  const live = new LiveInput("build it");
+  const record = loopSink();
+
+  /*
+   * A session shaped like the real one: it yields its frames and then WAITS for
+   * the input channel to close, exactly as the SDK does when its input iterable
+   * is still open. Replaying a finite array here would pass whether or not the
+   * fix exists, which is what let this ship.
+   */
+  /*
+   * A FULL `BuildSession`, not a bare generator — the loop also calls
+   * `getContextUsage()`, and a fixture missing it hangs for a reason that has
+   * nothing to do with what is under test.
+   */
+  const streaming: BuildSession = {
+    async *[Symbol.asyncIterator](): AsyncGenerator<SDKMessage, void> {
+      // DRAIN THE INPUT FIRST, as the real SDK does. `LiveInput`'s constructor
+      // seeds the queue with the first prompt, so a fixture that never reads the
+      // channel leaves `pending` at 1 forever and would fail this test for a
+      // reason that is nothing to do with the deadlock.
+      await live[Symbol.asyncIterator]().next();
+      yield envelope({ type: "result", subtype: "success", ...agreeingResult() });
+      /*
+       * BOUNDED, so a REGRESSION fails fast instead of hanging the runner.
+       * Measured: with the close removed, an unbounded wait here kept the event
+       * loop alive and `node --test` never exited — the deadlock reproduced
+       * faithfully and unreadably. The bound is longer than the assertion's race
+       * below, so a missing close still loses that race and reds for the right
+       * reason; it just lets the process die afterwards.
+       */
+      const giveUpAt = Date.now() + 8_000;
+      while (!live.closed && Date.now() < giveUpAt) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    },
+    getContextUsage: async (): Promise<ContextUsageEnvelope> => USAGE,
+  };
+
+  const builder = new ClaudeSubscriptionBuilder(() => streaming);
+  const settled = builder
+    .build(req({ sink: record.sink, liveInput: live }))
+    .then(() => "returned" as const);
+  const timeout = new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 3_000));
+
+  assert.equal(
+    await Promise.race([settled, timeout]),
+    "returned",
+    "build() never returned — the session stayed open because nothing closed the live channel, " +
+      "which is the deadlock that cost a real run eight hours",
+  );
+  assert.equal(live.closed, true, "the channel must be closed by the result branch, not only by finally");
+});
+
+test("THE LOOP: a result with a message STILL QUEUED does not cut the turn off", async () => {
+  // The owner spoke while the model was working. That message has not reached
+  // the SDK yet, so the segment is NOT over and closing here would discard the
+  // turn it is owed. Closing only on an empty queue is what keeps mid-run chat
+  // working while still ending the session when the work is genuinely done.
+  const live = new LiveInput("build it");
+  live.push({ text: "also make it warmer", images: [] });
+  const record = loopSink();
+
+  const streaming: BuildSession = {
+    async *[Symbol.asyncIterator](): AsyncGenerator<SDKMessage, void> {
+      await live[Symbol.asyncIterator]().next(); // the first prompt, as the SDK reads it
+      yield envelope({ type: "result", subtype: "success", ...agreeingResult() });
+      // The queued message is still pending here, so the channel must stay open.
+      // The fixture ends the session itself, standing in for the SDK running the
+      // extra turn the owner's message earned.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    },
+    getContextUsage: async (): Promise<ContextUsageEnvelope> => USAGE,
+  };
+
+  const builder = new ClaudeSubscriptionBuilder(() => streaming);
+  await builder.build(req({ sink: record.sink, liveInput: live }));
+  // `finally` closes it in the end either way; what matters is that the RESULT
+  // branch did not, while something was still waiting to be delivered.
+  assert.equal(live.pending, 1, "the queued message must not have been consumed or dropped");
 });
