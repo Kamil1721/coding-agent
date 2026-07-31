@@ -2245,3 +2245,51 @@ test("an abort signal with no reason is read as a cancel, never as a shutdown", 
   stopping.abort(ABORT_SHUTDOWN);
   assert.equal(abortReasonOf(stopping.signal), ABORT_SHUTDOWN, "and the one reason that IS recognised still is");
 });
+
+/**
+ * THE THIRD PHASE, AND THE ONE THE FIRST FIX MISSED.
+ *
+ * MEASURED ON A REAL RUN. A SIGTERM landed while
+ * `run-2026-07-30T20-16-40-242Z-052c6e02` was in the gate. The fix loop noticed
+ * and returned `cancelled`; nothing checked, so the run walked on through the
+ * judge and finished `failed` with "the frozen held-out suite did not go green
+ * in the sealed container" — about a suite that never got the chance. The owner
+ * was told his build had failed its tests when someone had stopped the server.
+ *
+ * Spec THROWS, build returns a `cancelled` DISCRIMINANT, the gate returns a
+ * `cancelled` REASON. Three shapes, and each one was missed in turn — which is
+ * exactly why the check is on the SIGNAL and not on the shape.
+ */
+test("a shutdown during the GATE leaves the run resumable, not failed on a suite it never ran", async () => {
+  const h = harness();
+  try {
+    seed(h.store, "run-gate-abort", 1);
+    // Straight to the state the real run was in: past the build, at the gate.
+    h.store.updateRun("run-gate-abort", {
+      status: "running",
+      phase: "gate",
+      builderSessionId: "session-gate",
+    });
+
+    await h.orchestrator.shutdown();
+    h.orchestrator.reconcileOnBoot();
+
+    const row = h.store.getRun("run-gate-abort");
+    assert.ok(row !== null);
+    assert.equal(
+      row.status,
+      "awaiting_input",
+      "a server stop during the gate must be recoverable, not a verdict",
+    );
+    assert.equal(
+      row.heldOutPass,
+      null,
+      "NOTHING WAS SCORED. `false` here would be the exact lie the real run told — a claim " +
+        "about a suite that never ran",
+    );
+    assert.equal(row.failureReason, null, "and no failure reason, because nothing failed");
+  } finally {
+    await h.orchestrator.shutdown();
+    h.cleanup();
+  }
+});

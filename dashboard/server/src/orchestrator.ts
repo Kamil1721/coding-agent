@@ -1384,6 +1384,30 @@ export class Orchestrator {
         return;
       }
 
+      /*
+       * AN ABORT DURING THE GATE IS NOT A FAILED GATE — AND THIS WAS MEASURED,
+       * NOT ANTICIPATED.
+       *
+       * A SIGTERM landed while `run-2026-07-30T20-16-40-242Z-052c6e02` was in the
+       * gate. The loop noticed correctly and returned `cancelled`; nothing here
+       * looked, so the run walked on through the judge and finished `failed` with
+       * "the frozen held-out suite did not go green in the sealed container" —
+       * about a suite that was never given the chance to go green. The owner was
+       * told his build had failed its tests when what had actually happened was
+       * that someone stopped the server.
+       *
+       * THIS IS THE SPEC-PHASE DEFECT AGAIN, IN THE ONE PHASE ITS FIX DID NOT
+       * COVER. Spec throws and was wrapped; build returns a `cancelled`
+       * discriminant and was checked; the gate returns a `cancelled` REASON and
+       * was not. Three phases, three shapes, one omission each time — which is
+       * the argument for checking the SIGNAL here rather than the shape.
+       *
+       * Placed with the rate-limit exit above and for the same reason: both are
+       * non-failures that must leave before a verdict is written. `#aborted`
+       * closes the log itself, so it is not closed here.
+       */
+      if (signal.aborted) return this.#aborted(runId, log, signal);
+
       // ---- PHASE 4: the code-reading judge ----------------------------
       this.#setPhase(runId, "judge");
       await this.#judgePhase(runId, ticket, suite, runPaths, scored.container, signal);

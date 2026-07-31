@@ -528,8 +528,24 @@ test("a run that speaks again and then goes quiet gets a SECOND warning", async 
     h.orchestrator.noteSilence("run-two", later(h, "run-two", 120));
     assert.equal(notices(h.store, "run-two").length, 1);
 
-    // It spoke. That ends the first silence; the next one is a new fact, and a
-    // dedup keyed on a boolean rather than on the instant would swallow it.
+    /*
+     * It spoke. That ends the first silence; the next one is a new fact, and a
+     * dedup keyed on a boolean rather than on the instant would swallow it.
+     *
+     * THE WAIT IS NOT PADDING, AND THE FLAKE IT FIXES IS INFORMATIVE. The dedup
+     * is keyed on `silence.since` — an INSTANT, at millisecond resolution. This
+     * test appends its event microseconds after `seedRunning` appended the last
+     * one, so on a fast machine both carry the SAME millisecond, `since` does not
+     * change, and the second warning is correctly suppressed. Measured: the test
+     * failed 2 runs in 3 in-file and passed alone.
+     *
+     * The production limit that exposes is real and narrow: two events in the
+     * same millisecond are indistinguishable to the dedup. Real runs put seconds
+     * between events — the measured minimum on the recorded run is 9 s — so it
+     * cannot bite there, and keying on the store's monotonic `seq` instead would
+     * remove it entirely if that ever stops being true.
+     */
+    await new Promise((resolve) => setTimeout(resolve, 5));
     h.store.appendEvent("run-two", { type: "tool", name: "Edit", summary: "script.js" });
     const spokeAt = h.store.lastRunEventAt("run-two");
     assert.ok(spokeAt !== null);
