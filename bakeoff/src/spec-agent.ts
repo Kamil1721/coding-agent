@@ -300,24 +300,47 @@ Without it the suite cannot be executed at all.
       "dataExpectations": []
     }
 
-CHOOSE ONE OF TWO MODES, from the ticket text alone:
+CHOOSE ONE OF TWO MODES, from the ticket text alone. DECIDE ON THE BEHAVIOUR THE TICKET ASKS FOR,
+NEVER ON WHAT KIND OF SITE IT IS. What the product is called tells you nothing about which mode it
+needs: the same kind of site is pages-only in one ticket and pages-plus-a-process in the next, and
+only the requested behaviour separates them. Read the ticket for behaviour and ignore the label.
 
-- STATIC — "start": null, "port": null, "healthPath": null. Choose this when the ticket asks for pages
-  and nothing server-side: a marketing page, a portfolio, a one-pager, a brochure site. The scorer then
-  serves the delivered files itself over ${STATIC_ORIGIN_DEFAULT} and checks that the root document
-  answers HTTP 200 with a non-empty body. THIS IS THE COMMON CASE. Do not invent a server for a ticket
-  that does not need one: a manifest that demands a start command the ticket never asked for fails a
-  correct implementation for a reason that has nothing to do with whether the work was done.
 - SERVER — "start": "<command>", "port": <number>, "healthPath": "<same-origin path>", all three
-  together. Choose this only when the ticket requires server-side behaviour: an API, a login, a
-  database, a form that must persist. Declare the port as ${String(STATIC_SERVE_PORT)} unless the
-  ticket names one, and prefer a health path the ticket itself implies.
+  together. Choose this when the ticket asks for ANYTHING that outlives a single page load, or
+  anything a browser with a folder of files cannot do by itself. ANY ONE of these is enough:
+    - an HTTP API, or any route the ticket writes under "/api"
+    - data that persists between requests: a database of any kind, a file the app writes and reads
+      back later, a record that survives a restart
+    - a form whose submission must be STORED, or validated where the submitter cannot edit the check
+    - a status code the ticket names for a request (201 on create, 400 on invalid, 404 on unknown)
+    - authentication of any kind: a login, a session, a bearer token, a permission check
+    - rate limiting, a quota, or any counter kept across requests
+    - server-side rendering, or content the ticket says is served from stored data rather than
+      hardcoded into the page
+  Declare the port as ${String(STATIC_SERVE_PORT)} unless the ticket names one, and prefer a health
+  path the ticket itself implies.
+- STATIC — "start": null, "port": null, "healthPath": null. Choose this ONLY when NOTHING in the
+  ticket asks for any behaviour in the SERVER list — everything it asks for has already happened by
+  the time the delivered files are opened. The scorer then serves the delivered files itself over
+  ${STATIC_ORIGIN_DEFAULT} and checks that the root document answers HTTP 200 with a non-empty body.
+  Do not invent a server for a ticket that does not need one: a manifest that demands a start command
+  the ticket never asked for fails a correct implementation for a reason that has nothing to do with
+  whether the work was done.
+
+WHEN BOTH ARE PRESENT — the ticket asks for pages AND for any behaviour in the SERVER list — IT IS
+SERVER. Pages never cancel a server. A ticket that asks for four pages and one stored form is a
+SERVER ticket that also has four pages, and declaring it STATIC leaves "start" null: the app is never
+booted, the behaviour half is never executed, every test of it fails against a folder of files, and
+the run reports a verdict about work it never examined.
 
 Every other field: "install" and "build" only when the ticket implies a build step — the container has
 NO NETWORK, so any install that reaches a registry fails by design. "sourceDirs" is scanned for stub
 markers and must name at least one directory that will exist; ["."] is correct when you cannot know the
 layout. "uiFlows" are the pages that get screenshotted at three breakpoints; every path is same-origin
-and starts with "/". "dataExpectations" is [] unless the ticket implies persisted data. The four
+and starts with "/". "dataExpectations" is [] ONLY when the ticket asks for no stored data at all: if
+you chose SERVER for a persistence trigger, declare at least one expectation here, because an empty
+list makes the persistence gate report "not applicable" and nothing outside your own tests ever looks
+at what was stored. The four
 nullable timeouts take the harness defaults when null, which is the right choice for a project you have
 not seen.
 

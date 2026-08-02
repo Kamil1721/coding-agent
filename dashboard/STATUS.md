@@ -9,7 +9,7 @@
 | Can a build read the held-out tests? | **Anthropic: no** — a CLI **policy-tier** deny rule plus an OS sandbox clause, each proven load-bearing by REMOVAL on 2026-07-29 (§0). **Codex: YES, nothing stops it.** `ThreadOptions` exposes no read restriction; a Codex build can `cat` the held-out suite. |
 | Is a `heldOutPass` trustworthy? | On/after 2026-07-29, Anthropic path: policy-enforced — a rule inside a process running as the owner's UID, **not** the bake-off's container. Before **2026-07-28**: **no**, and unrecoverably so — those runs were produced under a boundary with an EXECUTED bypass and there is no tripwire (§0.3). **§1.0's run attempted no sealed read, so no enforcement layer fired in it: its `true` inherits §0's removal proofs rather than re-deriving them.** |
 | What will cost money | The first run of a ticket **authors and freezes a suite** before any building (run 1's spec seat: 167,871 output tokens; run 4: 117,462). Every build burns subscription quota — §1.0 burned 1 h 44 m of it in one run. Expect a 429. No dollar figure is ever produced for a subscription run, by construction (§1.8). **And no token figure is recorded either: the spend tables exist and their five writers do not (§1.10).** |
-| What must I do before spending? | §5, in order. The three items that actually bite: re-resolve the scorer image digest yourself, build it with `--provenance=false --sbom=false`, and read §0. **The digest moved again on 2026-07-30 and this pass had no shell to re-resolve it (§1.2).** |
+| What must I do before spending? | §5, in order. The three items that actually bite: re-resolve the scorer image digest yourself, build it with `--provenance=false --sbom=false`, and read §0. **The digest moved again on 2026-08-02 — move #5, `sha256:b7a9fd0a…`, and this time it was MEASURED with a shell rather than reported (§1.2).** The 2026-07-30 move was re-resolved that same day and matched. Re-resolve it yourself regardless: any edit under `bakeoff/src` moves it, including one the scorer never executes. |
 | I am about to add a check | Read §6 first. **Seventeen** checks in this repo have shipped green over something that did nothing — three of them added on 2026-07-30. |
 
 **THE MOST DANGEROUS THING ABOUT TRUSTING THIS FILE — it has two halves, and the
@@ -65,10 +65,25 @@ measurement; so did the extension.
 reorganisation and in the extension is source-reading with `Grep`/`Read`, plus —
 new in the extension — reading the run's own committed score record off disk. **No
 test was run, no digest re-resolved, no container started, on either pass.** So
-§1.1's 850 and §1.2's newest digest row are REPORTED, and the one digest this
-file can call measured is the one stamped inside the score record. Claims that
+§1.1's 850 and §1.2's newest digest row were REPORTED, and the one digest this
+file could call measured was the one stamped inside the score record. Claims that
 would need a shell to re-check are carried forward as dated records and are
 labelled where that matters.
+
+**CORRECTED 2026-08-02 — THAT SHELL-LESS STATE IS NO LONGER TRUE OF §1.2.** A
+2026-08-02 pass with a shell rebuilt the scorer image (the spec seat's
+manifest-mode rewrite in `bakeoff/src/spec-agent.ts` moved it — move #5) and
+**resolved the digest itself, before and after, with `docker image inspect`**. It
+also started containers: the rebuilt image was executed directly, and
+`npm run bakeoff -- dry-run` ran the whole pipeline for $0 on a stub builder,
+**24 checks, 0 failures**, with STAGE 4 printing the new digest as the image the
+sealed gate resolved. So §1.2's newest row is MEASURED, the 2026-07-30 row is
+retrospectively confirmed, and all three preservation tags are verified on disk.
+**§1.1's 850 was NOT re-measured on that pass** — its scope was the image and the
+digest chain, and a status file that lets one corrected section imply a
+neighbouring one was corrected too is the exact failure this preamble exists to
+prevent. `bakeoff`'s own suite was measured, at **117/117**, because the rebuild
+had to be shown not to have broken it.
 
 **Where §1's old numbering went** (plans and commit messages cite the old ones;
 `§0`, `§2`, `§3`, `§5` and `§6` are unchanged, and two source files point at
@@ -522,19 +537,100 @@ nothing: it proves only that somebody copied a string.
 | before 2026-07-27 | `sha256:c7f5e1a4…` | superseded by the two D1/D2 fixes |
 | 2026-07-27 | `sha256:1c06aa11c425044af4a5dc8cd0b3ff6b7f78e185fd54204c0a8fd810d8074353` | the `node --test` second pass and the D2 fix |
 | 2026-07-29 (am) | `sha256:bcd017714ba73e07d3222fb83dda350081edba88e60abf607d469641a2974874` | the QUALITY-gate fix in `scorer-container.ts` / `scorer-protocol.ts` — `GATE:suite-green` now ignores a failing test whose title names only QUALITY criteria. **First exercised on a REAL build 2026-07-30 (§1.0): the gate passed while the suite exited 1 with one failed QUALITY test.** Until then it had only run against fixtures. |
-| 2026-07-29 (pm) | `sha256:c98bad3a762b8fc026bbeb8edc85ea8951cf78ea2bab70eb8d28e992f7826b20` | the three tier-0 fixes: `.html` in the stub scan, two more reward-hack families, and `GATE:build` reporting `unknown` rather than passing when a manifest declares no build step the artefact contradicts. **This is the only value in the chain this file can call MEASURED rather than transcribed: it is stamped inside §1.0's score record, which was read off disk on 2026-07-30.** |
-| **2026-07-30** | **`sha256:fae56a4e1374ee215bb1d23c20b2c55519f8c071bdb6c283d77ef29288e33770`** — **REPORTED, NOT RE-RESOLVED HERE** | **move #4.** The fix wave edited `bakeoff/src/tier0.ts` (the `GATE:boot` docblock and `problem` string that overstated what the static arm can see — §6 instance 16) and added `tier0.test.ts`; stage 1 compiles `src/`, so the image moved. Built `--platform linux/arm64 --provenance=false --sbom=false`; the value is what `docker image inspect bakeoff-scorer:1 --format '{{.Id}}'` printed for the lane that built it, i.e. the same field a `ScoreRecord` records. Previous image preserved as **`bakeoff-scorer:pre-readmech`** = `c98bad3a…`. |
+| 2026-07-29 (pm) | `sha256:c98bad3a762b8fc026bbeb8edc85ea8951cf78ea2bab70eb8d28e992f7826b20` | the three tier-0 fixes: `.html` in the stub scan, two more reward-hack families, and `GATE:build` reporting `unknown` rather than passing when a manifest declares no build step the artefact contradicts. **This was the only value in the chain this file could call MEASURED rather than transcribed: it is stamped inside §1.0's score record, which was read off disk on 2026-07-30.** Corrected 2026-08-02: no longer the only one — the 2026-08-02 row was resolved with a shell by the pass that wrote it, and this image was separately re-inspected that day as `bakeoff-scorer:pre-readmech` = `c98bad3a762b8fc026bbeb8edc85ea8951cf78ea2bab70eb8d28e992f7826b20`, which is the first time its preservation tag was verified rather than asserted. |
+| **2026-07-30** | **`sha256:fae56a4e1374ee215bb1d23c20b2c55519f8c071bdb6c283d77ef29288e33770`** — **REPORTED, NOT RE-RESOLVED HERE** — **CONFIRMED 2026-08-02** | **move #4.** The fix wave edited `bakeoff/src/tier0.ts` (the `GATE:boot` docblock and `problem` string that overstated what the static arm can see — §6 instance 16) and added `tier0.test.ts`; stage 1 compiles `src/`, so the image moved. Built `--platform linux/arm64 --provenance=false --sbom=false`; the value is what `docker image inspect bakeoff-scorer:1 --format '{{.Id}}'` printed for the lane that built it, i.e. the same field a `ScoreRecord` records. Previous image preserved as **`bakeoff-scorer:pre-readmech`** = `c98bad3a…`. **The 2026-08-02 pass had a shell and resolved `bakeoff-scorer:1` to exactly this value BEFORE rebuilding — so this row is no longer a report; it was independently confirmed, two days late, by the pass that superseded it.** |
+| **2026-08-02** | **`sha256:b7a9fd0a0f58e4a2f4eef5bebe754d839cb2e6013b386f804841bbe0bf4da8a8`** — **MEASURED HERE, NOT TRANSCRIBED** | **move #5.** The spec seat rewrote the manifest-mode rule in `bakeoff/src/spec-agent.ts` — the STATIC/SERVER discriminator stopped keying on site-type NOUNS (it named "a portfolio" and advertised STATIC as "THE COMMON CASE") and now keys on the BEHAVIOUR the ticket asks for, so a ticket that says "portfolio" *and* asks for an API is SERVER and its backend is actually booted. `spec-agent.test.ts` changed with it. **The scorer never executes `spec-agent.js`, but stage 1 compiles all of `src/`, so the image moved anyway** — that is this row's whole reason to exist. Built `docker build -f docker/scorer.Dockerfile -t bakeoff-scorer:1 --platform linux/arm64 --provenance=false --sbom=false .` from `bakeoff/` — `docker/README.md` §1's canonical form (invoked with absolute paths for `-f` and the context root, which is the same Dockerfile and the same context, and keeps `docker/scorer.Dockerfile.dockerignore` in effect). Previous image preserved as **`bakeoff-scorer:pre-specmode`** = `fae56a4e…`, tagged BEFORE the build and re-inspected after it to prove the tag did not follow the rebuild. |
 
-**THE NEWEST ROW IS A REPORT, AND THE SECTION'S OWN RULE APPLIES TO IT.** Neither
-2026-07-30 pass had a shell, so `fae56a4e…` was not resolved here: it is asserted
-by the lane that built the image and agreed with by the verification agent who
-re-ran that lane's mutations — **agreement between two agents, not independent
-resolution.** This file's own sentence two paragraphs up ("a transcribed digest
-certifies nothing: it proves only that somebody copied a string") is the reason it
-is labelled rather than promoted. `grep` for `fae56a4e` across both trees returns
-**nothing** — no source file pins it, every call site uses the moving tag
+**THE NEWEST ROW IS MEASURED — THE FIRST ONE IN THIS CHAIN THAT WAS RESOLVED BY
+THE PASS THAT WROTE IT.** Corrected 2026-08-02: the paragraph that stood here said
+"the newest row is a report", and that sentence was true of the 2026-07-30 row and
+is false of the 2026-08-02 one. Both claims are kept, each attached to its own row.
+
+- **The 2026-07-30 row (`fae56a4e…`) was a report when written.** Neither
+  2026-07-30 pass had a shell, so it was asserted by the lane that built the image
+  and agreed with by the verification agent who re-ran that lane's mutations —
+  **agreement between two agents, not independent resolution.** It is now
+  confirmed anyway, by accident of sequence: the 2026-08-02 pass ran
+  `docker image inspect bakeoff-scorer:1 --format '{{.Id}}'` **before** rebuilding
+  and got `fae56a4e1374ee215bb1d23c20b2c55519f8c071bdb6c283d77ef29288e33770`
+  character for character. A report that later survives an independent resolution
+  is still worth labelling as what it was when written.
+- **The 2026-08-02 row (`b7a9fd0a…`) is measured.** It was resolved with
+  `docker image inspect`, not read out of build output — BuildKit printed
+  `exporting manifest sha256:b7a9fd0a…` too, but a number scraped from a build log
+  is a transcription and this section forbids those. **Three further things were
+  measured rather than assumed:** (1) the digest MOVED — `b7a9fd0a…` ≠
+  `fae56a4e…`, which is the check that discriminates, because a rebuild that
+  reproduced the old digest would have meant the edit never entered the context;
+  (2) the rebuilt image actually carries the new rule — `node -e` inside it read
+  `/opt/bakeoff-scorer/dist/spec-agent.js` and found `DECIDE ON THE BEHAVIOUR`
+  present and the old `THIS IS THE COMMON CASE` **absent**, a two-sided check, so
+  stage 1 demonstrably compiled the edited source and not a cached copy; (3) the
+  sealed gate resolved this exact digest at run time — STAGE 4 of the dry run
+  printed `sha256:b7a9fd0a…` under "the gate resolves the scorer image by CONTENT
+  DIGEST" and then scored a run through it.
+
+**THE "grep RETURNS NOTHING" CLAIM WAS TRUE WHEN WRITTEN AND IS NOT TRUE NOW —
+corrected 2026-08-02 by running it.** The paragraph here said `grep` for
+`fae56a4e` across both trees returns **nothing**. With `/usr/bin/grep -rl`
+(excluding `node_modules` and `.git`) it returns **32 files**; `b7a9fd0a` returns
+**12**. What matters is that none of them is a pin:
+
+| | `fae56a4e…` | `b7a9fd0a…` |
+|---|---|---|
+| score records under `dashboard/results/` | 16 — 7 calibration-4a fixtures × (`*.json` + `*.container.json`), plus 2 for run `…052c6e02` | 0 |
+| dry-run score artefacts under `bakeoff/dry-run/` | 0 | 3 — `scores/*.json`, `*.container.json`, `runs/…/score.jsonl` |
+| `dashboard/data/runs.db` | 1 | 0 |
+| turbopack dev-cache blobs under `dashboard/.next*` | 11 | 8 |
+| prose (`bakeoff/STATUS.md`, `docs/HANDOVER.md`, `docs/STATE-2026-08-02…md`, this file) | 4 | 1 (this file) |
+| **`.ts` / `.mjs` source** | **0** | **0** |
+
+**The substance of the original claim survives, and it is the only part that ever
+mattered: zero source files pin a digest.** Every call site uses the moving tag
 `bakeoff-scorer:1`, and `SealedScorerGate` re-resolves before every run and throws
-on drift. **Re-resolve it yourself.**
+on drift. Everything else in that table is a digest being **recorded** — a
+`ScoreRecord` stamping the image that scored it, which is the mechanism working as
+designed — or a derived cache.
+
+**A TRAP THAT COST THIS PARAGRAPH TWO WRONG COUNTS, WORTH MORE THAN THE COUNTS.**
+The `grep` on this machine's interactive PATH is a shell function wrapping
+**`ugrep --ignore-files`**, which honours `.gitignore`. `bakeoff/dry-run/` is
+ignored (`bakeoff/.gitignore:45`) and so is `dashboard/results/`
+(`.gitignore:26`) — **precisely the two directories where score records live.** So
+the obvious command silently reports zero hits in the only places a digest is ever
+stamped, and a first pass here concluded `b7a9fd0a` "appears nowhere but this
+file" while three dry-run score artefacts on disk contained it. **If you audit a
+digest, use `/usr/bin/grep` explicitly.** An ignore-respecting search over an
+ignored results tree is a check that can only observe what it is permitted to see,
+which is this repo's signature defect wearing a different hat (§6).
+
+**Re-resolve the digest yourself anyway.** A grep result is a claim with a
+timestamp: the previous one rotted in three days, and the replacement rotted
+inside a single session — `b7a9fd0a`'s count went from 1 to 12 the moment the dry
+run wrote its score records. That is the argument for the rule at the top of this
+section, not against it.
+
+**WHAT MOVE #5 COSTS.** Everything stamped `fae56a4e…` is now on the far side of a
+move: the **seven calibration-4a fixture scores** (`blank-page`, `broken-build`,
+`correct-portfolio`, `missing-section`, `reward-hacked`, `stock-motion-only`,
+`stub-markers`) and the **2026-07-30 end-to-end run `…052c6e02`**, including its
+failed `GATE:boot`. Score-record-to-score-record comparison across that boundary is
+what is lost. What survives is that **`bakeoff-scorer:pre-specmode` is on disk**,
+so any of those is reproducible with
+`BAKEOFF_SCORER_IMAGE=bakeoff-scorer:pre-specmode`. In this particular case the
+behavioural risk is unusually low — the only source change was to
+`spec-agent.ts`, which **the scorer entrypoint never imports** — but "the change
+was harmless" is a claim about intent, and the digest is held-constant variable 3
+regardless of which file moved it. The row exists because the digest moved, not
+because the scorer changed.
+
+**`--provenance=false --sbom=false` STILL PINS THE DIGEST — re-measured 2026-08-02,
+not carried forward.** A second build from an identical context produced
+`sha256:b7a9fd0a0f58e4a2f4eef5bebe754d839cb2e6013b386f804841bbe0bf4da8a8` again,
+byte for byte. That property was last measured on 2026-07-29 against `c98bad3a…`;
+it now holds on a second image, two base-image-identical builds apart. The scratch
+tag used for the check was removed; it pointed at the same image id as
+`bakeoff-scorer:1`, so untagging deleted nothing.
 
 **WHAT MOVE #4 COSTS, and it is not abstract.** §1.0's run — the only end-to-end
 measurement in this file — was scored under `c98bad3a…`, and so was its green dry
@@ -554,6 +650,23 @@ measurement in §1.4 or §1.5 is still being compared. A second build from an
 identical context reproduced `c98bad3a…` exactly, so `--provenance=false
 --sbom=false` does pin the digest as §5 claims. **Neither the current digest nor
 `pre-lane4`'s presence was re-checked on 2026-07-30 — that pass had no shell.**
+
+**RE-CHECKED 2026-08-02, WITH A SHELL — all three preserved images are on disk and
+all three resolve to the values this table records.** `docker image inspect
+--format '{{.Id}}'` on each:
+
+| tag | resolves to | the row it makes auditable |
+|---|---|---|
+| `bakeoff-scorer:pre-lane4` | `sha256:bcd017714ba73e07d3222fb83dda350081edba88e60abf607d469641a2974874` | 2026-07-29 (am) |
+| `bakeoff-scorer:pre-readmech` | `sha256:c98bad3a762b8fc026bbeb8edc85ea8951cf78ea2bab70eb8d28e992f7826b20` | 2026-07-29 (pm) |
+| `bakeoff-scorer:pre-specmode` | `sha256:fae56a4e1374ee215bb1d23c20b2c55519f8c071bdb6c283d77ef29288e33770` | 2026-07-30 |
+
+So every move in this chain from 2026-07-29 (am) onward is still reproducible
+before/after with `BAKEOFF_SCORER_IMAGE=<tag>`, and the tags are verified rather
+than merely believed. Do not delete any of them. **`pre-specmode` was applied
+BEFORE the 2026-08-02 build and re-inspected after it** — a preservation tag
+applied after a rebuild silently points at the new image, which loses the anchor
+it was created to hold, so the order is part of the measurement.
 
 **What the moves mean for the calibration records already committed.**
 `dashboard/server/probes/results/calibration-4b.json` records
@@ -2363,7 +2476,25 @@ system that works, and it is one run old.
    to `c98bad3a…`. That is §5 item 4, it is ten minutes, and it is the difference
    between "the run is comparable" and "the run is a story".
 
+   **SUPERSEDED 2026-08-02 — the tag has moved and this item's two open ends are
+   both closed.** `bakeoff-scorer:1` now resolves to
+   **`sha256:b7a9fd0a0f58e4a2f4eef5bebe754d839cb2e6013b386f804841bbe0bf4da8a8`**
+   (move #5, the sixth value in §1.2's chain; `spec-agent.ts` was rewritten and
+   stage 1 compiles all of `src/`). `fae56a4e…` is preserved as
+   **`bakeoff-scorer:pre-specmode`** — the paragraph above stays because it is a
+   correct record of 2026-07-30, and its digest is still resolvable, just under a
+   different tag. **The dry run against the current image was then run and is
+   green:** `npm run bakeoff -- dry-run`, exit 0, **24 checks, 0 failures**, twice,
+   for $0 on the stub builder, with STAGE 4 printing `sha256:b7a9fd0a…` as the
+   image the sealed gate resolved by content digest. So "the run is comparable"
+   now holds for anything scored from here — and **only** from here: everything
+   stamped `fae56a4e…` sits on the far side of the move (§1.2, "what move #5
+   costs").
+
 **The honest one-line version:** it will finish a ticket unattended and its verdict
 is worth reading; it will not tell you what it spent, it cannot prove tonight that
 the tests it graded itself against were sealed, and its most important
-held-constant is currently somebody's word.
+held-constant is currently somebody's word. **Corrected 2026-08-02 on the last
+clause only:** the held-constant is no longer somebody's word — the digest was
+resolved, the rebuilt image was opened and read, and the dry run was executed
+against it. The first two clauses stand unchanged.
