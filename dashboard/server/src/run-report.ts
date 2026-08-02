@@ -75,8 +75,13 @@ import type {
   ApiTokens,
   ApiVendorSpend,
 } from "./api-types.js";
-import { extractAssumptions, isGateAssumption, renderAssumptions } from "./spec-assumptions.js";
-import type { Assumption } from "./spec-assumptions.js";
+import {
+  extractAssumptions,
+  isGateAssumption,
+  isStatedByOwner,
+  renderAssumptions,
+} from "./spec-assumptions.js";
+import type { AnsweredQuestion, Assumption } from "./spec-assumptions.js";
 import { renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
 
@@ -90,12 +95,20 @@ export const SPEND_FILE = "spend.md";
  *
  * ONE EXPRESSION, THREE CONSUMERS: this number, the sentence `verdict.ts`
  * renders ("N of M criteria were inferred rather than stated in your ticket"),
- * and `RunDetail.inferredCriteria`. The predicate is `source !== "ticket"`,
- * copied from `verdict.ts:renderAssumptionSummary` deliberately — a house
- * default is no more something the owner wrote than a guess is. Counting only
- * `source === "inferred"` here would put two different numbers under one name on
- * the API and in the file, and `run-report.test.ts` asserts the two agree by
- * reading the number back out of the rendered verdict.
+ * and `RunDetail.inferredCriteria`. The predicate is
+ * `spec-assumptions.ts:isStatedByOwner`, negated — a house default is no more
+ * something the owner wrote than a guess is. Counting only `source ===
+ * "inferred"` here would put two different numbers under one name on the API and
+ * in the file, and `run-report.test.ts` asserts the two agree by reading the
+ * number back out of the rendered verdict.
+ *
+ * IT IS NOW IMPORTED RATHER THAN COPIED, AND THAT MATTERS AS OF THE PLAN PHASE.
+ * This docblock used to say the predicate was "copied from
+ * `verdict.ts:renderAssumptionSummary` deliberately", and two copies were
+ * survivable while there was one owner-stated source. With `answered` there are
+ * two, and a copy left behind would have this count call a criterion inferred
+ * while the page beside it lists the owner's own reply — the disagreement the
+ * paragraph above forbids, arriving through the fix for something else.
  *
  * `assumptions.md` splits the same set further, into guesses and house
  * defaults. That is a finer breakdown of this number, not a competing one.
@@ -111,7 +124,7 @@ export const SPEND_FILE = "spend.md";
  * of the rendered page to prove they agree.
  */
 export function countInferredAssumptions(assumptions: readonly Assumption[]): number {
-  return assumptions.filter((entry) => !isGateAssumption(entry) && entry.source !== "ticket").length;
+  return assumptions.filter((entry) => !isGateAssumption(entry) && !isStatedByOwner(entry)).length;
 }
 
 /**
@@ -130,11 +143,17 @@ function forAssumptions(criteria: readonly ApiCriterion[]): readonly AcceptanceC
   }));
 }
 
+/**
+ * `answered` DEFAULTS TO EMPTY — the same control as on `extractAssumptions`.
+ * A run with no plan phase, and every caller written before there was one,
+ * produces the byte-identical record it produced yesterday.
+ */
 export function assumptionsFor(
   ticketText: string,
   criteria: readonly ApiCriterion[],
+  answered: readonly AnsweredQuestion[] = [],
 ): readonly Assumption[] {
-  return extractAssumptions(ticketText, forAssumptions(criteria));
+  return extractAssumptions(ticketText, forAssumptions(criteria), answered);
 }
 
 export interface AssumptionRecord {
@@ -142,6 +161,17 @@ export interface AssumptionRecord {
   readonly path: string;
   /** `countInferredAssumptions` over the record. Persisted onto the run row. */
   readonly inferredCriteria: number;
+  /**
+   * How many criteria were traced to an answer the owner gave.
+   *
+   * REPORTED SEPARATELY FROM THE COUNT ABOVE BECAUSE IT IS THE ONE NUMBER THAT
+   * SAYS WHETHER ASKING HIM WAS WORTH HIS TIME. `inferredCriteria` falling could
+   * mean the plan phase worked or that the ticket was better written this time;
+   * this cannot mean anything else. It is not persisted on the run row — it is
+   * for the run log, where a zero beside a non-zero question count is the seat
+   * asking questions nothing downstream used.
+   */
+  readonly answeredCriteria: number;
 }
 
 /**
@@ -151,17 +181,28 @@ export interface AssumptionRecord {
  * when the owner can still act on it: everything here is a sentence they can
  * add to the ticket, and correcting the ticket is cheaper than debugging the
  * verdict it produces.
+ *
+ * `answered` IS THE PLAN PHASE'S EXCHANGE and it is a separate parameter rather
+ * than something folded into `ticketText` on purpose: the folded brief carries
+ * DECLINED questions too, and a declined question's wording in the traced text
+ * would manufacture overlap and credit the owner with a requirement he refused
+ * to state. The caller passes what he actually answered, in his own words.
  */
 export function writeAssumptions(
   resultsDir: string,
   ticketText: string,
   criteria: readonly ApiCriterion[],
+  answered: readonly AnsweredQuestion[] = [],
 ): AssumptionRecord {
-  const assumptions = assumptionsFor(ticketText, criteria);
+  const assumptions = assumptionsFor(ticketText, criteria, answered);
   mkdirSync(resultsDir, { recursive: true });
   const path = join(resultsDir, ASSUMPTIONS_FILE);
   writeFileSync(path, `${renderAssumptions(assumptions)}\n`, "utf8");
-  return { path, inferredCriteria: countInferredAssumptions(assumptions) };
+  return {
+    path,
+    inferredCriteria: countInferredAssumptions(assumptions),
+    answeredCriteria: assumptions.filter((entry) => entry.source === "answered").length,
+  };
 }
 
 /* -------------------------------------------------------------------------

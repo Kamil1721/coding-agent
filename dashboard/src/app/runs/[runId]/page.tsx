@@ -100,9 +100,11 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { DesignLockPanel } from "@/components/run/design-lock";
+import { PlanDialoguePanel } from "@/components/run/plan-dialogue";
+import { planDialogueFrom } from "@/lib/plan-dialogue";
 import {
   ApiDownNotice,
   AwaitingInputNotice,
@@ -231,12 +233,29 @@ export default function RunPage(): ReactNode {
    * union to save one fetch is not a trade worth making. The refetch runs on send and
    * whenever the Chat tab is brought to the front, which is every moment the panel is
    * readable and could be stale.
+   *
+   * IT IS ALSO FETCHED ON MOUNT NOW, AND THAT SUPERSEDES THE OLD "NOT UNTIL YOU
+   * PRESS CHAT" RULE — 2026-08-02, with the plan phase. Those rows are no longer
+   * only a transcript: the plan park's questions ARE `run` rows and the answers
+   * ARE `owner` rows (`server/src/plan-dialogue.ts` — the host may not compose a
+   * `run` row, so the chat is the phase's whole transport). A decision the run is
+   * stopped on cannot be behind a click; see the docked panel below, and
+   * `planDialogue` under it for what is read out of these rows.
    */
   const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
   const loadMessages = useCallback((): void => {
     if (runId === null) return;
     void runMessages(runId)
-      .then((response) => setMessages(response.messages))
+      /*
+       * `Array.isArray` OVER A TYPE THAT SAYS IT IS ONE, and the guard was added
+       * after it fired: `api.ts` casts every response with `parsed as T` and
+       * validates nothing, so a body with no `messages` key put `undefined` into
+       * this state and `planDialogueFrom` threw "input.messages is not iterable"
+       * inside a render memo — a blank run page. It is the same class of absence
+       * `canvas/sheet.tsx` already guards with `?? []`, and `design-lock.
+       * browser.spec.ts` is what caught it.
+       */
+      .then((response) => setMessages(Array.isArray(response.messages) ? response.messages : []))
       // A failed poll must not blank the transcript the owner is reading.
       .catch(() => undefined);
   }, [runId]);
@@ -301,6 +320,95 @@ export default function RunPage(): ReactNode {
   const clearSelection = useCallback((): void => {
     setSelectedId(null);
   }, []);
+
+  /*
+   * THE PLAN PARK, DERIVED FROM THE TWO CHANNELS IT ACTUALLY USES.
+   *
+   * There is no `RunDetail.plan` — `lib/plan-dialogue.ts` opens with the check
+   * and the reason a client-side mirror was refused — so the questions come out
+   * of the chat rows and their outcomes out of the trace. Both are already in
+   * this component's hands, which is why this is one pure call and not a fetch.
+   *
+   * `null` FOR EVERY RUN THAT NEVER PLANNED, including every run recorded before
+   * the phase existed, and it falls out of the mechanism rather than a version
+   * check: no plan phase, no `run` row whose every line is `PQ-n: …`.
+   */
+  const planDialogue = useMemo(
+    () =>
+      run === undefined
+        ? null
+        : planDialogueFrom({
+            messages,
+            trace,
+            phase: run.phase,
+            status: run.status,
+          }),
+    [messages, trace, run],
+  );
+
+  const planParked =
+    run !== undefined && run.phase === "plan" && run.status === "awaiting_input";
+
+  /**
+   * The park is not merely open — there is a panel on screen offering the answer.
+   *
+   * The distinction decides whether the GENERIC park notice is suppressed; see
+   * the comment at its call site for the two paths on which a run is plan-parked
+   * and this is still false.
+   */
+  const planAnswerable = planParked && planDialogue !== null;
+
+  /*
+   * ONE POLL, BOUNDED BY THE ONE STATE THAT NEEDS IT.
+   *
+   * `OrchestratorChat`'s header states the constraint plainly: nothing refetches
+   * the transcript while it sits open, because a reply is written at the END of a
+   * build segment and can be an hour after the question. A PLAN turn is not that.
+   * It is a single seat call that answers in seconds, the run is stopped waiting
+   * for it, and the owner is looking straight at the panel — so a dialogue that
+   * only updates when you leave and come back is this screen failing at the one
+   * moment it exists for.
+   *
+   * SO: one fetch on mount for every run (a settled plan record has to render
+   * without a click too), and a timer only while the run is actually parked on a
+   * question. It stops the instant the park ends, so a run that plans for two
+   * minutes and then builds for two hours polls for two minutes.
+   */
+  useEffect(() => {
+    if (runId === null) return;
+    loadMessages();
+    if (!planParked) return;
+    const timer = window.setInterval(loadMessages, 4_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [runId, planParked, loadMessages]);
+
+  /**
+   * One reply from the plan panel.
+   *
+   * IT IS THE SAME `sendRunMessage` THE CHAT COMPOSER USES, deliberately: the
+   * panel's controls compose an addressed string (`PQ-2: six`, `you decide
+   * (PQ-2)`) and post it down the ordinary channel, so a reply typed in the Chat
+   * tab and a reply given here are the same kind of thing to the server. A second
+   * intake would be a second thing to keep in step with `classifyOwnerReply`.
+   *
+   * IT REJECTS RATHER THAN SWALLOWING. The panel shows the server's own sentence;
+   * a plan reply that 409s on a run that has just left the park must say so, not
+   * look sent.
+   */
+  const onSendPlanReply = useCallback(
+    async (text: string): Promise<void> => {
+      if (runId === null) return;
+      await sendRunMessage(runId, text, []);
+      loadMessages();
+      // The turn's own log lines — `recorded against PQ-2 (answered, …)` — are
+      // what moves a card from open to answered, so pull the trace forward with
+      // the transcript rather than leaving the two out of step.
+      refresh();
+    },
+    [runId, loadMessages, refresh],
+  );
 
   /*
    * FETCH WHEN THE CHAT TAB IS BROUGHT TO THE FRONT, rather than on mount or on
@@ -472,6 +580,28 @@ export default function RunPage(): ReactNode {
            * as an object literal followed by an element with no operator between
            * them: "Expected '</', got 'ident'". It cost a whole screenshot pass.
            */
+          /*
+           * `max-h-[40%]`/`62%` ARE INERT HERE AND HAVE ALWAYS BEEN — MEASURED
+           * 2026-08-02, and the comment above is corrected rather than deleted
+           * because the number in it was load-bearing in an argument.
+           *
+           * `OrchestrationCanvas` mounts this in `absolute left-3 top-3` with no
+           * height and no `bottom`, so the containing block's height is
+           * INDEFINITE and a percentage `max-height` resolves to `none`. Measured
+           * in the browser on the plan fixture at 900px: this element's height
+           * came back 1198.8px inside a 900px viewport, with `scrollHeight ===
+           * clientHeight` — so it neither capped nor scrolled, and the document
+           * did not scroll either. Anything past the fold was unreachable.
+           *
+           * WHAT ACTUALLY KEPT THE DESIGN LOCK OFF THE GRAPH is the PIXEL cap on
+           * its own wrapper below (`max-h-[200px]`/`380px`), which resolves
+           * against nothing. Every panel docked here needs one of its own; the
+           * plan panel uses a `vh` cap for the same reason.
+           *
+           * The classes are left as they are: they cost nothing, and removing
+           * them changes the box for every other run in a way this pass did not
+           * measure.
+           */
           <div className="pointer-events-auto flex max-h-[40%] w-[min(360px,calc(100vw-32px))] flex-col gap-2 overflow-y-auto min-[900px]:max-h-[62%]">
             <RunHud
               run={run}
@@ -498,9 +628,15 @@ export default function RunPage(): ReactNode {
              * are hidden in; this one is not. On a terminal run the composer
              * renders itself disabled with the reason on it (`runIsOver`), which is
              * a reader who learns what the chat is over a reader who never finds
-             * it. It carries no unread count: the transcript is deliberately not
-             * fetched until this is pressed, so a badge here would either be a lie
-             * or a poll nobody asked for.
+             * it.
+             *
+             * IT STILL CARRIES NO UNREAD COUNT, and the reason has changed rather
+             * than gone. The transcript IS fetched now — on mount, and on a timer
+             * while a plan park is open — so "we do not have the rows" is no
+             * longer the argument. What is missing is the other half: nothing
+             * records which rows this reader has seen, so any number here would
+             * be a count of messages, not of unread ones, and it would sit at a
+             * permanent non-zero on every run that ever spoke.
              */}
             <Button
               onClick={openChat}
@@ -520,8 +656,72 @@ export default function RunPage(): ReactNode {
             {run.status === "rate_limited" && (
               <RateLimitNotice run={run} onResume={onResume} busy={busy} />
             )}
-            {run.status === "awaiting_input" && lockPhase !== "pending" && (
+            {/*
+             * THE THIRD KIND OF `awaiting_input`, AND IT IS SUPPRESSED FOR THE
+             * SAME REASON THE DESIGN PARK IS.
+             *
+             * `AwaitingInputNotice` says the two moves are resume and cancel,
+             * which is true of a run whose builder died with the server and false
+             * of a plan park: there the moves are ANSWER, say "you decide", or
+             * ask what it means — and a bodyless resume would close the dialogue
+             * with every open question recorded as an assumption. Leaving a
+             * generic "answer it first, then resume" notice directly above the
+             * panel that IS the answer surface is how an owner ends up resuming
+             * past his own questions.
+             *
+             * IT IS GATED ON THE PANEL ACTUALLY RENDERING, NOT ON THE RUN BEING
+             * PLAN-PARKED, and those are different conditions on two real paths.
+             * The transcript arrives over a fetch, so on first paint there is no
+             * dialogue yet; and the orchestrator documents a window of its own —
+             * "Parking first leaves it parked with the questions missing from the
+             * chat, which the timer resolves on its own by expiring" — where
+             * `planDialogue` is null for the whole park. Gated on `planParked`
+             * alone, both of those show a run stopped on `awaiting input` with
+             * nothing on screen saying what it wants. Here the generic notice
+             * stands in, and its Resume really is the right move: on a plan park
+             * that closes the dialogue and records the assumptions (see the
+             * tooltip in `run-hud.tsx`).
+             */}
+            {run.status === "awaiting_input" &&
+              lockPhase !== "pending" &&
+              !planAnswerable && (
               <AwaitingInputNotice onResume={onResume} onCancel={onCancel} busy={busy} />
+            )}
+
+            {planDialogue !== null && (
+              <div
+                className={cx(
+                  "overflow-y-auto rounded",
+                  /*
+                   * THE SAME TWO WEIGHTS `DesignLockPanel` GETS, and the same
+                   * measured cap: a decision the run is STOPPED on gets room and a
+                   * ring, the settled record of one gets less and dims. The dock
+                   * is `max-h-[40%]`/`62%` with its own scroll, so an open
+                   * dialogue that grows past the cap scrolls inside this box and
+                   * the graph stays visible behind it.
+                   */
+                  /*
+                   * A `vh` CAP, NOT A PERCENTAGE — see the block on the dock
+                   * above, where the percentage was measured inert. 62vh leaves
+                   * the run chip, the chat button and the canvas controls at the
+                   * bottom-left clear at 900px, and it is the panel that
+                   * scrolls rather than the dock.
+                   *
+                   * An open park gets more room than a settled record for the
+                   * same reason `DesignLockPanel` does: a decision the run is
+                   * stopped on is the only thing on the screen that matters.
+                   */
+                  planParked
+                    ? "max-h-[62vh] ring-2 ring-warn/40"
+                    : "max-h-[200px] opacity-90 min-[900px]:max-h-[300px]",
+                )}
+              >
+                <PlanDialoguePanel
+                  dialogue={planDialogue}
+                  nowMs={nowMs}
+                  onSend={onSendPlanReply}
+                />
+              </div>
             )}
 
             {lockPhase !== null && (

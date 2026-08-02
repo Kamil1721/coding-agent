@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -10,6 +11,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import { AttachmentChips } from "@/components/attachment-chips";
 import { AuthPanel } from "@/components/auth-panel";
 import { ModelPicker } from "@/components/model-picker";
 import { FalseFinishBadge } from "@/components/outcome";
@@ -18,10 +20,10 @@ import { createRun, errorMessage } from "@/lib/api";
 import {
   acceptAttribute,
   dataUrlsOfKind,
-  documentTag,
   planAttachmentIntake,
-  readAttachment,
-  type Attachment,
+  readAttachments,
+  releaseAttachments,
+  type HeldAttachment,
 } from "@/lib/attachments";
 import { formatRelative } from "@/lib/format";
 import { useModels, useRuns } from "@/lib/hooks";
@@ -173,11 +175,29 @@ export default function NewTicketPage(): ReactNode {
   const [chosenModelId, setChosenModelId] = useState<string | null>(null);
   const [deploy, setDeploy] = useState(false);
   const [designLock, setDesignLock] = useState<"ask" | "auto">("ask");
-  const [attachments, setAttachments] = useState<readonly Attachment[]>([]);
+  const [attachments, setAttachments] = useState<readonly HeldAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * THE OBJECT URLS DIE WITH THIS FORM, and this is the only path that can free
+   * them: a successful submit navigates to the run page, so the component unmounts
+   * with a full list of `blob:` URLs that no removal handler will ever see.
+   *
+   * TWO EFFECTS RATHER THAN A REF WRITTEN DURING RENDER. The sweep is keyed on `[]`
+   * so it runs at unmount and NOT on every change — a cleanup keyed on
+   * `[attachments]` would revoke the previous list on every add and blank the
+   * thumbnails already on screen. It therefore cannot read `attachments` from its
+   * own closure, which is what the mirror is for. Both are safe under React's
+   * development double-mount: the first cleanup fires with the mirror still empty.
+   */
+  const held = useRef<readonly HeldAttachment[]>([]);
+  useEffect(() => {
+    held.current = attachments;
+  }, [attachments]);
+  useEffect(() => () => releaseAttachments(held.current), []);
 
   // The default is DERIVED, not written into state by an effect: an effect
   // here would render once with nothing selected and then again with a
@@ -216,13 +236,30 @@ export default function NewTicketPage(): ReactNode {
       const plan = planAttachmentIntake(files, attachments);
       setAttachError(plan.refusal);
       if (plan.take.length === 0) return;
-      void Promise.all(plan.take.map(readAttachment))
+      void readAttachments(plan.take)
         .then((read) => {
           setAttachments((previous) => [...previous, ...read]);
         })
         .catch((cause: unknown) => {
           setAttachError(cause instanceof Error ? cause.message : String(cause));
         });
+    },
+    [attachments],
+  );
+
+  /**
+   * Drop one chip, and hand its object URL back before the render that forgets it.
+   *
+   * THE REVOKE IS OUTSIDE THE UPDATER ON PURPOSE — `releaseAttachments`' docblock
+   * says why: React re-invokes updaters, and an impure one is how a thumbnail goes
+   * blank for reasons nobody can reproduce. `attachments` is this render's list, so
+   * the doomed entry is read from the closure and the updater stays a filter.
+   */
+  const removeAttachment = useCallback(
+    (index: number): void => {
+      const doomed = attachments[index];
+      if (doomed !== undefined) releaseAttachments([doomed]);
+      setAttachments((previous) => previous.filter((_unused, i) => i !== index));
     },
     [attachments],
   );
@@ -421,59 +458,19 @@ export default function NewTicketPage(): ReactNode {
             * deliberately not identical strings.
             */}
           <div className="flex flex-col gap-1.5 border-t border-line px-3 py-2">
-            {attachments.length > 0 && (
-              <ul className="flex flex-wrap gap-1">
-                {attachments.map((attachment, index) => (
-                  /*
-                   * A DOCUMENT CHIP IS NOT AN IMAGE CHIP, and the difference is
-                   * the filename plus a tag, not an icon. "scope.pdf" is the
-                   * whole content of the reassurance the owner is looking for
-                   * after a drop — a generic paperclip says a file is attached
-                   * and not WHICH file, which is exactly the doubt that makes
-                   * someone submit twice. The tag comes from the server's own
-                   * media-type → extension map, so a `.docx` reads DOCX rather
-                   * than the first 12 characters of a 71-character OOXML type.
-                   *
-                   * `title` CARRIES THE FULL NAME because the visible span
-                   * truncates at 160px, and two long exports of the same deck
-                   * differ in their tail.
-                   */
-                  <li
-                    key={`${attachment.name}:${String(index)}`}
-                    className={cx(
-                      "flex items-center gap-1 rounded-sm border px-1.5 py-[2px] text-[10.5px] text-ink-dim",
-                      attachment.kind === "document"
-                        ? "border-line-strong bg-surface-raised"
-                        : "border-line",
-                    )}
-                  >
-                    {attachment.kind === "document" && (
-                      <span className="numeric text-[9px] font-semibold tracking-[0.08em] text-ink-faint">
-                        {documentTag(attachment)}
-                      </span>
-                    )}
-                    <span className="max-w-[160px] truncate" title={attachment.name}>
-                      {attachment.name}
-                    </span>
-                    <button
-                      // `type="button"` IS NOT DECORATION. This markup sits inside
-                      // the ticket `<form>`, where a button's default type is
-                      // `submit` — removing a chip would start the run.
-                      type="button"
-                      onClick={() =>
-                        setAttachments((previous) =>
-                          previous.filter((_unused, i) => i !== index),
-                        )
-                      }
-                      className="text-ink-faint hover:text-fail"
-                      aria-label={`remove ${attachment.name}`}
-                    >
-                      ×
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            {/*
+              * THE CHIPS ARE A COMPONENT NOW, AND THE MARKUP THAT WAS HERE IS GONE
+              * WITH ITS REASONING CORRECTED. It said the difference between a
+              * document chip and an image chip was "the filename plus a tag, not an
+              * icon", on the argument that a generic paperclip names no file. The
+              * argument survives; the conclusion did not. An image chip renders the
+              * IMAGE — from the `File` the paste already put in memory — which is
+              * the strongest possible answer to "is that the right one", and a
+              * document gets a drawn glyph beside a size and a word a person uses
+              * ("Word", not `application/vnd.openxml…`). What was measured, and
+              * what the chip existed to prevent, is in `components/attachment-chips.tsx`.
+              */}
+            <AttachmentChips attachments={attachments} onRemove={removeAttachment} />
 
             {attachError !== null && (
               <p role="alert" className="text-[11px] text-fail">

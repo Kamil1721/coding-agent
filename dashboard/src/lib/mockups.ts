@@ -18,6 +18,17 @@
  * and stripping one prefix off either end of that pair matches the wrong file.
  * Adding is exact in both directions.
  *
+ * "REFERENCE" MEANS TWO DIFFERENT THINGS IN THIS PROGRAM AND ONLY ONE OF THEM IS
+ * IN THIS FILE. Everything below — `CaptureSplit.references`, `designLock`'s
+ * refs, `isPublishedAs` — is the DESIGN lane's own output: mockups `ui-designer`
+ * generated and the workspace refs the lock was taken on. `RunDetail.references`
+ * on the wire is something else entirely: the images the OWNER uploaded with the
+ * ticket, served by `GET /api/runs/:id/references/:file` and rendered by
+ * `components/run/attachments.tsx` on a different tab. Nothing here reads that
+ * field and nothing there calls `splitCaptures`; the collision is in the English
+ * word, not in the data, and merging the two under one heading is the mis-read
+ * both files are written to prevent.
+ *
  * THE TWO MIRRORED LITERALS BELOW ARE THE RISK IN THIS FILE. `MOCKUP_LABEL` is
  * the server's `DESIGN_MOCKUP_LABEL` (design-lock.ts) and `MOCKUP_COPY_PREFIX` is
  * the literal `#recordDesignMockups` prefixes each copy with. Neither is on the

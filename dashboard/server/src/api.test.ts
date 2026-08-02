@@ -315,7 +315,12 @@ test("POST /api/runs creates a queued run; costUsd is null and heldOutPass undet
     const detail = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
     assert.equal(detail.costUsd, null, "a subscription run has no dollar cost and must never invent one");
     assert.equal(detail.tokens, null);
-    assert.equal(detail.phase, "spec");
+    // `plan`, NOT `spec`, SINCE 2026-08-02. A queued run has not reached any
+    // phase, so this field is a statement about what it will do FIRST, and the
+    // plan phase is now that — `createRun` seeds it and `db.ts`'s `PHASES` leads
+    // with it. Leaving `spec` here would have every queued run render one phase
+    // ahead of where it actually starts.
+    assert.equal(detail.phase, "plan");
     assert.deepEqual(detail.criteria, []);
     assert.deepEqual(detail.screenshots, []);
     assert.equal(detail.previewUrl, null);

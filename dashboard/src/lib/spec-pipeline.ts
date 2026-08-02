@@ -60,7 +60,7 @@ import type { TraceEntry } from "./use-run-stream";
 export type SpecStageState = "done" | "running" | "pending" | "skipped";
 
 export interface SpecStage {
-  readonly id: "capture" | "author" | "audit" | "freeze";
+  readonly id: "plan" | "capture" | "author" | "audit" | "freeze";
   readonly label: string;
   /** One line the reader can act on. Empty when the stage has said nothing. */
   readonly detail: string;
@@ -88,6 +88,18 @@ const SEALED = /^sealed suite /i;
 const REUSED = /^reusing the sealed acceptance suite/i;
 /** The ticket named no URL, so nothing was captured and nothing is pending. */
 const NO_CAPTURE = /no reference capture/i;
+
+/*
+ * THE PLAN PHASE'S THREE LINES. It runs BEFORE the capture and produces exactly
+ * one stage, because that is all the server reports about it: the park
+ * announcement, one of two "asked nothing" sentences, and one of three closing
+ * sentences. There is no start line — `#planPhase` calls the seat and then
+ * speaks — so this stage is `running` from the phase itself and never from a
+ * timer, which is the same rule the four below it play by.
+ */
+const PLAN_PARKED = /waiting for an answer in the chat/i;
+const PLAN_NOTHING = /^plan phase (?:skipped|asked nothing)\s*[:—-]\s*(.+)$/i;
+const PLAN_OVER = /^the plan dialogue (?:is over|is folded into the brief|ended with nothing to fold)/i;
 
 interface Seen {
   readonly captured: TraceEntry | null;
@@ -136,10 +148,87 @@ function scan(trace: readonly TraceEntry[], ticketText: string): Seen {
 }
 
 /**
+ * The plan phase as one stage, or `null` when this run never had one.
+ *
+ * `null` IS WHAT KEEPS AN OLD RUN RENDERING UNCHANGED, and it is derived rather
+ * than version-checked: a run recorded before this phase existed emitted none of
+ * the three lines and is not in the `plan` phase, so there is nothing to draw and
+ * the four spec stages are exactly the list they were.
+ *
+ * NOTHING HERE IS A TIMER. `running` comes from the run being IN the phase or
+ * from the park line; `done` and `skipped` come from a sentence the server wrote.
+ */
+export function planStageFrom(
+  trace: readonly TraceEntry[],
+  phase: RunPhase,
+): SpecStage | null {
+  let over: TraceEntry | null = null;
+  let nothing: { entry: TraceEntry; reason: string } | null = null;
+  let parked: TraceEntry | null = null;
+
+  for (const entry of trace) {
+    if (over === null && PLAN_OVER.test(entry.text)) over = entry;
+    const asked = PLAN_NOTHING.exec(entry.text);
+    if (nothing === null && asked !== null) {
+      nothing = { entry, reason: asked[1] ?? entry.text };
+    }
+    if (parked === null && PLAN_PARKED.test(entry.text)) parked = entry;
+  }
+
+  if (over !== null) {
+    return { id: "plan", label: "Plan", detail: over.text, state: "done", atMs: over.atMs };
+  }
+  if (nothing !== null) {
+    return {
+      id: "plan",
+      label: "Plan",
+      detail: nothing.reason,
+      state: "skipped",
+      atMs: nothing.entry.atMs,
+    };
+  }
+  if (parked !== null) {
+    return {
+      id: "plan",
+      label: "Plan",
+      detail:
+        "Waiting for an answer in the run panel. The window closes on its own, and the run then " +
+        "proceeds on what it had to assume.",
+      state: "running",
+      atMs: parked.atMs,
+    };
+  }
+  if (phase === "plan") {
+    return {
+      id: "plan",
+      label: "Plan",
+      detail:
+        "Reading the ticket and anything attached to it, and working out what it cannot infer. " +
+        "It reports when it has something to ask.",
+      state: "running",
+      atMs: null,
+    };
+  }
+  return null;
+}
+
+/**
  * The pipeline, as far as the run has said.
  *
- * Returns an empty list when there is nothing honest to draw — before the spec
- * phase, and after it, where the real graph takes over.
+ * Returns an empty list when there is nothing honest to draw — before the plan
+ * phase, and after the spec phase, where the real graph takes over.
+ *
+ * THE PLAN PHASE IS DRAWN TOO, AND THE ALTERNATIVE WAS A BLANK CANVAS AT THE ONE
+ * MOMENT THE OWNER IS DEFINITELY WATCHING. This guard used to be `phase !==
+ * "spec"`, which for the whole of a plan park would have handed the canvas its
+ * empty-state copy — "The acceptance suite is being written and frozen first" —
+ * about a run that is doing no such thing and is in fact waiting on him.
+ *
+ * DURING THE PLAN PHASE IT IS ONE STAGE AND NOT FIVE. Drawing `capture` as
+ * `running` while the plan is still open would claim a page was being fetched
+ * that nothing has started; `pending` for four stages that have not been reported
+ * would be four grey rows saying nothing. One stage, in the phase the run is
+ * actually in.
  */
 export function specPipelineFrom(
   trace: readonly TraceEntry[],
@@ -147,6 +236,13 @@ export function specPipelineFrom(
   ticketText: string,
   runIsActive: boolean,
 ): readonly SpecStage[] {
+  const planStage = planStageFrom(trace, phase);
+  if (phase === "plan") {
+    if (planStage === null) return [];
+    return runIsActive || planStage.state !== "running"
+      ? [planStage]
+      : [{ ...planStage, state: "pending" as const }];
+  }
   if (phase !== "spec") return [];
   const seen = scan(trace, ticketText);
 
@@ -154,7 +250,7 @@ export function specPipelineFrom(
   // suite, so nothing is authored and nothing is audited; drawing four stages
   // that never move would invent work that is not happening.
   if (seen.reused !== null) {
-    return [
+    return withPlan(planStage, [
       {
         id: "freeze",
         label: "Acceptance suite",
@@ -162,7 +258,7 @@ export function specPipelineFrom(
         state: "done",
         atMs: seen.reused.atMs,
       },
-    ];
+    ]);
   }
 
   const captureState: SpecStageState =
@@ -228,12 +324,29 @@ export function specPipelineFrom(
       atMs: seen.sealed?.atMs ?? null,
     },
   ];
-  return stages.map((stage) =>
-    // A TERMINAL RUN HAS NO RUNNING STAGE. Whatever was in flight when it stopped
-    // did not continue; leaving a pulsing "running" card on a dead run is the
-    // same lie as the old empty state, relocated.
-    runIsActive || stage.state !== "running" ? stage : { ...stage, state: "pending" as const },
+  return withPlan(
+    planStage,
+    stages.map((stage) =>
+      // A TERMINAL RUN HAS NO RUNNING STAGE. Whatever was in flight when it stopped
+      // did not continue; leaving a pulsing "running" card on a dead run is the
+      // same lie as the old empty state, relocated.
+      runIsActive || stage.state !== "running" ? stage : { ...stage, state: "pending" as const },
+    ),
   );
+}
+
+/**
+ * Put the plan stage at the head of the spec list, when there was one.
+ *
+ * A RUN THAT NEVER PLANNED GETS THE LIST IT ALWAYS GOT — same length, same ids,
+ * same order — which is the property `spec-pipeline.unit.spec.ts`'s existing
+ * cases are written against.
+ */
+function withPlan(
+  planStage: SpecStage | null,
+  stages: readonly SpecStage[],
+): readonly SpecStage[] {
+  return planStage === null ? stages : [planStage, ...stages];
 }
 
 /* =========================================================================

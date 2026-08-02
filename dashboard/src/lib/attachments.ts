@@ -35,8 +35,11 @@
  * as "the declaration moved" rather than silently comparing against nothing.
  *
  * WHAT THIS MODULE DOES NOT DO. It does not post anything, does not know which
- * route an attachment is bound for, and — importantly — makes no claim about who
- * READS an attachment. `api-types.ts` is explicit that a ticket document's bytes
+ * route an attachment is bound for, and does not free the object URLs it hands
+ * out — {@link readAttachment} creates one per image and the HOLDER of the list
+ * must call {@link releaseAttachments}; see {@link HeldAttachment}. It also —
+ * importantly — makes no claim about who READS an attachment. `api-types.ts` is
+ * explicit that a ticket document's bytes
  * are stored and folded into the ticket id, while whether a seat is shown it is
  * decided by the server's build/spec wiring; and that a CHAT document is stored
  * and NOT delivered to the running agent at all. Copy that says "attached" must
@@ -56,6 +59,40 @@ export interface Attachment {
   readonly mediaType: string;
   /** `data:application/pdf;base64,…` — what both routes take. */
   readonly dataUrl: string;
+}
+
+/**
+ * An attachment as an INTAKE HOLDS IT — the wire record plus the two local facts
+ * a chip needs to show the owner what he just attached.
+ *
+ * WHY IT IS A SUBTYPE AND NOT TWO MORE FIELDS ON {@link Attachment}. Nothing on
+ * the wire path wants them: {@link planAttachmentIntake} decides from an
+ * {@link AttachmentCandidate}, {@link dataUrlsOfKind} reads `dataUrl`, and both
+ * keep taking a plain `Attachment` — a `HeldAttachment[]` is assignable to
+ * `readonly Attachment[]`, so no call site changed. The honest half of the reason
+ * is that an `Attachment` built by hand has NO `File` behind it (a spec composes
+ * one to fill the "already attached" list), so it could not supply a real byte
+ * count or an object URL, and a required field there would be filled with a lie.
+ *
+ * `previewUrl` IS A `blob:` URL AND ITS LIFETIME IS THE HOLDER'S PROBLEM. It is
+ * created here (see {@link readAttachment}) and is NOT released by anything in
+ * this module: the component that holds the list must call
+ * {@link releaseAttachments} when a chip is removed, when the list is cleared on
+ * send, and on unmount. A leaked blob URL pins the whole decoded image for the
+ * life of the document, and the cap is six images at 8 MB.
+ *
+ * IT COSTS A SECOND COPY OF THE BYTES, WHICH IS MEASURED RATHER THAN HIDDEN: the
+ * base64 in `dataUrl` is already retained for the POST, and the object URL keeps
+ * the `File` alive on top of it. `<img src={dataUrl}>` would have avoided that and
+ * was not chosen — a blob URL hands the browser the encoded bytes directly, where
+ * a data URL makes it re-parse a ~11 MB base64 string per paint, once for the chip
+ * and again for the lightbox.
+ */
+export interface HeldAttachment extends Attachment {
+  /** DECODED bytes of the picked file — the same quantity both servers cap. */
+  readonly size: number;
+  /** `blob:` for an image, `null` for a document. Revoke it; see above. */
+  readonly previewUrl: string | null;
 }
 
 /**
@@ -170,6 +207,49 @@ export function documentTag(attachment: Attachment): string {
   return (ACCEPTED_DOCUMENT_TYPES.get(attachment.mediaType) ?? "file").toUpperCase();
 }
 
+/**
+ * The word a person uses for this kind of file — `Word`, not `DOCX`, and never
+ * `application/vnd.openxmlformats-officedocument.wordprocessingml.document`.
+ *
+ * KEYED BY THE STORED EXTENSION, NOT BY THE MEDIA TYPE, and that is the whole
+ * design: {@link ACCEPTED_DOCUMENT_TYPES} is a TRANSCRIPTION of the server's map
+ * and a parity test fails when it drifts, so a second map keyed the same way would
+ * be a second thing to keep honest with no test behind it. Keyed by the extension,
+ * a media type the server adds tomorrow still resolves — it falls through to
+ * {@link documentTag} and reads as its uppercase extension, which is a worse label
+ * and not a wrong one.
+ *
+ * `.doc` AND `.docx` ARE BOTH "Word" because the distinction is the file format's,
+ * not the reader's; he attached his CV, and which OOXML generation Word wrote it in
+ * is not what he is checking the chip for.
+ */
+const DOCUMENT_WORDS: ReadonlyMap<string, string> = new Map([
+  ["pdf", "PDF"],
+  ["txt", "Text"],
+  ["md", "Markdown"],
+  ["csv", "CSV"],
+  ["json", "JSON"],
+  ["docx", "Word"],
+  ["doc", "Word"],
+  ["rtf", "Rich text"],
+]);
+
+/**
+ * What a chip says this file IS, for either kind — `PDF`, `Word`, `PNG`.
+ *
+ * AN IMAGE'S LABEL IS ITS SUBTYPE, uppercased, because that is already the word:
+ * nobody calls a `.png` anything but a PNG, and `image/png` on screen would be the
+ * raw media type this function exists to keep off the chip.
+ */
+export function attachmentTypeLabel(attachment: Attachment): string {
+  if (attachment.kind === "image") {
+    return attachment.mediaType.slice(attachment.mediaType.indexOf("/") + 1).toUpperCase();
+  }
+  const extension = ACCEPTED_DOCUMENT_TYPES.get(attachment.mediaType);
+  const word = extension === undefined ? undefined : DOCUMENT_WORDS.get(extension);
+  return word ?? documentTag(attachment);
+}
+
 /** `png, jpeg, jpg, webp, gif` — derived, so a refusal cannot list a stale set. */
 const IMAGE_EXTENSIONS = [...ACCEPTED_IMAGE_TYPES]
   .map((type) => type.slice(type.indexOf("/") + 1))
@@ -238,6 +318,23 @@ function megabytes(bytes: number): string {
 
 function megabytesUp(bytes: number): string {
   return `${String(Math.ceil((bytes / (1024 * 1024)) * 10) / 10)} MB`;
+}
+
+/**
+ * A file's size ON A CHIP — `207 KB`, `1.4 MB`, `912 bytes`.
+ *
+ * IT IS NOT {@link megabytes}, AND THE ACCEPTANCE CASE IS WHY. That helper exists
+ * to compare a file against a CAP, where megabytes are the only unit the sentence
+ * needs; run a 212 KB CV through it and the chip reads `0.2 MB`, which is the one
+ * file this display was built for. So the rung below a megabyte is a real rung
+ * here, and the two are kept apart rather than generalised into one — the refusal
+ * text rounds a file UP on purpose (see above) and a size a reader is only looking
+ * at should round to nearest.
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} bytes`;
+  if (bytes < 1024 * 1024) return `${String(Math.round(bytes / 1024))} KB`;
+  return megabytes(bytes);
 }
 
 /** `2 of these were not attached.` — and `1 of these was`. */
@@ -387,16 +484,21 @@ export function planAttachmentIntake<T extends AttachmentCandidate>(
  * exists because the alternative is a nullable return every call site must handle
  * for a case that cannot happen.
  */
-export function readAttachment(file: File): Promise<Attachment> {
+export function readAttachment(file: File): Promise<HeldAttachment> {
   const mediaType = normalizeMediaType(file.type);
+  const kind = attachmentKind(mediaType) ?? "image";
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       resolve({
         name: file.name,
-        kind: attachmentKind(mediaType) ?? "image",
+        kind,
         mediaType,
         dataUrl: typeof reader.result === "string" ? reader.result : "",
+        size: file.size,
+        // CREATED ON THE SUCCESS PATH ONLY, so a read that fails leaks nothing:
+        // there is no URL to release for an attachment that never existed.
+        previewUrl: kind === "image" ? URL.createObjectURL(file) : null,
       });
     };
     reader.onerror = () => {
@@ -404,6 +506,52 @@ export function readAttachment(file: File): Promise<Attachment> {
     };
     reader.readAsDataURL(file);
   });
+}
+
+/**
+ * Read a whole intake, ALL OR NOTHING — and release what a partial failure held.
+ *
+ * WHY IT IS NOT `Promise.all` AT THE CALL SITE, WHICH IS WHAT BOTH INTAKES USED.
+ * `Promise.all` rejects on the FIRST failure and discards the siblings that had
+ * already resolved. Each of those is holding an object URL that never reaches
+ * component state, so the holder's unmount sweep cannot see it and the blob is
+ * pinned for the life of the document — a leak on the one path nobody watches.
+ * `allSettled` lets the fulfilled ones be released before the rejection is
+ * re-thrown.
+ *
+ * THE OBSERVABLE BEHAVIOUR IS UNCHANGED: one unreadable file still attaches
+ * nothing and still surfaces the first error's message, which is what both
+ * composers show. Only the cleanup is new.
+ */
+export async function readAttachments(
+  files: readonly File[],
+): Promise<readonly HeldAttachment[]> {
+  const settled = await Promise.allSettled(files.map(readAttachment));
+  const read = settled.flatMap((one) => (one.status === "fulfilled" ? [one.value] : []));
+  const failure = settled.find((one) => one.status === "rejected");
+  if (failure === undefined) return read;
+  releaseAttachments(read);
+  throw failure.reason instanceof Error ? failure.reason : new Error(String(failure.reason));
+}
+
+/**
+ * Hand back the object URLs of attachments that are going away.
+ *
+ * CALL IT ON EVERY PATH THAT DROPS ONE — a removed chip, the list cleared after a
+ * send, the composer unmounting. `revokeObjectURL` on a URL that was never created
+ * or has already been revoked is a no-op, so a double release is safe and a
+ * MISSED one is not: the blob stays resident with no reference left to free it.
+ *
+ * IT MUST NOT BE CALLED FROM INSIDE A `setState` UPDATER. Updaters are re-invoked
+ * (React runs them twice in development), and while the revoke itself is
+ * idempotent, an impure updater is how a "why is my thumbnail blank" bug gets
+ * written. Both call sites release from the event handler, against the list the
+ * render already closed over.
+ */
+export function releaseAttachments(attachments: readonly HeldAttachment[]): void {
+  for (const one of attachments) {
+    if (one.previewUrl !== null) URL.revokeObjectURL(one.previewUrl);
+  }
 }
 
 /** The data URLs of one kind, in chip order — which is the order on disk. */

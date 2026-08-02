@@ -32,7 +32,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { DELIVERY_LANES } from "./agent-shortlist.js";
-import { dashboardBuilderPrompt } from "./build-prompt.js";
+import { dashboardBuilderPrompt, resumeBuilderPrompt } from "./build-prompt.js";
 
 /**
  * The plan's snippets call `buildPrompt({ ticketText, allowedAgents })`. The real
@@ -243,6 +243,112 @@ test("with delegation off, no report contract is advertised either", () => {
   // is text the builder pays for and can never use.
   const p = buildPrompt({ ticketText: "x", allowedAgents: [] });
   assert.doesNotMatch(p, /UNRESOLVED/, "nothing will be delegated, so nothing reports back");
+});
+
+/**
+ * THE ENVIRONMENT SECTION — three facts, three tests, three mutations.
+ *
+ * WHY SEPARATELY. One test asserting a heading is green over a section that has
+ * lost two of its three facts, and losing a fact is exactly the edit a future
+ * shortening pass makes. Each fact below is pinned on its own so each can go red
+ * on its own; the negative control for each was the deletion of that clause
+ * alone, and only its own test failed.
+ *
+ * WHY THE ASSERTIONS RESTATE THE TEXT INSTEAD OF IMPORTING IT. An exported
+ * constant asserted with `p.includes(CONST)` is satisfied by `CONST = ""`. The
+ * phrases below are independent restatements, so emptying the section is red.
+ */
+test("the builder is told it cannot open a port, and what shape that forces", () => {
+  // The 2026-07-30 run discovered this AFTER building — "this sandbox denies
+  // `listen()` on every port, `EPERM`", its closing message. The consequence is
+  // the load-bearing half: a server written but never executed boots for the
+  // first time inside the sealed gate, where a failure is a verdict.
+  const p = buildPrompt({ ticketText: "an API with a database", allowedAgents: ["backend-developer"] });
+  assert.match(p, /cannot open a port/i, "the fact");
+  assert.match(p, /EPERM/, "named, so the error message is recognisable when it appears");
+  assert.match(p, /exported router function/i, "the shape that survives no-listen");
+  assert.match(p, /node --test/, "and how the behaviour gets covered instead");
+  assert.match(p, /no socket/i);
+});
+
+test("the builder is told the artefact is judged with NO NETWORK, and what needs no install", () => {
+  // Its OWN network is unrestricted, so nothing stops it installing; the failure
+  // lands later, in `docker run --network=none`, as a boot that cannot happen.
+  const p = buildPrompt({ ticketText: "an API with a database", allowedAgents: ["backend-developer"] });
+  assert.match(p, /NO NETWORK/, "the container the artefact is judged in");
+  assert.match(p, /dependencies must be zero|zero, or\s+already vendored/i, "the requirement");
+  assert.match(p, /node:sqlite/, "MEASURED available in the scorer image on v24.18.0");
+  assert.match(p, /node:http/);
+  assert.match(p, /standard library/i);
+});
+
+test("the builder is told to leave the project workable — README and .gitignore", () => {
+  // The publish step writes these only when the builder shipped none
+  // (project-handover.ts). A fallback is not the same artefact as one written by
+  // the agent that knows what the thing reads.
+  const p = buildPrompt({ ticketText: "an API with a database", allowedAgents: ["backend-developer"] });
+  assert.match(p, /README\.md/);
+  assert.match(p, /\.gitignore/);
+  // `\s+` because the section is hard-wrapped: the phrase straddles a newline and
+  // two spaces of indent, and a literal-space regex is red for the wrong reason.
+  assert.match(p, /environment\s+variables it reads/i, "a README that says nothing about config is a stub");
+  assert.match(p, /node_modules/);
+});
+
+test("the builder is told WHICH PORT to serve on, not merely that it cannot open one", () => {
+  // THE GAP THIS CLOSES, MEASURED. The port contract used to live in
+  // `dashboardBuilderPrompt` only, and a design-lane run never reaches that
+  // function: segment 1 is `designSegmentPrompt` and segment 2 RESUMES it, so the
+  // first BUILD turn takes the resume branch. On the real run,
+  // `runs/run-2026-07-30T20-16-40-242Z-052c6e02/results/prompt.txt` matches "3000"
+  // zero times and "listen" zero times. That build was told it could not open a
+  // port and never told which one the gate would probe.
+  const p = buildPrompt({ ticketText: "an API with a database", allowedAgents: ["backend-developer"] });
+  assert.match(p, /listen on port 3000/i, "the port the scorer probes when the manifest declares no other");
+  assert.match(p, /0\.0\.0\.0/, "binding loopback-only by name is the other way a boot gate fails");
+  assert.match(p, /ticket names/i, "3000 is the DEFAULT, not the only legal port — spec-agent authors otherwise");
+});
+
+test("THE RESUMED BUILD IS TOLD THE PORT TOO — this is the half that was missing", () => {
+  // The discriminating assertion of the pair. A copy of the contract inside
+  // `dashboardBuilderPrompt` would leave this red, which is the whole point:
+  // moving it into the shared section is what fixes the design-lane shape, and
+  // duplicating it back would let the two spellings drift.
+  const p = resumeBuilderPrompt("the design was locked and the build continues from there");
+  assert.match(p, /listen on port 3000/i);
+  assert.match(p, /0\.0\.0\.0/);
+  assert.match(p, /cannot open a port/i, "and it still knows it cannot try");
+});
+
+test("the port default is the DECLARED port, not whatever PORT happens to hold", () => {
+  // `scorer-container.ts` starts the artefact with `artifactEnv(null)` — no PORT
+  // in the environment — while probing `execution.port`. A server that reads PORT
+  // and falls back to something else boots on the wrong port and fails GATE:boot
+  // for a reason unrelated to the work.
+  const p = buildPrompt({ ticketText: "an API with a database", allowedAgents: ["backend-developer"] });
+  assert.match(p, /PORT environment variable/i);
+  assert.match(p, /no PORT set/i, "the judge's actual behaviour, stated rather than implied");
+});
+
+test("the environment section survives an EMPTY shortlist — it is not part of delegation", () => {
+  // Everything else added to this prompt so far renders only when delegation is
+  // on. The sandbox does not care how many specialists were shortlisted.
+  const p = buildPrompt({ ticketText: "x", allowedAgents: [] });
+  assert.match(p, /EPERM/);
+  assert.match(p, /NO NETWORK/);
+});
+
+test("THE RESUMED BUILD IS TOLD TOO — a design-lane run never sees the first-turn prompt", () => {
+  // MEASURED, and this is the arm that would otherwise be uncovered. With the
+  // lane on, segment 1 is the design prompt and segment 2 RESUMES it, so
+  // `#buildSegmentPrompt` takes its `builderSessionId !== null` branch on the
+  // first build turn: `run-2026-07-30T20-16-40-242Z-052c6e02/results/prompt.txt`
+  // opens with this function's first line and carries no working agreement. That
+  // is the run that ended in the EPERM apology.
+  const p = resumeBuilderPrompt("the design was locked and the build continues from there");
+  assert.match(p, /EPERM/);
+  assert.match(p, /NO NETWORK/);
+  assert.match(p, /README\.md/);
 });
 
 test("the parts of the prompt Phase 0 depends on are unchanged", () => {

@@ -37,6 +37,19 @@
  * the artefact with .git and .bakeoff stripped" — this codebase already treats
  * that directory as not-the-artefact, on the same footing as `.git`.
  *
+ * `.env` IS COPIED, AND IS NEVER COMMITTED. The two questions are separate and
+ * they get different answers. On disk it is the only place the values the build
+ * agent used exist, the README's "Run it" section is useless without them, and
+ * `projects/` is itself gitignored inside the owner's repository — a copied
+ * `.env` is a file on his own machine, which is where a `.env` belongs. In the
+ * HISTORY it is a key that survives every later `.gitignore` edit and travels
+ * with the first `git push`, and the README this publish writes tells him the
+ * folder is his to push. So `project-handover.ts` keeps the whole `.env` family
+ * (except `.env.example` and friends) out of the commit through the repository's
+ * own exclude file, and the copy brings it across. Excluding it from the COPY
+ * instead would hand the owner a project that cannot start and no statement of
+ * what is missing beyond a table of variable NAMES.
+ *
  * WHAT IS *NOT* EXCLUDED, STATED SO NOBODY ASSUMES IT IS. `TICKET.md`, `.tmp/`
  * and `node_modules/` are copied if present. `TICKET.md` is arguably the
  * project's README; `.tmp/` exists in one workspace on this machine and nobody
@@ -57,6 +70,20 @@
  * finished run recorded `http://127.0.0.1:4321` and nothing has listened there
  * since). Publishing a folder does not serve it, does not open it and does not
  * make it run; it puts the files where the owner can open them himself.
+ *
+ * WHAT THE COPY ALONE DID NOT ANSWER, AND WHAT `project-handover.ts` ADDS. The
+ * owner's next sentence about that folder was "what if I wanted to work in the
+ * project after it was done? I don't have a file or a database to work from" —
+ * a folder of files with no history, no README, no `.gitignore` and a binary
+ * `.db` nobody can read. After the copy succeeds this module calls
+ * {@link handoverProject}, which gives the published directory ITS OWN git
+ * repository with one commit, a README (only when the builder shipped none),
+ * a `.gitignore` (only when the builder shipped none) and `db/schema.sql` for
+ * every SQLite file that came across. THE RUN'S OWN REPOSITORY IS NEVER
+ * TOUCHED: `.git` is excluded from the copy, and the workspace's single
+ * `workspace created` commit is the baseline `orchestrator.ts:3974` diffs
+ * against to build the judge's reading material — a commit in there would empty
+ * that diff.
  */
 
 import {
@@ -73,6 +100,11 @@ import {
 import { isAbsolute, join, relative, sep } from "node:path";
 import { redactForPersistence } from "bakeoff/dist/redact.js";
 import type { ApiProjectExclusion, ApiPublishedProject } from "./api-types.js";
+import { isTerminal } from "./db.js";
+import { handoverProject, inspectRepository, preserveUncommittedWork, spawnGit } from "./project-handover.js";
+import type { GitRunner, HandoverRecord, PublishRunFacts } from "./project-handover.js";
+import { runPathsFor } from "./paths.js";
+import type { DashboardPaths } from "./paths.js";
 
 /** One thing that is never copied, and the sentence the owner is given for it. */
 export interface ExcludedEntry {
@@ -156,8 +188,38 @@ export const MAX_NAME_ATTEMPTS = 50;
  * `no-free-name`       {@link MAX_NAME_ATTEMPTS} candidate folder names were all
  *                      taken. Nothing was overwritten.
  * `copy-failed`        the filesystem refused mid-way. `detail` is what it said.
+ * `run-not-terminal`   {@link republishProject} only. A run that is still going
+ *                      has a workspace being written underneath the copy.
  */
-export type PublishDecline = "workspace-missing" | "workspace-empty" | "no-free-name" | "copy-failed";
+export type PublishDecline =
+  | "workspace-missing"
+  | "workspace-empty"
+  | "no-free-name"
+  | "copy-failed"
+  | "run-not-terminal";
+
+/**
+ * Why a re-publish did NOT go back into this run's own earlier folder.
+ *
+ * `owner-commits`      the folder is a git repository whose HEAD is not the
+ *                      commit this run last made there. Somebody has committed
+ *                      since — the owner, or a tool of his. Publishing over it
+ *                      would put a machine commit on top of his work.
+ * `foreign-repository` there is a `.git` there that is not this directory's own
+ *                      repository, or git could not answer at all.
+ * `preserve-failed`    the folder had uncommitted changes and the commit that
+ *                      would have saved them failed. Overwriting after that
+ *                      would destroy the one state git cannot recover.
+ */
+export type ReuseRefusal = "owner-commits" | "foreign-repository" | "preserve-failed";
+
+/** Recorded when a re-publish went to a NEW folder rather than the old one. */
+export interface PublishRedirect {
+  /** The folder this run published to last time and did not write into now. */
+  readonly from: string;
+  readonly reason: ReuseRefusal;
+  readonly detail: string;
+}
 
 /** The record written when a copy was made. */
 export interface PublishedProjectRecord {
@@ -172,6 +234,15 @@ export interface PublishedProjectRecord {
   readonly fileCount: number;
   readonly bytes: number;
   readonly excluded: readonly ApiProjectExclusion[];
+  /**
+   * What was done to make the copy workable — the repository, the README, the
+   * `.gitignore`, the schema dumps. SERVER-SIDE ONLY today: `ApiPublishedProject`
+   * has no mirror for it yet, and `publishedProjectFromRecord` neither reads nor
+   * forwards it, so a client sees the same six fields it always has.
+   */
+  readonly handover: HandoverRecord;
+  /** Non-null only when this run's own earlier folder was left alone. */
+  readonly redirected: PublishRedirect | null;
 }
 
 /** The record written when the publish was attempted and declined. */
@@ -202,6 +273,18 @@ export interface PublishRequest {
   readonly projectsDir: string;
   /** `runs/<id>/results` — where {@link PROJECT_PUBLISH_RECORD} is written. */
   readonly resultsDir: string;
+  /**
+   * The run row, for the README's provenance block and the commit message.
+   *
+   * OPTIONAL BECAUSE THE CALL SITE IS IN ANOTHER AGENT'S FILE. `RunRow`
+   * satisfies {@link PublishRunFacts} structurally and `orchestrator.ts
+   * #publishProject` already holds the row, so wiring it is one added line
+   * (`run: row,`). Until that line exists the README says "not recorded" for the
+   * run id, ticket id, verdict and model rather than inventing them.
+   */
+  readonly run?: PublishRunFacts | undefined;
+  /** TESTS ONLY. The seam that makes "git failed" reachable without breaking git. */
+  readonly git?: GitRunner | undefined;
 }
 
 /**
@@ -272,6 +355,32 @@ export function runIdSuffix(runId: string): string {
  * record does not name this run id is, and that is the case the `EEXIST` claim
  * refuses. Files the owner ADDED to his copy are left alone — this writes over
  * the names it copies and deletes nothing.
+ *
+ * …AND THAT REUSE IS NOW CONDITIONAL, BECAUSE THE FOLDER IS A REPOSITORY. The
+ * rule, decided here and enforced by {@link checkReuse}:
+ *
+ *   THE FOLDER IS STILL OURS ONLY WHILE ITS HEAD IS THE COMMIT WE LEFT THERE.
+ *   The published record carries the sha of the commit this run made; on a
+ *   re-publish that sha is compared with the folder's actual HEAD. Equal means
+ *   nobody has committed since and the copy may write over files it wrote in the
+ *   first place. Different — including a repository that exists where our record
+ *   remembers none — means the owner has been working here, and a machine commit
+ *   on top of his history is exactly what item 6 forbids. That case publishes to
+ *   `<slug>-<run id>` instead and records {@link PublishRedirect}, so nothing is
+ *   lost and nothing is silent.
+ *
+ *   WHY HEAD AND NOT "IS THE TREE CLEAN". A database the builder's own
+ *   `.gitignore` does not mention is untracked forever, so a cleanliness test
+ *   would report owner work on every single re-publish and mint a new folder each
+ *   time — idempotence gone, for a file we deliberately do not commit. Dirtiness
+ *   is measured under the commit's own exclusions and handled separately: TRACKED
+ *   edits that were never committed are saved as their own commit BEFORE the copy
+ *   overwrites them ({@link preserveUncommittedWork}), because an uncommitted edit
+ *   is the one state git cannot get back.
+ *
+ *   A FOLDER WITH NO `.git` IS STILL OURS. The one project published on this
+ *   machine predates the handover and has no repository; re-publishing it is how
+ *   it gets one.
  */
 export function publishProject(request: PublishRequest): ProjectPublishRecord {
   const attemptedAt = new Date().toISOString();
@@ -297,14 +406,23 @@ export function publishProject(request: PublishRequest): ProjectPublishRecord {
 
   let createdHere = false;
   let destination = "";
+  let redirected: PublishRedirect | null = null;
+  let preservedCommit: string | null = null;
   try {
     if (!statSync(request.workspace).isDirectory()) {
       return decline("workspace-missing", `${request.workspace} is not a directory`);
     }
-    const reuse = ownPreviousPath(request.resultsDir, request.runId);
-    if (reuse !== null) {
-      destination = reuse;
-    } else {
+    const previous = ownPreviousPublish(request.resultsDir, request.runId);
+    if (previous !== null) {
+      const reuse = checkReuse(previous, request.git ?? spawnGit);
+      if (reuse.ok) {
+        destination = previous.path;
+        preservedCommit = reuse.preserved;
+      } else {
+        redirected = { from: previous.path, reason: reuse.reason, detail: reuse.detail };
+      }
+    }
+    if (destination === "") {
       const claimed = claimDestination(request.projectsDir, projectSlug(request.ticketTitle), runIdSuffix(request.runId));
       if (claimed === null) {
         return decline(
@@ -345,15 +463,30 @@ export function publishProject(request: PublishRequest): ProjectPublishRecord {
       );
     }
 
+    const publishedAt = new Date().toISOString();
     const record: PublishedProjectRecord = {
       published: true,
       runId: request.runId,
       path: destination,
       source: request.workspace,
-      publishedAt: new Date().toISOString(),
+      publishedAt,
       fileCount: tally.files,
       bytes: tally.bytes,
       excluded: tally.excluded,
+      // AFTER THE COPY AND INSIDE THE SAME `try`, but it cannot reach the
+      // `catch`: `handoverProject` names its own failures and returns them.
+      // The wrapper below is for the failure it cannot name — a bug in it — and
+      // exists so that a folder that was copied correctly is still reported as
+      // published when the thing that makes it workable falls over.
+      handover: runHandover({
+        directory: destination,
+        run: request.run ?? null,
+        workspace: request.workspace,
+        publishedAt,
+        preservedCommit,
+        git: request.git,
+      }),
+      redirected,
     };
     writeRecord(request.resultsDir, record);
     return record;
@@ -503,8 +636,20 @@ function writeRecord(resultsDir: string, record: ProjectPublishRecord): void {
   }
 }
 
-/** This run's own previous publish, when it still exists on disk. */
-function ownPreviousPath(resultsDir: string, runId: string): string | null {
+/** This run's own previous publish, when its folder still exists on disk. */
+interface PreviousPublish {
+  readonly path: string;
+  /**
+   * The commit this run left at that folder's HEAD, or null when it never made
+   * one — a record written before the handover existed, or a publish whose git
+   * step declined. Null is not "no repository": it is "we know of no commit",
+   * and {@link checkReuse} treats a repository that has one anyway as the
+   * owner's.
+   */
+  readonly commit: string | null;
+}
+
+function ownPreviousPublish(resultsDir: string, runId: string): PreviousPublish | null {
   const path = join(resultsDir, PROJECT_PUBLISH_RECORD);
   if (!existsSync(path)) return null;
   try {
@@ -515,10 +660,174 @@ function ownPreviousPath(resultsDir: string, runId: string): string | null {
     // The run id guard is the point: a record naming a DIFFERENT run must never
     // hand this run a directory to write into.
     if (parsed["runId"] !== runId || typeof previous !== "string" || previous.length === 0) return null;
-    return existsSync(previous) ? previous : null;
+    if (!existsSync(previous)) return null;
+    return { path: previous, commit: recordedCommit(parsed) };
   } catch {
     return null;
   }
+}
+
+/**
+ * The commit sha out of a record's handover block, VALIDATED not cast.
+ *
+ * The file was written by an older build of this same program — one that had no
+ * handover block at all — so every level of this access can be absent, and an
+ * `undefined` reaching the HEAD comparison would silently read as "the owner has
+ * committed" and send every re-publish to a new folder.
+ *
+ * WHAT `null` COSTS, STATED BECAUSE IT IS A REAL SEQUENCE. Publish once with git
+ * broken (no repository, no sha recorded), then make the folder a repository by
+ * hand, then re-publish: the HEAD comparison sees a commit where the record
+ * remembers none and redirects to `<slug>-<run id>`, permanently forking the
+ * name. That is the safe side of a question this program cannot answer — a
+ * commit it has no record of making is indistinguishable from one the owner
+ * made — and the alternative, writing over a repository on the strength of a
+ * path alone, is the mistake that costs work rather than a folder name.
+ */
+function recordedCommit(record: Record<string, unknown>): string | null {
+  const handover = record["handover"];
+  if (!isObject(handover)) return null;
+  const repository = handover["repository"];
+  if (!isObject(repository)) return null;
+  const commit = repository["commit"];
+  return typeof commit === "string" && commit.length > 0 ? commit : null;
+}
+
+type ReuseCheck =
+  | { readonly ok: true; readonly preserved: string | null }
+  | { readonly ok: false; readonly reason: ReuseRefusal; readonly detail: string };
+
+/**
+ * May this run write into the folder it published to last time?
+ *
+ * THE RULE IS DEFENDED IN `publishProject`'s DOCBLOCK. This is the mechanism:
+ * HEAD is the discriminator, uncommitted TRACKED edits are saved first, and
+ * every refusal names the folder that was left alone.
+ */
+function checkReuse(previous: PreviousPublish, git: GitRunner): ReuseCheck {
+  const state = inspectRepository(previous.path, git);
+  if (state.kind === "absent") return { ok: true, preserved: null };
+  if (state.kind === "foreign") {
+    return {
+      ok: false,
+      reason: "foreign-repository",
+      detail:
+        `${previous.path} holds a git repository this program cannot verify as its own (${state.detail}), so it was ` +
+        "left untouched and this run published elsewhere.",
+    };
+  }
+  if (state.head !== previous.commit) {
+    return {
+      ok: false,
+      reason: "owner-commits",
+      detail:
+        `${previous.path} is at commit ${state.head ?? "(none)"} and the last commit this run made there was ` +
+        `${previous.commit ?? "(none recorded)"}. Somebody has committed since, so that folder is now the owner's ` +
+        "work: it was left exactly as it is and this run published to a new folder beside it.",
+    };
+  }
+  if (!state.dirty) return { ok: true, preserved: null };
+  const saved = preserveUncommittedWork(previous.path, git);
+  if (saved.commit === null) {
+    return {
+      ok: false,
+      reason: "preserve-failed",
+      detail:
+        `${previous.path} has changes that were never committed and committing them first failed (${saved.detail}). ` +
+        "Copying over them would have destroyed the one state git cannot recover, so the folder was left alone.",
+    };
+  }
+  return { ok: true, preserved: saved.commit };
+}
+
+/**
+ * The handover, wrapped so that a bug in it cannot un-publish a good copy.
+ *
+ * `handoverProject` returns named failures rather than throwing, which is its
+ * contract; this is the belt for the day that contract is broken by an edit. The
+ * files are already on disk when it runs — reporting `published: false` because
+ * a README could not be rendered would be a lie about the folder the owner is
+ * about to open.
+ */
+function runHandover(request: Parameters<typeof handoverProject>[0]): HandoverRecord {
+  try {
+    return handoverProject(request);
+  } catch (error) {
+    return {
+      readme: { state: "declined", detail: "the handover step threw" },
+      gitignore: { state: "declined", detail: "the handover step threw" },
+      databases: [],
+      envVars: [],
+      repository: {
+        state: "declined",
+        reason: "handover-crashed",
+        detail: redactForPersistence(error instanceof Error ? error.message : String(error)),
+      },
+    };
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Re-publishing a run that has already finished
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The seam a route hangs off. `RunRow` satisfies {@link PublishRunFacts}, so the
+ * handler is `republishProject({ run, paths })` and nothing else.
+ */
+export interface RepublishRequest {
+  readonly run: PublishRunFacts;
+  readonly paths: DashboardPaths;
+  /** TESTS ONLY. See {@link PublishRequest.git}. */
+  readonly git?: GitRunner | undefined;
+}
+
+/**
+ * PUBLISH A RUN THAT HAS ALREADY FINISHED. Same rules, same declines, safe to
+ * call twice.
+ *
+ * WITHOUT THIS, THE WHOLE HANDOVER ONLY HELPS THE NEXT RUN. `publishProject` is
+ * called from `#finish`, and every run on this machine is already terminal — so
+ * nothing above would ever reach the one project the owner actually has. This is
+ * the same function with the paths worked out from the run id, exported for a
+ * route to call.
+ *
+ * IT REFUSES A RUN THAT IS STILL GOING, and that refusal is not bureaucracy: a
+ * live run's workspace is being written underneath the copy, so the folder would
+ * be a torn half-state named after a ticket that has not finished. `queued`,
+ * `running`, `awaiting_input` and `rate_limited` are all still going — the last
+ * one especially, since it is resumable and its half-built site would be
+ * published as if it were the answer.
+ *
+ * IT CANNOT FAIL ANYTHING EITHER. Same contract as `publishProject`: every
+ * failure it can name is a record, not a throw.
+ */
+export function republishProject(request: RepublishRequest): ProjectPublishRecord {
+  const runPaths = runPathsFor(request.paths, request.run.runId);
+  if (!isTerminal(request.run.status)) {
+    const record: DeclinedProjectRecord = {
+      published: false,
+      runId: request.run.runId,
+      source: runPaths.workspace,
+      reason: "run-not-terminal",
+      detail:
+        `run ${request.run.runId} is ${request.run.status}: its workspace is still being written, so publishing it ` +
+        "now would copy a half-finished tree into a folder named after the ticket. Nothing was copied.",
+      attemptedAt: new Date().toISOString(),
+    };
+    // NOT WRITTEN TO `results/`. A refusal to publish a RUNNING run must not
+    // overwrite the record of the publish that run will make when it finishes.
+    return record;
+  }
+  return publishProject({
+    runId: request.run.runId,
+    ticketTitle: request.run.ticketTitle,
+    workspace: runPaths.workspace,
+    projectsDir: request.paths.projects,
+    resultsDir: runPaths.results,
+    run: request.run,
+    git: request.git,
+  });
 }
 
 /* -------------------------------------------------------------------------

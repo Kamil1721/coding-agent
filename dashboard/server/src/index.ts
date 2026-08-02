@@ -7,7 +7,11 @@
  *      be aggregated into a ~$2,100 measurement it was never part of;
  *   2. validate the bind host and REFUSE anything but 127.0.0.1;
  *   3. open the database and reconcile runs left mid-flight by a dead server;
- *   4. listen.
+ *   4. listen;
+ *   5. reconcile the two kinds of state a dead server leaves behind: runs
+ *      (`orchestrator.reconcileOnBoot`) and PROJECT CHILD PROCESSES
+ *      (`projects.reconcileOnBoot`). The second one only ever KILLS. Nothing in
+ *      this file starts a project — that is always an explicit owner action.
  *
  * Every refusal is a named error with the exact action that clears it. Never a
  * stack trace, and never a silent downgrade: a dashboard that quietly binds
@@ -29,6 +33,7 @@ import { ModelCatalog } from "./models.js";
 import { Orchestrator } from "./orchestrator.js";
 import { DASHBOARD_ENV, ensureDirs, resolvePaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
+import { ProjectRunner } from "./project-runner.js";
 
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const paths = resolvePaths(env);
@@ -44,8 +49,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const catalog = new ModelCatalog(auth, env);
   const preview = new PreviewHost();
   const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env });
+  // ONE INSTANCE, SHARED WITH THE SERVER. It holds the running children, so the
+  // boot reconcile and the shutdown kill below must act on the same object the
+  // routes act on — a second runner inside `createDashboardServer` would leave
+  // every started project alive after this process exits.
+  const projects = new ProjectRunner({ paths, env });
 
-  const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths });
+  const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths, projects });
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -73,12 +83,26 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
 
   orchestrator.reconcileOnBoot();
 
+  // KILLS ONLY. A project left running by a dashboard that died is holding a
+  // port on the owner's machine with nothing able to name it; this is what ends
+  // that. It never starts anything, and it refuses to signal a pid it cannot
+  // verify is the one this dashboard started — see `project-runner.ts`.
+  for (const entry of projects.reconcileOnBoot().entries) {
+    process.stdout.write(`  project   ${entry.slug}: ${entry.outcome} — ${entry.detail}\n`);
+  }
+
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     process.stdout.write(`\n${signal}: stopping. In-flight builds are aborted and stay resumable.\n`);
-    void orchestrator.shutdown().finally(() => {
+    // IN PARALLEL WITH THE ORCHESTRATOR, NOT AFTER IT, AND THE 3 s BELOW IS WHY.
+    // That timer fires once this settles; a serial `stopAll` would run inside
+    // the same budget the build teardown is already spending and the last child
+    // would be orphaned by `process.exit`. `stopAll` kills its children in
+    // parallel too, and `allSettled` means a child that refuses to die cannot
+    // stop the database from closing.
+    void Promise.allSettled([orchestrator.shutdown(), projects.stopAll()]).finally(() => {
       server.close(() => {
         store.close();
         process.exit(0);

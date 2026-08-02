@@ -126,7 +126,21 @@ export interface PhaseMeta {
   readonly blurb: string;
 }
 
+/**
+ * `plan` JOINS AT THE FRONT, WHICH SHIFTS EVERY INDEX BY ONE.
+ *
+ * The cost was measured before it was accepted: `phaseIndex` and `PHASE_ORDER`
+ * have exactly one caller in this package — `components/run/header.tsx`, which
+ * nothing imports (`run-hud.tsx`'s header states the same, and `grep -rn
+ * phaseIndex src/ tests/` on 2026-08-02 confirms it). So the shift moves no
+ * pixels today. What it WOULD cost the day that header is mounted is stated
+ * rather than left to be discovered: a run recorded before this phase existed
+ * reports `spec` and would render with the Plan step behind it, as though it had
+ * planned. Deriving "did it plan?" from the event stream is the only fix and it
+ * is not worth a tick mark.
+ */
 export const PHASE_ORDER: readonly RunPhase[] = [
+  "plan",
   "spec",
   "build",
   "gate",
@@ -136,6 +150,11 @@ export const PHASE_ORDER: readonly RunPhase[] = [
 
 export function phaseMeta(phase: RunPhase): PhaseMeta {
   switch (phase) {
+    case "plan":
+      return {
+        label: "Plan",
+        blurb: "Questions answered before any criteria are written.",
+      };
     case "spec":
       return {
         label: "Spec",

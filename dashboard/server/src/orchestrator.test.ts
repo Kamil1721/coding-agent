@@ -2215,6 +2215,65 @@ test("a rate-limit report that refused nothing is not announced as a refusal", a
   }
 });
 
+/* -------------------------------------------------------------------------
+ * THE BUILD SEGMENT IS TOLD THE ENVIRONMENT — AT THE SEAM, NOT IN THE MODULE.
+ *
+ * WHY THESE EXIST WHEN build-prompt.test.ts ALREADY PINS THE TEXT. That file
+ * calls the two prompt functions directly, so it proves the strings contain the
+ * facts and nothing about whether a run still sends them. This repository's
+ * signature defect is exactly that gap. `designRun` drives the whole `#execute`,
+ * and `builderCalls[n].prompt` is the string the driver was actually handed.
+ *
+ * TWO ARMS, BECAUSE THE ORCHESTRATOR HAS TWO AND THEY TAKE DIFFERENT FUNCTIONS:
+ *
+ *   NO LANE      one segment, `builderSessionId === null`, so
+ *                `#buildSegmentPrompt` renders `dashboardBuilderPrompt`.
+ *   DESIGN LANE  segment 1 is the design prompt and segment 2 RESUMES it, so the
+ *                first BUILD turn takes the `resumeBuilderPrompt` branch and the
+ *                first-turn prompt is never sent AT ALL. Measured on a real run:
+ *                `runs/run-2026-07-30T20-16-40-242Z-052c6e02/results/prompt.txt`
+ *                opens "Your previous turn ended early: the design was locked"
+ *                and carries no working agreement. That run's build.log ends with
+ *                the builder discovering `listen()` EPERM in prose — the second
+ *                arm is the one that produced the defect.
+ *
+ * Each arm is red on its own deletion and green on the other's, which is what
+ * makes them two tests rather than one written twice.
+ * ---------------------------------------------------------------------- */
+
+test("a run with NO lane: the single build segment carries the harness facts", async () => {
+  const h = await designRun({ ticket: "a cli that renames files in place", designLock: "auto" });
+  try {
+    assert.equal(h.builderCalls.length, 1);
+    const p = String(h.builderCalls[0]?.prompt);
+    assert.match(p, /cannot open a port/i);
+    assert.match(p, /EPERM/, "the error it will otherwise meet at the end");
+    assert.match(p, /NO NETWORK/, "the container the artefact is judged in");
+    assert.match(p, /node:sqlite/, "and what needs no install");
+    assert.match(p, /README\.md/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A LANE RUN'S BUILD SEGMENT CARRIES THEM TOO — the arm the first-turn prompt never reaches", async () => {
+  const h = await designRun({ designLock: "auto" });
+  try {
+    assert.equal(h.builderCalls.length, 2);
+    const p = String(h.builderCalls[1]?.prompt);
+    // The branch is named as well as the content, so a future change that made
+    // segment 2 take the fresh-prompt path could not pass this quietly.
+    assert.match(p, /Your previous turn ended early/, "segment 2 RESUMES; it is not a first turn");
+    assert.match(p, /cannot open a port/i);
+    assert.match(p, /EPERM/);
+    assert.match(p, /NO NETWORK/);
+    assert.match(p, /node:sqlite/);
+    assert.match(p, /README\.md/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 /**
  * THE DEFAULT IN `abortReasonOf`, WHICH IS LOAD-BEARING AND EASY TO GET BACKWARDS.
  *

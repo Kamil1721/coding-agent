@@ -198,7 +198,11 @@ test("the gate-ran predicate discriminates in both directions", () => {
 
 test("the inferred count reported by the API is the number the verdict prints", () => {
   // Two numbers under one name is how an owner learns to distrust both.
-  // `verdict.ts` counts `source !== "ticket"`; so must this.
+  // Both count `!isStatedByOwner`, the one predicate in `spec-assumptions.ts`.
+  // This comment used to say "`verdict.ts` counts `source !== "ticket"`; so must
+  // this", which was a description of two COPIES of a predicate — and the copies
+  // diverged the moment `answered` was added. `assumptions-answered.test.ts`
+  // asserts the same agreement with a criterion the owner answered.
   const criteria = [
     criterion("REQ-001", "The system shall present a scroll-scrubbed masthead.", "FUNCTIONAL", "pass"),
     criterion("REQ-002", "The system shall present at least three project entries.", "FUNCTIONAL", "pass"),

@@ -87,7 +87,17 @@ export type ApiRunStatus =
   | "failed"
   | "cancelled";
 
-export type ApiPhase = "spec" | "build" | "gate" | "judge" | "done";
+/**
+ * `plan` IS FIRST AND IT IS FIRST FOR ONE REASON: a question asked after the
+ * suite is frozen cannot change what the run is graded against, so it would be
+ * theatre. Asked before, the answers enter the brief, the criteria are authored
+ * from them, and `heldOutPass` keeps meaning exactly what it means today.
+ *
+ * EVERY RUN ALREADY ON DISK PREDATES IT. Nothing migrates: `db.ts`'s `PHASES` is
+ * read through a membership test, so an old row saying `spec` still reads. What
+ * DOES move is the client's `PHASE_ORDER` index — see the note there.
+ */
+export type ApiPhase = "plan" | "spec" | "build" | "gate" | "judge" | "done";
 
 export type ApiCriterionResult = "pass" | "fail" | "pending";
 
@@ -324,6 +334,50 @@ export interface ApiScreenshot {
 }
 
 /**
+ * ONE FILE THE OWNER ATTACHED TO A TICKET, addressed so a browser can open it.
+ *
+ * WHY IT IS NOT A PATH. `ReferenceImage.path` and `ReferenceDocument.path` are
+ * absolute HOST paths, written for an agent that calls `Read`. Measured this
+ * session: the ticket form renders an attached PNG and PDF as bare text chips
+ * and `document.querySelectorAll('img')` returns zero elements, because there
+ * was no address the page could put in a `src`. {@link ApiAttachment.url} is
+ * that address — same origin, served by `GET /api/runs/:id/references/:file` and
+ * `GET /api/runs/:id/documents/:file`.
+ *
+ * `mediaType` IS THE EXACT `Content-Type` THE ROUTE WILL SEND, header value and
+ * all, including the `; charset=utf-8` a text document carries. Both come from
+ * one derivation in `run-attachments.ts`, so a client that decides how to render
+ * from this field cannot be told one thing and sent another.
+ *
+ * `file` IS NOT THE NAME THE OWNER PICKED, AND MUST NOT BE RENDERED AS IF IT
+ * WERE. The intake takes base64 data URLs, which carry no filename, so
+ * `Kamil_Borzecki_CV.pdf` is discarded by the browser before the request is
+ * sent and the server only ever knows the ordinal name it minted
+ * (`document-1.pdf`, `reference-2.png`). Showing the original name would need
+ * the client to send it and the intake to record it — an additive change on
+ * both sides that nothing here fakes.
+ *
+ * `path` IS KEPT because it is the value the manifest records and the value the
+ * builder and the DESIGN lane are given in their prompts, so it is what a bug
+ * report or a log line has to be matched against. It is not openable from a
+ * page; `url` is.
+ */
+export interface ApiAttachment {
+  /** The server-minted filename, and the last segment of {@link ApiAttachment.url}. */
+  readonly file: string;
+  /** Absolute host path. Builder-facing; a browser cannot open it. */
+  readonly path: string;
+  /** sha256 of the bytes. THIS is what entered the ticket id. */
+  readonly sha256: string;
+  /** Size as digested at intake, not as `stat`ed now. */
+  readonly bytes: number;
+  /** Byte for byte the `Content-Type` the route answers with. */
+  readonly mediaType: string;
+  /** Same-origin, no host. Put it straight in a `src` or an `href`. */
+  readonly url: string;
+}
+
+/**
  * The DESIGN lane's lock (spec §17), as the UI needs it.
  *
  * `mockups` are `ApiScreenshot`s because that is what the run already stores
@@ -475,9 +529,17 @@ export interface ApiProjectExclusion {
  * THE PROBLEM IT SOLVES, IN THE OWNER'S WORDS: "the code will be saved into a
  * folder within this directory". Today the artefact is at
  * `dashboard/runs/run-2026-07-30T20-16-40-242Z-052c6e02/workspace/` — a
- * 44-character generated id inside a server package — and he reported he cannot
+ * 37-character generated id inside a server package — and he reported he cannot
  * find it and that it does not read as his project. `project-publish.ts` COPIES
  * it to `projects/<slug-of-the-ticket-title>/` when the run goes terminal.
+ *
+ * (37, COUNTED off the very id quoted above, which this docblock called
+ * "44-character" until 2026-08-02. It follows from `http.ts`, which mints the id
+ * as `run-` + a 24-character ISO instant + `-` + 8 uuid characters = 37. NOTHING
+ * TESTS THE MINTER: `publish-wiring.test.ts` asserts only that its own FIXTURE
+ * is 37, so a change to the id format would leave that test green and this
+ * sentence wrong. Three docblocks still say 44 and were left alone as out of
+ * scope: `paths.ts`, `project-publish.ts`, `src/components/canvas/sheet.tsx`.)
  *
  * IT IS NOT {@link RunDetail.previewUrl} AND MUST NOT BE RENDERED AS ONE. That
  * field is a historical record of an address that was served by a process which
@@ -536,6 +598,171 @@ export type ApiPublishedProject =
       readonly detail: string;
       readonly attemptedAt: string;
     };
+
+/* -------------------------------------------------------------------------
+ * A published project, and the process serving it
+ * ---------------------------------------------------------------------- */
+
+/**
+ * HOW A CHILD ENDED. Recorded whether the owner asked for it or not, because
+ * the two are different facts and the UI must not draw them the same.
+ *
+ * `requested: true`  the owner pressed stop and this is the receipt.
+ * `requested: false` it died on its own — a crash, a port collision inside the
+ *                    project's own code, an `npm start` that exits immediately.
+ *                    THAT is the case a green "stopped" chip would hide.
+ */
+export interface ApiProjectExit {
+  readonly at: string;
+  /** Null when a signal ended it; `signal` is then non-null. */
+  readonly code: number | null;
+  readonly signal: string | null;
+  readonly requested: boolean;
+}
+
+/**
+ * THREE STATES, AND THE THIRD IS THE POINT — the same rule
+ * {@link ApiPublishedProject} follows.
+ *
+ * `stopped` nothing of ours is running. `lastExit` is null when this dashboard
+ *           never started it, and non-null (with `requested: true`) when the
+ *           owner stopped it.
+ * `running` a child is alive AND the URL below answered an HTTP request at
+ *           `readyAt`. It is never set on the strength of a successful spawn:
+ *           see `project-runner.ts`, where readiness is measured.
+ * `exited`  a child we started died WITHOUT being asked to. The port is
+ *           released and the logs are still readable, which is the only reason
+ *           this is not folded into `stopped`.
+ *
+ * WHAT `running` DOES NOT CLAIM: that the URL answers RIGHT NOW. It answered at
+ * `readyAt` and the process was alive at the moment this response was built. A
+ * server that wedged in between reads as running, and no amount of bookkeeping
+ * here can say otherwise without probing on every list — which would put an
+ * HTTP request per project on a route the UI polls.
+ */
+export type ApiProjectProcess =
+  | { readonly state: "stopped"; readonly lastExit: ApiProjectExit | null }
+  | {
+      readonly state: "running";
+      /** `http://127.0.0.1:<port>` — loopback, always. */
+      readonly url: string;
+      readonly port: number;
+      readonly pid: number;
+      readonly startedAt: string;
+      /** When the port actually answered. */
+      readonly readyAt: string;
+    }
+  | {
+      readonly state: "exited";
+      readonly port: number;
+      readonly startedAt: string;
+      readonly exit: ApiProjectExit;
+    };
+
+/**
+ * One folder under `projects/`, with everything needed to decide what to do
+ * about it.
+ *
+ * `startCommand` IS NULL WHEN THE PROJECT CANNOT BE STARTED — no
+ * `package.json`, or one with no `start` script. The UI must read it before
+ * offering a start button, because the route's refusal for that case is a 409
+ * the owner should never have to see.
+ *
+ * `runId` is the run that published this folder, discovered by reading each
+ * run's own publish record. Null means no record names it — a folder the owner
+ * created himself, or one published before the record existed. It is what
+ * `POST /api/runs/:id/publish` is keyed on, so a null one cannot be
+ * re-published from the projects list.
+ */
+export interface ApiProject {
+  /** The directory name under `projects/`. The only id this API accepts. */
+  readonly slug: string;
+  /** Absolute HOST path. A browser cannot open it; see {@link ApiPublishedProject}. */
+  readonly path: string;
+  /** e.g. `npm start`. Null when nothing here can be started. */
+  readonly startCommand: string | null;
+  /** True when the folder has its own git repository (the handover's, or the owner's). */
+  readonly hasRepository: boolean;
+  readonly runId: string | null;
+  readonly process: ApiProjectProcess;
+}
+
+export interface ApiProjectsResponse {
+  readonly projects: readonly ApiProject[];
+  /** The loopback port window children are allocated from, inclusive. */
+  readonly portRange: { readonly min: number; readonly max: number };
+}
+
+/**
+ * `started: false` with a `running` process is the ALREADY-RUNNING answer: the
+ * existing URL, and no second child. It is a 200 rather than a refusal because
+ * the caller asked for a running project and got one.
+ */
+export interface ApiProjectStartResponse {
+  readonly started: boolean;
+  readonly project: ApiProject;
+}
+
+export interface ApiProjectStopResponse {
+  readonly stopped: boolean;
+  readonly project: ApiProject;
+}
+
+export interface ApiProjectLogLine {
+  readonly stream: "stdout" | "stderr";
+  readonly at: string;
+  readonly text: string;
+}
+
+/**
+ * RECENT output, bounded and redacted at the source. `dropped` is how many
+ * lines fell off the front — a chatty server's log is a window, not a
+ * transcript, and a window that does not say what it lost is a lie about
+ * volume.
+ */
+export interface ApiProjectLogs {
+  readonly slug: string;
+  readonly lines: readonly ApiProjectLogLine[];
+  readonly dropped: number;
+  readonly maxLines: number;
+}
+
+/**
+ * What `POST /api/runs/:id/publish` did — the copy, and the four things that
+ * make the copy workable.
+ *
+ * SERIALIZED BY THE ROUTE FROM THE SERVER RECORD, because
+ * `publishedProjectFromRecord` deliberately forwards six fields and no more:
+ * `RunDetail.publishedProject` is a summary of a run, while this is the
+ * response to an action the owner just took and has to be able to read the
+ * outcome of.
+ *
+ * A DECLINED publish is NOT this shape. It is the ordinary error envelope with
+ * the decline's own reason as the code, because nothing was published.
+ */
+export interface ApiRepublishResponse {
+  readonly runId: string;
+  readonly path: string;
+  readonly publishedAt: string;
+  readonly fileCount: number;
+  readonly bytes: number;
+  /** `committed` | `unchanged` | `declined`. */
+  readonly repository: string;
+  /** The commit sha, or null when nothing was committed. */
+  readonly commit: string | null;
+  /** Non-null only when the repository step declined, and then it names why. */
+  readonly repositoryDetail: string | null;
+  /** `written` | `kept` | `declined`. */
+  readonly readme: string;
+  readonly gitignore: string;
+  /** One entry per SQLite file found in the published copy. */
+  readonly databases: readonly { readonly file: string; readonly schema: string | null }[];
+  /**
+   * The folder this run published to last time and did NOT write into, because
+   * the owner has committed there since. Null in the ordinary case.
+   */
+  readonly redirectedFrom: string | null;
+}
 
 export interface RunSummary {
   readonly runId: string;
@@ -604,6 +831,71 @@ export interface RunDetail extends RunSummary {
    */
   readonly silence: ApiRunSilence | null;
   readonly screenshots: readonly ApiScreenshot[];
+  /**
+   * The REFERENCE IMAGES the owner attached to this ticket, each with a URL.
+   *
+   * NOT THE SAME THING AS `designLock.mockups`, and the two must not be merged
+   * in a renderer: those are mockups `ui-designer` GENERATED for this run and
+   * they answer "what did the machine propose"; these are the owner's own
+   * uploads and they answer "what did I hand it". A design board and a mockup
+   * side by side under one heading is a comparison nobody asked for.
+   *
+   * FOLDED FROM THE REFERENCE MANIFEST ON DISK, not from the row — the bytes and
+   * their digests were never in SQLite. An EMPTY LIST therefore means "none were
+   * attached" OR "the manifest could not be read", which is
+   * `readReferenceManifest`'s existing flattening and not a new one; the
+   * distinction it keeps is the one a renderer needs, which is whether there is
+   * anything to show. It does NOT include the screenshots `runCapture` writes
+   * into the same directory when a ticket names a page — those are the
+   * dashboard's reading of a page, not the owner's upload, and only the
+   * manifest can tell them apart.
+   */
+  readonly references: readonly ApiAttachment[];
+  /**
+   * The DOCUMENTS the owner attached to this ticket — a scope, a brief, a CV.
+   *
+   * Same folding and the same empty-list flattening as
+   * {@link RunDetail.references}, off the same manifest.
+   *
+   * A URL HERE MEANS THE OWNER CAN READ IT. WHICH AGENTS ALSO READ IT IS A
+   * SHORTER LIST THAN "the run", AND THIS FIELD DOES NOT SAY WHICH.
+   *
+   * THE WIRING EXISTS — this docblock said it did not, and was wrong from the day
+   * `#seatDocuments` landed. Read off `orchestrator.ts` on 2026-08-02, that
+   * method has three call sites and each hands the documents to a named seat:
+   *
+   *   `#planOpening`   -> the PLAN seat's opening turn      } ONLY when the plan
+   *   `#planFollowUp`  -> the PLAN seat, every follow-up turn } phase runs
+   *   `#specPhase`     -> the SPEC seat, on EVERY call it makes — the first
+   *                       authoring attempt and every regeneration after it
+   *
+   * THE FIRST TWO ARE GATED AND THE THIRD IS NOT. `planPolicy(row.interactive)`
+   * returns `skip` for a run that was not submitted from the dashboard — a CLI
+   * or cron ticket — and that branch makes NO seat call at all, so on those runs
+   * the plan seat never sees a document. The spec seat is on the unconditional
+   * path.
+   *
+   * The run says so itself: `#specPhase` emits `the spec seat will see N
+   * attached document(s) on every call it makes`. What a seat receives is a
+   * `SeatDocument` — the bytes as a native document block where the vendor
+   * accepts them, otherwise text extracted by `pdftotext`/`textutil`, and the
+   * run logs a `warn` naming the route when the extractor is unusable.
+   *
+   * AND ONE SEAT DELIBERATELY GETS NONE. The audit/judge caller in `#specPhase`
+   * is constructed WITHOUT documents, with the cost written down at its
+   * construction site: it grades the draft suite's shape rather than its
+   * fidelity to the scope, so a criterion the spec seat mis-derived from page 4
+   * of the owner's document is not something the auditor can catch. The BUILDER
+   * is not on the list either.
+   *
+   * SO DO NOT RENDER THIS AS "the run has read your scope", and do not render it
+   * as "stored, never read" either — both are claims about a specific run that
+   * only that run's own trace can settle. `POST /api/runs`'s intake `warn` still
+   * says STORED, NOT READ and is now the stale half of that pair; the accurate
+   * sentence for a UI is that the owner can open these, and the run's log names
+   * which seats were given them.
+   */
+  readonly documents: readonly ApiAttachment[];
   readonly artifactPath: string | null;
   readonly previewUrl: string | null;
   /**
@@ -1422,6 +1714,10 @@ export interface CreateRunRequest {
    * in their prompts. NOT the spec seat, which is constructed with `tools: []`
    * and cannot open a file — it is not even told an image exists, because a
    * criterion written about an unseen image grades for untraceable reasons.
+   * AND, since `GET /api/runs/:id/references/:file` exists, THE OWNER: they come
+   * back on {@link RunDetail.references} as {@link ApiAttachment}s with URLs a
+   * page can render. That route reads the manifest, so what the dashboard shows
+   * is exactly what entered the ticket id.
    */
   readonly references: readonly string[] | null;
   /**
@@ -1447,7 +1743,10 @@ export interface CreateRunRequest {
    * digest into the id. It does not, by itself, put the document in front of any
    * agent: that is the build and spec wiring's decision, and the server says so
    * on the run's event stream with a `warn` naming where the file was stored. A
-   * form offering "attach a scope" must not imply the run has read it.
+   * form offering "attach a scope" must not imply the run has read it. THE OWNER
+   * CAN NOW READ IT, which is a different claim: it comes back on
+   * {@link RunDetail.documents} with a URL, served by
+   * `GET /api/runs/:id/documents/:file`.
    *
    * REFUSALS ARE NAMED: `too_many_documents`, `invalid_document` (with a sentence
    * naming the actual type or the actual byte count), and `body_too_large` when

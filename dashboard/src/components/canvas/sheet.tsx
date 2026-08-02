@@ -64,9 +64,11 @@ import type {
 import type { StreamState, TraceEntry } from "@/lib/use-run-stream";
 import { TONE_TEXT, type Tone } from "@/lib/presentation";
 import { Button, MonoPath, Panel, cx } from "@/components/ui";
+import { TicketAttachmentsPanel } from "@/components/run/attachments";
 import { CodeBrowser } from "@/components/run/code-browser";
 import { CriteriaPanel } from "@/components/run/criteria";
 import { OutcomeNotice } from "@/components/run/notices";
+import { PublishedProjectPanel } from "@/components/run/published-project";
 import { ScreenshotsPanel } from "@/components/run/screenshots";
 import { TracePane } from "@/components/run/trace";
 import { UsagePanel } from "@/components/run/usage";
@@ -679,16 +681,56 @@ export function RunSheet({
         <div hidden={tab !== "chat"}>{chat}</div>
 
         {/*
-         * THE TICKET TAB IS THE TICKET, AND NOTHING ELSE NOW.
+         * THE TICKET TAB IS THE TICKET — THE WORDS, AND NOW THE FILES.
          *
          * `OutcomeNotice` and `DeliveryNotice` used to render here, above the
          * brief — so the pass/fail of the run was announced on the tab about what
          * was asked for, and the tab called Verdict carried criteria and captures
          * but no verdict. Both moved down to `verdict`; see the comment there for
          * what happened to the delivery half.
+         *
+         * `TicketAttachmentsPanel` IS HERE AND NOT ON VERDICT, and the placement
+         * is the whole anti-confusion mechanism rather than a layout preference.
+         * Verdict already renders a disclosure called "Design references" inside
+         * `ScreenshotsPanel` — `ui-designer`'s GENERATED mockups. These are the
+         * owner's UPLOADS. Two tabs means no screen can ever show them under one
+         * heading; read `attachments.tsx`'s header before moving either.
          */}
         {tab === "ticket" && (
           <TabBody>
+            {/*
+             * ABOVE THE BRIEF, AND THAT ORDER WAS CHANGED AFTER LOOKING AT IT.
+             *
+             * It was mounted under the ticket text first. On the owner's own run
+             * the brief is 1,100 words — three sentences the owner typed, then
+             * the intake's whole "WHAT THE DASHBOARD READ FROM THE PAGE THIS
+             * TICKET NAMES" dump — so the panel rendered roughly 900px below the
+             * fold of a 560px sheet. Playwright still called it visible (a
+             * non-empty box is visible), which is exactly how a feature ships
+             * and is then reported missing; this screen has paid that bill once
+             * already, in the 80 minutes when the chat was mounted somewhere
+             * nobody could reach (see `runs/[runId]/page.tsx`).
+             *
+             * IT COSTS NOTHING WHEN THERE IS NOTHING, which is what makes the
+             * order free: the panel returns `null` for two empty lists, so a
+             * ticket with no attachments opens on the brief exactly as before.
+             * The brief is unbounded and the file list is short — the short,
+             * scannable half goes first.
+             *
+             * `?? []` FLATTENS AN ABSENT KEY, and it is load-bearing rather than
+             * belt-and-braces. `lib/api.ts` does `parsed as T` with no runtime
+             * validation, and EVERY run recorded before these routes existed
+             * answers with a body carrying neither field — measured 2026-08-02
+             * against the running backend, which does not even serve the routes
+             * yet. Without it the panel reads `.length` off `undefined` and takes
+             * the whole Ticket tab down. Same shape as `adversary ?? null` on the
+             * Verdict tab, for the same reason.
+             */}
+            <TicketAttachmentsPanel
+              references={run.references ?? []}
+              documents={run.documents ?? []}
+            />
+
             <div className="rounded border border-line bg-canvas/40">
               <p className="border-b border-line px-3 py-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
                 the ticket, verbatim
@@ -732,6 +774,28 @@ export function RunSheet({
                 <MonoPath path={run.artifactPath} max={80} />
               </div>
             )}
+
+            {/*
+             * DIRECTLY UNDER THE ARTIFACT PATH, AND THAT PAIRING IS THE POINT.
+             *
+             * Both answer "where did the work land". The artifact is the run's
+             * own workspace — evidence, kept for re-scoring, named by a
+             * 44-character run id — and this is the COPY made for the owner,
+             * under the ticket's name, which is the one he is meant to open. Put
+             * anywhere else on this tab they read as two unrelated paths.
+             *
+             * IT IS UNCONDITIONAL, unlike the row above it, because all four
+             * states of `RunDetail.publishedProject` are worth a sentence: a run
+             * that has not finished, a run with no record, a publish that was
+             * refused and a copy that exists. The panel decides which; see its
+             * docblock for why "no record" and "refused" may never be drawn the
+             * same way.
+             *
+             * IT IS THE ONLY THING ON THIS TAB THAT ACTS ON THE WORLD — it can
+             * spawn and kill a process — so it sits under the verdict and the
+             * evidence rather than above them.
+             */}
+            <PublishedProjectPanel run={run} />
 
             <CriteriaPanel criteria={run.criteria} />
 

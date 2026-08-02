@@ -182,10 +182,18 @@ import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { publishProject } from "./project-publish.js";
 import { writeAssumptions, writeRunVerdict } from "./run-report.js";
+import type { AnsweredQuestion } from "./spec-assumptions.js";
 import { describeTokens, mergeTokenTotals, toApiTokens, zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
-import { SubscriptionSeatCaller, describeSeatDocuments, seatDocumentsFor } from "./subscription-caller.js";
-import type { SeatDocument } from "./subscription-caller.js";
+import {
+  SubscriptionSeatCaller,
+  describeSeatDocuments,
+  describeSeatImages,
+  planSeatImages,
+  seatDocumentsFor,
+  seatImagesFor,
+} from "./subscription-caller.js";
+import type { SeatDocument, SeatImage, SeatImagePlan } from "./subscription-caller.js";
 import { extractorIsUsable, probeDocumentCapability } from "./document-capability.js";
 import { routeFor } from "./document-intake.js";
 import { ticketFromStoredReferences } from "./ticket.js";
@@ -197,7 +205,26 @@ import {
   referenceDirFor,
   ticketProse,
 } from "./ticket-refs.js";
+import type { ReferenceManifest } from "./ticket-refs.js";
 import { classifySurface } from "./surface.js";
+import { answeredInOwnerWords, foldPlanIntoBrief, stripPlanBlock } from "./plan-brief.js";
+import { PlanDriver, questionText } from "./plan-dialogue.js";
+import type { PlanDialogueHost } from "./plan-dialogue.js";
+import { MAX_QUESTIONS_PER_TURN } from "./plan-question.js";
+import type { PlanRecord } from "./plan-record.js";
+import {
+  planExpired,
+  planPolicy,
+  planTimeoutMin,
+  readPlanRecord,
+  unaskedPlanState,
+  writePlanRecord,
+} from "./plan-record.js";
+import { planSeatImagesFrom, runPlanFollowUp, runPlanOpening } from "./plan-seat.js";
+import type { PlanSeatCaller } from "./plan-seat.js";
+import { closePlan, openPlanState, openQuestions } from "./plan-state.js";
+import type { ClassifiedReply, PlanState } from "./plan-state.js";
+import type { PlanSeatReply } from "./plan-turn.js";
 
 const exec = promisify(execFile);
 
@@ -306,6 +333,39 @@ export interface OrchestratorDeps {
    * the same act.
    */
   readonly makeGate?: (env: NodeJS.ProcessEnv) => Promise<AcceptanceGate>;
+  /**
+   * How the PLANNING seat is constructed. Defaulted to a real
+   * `SubscriptionSeatCaller` on the spec seat's model.
+   *
+   * THE SEAM EXISTS BECAUSE THE ALTERNATIVE IS AN UNTESTED PHASE. Every question
+   * this phase asks comes out of a model, so a test that drove the real caller
+   * would spend the owner's subscription on every run of the suite — and the
+   * things worth checking here are not the model's answers but the HOST's
+   * handling of them: does a zero-question turn skip the park, does a clarifying
+   * turn leave the question open, does an expiry proceed. Those are exactly the
+   * cases a real seat cannot be asked to produce on demand.
+   *
+   * `#specPhase` HAS NO SUCH SEAM AND DOES NOT NEED ONE — its tests hand-freeze
+   * the suite so the call never happens. That trick is unavailable here: the plan
+   * phase's whole output is the call.
+   *
+   * WHAT IT DOES NOT WEAKEN. Nothing in production passes it, and a caller handed
+   * in here reaches the same `applyOwnerTurn` arbiter as the real one — which
+   * cannot resolve a question by itself whatever it returns.
+   *
+   * `documents` AND `images` ARE HANDED OVER THOUGH A STUB HAS NO USE FOR THEM,
+   * and that is the seam earning its keep rather than decoration: the real caller
+   * receives exactly these two lists, so a test can watch the host READ a run's
+   * manifest and turn it into blocks. Without them, the only observable evidence
+   * that the owner's pictures reached the plan seat would be on the branch that
+   * spawns the CLI, i.e. on no branch any test can drive.
+   */
+  readonly makePlanSeat?: (options: {
+    readonly runId: string;
+    readonly documents: readonly SeatDocument[];
+    readonly images: readonly SeatImage[];
+    readonly signal: AbortSignal;
+  }) => PlanSeatCaller;
 }
 
 /** The one thing `#adversaryPhase` cannot do without spending money. */
@@ -969,8 +1029,68 @@ export class Orchestrator {
     return pushed;
   }
 
+  /**
+   * An owner message arrived for a run that is parked in the PLAN dialogue.
+   *
+   * Returns true when this run will read it as an answer — which is what the
+   * route needs in order to say so, and is NOT the same as `pushLiveMessage`'s
+   * true. There is no live session here; the turn is asynchronous because it
+   * makes a seat call, and the HTTP request must not wait for a model.
+   *
+   * THE STAMP IS NOT TAKEN HERE. `PlanDriver` marks the message delivered after
+   * it has written `plan.json`, which is what keeps a plan answer out of
+   * `pendingMessages` — and therefore out of the next build segment's prompt,
+   * where `ownerMessageBlock` would present the owner's own planning answer to
+   * the builder as a mid-run redirection conflicting with criteria authored from
+   * that very answer.
+   */
+  deliverPlanReply(runId: string): boolean {
+    return this.#plan.deliver(runId);
+  }
+
+  /**
+   * The PLAN park's live half, and the off-queue turn.
+   *
+   * CONSTRUCTED HERE RATHER THAN PER RUN because the timer map has to outlive
+   * `#execute`: the run that armed it is no longer executing — it is parked — and
+   * a driver built inside the phase would be collected with the frame that
+   * created it, leaving `awaiting_input` with no exit at all.
+   *
+   * EVERY CALLBACK BELOW IS SOMETHING ONLY THIS CLASS CAN DO. The driver decides
+   * WHEN; it is told HOW. That is the same split `#gateFixLoop` uses, and it is
+   * what keeps `plan-dialogue.test.ts` free of a store, a bus and a subscription.
+   */
+  readonly #plan: PlanDriver;
+
   constructor(deps: OrchestratorDeps) {
     this.#deps = deps;
+    const host: PlanDialogueHost = {
+      env: deps.env,
+      resultsDir: (runId) => runPathsFor(deps.paths, runId).results,
+      getRun: (runId) => deps.store.getRun(runId),
+      pendingMessages: (runId) => deps.store.pendingMessages(runId),
+      markDelivered: (runId, seqs) => {
+        deps.store.markMessagesDelivered(runId, seqs);
+      },
+      // A `run` ROW CARRIES MODEL TEXT AND NOTHING ELSE — db.ts's `ChatRole` says
+      // why, and this callback is the only route from the driver to that table.
+      // Everything the HOST wants to say goes through `log` below.
+      say: (runId, text) => {
+        deps.store.appendMessage(runId, { role: "run", text, images: [] });
+      },
+      log: (runId, level, text) => {
+        this.#emitLog(runId, level, text);
+      },
+      markParked: (runId) => {
+        deps.store.updateRun(runId, { status: "awaiting_input", queuePosition: null });
+        this.#emit(runId, { type: "status", status: "awaiting_input" });
+      },
+      resume: (runId) => {
+        this.resume(runId);
+      },
+      followUp: (runId, input) => this.#planFollowUp(runId, input),
+    };
+    this.#plan = new PlanDriver(host);
   }
 
   get activeRunId(): string | null {
@@ -1025,6 +1145,14 @@ export class Orchestrator {
   cancel(runId: string): boolean {
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
+    // THE PLAN TIMER GOES FIRST, BEFORE EITHER EXIT. A cancelled run that still
+    // holds an armed park would be `resume()`d by it minutes later — refused,
+    // because `resume` declines a terminal run, but only after the timer had
+    // already logged that the window expired on a run nobody was waiting for. A
+    // plan turn in flight is handled inside `PlanDriver`, which re-reads the row
+    // after its seat call and declines to write onto a row that is no longer
+    // parked.
+    this.#plan.clearTimer(runId);
     if (this.#active !== null && this.#active.runId === runId) {
       this.#active.abort.abort(ABORT_CANCELLED);
       return true;
@@ -1091,6 +1219,12 @@ export class Orchestrator {
       }
     }
     this.#clearDesignLockTimer(runId);
+    // AND THE PLAN TIMER, whichever way the dialogue ended. `PlanDriver` clears
+    // its own on the paths it controls; this covers the two it does not — an
+    // owner who resumes a parked run by hand instead of answering, and a boot
+    // that re-armed a park the owner then ended. A timer left armed would fire
+    // mid-spec and requeue a RUNNING run.
+    this.#plan.clearTimer(runId);
     // THE RATE-LIMIT PARK ENDS HERE TOO, whichever way it was ended. A timer
     // left armed across a manual resume would fire mid-build and requeue a
     // RUNNING run; the row's `rateLimitedAt` is cleared with it so a later boot
@@ -1140,6 +1274,20 @@ export class Orchestrator {
     // to produce.
     for (const row of this.#deps.store.listByStatus("awaiting_input")) {
       const paths = runPathsFor(this.#deps.paths, row.runId);
+      /*
+       * THE PLAN PARK IS RECONCILED FIRST, AND WITHOUT THIS BRANCH IT IS AN
+       * INFINITE PARK. The loop below reads `design-lock.json` and `continue`s
+       * when there is none — so a run parked for an ANSWER is skipped, and
+       * `awaiting_input` has no other exit. That is verbatim the defect this
+       * loop's own comment exists to prevent, reintroduced one park down.
+       *
+       * `PlanDriver.reconcile` REFUSES A FOLDED RECORD, which is what keeps this
+       * from hijacking a design park: a run that planned, built and then parked
+       * for a mockup holds BOTH files — `plan.json` with `awaiting:false,
+       * folded:true` and `design-lock.json` with `awaiting:true` — and only the
+       * second one is what it is waiting for.
+       */
+      if (this.#plan.reconcile(row.runId)) continue;
       const park = readDesignLock(paths.results);
       if (park === null || !park.awaiting) continue;
       if (designLockExpired(park.parkedAt, new Date().toISOString(), designLockTimeoutMin(this.#deps.env))) {
@@ -1182,6 +1330,12 @@ export class Orchestrator {
     // covers process exit and nothing else — a host that shuts the orchestrator
     // down and closes the database still has these armed.
     for (const runId of [...this.#designLockTimers.keys()]) this.#clearDesignLockTimer(runId);
+    // THE PLAN TIMERS, FOR THE SAME REASON AND WITH THE SAME CONSEQUENCE. Each
+    // one holds a callback that calls `resume()`, which writes to the store; a
+    // host that stops the orchestrator and closes the database while the process
+    // lives would otherwise crash when the park expires. The next boot re-arms
+    // them from `plan.json` for the REMAINDER.
+    for (const runId of this.#plan.parkedRunIds()) this.#plan.clearTimer(runId);
     // Same argument for the rate-limit timers: `unref()` covers process exit and
     // nothing else, and a callback that calls `resume()` against a closed store
     // is a crash on a host that stops the orchestrator without stopping the
@@ -1275,7 +1429,13 @@ export class Orchestrator {
      * change there rather than a fifth argument here.
      */
     const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
-    const ticket: Ticket = ticketFromStoredReferences(row0.ticketText, manifest);
+    // `let`, BECAUSE THE PLAN PHASE MAY REPLACE IT. Folding the owner's answers
+    // into the brief mints a NEW ticket id, and every line below this one — the
+    // suite freeze, the workspace ticket file, the gate, the judge — has to use
+    // that one. A second local for the amended ticket would leave the original in
+    // scope for a later reader to pick up by accident, which is a run graded
+    // against a suite authored from a different brief.
+    let ticket: Ticket = ticketFromStoredReferences(row0.ticketText, manifest);
     if (manifest !== null && ticket.id !== row0.ticketId) {
       this.#emitLog(
         runId,
@@ -1303,6 +1463,28 @@ export class Orchestrator {
     this.#armSilenceWatch(runId);
 
     try {
+      // ---- PHASE 0: the questions, BEFORE anything is frozen -----------
+      //
+      // FIRST, AND THERE IS ONLY ONE ANSWER TO WHERE IT GOES. The suite is
+      // authored from the brief and then frozen by digest, so a question asked
+      // after `#specPhase` cannot change what the run is graded against — it
+      // would cost the owner attention and move nothing. Asked here, the answers
+      // enter the brief, the criteria are authored from them, and `heldOutPass`
+      // keeps meaning exactly what it meant before this phase existed.
+      this.#setPhase(runId, "plan");
+      const planned = await this.#planPhase(runId, ticket, runPaths, manifest, signal);
+      if (planned.kind === "parked") {
+        // NOT TERMINAL, AND NOT A VERDICT — the same exit shape the design park
+        // takes below. The run is `awaiting_input` with its questions in the
+        // chat; `PlanDriver` re-enters `#execute` when the dialogue ends, and its
+        // timer ends the park if nobody answers. No `#finish`, so nothing writes
+        // a verdict for a run that has not run.
+        log.close();
+        return;
+      }
+      if (signal.aborted) return this.#aborted(runId, log, signal);
+      ticket = planned.ticket;
+
       // ---- PHASE 1: the sealed acceptance suite ------------------------
       this.#setPhase(runId, "spec");
       let suite: AcceptanceSuite;
@@ -1448,6 +1630,483 @@ export class Orchestrator {
     } finally {
       log.close();
     }
+  }
+
+  /* ---- phase 0: plan --------------------------------------------------- */
+
+  /**
+   * Ask before anything is frozen, or say plainly why nothing was asked.
+   *
+   * ─── THE MEASUREMENT THAT ARGUES FOR THIS PHASE ───
+   *
+   * Two runs already on disk: `…3d4d1ccb`, a detailed ticket, `inferredCriteria`
+   * 2. `…052c6e02`, one sentence with two typos, `inferredCriteria` 16 — and its
+   * `assumptions.md` says "Of 16 criteria: 15 inferred by the grader, 1 house
+   * defaults, 0 traced to words you wrote". That run was graded almost entirely
+   * against guesses. This phase turns a guess into a question while a question
+   * can still change the answer.
+   *
+   * ─── FIVE WAYS IN, AND EVERY ONE OF THEM PROCEEDS ───
+   *
+   * `#execute` is re-entered on every resume — a rate limit, a restart, the plan
+   * timer, an owner's answer — so this function is a state machine over
+   * `plan.json` rather than a step:
+   *
+   *   folded already      the dialogue is over and the brief carries it. Nothing.
+   *   awaiting            coming back out of the park. Close it on the honest
+   *                       reason, fold, amend, proceed.
+   *   not interactive     no park AND NO SEAT CALL. `planPolicy` says why.
+   *   seat asked nothing  no park either — a park with no questions in it is a
+   *                       20-minute latency tax on a well-written ticket.
+   *   seat asked          post the questions, park, and return `parked`.
+   *
+   * NOTHING HERE CAN FAIL A RUN. A seat that throws, a seat that returns prose, a
+   * machine with no subscription — each is logged and the run proceeds to spec
+   * exactly as it would have before this phase existed. That is the floor this
+   * feature must not go below: it may improve a run and it may not make one
+   * worse.
+   */
+  async #planPhase(
+    runId: string,
+    ticket: Ticket,
+    runPaths: RunPaths,
+    manifest: ReferenceManifest | null,
+    signal: AbortSignal,
+  ): Promise<{ readonly kind: "parked" } | { readonly kind: "proceed"; readonly ticket: Ticket }> {
+    const existing = readPlanRecord(runPaths.results);
+
+    // ALREADY FOLDED. `row.ticketText` carries the exchange and `ticket` was
+    // derived from it at the top of `#execute`, so there is nothing left to do —
+    // and re-folding would append the same block twice and mint a third id.
+    if (existing !== null && existing.folded) return { kind: "proceed", ticket };
+
+    /*
+     * ANY UNFOLDED RECORD CLOSES HERE, NOT JUST AN AWAITING ONE — AND THE
+     * DISTINCTION WAS A REAL BUG, CAUGHT BY `plan-phase.test.ts` BEFORE IT
+     * SHIPPED. `PlanDriver` writes `awaiting: false` the moment the last question
+     * is answered, and only then calls `resume()`. So the record this function
+     * finds on re-entry is settled-and-unfolded, not awaiting; a branch that
+     * tested `awaiting` alone fell through to the FRESH path, called the seat a
+     * second time, and started a new dialogue over the answers it had just been
+     * given.
+     *
+     * `closePlan` IS A NO-OP ON AN ALREADY-CLOSED STATE, so the reason the driver
+     * recorded ("answered") survives this call rather than being overwritten by
+     * the one computed below.
+     */
+    if (existing !== null) {
+      return { kind: "proceed", ticket: this.#closePlanDialogue(runId, existing, runPaths, manifest) };
+    }
+
+    const row = this.#deps.store.getRun(runId);
+    if (row === null) return { kind: "proceed", ticket };
+    const at = new Date().toISOString();
+
+    /*
+     * A RUN THAT IS ALREADY BOUND TO A SUITE NEVER PLANS, AND THIS IS THE
+     * UPGRADE PATH RATHER THAN AN EDGE CASE.
+     *
+     * `#execute` is re-entered on every resume, and a run that STARTED before
+     * this phase existed has no `plan.json` at all — so a design-lock park, a
+     * rate-limit resume or a boot reconcile would drop it into the fresh branch
+     * below, ask it questions, and then hand the fold to `amendBrief`, which
+     * refuses a frozen run BY THROWING. That throw escapes to `#start` and
+     * finishes the run `failed`: a run that used to resume cleanly would die,
+     * which is the one outcome this feature must never produce.
+     *
+     * IT IS ALSO THE RIGHT ANSWER ON THE MERITS, not just the safe one. The
+     * suite is authored and frozen; an answer given now cannot change what the
+     * run is graded against, so asking would cost the owner attention and change
+     * nothing — the same argument that puts this phase before `#specPhase` in the
+     * first place.
+     */
+    if (row.suiteSha256 !== null) {
+      const detail =
+        "this run's acceptance suite was already frozen when it reached the plan phase, so a question " +
+        "now could not change what it is graded against; nothing was asked";
+      this.#writePlan(runPaths, { awaiting: false, parkedAt: at, folded: true, state: unaskedPlanState(at, detail) });
+      this.#emitLog(runId, "info", `plan phase skipped: ${detail}`);
+      return { kind: "proceed", ticket };
+    }
+
+    if (planPolicy(row.interactive) === "skip") {
+      /*
+       * NO SEAT CALL AT ALL, WHICH IS STRONGER THAN NOT PARKING AND IS THE POINT.
+       * `designLockPolicy`'s argument applies unchanged — "a cron run that parks
+       * forever waiting for a click is the exact failure unattended operation
+       * exists to avoid" — but there is a second reason to skip the CALL and not
+       * merely the wait: `questionEarnsItsPlace` measures a question's worth by
+       * what a DIFFERENT ANSWER would change, and with nobody there to answer,
+       * every question is worth nothing by that rule. The call would spend the
+       * owner's quota to produce a list that cannot be acted on.
+       *
+       * IT IS STILL RECORDED. An unattended run has to be explainable afterwards
+       * — the same rule `lockManifest` refuses a blank reason for.
+       */
+      const detail =
+        "this run was not submitted from the dashboard, so there was nobody to answer a question; " +
+        "the planning seat was not called and the criteria are authored from the ticket alone";
+      this.#writePlan(runPaths, { awaiting: false, parkedAt: at, folded: true, state: unaskedPlanState(at, detail) });
+      this.#emitLog(runId, "info", `plan phase skipped: ${detail}`);
+      return { kind: "proceed", ticket };
+    }
+
+    const opened = await this.#planOpening(runId, ticket, signal);
+    if (opened === null) {
+      // THE SEAT COULD NOT BE ASKED OR COULD NOT BE READ. `#planOpening` has
+      // already said which on the log. The run proceeds, unamended.
+      return { kind: "proceed", ticket };
+    }
+
+    if (opened.closed !== null) {
+      /*
+       * NOTHING TO ASK — AND THE DETAIL DISTINGUISHES THE TWO WAYS TO GET HERE.
+       * "Proposed no questions" is the best outcome this phase has: the ticket
+       * already said what it wanted and the owner was not interrupted. "Proposed
+       * five and none earned a place" is a defect in the seat, and it is only
+       * visible because `PlanState.proposed` counts what was tried.
+       */
+      this.#writePlan(runPaths, { awaiting: false, parkedAt: at, folded: true, state: opened });
+      this.#emitLog(runId, "info", `plan phase asked nothing — ${opened.closed.detail}`);
+      this.#reportDropped(runId, opened);
+      return { kind: "proceed", ticket };
+    }
+
+    const questions = openQuestions(opened);
+    // THE PARK IS WRITTEN BEFORE THE QUESTIONS ARE POSTED, and the asymmetry is
+    // the reason. Both orders have a crash window; they fail differently. Posting
+    // first leaves a crashed run `running` with NO `plan.json`, so the next boot
+    // moves it to `awaiting_input` and finds no park to reconcile — wedged until
+    // somebody resumes it by hand. Parking first leaves it parked with the
+    // questions missing from the chat, which the timer resolves on its own by
+    // expiring and proceeding. Nothing between these two statements awaits, so
+    // the window is a scheduling accident rather than a real interval.
+    this.#plan.park(runId, { awaiting: true, parkedAt: at, folded: false, state: opened });
+    // THE PLAN AND THE QUESTIONS ARE THE SEAT'S OWN SENTENCES, so they are `run`
+    // chat rows. What the HOST has to say about them is a log line — db.ts's
+    // `ChatRole` is explicit that the server must never compose a `run` row.
+    if (opened.plan.length > 0) {
+      this.#deps.store.appendMessage(runId, { role: "run", text: opened.plan.join("\n"), images: [] });
+    }
+    this.#deps.store.appendMessage(runId, { role: "run", text: questionText(questions), images: [] });
+    this.#reportDropped(runId, opened);
+    this.#emitLog(
+      runId,
+      "info",
+      `the planning seat proposed ${String(opened.proposed)} question(s) and ${String(questions.length)} ` +
+        `earned a place. The run is waiting for an answer in the chat; ` +
+        `POST /api/runs/${runId}/messages carries one. With no answer inside ` +
+        `${String(planTimeoutMin(this.#deps.env))} minutes the run proceeds on what it assumed, and the ` +
+        "assumptions are recorded.",
+    );
+    return { kind: "parked" };
+  }
+
+  /**
+   * End the dialogue, fold it into the brief, and re-derive the ticket.
+   *
+   * THE RECOMPUTE HAPPENS EXACTLY HERE AND NOWHERE ELSE, and the ordering is the
+   * whole reason this phase can work at all. One step LATER — after `#specPhase`
+   * — and the suite would be authored and frozen from the OLD brief, so the
+   * answers would never reach the criteria author: the feature would be inert
+   * while appearing to work, and the row's `ticketId` would name a suite the run
+   * was not graded against. One step EARLIER — per turn — and a park spanning a
+   * restart would re-derive from a half-amended brief.
+   *
+   * NOTHING IS ORPHANED, AND IT IS A MECHANISM RATHER THAN AN ARGUMENT. The only
+   * artefact keyed by ticket id is `acceptance/<id>/`, written by
+   * `authorAndFreezeSuite` inside `#specPhase`, and the column that binds a run to
+   * it is `suite_sha256`. Both are downstream of this line, so at this moment
+   * `suite_sha256 IS NULL` by construction — which is precisely the condition
+   * `RunStore.amendBrief` refuses on.
+   *
+   * THE DIGEST IS TAKEN OVER THE STRING THAT IS STORED. `redactForPersistence`
+   * runs FIRST and the ticket is derived from its output, because the next
+   * `#execute` entry re-derives from `ticket_text` as stored: a digest of the
+   * unredacted brief would name a ticket nothing can compute again, which sends
+   * the run to `authorAndFreezeSuite` for a SECOND suite on the owner's quota.
+   */
+  #closePlanDialogue(
+    runId: string,
+    record: PlanRecord,
+    runPaths: RunPaths,
+    manifest: ReferenceManifest | null,
+  ): Ticket {
+    this.#plan.clearTimer(runId);
+    const now = new Date().toISOString();
+    const expired = planExpired(record.parkedAt, now, planTimeoutMin(this.#deps.env));
+    // A MANUAL RESUME WITH TIME LEFT IS A DECLINE, NOT AN EXPIRY. Both proceed
+    // and both record the same assumption; only the sentence in `assumptions.md`
+    // and in the brief differs, and it should say what actually happened.
+    const closed = closePlan(record.state, expired ? "window expired" : "declined", now);
+    this.#writePlan(runPaths, { ...record, awaiting: false, folded: true, state: closed });
+
+    for (const assumption of closed.questions.filter((entry) => entry.status === "expired")) {
+      this.#emitLog(
+        runId,
+        "warn",
+        `${assumption.question.id} was never answered, so the run is assuming: ` +
+          `${assumption.assumed ?? assumption.question.ifUnanswered}`,
+      );
+    }
+
+    const row = this.#deps.store.getRun(runId);
+    if (row === null) return ticketFromStoredReferences("", manifest);
+    const folded = foldPlanIntoBrief(row.ticketText, closed);
+    if (folded === row.ticketText) {
+      // NOTHING WAS SAID, SO THE TICKET DOES NOT MOVE — the same string, not an
+      // equal-looking one. A run whose dialogue produced nothing must derive the
+      // id it would have derived with no plan phase at all, or a suite already
+      // frozen on disk is addressed by an id nothing will compute again.
+      this.#emitLog(runId, "info", `the plan dialogue ended with nothing to fold: ${closed.closed?.detail ?? ""}`);
+      return ticketFromStoredReferences(row.ticketText, manifest);
+    }
+    const stored = redactForPersistence(folded);
+    const amended = ticketFromStoredReferences(stored, manifest);
+    this.#deps.store.amendBrief(runId, {
+      ticketText: stored,
+      ticketId: amended.id,
+      ticketSha256: amended.sha256,
+    });
+    this.#emitLog(
+      runId,
+      "info",
+      `the plan dialogue is folded into the brief and this run's ticket is now ${amended.id} ` +
+        `(was ${row.ticketId}). The acceptance suite is authored from the amended brief — ` +
+        `${closed.closed?.detail ?? "the exchange is recorded in plan.json"}.`,
+    );
+    return amended;
+  }
+
+  /**
+   * The opening turn. `null` means the seat could not be asked or could not be
+   * read, which is a logged non-event rather than a failure.
+   */
+  async #planOpening(runId: string, ticket: Ticket, signal: AbortSignal): Promise<PlanState | null> {
+    const at = new Date().toISOString();
+    try {
+      const documents = await this.#seatDocuments(runId);
+      const caller = this.#planSeat(runId, documents, signal);
+      const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
+      const turn = await runPlanOpening(caller.seat, {
+        brief: ticket.brief,
+        // COUNTS TAKEN FROM THE PLAN THAT GOES ON THE WIRE, never from the
+        // manifest. The manifest says what the owner attached; only the caller's
+        // plan knows what this message actually holds, and the prompt is about to
+        // tell the seat to LOOK AT THEM.
+        images: planSeatImagesFrom(caller.images),
+        documentNotes: caller.notes,
+        capturedUrl: manifest?.capture?.url ?? null,
+        cap: MAX_QUESTIONS_PER_TURN,
+        firstOrdinal: 1,
+      });
+      caller.report();
+      if (!turn.parsed.ok) {
+        this.#emitLog(
+          runId,
+          "warn",
+          `the planning seat's opening turn could not be read (${turn.parsed.detail}), so nothing was ` +
+            "asked and the run is proceeding on the ticket alone",
+        );
+        return null;
+      }
+      return openPlanState(turn.parsed.proposal, at);
+    } catch (error) {
+      if (signal.aborted) return null;
+      this.#emitLog(
+        runId,
+        "warn",
+        `the planning seat could not be reached (${describeError(error)}), so nothing was asked and the ` +
+          "run is proceeding on the ticket alone",
+      );
+      return null;
+    }
+  }
+
+  /**
+   * One follow-up turn, for `PlanDriver`.
+   *
+   * IT RETURNS `null` RATHER THAN THROWING, ALWAYS. `applyOwnerTurn` records the
+   * owner's own words when the seat is null, so a seat that fails here costs a
+   * tidier phrasing and never costs the answer — which is the only acceptable
+   * direction for a call that happens while the owner is watching.
+   *
+   * A SEPARATE CALLER PER TURN, AND SO A SEPARATE CEILING. `#specPhase` shares one
+   * ceiling across its two seats because a per-call ceiling never fires; that is
+   * not available here, because a dialogue can span a restart and a ceiling
+   * cannot. The bound that actually holds is the turn cap — at most
+   * `MAX_OWNER_TURNS` calls per run, one per owner message — and it is durable
+   * because `turnsUsed` is in `plan.json`.
+   */
+  async #planFollowUp(
+    runId: string,
+    input: { readonly state: PlanState; readonly ownerText: string; readonly classified: ClassifiedReply },
+  ): Promise<PlanSeatReply | null> {
+    const row = this.#deps.store.getRun(runId);
+    if (row === null) return null;
+    const controller = new AbortController();
+    try {
+      const documents = await this.#seatDocuments(runId);
+      const caller = this.#planSeat(runId, documents, controller.signal);
+      const turn = await runPlanFollowUp(
+        caller.seat,
+        {
+          brief: row.ticketText,
+          plan: input.state.plan,
+          open: openQuestions(input.state),
+          ownerText: input.ownerText,
+          classified: input.classified,
+          // THE SAME PICTURES, RE-SENT. A fresh caller per turn means a fresh
+          // plan; taking the counts from it rather than from the opening turn is
+          // what makes this line true on the turn where a file has since gone.
+          images: planSeatImagesFrom(caller.images),
+        },
+        input.state.turnsUsed + 1,
+      );
+      caller.report();
+      if (!turn.parsed.ok) {
+        this.#emitLog(
+          runId,
+          "warn",
+          `the planning seat's reply could not be read (${turn.parsed.detail}); your message is recorded ` +
+            "as you wrote it",
+        );
+        return null;
+      }
+      return turn.parsed.value;
+    } catch (error) {
+      this.#emitLog(
+        runId,
+        "warn",
+        `the planning seat could not be reached (${describeError(error)}); your message is recorded as ` +
+          "you wrote it",
+      );
+      return null;
+    }
+  }
+
+  /**
+   * A planning seat caller, and the two things only the real one can report.
+   *
+   * `report()` IS A CLOSURE RATHER THAN A RETURN VALUE because the injected test
+   * seam has neither tokens nor a base-class usage counter to assert on. Reading
+   * them off a stub would mean either a widened interface every test has to
+   * satisfy or a cast, and the numbers exist for the owner's log, not for the
+   * host's control flow.
+   */
+  #planSeat(
+    runId: string,
+    documents: readonly SeatDocument[],
+    signal: AbortSignal,
+  ): {
+    readonly seat: PlanSeatCaller;
+    readonly notes: readonly string[];
+    /** What this call CARRIES in pictures. The prompt's counts are read off it. */
+    readonly images: SeatImagePlan;
+    report(): void;
+  } {
+    // THE OWNER'S INSTRUCTION, LITERALLY: "the design images need to be analysed
+    // and seen not quizzed by me as they are visual reference." The manifest's
+    // rows satisfy `AttachedImage` structurally, so nothing maps between them and
+    // nothing can drift; `seatImagesFor` never throws on a file and reports every
+    // refusal by name.
+    const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
+    const images = seatImagesFor(manifest?.images ?? []);
+    const injected = this.#deps.makePlanSeat;
+    if (injected !== undefined) {
+      // THE SAME PLANNING FUNCTION THE REAL CALLER RUNS, so the prompt a test
+      // observes is the prompt production composes — including which images the
+      // per-call budget refused.
+      const plan = planSeatImages(images);
+      this.#reportSeatImages(runId, plan);
+      return {
+        seat: injected({ runId, documents, images, signal }),
+        notes: [],
+        images: plan,
+        report: () => undefined,
+      };
+    }
+    const caller = new SubscriptionSeatCaller(this.#seat(SPEC_SEAT), {
+      budget: DASHBOARD_BUDGET,
+      cwd: this.#deps.paths.home,
+      env: this.#deps.env,
+      abortController: childAbort(signal),
+      onRateLimit: (state) => this.#noteRateLimit(runId, state),
+      // THE SAME ATTACHMENTS THE SPEC SEAT WILL SEE. A planning seat that could
+      // not read the owner's scope document would ask him what is in it.
+      documents,
+      images,
+    });
+    this.#reportSeatImages(runId, caller.imagePlan);
+    return {
+      seat: caller,
+      // READ BACK OFF THE CALLER, NOT OFF `images`. `caller.imagePlan` is the
+      // exact value `seatPrompt` puts on the wire, so the prompt's "they ARE in
+      // this message" cannot outlive the `images:` option above: delete it and
+      // this becomes `NO_SEAT_IMAGES` and the prompt claims nothing. That is the
+      // only guard available — this constructor runs only on the branch that
+      // spawns the CLI, so no unit test can watch that argument go missing.
+      images: caller.imagePlan,
+      notes: caller.documentPlan.notes,
+      report: () => {
+        caller.assertUnused();
+        this.#emitLog(runId, "info", `plan seat — ${describeTokens(caller.tokens)}`);
+      },
+    };
+  }
+
+  /**
+   * Which pictures this turn carried and which it did not, BY NAME.
+   *
+   * A SEAT THAT SAW HALF THE DESIGN AND DOES NOT SAY SO IS WORSE THAN ONE THAT SAW
+   * NONE, and after the run this line is the only thing that can tell the two
+   * apart: "the seat asked a bad question" and "the seat never got the mockup" are
+   * different defects with different fixes.
+   *
+   * EMITTED HERE AND NOT FROM `report()`, WHICH IS THE PART THAT MATTERS. `report()`
+   * is a no-op on the injected seam, so a dropped image named only there would be
+   * named only on the branch no test can drive — this repository's signature
+   * defect. Both branches reach this line, and `plan-seat.wiring.test.ts` asserts
+   * the refused image is named in the persisted log.
+   *
+   * ONCE PER TURN, BECAUSE THAT IS WHAT IT COSTS. A dialogue builds a fresh caller
+   * per owner message and each one re-sends every carried byte, so `calls` is 1
+   * and a six-turn dialogue prints six lines rather than one covering all of them.
+   *
+   * `1` IS THE CALL THIS CALLER WILL MAKE, NOT ONE OBSERVED. This runs at
+   * construction, so on the path where the seat cannot be reached at all
+   * (`#planOpening`'s catch) the line has already claimed bytes that never left.
+   * That is the same direction `documentCalls` errs in and for the same reason —
+   * the honest side to be wrong on for a cost figure — and moving the emit after
+   * the call would put it back on `report()`, which is a no-op on the seam and so
+   * on no branch a test can drive.
+   */
+  #reportSeatImages(runId: string, plan: SeatImagePlan): void {
+    if (plan.notes.length === 0) return;
+    this.#emitLog(runId, "info", `plan seat — ${describeSeatImages(plan, 1)}`);
+  }
+
+  /**
+   * What the seat proposed and the host refused, as a count and then a list.
+   *
+   * WITHOUT THIS, TWO DIFFERENT THINGS LOOK IDENTICAL: a ticket so detailed that
+   * nothing was worth asking, and a seat that proposed five generic questions and
+   * landed none. Only the second is a defect, and it is invisible unless the
+   * refusals are named.
+   */
+  #reportDropped(runId: string, state: PlanState): void {
+    for (const dropped of state.dropped) {
+      this.#emitLog(
+        runId,
+        "info",
+        `a proposed question was not asked (${dropped.refusal}): ${dropped.detail}` +
+          (dropped.text.length > 0 ? ` — "${truncate(dropped.text, 160)}"` : ""),
+      );
+    }
+  }
+
+  #writePlan(runPaths: RunPaths, record: PlanRecord): void {
+    writePlanRecord(runPaths.results, record);
   }
 
   /* ---- phase 1: spec ------------------------------------------------- */
@@ -1670,16 +2329,49 @@ export class Orchestrator {
    * The input is still deliberately the prose: folding document text in would
    * reclassify a machine reading of a 40-page PDF as something the owner said,
    * which is the failure this record exists to prevent, and it is the larger of
-   * the two wrongs. The consequence to carry forward is that
-   * `RunDetail.inferredCriteria` is now non-comparable across THREE cases, not
-   * two: prose-only, prose+capture, and prose+attached documents.
+   * the two wrongs.
+   *
+   * THE PLAN DIALOGUE MAKES IT FOUR CASES, NOT THREE (2026-08-02), and the
+   * correction is required rather than tidy: this docblock previously ended
+   * "non-comparable across THREE cases — prose-only, prose+capture, and
+   * prose+attached documents", and a fourth now exists. `stripPlanBlock` runs
+   * BEFORE `ticketProse` below so the planning exchange is excluded from the
+   * prose the tracer measures against, and both halves of that decision have a
+   * cost worth stating:
+   *
+   *   WHY IT IS EXCLUDED. `extractAssumptions` traces by content-token overlap.
+   *   A DECLINED question's wording sitting in the prose region would manufacture
+   *   that overlap and stamp a criterion the owner explicitly refused to state as
+   *   "traced to words you wrote" — a false-pass shape inside the one module
+   *   built to prevent them. The number would fall, and it would fall for a
+   *   fabricated reason, which is worse than not falling.
+   *
+   *   WHAT IT COST, AND WHAT IS NO LONGER OWED (2026-08-02, second pass). The
+   *   paragraph here used to end "this phase makes the criteria better without
+   *   moving `inferredCriteria` yet", and the fourth source it called the next
+   *   step has now landed: `spec-assumptions.ts:AnsweredQuestion`, matched
+   *   against the question-and-answer PAIR with at least one of the shared
+   *   tokens taken from HIS reply. The pairs are passed BESIDE the prose rather
+   *   than folded into it, which keeps the exclusion above intact — a declined
+   *   question still contributes nothing, because `answeredInOwnerWords` emits
+   *   no pair for one.
+   *
+   * MEASURED, and measured on this run's own fixture rather than argued. Run
+   * `run-2026-07-30T20-16-40-242Z-052c6e02`, its real ticket and its real 16
+   * criteria, with three questions answered: `inferredCriteria` 16 -> 16 before
+   * this change and 16 -> 13 after it. The ORDER OF THE TWO CUTS was not the
+   * cause and has not been changed: on that fixture's folded brief
+   * `ticketProse(stripPlanBlock(b))` and `stripPlanBlock(ticketProse(b))` return
+   * the identical string, since the fold always appends. `spec-assumptions.
+   * answered.test.ts` holds both numbers and that identity.
    */
   #recordAssumptions(runId: string, ticket: Ticket, runPaths: RunPaths): void {
     try {
       const record = writeAssumptions(
         runPaths.results,
-        ticketProse(ticket.brief),
+        ticketProse(stripPlanBlock(ticket.brief)),
         this.#deps.store.listCriteria(runId),
+        this.#answeredQuestions(runPaths),
       );
       this.#deps.store.updateRun(runId, { inferredCriteria: record.inferredCriteria });
       this.#emitLog(
@@ -1689,9 +2381,55 @@ export class Orchestrator {
           `stated in your ticket. What the grader assumed is recorded in ${record.path}; correcting the ` +
           "ticket is cheaper than debugging the verdict it produces.",
       );
+      this.#reportAnswersCredited(runId, runPaths, record.answeredCriteria);
     } catch (error) {
       this.#emitLog(runId, "warn", `the assumption record could not be written: ${describeError(error)}`);
     }
+  }
+
+  /**
+   * What the owner answered, in his own words, for the tracer.
+   *
+   * READ BACK OFF `plan.json` RATHER THAN PARSED OUT OF THE FOLDED BRIEF, and
+   * the distinction is the difference between crediting him and crediting the
+   * house. The brief carries declined and expired questions too, each with the
+   * dashboard's own `ifUnanswered` beneath it; a parser would have to
+   * re-implement the answered/declined split against prose, giving "answered" a
+   * second definition free to drift from `plan-state.ts`'s. The record holds the
+   * verified statuses, so there is nothing to re-derive.
+   *
+   * EVERY FAILURE IS EMPTY, NOT AN EXCEPTION. `#planPhase` has several paths that
+   * write no record at all (no row, a seat that could not be reached), a run that
+   * predates this phase has none, and an unreadable one is `null`. All of them
+   * mean the same thing here — nothing the owner answered can be traced — and the
+   * record written is byte-identical to the one this function's absence produced.
+   * A throw would take down the assumptions file over a missing optional input.
+   */
+  #answeredQuestions(runPaths: RunPaths): readonly AnsweredQuestion[] {
+    const record = readPlanRecord(runPaths.results);
+    if (record === null) return [];
+    return answeredInOwnerWords(record.state);
+  }
+
+  /**
+   * Say on the run log how much his answering actually bought.
+   *
+   * PRINTED ONLY WHEN HE ANSWERED SOMETHING, and then whatever the outcome —
+   * INCLUDING ZERO. "You answered three questions and no criterion could be
+   * traced to any of them" is the single most useful line this phase can emit:
+   * it is the plan seat asking questions whose answers the criteria author did
+   * not use, and without this line that failure is silent and the phase looks
+   * like it worked. Suppressing the zero would leave only the flattering case.
+   */
+  #reportAnswersCredited(runId: string, runPaths: RunPaths, credited: number): void {
+    const answered = this.#answeredQuestions(runPaths).length;
+    if (answered === 0) return;
+    this.#emitLog(
+      runId,
+      credited === 0 ? "warn" : "info",
+      `you answered ${String(answered)} question(s) before this run was frozen, and ` +
+        `${String(credited)} of its criteria are credited to those answers rather than to the grader.`,
+    );
   }
 
   #recordCriteria(runId: string, suite: AcceptanceSuite): void {
@@ -1798,12 +2536,26 @@ export class Orchestrator {
     // agents. `ticketProse` returns the brief unchanged when there is no capture,
     // so every run without one classifies byte-identically to before.
     //
+    // THE PLAN BLOCK IS CUT FOR THE SAME REASON AND IT IS NOT A HYPOTHETICAL —
+    // MEASURED 2026-08-02. The planning exchange the run folds into the brief
+    // says "the dashboard" a dozen times in its own framing paragraphs, and
+    // `dashboard` is one of this classifier's WEB_UI keywords. So an `api` ticket
+    // came back `fullstack` after a plan dialogue about nothing in particular:
+    // the machine's own wording, not the owner's, choosing the shortlist and
+    // switching on the DESIGN lane. `plan-phase.test.ts` holds that measurement.
+    //
+    // WHAT THE CUT COSTS, STATED: an owner's ANSWER cannot widen the surface
+    // either. "It should also expose a REST endpoint", typed into the plan
+    // dialogue, does not add the backend lane — the ticket's own words still
+    // decide. That is the conservative direction and the same one the capture cut
+    // takes; the alternative is a boundary decided by text nobody typed.
+    //
     // `classifySurface` is pure, total and keyword-based on purpose (see
     // surface.ts): it runs before the build session exists, on the path that
     // builds a permission boundary, and a boundary that can time out or be
     // refused is not a boundary. An unrecognisable ticket classifies `fullstack`,
     // the widest set, because under-delegation is the failure nobody sees.
-    const surface = classifySurface(ticketProse(ticket.brief));
+    const surface = classifySurface(ticketProse(stripPlanBlock(ticket.brief)));
     const laneMode = await this.#designLaneFor(runId, ticket, runPaths, surface);
     // NOW WITH THE LANE MODE, AT BOTH CALL SITES. `agent-shortlist.ts` says the
     // one-argument form defaults to `off` and under-delegates on purpose, which
@@ -2711,7 +3463,13 @@ export class Orchestrator {
       // build was allowed and the fix loop was not. A fix round is bounded
       // further, to one agent, in `fixAllowedAgents`; this is the outer set
       // triage is checked against.
-      allowedAgents: shortlistFor(classifySurface(ticket.brief), laneMode),
+      // `stripPlanBlock` FOR THE MEASURED REASON GIVEN IN `#buildPhase`: the
+      // planning exchange's own framing text trips this classifier's WEB_UI set,
+      // so a fix round's shortlist would be widened by wording nobody typed. It
+      // still reads the CAPTURE block, exactly as it did before — that
+      // inconsistency with `#buildPhase` predates this change and is left alone
+      // rather than quietly widened here.
+      allowedAgents: shortlistFor(classifySurface(stripPlanBlock(ticket.brief)), laneMode),
       signal: loopAbort.signal,
       log: (level, text) => this.#emitLog(runId, level, text),
     });
@@ -3161,7 +3919,8 @@ export class Orchestrator {
     loop: GateFixLoopResult,
     signal: AbortSignal,
   ): Promise<void> {
-    const surface = classifySurface(ticket.brief);
+    // `stripPlanBlock` FOR THE MEASURED REASON GIVEN IN `#buildPhase`.
+    const surface = classifySurface(stripPlanBlock(ticket.brief));
     const previewUrl = this.#deps.store.getRun(runId)?.previewUrl ?? null;
     // A SIBLING OF THE ARTEFACT, NEVER INSIDE IT. This is the session's `cwd`, so
     // `buildOptions` scopes the CLI sandbox's `allowWrite` and the workspace-write
@@ -3852,6 +4611,10 @@ export class Orchestrator {
         workspace: runPaths.workspace,
         projectsDir: this.#deps.paths.projects,
         resultsDir: runPaths.results,
+        // Without this the README's provenance block renders `not recorded` for
+        // run id, ticket id, verdict and model — measured, and pinned by
+        // `publish-wiring.test.ts`, which is red when this line is absent.
+        run: row,
       });
       if (record.published) {
         this.#emitLog(

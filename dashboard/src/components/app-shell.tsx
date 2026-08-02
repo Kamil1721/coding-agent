@@ -7,9 +7,20 @@ import type { ReactNode } from "react";
 import { useHealth } from "@/lib/hooks";
 import { Dot, cx } from "./ui";
 
+/**
+ * `Projects` SITS AFTER `Runs` BECAUSE IT IS DOWNSTREAM OF IT — a ticket becomes
+ * a run becomes a folder, and the nav reads in that order.
+ *
+ * IT IS NOT A SHORTCUT TO SOMETHING ALREADY REACHABLE. A published folder was
+ * findable only by remembering which run produced it and reading a path off that
+ * run's Verdict tab; the whole point of the index is coming back a week later
+ * without the run id, and a route the owner has to type by hand does not do
+ * that.
+ */
 const NAV: readonly { readonly href: string; readonly label: string }[] = [
   { href: "/", label: "New ticket" },
   { href: "/runs", label: "Runs" },
+  { href: "/projects", label: "Projects" },
 ];
 
 function NavLink({ href, label }: { href: string; label: string }): ReactNode {

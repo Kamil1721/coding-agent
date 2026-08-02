@@ -25,13 +25,41 @@
  * the budget, and the tokens are whole words of the input.
  *
  * No browser: `ticketLabel` is a pure function of a string, and `RunHud` is
- * called as a function, so the element assertions read React's element tree
+ * called as a function, so the element assertions read the tree it returns
  * without rendering it. Nothing here needs a DOM and nothing here can be green
  * because a DOM was missing.
+ *
+ * WHAT THAT TREE IS NOT: A REACT ELEMENT TREE. This header used to say it was,
+ * and the three element tests below NEVER PASSED ONCE — not "regressed", never
+ * green. Dated rather than asserted: this file landed at `a23e0e6` (2026-07-31)
+ * and `5ee7209` had already moved `@playwright/test` from `^1.51.1` to `^1.62.0`
+ * two days earlier, so every run these tests have ever had was under the runner
+ * described below. All three died on the guard in `hudHeading` — `Error: RunHud
+ * rendered no <h1>` — while `run-hud.tsx` rendered an `h1` the whole time, and
+ * three handovers recorded them as pre-existing component drift.
+ * MEASURED, by dumping the tree: `RunHud(...)` returns
+ * `{ __pw_type: "jsx", type: "div", props: {…} }`. Playwright's transform pins
+ * `jsxImportSource` to its own package for EVERY `.tsx` it loads
+ * (`node_modules/playwright/lib/common/index.js:1345` —
+ * `path.dirname(require.resolve("playwright"))`, passed to
+ * `@babel/plugin-transform-react-jsx`), so the JSX in `run-hud.tsx` compiles to
+ * `playwright/jsx-runtime`'s factory, which returns a plain object with no
+ * `$$typeof`. `isValidElement` is therefore FALSE for every node in this tree,
+ * the old search returned `null` at the root, and the guard fired. There is no
+ * config knob: the value is set unconditionally in `configLoader`, not per
+ * project.
+ *
+ * SO THE SEARCH IS FACTORY-AGNOSTIC ON PURPOSE — it recognises a node by having
+ * a `type` and a `props`, which is true of a React element and of Playwright's
+ * object alike, and it must never be narrowed back to `isValidElement`. What it
+ * reads is still exactly what `run-hud.tsx` wrote: `type` is the tag and
+ * `props` are the attributes, whichever factory built the object. The guard
+ * stays, and is proved: with `h1` changed to `h2` in `run-hud.tsx` all three
+ * tests below throw `RunHud rendered no <h1>` again, so it is still a negative
+ * control and not decoration.
  */
 
 import { expect, test } from "@playwright/test";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
 
 import { RunHud } from "../src/components/canvas/run-hud";
 import {
@@ -289,19 +317,43 @@ test.describe("ticketTooltip keeps the original reachable", () => {
 /* the element                                                        */
 /* ------------------------------------------------------------------ */
 
-/** Depth-first search of a React element tree for the first `<h1>`. */
-function findElement(node: ReactNode, tag: string): ReactElement | null {
+/**
+ * One node of the JSX tree `RunHud` returns, in whichever shape the loader that
+ * compiled `run-hud.tsx` produced. See the header: under this runner that is
+ * Playwright's `{ __pw_type: "jsx", type, props }` rather than a React element,
+ * so this shape is deliberately the intersection of the two and nothing here may
+ * key on `$$typeof` or `isValidElement`.
+ */
+interface JsxNode {
+  readonly type: unknown;
+  readonly props: { readonly children?: unknown };
+}
+
+/**
+ * A node, or `null` for a string, a number, `null`, `undefined` or a `false`
+ * left behind by a `&&` — the leaves a JSX tree is full of.
+ */
+function asNode(value: unknown): JsxNode | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as { readonly type?: unknown; readonly props?: unknown };
+  if (candidate.type === undefined) return null;
+  if (typeof candidate.props !== "object" || candidate.props === null) return null;
+  return { type: candidate.type, props: candidate.props as JsxNode["props"] };
+}
+
+/** Depth-first search of that tree for the first node whose type is `tag`. */
+function findElement(node: unknown, tag: string): JsxNode | null {
   if (Array.isArray(node)) {
-    for (const child of node as readonly ReactNode[]) {
+    for (const child of node as readonly unknown[]) {
       const hit = findElement(child, tag);
       if (hit !== null) return hit;
     }
     return null;
   }
-  if (!isValidElement(node)) return null;
-  if (node.type === tag) return node;
-  const props = node.props as { readonly children?: ReactNode };
-  return props.children === undefined ? null : findElement(props.children, tag);
+  const element = asNode(node);
+  if (element === null) return null;
+  if (element.type === tag) return element;
+  return findElement(element.props.children, tag);
 }
 
 function hudHeading(ticketTitle: string, ticketText: string): {

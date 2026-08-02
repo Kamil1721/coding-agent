@@ -69,7 +69,20 @@ export interface RunSummary {
   readonly falseFinish: boolean | null;
 }
 
-export type RunPhase = "spec" | "build" | "gate" | "judge" | "done";
+/**
+ * `plan` IS FIRST BECAUSE IT RUNS FIRST, and the server's `ApiPhase` says why in
+ * full: a question asked after the acceptance suite is frozen cannot change what
+ * the run is graded against, so the only place it earns its keep is before the
+ * spec seat.
+ *
+ * NOTHING MIGRATES ON THIS SIDE EITHER. The one consumer of the ORDER is
+ * `presentation.ts`'s `PHASE_ORDER`/`phaseIndex`, whose only caller is
+ * `components/run/header.tsx` — a file with no importer. Everything else reads
+ * the phase as a value: `phaseMeta` switches on it, `spec-pipeline.ts` compares
+ * it. A run recorded before this phase existed carries one of the original five
+ * and renders exactly as it did.
+ */
+export type RunPhase = "plan" | "spec" | "build" | "gate" | "judge" | "done";
 
 /**
  * Gating tier, from `bakeoff/src/contracts.ts` and research doc 02 section 5.4.
@@ -237,6 +250,41 @@ export interface Screenshot {
 }
 
 /**
+ * ONE FILE THE OWNER ATTACHED TO A TICKET — the server's `ApiAttachment`,
+ * mirrored by hand.
+ *
+ * `url` IS THE ONLY FIELD A BROWSER CAN USE. `path` is an absolute HOST path,
+ * like `Screenshot.path` and `artifactPath`; `url` is same-origin and route-
+ * relative (`/api/runs/:id/references/:file`), so it goes through `apiUrl()`
+ * for the same reason `screenshotSrc` reads `API_BASE` — the browser specs run
+ * the app and the API on different loopback ports.
+ *
+ * `mediaType` IS BYTE FOR BYTE THE `Content-Type` THE ROUTE ANSWERS WITH,
+ * charset and all. The server derives both from one function, so deciding how
+ * to render from this field cannot be told one thing and sent another; that is
+ * why `attachments.tsx` switches on it rather than on the extension.
+ *
+ * `file` IS NOT THE NAME THE OWNER PICKED. Intake takes base64 data URLs, which
+ * carry no filename, so the browser discards `Kamil_Borzecki_CV.pdf` before the
+ * POST and the server only ever knows the ordinal name it minted
+ * (`document-1.pdf`). Renderers must not present it as the owner's own name.
+ */
+export interface Attachment {
+  /** The server-minted filename, and the last segment of `url`. */
+  readonly file: string;
+  /** Absolute host path. Builder-facing; a browser cannot open it. */
+  readonly path: string;
+  /** sha256 of the bytes — this is what entered the ticket id. */
+  readonly sha256: string;
+  /** Size as digested at intake, not as `stat`ed now. */
+  readonly bytes: number;
+  /** Byte for byte the `Content-Type` the route answers with. */
+  readonly mediaType: string;
+  /** Same-origin, no host. Route-relative; pass it through `apiUrl()`. */
+  readonly url: string;
+}
+
+/**
  * The DESIGN lane's lock — the server's `ApiDesignLock`, mirrored by hand.
  *
  * NOTHING BUT `contract-parity.test.ts` COMPARES THIS WITH THE SERVER. The two
@@ -357,9 +405,17 @@ export interface ProjectExclusion {
  * server's `ApiPublishedProject`, mirrored by hand.
  *
  * THE POINT OF IT. The artefact lives at
- * `dashboard/runs/<44-character run id>/workspace/`, which the owner said he
+ * `dashboard/runs/<37-character run id>/workspace/`, which the owner said he
  * cannot find and which does not read as his project. On a terminal run the
  * server copies it to `projects/<slug-of-the-ticket-title>/`.
+ *
+ * (37, MEASURED — this docblock said 44 until 2026-08-02, as three others still
+ * do. The id is built at `server/src/http.ts` as `run-<ISO instant with : and .
+ * replaced by ->` plus a dash and 8 uuid characters: 4 + 24 + 1 + 8. Checked
+ * against a freshly minted id and against the one run on this machine that
+ * reached a verdict, `run-2026-07-30T20-16-40-242Z-052c6e02`. NOTHING TESTS THE
+ * MINTER — `server/src/publish-wiring.test.ts` pins only its own fixture's
+ * length — so treat this as arithmetic off the format, not as a checked fact.)
  *
  * IT IS A HOST PATH, NOT A LINK. A browser cannot open it — the same as
  * `artifactPath`, `verdictPath` and `screenshots[].path`. And it is NOT
@@ -424,6 +480,58 @@ export interface RunDetail extends RunSummary {
    */
   readonly silence: RunSilence | null;
   readonly screenshots: readonly Screenshot[];
+  /**
+   * The REFERENCE IMAGES the owner attached to this ticket, each with a URL.
+   *
+   * NOT `designLock.mockups`, AND THE TWO MUST NEVER SHARE A HEADING. Those are
+   * images `ui-designer` GENERATED for this run — "what did the machine
+   * propose"; these are the owner's own uploads — "what did I hand it". They are
+   * kept on different tabs of `RunSheet` for that reason: mockups render inside
+   * `ScreenshotsPanel` on Verdict, these render in `TicketAttachmentsPanel` on
+   * Ticket, so no screen can put them side by side.
+   *
+   * FOLDED PER REQUEST FROM THE REFERENCE MANIFEST ON DISK, never from the run
+   * row — the bytes and digests were never in SQLite. So an empty list means
+   * "none attached" OR "the manifest could not be read", which is the server's
+   * existing flattening; the distinction a renderer needs — is there anything to
+   * show — survives it.
+   *
+   * ABSENT ENTIRELY ON EVERY RUN RECORDED BEFORE THESE ROUTES EXISTED, and that
+   * is not theoretical: measured on 2026-08-02 against the running backend,
+   * `GET /api/runs/run-2026-07-30T20-16-40-242Z-052c6e02` returns a body with
+   * neither key. `lib/api.ts` does `parsed as T` with NO runtime validation, so
+   * the type below lies about that payload at runtime. Read it as
+   * `run.references ?? []` at the call site, the way `adversary` is read
+   * `?? null` — see `RunSheet`'s Ticket tab.
+   */
+  readonly references: readonly Attachment[];
+  /**
+   * The DOCUMENTS the owner attached — a scope, a brief, a CV. Same folding,
+   * same flattening and the same absent-on-old-runs trap as `references`.
+   *
+   * A URL HERE MEANS THE OWNER CAN READ IT. WHICH SEATS ALSO READ IT IS A
+   * SHORTER LIST THAN "the run". What is certain is that the digest of each of
+   * these entered the ticket id, so changing one re-authors the acceptance
+   * suite.
+   *
+   * THE SEATS, READ OFF `orchestrator.ts` ON 2026-08-02 rather than inferred:
+   * `#seatDocuments` has three call sites — `#planOpening` and `#planFollowUp`
+   * (the PLAN seat, opening and every follow-up turn) and `#specPhase` (the SPEC
+   * seat, on every call it makes). The audit/judge caller is built WITHOUT them
+   * deliberately, and so is the builder. The server's own `documents` docblock
+   * carries the full reasoning and the cost of that exclusion.
+   *
+   * THE PLAN SEAT IS GATED, THE SPEC SEAT IS NOT. `planPolicy(interactive)` is
+   * `skip` for a run that did not come from the dashboard, and that branch makes
+   * no plan-seat call at all — so on a CLI or cron run the first two sites never
+   * happen. Only the spec seat is on the unconditional path.
+   *
+   * SO DO NOT WRITE "the run has read your scope" IN A SUBTITLE — it is true of
+   * some seats and false of others, and only the run's own log says what a given
+   * run did. Note `http.ts`'s intake `warn` still says STORED, NOT READ; it is
+   * the stale half of that pair and is not the sentence to mirror.
+   */
+  readonly documents: readonly Attachment[];
   readonly artifactPath: string | null;
   readonly previewUrl: string | null;
   /**
@@ -1016,6 +1124,7 @@ const RUN_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 const RUN_PHASES: ReadonlySet<string> = new Set([
+  "plan",
   "spec",
   "build",
   "gate",
@@ -1195,3 +1304,160 @@ export interface CodeFileResponse {
  * `not_a_file` — 403, the path is neither a file nor a directory.
  */
 export type PreviewOwnRefusalCode = "no_index_html" | "invalid_encoding" | "not_a_file";
+
+/* -------------------------------------------------------------------------
+ * `/api/projects` — the published folders, and the processes serving them
+ *
+ * Mirrored BY HAND from `server/src/api-types.ts` (`ApiProject*`), like every
+ * other shape in this file. `contract-parity.test.ts` pins the SSE union,
+ * RunDetail's design-lock/gate fields and the spend record and NOTHING HERE —
+ * grepped, not assumed — so nothing goes red if the server renames one of these.
+ * Read the server's docblocks before changing a field name.
+ *
+ *   GET  /api/projects              -> ProjectsResponse
+ *   POST /api/projects/:slug/start  -> ProjectStartResponse  (or a refusal)
+ *   POST /api/projects/:slug/stop   -> ProjectStopResponse   (or a refusal)
+ *   GET  /api/projects/:slug/logs   -> ProjectLogs
+ *
+ * THE TWO POSTS ARE ORIGIN-CHECKED. The server refuses a present, non-loopback
+ * `Origin` with 403 `cross_origin_write`, because their effect is a process
+ * spawned or killed. Measured 2026-08-02 through `next.config.ts`'s rewrite: a
+ * POST carrying `Origin: http://127.0.0.1:4319` — which is what this app's own
+ * fetches send — reaches the runner (it came back 409 `not_running`, the state
+ * refusal, not the origin one). So the rewrite preserves the header and the
+ * dashboard's own page is allowed.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * HOW A CHILD ENDED — the server's `ApiProjectExit`.
+ *
+ * `requested` IS THE WHOLE FIELD. `true` is a receipt for a stop the owner
+ * asked for; `false` is a process that died on its own, which is the case a
+ * calm "stopped" chip would hide. Never render the two the same way.
+ */
+export interface ProjectExit {
+  readonly at: string;
+  /** Null when a signal ended it; `signal` is then non-null. */
+  readonly code: number | null;
+  readonly signal: string | null;
+  readonly requested: boolean;
+}
+
+/**
+ * THREE STATES, AND THE THIRD IS THE POINT — the server's `ApiProjectProcess`.
+ *
+ * `stopped` nothing of ours is running. `lastExit === null` = this dashboard
+ *           never started it; `lastExit.requested === true` = the owner stopped
+ *           it. Two different sentences.
+ * `running` a child is alive AND the URL answered an HTTP request at `readyAt`.
+ *           The server never sets it on the strength of a successful spawn.
+ * `exited`  a child we started died WITHOUT being asked to.
+ *
+ * `url` EXISTS ONLY ON THE `running` MEMBER, and that is the mechanism rather
+ * than a convention: a renderer structurally cannot offer a link to open before
+ * the server has measured that the port answers. Do not lift it out of the
+ * union, and do not build an address from `port` on any other member.
+ *
+ * WHAT `running` DOES NOT CLAIM: that the URL answers RIGHT NOW. It answered at
+ * `readyAt` and the process was alive when the response was built.
+ *
+ * THERE IS NO `starting` MEMBER, deliberately — readiness is measured inside the
+ * start request, so "starting" is the client's own in-flight state and belongs
+ * to whichever component holds the promise. See `project/controls.tsx`.
+ */
+export type ProjectProcess =
+  | { readonly state: "stopped"; readonly lastExit: ProjectExit | null }
+  | {
+      readonly state: "running";
+      /** `http://127.0.0.1:<port>` — loopback, always. */
+      readonly url: string;
+      readonly port: number;
+      readonly pid: number;
+      readonly startedAt: string;
+      /** When the port actually answered. */
+      readonly readyAt: string;
+    }
+  | {
+      readonly state: "exited";
+      readonly port: number;
+      readonly startedAt: string;
+      readonly exit: ProjectExit;
+    };
+
+/**
+ * One folder under `projects/` — the server's `ApiProject`.
+ *
+ * `startCommand` IS NULL WHEN NOTHING HERE CAN BE STARTED (no `package.json`, or
+ * one with no `start` script). READ IT BEFORE OFFERING A START BUTTON: the
+ * route's refusal for that case is a 409 the owner should never have to see.
+ *
+ * `runId` is the run that published this folder, found by reading each run's own
+ * publish record. Null means no record names it — a folder the owner made
+ * himself, or one published before the record existed. It is also the join key
+ * back to a run: prefer it over comparing `path` against
+ * `PublishedProject.path`, because the two sides realpath differently.
+ *
+ * `path` is an absolute HOST path. A browser cannot open it — the same rule as
+ * `artifactPath` and `PublishedProject.path`. `process.url` is the only address
+ * on this type that is a link.
+ */
+export interface Project {
+  /** The directory name under `projects/`. The only id the API accepts. */
+  readonly slug: string;
+  readonly path: string;
+  /** e.g. `npm start`. Null when nothing here can be started. */
+  readonly startCommand: string | null;
+  /** True when the folder has its own git repository (the handover's, or the owner's). */
+  readonly hasRepository: boolean;
+  readonly runId: string | null;
+  readonly process: ProjectProcess;
+}
+
+/**
+ * SORTED BY SLUG, ALPHABETICALLY — measured against the running server, and it
+ * matters because nothing on `Project` carries a timestamp. A list that wants
+ * newest-first has to join `runId` to the runs list for a time; see
+ * `app/projects/page.tsx`, which does exactly that and falls back to this order
+ * when the runs list has not arrived.
+ */
+export interface ProjectsResponse {
+  readonly projects: readonly Project[];
+  /** The loopback port window children are allocated from, inclusive. */
+  readonly portRange: { readonly min: number; readonly max: number };
+}
+
+/**
+ * `started: false` WITH A `running` PROCESS IS THE ALREADY-RUNNING ANSWER — the
+ * existing URL, and no second child. It is a 200 rather than a refusal because
+ * the caller asked for a running project and got one.
+ */
+export interface ProjectStartResponse {
+  readonly started: boolean;
+  readonly project: Project;
+}
+
+export interface ProjectStopResponse {
+  readonly stopped: boolean;
+  readonly project: Project;
+}
+
+export interface ProjectLogLine {
+  readonly stream: "stdout" | "stderr";
+  readonly at: string;
+  readonly text: string;
+}
+
+/**
+ * RECENT output, bounded and redacted by the server. `dropped` is how many lines
+ * fell off the front — render it, because a window that does not say what it
+ * lost is a lie about volume.
+ *
+ * A project that never ran answers with an EMPTY list rather than a refusal.
+ * "Nothing was recorded" is the truthful answer to the question that was asked.
+ */
+export interface ProjectLogs {
+  readonly slug: string;
+  readonly lines: readonly ProjectLogLine[];
+  readonly dropped: number;
+  readonly maxLines: number;
+}

@@ -30,18 +30,52 @@
  *    runner, and it is the kind of thing that silently drifts when a font size
  *    changes. A misaligned gutter makes every number a lie about which row it
  *    labels.
+ *
+ * RE-POINTED 2026-08-02: THE PANEL IS BEHIND TWO CLICKS NOW, AND THE OLD SCOPE
+ * HAD NO REFERENT. All four tests below died in `openRun` — `element(s) not
+ * found` for `section:has(> header:has-text('Code'))` — because `CodeBrowser` is
+ * no longer mounted on the run page. `runs/[runId]/page.tsx:59` records the move
+ * in as many words: it is the `RunSheet`'s "Code" tab, reached with the chip's
+ * `run detail` button and then the tab. Nothing about what is measured changed;
+ * only where it is measured. The `section`/`header` wrapper was the run page's,
+ * not `code-browser.tsx`'s — that component renders a `<header>` for the FILE,
+ * never one saying "Code" — so the scope is now the tabpanel `sheet.tsx` gives
+ * the slot, which is a real id rather than a shape reconstructed from text.
+ *
+ * WHY THE SCOPE IS STILL WORTH HAVING. `#run-panel-code` only exists while the
+ * code tab is selected (`sheet.tsx` renders ONE tabpanel and ids it after the
+ * current tab), so every assertion below is inside the panel it names, and a
+ * regression that moved the tree somewhere else on the page cannot satisfy it.
  */
 
 import { expect, test, type Page } from "@playwright/test";
 
+import { formatBytes } from "../src/lib/code-tree";
 import { RUN_ID } from "./fixtures/config";
+import { CODE_FILES } from "./fixtures/run-fixture";
 
-const CODE_PANEL = "section:has(> header:has-text('Code'))";
+/**
+ * The over-cap transcript the truncation test measures, read off the fixture the
+ * API server is serving rather than described in a literal. The throw is a
+ * negative control: without it a renamed fixture key would leave the assertions
+ * below comparing `undefined` to `undefined`.
+ */
+const TRUNCATED_FILE = CODE_FILES["build.log"];
+if (TRUNCATED_FILE === undefined) throw new Error("the fixture has no build.log");
+
+const CODE_PANEL = "#run-panel-code";
+const TREE = `${CODE_PANEL} nav[aria-label="Files this run produced"]`;
 
 async function openRun(page: Page): Promise<void> {
   await page.goto(`/runs/${RUN_ID}`);
-  // The panel arrives with the run detail, and the tree is a second fetch.
-  await expect(page.locator(`${CODE_PANEL} nav[aria-label="Files this run produced"]`)).toBeVisible();
+  // The sheet opens on the Ticket tab (`openRunSheet` sets it explicitly), so
+  // the Code tab is a second click. `CodeBrowser` fetches on mount and the sheet
+  // deliberately does not keep it mounted across tabs (`sheet.tsx`), so the tree
+  // is a request that only starts here — which is why the wait is after the
+  // click and not after the navigation.
+  await page.getByRole("button", { name: "run detail" }).click();
+  await page.getByRole("tab", { name: "Code" }).click();
+  await expect(page.locator(TREE)).toBeVisible();
 }
 
 test.describe("at 1280", () => {
@@ -51,7 +85,7 @@ test.describe("at 1280", () => {
     page,
   }) => {
     await openRun(page);
-    const tree = page.locator(`${CODE_PANEL} nav[aria-label="Files this run produced"]`);
+    const tree = page.locator(TREE);
 
     // The default: a root file is open, and the directory row says it is open.
     await expect(page.getByTestId("code-text")).toContainText("<h1>Coglane</h1>");
@@ -95,10 +129,36 @@ test.describe("at 1280", () => {
 
     const notice = page.getByTestId("code-truncated");
     await expect(notice).toBeVisible();
-    // BOTH NUMBERS. "Truncated" alone does not tell the reader whether they are
-    // missing two lines or twelve megabytes.
-    await expect(notice).toContainText("256 KB");
+
+    /*
+     * BOTH NUMBERS. "Truncated" alone does not tell the reader whether they are
+     * missing two lines or twelve megabytes.
+     *
+     * THE SHOWN FIGURE IS DERIVED FROM THE RESPONSE, NOT WRITTEN DOWN — and that
+     * is the correction this test needed rather than a new value. It asserted the
+     * literal `256 KB`, the server's cap, and had never once passed: the notice
+     * reads `Showing the first 241 KB of 11.8 MB`. Neither side was wrong about
+     * the cap. `code-browser.tsx:181-191` refuses to name it on purpose — "a
+     * second constant that silently goes stale the day the server's changes, and
+     * the sentence would then be wrong in the most misleading possible way,
+     * understating how much is missing" — so it encodes the text it actually
+     * received. The fixture then never reached the cap anyway: `TRUNCATED_TEXT`
+     * is `"builder step\n".repeat(19_000)`, 13 × 19,000 = 247,000 bytes, and its
+     * `.slice(0, 262_144)` is a no-op on a string already shorter than that.
+     *
+     * So the expectation is computed the same way the component computes it, from
+     * the same fixture the server is serving. A component that went back to
+     * printing a cap constant goes red here, and a fixture whose transcript
+     * changes size does not — which is the opposite of what the literal did.
+     */
+    const shownBytes = new TextEncoder().encode(TRUNCATED_FILE.text ?? "").length;
+    expect(shownBytes).toBeGreaterThan(0);
+    await expect(notice).toContainText(formatBytes(shownBytes));
+    await expect(notice).toContainText(formatBytes(TRUNCATED_FILE.bytes));
+    // The literal total as well, because the file header quotes it and a derived
+    // pair that happened to be the same number would satisfy the two lines above.
     await expect(notice).toContainText("11.8 MB");
+    expect(formatBytes(shownBytes)).not.toBe(formatBytes(TRUNCATED_FILE.bytes));
 
     // POSITIVE CONTROL: the notice is absent on a file that fits, so its
     // presence above is a fact about this file and not a permanent banner.
@@ -146,7 +206,7 @@ test.describe("at 375", () => {
 
   test("the tree stacks above the file rather than squeezing beside it", async ({ page }) => {
     await openRun(page);
-    const tree = page.locator(`${CODE_PANEL} nav[aria-label="Files this run produced"]`);
+    const tree = page.locator(TREE);
     const code = page.getByTestId("code-text");
 
     const treeBox = await tree.boundingBox();

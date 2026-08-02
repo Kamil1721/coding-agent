@@ -192,19 +192,20 @@ test("CONTRACT: parseRunEvent has a case for every server event type", () => {
 });
 
 /* -------------------------------------------------------------------------
- * RunDetail.designLock — the field the three event-type tests above cannot see
+ * RunDetail.designLock — one field, checked by name
  *
- * Everything above compares EVENT TYPES. Nothing anywhere compares `RunDetail`
- * across the two packages, so a field added to the server's `RunDetail` and
- * forgotten in `dashboard/src/lib/api-types.ts` compiles clean on BOTH sides,
- * is serialised by the server, arrives at the browser, and simply never renders
- * — with no test, no typecheck and no lint saying anything. That asymmetry was
- * measured for this field (Task 11 Step 5 control 1): both typechecks stay
- * green and only these tests go red.
+ * Everything above compares EVENT TYPES. A field added to the server's
+ * `RunDetail` and forgotten in `dashboard/src/lib/api-types.ts` compiles clean
+ * on BOTH sides, is serialised by the server, arrives at the browser, and simply
+ * never renders — with no test, no typecheck and no lint saying anything. That
+ * asymmetry was measured for this field (Task 11 Step 5 control 1): both
+ * typechecks stay green and only these tests go red.
  *
- * ONE SIDE TEXTUAL, THE OTHER HARDCODED, for the same reason as above: the
- * expected shape is spelled out here as literals, so deleting the field from
- * BOTH packages cannot pass by matching nothing on both sides.
+ * THIS TEST AND THE `gateAttempts` ONE BELOW ARE PER-FIELD AND CLIENT-ONLY, and
+ * that shape is exactly what let `references`/`documents` lag — see the
+ * whole-shape check further down, which is the general form. They are kept
+ * because they also pin the client's TYPE for each field, which the field-name
+ * comparison cannot see.
  * ---------------------------------------------------------------------- */
 
 test("CONTRACT: the client's RunDetail declares designLock, with the server's shape", () => {
@@ -571,5 +572,265 @@ test("CONTRACT: the client's spend fields carry the server's types, and pricing 
     /"not-priced-subscription-seat"/,
     "the client's PricingBasis is not the server's literal: `costUsd: null` and `totalCostUsd: 0` " +
       "are both already read as free, and this literal is the only thing that says otherwise",
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * `RunDetail` AND ITS NESTED SHAPES — the whole record, not selected fields
+ *
+ * WHY THIS EXISTS, AND WHAT IT COST TO LEARN. Until this check, the only things
+ * comparing `RunDetail` across the packages were the two per-field tests above:
+ * one names `designLock`, one names `gateAttempts`/`gateStopReason`. A field the
+ * server grew that NEITHER test names was invisible — and that is not
+ * hypothetical. `references` and `documents` were added to the server's
+ * `RunDetail` with `ApiAttachment` on 2026-08-02, the client mirror was
+ * deliberately left untouched to avoid a concurrent-edit collision, and the
+ * whole suite stayed green: 1165/1163 at the time. Both typechecks passed, the
+ * server serialised both fields, the browser received them, and no renderer
+ * could see them. `docs/STATE-2026-08-02-end-to-end.md` records the gap and
+ * points at this file's own header for admitting it.
+ *
+ * SO THE UNIT OF COMPARISON IS THE WHOLE FIELD SET, in both directions. Adding a
+ * field to either side alone is red here without anyone remembering to write a
+ * test for that particular field, which is the property the per-field tests
+ * structurally cannot have.
+ *
+ * THREE LEGS, COPIED FROM THE SPEND RECORD ABOVE because that shape is the one
+ * with teeth:
+ *   · LEG ONE compares the client against a HARDCODED list here. Deleting a
+ *     field from BOTH packages is red — the failure a two-sided textual
+ *     comparison cannot see, because two empty parses agree.
+ *   · LEG TWO compares SERVER TEXT against CLIENT TEXT. A field added to the
+ *     server and to the list here but forgotten on the client is red, and so is
+ *     the reverse.
+ *   · The parser itself throws on a zero-field parse (`fieldNames`), so a
+ *     refactor that moves a declaration reads as a refactor rather than as
+ *     agreement between two things that were never found.
+ *
+ * WHAT IT COVERS: twelve shapes, named in `DETAIL_SHAPES`. `RunDetail` itself,
+ * the `RunSummary` it extends, and the ten nested INTERFACES its fields are
+ * typed with.
+ *
+ * WHAT IT DOES NOT COVER, NAMED RATHER THAN IMPLIED:
+ *   · THE TWO UNIONS. `ApiPublishedProject`/`PublishedProject` and the server's
+ *     `ApiProjectProcess` are discriminated unions of object literals, and
+ *     `fieldNames` closes on the FIRST `}` — it would silently read one member
+ *     and compare a fragment. They are excluded deliberately rather than
+ *     half-checked; `ProjectExclusion`, which `PublishedProject` carries, IS in
+ *     the list below.
+ *   · TYPES. This compares field NAMES. A client `references` typed
+ *     `readonly string[]` passes here. The per-field regex tests above are where
+ *     a type is pinned, and `Attachment`'s six are pinned in the test after this
+ *     one for exactly that reason.
+ *   · WHETHER ANYTHING RENDERS THE FIELD. A mirrored type nothing reads is still
+ *     invisible to the owner; that is a component test's job, not this file's.
+ *
+ * THREE NEGATIVE CONTROLS, APPLIED, WATCHED AND RESTORED (both files verified
+ * byte-identical by sha1 afterwards). They are three rather than one because the
+ * checks below are complementary and a single mutation would not have shown it:
+ *
+ *   1. `documents` DELETED FROM THE CLIENT ONLY — the exact 2026-08-02 lag.
+ *      Both the whole-shape test and the attachment-field test went red; the
+ *      first named it as "the client does not declare … it declares …" with
+ *      `documents` absent from the second list. This is the mutation the file
+ *      previously could not see at all.
+ *   2. CLIENT `references` RETYPED `readonly string[]`, THE NAME LEFT ALONE.
+ *      The whole-shape test stayed GREEN and only the typed test went red —
+ *      which is the discrimination that justifies keeping both, and the reason
+ *      the whole-shape check is documented above as not covering types.
+ *   3. `mediaType` DELETED FROM **BOTH** PACKAGES. Leg two (server text vs
+ *      client text) agreed perfectly, exactly as a two-sided textual comparison
+ *      must; leg one's hardcoded list is what went red. This is the can't-fail
+ *      shape this whole file exists to avoid, and it is why the field lists
+ *      below are spelled out rather than derived.
+ * ---------------------------------------------------------------------- */
+
+/** Server interface -> client interface, and the fields both must declare. */
+const DETAIL_SHAPES: readonly {
+  readonly server: string;
+  readonly client: string;
+  readonly fields: readonly string[];
+}[] = [
+  {
+    server: "RunSummary",
+    client: "RunSummary",
+    fields: [
+      "runId",
+      "ticketTitle",
+      "modelId",
+      "status",
+      "startedAt",
+      "endedAt",
+      "heldOutPass",
+      "falseFinish",
+    ],
+  },
+  {
+    // The anchor is spelled identically on both sides, `extends` included, so a
+    // side that stopped extending the summary fails on the anchor rather than
+    // by quietly comparing a different declaration.
+    server: "RunDetail extends RunSummary",
+    client: "RunDetail extends RunSummary",
+    fields: [
+      "ticketText",
+      "phase",
+      "criteria",
+      "tokens",
+      "costUsd",
+      "rateLimit",
+      "silence",
+      "screenshots",
+      "references",
+      "documents",
+      "artifactPath",
+      "previewUrl",
+      "publishedProject",
+      "inferredCriteria",
+      "verdictPath",
+      "gateAttempts",
+      "gateStopReason",
+      "failureReason",
+      "designLock",
+      "adversary",
+    ],
+  },
+  {
+    // THE SHAPE THE LAG WAS IN. `references`/`documents` are lists of this.
+    server: "ApiAttachment",
+    client: "Attachment",
+    fields: ["file", "path", "sha256", "bytes", "mediaType", "url"],
+  },
+  {
+    server: "ApiScreenshot",
+    client: "Screenshot",
+    fields: ["path", "label", "capturedAt"],
+  },
+  {
+    server: "ApiCriterion",
+    client: "RunCriterion",
+    fields: ["id", "statement", "tier", "result"],
+  },
+  {
+    server: "ApiTokens",
+    client: "TokenCounts",
+    fields: ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"],
+  },
+  {
+    server: "ApiRateLimit",
+    client: "RateLimitState",
+    fields: ["limited", "retryAfterSec"],
+  },
+  {
+    server: "ApiRunSilence",
+    client: "RunSilence",
+    fields: ["since", "sinceKind", "quietMin", "thresholdMin", "overThreshold"],
+  },
+  {
+    server: "ApiDesignLock",
+    client: "DesignLockState",
+    fields: ["awaiting", "mockups", "locked", "lockedBy", "reason"],
+  },
+  {
+    server: "ApiAdversaryPass",
+    client: "AdversaryPass",
+    fields: ["ran", "stop", "stopDetail", "findings"],
+  },
+  {
+    server: "ApiAdversaryFinding",
+    client: "AdversaryFinding",
+    fields: ["severity", "klass", "summary", "detail"],
+  },
+  {
+    // Carried by the `published: true` member of `PublishedProject`, which is
+    // itself a union this check cannot parse. The leaf still can be.
+    server: "ApiProjectExclusion",
+    client: "ProjectExclusion",
+    fields: ["path", "reason"],
+  },
+];
+
+test("CONTRACT: the client mirrors every field of RunDetail and its nested shapes, in both directions", () => {
+  const client = readClient(CLIENT_TYPES);
+  const server = readSource(SERVER_TYPES, "this package's own api-types.ts");
+
+  for (const shape of DETAIL_SHAPES) {
+    const onServer = fieldNames(server, SERVER_TYPES, `export interface ${shape.server} {`);
+    const onClient = fieldNames(client, CLIENT_TYPES, `export interface ${shape.client} {`);
+
+    // LEG ONE: the hardcoded expectation. Deleting a field from BOTH packages is
+    // red here and is invisible to the comparison below.
+    assert.deepEqual(
+      sorted(onClient),
+      sorted(shape.fields),
+      `${shape.client} in the client does not declare ${shape.fields.join(", ")} — it declares ` +
+        `${onClient.join(", ")}. The server sends the full shape and the UI cannot see what it omits.`,
+    );
+    // LEG TWO: the two packages against each other.
+    assert.deepEqual(
+      sorted(onServer),
+      sorted(onClient),
+      `${shape.server} and ${shape.client} have drifted: the server declares ${onServer.join(", ")} ` +
+        `and the client ${onClient.join(", ")}. Nothing but this test compares them, and a field the ` +
+        "server sends that the client never declares is serialised, delivered and never rendered.",
+    );
+  }
+});
+
+test("CONTRACT: the client's attachment fields carry the server's types, and the URL is the browser's only handle", () => {
+  /*
+   * THE COMPANION TO THE FIELD-NAME CHECK, for the one shape whose types decide
+   * whether anything renders. A client `Attachment` whose `url` were typed
+   * `string | null` or whose `bytes` were `string` would mirror every NAME and
+   * still break the panel, and the check above cannot see it.
+   *
+   * `url` AND `path` ARE BOTH `string` AND ARE NOT INTERCHANGEABLE — `path` is an
+   * absolute HOST path a browser cannot open, `url` is same-origin and
+   * route-relative. Nothing in a type can enforce which one a renderer reaches
+   * for; both are pinned here so neither can quietly go missing.
+   */
+  const attachment = region(readClient(CLIENT_TYPES), CLIENT_TYPES, "export interface Attachment {", "}");
+  for (const field of [
+    /readonly file: string;/,
+    /readonly path: string;/,
+    /readonly sha256: string;/,
+    /readonly bytes: number;/,
+    /readonly mediaType: string;/,
+    /readonly url: string;/,
+  ]) {
+    assert.match(attachment, field, `the client's Attachment is missing ${String(field)}`);
+  }
+});
+
+test("CONTRACT: the client's RunDetail declares the ticket's attachments, as lists of Attachment", () => {
+  /*
+   * THE REGRESSION THIS FILE FAILED TO CATCH ONCE, PINNED BY NAME AND BY TYPE.
+   * The field-name check above would go red if either field were dropped, but it
+   * would stay green if `references` were typed `readonly string[]` — which is
+   * the plausible wrong mirror, because the POST that creates them takes
+   * `readonly string[]` (base64 data URLs) and the two live a few hundred lines
+   * apart in the same file.
+   *
+   * BOTH FIELDS, NOT ONE. They are a pair for the same reason `gateAttempts` and
+   * `gateStopReason` are: the server folds them off the SAME manifest in the
+   * same request, so a mirror that gained one and not the other is the partial
+   * widening that actually happens.
+   */
+  const detail = region(
+    readClient(CLIENT_TYPES),
+    CLIENT_TYPES,
+    "export interface RunDetail extends RunSummary {",
+    "\nexport ",
+  );
+  assert.match(
+    detail,
+    /readonly references: readonly Attachment\[\];/,
+    "the client's RunDetail mirror has no `references: readonly Attachment[]`: the owner's own " +
+      "reference images are serialised by the server and no panel can see them",
+  );
+  assert.match(
+    detail,
+    /readonly documents: readonly Attachment\[\];/,
+    "the client's RunDetail mirror has no `documents: readonly Attachment[]`: the owner's attached " +
+      "scope or CV is serialised by the server and no panel can see it",
   );
 });

@@ -34,8 +34,9 @@ import type {
   RunGraphResponse,
   RunSummary,
 } from "../../src/lib/api-types";
+import type { ChatMessage } from "../../src/lib/api";
 import { foldGraphAll } from "../../src/lib/graph";
-import { REPLAY_RUN_ID, RUN_ID } from "./config";
+import { PLAN_RUN_ID, REPLAY_RUN_ID, RUN_ID } from "./config";
 
 export const MODEL_ID = "claude-sonnet-4-6";
 
@@ -212,6 +213,22 @@ export const RUN_DETAIL: RunDetail = {
   costUsd: null,
   rateLimit: null,
   screenshots: [],
+  /*
+   * NO ATTACHMENTS, WRITTEN OUT RATHER THAN OMITTED — and the difference costs
+   * something, so it is named here.
+   *
+   * `[]` is what the server sends for a ticket nobody attached a file to, and
+   * `TicketAttachmentsPanel` renders nothing for it, so every existing spec sees
+   * the Ticket tab it saw before. What this fixture can therefore NO LONGER
+   * reproduce is the other absence: a run recorded before these fields existed
+   * answers with a body carrying neither KEY, and `lib/api.ts` casts responses
+   * with `parsed as T` and no runtime validation. That case is real (it is every
+   * run in `dashboard/runs/` today) and is guarded by `?? []` at the mount site
+   * in `canvas/sheet.tsx`; it was verified against the live backend on
+   * 2026-08-02, not here.
+   */
+  references: [],
+  documents: [],
   artifactPath: null,
   previewUrl: null,
   inferredCriteria: 0,
@@ -234,9 +251,190 @@ export const RUN_DETAIL: RunDetail = {
 /** The same run under a second id, served with a replaying stream. */
 export const REPLAY_DETAIL: RunDetail = { ...RUN_DETAIL, runId: REPLAY_RUN_ID };
 
+/* -------------------------------------------------------------------------
+ * THE PLAN PARK
+ *
+ * A run stopped in the `plan` phase with three questions outstanding, one of
+ * them already settled, and one owner turn that was a QUESTION rather than an
+ * answer — because that last one is the state the whole surface is judged on:
+ * an owner who asks for clarification must be able to see that he has not
+ * answered.
+ *
+ * EVERY STRING BELOW IS THE SHAPE ITS PRODUCER EMITS, quoted from the server
+ * rather than invented, so that a client that renders this fixture renders the
+ * real thing:
+ *
+ *   · the plan prose row  — `appendMessage(runId, {role:"run", text:
+ *     opened.plan.join("\n")})`, `orchestrator.ts#planPhase`
+ *   · the question block  — `questionText(questions)` =
+ *     `questions.map(q => `${q.id}: ${q.text}`).join("\n")`,
+ *     `server/src/plan-dialogue.ts`
+ *   · the re-ask          — `PlanDriver#reask`, the SAME function over the
+ *     still-open set, which is what makes the newest block the open set
+ *   · the park log line   — `orchestrator.ts#planPhase`'s `#emitLog`, verbatim
+ *     including the minute count the countdown is derived from
+ *   · the `recorded against` line — `PlanDriver#report`
+ * ---------------------------------------------------------------------- */
+
+const PLAN_SUMMARY: RunSummary = {
+  runId: PLAN_RUN_ID,
+  ticketTitle: "Build me a portfolio site",
+  modelId: MODEL_ID,
+  // PARKED, NOT RUNNING. `phase: "plan"` and `awaiting_input` together are the
+  // only thing that makes the newest question block the OPEN set rather than a
+  // list of questions that have all been settled.
+  status: "awaiting_input",
+  startedAt: new Date("2026-08-02T09:00:00.000Z").toISOString(),
+  endedAt: null,
+  heldOutPass: null,
+  falseFinish: null,
+};
+
+export const PLAN_DETAIL: RunDetail = {
+  ...PLAN_SUMMARY,
+  failureReason: null,
+  silence: null,
+  publishedProject: null,
+  ticketText: "build me a portfolio site",
+  phase: "plan",
+  // NO CRITERIA, AND THAT IS THE POINT OF THE PHASE. The suite is authored after
+  // the dialogue folds into the brief; a parked plan run has none yet.
+  criteria: [],
+  tokens: null,
+  costUsd: null,
+  rateLimit: null,
+  screenshots: [],
+  references: [],
+  documents: [],
+  artifactPath: null,
+  previewUrl: null,
+  inferredCriteria: 0,
+  verdictPath: "",
+  gateAttempts: 0,
+  gateStopReason: null,
+  designLock: null,
+  adversary: null,
+};
+
+/**
+ * NO GRAPH, FOLDED BY THE REAL REDUCER RATHER THAN WRITTEN OUT.
+ *
+ * A run parked in the plan phase has no builder session, so there are no `graph_*`
+ * events to fold and the canvas draws the plan STAGE instead. `foldGraphAll([])`
+ * is what the server would answer with, and using it means an added field on
+ * `GraphState` cannot leave this fixture serving a shape the app no longer reads.
+ */
+export const PLAN_GRAPH: RunGraphResponse = { ...foldGraphAll([]), atSeq: 0 };
+
+/**
+ * The park's log lines, replayed on the stream the way `/events` replays them.
+ *
+ * THE PARK LINE'S TIMESTAMP IS THE CLOCK. `at` is what the client turns into
+ * `TraceEntry.atMs`, and the countdown is that instant plus the minutes named in
+ * the sentence — so this fixture's `at` is written at RUN TIME (see
+ * `planEvents`) rather than frozen, because a fixture with a 2026-08-02 park
+ * instant would render "the window has closed" forever and prove nothing about
+ * the countdown.
+ */
+export function planEvents(nowMs: number): readonly RunEvent[] {
+  const parkedAt = new Date(nowMs - 4 * 60_000).toISOString();
+  return [
+    { type: "phase", phase: "plan", at: parkedAt },
+    {
+      type: "log",
+      level: "info",
+      at: parkedAt,
+      text:
+        "the planning seat proposed 4 question(s) and 3 earned a place. The run is waiting for an " +
+        `answer in the chat; POST /api/runs/${PLAN_RUN_ID}/messages carries one. With no answer ` +
+        "inside 20 minutes the run proceeds on what it assumed, and the assumptions are recorded.",
+    },
+    {
+      type: "log",
+      level: "info",
+      at: new Date(nowMs - 90_000).toISOString(),
+      /*
+       * WHAT WAS RECORDED, WHICH IS NOT WORD-FOR-WORD WHAT HE TYPED. He wrote
+       * "PQ-2: one page is enough. PQ-1: what do you mean by the grid?" in one
+       * message; `stripQuestionIds` takes the addressing off and the seat's
+       * refinement narrows it to the clause that answers PQ-2. The panel prints
+       * this, not his sentence, because the arbiter's echo is the whole
+       * mitigation for a seat that paraphrases wrongly.
+       */
+      text: "recorded against PQ-2 (answered, addressed): one page is enough",
+    },
+  ];
+}
+
+/**
+ * The chat, oldest first, exactly as `GET /api/runs/:id/messages` returns it.
+ *
+ * FOUR TURNS AND THE LAST WORD IS THE RUN'S, which is the shape a park always
+ * has: the seat asks, the owner says something, the seat responds and RE-ASKS
+ * whatever is still open. Here the owner answered PQ-2 and then asked a question
+ * of his own about PQ-1 — so PQ-1 and PQ-3 come back in the final block and PQ-2
+ * does not.
+ */
+export const PLAN_MESSAGES: readonly ChatMessage[] = [
+  {
+    seq: 1,
+    at: new Date("2026-08-02T09:00:12.000Z").toISOString(),
+    role: "run",
+    text:
+      "A single-page portfolio: a short intro, a project grid, and a contact line.\n" +
+      "Static HTML and CSS, no framework, no build step.",
+    images: [],
+    deliveredAt: null,
+  },
+  {
+    seq: 2,
+    at: new Date("2026-08-02T09:00:12.000Z").toISOString(),
+    role: "run",
+    text:
+      "PQ-1: How many projects should the grid show?\n" +
+      "PQ-2: Should each project have its own page, or is one page enough?\n" +
+      "PQ-3: Which of the two images you attached is the one at the top?",
+    images: [],
+    deliveredAt: null,
+  },
+  {
+    seq: 3,
+    at: new Date("2026-08-02T09:01:40.000Z").toISOString(),
+    role: "owner",
+    text: "PQ-2: one page is enough. PQ-1: what do you mean by the grid?",
+    images: [],
+    deliveredAt: new Date("2026-08-02T09:01:41.000Z").toISOString(),
+  },
+  {
+    seq: 4,
+    at: new Date("2026-08-02T09:01:58.000Z").toISOString(),
+    role: "run",
+    text:
+      "The grid is the row of project cards under the intro — how many you want decides whether it " +
+      "is one row or two.",
+    images: [],
+    deliveredAt: null,
+  },
+  {
+    // THE RE-ASK, AND IT IS THE WHOLE MECHANISM. `PlanDriver#reask` posts the
+    // still-open set through the same `questionText`, so this block IS the answer
+    // to "what is still outstanding" — PQ-2 is gone from it because it was
+    // recorded, PQ-1 is still here because a question is never an answer.
+    seq: 5,
+    at: new Date("2026-08-02T09:01:58.000Z").toISOString(),
+    role: "run",
+    text:
+      "PQ-1: How many projects should the grid show?\n" +
+      "PQ-3: Which of the two images you attached is the one at the top?",
+    images: [],
+    deliveredAt: null,
+  },
+];
+
 export const RUN_LIST: readonly RunSummary[] = [
   SUMMARY,
   { ...SUMMARY, runId: REPLAY_RUN_ID },
+  PLAN_SUMMARY,
 ];
 
 export const MODELS: readonly ModelOption[] = [
@@ -288,8 +486,21 @@ export const CODE_TREE: CodeTreeResponse = {
   truncated: false,
 };
 
-/** The 256 KB the server would send of a 12,369,476-byte transcript. */
-const TRUNCATED_TEXT = `${"builder step\n".repeat(19_000)}`.slice(0, 262_144);
+/**
+ * A prefix of a 12,369,476-byte transcript, standing in for what the server
+ * sends when it hits its cap.
+ *
+ * IT IS 247,000 BYTES, NOT THE 256 KB THIS COMMENT USED TO CLAIM, and the
+ * `.slice` is why the claim went unnoticed: `"builder step\n"` is 13 bytes and
+ * 13 × 19,000 = 247,000, so slicing at 262,144 is a no-op on a string that never
+ * reaches it. The number matters because `code-browser.tsx` reports the size of
+ * what ARRIVED rather than a copy of the server's constant — measured on screen
+ * as `Showing the first 241 KB of 11.8 MB` — so the sentence under test is a
+ * fact about this string. `code-browser.browser.spec.ts` now derives its
+ * expectation from this constant instead of naming a literal, which means the
+ * repeat count above can change freely and only this comment has to keep up.
+ */
+const TRUNCATED_TEXT = "builder step\n".repeat(19_000);
 
 export const CODE_FILES: Readonly<Record<string, CodeFileResponse>> = {
   "index.html": {

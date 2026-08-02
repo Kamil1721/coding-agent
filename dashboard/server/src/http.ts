@@ -15,12 +15,27 @@
  * No CORS header is set anywhere, for the same reason: the only page that may
  * talk to this API is the one this server serves.
  *
- * ROUTES BEYOND THE FROZEN CONTRACT: exactly six, and all six are additive.
+ * ROUTES BEYOND THE FROZEN CONTRACT: thirteen, and every one of them is
+ * additive — no existing shape has been narrowed, renamed or removed.
  *
  * `GET /api/runs/:id/screenshots/:file` serves a captured screenshot, because
  * `RunDetail.screenshots[].path` is an absolute host path that a browser cannot
  * open. It resolves ONE path segment inside that run's own screenshot
  * directory and nothing else.
+ *
+ * `GET /api/runs/:id/references/:file` and `GET /api/runs/:id/documents/:file`
+ * serve THE OWNER'S OWN UPLOADS for the same reason and with a stricter lookup.
+ * Measured before they existed: a PNG and a PDF pasted into the ticket form
+ * render as bare text chips and `document.querySelectorAll('img')` returns zero
+ * elements, because `ReferenceImage.path` is a filesystem path written for an
+ * agent that calls `Read`. THEY DO NOT COPY `serveScreenshot`'S BASENAME-JOIN.
+ * A run's screenshot directory holds nothing but harness PNGs; `references/`
+ * additionally holds `references.json` — absolute host paths and digests off the
+ * owner's machine — and the screenshots `runCapture` writes when a ticket names
+ * a page. So the lookup is the MANIFEST's own entry list and the read is always
+ * `join(<that run's directory>, file)`; `run-attachments.ts` owns all four
+ * refusals and the content-type derivation, and this file does routing only, for
+ * the same reason `code-files.ts` owns the workspace ones.
  *
  * `GET /api/runs/:id/graph` returns the folded orchestration canvas plus the
  * durable watermark it was folded at (spec §9.2). It exists because the
@@ -98,6 +113,24 @@
  * event stream saying the attachment was STORED, not read. The wording is about
  * what the intake does rather than about what every other module does not,
  * because the second kind of sentence goes stale silently.
+ *
+ * THE FIVE NEWEST ROUTES ARE ABOUT A PROJECT AFTER THE RUN THAT BUILT IT.
+ *
+ * `GET /api/projects`, `POST /api/projects/:slug/start`,
+ * `POST /api/projects/:slug/stop` and `GET /api/projects/:slug/logs` give a
+ * published folder a supervised local lifecycle. `project-runner.ts` owns every
+ * refusal, every path decision and every child process; this file routes and
+ * serializes. TWO PROPERTIES OF THAT MODULE MATTER TO ANYONE EDITING HERE:
+ * NOTHING STARTS WITHOUT AN EXPLICIT OWNER REQUEST (there is no auto-start, on
+ * boot or anywhere else), and the slug reaches it STILL PERCENT-ENCODED — the
+ * same construction the attachment routes use, and the reason a helpful
+ * `decodeURIComponent` in the router would be a hole rather than a convenience.
+ *
+ * `POST /api/runs/:id/publish` re-runs the publish and handover for a run that
+ * has already finished. It is keyed on the RUN because the publish seam is: the
+ * folder is the output. Without it, `project-handover.ts` would only ever reach
+ * runs that finish AFTER it was written, which is none of the runs on this
+ * machine.
  */
 
 import { createServer } from "node:http";
@@ -111,6 +144,11 @@ import { ADVERSARY_RECORD_FILE, adversaryPassFromRecord } from "./adversary.js";
 import type {
   ApiAdversaryPass,
   ApiErrorResponse,
+  ApiProjectLogs,
+  ApiProjectStartResponse,
+  ApiProjectStopResponse,
+  ApiProjectsResponse,
+  ApiRepublishResponse,
   CreateRunResponse,
   HealthResponse,
   ModelOption,
@@ -141,8 +179,11 @@ import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
 import { describeError, silenceOf } from "./orchestrator.js";
 import type { DashboardPaths } from "./paths.js";
-import { readPublishedProject } from "./project-publish.js";
+import { readPublishedProject, republishProject } from "./project-publish.js";
+import { ProjectRunner } from "./project-runner.js";
 import { runPathsFor, safeSegment } from "./paths.js";
+import { attachmentHeaders, isAttachmentKind, listAttachments, resolveAttachment } from "./run-attachments.js";
+import type { AttachmentKind } from "./run-attachments.js";
 import {
   containsStoredSecret,
   declaredRuntimeMode,
@@ -275,6 +316,26 @@ export interface RunController {
    * router stamps it delivered.
    */
   pushLiveMessage(runId: string, message: { text: string; images: readonly string[] }): boolean;
+  /**
+   * Hand an owner message to a run parked in the PLAN dialogue.
+   *
+   * `true` means this run is waiting for an answer and will read the message as
+   * one — a different fact from `pushLiveMessage`'s `true`, which means a live
+   * session took it. Both are false for a queued run and for one between
+   * segments, which is the case the boundary drain exists for.
+   *
+   * IT DOES NOT STAMP `delivered_at` AND THE ROUTER MUST NOT EITHER: the turn is
+   * asynchronous, and the orchestrator stamps only once the answer is durable.
+   *
+   * OPTIONAL FOR THE REASON `HttpDeps.env` IS: this interface is implemented by
+   * eight test doubles across six files, two of them another fleet's untracked
+   * work in progress, and a required member would break all of them for a method
+   * none of them exercises. THE COST IS THAT A RENAME WOULD SILENTLY DISABLE THE
+   * PLAN INTAKE rather than fail to compile — `?.` swallows a missing method — so
+   * `plan-phase.test.ts` asserts the real `Orchestrator` still carries it, both
+   * at the type level and at run time.
+   */
+  deliverPlanReply?(runId: string): boolean;
 }
 
 export interface HttpDeps {
@@ -313,6 +374,19 @@ export interface HttpDeps {
    * the manifest, the id — be checked with no network and no browser.
    */
   readonly captureSite?: (options: CaptureOptions) => Promise<SiteCaptureResult>;
+  /**
+   * The supervisor for locally-started published projects.
+   *
+   * OPTIONAL FOR THE SAME REASON `gate` IS — every existing caller builds this
+   * server without one — but it is NOT interchangeable per request: it holds
+   * the child processes, so a runner built inside `handle()` would forget every
+   * project it started. `createDashboardServer` resolves it once.
+   *
+   * `index.ts` PASSES ITS OWN, and must: the boot reconcile and the shutdown
+   * kill are called on that instance, and a server holding a different one
+   * would leave its children running after exit.
+   */
+  readonly projects?: ProjectRunner;
 }
 
 /**
@@ -320,10 +394,12 @@ export interface HttpDeps {
  *
  * The probe holds the cache and the in-flight promise, so it must be ONE object
  * for the life of the server — resolving it inside `handle()` would build a new
- * one per request and probe docker on every poll.
+ * one per request and probe docker on every poll. The project runner holds live
+ * child processes and has the same requirement, one layer up.
  */
 interface ResolvedHttpDeps extends HttpDeps {
   readonly gate: GateProbe;
+  readonly projects: ProjectRunner;
 }
 
 /**
@@ -434,6 +510,25 @@ function toDetail(
      */
     silence: silenceOf(row, store, env),
     screenshots,
+    /*
+     * WHAT THE OWNER ATTACHED, WITH AN ADDRESS A PAGE CAN OPEN.
+     *
+     * OFF THE MANIFEST ON DISK, per request, like `readDesignLock` and
+     * `readAdversaryPass` above — the bytes and their digests were never in
+     * SQLite, so the row cannot answer this. `listAttachments` reads
+     * `references/references.json` for BOTH lists and returns `[]` when it is
+     * absent or unreadable; api-types.ts states that flattening where the fields
+     * are declared.
+     *
+     * `row.runId`, NEVER THE REQUEST'S STRING, exactly as the `results` read
+     * above: the id reaching here has already matched a persisted run, so this
+     * adds no path surface.
+     *
+     * THESE ARE NOT `designLock.mockups`. Those are generated proposals; these
+     * are the owner's own uploads, and the two answer different questions.
+     */
+    references: listAttachments(paths.runs, row.runId, "references"),
+    documents: listAttachments(paths.runs, row.runId, "documents"),
     artifactPath: row.artifactPath,
     previewUrl: row.previewUrl,
     /*
@@ -609,6 +704,9 @@ export function createDashboardServer(deps: HttpDeps): Server {
     gate:
       deps.gate ??
       new GateProbe({ paths: deps.paths, env: deps.env ?? process.env }),
+    // A DEFAULT RUNNER SPAWNS NOTHING until a route asks it to, so building one
+    // for a server that never serves `/api/projects` costs an object.
+    projects: deps.projects ?? new ProjectRunner({ paths: deps.paths, env: deps.env ?? process.env }),
   };
   const server = createServer((request, response) => {
     void handle(resolved, request, response).catch((error: unknown) => {
@@ -679,6 +777,78 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
       return;
     }
     sendError(response, 405, "method_not_allowed", `${method} is not allowed on ${path}`, null);
+    return;
+  }
+
+  /* GET /api/projects
+   * POST /api/projects/:slug/start   |  POST /api/projects/:slug/stop
+   * GET  /api/projects/:slug/logs                    (additive; see the file header)
+   *
+   * THE SLUG IS NEVER TOUCHED HERE. `segments` are still percent-encoded
+   * (`URL.pathname` does not decode) and nothing below decodes them, exactly as
+   * for the attachment routes: `resolveProjectDir` owns the allowlist, the join
+   * and the realpath containment re-check, and its character class has no `%`.
+   * A router that helpfully decoded first would reopen the double-decode hole on
+   * the one route in this file that SPAWNS A PROCESS from the path it resolves.
+   */
+  if (segments[1] === "projects") {
+    if (segments.length === 2 && method === "GET") {
+      const body: ApiProjectsResponse = deps.projects.list();
+      sendJson(response, 200, body);
+      return;
+    }
+    if (segments.length === 4) {
+      const slug = segments[2] ?? "";
+      const action = segments[3];
+      /* THE SAME CROSS-ORIGIN REFUSAL THE SECRET INTAKE MAKES, AND FOR A BIGGER
+       * REASON. A page the owner did not open cannot READ this API — no CORS
+       * header is ever set — but without a preflight it can still POST, and the
+       * effect of these two routes is not a stored value: it is a PROCESS
+       * SPAWNED or KILLED on the owner's machine. `originIsDashboard` allows an
+       * absent `Origin` (curl, the cron tick) and refuses a present one that is
+       * not loopback, including the literal "null" a sandboxed iframe sends. */
+      if (method === "POST" && !originIsDashboard(request.headers.origin)) {
+        sendError(
+          response,
+          403,
+          "cross_origin_write",
+          "a project may only be started or stopped from the dashboard's own page",
+          "Use the dashboard at http://127.0.0.1:4319, or send the request with no Origin header.",
+        );
+        return;
+      }
+      if (action === "start" && method === "POST") {
+        const outcome = await deps.projects.start(slug);
+        if (!outcome.ok) {
+          sendError(response, outcome.status, outcome.code, outcome.message, outcome.remediation);
+          return;
+        }
+        const body: ApiProjectStartResponse = { started: outcome.started, project: outcome.project };
+        sendJson(response, 200, body);
+        return;
+      }
+      if (action === "stop" && method === "POST") {
+        const outcome = await deps.projects.stop(slug);
+        if (!outcome.ok) {
+          sendError(response, outcome.status, outcome.code, outcome.message, outcome.remediation);
+          return;
+        }
+        const body: ApiProjectStopResponse = { stopped: outcome.stopped, project: outcome.project };
+        sendJson(response, 200, body);
+        return;
+      }
+      if (action === "logs" && method === "GET") {
+        const outcome = deps.projects.logs(slug);
+        if (!outcome.ok) {
+          sendError(response, outcome.status, outcome.code, outcome.message, outcome.remediation);
+          return;
+        }
+        const body: ApiProjectLogs = outcome.logs;
+        sendJson(response, 200, body);
+        return;
+      }
+    }
+    sendError(response, 404, "not_found", `no route for ${method} ${path}`, null);
     return;
   }
 
@@ -852,6 +1022,36 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
     return;
   }
 
+  /* POST /api/runs/:id/publish  (additive; see the file header)
+   *
+   * KEYED ON THE RUN, NOT ON THE PROJECT FOLDER, because that is what
+   * `republishProject` takes: it works out `runs/<id>/workspace` itself and the
+   * folder is an OUTPUT of the publish, not an input to it. `ApiProject.runId`
+   * is how the projects list reaches this route.
+   *
+   * WITHOUT IT THE HANDOVER ONLY EVER HELPS FUTURE RUNS. `publishProject` is
+   * called from the orchestrator's terminal path, and every run on this machine
+   * is already terminal — so the one published project would never gain a
+   * repository, a README or a schema dump.
+   */
+  if (segments.length === 4 && segments[3] === "publish" && method === "POST") {
+    // It writes into `projects/`, commits, and can preserve the owner's own
+    // uncommitted work under a machine-authored message. Same guard, same
+    // reason as the two project routes above.
+    if (!originIsDashboard(request.headers.origin)) {
+      sendError(
+        response,
+        403,
+        "cross_origin_write",
+        "a run may only be published from the dashboard's own page",
+        "Use the dashboard at http://127.0.0.1:4319, or send the request with no Origin header.",
+      );
+      return;
+    }
+    republishRoute(deps, row, response);
+    return;
+  }
+
   // GET /api/runs/:id/files[?path=…]  (additive; see the file header)
   //
   // `url.searchParams.get` HAS ALREADY PERCENT-DECODED ONCE, which is why
@@ -881,6 +1081,28 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
   if (segments.length === 5 && segments[3] === "screenshots" && method === "GET") {
     serveScreenshot(deps, runId, segments[4] ?? "", response);
     return;
+  }
+
+  /* GET /api/runs/:id/references/:file  and  GET /api/runs/:id/documents/:file
+   * (additive; see the file header)
+   *
+   * BELOW THE `row === null` CHECK ABOVE, WHICH IS LOAD-BEARING. An unknown run
+   * id is answered `unknown_run` by the dispatcher before any handler sees it,
+   * so this route cannot be used to ask whether a run exists in a second,
+   * differently-worded way. `api-attachments.test.ts` asserts the error CODE
+   * and not just the status, so moving this branch above that check is red.
+   *
+   * The kind is the same string as the directory name and the same string as the
+   * URL segment — see `AttachmentKind`. `segments` are still percent-encoded
+   * here (`URL.pathname` does not decode) and NOTHING BELOW DECODES THEM: the
+   * filename allowlist in `run-attachments.ts` has no `%` in its character
+   * class, which is how the double-decode hole stays closed by construction. */
+  if (segments.length === 5 && method === "GET") {
+    const kind = segments[3] ?? "";
+    if (isAttachmentKind(kind)) {
+      serveAttachment(deps, runId, kind, segments[4] ?? "", response);
+      return;
+    }
   }
 
   sendError(response, 404, "not_found", `no route for ${method} ${path}`, null);
@@ -1118,6 +1340,25 @@ async function postMessage(
   if (live) deps.store.markMessagesDelivered(runId, [message.seq]);
 
   /*
+   * A RUN PARKED IN THE PLAN DIALOGUE READS THIS AS AN ANSWER, NOT AS A
+   * MID-RUN REDIRECTION — and it is the SAME intake, deliberately. Building a
+   * second route for answers would mean two message tables, two delivery stamps
+   * and two chances for one of them to drop the owner's sentence; the chat
+   * channel already carries text and images to a specific run and already renders
+   * both directions.
+   *
+   * ONLY WHEN THE LIVE PUSH DECLINED. A parked run has no open segment, so the
+   * two are mutually exclusive by construction; asking in this order means a
+   * running build's channel is never shadowed by a stale plan record.
+   *
+   * NOT STAMPED HERE. The turn itself is asynchronous — it makes a seat call —
+   * and `PlanDriver` stamps the row only after `plan.json` is written. Stamping
+   * here would lose an answer to a crash in between; leaving it pending costs at
+   * worst a repeated turn.
+   */
+  const planned = live ? false : (deps.orchestrator.deliverPlanReply?.(runId) ?? false);
+
+  /*
    * ON THE EVENT STREAM TOO, so the trace shows the redirection in the same
    * timeline as the work it changed. Without this the run record would show the
    * behaviour changing with no visible cause.
@@ -1128,7 +1369,9 @@ async function postMessage(
     text:
       (live
         ? "owner message delivered into the running session"
-        : "owner message queued for the next segment boundary") +
+        : planned
+          ? "owner message taken up by the plan dialogue, before any criteria are written"
+          : "owner message queued for the next segment boundary") +
       (written.length > 0 ? ` with ${String(written.length)} image(s)` : "") +
       `: ${text.slice(0, 200)}`,
   });
@@ -1849,6 +2092,58 @@ async function putSecretRoute(deps: HttpDeps, request: IncomingMessage, response
 }
 
 /**
+ * Publish (or re-publish) a finished run's code, and answer with what happened
+ * to the folder.
+ *
+ * SYNCHRONOUS, AND THAT IS A REAL COST: `republishProject` copies the workspace
+ * on this thread, so the event loop is held for the duration. Measured on the
+ * one published project here — 12 files, 1.37 MB — that is milliseconds; a run
+ * that installed `node_modules` would be seconds, and the owner would see the
+ * dashboard stall. It is still synchronous because the publish module is, and a
+ * second, asynchronous copy path would be a second set of rules about
+ * overwriting somebody's folder.
+ *
+ * A DECLINE IS THE ERROR ENVELOPE, NOT A 200. Nothing was published, so the
+ * response says so in the shape every other refusal in this file uses; the
+ * decline's own vocabulary becomes the error code. `run-not-terminal` is
+ * deliberately never written to `results/` by the publish module — it would
+ * overwrite the record the LIVE run will write when it finishes — so this
+ * response body is the only place it is ever reported.
+ */
+function republishRoute(deps: ResolvedHttpDeps, row: RunRow, response: ServerResponse): void {
+  const record = republishProject({ run: row, paths: deps.paths });
+  if (!record.published) {
+    sendError(
+      response,
+      record.reason === "copy-failed" ? 500 : 409,
+      record.reason.replace(/-/g, "_"),
+      record.detail,
+      record.reason === "run-not-terminal" ? "Wait for the run to finish, or cancel it, then publish." : null,
+    );
+    return;
+  }
+  const repository = record.handover.repository;
+  const body: ApiRepublishResponse = {
+    runId: record.runId,
+    path: record.path,
+    publishedAt: record.publishedAt,
+    fileCount: record.fileCount,
+    bytes: record.bytes,
+    repository: repository.state,
+    commit: repository.state === "declined" ? null : repository.commit,
+    repositoryDetail: repository.state === "declined" ? repository.detail : null,
+    readme: record.handover.readme.state,
+    gitignore: record.handover.gitignore.state,
+    databases: record.handover.databases.map((database) => ({
+      file: database.file,
+      schema: database.dumped ? database.schemaPath : null,
+    })),
+    redirectedFrom: record.redirected?.from ?? null,
+  };
+  sendJson(response, 200, body);
+}
+
+/**
  * Serve the run's workspace: the tree, or one file.
  *
  * ROUTING ONLY. Every decision about what may be served is `code-files.ts`'s,
@@ -2117,4 +2412,45 @@ function serveScreenshot(deps: HttpDeps, runId: string, file: string, response: 
     "Content-Security-Policy": "default-src 'none'; sandbox",
   });
   createReadStream(target).pipe(response);
+}
+
+/**
+ * Serve one file the OWNER attached to this run's ticket.
+ *
+ * ROUTING ONLY. Every refusal, the containment check and the content type live
+ * in `run-attachments.ts`, for the reason the file header gives: the list this
+ * server advertises on `RunDetail` and the bytes it hands back must not be able
+ * to disagree about what may be served, so one module decides both.
+ *
+ * ONE STATUS FOR EVERY REFUSAL, AND IT IS 404 RATHER THAN 403. A hostile
+ * filename, an attachment this run never had, and a symlink that escapes the
+ * directory are indistinguishable from outside — a route that answered 403 for
+ * the third would be an existence oracle for the owner's filesystem, which this
+ * process can read in full because it runs as his UID.
+ *
+ * THE STREAM'S `error` IS HANDLED, which `serveScreenshot` above does not do.
+ * Headers are already sent by then so there is no status left to change, but an
+ * unhandled `error` on a stream takes the whole server down — and unlike a
+ * harness screenshot, an attachment sits in a directory the owner can and does
+ * open in Finder. Same handling as `sendPreviewFile`.
+ */
+function serveAttachment(
+  deps: HttpDeps,
+  runId: string,
+  kind: AttachmentKind,
+  file: string,
+  response: ServerResponse,
+): void {
+  const resolved = resolveAttachment(deps.paths.runs, runId, kind, file);
+  if (resolved === null) {
+    const noun = kind === "references" ? "reference" : "document";
+    sendError(response, 404, "not_found", `no such ${noun} on this run`, null);
+    return;
+  }
+  response.writeHead(200, attachmentHeaders(resolved));
+  const stream = createReadStream(resolved.realPath);
+  stream.on("error", () => {
+    response.destroy();
+  });
+  stream.pipe(response);
 }

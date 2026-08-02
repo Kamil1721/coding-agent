@@ -355,7 +355,22 @@ const RUN_STATUSES: readonly ApiRunStatus[] = [
   "failed",
   "cancelled",
 ];
-const PHASES: readonly ApiPhase[] = ["spec", "build", "gate", "judge", "done"];
+/**
+ * `plan` LEADS, AND ADDING IT MIGRATES NOTHING.
+ *
+ * This list has exactly one consumer — `oneOf(PHASES, str(row, "phase"), "phase")`
+ * in `toRunRow` — and `oneOf` is a MEMBERSHIP test, not an index. So every run row
+ * already on disk holds one of the original five, all of which are still members,
+ * and no backfill exists to be forgotten. `plan-phase.test.ts` inserts a row whose
+ * phase is `spec` and reads it back through this guard, so the claim is checked
+ * rather than argued.
+ *
+ * THE ORDER IS FOR READERS, NOT FOR THIS FILE. Nothing here indexes it; the
+ * client's `PHASE_ORDER` does, and that is where adding a member at the front has
+ * a visible cost (an old run whose first recorded phase was `spec` renders as
+ * though it completed a plan phase it never had).
+ */
+const PHASES: readonly ApiPhase[] = ["plan", "spec", "build", "gate", "judge", "done"];
 // "moonshot" and "deepseek" left this list on 2026-07-30 with the model rows the
 // owner removed. Nothing in this store can hold either: `POST /api/runs` refused
 // every metered id with 409 for as long as they existed, so no run row was ever
@@ -803,7 +818,11 @@ export class RunStore {
         run.provider,
         flag(run.deploy),
         "queued" satisfies ApiRunStatus,
-        "spec" satisfies ApiPhase,
+        // A QUEUED RUN HAS NOT REACHED ANY PHASE, so this is a statement about
+        // what it will do first rather than what it has done. `plan` is now that
+        // phase; leaving `spec` here would have every queued run render one phase
+        // ahead of where it will actually start.
+        "plan" satisfies ApiPhase,
         run.queuePosition,
         run.startedAt,
         // NOT REDACTED, AND IT CANNOT BE: this is one of two literals or the
@@ -823,6 +842,71 @@ export class RunStore {
   getRun(runId: string): RunRow | null {
     const row = this.#db.prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE run_id = ?`).get(runId);
     return row === undefined ? null : toRunRow(row);
+  }
+
+  /**
+   * Replace a run's brief and the identity derived from it — the PLAN PHASE'S one
+   * write, and the only write in this file that may change a ticket id.
+   *
+   * NOT THREE NEW FIELDS ON {@link RunPatch}. That type's comment — "the fields a
+   * caller may change after creation; everything else is frozen" — is load-bearing,
+   * and widening it to the ticket columns is exactly how a caller two months from
+   * now mutates a ticket AFTER its suite is frozen with nothing to stop it. A
+   * separate method can carry the guard, and does:
+   *
+   * IT REFUSES ONCE `suite_sha256` IS SET, OR ONCE THE RUN IS TERMINAL. The
+   * acceptance suite is written to `acceptance/<ticketId>/` and a run is bound to
+   * it by that column; amending the brief afterwards would leave the row naming a
+   * suite it was not graded against, and the next `#execute` entry would miss
+   * `assertSuiteIntact` and author a SECOND suite on the owner's quota — the exact
+   * failure `ticket.ts` documents for the wrong read-back function. The plan phase
+   * runs before `#specPhase`, so this refusal never fires in the ordinary path;
+   * that is what makes it a check on the ordering rather than a comment about it.
+   *
+   * THE CALLER MUST PASS THE DIGEST OF THE STRING IT IS STORING, and that is why
+   * this method does not redact. `createRun` redacts the text on the way in while
+   * taking a `ticketSha256` computed upstream, which is why the orchestrator has
+   * a mismatch `warn` at all. Here the two must agree exactly: the next
+   * `#execute` entry re-derives the id from `ticket_text` as stored, so a digest
+   * taken over the unredacted brief would name a ticket nothing can compute
+   * again. The orchestrator redacts, derives from the redacted string, and passes
+   * all three; `plan-phase.test.ts` amends and then re-derives from the stored row
+   * to check it.
+   *
+   * `ticket_title` IS NOT TOUCHED. It comes from the owner's prose
+   * (`titleFromBrief(references.prose)`), and the exchange is appended after it —
+   * his answers are not a new headline for his run.
+   */
+  amendBrief(
+    runId: string,
+    amendment: { readonly ticketText: string; readonly ticketId: string; readonly ticketSha256: string },
+  ): RunRow {
+    const row = this.getRun(runId);
+    if (row === null) {
+      throw new BakeoffError("invalid_usage_shape", `run ${runId} does not exist`, "Check the run id.");
+    }
+    if (row.suiteSha256 !== null) {
+      throw new BakeoffError(
+        "invalid_usage_shape",
+        `run ${runId} is already bound to suite ${row.suiteSha256}, so its ticket can no longer change`,
+        "A brief may only be amended before the acceptance suite is authored and frozen.",
+      );
+    }
+    if (isTerminal(row.status)) {
+      throw new BakeoffError(
+        "invalid_usage_shape",
+        `run ${runId} is ${row.status}, so its ticket can no longer change`,
+        "Start a new run with the revised brief instead.",
+      );
+    }
+    this.#db
+      .prepare("UPDATE runs SET ticket_text = ?, ticket_id = ?, ticket_sha256 = ?, updated_at = ? WHERE run_id = ?")
+      .run(amendment.ticketText, amendment.ticketId, amendment.ticketSha256, new Date().toISOString(), runId);
+    const updated = this.getRun(runId);
+    if (updated === null) {
+      throw new BakeoffError("invalid_usage_shape", `run ${runId} vanished during amendment`, "Retry.");
+    }
+    return updated;
   }
 
   listRuns(): readonly RunRow[] {

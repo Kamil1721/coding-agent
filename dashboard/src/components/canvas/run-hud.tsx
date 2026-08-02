@@ -159,9 +159,35 @@ export function RunHud({
            * never the shared "no owner choice arrived before the timeout", which
            * is true of the timer and would be a lie on a click.
            */}
+          {/*
+           * A PLAN PARK KEEPS THE BUTTON AND GAINS A SENTENCE — 2026-08-02.
+           *
+           * The design park's removal above was because a bodyless resume there
+           * records a pick the owner did not make. A plan park is not that: a
+           * manual resume with time left closes the dialogue as a DECLINE, which
+           * `Orchestrator#closePlanDialogue` says in as many words, and every
+           * question still open is recorded with the assumption it would have
+           * carried had the window simply closed. That is a legitimate move — it
+           * is the same landing spot as the panel's "you decide all" — and it is
+           * the escape hatch if the panel below cannot render.
+           *
+           * What it is NOT is what "Resume" sounds like, which is "carry on where
+           * you left off". Nothing here can rename a shared button per phase
+           * without the label wrapping in a 360px chip, so the sentence goes on
+           * the tooltip and the explicitly-labelled control lives in the panel.
+           */}
           {(run.status === "rate_limited" ||
             (run.status === "awaiting_input" && lockPhase !== "pending")) && (
-            <Button variant="primary" onClick={onResume} disabled={busy}>
+            <Button
+              variant="primary"
+              onClick={onResume}
+              disabled={busy}
+              title={
+                run.phase === "plan" && run.status === "awaiting_input"
+                  ? "Stop asking and carry on. Every question still open is recorded as an assumption — the same place the run lands if the window simply closes."
+                  : "Put this run back in the queue."
+              }
+            >
               Resume
             </Button>
           )}

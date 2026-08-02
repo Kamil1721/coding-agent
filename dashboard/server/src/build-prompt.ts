@@ -7,7 +7,10 @@
  * because the bake-off builder runs inside a sealed image. The dashboard
  * builder runs on the host, in a real directory, with network access. Handing
  * it that prompt verbatim would send it to a path that does not exist and tell
- * it a fact about its environment that is false. So the WORDING that is
+ * it a fact about its environment that is false — false of the BUILDER, that
+ * is; it is true of the gate that judges what the builder ships, which is why
+ * the environment section below states it about the ARTEFACT and not about the
+ * agent writing it. So the WORDING that is
  * load-bearing is reproduced and the environment facts are corrected, with
  * `WORKSPACE` and `STATIC_SERVE_PORT` imported rather than retyped so the
  * self-report path and the static port cannot drift from the harness.
@@ -96,6 +99,39 @@
  * zero. It is stated WITH its reason for exactly that purpose: a bare format is
  * followed until the model judges that more detail would help, which is the
  * failure mode; a model that knows why complies when it matters.
+ *
+ * A SIXTH: THE BUILDER IS TOLD THE ENVIRONMENT IT IS ACTUALLY IN, UP FRONT.
+ * Until 2026-08-02 it found out at the end and wrote an apology in prose. From
+ * `runs/run-2026-07-30T20-16-40-242Z-052c6e02/results/build.log`, verbatim: "I
+ * can't start a server here (this sandbox denies `listen()` on every port,
+ * `EPERM`)" — its closing message, after the build was finished. Nothing had told
+ * it. So a build asked for a backend writes a server it never executes, and the
+ * first boot happens inside the sealed gate, where a failure is a verdict rather
+ * than a fix.
+ *
+ * TWO FACTS, ONE CONSEQUENCE EACH, AND BOTH ARE MEASUREMENTS RATHER THAN ADVICE:
+ *
+ *   `listen()` IS EPERM HERE — the build.log line above. The consequence is a
+ *   SHAPE: behaviour behind exported functions, exercised by `node --test` over
+ *   no socket. A test that needs a listening server does not fail because the
+ *   code is wrong; it fails because the sandbox refused the socket, which teaches
+ *   nothing and is indistinguishable from a broken build.
+ *
+ *   THE GATE RUNS `docker run --network=none`. The builder's own network is
+ *   unrestricted (`recordedNetworkPolicy(undefined)`), so it can install anything
+ *   and ship an artefact that cannot start when it is judged. The dependencies
+ *   must be zero or already in the workspace. `node:sqlite` was measured working
+ *   in the scorer image — `docker run --rm --network=none --entrypoint node
+ *   bakeoff-scorer:1` printed "node:sqlite OK ... on v24.18.0" — so a real
+ *   backend with real persistence and no install is reachable, which is why the
+ *   section names what is available rather than steering off servers.
+ *
+ * IT IS IN BOTH `dashboardBuilderPrompt` AND `resumeBuilderPrompt`, AND THAT IS
+ * NOT BELT-AND-BRACES. See the second function's own docblock: a run with a
+ * design lane never sends the first-turn prompt at all.
+ *
+ * NOT A STYLE LECTURE, ON PURPOSE. What the ticket asks for decides the shape;
+ * this section states only what is true of the harness and what follows from it.
  */
 
 import { WORKSPACE } from "bakeoff/dist/runner.js";
@@ -274,6 +310,71 @@ function delegationSection(allowedAgents: readonly string[]): readonly string[] 
   ];
 }
 
+/**
+ * The harness, as facts. Prepended to every build, so it is kept short.
+ *
+ * ONE DEFINITION, TWO CALL SITES, for the same reason `allowedAgents` is one
+ * expression: the two prompts that can open a BUILD segment are
+ * `dashboardBuilderPrompt` and `resumeBuilderPrompt`, and a copy in each would
+ * let one drift while every test still passed against the other.
+ *
+ * WHY NO AGENT NAME, NO "DESIGN", NO FRAMEWORK APPEARS BELOW. This text is
+ * inlined into `dashboardBuilderPrompt`, which is held to three properties by
+ * build-prompt.test.ts: no name outside the caller's shortlist may appear
+ * anywhere in the prompt, a run with no design lane must not see that word, and
+ * the ticket text must remain last. Naming a database or a framework as
+ * preferred would also be this file deciding the artefact's shape, which is the
+ * ticket's job — so the only products named are the ones that need no install,
+ * and they are named as availability, not as a recommendation.
+ */
+function harnessEnvironmentSection(): readonly string[] {
+  return [
+    "",
+    "THE ENVIRONMENT YOU ARE IN",
+    "- You cannot open a port. This sandbox denies `listen()` on every port with EPERM. If the work",
+    "  needs a server, put the request handling in an exported router function that `listen()` merely",
+    "  wires up, and put database access behind functions that take a handle. Cover that behaviour",
+    "  with `node --test` tests that call those functions directly, over no socket. Run them and get",
+    "  them passing before you declare done. A test that needs a listening server fails with EPERM",
+    "  here and teaches you nothing.",
+    "- The artefact is judged in a container with NO NETWORK. So its dependencies must be zero, or",
+    "  already vendored into the workspace. An install that reaches a registry at judging time fails",
+    "  by design. Zero is achievable: `node:sqlite` (measured working in the judging image, Node",
+    "  v24.18.0, no network), `node:http`, `node:test` and the rest of the standard library are there",
+    "  with nothing installed.",
+    "- Leave the project workable. Write a README.md saying how to start it and which environment",
+    "  variables it reads, and a .gitignore that keeps generated databases, node_modules and .env out.",
+    // THE TWO BULLETS ABOVE LOOK LIKE THEY DISAGREE: vendor `node_modules`, then
+    // ignore it. They govern different artefacts, and a builder left to work that
+    // out for itself is doing the reconstruction this whole section exists to
+    // remove. The judge runs the WORKSPACE as it stands; the `.gitignore` governs
+    // the repository `project-handover.ts` publishes from it afterwards.
+    "  That file governs the repository published from this work, not what the judge runs — a",
+    "  vendored node_modules still ships in the workspace.",
+    // MOVED HERE 2026-08-02 FROM `dashboardBuilderPrompt`, WHERE A DESIGN-LANE RUN
+    // NEVER SAW IT. Segment 1 of such a run is `designSegmentPrompt` and segment 2
+    // RESUMES that session, so `#buildSegmentPrompt` takes its
+    // `builderSessionId !== null` branch on the first BUILD turn and the
+    // first-turn prompt is never sent. Measured on the run that motivated this
+    // section: `grep -c 3000` on
+    // `runs/run-2026-07-30T20-16-40-242Z-052c6e02/results/prompt.txt` is 0, and
+    // `grep -ci listen` is 0 — that build was told it could not open a port and
+    // never told which one to serve on. It is a harness fact, so it belongs with
+    // the harness facts, where both prompts inherit it from one definition.
+    //
+    // "UNLESS THE TICKET NAMES ONE" IS NOT PADDING. `spec-agent.ts` authors the
+    // manifest with "Declare the port as 3000 unless the ticket names one", and
+    // `scorer-container.ts` starts the artefact with `artifactEnv(null)` — NO PORT
+    // in the environment — while probing `execution.port`. So a ticket naming 8080
+    // yields a gate that probes 8080 against a server told a flat 3000. Defaulting
+    // to the declared port rather than reading PORT is what actually boots.
+    `- If the work needs a server, it must listen on port ${String(STATIC_SERVE_PORT)} — or on the port the`,
+    "  ticket names, if it names one — and bind 127.0.0.1 or 0.0.0.0, never \"localhost\" only. Honour a",
+    "  PORT environment variable if one is set, but DEFAULT to that port: the judge starts the artefact",
+    "  with no PORT set and probes the port the frozen manifest declares.",
+  ];
+}
+
 export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
   const { ticketText, workspaceDir } = request;
   return [
@@ -287,7 +388,13 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
     "  tests, provided so you have a real feedback signal. Run them as often as you like.",
     "  Passing them is necessary and not sufficient: acceptance is judged separately, by tests",
     "  you have not seen, executed elsewhere against your final workspace.",
-    "- You have network access and may install dependencies.",
+    // STILL TRUE OF THE BUILDER — `recordedNetworkPolicy(undefined)` is unrestricted
+    // egress — and no longer the whole truth, because what it installs has to run
+    // where there is none. Qualified rather than deleted: a flat "no network" here
+    // would be a second false statement replacing the first.
+    "- You have network access while you build and may install dependencies. What you ship is",
+    "  judged without either; the next section is the environment that judges it.",
+    ...harnessEnvironmentSection(),
     "",
     "SHIP THE SIMPLEST THING THE TICKET ACTUALLY ASKS FOR",
     "- If the ticket needs no server-side behaviour, plain HTML and CSS is a COMPLETE answer.",
@@ -295,8 +402,11 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
     "  you are not penalised for leaving them out.",
     "- Put the entry document at the root of your workspace, named index.html, so the site is",
     "  openable as it stands. Reference assets by relative path.",
-    `- If the ticket DOES need a server, start it on port ${String(STATIC_SERVE_PORT)} and bind`,
-    '  127.0.0.1 or 0.0.0.0 — never "localhost" only.',
+    // The port contract used to sit here. It is now the last bullet of
+    // `harnessEnvironmentSection`, because a design-lane run never reaches this
+    // function at all and was shipping a server with no port instruction — see the
+    // comment on that bullet for the measurement. Not duplicated back: two
+    // spellings of one contract is how the two drift.
     // AFTER the simplicity clause on purpose. A list of 26 specialists is an
     // invitation to build a pipeline; the model should read "ship the simplest
     // thing" first and take delegation as a way to do that well, not as a bar to
@@ -327,6 +437,21 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
  * A resumed session already holds the whole conversation, so repeating the
  * ticket would spend quota re-reading what the model can already see. What it
  * cannot see is why it stopped.
+ *
+ * THE ENVIRONMENT IS THE ONE EXCEPTION, AND IT IS NOT A HEDGE — IT IS THE ONLY
+ * DELIVERY ROUTE FOR HALF THE RUNS. "The session already saw it" is false
+ * whenever the design lane is on: segment 1 is `designSegmentPrompt` and segment
+ * 2 resumes it, so `orchestrator.ts#buildSegmentPrompt` takes the
+ * `builderSessionId !== null` branch on the FIRST build turn and
+ * `dashboardBuilderPrompt` is never sent at all. Measured, not reasoned:
+ * `runs/run-2026-07-30T20-16-40-242Z-052c6e02/results/prompt.txt` — the build
+ * segment of a real portfolio run — opens "Your previous turn ended early: the
+ * design was locked and the build continues from there", i.e. this function's
+ * output, and contains no working agreement. That is the run whose build.log
+ * ends with the builder discovering `listen()` EPERM in prose.
+ *
+ * The repeat costs a few hundred tokens on an interrupted build that did see the
+ * first turn. Not repeating it costs every design-lane run the facts entirely.
  */
 export function resumeBuilderPrompt(reason: string): string {
   return [
@@ -334,5 +459,6 @@ export function resumeBuilderPrompt(reason: string): string {
     "",
     "Continue from where you stopped. The workspace is unchanged and still yours.",
     `When you are finished, or if you cannot finish, write ${WORKSPACE.selfReport} as described earlier.`,
+    ...harnessEnvironmentSection(),
   ].join("\n");
 }

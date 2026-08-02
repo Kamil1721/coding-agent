@@ -20,12 +20,15 @@
  */
 
 import { strict as assert } from "node:assert";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { crc32, deflateSync } from "node:zlib";
 import type { AnthropicSeat } from "bakeoff/dist/contracts.js";
 import { SPEC_SEAT } from "bakeoff/dist/config.js";
 import { DASHBOARD_BUDGET } from "./orchestrator.js";
-import { SubscriptionSeatCaller } from "./subscription-caller.js";
+import { SubscriptionSeatCaller, seatImagesFor } from "./subscription-caller.js";
 
 const LIVE = (process.env["DASHBOARD_LIVE_SMOKE"] ?? "") === "1";
 
@@ -104,6 +107,143 @@ test(
     const parsed = JSON.parse(result.text) as { colour: string; count: number };
     assert.equal(parsed.colour.toLowerCase(), "blue");
     assert.equal(parsed.count, 3);
+    assert.doesNotThrow(() => caller.assertUnused());
+  },
+);
+
+/* -------------------------------------------------------------------------
+ * The image probe — the ONE combination nothing else has ever run
+ * ---------------------------------------------------------------------- */
+
+/**
+ * A PNG built here rather than committed as a fixture.
+ *
+ * WHY GENERATED: a binary in the tree is a thing nobody can review, and the
+ * assertion below depends on knowing EXACTLY what is in the picture. This writes
+ * the left half red (255,0,0) and the right half blue (0,0,255), so a model that
+ * merely detects "an image is present" cannot pass — it has to read WHERE the
+ * colours are, which is the image analogue of the PDF probe's table-row test.
+ *
+ * MEASURED: 193 bytes at 128x64, verified with file(1) ("PNG image data, 128 x
+ * 64, 8-bit/color RGB, non-interlaced") and sips(1) before this test was written.
+ * Truecolour, no palette, filter 0 on every scanline — the simplest encoding that
+ * is still a valid PNG.
+ */
+function halfRedHalfBluePng(width: number, height: number): Buffer {
+  const chunk = (type: string, body: Buffer): Buffer => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(body.length, 0);
+    const typed = Buffer.concat([Buffer.from(type, "ascii"), body]);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE(crc32(typed), 0);
+    return Buffer.concat([length, typed, checksum]);
+  };
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type 2 = truecolour RGB
+  ihdr[10] = 0; // deflate
+  ihdr[11] = 0; // adaptive filtering
+  ihdr[12] = 0; // no interlace
+
+  const stride = 1 + width * 3;
+  const raw = Buffer.alloc(height * stride);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * stride;
+    raw[row] = 0; // filter type 0 for this scanline
+    for (let x = 0; x < width; x += 1) {
+      const at = row + 1 + x * 3;
+      const left = x < width / 2;
+      raw[at] = left ? 255 : 0;
+      raw[at + 1] = 0;
+      raw[at + 2] = left ? 0 : 255;
+    }
+  }
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 9 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+test(
+  "AN IMAGE BLOCK REACHES THE SEAT AND IS READ — streaming input + image + json_schema together",
+  { skip: LIVE ? false : "set DASHBOARD_LIVE_SMOKE=1 to spend a small amount of quota on this" },
+  async () => {
+    /*
+     * THE GAP THIS CLOSES, NAMED BY `subscription-caller.ts`'s OWN HEADER. The
+     * document measurement asked a FREE-FORM question, so streaming input +
+     * content block + `outputFormat: {type:"json_schema"}` had never been run
+     * together — and every real authoring call this seat makes carries that
+     * output format. If the combination were rejected, the document path would
+     * have failed on the first live ticket carrying a PDF and the image path
+     * would have failed on the first one carrying a mockup.
+     *
+     * IT ALSO PROVES `tools: []` DOES NOT BLOCK AN IMAGE. The seat has no Read
+     * tool and cannot open the file this test wrote; the only way it can answer
+     * is from the content block. If the picture did not arrive, the model has
+     * nothing to describe and the assertion fails rather than passing vacuously.
+     *
+     * THAT LAST CLAIM IS MEASURED, NOT ASSUMED. Run 2026-08-02 with `images: []`
+     * and every other argument identical, this test FAILED with left = "blue"
+     * ('blue' !== 'red'). So the green version is reading the picture rather than
+     * inferring red-then-blue from the wording of the question. Anyone changing
+     * this test should re-run that control: swap `images` for `[]`, watch it go
+     * red, and put it back.
+     */
+    const seat: AnthropicSeat = { ...SPEC_SEAT, modelId: "default", effort: "low" };
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env["ANTHROPIC_API_KEY"];
+    delete env["ANTHROPIC_AUTH_TOKEN"];
+    delete env["ANTHROPIC_BASE_URL"];
+
+    const dir = mkdtempSync(join(tmpdir(), "seat-image-live-"));
+    const path = join(dir, "halves.png");
+    const png = halfRedHalfBluePng(128, 64);
+    writeFileSync(path, png);
+
+    const images = seatImagesFor([{ path }]);
+    const carried = images[0];
+    assert.ok(carried !== undefined);
+    assert.notEqual(carried.block, null, `the probe image was refused: ${String(carried.declined)}`);
+
+    const caller = new SubscriptionSeatCaller(seat, {
+      budget: DASHBOARD_BUDGET,
+      cwd: tmpdir(),
+      env,
+      images,
+    });
+
+    const result = await caller.call({
+      system:
+        "You are shown one image. Report the dominant colour of its left half and of its right half, " +
+        "each as a single lowercase English colour word.",
+      userTurns: ["Which colour is on the left half, and which is on the right?"],
+      maxOutputTokens: 256,
+      // THE THIRD LEG OF THE COMBINATION. Without this the probe would only
+      // repeat what the PDF measurement already established.
+      jsonSchema: {
+        type: "object",
+        properties: { left: { type: "string" }, right: { type: "string" } },
+        required: ["left", "right"],
+        additionalProperties: false,
+      },
+      purpose: "dashboard image smoke",
+    });
+
+    const parsed = JSON.parse(result.text) as { left: string; right: string };
+    assert.equal(parsed.left.toLowerCase(), "red", `left half read as "${parsed.left}"`);
+    assert.equal(parsed.right.toLowerCase(), "blue", `right half read as "${parsed.right}"`);
+
+    assert.equal(caller.imageCalls, 1);
+    assert.equal(caller.imagePlan.blocks.length, 1);
+    assert.equal(caller.imagePlan.base64Chars, png.toString("base64").length);
+    // The base class's API-key client stayed unused: this went over the
+    // subscription, like every other call this seat makes.
     assert.doesNotThrow(() => caller.assertUnused());
   },
 );

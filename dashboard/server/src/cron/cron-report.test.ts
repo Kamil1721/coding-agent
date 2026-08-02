@@ -73,6 +73,10 @@ function detail(over: Partial<RunDetail> = {}): RunDetail {
     costUsd: null,
     rateLimit: null,
     screenshots: [],
+    // A cron ticket is submitted from a file with no attachments, so both lists
+    // are empty for every run this report has ever described.
+    references: [],
+    documents: [],
     artifactPath: null,
     previewUrl: null,
     inferredCriteria: 0,

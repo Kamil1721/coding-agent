@@ -123,17 +123,18 @@
  * instead — the TICKET form, where it becomes part of the ticket's identity.
  */
 
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { formatTimeOnly } from "@/lib/format";
+import { AttachmentChips } from "@/components/attachment-chips";
 import { Button, cx } from "@/components/ui";
 import {
   acceptAttribute,
   dataUrlsOfKind,
-  documentTag,
   planAttachmentIntake,
-  readAttachment,
-  type Attachment,
+  readAttachments,
+  releaseAttachments,
+  type HeldAttachment,
   type IntakePolicy,
 } from "@/lib/attachments";
 
@@ -437,10 +438,26 @@ export function OrchestratorChat({
   canAttachDocuments?: boolean;
 }): ReactNode {
   const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<readonly Attachment[]>([]);
+  const [attachments, setAttachments] = useState<readonly HeldAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * THE OBJECT URLS DIE WITH THIS PANEL. It is mounted inside the run sheet, which
+   * the reader closes with Escape or the × — so unmount with images still staged is
+   * the ORDINARY path here, not an edge case, and nothing else would ever free them.
+   *
+   * The sweep is keyed on `[]` so it runs at unmount only; a cleanup keyed on
+   * `[attachments]` would revoke the previous list on every add and blank the
+   * thumbnails already on screen. The mirror is what gives that cleanup the list it
+   * cannot close over.
+   */
+  const held = useRef<readonly HeldAttachment[]>([]);
+  useEffect(() => {
+    held.current = attachments;
+  }, [attachments]);
+  useEffect(() => () => releaseAttachments(held.current), []);
 
   const gap = replyGap(messages, runIsOver);
 
@@ -474,7 +491,7 @@ export function OrchestratorChat({
       });
       setError(plan.refusal);
       if (plan.take.length === 0) return;
-      void Promise.all(plan.take.map(readAttachment))
+      void readAttachments(plan.take)
         .then((read) => {
           setAttachments((previous) => [...previous, ...read]);
         })
@@ -485,20 +502,58 @@ export function OrchestratorChat({
     [attachments, canAttachDocuments],
   );
 
+  /**
+   * Drop one chip, and hand its object URL back before the render that forgets it.
+   *
+   * OUTSIDE THE UPDATER, for the reason `releaseAttachments` states: React
+   * re-invokes updaters, and a side effect in one is how a thumbnail goes blank for
+   * reasons nobody can reproduce.
+   */
+  const removeAttachment = useCallback(
+    (index: number): void => {
+      const doomed = attachments[index];
+      if (doomed !== undefined) releaseAttachments([doomed]);
+      setAttachments((previous) => previous.filter((_unused, i) => i !== index));
+    },
+    [attachments],
+  );
+
   const send = useCallback((): void => {
     const trimmed = text.trim();
     if (busy) return;
     if (trimmed === "" && attachments.length === 0) return;
+    /*
+     * WHAT IS BEING SENT, PINNED HERE, AND EVERY LINE BELOW IS ABOUT THIS LIST
+     * AND NOT ABOUT `attachments`.
+     *
+     * A REQUEST TAKES TIME AND THE COMPOSER STAYS LIVE FOR ALL OF IT. The send
+     * button disables while busy; the file input, the paste handler and the drop
+     * handler do not, deliberately — a reader who spots a second screenshot
+     * while the first is uploading should be able to add it. So by the time this
+     * promise settles, component state may hold attachments this request never
+     * carried, and the previous version ended in `setAttachments([])`, which
+     * dropped them: the chip vanished from the box he had just attached it to,
+     * and its `blob:` URL was never revoked because nothing held it any more.
+     * The cap is six images at 8 MB, so up to 48 MB pinned for the life of the
+     * document. Measured in Chromium; `chat-attachments.browser.spec.ts`.
+     */
+    const sent = attachments;
     setBusy(true);
     setError(null);
-    void onSend(
-      trimmed,
-      dataUrlsOfKind(attachments, "image"),
-      dataUrlsOfKind(attachments, "document"),
-    )
+    void onSend(trimmed, dataUrlsOfKind(sent, "image"), dataUrlsOfKind(sent, "document"))
       .then(() => {
         setText("");
-        setAttachments([]);
+        // HANDED BACK BEFORE THE STATE FORGETS THEM, and OUTSIDE the updater for
+        // the reason `releaseAttachments` states — React re-invokes updaters, and
+        // a side effect in one is how a thumbnail goes blank unreproducibly. Only
+        // on SUCCESS: a rejected send keeps the chips and their previews.
+        releaseAttachments(sent);
+        // BY IDENTITY, NOT BY INDEX OR BY NAME. A `HeldAttachment` is created once
+        // in `readAttachment` and never copied, so `has` is exact — where an index
+        // would be shifted by a removal made mid-flight and a name would drop a
+        // second file the reader picked with the same one.
+        const posted = new Set(sent);
+        setAttachments((previous) => previous.filter((one) => !posted.has(one)));
       })
       .catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -593,50 +648,18 @@ export function OrchestratorChat({
             className="w-full resize-y rounded-sm border border-line bg-canvas px-2 py-1.5 text-[12px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-line-strong focus:outline-none"
           />
 
-          {attachments.length > 0 && (
-            <ul className="flex flex-wrap gap-1">
-              {attachments.map((attachment, index) => (
-                /*
-                 * SAME CHIP GRAMMAR AS THE TICKET FORM: a document carries an
-                 * uppercase tag from the server's media-type → extension map and
-                 * a heavier border, an image carries neither. The MARKUP is not
-                 * shared with `app/page.tsx` — only the tag and the classification
-                 * are — because the two chips differ in width and text size and a
-                 * shared component would take props for both. Named as a
-                 * duplication rather than hidden: it is presentation, and neither
-                 * copy can drop a file.
-                 */
-                <li
-                  key={`${attachment.name}:${String(index)}`}
-                  className={cx(
-                    "flex items-center gap-1 rounded-sm border px-1.5 py-[2px] text-[10.5px] text-ink-dim",
-                    attachment.kind === "document"
-                      ? "border-line-strong bg-surface-raised"
-                      : "border-line",
-                  )}
-                >
-                  {attachment.kind === "document" && (
-                    <span className="numeric text-[9px] font-semibold tracking-[0.08em] text-ink-faint">
-                      {documentTag(attachment)}
-                    </span>
-                  )}
-                  <span className="max-w-[120px] truncate" title={attachment.name}>
-                    {attachment.name}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setAttachments((previous) => previous.filter((_, i) => i !== index))
-                    }
-                    className="text-ink-faint hover:text-fail"
-                    aria-label={`remove ${attachment.name}`}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          {/*
+            * THE SAME CHIPS AS THE TICKET FORM — NOW THE SAME COMPONENT, WHICH
+            * CORRECTS WHAT STOOD HERE. The markup was a hand copy of `app/page.tsx`'s,
+            * justified in a comment by the two chips differing "in width and text
+            * size": they never differed in text size — both were `text-[10.5px]` —
+            * and the only real difference was the filename's `max-w`, 120 here
+            * against 160 there. A thumbnail, a lightbox and an object-URL lifetime
+            * are not a width's worth of markup to keep in step by hand, so the
+            * duplication is gone rather than re-argued. This composer is 360px of
+            * sheet and the shared chip is 40px tall; it wraps.
+            */}
+          <AttachmentChips attachments={attachments} onRemove={removeAttachment} />
 
           {error !== null && <p className="text-[11px] text-fail">{error}</p>}
 

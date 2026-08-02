@@ -58,6 +58,12 @@
  * shallow for the same reason: an aggressive stemmer manufactures overlap, and
  * manufactured overlap is the first error, not the second.
  *
+ * THE PLAN PHASE ADDS A SECOND WAY FOR A CRITERION TO BE THE OWNER'S — he can
+ * have ANSWERED a question about it before anything was frozen. That source and
+ * the rule that keeps it honest are documented at {@link AnsweredQuestion}; the
+ * two lists above are what it matches on too, and the asymmetry argument below
+ * governs it unchanged.
+ *
  * ACCOUNTING IS THE INVARIANT. `extractAssumptions` emits exactly one record per
  * criterion. A criterion that produced no record is an inference nobody can see,
  * which is the failure this module exists to prevent — silence, not error.
@@ -86,8 +92,30 @@ import type { DomFindingKind } from "bakeoff/dist/scorer-protocol.js";
  * them to correct. Filing "the build succeeds" under INFERRED would bury the two
  * or three real inferences under boilerplate, and a review document that is
  * mostly boilerplate stops being read.
+ *
+ * `answered` is the plan phase's, and it is a SECOND KIND OF "the owner said
+ * so", not a weaker `ticket`. The dashboard asked him a question before anything
+ * was frozen and he typed a reply; a criterion resting on that reply is not a
+ * guess. It is kept apart from `ticket` because the two invite different
+ * corrections — a `ticket` line is one he can edit, an `answered` line is one he
+ * settled in a conversation that is over — and because keeping them apart is the
+ * only way to measure whether asking him changed anything.
  */
-export type AssumptionSource = "ticket" | "inferred" | "default";
+export type AssumptionSource = "ticket" | "inferred" | "default" | "answered";
+
+/**
+ * True when the owner himself is the source, by ticket or by answer.
+ *
+ * ONE EXPRESSION, THREE CONSUMERS, and until this existed that claim was false:
+ * `run-report.ts:countInferredAssumptions` and `verdict.ts:renderAssumptionSummary`
+ * each carried their own `source !== "ticket"`, with a comment in the first
+ * saying it was "copied from verdict.ts deliberately". Two copies of a predicate
+ * that has just grown a fourth case is how the API count and the page the owner
+ * reads end up disagreeing about which criteria he stated.
+ */
+export function isStatedByOwner(assumption: Assumption): boolean {
+  return assumption.source === "ticket" || assumption.source === "answered";
+}
 
 export interface Assumption {
   readonly id: string;
@@ -434,8 +462,20 @@ function singularise(word: string): string {
   return word;
 }
 
-/** Tokens that could carry a requirement: not a function word, not boilerplate. */
-function contentTokens(text: string): readonly string[] {
+/**
+ * Tokens that could carry a requirement: not a function word, not boilerplate.
+ *
+ * EXPORTED FOR `plan-question.ts`, AND THE EXPORT IS THE POINT RATHER THAN A
+ * CONVENIENCE. The plan phase refuses a question whose two candidate criteria
+ * differ only in words this filter drops — that is the entire mechanism that
+ * stops "what colour scheme?" reaching the owner. Re-declaring the two lists
+ * over there would give the refusal a second, drifting definition of "content",
+ * and the header above says plainly that deleting either list turns the
+ * negative control red. One list, one filter, two callers.
+ *
+ * Signature and behaviour unchanged by the export.
+ */
+export function contentTokens(text: string): readonly string[] {
   const seen = new Set<string>();
   for (const token of tokenize(text)) {
     if (STOPWORDS.has(token) || TICKET_BOILERPLATE.has(token)) continue;
@@ -530,13 +570,168 @@ function houseRuleFor(statement: string): { readonly gate: string; readonly rule
   return null;
 }
 
+/* -------------------------------------------------------------------------
+ * WHAT HE ANSWERED — the plan phase's pairs, and the rule that keeps the label
+ * honest
+ *
+ * MEASURED DEFECT (2026-08-02, fixture `run-2026-07-30T20-16-40-242Z-052c6e02`,
+ * its own ticket and its own 16 criteria). Three questions answered by the
+ * owner moved `inferredCriteria` 16 -> 16 — not one criterion changed label,
+ * because this function took no pairs and there was no fourth source for one to
+ * land on. The whole justification for interrupting him is that this number
+ * falls when he answers; it did not fall, so the interruption bought nothing
+ * measurable.
+ *
+ * THE OBVIOUS CHEAT, NAMED SO IT CAN BE REFUSED. Relabelling criteria because a
+ * plan block exists somewhere in the brief — or matching them against the
+ * QUESTIONS, which are the machine's own words — moves the number without
+ * improving anything, and it moves it in the direction that HIDES an inference.
+ * That is the false-pass shape this whole module exists to prevent, reintroduced
+ * by the module built to prevent it.
+ *
+ * SO THE LINK MUST RUN FROM A SPECIFIC ANSWER TO A SPECIFIC CRITERION, and the
+ * rule is two conditions, not one:
+ *   1. the criterion shares at least {@link MIN_SHARED_CONTENT_TOKENS} content
+ *      tokens with the PAIR — his answer plus the question it answers; and
+ *   2. AT LEAST ONE of those shared tokens is his answer's own.
+ *
+ * WHY THE PAIR AND NOT THE ANSWER ALONE. Real answers are elliptical: asked "how
+ * many projects?" he types "four", which carries one content token against a
+ * threshold of two. The question supplies the subject his answer omits, and it
+ * is legitimate context precisely because he answered THAT question.
+ *
+ * WHY CONDITION 2 IS NOT OPTIONAL. Without it, "should the nav be sticky?" —
+ * "yes" would stamp a nav criterion as his, on the strength of the machine's own
+ * sentence; a "no" would stamp it just as firmly. Condition 2 also keeps the
+ * record CHECKABLE BY EYE, which is the same argument that makes the `ticket`
+ * branch quote only the words its quoted sentence actually contains: the reason
+ * names the words to look for, and he must be able to find at least one of them
+ * in his own reply. A record whose one invited check fails is worse than none.
+ *
+ * WHAT IS NOT HERE. Declined and expired questions produce no pair at all —
+ * `plan-state.ts:answeredPairs` and `plan-brief.ts:answeredInOwnerWords` both
+ * refuse to emit one — because their recorded default is the house's guess. If
+ * declining moved this number, declining everything would be the cheapest way to
+ * a clean report.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * One question the owner answered, in HIS words.
+ *
+ * `answer` MUST BE THE OWNER'S OWN TEXT, not the seat's paraphrase of it.
+ * `PlanAnswer` carries both — `text` is the recorded wording and `quoted` is the
+ * span of his turn it rests on, with `paraphrased` saying which is which — and
+ * crediting a criterion to a sentence the machine wrote would be this module's
+ * own defect one level down. `plan-brief.ts:answeredInOwnerWords` is the one
+ * place that resolves it; this type only records the contract.
+ */
+export interface AnsweredQuestion {
+  /** The question as it was put to him. Context only: it can never carry a match alone. */
+  readonly question: string;
+  /** His reply, verbatim. */
+  readonly answer: string;
+}
+
+interface AnsweredSupport {
+  readonly pair: AnsweredQuestion;
+  /** Shared with the pair, his answer's words first. Every one is in the criterion. */
+  readonly shared: readonly string[];
+  /** The subset he himself typed. Non-empty, or there is no support at all. */
+  readonly fromAnswer: readonly string[];
+}
+
+/**
+ * The answer that best supports this criterion, or null.
+ *
+ * BEST = most of HIS words shared, then most shared overall, then asked first.
+ * The first key is the deliberate one: between an answer that shares two of his
+ * words and one that shares one of his and three of the question's, the record
+ * should quote the reply that actually says it. Ties break toward the earlier
+ * question so the choice is stable across runs rather than dependent on map
+ * ordering — the same reason `supportingSentence` scans in document order.
+ */
+function answeredSupportFor(
+  statement: string,
+  answered: readonly AnsweredQuestion[],
+): AnsweredSupport | null {
+  const criterionTokens = contentTokens(statement);
+  let best: AnsweredSupport | null = null;
+  for (const pair of answered) {
+    const answerTokens = new Set(contentTokens(pair.answer));
+    const questionTokens = new Set(contentTokens(pair.question));
+    const shared = criterionTokens.filter((t) => answerTokens.has(t) || questionTokens.has(t));
+    const fromAnswer = shared.filter((t) => answerTokens.has(t));
+    // BOTH CONDITIONS, AND THE SECOND IS THE ONE THAT REFUSES THE CHEAT. A pair
+    // whose only overlap is the question's wording is the machine agreeing with
+    // itself.
+    if (shared.length < MIN_SHARED_CONTENT_TOKENS || fromAnswer.length === 0) continue;
+    const candidate: AnsweredSupport = {
+      pair,
+      // His words lead the list, because his words are what he can check.
+      shared: [...fromAnswer, ...shared.filter((t) => !answerTokens.has(t))],
+      fromAnswer,
+    };
+    if (
+      best === null ||
+      candidate.fromAnswer.length > best.fromAnswer.length ||
+      (candidate.fromAnswer.length === best.fromAnswer.length && candidate.shared.length > best.shared.length)
+    ) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+/**
+ * Why a criterion carries `answered`, in the owner's terms.
+ *
+ * QUOTES BOTH SIDES AND SAYS WHICH WORDS ARE HIS. The question alone would let
+ * him think the dashboard credited him with its own sentence; his answer alone
+ * would leave "four" floating with no subject. The words the question
+ * contributed are named separately rather than merged, so the one check this
+ * record invites — read your reply, find the words — is one he can actually run.
+ *
+ * THE WORDS PRINT AS THE TRACER SEES THEM, NOT AS HE TYPED THEM, and that is a
+ * real if minor cost: `singularise` maps "entries" to "entrie", so that is what
+ * the list says. His reply still CONTAINS every printed word as a prefix — which
+ * is exactly what the test asserts, and the same thing the `ticket` branch has
+ * always done — so the check by eye survives. Printing the verbatim span instead
+ * would mean carrying each token's original offset through `contentTokens`, and
+ * that is a change to the shared filter `plan-question.ts` also depends on.
+ */
+function answeredReason(support: AnsweredSupport): string {
+  const fromQuestion = support.shared.filter((t) => !support.fromAnswer.includes(t));
+  const context =
+    fromQuestion.length === 0
+      ? ""
+      : ` The question supplied the rest of the wording: ${fromQuestion.join(", ")}.`;
+  return (
+    `you settled this before anything was frozen. The dashboard asked: "${oneLine(support.pair.question)}" ` +
+    `and you answered: "${oneLine(support.pair.answer)}" — your own words in this criterion: ` +
+    `${support.fromAnswer.join(", ")}.${context}`
+  );
+}
+
+/** Newlines flattened so a multi-line answer cannot reshape the record's bullet. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 /**
  * One record per criterion, in criteria order. Never fewer — a criterion with no
  * record is an inference the owner cannot see.
+ *
+ * `answered` DEFAULTS TO EMPTY, and that default is a control rather than a
+ * convenience: every caller that predates the plan phase — `calibration/
+ * grade-fixture.ts` among them — keeps producing byte-identical output, so a
+ * change in any of their numbers is attributable to this change and to nothing
+ * else. `spec-assumptions.answered.test.ts` measures the same fixture with and
+ * without pairs for exactly that reason.
  */
 export function extractAssumptions(
   ticket: string,
   criteria: readonly AcceptanceCriterion[],
+  answered: readonly AnsweredQuestion[] = [],
 ): readonly Assumption[] {
   const ticketTokens = new Set(contentTokens(ticket));
   const ticketVocabulary = [...ticketTokens];
@@ -604,6 +799,27 @@ export function extractAssumptions(
       };
     }
 
+    /*
+     * AFTER THE HOUSE RULES, AND NOT BEFORE THEM — the one ordering decision in
+     * this function that changes a number, and it was MEASURED WRONG FIRST.
+     * Placed above the house block (as it was, with a comment claiming the
+     * opposite), the criterion "Every route shall return a 200" against the pair
+     * "should every route answer 200?" / "yes, every route must answer 200"
+     * came back `answered` rather than `default` — verified 2026-08-02 before
+     * the block was moved.
+     *
+     * WHY THAT MATTERS RATHER THAN BEING A TIE. `countInferredAssumptions` counts
+     * `default` and excludes `answered`, so relabelling a house rule this way
+     * drops the number for a criterion that is checked WHATEVER he says — the
+     * dashboard moving its own score by choosing what to ask about. `ticket`
+     * still outranks the house block above, and the asymmetry is deliberate: he
+     * volunteered that sentence, whereas the question here was the machine's.
+     */
+    const support = answeredSupportFor(criterion.statement, answered);
+    if (support !== null) {
+      return { ...base, source: "answered" as const, because: answeredReason(support) };
+    }
+
     return { ...base, source: "inferred" as const, because: inferenceReason(shared, ticketVocabulary) };
   });
 }
@@ -654,6 +870,7 @@ export function renderAssumptions(a: readonly Assumption[]): string {
   const inferred = a.filter((x) => x.source === "inferred");
   const defaults = a.filter((x) => x.source === "default");
   const fromTicket = a.filter((x) => x.source === "ticket");
+  const answered = a.filter((x) => x.source === "answered");
 
   const lines: string[] = [
     "# What the grader assumed",
@@ -662,10 +879,19 @@ export function renderAssumptions(a: readonly Assumption[]): string {
     "here is a false pass or a wasted fix round waiting to happen, and the cheapest",
     "correction is to the TICKET rather than to the code.",
     "",
+    // THE FOURTH FIGURE IS PRINTED EVEN AT ZERO, like every section heading
+    // below and for the same reason: "0 answered" on a run nobody was asked is a
+    // true and readable statement, and a figure that appears only when it is
+    // non-zero is indistinguishable from a renderer that dropped it. It is
+    // appended rather than inserted so the sentence the owner already scans for
+    // ("Of 16 criteria: 15 inferred by the grader…") reads the same up to the
+    // comma.
     `Of ${a.length} criteria: ${inferred.length} inferred by the grader, ` +
-      `${defaults.length} house defaults, ${fromTicket.length} traced to words you wrote.`,
+      `${defaults.length} house defaults, ${fromTicket.length} traced to words you wrote, ` +
+      `${answered.length} answered by you when the dashboard asked.`,
     "",
     section("INFERRED — the grader's guesses. READ THESE FIRST.", inferred),
+    section("ANSWERED BY YOU — you settled these before anything was frozen.", answered),
     section("HOUSE DEFAULTS — checked on every run, nothing to correct.", defaults),
     section("FROM YOUR TICKET — you already asked for these.", fromTicket),
   ];

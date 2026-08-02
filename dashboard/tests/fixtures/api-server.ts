@@ -23,19 +23,24 @@
 
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import type { ChatMessage } from "../../src/lib/api";
 import type { RunEvent } from "../../src/lib/api-types";
-import { REPLAY_RUN_ID, RUN_ID } from "./config";
+import { PLAN_RUN_ID, REPLAY_RUN_ID, RUN_ID } from "./config";
 import {
   CODE_FILES,
   CODE_TREE,
   GRAPH_EVENTS,
   GRAPH_SNAPSHOT,
   MODELS,
+  PLAN_DETAIL,
+  PLAN_GRAPH,
+  PLAN_MESSAGES,
   REPLAY_DETAIL,
   RUN_DETAIL,
   RUN_LIST,
   TAIL_MARKER,
   TAIL_SEQ,
+  planEvents,
 } from "./run-fixture";
 
 export interface FixtureApi {
@@ -73,6 +78,23 @@ function writeFrame(response: ServerResponse, seq: number, event: RunEvent): voi
 
 export function startFixtureApi(port: number): Promise<FixtureApi> {
   const streams = new Set<ServerResponse>();
+
+  /*
+   * THE PLAN RUN'S CHAT, MUTABLE, BECAUSE THE ANSWER PATH IS HALF THE FEATURE.
+   *
+   * A read-only transcript would let a spec prove the questions RENDER and prove
+   * nothing about answering one. This list grows when the browser posts, so a
+   * spec can click `you decide`, watch the row appear, and read back the exact
+   * string the panel composed — which is the only thing that can catch the
+   * composition the real classifier records as an ANSWER instead of a decline
+   * (`src/lib/plan-dialogue.ts` carries that measurement).
+   *
+   * IT DOES NOT SIMULATE THE SERVER'S TURN. Nothing here re-asks, resolves or
+   * closes anything: that is `plan-state.ts`'s job and it is tested against the
+   * real arbiter in the server package. This fixture is the WIRE, not the
+   * server.
+   */
+  const planMessages: ChatMessage[] = [...PLAN_MESSAGES];
 
   const openStream = (response: ServerResponse): void => {
     response.writeHead(200, {
@@ -172,6 +194,60 @@ export function startFixtureApi(port: number): Promise<FixtureApi> {
         writeFrame(response, index + 1, event);
       });
       writeFrame(response, TAIL_SEQ, TAIL_MARKER);
+      request.on("close", () => streams.delete(response));
+      return;
+    }
+
+    const plan = `/api/runs/${encodeURIComponent(PLAN_RUN_ID)}`;
+
+    if (path === plan) {
+      sendJson(response, 200, PLAN_DETAIL);
+      return;
+    }
+    if (path === `${plan}/graph`) {
+      // A PARKED PLAN RUN HAS NO GRAPH, and that is not an empty response to be
+      // tidied away: no builder session exists yet, so there are no `graph_*`
+      // events to fold. The canvas draws the plan STAGE instead.
+      sendJson(response, 200, PLAN_GRAPH);
+      return;
+    }
+    if (path === `${plan}/messages`) {
+      if (request.method === "POST") {
+        let body = "";
+        request.on("data", (chunk: Buffer | string) => {
+          body += String(chunk);
+        });
+        request.on("end", () => {
+          const parsed: unknown = body === "" ? {} : JSON.parse(body);
+          const text =
+            typeof parsed === "object" && parsed !== null && "text" in parsed
+              ? String((parsed as { text: unknown }).text)
+              : "";
+          const message: ChatMessage = {
+            seq: planMessages.length + 1,
+            at: new Date().toISOString(),
+            role: "owner",
+            text,
+            images: [],
+            deliveredAt: null,
+          };
+          planMessages.push(message);
+          sendJson(response, 202, { message });
+        });
+        return;
+      }
+      sendJson(response, 200, { messages: planMessages });
+      return;
+    }
+    if (path === `${plan}/events`) {
+      // REPLAYED AND THEN SILENT, like `/events` on a run whose history is
+      // already written. The park's own log lines are what the countdown and the
+      // per-question outcomes are read out of, so they have to be on the stream
+      // and not merely in the fixture file.
+      openStream(response);
+      planEvents(Date.now()).forEach((event, index) => {
+        writeFrame(response, index + 1, event);
+      });
       request.on("close", () => streams.delete(response));
       return;
     }

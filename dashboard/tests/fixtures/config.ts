@@ -24,6 +24,22 @@ export const RUN_ID = "harness-canvas-run";
 export const REPLAY_RUN_ID = "harness-replay-run";
 
 /**
+ * A run PARKED IN THE PLAN PHASE, waiting on questions.
+ *
+ * WHY IT IS A THIRD RUN AND NOT A FLAG ON THE FIRST. There is no such run on this
+ * machine and there cannot easily be one — the plan seat spends the owner's
+ * subscription quota, and a park lasts twenty minutes. The state is real, the
+ * server writes it today, and the only way a browser can be shown it is a
+ * fixture. `RUN_ID` is measured for pixels by four other specs and must not
+ * acquire a docked panel none of them expect.
+ *
+ * ITS CHAT ROWS ARE THE BYTES THE SERVER WOULD SEND: `questionText`'s
+ * `PQ-n: sentence` block, and one prose row for the seat's plan. See
+ * `run-fixture.ts`, which quotes the producing line for each one.
+ */
+export const PLAN_RUN_ID = "harness-plan-run";
+
+/**
  * The build directory the harness's `next dev` uses.
  *
  * Next 16 locks its build directory and refuses to start a second dev server

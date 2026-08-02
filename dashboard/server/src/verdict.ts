@@ -98,7 +98,13 @@ import type { CriterionResult } from "bakeoff/dist/contracts.js";
 // erase at runtime — leaving the ordering below silently matching nothing.
 import { ALL_GATE_IDS, GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
 import type { ApiCriterionTier } from "./api-types.js";
-import { gateLabel, isGateAssumption, isGateCriterionId, isQualityRollupId } from "./spec-assumptions.js";
+import {
+  gateLabel,
+  isGateAssumption,
+  isGateCriterionId,
+  isQualityRollupId,
+  isStatedByOwner,
+} from "./spec-assumptions.js";
 import type { Assumption } from "./spec-assumptions.js";
 // The REAL type rather than a local restatement: a second declaration of the
 // shape is a second thing to keep in step, and the field this module reads —
@@ -339,12 +345,25 @@ function renderUnmetCriterion(
   }
   // The tags are uppercase and the reason follows them, because the reason is
   // written by another module and may start with anything.
-  const provenance =
-    assumption.source === "ticket"
-      ? `FROM YOUR TICKET — ${oneLine(assumption.because)}`
-      : assumption.source === "inferred"
-        ? `INFERRED, not something you wrote — ${oneLine(assumption.because)}`
-        : `A HOUSE DEFAULT, not something you wrote — ${oneLine(assumption.because)}`;
+  //
+  // A SWITCH AND NOT A TERNARY CHAIN, AS OF THE FOURTH SOURCE. The chain this
+  // replaces ended in an `else` reading "A HOUSE DEFAULT, not something you
+  // wrote", so `answered` — a criterion the owner settled in his own words —
+  // would have been announced to him as a house default he never stated. An
+  // exhaustive switch over the union makes the next source added upstream a
+  // COMPILE error here instead of a false sentence on his page.
+  const provenance = ((): string => {
+    switch (assumption.source) {
+      case "ticket":
+        return `FROM YOUR TICKET — ${oneLine(assumption.because)}`;
+      case "answered":
+        return `YOU ANSWERED THIS when the dashboard asked — ${oneLine(assumption.because)}`;
+      case "inferred":
+        return `INFERRED, not something you wrote — ${oneLine(assumption.because)}`;
+      case "default":
+        return `A HOUSE DEFAULT, not something you wrote — ${oneLine(assumption.because)}`;
+    }
+  })();
   return [`- ${prefix}${oneLine(assumption.statement)}`, `  - ${provenance}`];
 }
 
@@ -544,7 +563,14 @@ function renderAssumptionSummary(input: VerdictInput): readonly string[] {
           "Those are not guesses about your ticket and there is nothing in them to correct.",
           "",
         ];
-  const inferred = ticketScoped.filter((entry) => entry.source !== "ticket");
+  // `isStatedByOwner`, NOT `source !== "ticket"`. The predicate lives in
+  // `spec-assumptions.ts` and is shared with `run-report.ts:countInferred-
+  // Assumptions` because it now has two true cases: a criterion the owner
+  // ANSWERED is as much his as one he typed, and a local copy of the old test
+  // would both inflate this count past `RunDetail.inferredCriteria` — which
+  // `run-report.test.ts` asserts against — and list his own reply under a
+  // heading saying he never stated it.
+  const inferred = ticketScoped.filter((entry) => !isStatedByOwner(entry));
   const total = ticketScoped.length;
   if (inferred.length === 0) {
     lines.push(`All ${String(total)} criteria trace back to something you wrote.`, "", ...gateNote);

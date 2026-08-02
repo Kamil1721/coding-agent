@@ -4,6 +4,10 @@ import type {
   HealthState,
   ModelOption,
   OkResponse,
+  ProjectLogs,
+  ProjectStartResponse,
+  ProjectStopResponse,
+  ProjectsResponse,
   RunDetail,
   RunSummary,
 } from "./api-types";
@@ -52,6 +56,20 @@ export const KEY = {
     `/api/runs/${encodeURIComponent(runId)}/files?path=${encodeURIComponent(path)}`,
   models: "/api/models",
   health: "/api/health",
+  /** Every folder under `projects/`, with the process serving each. */
+  projects: "/api/projects",
+  /**
+   * ONE PATH SEGMENT, ENCODED ONCE.
+   *
+   * `encodeURIComponent` here and NO decode on the server: `URL.pathname` does
+   * not decode and the router does not either, so the runner's
+   * `resolveProjectDir` sees the raw segment and applies its own
+   * `[A-Za-z0-9._-]` allowlist to it. A slug is a directory name that gets
+   * SPAWNED IN, so a second decode anywhere on that path is a traversal hole —
+   * the same shape the attachment routes keep.
+   */
+  projectLogs: (slug: string): string =>
+    `/api/projects/${encodeURIComponent(slug)}/logs`,
 } as const;
 
 /**
@@ -275,6 +293,49 @@ export function sendRunMessage(
     `/api/runs/${encodeURIComponent(runId)}/messages`,
     { method: "POST", body: JSON.stringify({ text, images }) },
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Published projects                                                  */
+/* ------------------------------------------------------------------ */
+
+export function listProjects(): Promise<ProjectsResponse> {
+  return request<ProjectsResponse>(KEY.projects);
+}
+
+/**
+ * Start a published project, and RESOLVE ONLY WHEN ITS PORT ANSWERS.
+ *
+ * That is the server's contract, not a courtesy: `project-runner.ts` polls the
+ * child with a real HTTP GET and holds this response until it answers or until
+ * `DEFAULT_START_TIMEOUT_MS` (30 s) is up. So this promise being in flight IS
+ * the "starting" state — there is no `starting` member on `ProjectProcess` to
+ * poll for, and a caller that shows a spinner off its own timer would be
+ * inventing a state the server never claimed.
+ *
+ * IT REJECTS WITH THE SERVER'S OWN SENTENCE. A child that exited immediately
+ * comes back as `start_exited` with its stderr tail INSIDE the message, and one
+ * that never bound comes back as `start_timeout` or `bound_elsewhere`.
+ * `messageFromBody` caps that at 400 characters, so render `GET
+ * /api/projects/:slug/logs` beside it rather than presenting the message as the
+ * whole failure.
+ */
+export function startProject(slug: string): Promise<ProjectStartResponse> {
+  return request<ProjectStartResponse>(
+    `/api/projects/${encodeURIComponent(slug)}/start`,
+    { method: "POST" },
+  );
+}
+
+export function stopProject(slug: string): Promise<ProjectStopResponse> {
+  return request<ProjectStopResponse>(
+    `/api/projects/${encodeURIComponent(slug)}/stop`,
+    { method: "POST" },
+  );
+}
+
+export function projectLogs(slug: string): Promise<ProjectLogs> {
+  return request<ProjectLogs>(KEY.projectLogs(slug));
 }
 
 export function errorMessage(error: unknown): string {

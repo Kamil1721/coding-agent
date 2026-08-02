@@ -67,6 +67,43 @@
  *     already points at schema-validation retries. It is the first thing to watch
  *     on the first live ticket carrying a PDF.
  *
+ * ATTACHED REFERENCE IMAGES, ADDED 2026-08-02, AND WHAT IS PROVEN ABOUT THEM.
+ * The owner's instruction was that reference images "need to be analysed and seen
+ * not quizzed by me as they are visual reference". Before this, the spec and plan
+ * seats could only ASK about an image, because the only channel into them was a
+ * string. Images now travel the same way documents do — {@link SeatImage}s become
+ * base64 `image` content blocks in the same streamed user message — and for the
+ * same reason: `tools: []` does not block it because an image is CONTENT, not a
+ * tool call. THE SEAT IS STILL GIVEN NO TOOLS. It cannot open a file and must not
+ * be able to; carrying pictures as content is what makes the capability
+ * unnecessary rather than what relaxes the boundary.
+ *
+ * THE MEASUREMENT, TAKEN THIS SESSION AND BY THIS FILE'S OWN LIVE TEST rather
+ * than by a stub: a `Base64ImageSource` PNG was pushed through
+ * `query({ prompt: <AsyncIterable<SDKUserMessage>>, options })` against the real
+ * CLI subprocess with THIS seat's options (`tools: []`, `settingSources: []`)
+ * AND `outputFormat: {type: "json_schema"}`, and came back result subtype
+ * `success` having correctly named which half of the image was red and which was
+ * blue. That closes the specific gap the document paragraph below leaves open:
+ * streaming input + content block + structured output had never been run
+ * together, and every real authoring call carries that output format. See
+ * `subscription-caller.live.test.ts`, which is skipped unless
+ * DASHBOARD_LIVE_SMOKE=1.
+ *
+ * AND THE NEGATIVE CONTROL FOR IT, RUN THE SAME SESSION, because a live test that
+ * cannot fail proves nothing. The identical call with `images: []` and everything
+ * else unchanged — same system prompt, same question, same schema — came back
+ * left = "blue" and the assertion FAILED. The passing answer therefore came from
+ * the image block, and not from the system prompt, the filename, or a lucky
+ * guess: without the picture the seat has nothing to read and answers wrongly.
+ *
+ * TWO THINGS THAT MEASUREMENT DOES NOT ESTABLISH:
+ *   - HOW LARGE an image may be, or how many. The probe sent ONE 193-byte PNG.
+ *     {@link MAX_SEAT_IMAGE_BYTES} and {@link DEFAULT_SEAT_IMAGE_BASE64_CHARS}
+ *     are chosen budgets, not discovered ceilings, and say so.
+ *   - THAT A SEAT WITH IMAGES AUTHORS BETTER CRITERIA. Nothing here grades the
+ *     criteria; this file only puts the picture in front of the seat.
+ *
  * WHAT IS WIRED, AND WHAT HAS ACTUALLY BEEN RUN. The production chain exists as
  * of this commit: the ticket route writes attachments to `runs/<id>/documents/`
  * and records them in the reference manifest (`http.ts`), `#seatDocuments` in
@@ -76,9 +113,20 @@
  * assertion in `subscription-caller.documents.test.ts` stops at the SDK
  * boundary, where `query` is replaced by a recording stub. Treat "a document
  * reaches the spec seat" as wired and type-checked, not as observed.
+ *
+ * THE IMAGE CHAIN IS SHORTER, AND SINCE 2026-08-02 IT IS CONNECTED AT ONE END.
+ * `orchestrator.ts#planSeat` now calls {@link seatImagesFor} on the run's
+ * manifest and passes `images` to the PLAN seat's caller, and `plan-seat.ts`
+ * tells that seat to look at them (its old "YOU CANNOT OPEN THEM" branch is
+ * deleted). THE SPEC SEAT IS DELIBERATELY UNCHANGED and still constructs without
+ * `images`, for the reason `plan-seat.ts`'s header records: what reaches it is
+ * the plan phase's output — the owner's own sentences and criteria written in
+ * words a text-only grader can check — which is traceable in a way a criterion
+ * authored from a picture its own auditor cannot see would not be.
  */
 
 import { readFileSync, statSync } from "node:fs";
+import { basename, extname } from "node:path";
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -94,7 +142,7 @@ import type {
   VendorUsage,
 } from "bakeoff/dist/contracts.js";
 import { PRICE_FIELDS } from "bakeoff/dist/contracts.js";
-import { redactText } from "bakeoff/dist/redact.js";
+import { redactForPersistence, redactText } from "bakeoff/dist/redact.js";
 import {
   NOT_RATE_LIMITED,
   assistantText,
@@ -483,6 +531,15 @@ export type SeatSessionFactory = (params: {
  * there is at least one document block — the narrowest possible extension of the
  * old path.
  *
+ * IMAGES JOIN ON EXACTLY THAT RULE, WHICH IS WHY THEY ARE A THIRD ARGUMENT WITH A
+ * DEFAULT RATHER THAN A NEW FUNCTION. An empty image plan contributes an empty
+ * `text` and no blocks, so `seatPrompt(request, plan)` means what it has always
+ * meant and a seat carrying documents and no images streams exactly the message
+ * it did before this argument existed. Streaming is now used when there is at
+ * least one block OF EITHER KIND; a seat whose only images were all refused
+ * carries their {@link undeliveredImageSection}s on the STRING path, because
+ * there is again nothing to stream.
+ *
  * WHY THE GENERATOR IS ALLOWED TO COMPLETE, WHEN `live-input.ts` PARKS FOREVER.
  * That file's recorded trap is a generator that RETURNS after its first message:
  * the SDK ends the session when the input iterable completes, so a long-lived
@@ -499,34 +556,45 @@ export type SeatSessionFactory = (params: {
 export function seatPrompt(
   request: SeatCallRequest,
   plan: SeatDocumentPlan,
+  images: SeatImagePlan = NO_SEAT_IMAGES,
 ): string | AsyncIterable<SDKUserMessage> {
   const turns = request.userTurns.join("\n\n");
-  const text = plan.text === "" ? turns : `${turns}\n${plan.text}`;
-  if (plan.blocks.length === 0) return text;
-  return oneShotDocumentMessage(plan.blocks, text);
+  // JOINED IN THIS ORDER, AND EMPTY MEMBERS CONTRIBUTE NOTHING — not an empty
+  // line, not a separator. That is what keeps the documents-only string byte
+  // for byte what it was before images existed.
+  const attached = [plan.text, images.text].filter((section) => section !== "").join("\n");
+  const text = attached === "" ? turns : `${turns}\n${attached}`;
+  if (plan.blocks.length === 0 && images.blocks.length === 0) return text;
+  return oneShotAttachmentMessage(plan.blocks, images.blocks, text);
 }
 
 /**
- * One user message: the documents first, then the text.
+ * One user message: the documents, then the images, then the text.
  *
- * DOCUMENTS BEFORE TEXT because the text refers to them ("the owner attached
- * …") and because a document block trailing the instruction reads as an
- * afterthought to the model in the same way it does to a person. The API imposes
- * no order.
+ * ATTACHMENTS BEFORE TEXT because the text refers to them ("the owner attached
+ * …") and because a block trailing the instruction reads as an afterthought to
+ * the model in the same way it does to a person. The API imposes no order.
+ *
+ * DOCUMENTS BEFORE IMAGES IS ARBITRARY BUT FIXED, and nothing is allowed to
+ * depend on the absolute position: {@link imageRoster} numbers the IMAGE blocks
+ * among themselves ("in the order they appear"), so a prompt carrying two PDFs
+ * and three mockups still names mockup 1 as 1. Documents self-label through
+ * `block.title` and do not need the ordering at all.
  *
  * A FRESH GENERATOR PER CALL. An async generator is single-use: iterating it
  * twice yields nothing the second time, so a shared instance would send the
- * document on the first authoring attempt and an EMPTY prompt on the
+ * attachments on the first authoring attempt and an EMPTY prompt on the
  * regeneration. `call()` therefore builds the prompt inside the call, and the
- * test drives two calls and asserts both carried the block.
+ * tests drive two calls and assert both carried the blocks.
  */
-async function* oneShotDocumentMessage(
-  blocks: readonly SeatDocumentBlock[],
+async function* oneShotAttachmentMessage(
+  documents: readonly SeatDocumentBlock[],
+  images: readonly SeatImageBlock[],
   text: string,
 ): AsyncIterable<SDKUserMessage> {
   yield {
     type: "user",
-    message: { role: "user", content: [...blocks, { type: "text", text }] },
+    message: { role: "user", content: [...documents, ...images, { type: "text", text }] },
     parent_tool_use_id: null,
   };
   // AND THEN IT RETURNS, WHICH ENDS THE SESSION. See `seatPrompt` above for why
@@ -696,6 +764,557 @@ function readBoundedFile(path: string, maxBytes: number): Buffer | null {
   }
 }
 
+/* -------------------------------------------------------------------------
+ * Attached reference images
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The four image media types, which are the four the intake accepts.
+ *
+ * NOT A POLICY, THE API'S OWN TYPE. `Base64ImageSource` is declared
+ * `media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'`
+ * (@anthropic-ai/sdk `resources/messages/messages.d.ts:97`), and
+ * `decodeReferenceDataUrl` (ticket-refs.ts:114) accepts exactly
+ * `png|jpeg|jpg|webp|gif`. The two sets coincide, so every image the intake lets
+ * in has a base64 image form — which is the difference from documents, where
+ * only the PDF of nine accepted types has one.
+ */
+export type SeatImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+
+export const ACCEPTED_SEAT_IMAGE_MEDIA_TYPES: readonly SeatImageMediaType[] = Object.freeze([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+
+/**
+ * The intake's extension → the media type on the wire.
+ *
+ * THE EXTENSION IS WHERE THE MEDIA TYPE LIVES, BECAUSE THE MANIFEST DOES NOT
+ * RECORD ONE. `ReferenceDocument` carries `mediaType`; `ReferenceImage` is
+ * `{path, sha256, bytes}` and nothing more (ticket-refs.ts:127), so an image's
+ * type has to be recovered from its path. That is sound rather than a guess:
+ * `http.ts:1719` writes `reference-<n>.<ext>` where `ext` comes from
+ * `decodeReferenceDataUrl`, which derived it from the data URL's declared type —
+ * it is not a client-supplied filename.
+ *
+ * `jpeg` AND `jpg` BOTH MAP, though the intake only ever writes `jpg`. A path
+ * reaching this from anywhere else spelled `.jpeg` is an image the API accepts,
+ * and refusing it would be this module lying about the API's own union.
+ *
+ * WHAT THIS INHERITS AND CANNOT FIX: `decodeReferenceDataUrl` states that it does
+ * NOT verify the declared MIME type against the bytes. So an extension here
+ * records what the uploader CLAIMED. If the claim is wrong the API rejects the
+ * block and it surfaces loudly through `#asCallError`, which is the same bargain
+ * `nativeDocumentBlock` takes by trusting `DecodedDocument.mediaType`. Sniffing
+ * magic bytes here was rejected deliberately: it would give the seat a different
+ * notion of an image's type from the manifest's, with nothing able to reconcile
+ * the two.
+ */
+const IMAGE_MEDIA_TYPES: Readonly<Record<string, SeatImageMediaType>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+/**
+ * A base64 image as the API's `image` content block.
+ *
+ * DECLARED STRUCTURALLY, for the reason {@link NativeDocumentBlock} gives:
+ * `@anthropic-ai/sdk` is a TRANSITIVE dependency this package does not declare.
+ * The shape is asserted assignable to the real `ImageBlockParam` inside
+ * `subscription-caller.images.test.ts`, so SDK drift becomes a compile error.
+ *
+ * TWO FIELDS THE DOCUMENT BLOCK HAS AND THIS ONE DOES NOT, both load-bearing:
+ *
+ *   `title`      `ImageBlockParam` (messages.d.ts:610) is `{source, type,
+ *                cache_control?}` — there is nowhere to put a filename. The
+ *                seat therefore cannot tell which picture is which from the
+ *                blocks alone, which is why {@link SeatImagePlan.text} always
+ *                carries a roster naming them IN BLOCK ORDER.
+ *   `citations`  There is no image equivalent of a page-anchored citation. The
+ *                traceability argument for the PDF path — "a criterion that can
+ *                name the page it came from" — DOES NOT CARRY OVER. Anything the
+ *                seat says about an image is its own description of what it saw,
+ *                and the roster text says so to the seat in as many words.
+ */
+export interface SeatImageBlock {
+  readonly type: "image";
+  readonly source: {
+    readonly type: "base64";
+    readonly media_type: SeatImageMediaType;
+    /** Standard base64, no data-URL prefix. The API takes the payload alone. */
+    readonly data: string;
+  };
+}
+
+/**
+ * One reference image the owner attached, in the form this seat needs it.
+ *
+ * THE FIELD IS `declined`, NOT `nativeDeclined`, AND THE RENAME IS THE POINT. A
+ * {@link SeatDocument} with no block still travels — as extracted text — so its
+ * reason explains a DEMOTION. An image with no block does not travel at all:
+ * there is no text form of a picture, and `pdftotext` has no counterpart here.
+ * Same vocabulary, different consequence, so a different name rather than a
+ * familiar one that would quietly mean something else.
+ *
+ * `label` IS SEAT-FACING and is the redacted basename, never a host path — the
+ * rule `ticket-refs.ts` states for the brief and `documentPromptText` keeps for
+ * documents.
+ */
+export interface SeatImage {
+  readonly label: string;
+  /** `null` when the extension named no media type this seat can carry. */
+  readonly mediaType: SeatImageMediaType | null;
+  readonly block: SeatImageBlock | null;
+  /**
+   * Why there is no block, in the words of whoever decided — or null when a
+   * block IS present. Same purpose as {@link SeatDocument.nativeDeclined}: the
+   * five refusals ({@link SeatImageReadCode} plus the unsupported type and the
+   * per-call budget) have five different fixes, and a note naming the wrong one
+   * sends the owner to the wrong file.
+   *
+   * IT NEVER CONTAINS A HOST PATH. It is rendered into seat-facing text by
+   * {@link planSeatImages}, so `readBoundedImage` reports an fs error by its
+   * `code` (`ENOENT`, `EACCES`) rather than by its message, whose text embeds
+   * the path Node was given.
+   */
+  readonly declined: string | null;
+}
+
+/**
+ * The largest ONE image this seat will carry, DECODED.
+ *
+ * A CHOSEN BUDGET, NOT A DISCOVERED CEILING — the same status
+ * {@link DEFAULT_SEAT_NATIVE_BASE64_CHARS} and `MAX_NATIVE_PDF_BYTES` carry, and
+ * it is important not to read it as an API limit. Nothing in this session
+ * measured how large an image block may be; the probe below sent a 193-byte PNG.
+ *
+ * THE NUMBER IS SET AGAINST REAL FILES, AND THE FIRST ATTEMPT AT IT WAS WRONG.
+ * It was originally 2 MB, justified by the assertion that reference images are
+ * "typically a few hundred kilobytes" — an assumption, not a measurement.
+ * MEASURED THIS SESSION, the reference PNGs actually sitting in this
+ * repository's own `runs/<id>/references/` are 1,961,940, 1,663,665 and 1,289,740
+ * bytes, and a retina `screencapture` of this machine's 3600x2338 display is
+ * 936,670 bytes. The largest real one was therefore within 4% of the old cap: a
+ * page capture a fraction wider would have been refused, and the owner's
+ * instruction is that these be SEEN. 4 MB is double the largest measured file,
+ * and it is the same per-item ceiling the document path already uses for native
+ * bytes (`MAX_NATIVE_PDF_BYTES`), so the two halves of one attachment story
+ * agree instead of each picking a number.
+ *
+ * A NAMED GAP THIS LEAVES OPEN. `MAX_REFERENCE_IMAGE_BYTES` (ticket-refs.ts:96)
+ * accepts 8 MB, so an image between 4 and 8 MB is stored, digested into the
+ * ticket id, and READ BY THE BUILDER AND THE DESIGN LANE — which are given paths
+ * and have tools — while this seat does not get it. The asymmetry is not silent
+ * (the seat is told the image exists and is absent, and the run log names it by
+ * {@link describeSeatImages}), but it is real. Closing it means raising this
+ * number and re-deriving the budget below, not special-casing anything.
+ *
+ * AN IMAGE OVER IT IS DROPPED, NOT DEMOTED, because there is nothing to demote it
+ * to. It is named in {@link SeatImagePlan.notes} and announced to the seat by
+ * {@link undeliveredImageSection}.
+ */
+export const MAX_SEAT_IMAGE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * How much base64 this seat will carry as IMAGES in ONE call, across ALL images.
+ *
+ * DERIVED FROM THE PER-IMAGE CAP RATHER THAN CHOSEN AGAIN, exactly as
+ * {@link DEFAULT_SEAT_NATIVE_BASE64_CHARS} is derived from `MAX_NATIVE_PDF_BYTES`,
+ * so the two cannot drift into disagreeing. Three images' worth: 16,777,218
+ * base64 characters, 16 MB.
+ *
+ * WHY THREE WHEN THE INTAKE ACCEPTS SIX — AND WHY SIX STILL FIT IN PRACTICE.
+ * "Three images' worth" is three at the 4 MB per-image CAP, which is twice the
+ * largest reference image measured in this repository. Against the real files
+ * named on {@link MAX_SEAT_IMAGE_BYTES}, SIX of the biggest (1,961,940 bytes)
+ * come to 15,695,520 base64 characters and ALL SIX TRAVEL, with room to spare.
+ * The budget therefore bites on the pathological intake — six images averaging
+ * over 4 MB, which the route would accept at 8 MB each, i.e. 64 MB of base64 —
+ * and not on the intake this feature actually sees. When it does drop one it says
+ * which, by name, in three places: the plan's notes, the run log line from
+ * {@link describeSeatImages}, and a section in the prompt telling the seat the
+ * image exists and is absent.
+ *
+ * THE COST THIS BOUNDS, WITH THE MULTIPLIER SPELLED OUT, on the same arithmetic
+ * `DEFAULT_SEAT_NATIVE_BASE64_CHARS` states: images ride in the USER TURN and
+ * `generateAuditedSuite` loops up to three authoring calls plus one truncation
+ * retry, so a worst case of FOUR calls each re-sending every byte — ~64 MB of
+ * base64 across four calls at this budget. That is a large number and it is meant
+ * to be read as one; the alternative was refusing the owner's actual references.
+ *
+ * NOTHING HAS DRIVEN THE CLI'S STDIN TO THIS SIZE. The live probe sent 260 base64
+ * characters. Whether one JSON message of 16 MB is accepted is UNMEASURED, and if
+ * it is not, it fails loudly through `#asCallError` rather than silently.
+ *
+ * IT IS NOT THE ONLY BUDGET IN THE MESSAGE, AND NOTHING ENFORCES THE SUM.
+ * Documents may add up to {@link DEFAULT_SEAT_NATIVE_BASE64_CHARS} (5,592,406)
+ * on top of this, so the true worst case for one call is 22,369,624 base64
+ * characters, ~21.3 MB, and ~85 MB across four calls. That total is stated here
+ * rather than bounded because bounding it would mean one shared budget whose
+ * outcome depends on which planner ran first — a run where attaching a PDF
+ * silently dropped a mockup. Two independent budgets each name what they bound;
+ * a reader who needs the envelope adds them.
+ */
+export const DEFAULT_SEAT_IMAGE_BASE64_CHARS = 3 * Math.ceil((MAX_SEAT_IMAGE_BYTES * 4) / 3);
+
+/**
+ * What one call will actually carry in pictures, decided ONCE at construction.
+ *
+ * DECIDED ONCE FOR THE REASON {@link SeatDocumentPlan} GIVES: `generateSuite`
+ * re-calls the same caller for each regeneration attempt, and a plan recomputed
+ * per call could differ between attempt 1 and attempt 3 — a suite audited
+ * against references the regeneration never saw.
+ */
+export interface SeatImagePlan {
+  /** Image blocks, in the order given, within budget. */
+  readonly blocks: readonly SeatImageBlock[];
+  /**
+   * The labels of {@link blocks}, IN THE SAME ORDER AND THE SAME LENGTH.
+   *
+   * A FIRST-CLASS FIELD BECAUSE THE CORRESPONDENCE IS THE ONLY LABELLING THERE
+   * IS. An image block has no `title`, so this list — rendered into
+   * {@link text} — is what tells the seat which picture is which. A test asserts
+   * the two arrays stay in lockstep; if they drift the seat is told the second
+   * mockup is the first one, which is worse than telling it nothing.
+   */
+  readonly labels: readonly string[];
+  /** The roster naming {@link blocks}, plus a section per image that did NOT travel. */
+  readonly text: string;
+  /** Exact base64 characters across {@link blocks}. Re-sent on every call. */
+  readonly base64Chars: number;
+  /** One sentence per image, for the run log. Never empty when images were given. */
+  readonly notes: readonly string[];
+}
+
+/** The plan for a seat with no images: the pre-image behaviour exactly. */
+export const NO_SEAT_IMAGES: SeatImagePlan = Object.freeze({
+  blocks: [],
+  labels: [],
+  text: "",
+  base64Chars: 0,
+  notes: [],
+});
+
+/**
+ * Decide, per image, whether it travels — and when it does not, say why.
+ *
+ * ORDER MATTERS AND IS THE OWNER'S, the same rule {@link planSeatDocuments}
+ * states: images are considered in the order given, the ones that fit travel, and
+ * nothing is reordered by size. `ticket-refs.ts` already treats the order as the
+ * owner's stated priority ("this one first") to the point of folding it into the
+ * ticket id, so silently promoting a smaller third image over a larger first one
+ * would contradict the identity the run was minted under.
+ *
+ * NO IMAGE IS EVER SILENTLY DROPPED — the requirement a bounded list has to meet.
+ * An image that cannot travel still renders {@link undeliveredImageSection},
+ * which tells the seat the attachment exists, that it is absent, and not to guess
+ * at it. That branch matters MORE here than for documents: a dropped document
+ * still arrives as text, so its silence would cost detail; a dropped image
+ * arrives as nothing at all, so its silence would be a prompt that has forgotten
+ * an attachment the owner made.
+ */
+export function planSeatImages(
+  images: readonly SeatImage[],
+  budgetBase64Chars: number = DEFAULT_SEAT_IMAGE_BASE64_CHARS,
+): SeatImagePlan {
+  if (images.length === 0) return NO_SEAT_IMAGES;
+
+  const blocks: SeatImageBlock[] = [];
+  const labels: string[] = [];
+  const sections: string[] = [];
+  const notes: string[] = [];
+  let base64Chars = 0;
+
+  for (const image of images) {
+    const size = image.block === null ? 0 : image.block.source.data.length;
+    if (image.block !== null && base64Chars + size <= budgetBase64Chars) {
+      blocks.push(image.block);
+      labels.push(image.label);
+      base64Chars += size;
+      notes.push(
+        `${image.label} (${image.block.source.media_type}): sent as an image block, ` +
+          `${String(size)} base64 chars`,
+      );
+      continue;
+    }
+
+    const reason =
+      image.block === null
+        ? (image.declined ?? "no image block was supplied for it and no reason was given with it")
+        : `carrying it would put ${String(base64Chars + size)} base64 chars of images into EVERY call ` +
+          `this seat makes and the per-call budget is ${String(budgetBase64Chars)}, so it is DROPPED — ` +
+          "an image has no text form to fall back to";
+    notes.push(`${image.label}: ${reason}`);
+    sections.push(undeliveredImageSection(image, reason));
+  }
+
+  const text = (blocks.length === 0 ? sections : [imageRoster(blocks, labels), ...sections]).join("\n");
+  return { blocks, labels, text, base64Chars, notes };
+}
+
+/**
+ * The roster: which picture is which, in block order.
+ *
+ * THIS EXISTS BECAUSE `ImageBlockParam` HAS NO `title`. A document announces
+ * itself on the wire; an image cannot, so without this the seat receives N
+ * anonymous pictures and any sentence it writes about "the second reference" is
+ * unanchored. The list is built from the blocks themselves so it cannot describe
+ * an ordering the message does not have.
+ *
+ * IT ALSO STATES THE CITATION GAP OUT LOUD. The PDF path enables page-anchored
+ * citations precisely so a criterion can name where it came from; there is no
+ * such anchor for an image, and a seat that assumed otherwise would cite
+ * something that cannot exist.
+ */
+function imageRoster(blocks: readonly SeatImageBlock[], labels: readonly string[]): string {
+  const entries = blocks.map(
+    (block, index) => `    ${String(index + 1)}. ${labels[index] ?? "(unnamed)"} (${block.source.media_type})`,
+  );
+  return [
+    "",
+    "--- REFERENCE IMAGES IN THIS MESSAGE ---",
+    "",
+    `The owner attached ${String(blocks.length)} reference image(s) and they ARE IN THIS MESSAGE, as`,
+    "image blocks above this text. In the order they appear:",
+    "",
+    ...entries,
+    "",
+    "AN IMAGE BLOCK CARRIES NO FILENAME AND NO CITATION ANCHOR. This list is the only thing that says",
+    "which picture is which, and there is no page number or quotable span you can cite back to one, so",
+    "anything you say about a reference image is your own description of what you saw rather than a",
+    "traceable quotation.",
+    "",
+    "--- END OF REFERENCE IMAGES ---",
+    "",
+  ].join("\n");
+}
+
+/**
+ * An image that could not be carried, announced rather than omitted.
+ *
+ * DELIBERATELY PARALLEL TO {@link undeliveredSection} AND DELIBERATELY NOT THE
+ * SAME FUNCTION. That one describes a document that could not be CARRIED and
+ * whose extracted text was also missing — a coincidence of two failures. This
+ * describes the ordinary case for an image, because there is no second channel:
+ * "no extracted text was supplied for it either" would be a strange thing to say
+ * about a PNG, and the instruction the seat needs is stronger.
+ */
+function undeliveredImageSection(image: SeatImage, reason: string): string {
+  return [
+    "",
+    "--- ATTACHED REFERENCE IMAGE (NOT IN THIS PROMPT) ---",
+    "",
+    `The owner attached "${image.label}". IT IS NOT IN THIS MESSAGE.`,
+    "",
+    `Reason: ${reason}.`,
+    "",
+    "AN IMAGE HAS NO TEXT FORM, so unlike an attached document there is no extracted fallback: none of",
+    "it is here in any shape. Do not describe it, do not guess what is in it, and do not write anything",
+    "that depends on having seen it. If the work needs it, say plainly that a reference image was",
+    "attached and could not be carried.",
+    "",
+    "--- END OF ATTACHED REFERENCE IMAGE ---",
+    "",
+  ].join("\n");
+}
+
+/**
+ * What the run log should say about the pictures, in numbers this code measured.
+ *
+ * THE COUNTERPART TO {@link describeSeatDocuments} AND FOR THE SAME REASON: "the
+ * seat asked a bad question" and "the seat never got the picture" are different
+ * failures with different fixes, and after the run only a line like this can tell
+ * them apart. So the branch where NOTHING travelled says so in those words rather
+ * than reporting an attachment count and leaving the reader to infer.
+ *
+ * NO TOKEN FIGURE IS QUOTED. This file cannot convert pixels or bytes into input
+ * tokens, and a plausible "≈ N tokens per image" would be a fabricated number in
+ * a line the owner reads as measurement.
+ */
+export function describeSeatImages(plan: SeatImagePlan, calls: number): string {
+  if (plan.notes.length === 0) return "no images were attached to this seat";
+  const carried =
+    plan.blocks.length === 0
+      ? "NO IMAGE REACHED THE SEAT — every one of them was refused, and this seat saw no picture at all"
+      : `${String(plan.blocks.length)} image block(s) in order (${plan.labels.join(", ")}), ` +
+        `${String(plan.base64Chars)} base64 chars, re-sent on each of ${String(calls)} call(s) = ` +
+        `${String(plan.base64Chars * calls)} base64 chars in total`;
+  return `${String(plan.notes.length)} attached image(s): ${plan.notes.join("; ")} — ${carried}`;
+}
+
+/* -------------------------------------------------------------------------
+ * From a file on disk to a SeatImage
+ * ---------------------------------------------------------------------- */
+
+/**
+ * An image as the run's reference manifest records it: a path, and that is all.
+ *
+ * ONE FIELD, WHERE {@link AttachedDocument} HAS TWO, AND THAT IS THE MANIFEST'S
+ * SHAPE RATHER THAN AN OMISSION. `ReferenceImage` is `{path, sha256, bytes}`
+ * (ticket-refs.ts:127) — no media type is recorded for an image, unlike a
+ * document — so the type is recovered from the intake-chosen extension by
+ * {@link IMAGE_MEDIA_TYPES}. `ReferenceImage` satisfies this structurally, which
+ * is the point: the orchestrator can pass the manifest's own rows.
+ *
+ * DELIBERATELY NOT `ReferenceImage` ITSELF, for the reason {@link AttachedDocument}
+ * gives: this module has no business knowing what a manifest is.
+ */
+export interface AttachedImage {
+  /**
+   * Absolute host path. Used to READ the file and NEVER rendered into seat-facing
+   * text: {@link seatImagesFor} carries the redacted basename instead.
+   */
+  readonly path: string;
+}
+
+/** Why an image's bytes did not become a block. Each has a different fix. */
+export type SeatImageReadCode = "unreadable-file" | "empty" | "over-image-cap";
+
+export type SeatImageRead =
+  | { readonly ok: true; readonly bytes: Buffer }
+  | { readonly ok: false; readonly code: SeatImageReadCode; readonly detail: string };
+
+export interface SeatImageOptions {
+  /** Per-image DECODED byte cap. Defaults to {@link MAX_SEAT_IMAGE_BYTES}. */
+  readonly maxImageBytes?: number;
+  /** Injected so every refusal branch is reachable without a real file on disk. */
+  readonly readBytes?: (path: string, maxBytes: number) => SeatImageRead;
+}
+
+/**
+ * Read each attached image off disk and produce what the seat needs.
+ *
+ * SYNCHRONOUS, WHERE {@link seatDocumentsFor} IS ASYNC, and the difference is
+ * real rather than stylistic: a document may have to spawn `pdftotext` or
+ * `textutil`, and an image has nothing to extract — the bytes ARE the payload.
+ * There is no capability to probe for the same reason, which is why this takes no
+ * equivalent of `SeatDocumentOptions.capability`.
+ *
+ * NEVER THROWS ON A FILE. Every failure — missing, unreadable, zero bytes, over
+ * the per-image cap, or an extension naming no acceptable media type — comes back
+ * as a {@link SeatImage} with `block: null` and a named reason, never an
+ * exception that would take down a spec phase over an attachment.
+ *
+ * NO HOST PATH REACHES THE SEAT, and for images that needs saying twice, because
+ * the obvious implementation leaks one: `statSync`'s error message is
+ * "ENOENT: no such file or directory, stat '/Users/.../runs/…'". The reason
+ * strings below carry the error's `code` and never its message.
+ */
+export function seatImagesFor(
+  attached: readonly AttachedImage[],
+  options: SeatImageOptions = {},
+): readonly SeatImage[] {
+  const maxImageBytes = options.maxImageBytes ?? MAX_SEAT_IMAGE_BYTES;
+  const readBytes = options.readBytes ?? readBoundedImage;
+
+  const images: SeatImage[] = [];
+  for (const image of attached) {
+    const label = redactForPersistence(basename(image.path));
+    const extension = extname(image.path).slice(1).toLowerCase();
+    const mediaType = IMAGE_MEDIA_TYPES[extension];
+
+    if (mediaType === undefined) {
+      images.push({
+        label,
+        mediaType: null,
+        block: null,
+        declined:
+          `its extension (${extension === "" ? "none" : `.${extension}`}) names no image media type this ` +
+          `seat can carry — the API's base64 image source accepts ` +
+          `${ACCEPTED_SEAT_IMAGE_MEDIA_TYPES.join(", ")} only — so it is dropped`,
+      });
+      continue;
+    }
+
+    const read = readBytes(image.path, maxImageBytes);
+    if (!read.ok) {
+      images.push({ label, mediaType, block: null, declined: read.detail });
+      continue;
+    }
+
+    images.push({
+      label,
+      mediaType,
+      block: {
+        type: "image",
+        source: { type: "base64", media_type: mediaType, data: read.bytes.toString("base64") },
+      },
+      declined: null,
+    });
+  }
+  return images;
+}
+
+/**
+ * Read a whole image, but only if it is small enough to want — and say WHICH of
+ * the three ways it was not.
+ *
+ * THE THREE ARE KEPT APART HERE WHERE `readBoundedFile` FLATTENS THEM TO `null`,
+ * and the divergence is deliberate. For a document all three failures have the
+ * same consequence (it travels as extracted text) so one reason serves. For an
+ * image they have the same consequence — it does not travel — but three different
+ * FIXES: a missing file is a wiring bug, a zero-byte file is a broken upload, and
+ * an oversized one is the owner's to re-export smaller. Telling the owner "it
+ * could not be read" when the file is simply 6 MB sends him to look for a bug
+ * that is not there.
+ *
+ * THE SIZE IS CHECKED BEFORE THE READ, the same discipline `readBoundedFile`
+ * states: `readFileSync` on a path this function did not choose is unbounded
+ * memory, and past the cap the bytes are unwanted anyway.
+ */
+function readBoundedImage(path: string, maxBytes: number): SeatImageRead {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch (error) {
+    return {
+      ok: false,
+      code: "unreadable-file",
+      detail: `its bytes could not be read off disk (${fsErrorCode(error)}), so it is dropped`,
+    };
+  }
+  if (size === 0) {
+    return { ok: false, code: "empty", detail: "the file on disk is zero bytes long, so it is dropped" };
+  }
+  if (size > maxBytes) {
+    return {
+      ok: false,
+      code: "over-image-cap",
+      detail:
+        `it is ${String(size)} bytes and this seat's per-image cap is ${String(maxBytes)} bytes, so it ` +
+        "is dropped — an image has no text form to fall back to",
+    };
+  }
+  try {
+    return { ok: true, bytes: readFileSync(path) };
+  } catch (error) {
+    return {
+      ok: false,
+      code: "unreadable-file",
+      detail: `its bytes could not be read off disk (${fsErrorCode(error)}), so it is dropped`,
+    };
+  }
+}
+
+/**
+ * An fs error's `code` and NOTHING ELSE.
+ *
+ * `error.message` EMBEDS THE PATH — "ENOENT: no such file or directory, stat
+ * '/Users/…/runs/run-…/references/reference-1.png'" — and these strings are
+ * rendered into the prompt by {@link undeliveredImageSection}. Carrying the
+ * message would put an absolute host path in front of the spec seat, which is
+ * exactly what `ticket-refs.ts` forbids for the brief.
+ */
+function fsErrorCode(error: unknown): string {
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : "unknown error";
+}
+
 export interface SubscriptionCallerOptions {
   readonly budget: BudgetPolicy;
   readonly ceiling?: SpendCeiling;
@@ -713,6 +1332,13 @@ export interface SubscriptionCallerOptions {
   readonly documents?: readonly SeatDocument[];
   /** Override {@link DEFAULT_SEAT_NATIVE_BASE64_CHARS}. */
   readonly nativeBudgetBase64Chars?: number;
+  /**
+   * Reference images EVERY call this seat makes will carry. Absent means the
+   * pre-image path, byte for byte — including for a seat that has documents.
+   */
+  readonly images?: readonly SeatImage[];
+  /** Override {@link DEFAULT_SEAT_IMAGE_BASE64_CHARS}. */
+  readonly imageBudgetBase64Chars?: number;
   /** The SDK's `query`, unless a test supplies a stream. */
   readonly startQuery?: SeatSessionFactory;
 }
@@ -728,11 +1354,13 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
   readonly #onRateLimit: ((state: RateLimitState) => void) | null;
   readonly #abortController: AbortController | null;
   readonly #plan: SeatDocumentPlan;
+  readonly #imagePlan: SeatImagePlan;
   readonly #startQuery: SeatSessionFactory;
   #tokens: TokenTotals = zeroTokens("anthropic");
   #rateLimit: RateLimitState = NOT_RATE_LIMITED;
   #calls = 0;
   #documentCalls = 0;
+  #imageCalls = 0;
 
   constructor(seat: AnthropicSeat, options: SubscriptionCallerOptions) {
     const base = options.env ?? process.env;
@@ -752,6 +1380,14 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
     this.#plan = planSeatDocuments(
       options.documents ?? [],
       options.nativeBudgetBase64Chars ?? DEFAULT_SEAT_NATIVE_BASE64_CHARS,
+    );
+    // A SECOND PLAN, NOT A WIDER ONE. Folding images into `#plan` would change
+    // what `documentPlan` and `documentCalls` mean for the callers already
+    // reading them (orchestrator.ts:1994, 2114, 2135, 2143), so a run log line
+    // that says "N attached document(s)" would start counting pictures.
+    this.#imagePlan = planSeatImages(
+      options.images ?? [],
+      options.imageBudgetBase64Chars ?? DEFAULT_SEAT_IMAGE_BASE64_CHARS,
     );
     this.#startQuery = options.startQuery ?? query;
   }
@@ -781,6 +1417,20 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
    */
   get documentCalls(): number {
     return this.#documentCalls;
+  }
+
+  /** What every call carries in pictures, and why each image travels or does not. */
+  get imagePlan(): SeatImagePlan {
+    return this.#imagePlan;
+  }
+
+  /**
+   * Calls DISPATCHED carrying at least one attached image — counted on the same
+   * rule as {@link documentCalls}, and counted SEPARATELY from it so that a seat
+   * with both does not report one dispatch as two.
+   */
+  get imageCalls(): number {
+    return this.#imageCalls;
   }
 
   /**
@@ -813,17 +1463,25 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
    * any implementation (doc 03 section 7.4); a spec seat that could read the
    * workspace, or that inherited the owner's CLAUDE.md, is not that agent.
    *
-   * ATTACHED DOCUMENTS RIDE ON EVERY CALL, INCLUDING REGENERATIONS. The plan is
-   * fixed at construction and {@link seatPrompt} rebuilds the prompt per call,
-   * so authoring attempt 1 and authoring attempt 3 see the same attachment. That
-   * is the point — a regeneration that lost the document would author its
-   * replacement suite from the ticket text alone while the log still said a
-   * document was attached — and it is also the cost:
-   * {@link DEFAULT_SEAT_NATIVE_BASE64_CHARS} names the multiplier.
+   * ATTACHED DOCUMENTS AND IMAGES RIDE ON EVERY CALL, INCLUDING REGENERATIONS.
+   * Both plans are fixed at construction and {@link seatPrompt} rebuilds the
+   * prompt per call, so authoring attempt 1 and authoring attempt 3 see the same
+   * attachments. That is the point — a regeneration that lost them would author
+   * its replacement suite from the ticket text alone while the log still said a
+   * scope and three mockups were attached — and it is also the cost:
+   * {@link DEFAULT_SEAT_NATIVE_BASE64_CHARS} and
+   * {@link DEFAULT_SEAT_IMAGE_BASE64_CHARS} each name the multiplier, and neither
+   * bounds the other.
    *
-   * `options` IS UNTOUCHED BY DOCUMENTS. Only `prompt` changes shape; nothing
-   * about a document is expressible as an SDK option, and the no-document path
-   * therefore passes the identical option object it always did.
+   * `options` IS UNTOUCHED BY EITHER. Only `prompt` changes shape; nothing about
+   * a document or an image is expressible as an SDK option, and the
+   * no-attachment path therefore passes the identical option object it always
+   * did. IN PARTICULAR `tools: []` IS UNCHANGED — an image is CONTENT, not a
+   * tool call, so carrying one does not and must not give this seat the ability
+   * to open a file. That inability is a measured property the sealed-suite
+   * boundary depends on, and it is why `plan-seat.ts` still forbids a criterion
+   * that could only be graded by opening an attachment: the PLAN seat can see the
+   * owner's pictures, and every seat downstream of it cannot.
    */
   override async call(request: SeatCallRequest): Promise<SeatCallResult> {
     if (request.userTurns.length === 0) {
@@ -868,8 +1526,9 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
     // BUILT PER CALL, NOT PER CALLER. An async generator is single-use; a
     // prompt built once and reused would deliver the document to the first
     // attempt and an empty message to every regeneration after it.
-    const prompt = seatPrompt(request, this.#plan);
+    const prompt = seatPrompt(request, this.#plan, this.#imagePlan);
     if (this.#plan.notes.length > 0) this.#documentCalls += 1;
+    if (this.#imagePlan.notes.length > 0) this.#imageCalls += 1;
 
     try {
       const session = this.#startQuery({ prompt, options });
