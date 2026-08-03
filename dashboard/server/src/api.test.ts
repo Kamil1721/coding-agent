@@ -33,7 +33,7 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import type { StoredEvent } from "./db.js";
-import { DESIGN_MOCKUP_LABEL, designLockPolicy, writeDesignLock } from "./design-lock.js";
+import { DESIGN_MOCKUP_LABEL, designLockPolicy, emptyDesignLockRecord, writeDesignLock } from "./design-lock.js";
 import type { DesignLockRecord } from "./design-lock.js";
 import type { DesignLockedBy } from "./design-manifest.js";
 import { GateProbe } from "./health-gate.js";
@@ -983,7 +983,11 @@ async function designRun(
 const PARKED_AT = "2026-07-29T10:00:00.000Z";
 
 function parkedRecord(): DesignLockRecord {
-  return { awaiting: true, parkedAt: PARKED_AT, locked: null, lockedBy: null, reason: null };
+  // SPREAD ONTO `emptyDesignLockRecord`, never a bare literal: the record grew
+  // eleven fields on 2026-08-03 and a literal here would compile only until it
+  // stopped compiling, which is the good case. The bad case is a PRODUCTION
+  // literal, which silently resets the dialogue caps — see that function.
+  return { ...emptyDesignLockRecord(PARKED_AT), awaiting: true };
 }
 
 test("POST /api/runs accepts designLock and refuses anything that is not auto, ask or absent", async () => {
@@ -1042,7 +1046,7 @@ test("a lane that RAN and locked nothing is {awaiting:false, locked:null} — wh
   try {
     const { runId } = await designRun(
       harness,
-      { awaiting: false, parkedAt: PARKED_AT, locked: null, lockedBy: null, reason: null },
+      { ...emptyDesignLockRecord(PARKED_AT) },
       0,
     );
     const detail = await detailOf(harness, runId);
@@ -1079,8 +1083,7 @@ test("a locked run carries WHO chose and WHY, not just the path (§17.3 rule 4)"
     const { runId, mockups } = await designRun(
       harness,
       {
-        awaiting: false,
-        parkedAt: PARKED_AT,
+        ...emptyDesignLockRecord(PARKED_AT),
         locked: "",
         lockedBy: "fallback",
         reason: "the timeout expired; the first mockup in manifest order was locked automatically",
@@ -1089,8 +1092,7 @@ test("a locked run carries WHO chose and WHY, not just the path (§17.3 rule 4)"
     );
     // The record is rewritten with a path the fixture now knows.
     writeDesignLock(runPathsFor(harness.paths, runId).results, {
-      awaiting: false,
-      parkedAt: PARKED_AT,
+      ...emptyDesignLockRecord(PARKED_AT),
       locked: mockups[0] ?? "",
       lockedBy: "fallback",
       reason: "the timeout expired; the first mockup in manifest order was locked automatically",
@@ -1382,6 +1384,66 @@ test("RunDetail carries the loop's attempts and stop reason once they are persis
     const green = await detailOf(harness, runId);
     assert.equal(green.gateAttempts, 1);
     assert.equal(green.gateStopReason, "green");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("THE FOUR STAGES ON THE WIRE, and `expanding` is the one a renderer gets wrong", async () => {
+  // BETWEEN THE DIRECTION CHOICE AND THE HERO LOCK the record reads
+  // `{awaiting: false, locked: null, chosenDirection: "x", expanded: false}` —
+  // and any "locked, else awaiting, else unlocked" ladder reports that as
+  // UNLOCKED ("the DESIGN lane finished without a design to lock") for the whole
+  // stage-B window, which is five to seven image generations long. `stage` is on
+  // the wire so a renderer can check it FIRST.
+  //
+  // CONTROL: in `designLockOf`, stop consulting `expanded` — return `"settled"`
+  // whenever `chosenDirection !== null` — and this goes red on `expanding` while
+  // every other stage stays green.
+  const harness = await startHarness(true);
+  try {
+    const directions = [
+      { slug: "editorial-slab", name: "Editorial slab", distinction: "a slab masthead", notes: null, mockups: [] },
+      { slug: "quiet-grid", name: "Quiet grid", distinction: "a hairline grid", notes: null, mockups: [] },
+    ];
+    const cases: readonly { readonly over: Partial<DesignLockRecord>; readonly stage: string }[] = [
+      // A run written before 2026-08-03: no directions at all.
+      { over: {}, stage: "none" },
+      // Parked on the canvass, nothing chosen.
+      { over: { awaiting: true, directions }, stage: "canvass" },
+      // THE WINDOW. Chosen, not yet expanded, and NOTHING IS LOCKED.
+      { over: { directions, chosenDirection: "quiet-grid", chosenDirectionBy: "owner" }, stage: "expanding" },
+      // Stage B returned. `expanded`, NOT `locked`, is what says so — a degraded
+      // run finishes with no still to lock at all.
+      { over: { directions, chosenDirection: "quiet-grid", expanded: true }, stage: "settled" },
+    ];
+    for (const { over, stage } of cases) {
+      const { runId } = await designRun(harness, { ...emptyDesignLockRecord(PARKED_AT), ...over }, 2);
+      const detail = await detailOf(harness, runId);
+      assert.equal(detail.designLock?.stage, stage, `stage for ${JSON.stringify(over)}`);
+      if (stage === "expanding") {
+        assert.equal(detail.designLock?.locked, null, "nothing is locked yet — that is the whole window");
+        assert.equal(detail.designLock?.awaiting, false, "and the run is not parked either");
+        assert.equal(detail.designLock?.chosenDirection, "quiet-grid");
+        assert.deepEqual(
+          detail.designLock?.directions.map((direction) => direction.discarded),
+          [true, false],
+          "the unchosen direction is marked discarded the moment the choice lands",
+        );
+      }
+    }
+
+    // A DEGRADED RUN REACHES `settled` WITH NO STILL LOCKED, which is why the
+    // stage may not be derived from `locked`.
+    const { runId } = await designRun(
+      harness,
+      { ...emptyDesignLockRecord(PARKED_AT), directions, chosenDirection: "quiet-grid", expanded: true },
+      0,
+    );
+    const detail = await detailOf(harness, runId);
+    assert.equal(detail.designLock?.stage, "settled");
+    assert.equal(detail.designLock?.locked, null);
+    assert.deepEqual(detail.designLock?.mockups, [], "and the panel must render the directions anyway");
   } finally {
     await harness.close();
   }

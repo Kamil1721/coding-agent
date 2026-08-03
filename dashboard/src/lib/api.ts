@@ -259,6 +259,31 @@ export function resumeRun(
   );
 }
 
+/**
+ * Answer the CANVASS: continue the run in one of the directions it offered.
+ *
+ * A DIRECTION IS NOT A MOCKUP, AND THIS DELIBERATELY SENDS ONLY THE SLUG.
+ * `chosenMockup` is validated against the manifest's refs — a published copy
+ * path earns a 409 there, which is what `design-lock.browser.spec.ts`'s refusal
+ * case records — so pairing a slug with a path could only convert a valid
+ * direction choice into a refusal. The server resolves the direction from the
+ * slug; a click that could not carry one does not go.
+ *
+ * IT IS THE SAME ROUTE `resumeRun` POSTS TO, because it is the same act: the
+ * park ends and the run continues. What differs is which of the two irreversible
+ * facts the body records — which design gets BUILT (this) or which single still
+ * the gate GRADES against (`resumeRun`'s `chosenMockup`).
+ */
+export function resumeWithDirection(
+  runId: string,
+  chosenDirection: string,
+): Promise<OkResponse> {
+  return request<OkResponse>(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+    method: "POST",
+    body: JSON.stringify({ chosenDirection }),
+  });
+}
+
 /** One message on the owner↔run channel. Mirrors the server's `ChatMessage`. */
 export interface ChatMessage {
   readonly seq: number;

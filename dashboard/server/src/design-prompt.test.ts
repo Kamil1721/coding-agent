@@ -5,13 +5,17 @@ import type { DesignCapability } from "./design-capability.js";
 import { legPlannerInput } from "./design/video-lane.js";
 import type { VideoLegPlan } from "./design/video-legs.js";
 import { DEFAULT_VIDEO_LEG_CAP, planVideoLegs, resolveLegCap, VEO_ASPECTS } from "./design/video-legs.js";
-import type { DesignManifest } from "./design-manifest.js";
-import { parseDesignManifest, toVisualManifest } from "./design-manifest.js";
+import type { DesignDirection, DesignManifest } from "./design-manifest.js";
+import { auditCanvass, parseDesignManifest, toVisualManifest } from "./design-manifest.js";
 import {
   designHandoffSection,
   designSegmentPrompt,
+  DESIGN_CANVASS_SECTIONS,
   DESIGN_DIALS,
+  DESIGN_DIRECTION_CHOICE_FILE,
+  DESIGN_DIRECTION_COUNT,
   IMAGE_TO_CODE_SKILL,
+  MIN_CANVASS_REFS,
   MIN_DESIGN_REFS,
   visualGatePrompt,
   VISUAL_GATE_AGENT,
@@ -34,8 +38,34 @@ function full(overrides: Partial<Parameters<typeof designSegmentPrompt>[0]> = {}
     mode: "full",
     capability: CAP,
     autoChoose: false,
+    // THE DEFAULT IS THE CANVASS, because that is what a fresh run now gets.
+    // Every test written before 2026-08-03 was written against the ONE-direction
+    // deliverable, and `expand({...})` below is where that shape now lives.
+    stage: "canvass",
+    chosen: null,
     ...overrides,
   });
+}
+
+/**
+ * THE ONE-DIRECTION DELIVERABLE, WHICH IS NOW STAGE B.
+ *
+ * Every assertion about "at least five PNGs, one per section" and about the
+ * motion mark moved here when the canvass landed, and they MOVED rather than
+ * being deleted: the expansion IS today's shape, applied to the chosen direction
+ * alone. A test that had stayed on `full()` would have gone green against a
+ * canvass brief that never mentions five PNGs — the assertion surviving while the
+ * thing it measured moved out from under it.
+ */
+const CHOSEN: DesignDirection = {
+  slug: "editorial-slab",
+  name: "Editorial slab",
+  distinction: "A slab-serif masthead over a two-column measure; the others are grotesk and single-column.",
+  notes: `${WS}/design-refs/direction-editorial-slab.md`,
+};
+
+function expand(overrides: Partial<Parameters<typeof designSegmentPrompt>[0]> = {}): string {
+  return full({ stage: "expand", chosen: CHOSEN, ...overrides });
 }
 
 test("the prompt names the script by its ABSOLUTE path — nothing on PATH substitutes", () => {
@@ -71,7 +101,10 @@ test("the closed loop and its cap are stated: Read, critique, max 2 retries", ()
 });
 
 test("at least five PNGs and a manifest, at the exact paths the host will read", () => {
-  const p = full();
+  // STAGE B. This is the deliverable the whole pipeline was built around, and it
+  // is now what the CHOSEN direction is expanded to — same floor, same one-per-
+  // section shape, same manifest path.
+  const p = expand();
   assert.match(p, new RegExp(`at least ${String(MIN_DESIGN_REFS)}`, "i"));
   assert.match(p, /\/runs\/r1\/workspace\/design-refs\//);
   assert.match(p, /\/runs\/r1\/workspace\/design-refs\/manifest\.json/);
@@ -88,6 +121,8 @@ test("THE KEY IS NEVER IN THE PROMPT — not the value, not a read instruction",
     mode: "full",
     capability: { ...CAP, key: { available: true, source: "~/.gemini/api_key" } },
     autoChoose: false,
+    stage: "canvass",
+    chosen: null,
   });
   assert.doesNotMatch(p, /cat .*api_key/i);
   assert.doesNotMatch(p, /\$GEMINI_API_KEY/);
@@ -112,7 +147,10 @@ test("2b NEVER asks for video — the capability flag is false and the ask is ga
 });
 
 test("with the video capability present, the ask appears — the flag is load-bearing", () => {
-  const p = full({ capability: { ...CAP, video: true } });
+  // ON THE EXPANSION, NOT THE CANVASS. A leg spends on a metered key and two of
+  // three directions are about to be discarded, so the mark is asked for only
+  // once a direction has been chosen.
+  const p = expand({ capability: { ...CAP, video: true } });
   assert.match(p, /\.mp4/);
 });
 
@@ -166,7 +204,7 @@ function planFromTemplate(prompt: string): VideoLegPlan {
 }
 
 test("THE VIDEO BRANCH IS 2C'S TRIGGER: the template, copied literally, PLANS A LEG", () => {
-  const p = full({ capability: { ...CAP, video: true } });
+  const p = expand({ capability: { ...CAP, video: true } });
 
   // THE PLAN IS ASSERTED BEFORE THE COUNTS, AND THE ORDER WAS CHOSEN BY A
   // MEASUREMENT. With `marked.length === 1` first, two of the controls below
@@ -240,7 +278,7 @@ function motionBlock(prompt: string): string {
 }
 
 test("the motion instruction carries the cap, the two legal aspects, and no tool to run", () => {
-  const block = motionBlock(full({ capability: { ...CAP, video: true } }));
+  const block = motionBlock(expand({ capability: { ...CAP, video: true } }));
   assert.match(block, /"animate": true/, "the field and its value, spelled the way the file wants it");
   assert.match(
     block,
@@ -299,9 +337,12 @@ const WORK = `${WS}/design-refs/02-work.png`;
 const LOCKED: DesignManifest = {
   version: 1,
   refs: [
-    { path: HERO, section: "hero", aspect: "21:9", intent: "full-bleed opening statement" },
-    { path: WORK, section: "work", aspect: "16:9", intent: "three projects, uneven weight" },
+    { path: HERO, section: "hero", aspect: "21:9", intent: "full-bleed opening statement", direction: null, origin: null },
+    { path: WORK, section: "work", aspect: "16:9", intent: "three projects, uneven weight", direction: null, origin: null },
   ],
+  directions: [],
+  chosenDirection: null,
+  directionChoice: null,
   lockedMockup: HERO,
   lockedBy: "owner",
   lockedReason: "chosen in the dashboard",
@@ -528,4 +569,268 @@ test("the delegation instruction is absent when there is no image capability", (
   // the no-stills path, where the prompt asks for WRITTEN art direction instead.
   const degraded = full({ mode: "degraded" });
   assert.doesNotMatch(degraded, /WHO AUTHORS THIS/);
+});
+
+/* ══ STAGE A — THE CANVASS (2026-08-03) ════════════════════════════════════ */
+
+/**
+ * The canvass template, parsed by the HOST'S OWN parser.
+ *
+ * SAME ARGUMENT AS `templateRefs` ABOVE, one stage earlier: the question is not
+ * "does the prompt contain the word direction", it is "does the file an agent
+ * produces by copying this template give the host three comparable directions".
+ * A grep answers the first and nothing answers the second.
+ */
+function canvassTemplate(prompt: string): DesignManifest {
+  const parsed = parseDesignManifest(manifestTemplate(prompt), WS);
+  assert.notEqual(parsed, null, "the canvass template must survive the host's own parser");
+  return parsed as DesignManifest;
+}
+
+test("THE CANVASS ASKS FOR THE SAME SECTIONS, IN THE SAME ORDER, AT THE SAME ASPECT", () => {
+  // COMPARABILITY IS THE FEATURE. Three directions rendering hero/work,
+  // hero/footer and hero/pricing are not three directions the owner can compare —
+  // he is comparing pictures, and the nicest picture wins for a reason that has
+  // nothing to do with the design.
+  const p = full();
+  const template = canvassTemplate(p);
+
+  // THE TEMPLATE ITSELF IS COMPARABLE. Every ref carries one aspect, and the
+  // sections repeat across directions rather than varying with them.
+  const aspects = new Set(template.refs.map((ref) => ref.aspect));
+  assert.equal(aspects.size, 1, "one aspect across the whole example set");
+  const byDirection = new Map<string, string[]>();
+  for (const ref of template.refs) {
+    const slug = ref.direction ?? "";
+    byDirection.set(slug, [...(byDirection.get(slug) ?? []), ref.section]);
+  }
+  assert.ok(byDirection.size >= 2, "the example shows more than one direction, or it shows nothing");
+  const [first, ...rest] = [...byDirection.values()];
+  for (const sections of rest) {
+    assert.equal(sections[0], first?.[0], "every direction opens on the SAME section");
+  }
+
+  // AND THE INSTRUCTION SAYS IT IN WORDS, because the template shows two
+  // directions and the lane must produce three. A model that read the template
+  // and not the prose would render direction 3 however it liked.
+  assert.match(p, /SAME SECTIONS, SAME ORDER, SAME ASPECT/);
+  assert.match(p, new RegExp(`${String(DESIGN_DIRECTION_COUNT)} DISTINCT DIRECTIONS`));
+  assert.match(p, new RegExp(`${String(DESIGN_CANVASS_SECTIONS)} STILLS`));
+  assert.match(p, new RegExp(`${String(MIN_CANVASS_REFS)} PNGs`));
+});
+
+test("THE EXAMPLE THE LANE COPIES SURVIVES THE CHECK THE HOST APPLIES TO IT", () => {
+  /*
+   * THE PROMPT AND THE CLASSIFIER, BOUND RATHER THAN BOTH ASSERTED. Since
+   * 2026-08-03 `auditCanvass` → `classifyDesignLane` fails a canvass whose
+   * directions do not carry the same sections, and the brief now says so. A
+   * template that could not itself pass that check would be this file handing an
+   * agent a manifest the host rejects — the same defect the "valid JSON, not a
+   * sketch with ellipses" rule exists for, one layer up.
+   *
+   * IT WAS RED BEFORE THE TEMPLATE GAINED ITS FOURTH REF: the example showed
+   * `slugA` with two sections and `slugB` with one, so the host's own reader
+   * reported `quiet-grid` short and missing the second section.
+   */
+  const template = canvassTemplate(full());
+  const audited = auditCanvass(template);
+  assert.ok(audited.length >= 2, "the example shows more than one direction, or it audits nothing");
+  assert.deepEqual(
+    audited.flatMap((direction) => direction.missing),
+    [],
+    "every direction in the example renders every section the others do",
+  );
+  for (const direction of audited) {
+    assert.ok(
+      direction.sections.length >= DESIGN_CANVASS_SECTIONS,
+      `${direction.slug} shows ${String(direction.sections.length)} section(s); the check the brief names requires ${String(DESIGN_CANVASS_SECTIONS)}`,
+    );
+    assert.equal(direction.aspects.length, 1, "one aspect per direction, and the same one — see the aspects check above");
+  }
+
+  // AND THE BRIEF SAYS WHAT IS CHECKED, in the terms the check uses. A lane can
+  // only correct what it is told is measured.
+  const p = full();
+  assert.match(p, /THE HOST CHECKS THIS OFF THE MANIFEST YOU WRITE/);
+  assert.match(p, new RegExp(`all ${String(DESIGN_DIRECTION_COUNT)} directions must be declared`));
+  assert.match(p, new RegExp(`at least\\s+${String(DESIGN_CANVASS_SECTIONS)} DISTINCT sections`));
+  assert.match(p, /Two stills of\s+the same section count as ONE/);
+  // THE FOURTH CHECK, IN THE BRIEF'S OWN WORDS: six stills of one direction is
+  // the shape that cleared stage A before 2026-08-03.
+  // WRAPPED ACROSS A LINE IN THE PROMPT, so the number is matched with `\s` for
+  // the same reason `least two of` above is — a literal space here goes red on a
+  // re-wrap that changed nothing about what the brief says.
+  assert.match(p, new RegExp(`neither does\\s+${String(MIN_CANVASS_REFS)} stills of one direction`));
+});
+
+test("THE CANVASS DEMANDS DISTINCTNESS BY AXIS, and one sentence saying what differs", () => {
+  // Three directions that differ only in accent colour are ONE direction shown
+  // three times, and the owner's choice then decides nothing.
+  const p = full();
+  assert.match(p, /differ only in accent colour are/i);
+  for (const axis of ["TYPE SYSTEM", "LAYOUT SCAFFOLD", "DENSITY", "MOTION IDEA"]) {
+    assert.ok(p.includes(axis), `the axis ${axis} must be named — "make them different" is not an instruction`);
+  }
+  // WRAPPED ACROSS A LINE IN THE PROMPT, so the phrase is matched without the
+  // leading word rather than with a `\s` that would also accept "at        least".
+  assert.match(p, /least two of/i, "one axis is a variation; two is a direction");
+  assert.match(p, /what THIS direction does that the OTHER TWO do not/);
+  assert.ok(canvassTemplate(p).directions.every((d) => d.distinction.length > 0));
+});
+
+test("THREE DIRECTIONS ARE THREE READINGS OF THE OWNER'S REFERENCE, not departures from it", () => {
+  // `designReferenceSection` already tells the lane an attached image is "the
+  // direction the owner has already chosen. Derive from them." A canvass
+  // instruction that did not say the same thing would turn this feature into
+  // three unrelated designs and the owner's own image would stop mattering —
+  // which is the exact question the whole change exists to answer.
+  const p = full();
+  assert.match(p, /every direction derives from it/i);
+  assert.match(p, /unrelated designs/i);
+});
+
+test("THE CANVASS FORBIDS A LOCK AND A SUBDIRECTORY — both are silent breakages", () => {
+  const p = full();
+  assert.match(p, /DO NOT LOCK ANYTHING/);
+  // `publishedMockupPath` builds the served copy from `basename(refPath)`, so
+  // three directions each writing `01-hero.png` collide into one card; and
+  // `countDesignPngs` is a non-recursive readdir, so a nested layout counts 0.
+  assert.match(p, /NO SUBDIRECTORIES/);
+});
+
+test("THE CANVASS NAMES THE FROZEN SUITE — what is decided here is not what counts as done", () => {
+  assert.match(full(), /acceptance suite was frozen in the spec phase/i);
+  assert.match(full(), /does not change what counts as done/i);
+});
+
+test("THE AUTO-CHOOSER PICKS A DIRECTION BY SLUG, and never a still", () => {
+  // A `choice.json` written at stage A would lock a CANVASS still, and
+  // `lockManifest` would then refuse the real hero at the end of stage B with
+  // "this run already locked X" — the choice arriving one stage too early and
+  // blocking the one that matters.
+  const p = full({ autoChoose: true });
+  assert.ok(p.includes(DESIGN_DIRECTION_CHOICE_FILE), "the direction choice file is named");
+  assert.match(p, /"chosen": "<the slug of one direction>"/);
+  assert.match(p, /A SLUG, NOT A PATH/);
+  assert.doesNotMatch(p, /"choice\.json"|\/choice\.json/, "the still-choice file has no business at stage A");
+  // AND THE EXPANSION ASKS FOR NO CHOICE AT ALL: the host locks the hero itself.
+  assert.doesNotMatch(expand({ autoChoose: true }), /CHOOSING THE DIRECTION/);
+});
+
+test("THE EXPANSION IS ADDITIVE AND NAMES ONLY THE CHOSEN DIRECTION", () => {
+  const p = expand();
+  assert.match(p, /STAGE B — EXPAND/);
+  assert.ok(p.includes(CHOSEN.name), "the direction is named to the lane building it");
+  assert.ok(p.includes(CHOSEN.distinction), "and so is what makes it that direction");
+  assert.ok(p.includes(CHOSEN.notes ?? " "), "its own art direction is a Read target");
+  assert.match(p, /APPEND TO `refs`, NEVER REPLACE IT/);
+  assert.match(p, /EXPAND THAT ONE DIRECTION AND NOTHING ELSE/);
+  assert.match(p, /leave their files and their manifest entries/i, "the unchosen ones are a record");
+  // THE HOST OWNS THE CHOICE FIELDS. A lane that rewrote them would record a
+  // decision nobody made.
+  assert.match(p, /records a decision nobody made/);
+  const template = canvassTemplate(p);
+  assert.equal(template.chosenDirection, CHOSEN.slug, "the template carries the choice through the parser");
+  assert.equal(template.directionChoice?.by, "owner");
+});
+
+test("DEGRADED MODE CANVASSES TOO — three WRITTEN directions and a manifest to park on", () => {
+  // A degraded path that silently falls back to ONE direction is the feature
+  // quietly not existing on the machine where the owner can least tell.
+  const p = full({ mode: "degraded" });
+  assert.match(p, new RegExp(`PRODUCE ${String(DESIGN_DIRECTION_COUNT)} WRITTEN ART DIRECTIONS`));
+  assert.match(p, /direction-<slug>\.md/);
+  assert.doesNotMatch(p, /gemini-image\.sh/, "a degraded lane is never pointed at the tool");
+
+  // AND THE MANIFEST, WITHOUT WHICH THE OWNER IS NEVER ASKED. Every park
+  // condition downstream reads `directions.length > 0 && chosenDirection === null`
+  // off the manifest, so three documents and no manifest is a run that chose for
+  // him and did not say so.
+  const template = canvassTemplate(p);
+  assert.deepEqual(template.refs, [], "no stills on a degraded run");
+  assert.equal(template.directions.length, 1, "the shape of a direction entry, with its notes file");
+  assert.equal(template.directions[0]?.notes, `${WS}/design-refs/direction-editorial-slab.md`);
+  assert.match(p, /WITHOUT THAT FILE THE OWNER IS NEVER ASKED/);
+
+  // AND IT MUST NOT WRITE `direction.md` YET — that filename means THE CHOSEN
+  // direction, and handing the build one the owner never picked is the failure.
+  assert.match(p, /DO NOT write .*direction\.md yet/);
+});
+
+test("DEGRADED EXPANSION WRITES direction.md — the two consumers that must not go blind", () => {
+  // `readDesignDirection` and `designHandoffSection`'s `dials.length > 0` test.
+  const p = expand({ mode: "degraded" });
+  assert.match(p, /design-refs\/direction\.md/);
+  assert.ok(p.includes(CHOSEN.notes ?? " "), "started from the direction's own document");
+  assert.doesNotMatch(p, /PRODUCE 3 WRITTEN ART DIRECTIONS/);
+});
+
+test("THE DIALS FOLLOW THE DOCUMENT THE STAGE ACTUALLY WRITES", () => {
+  // On a canvass there is no `direction.md` — that filename means THE CHOSEN
+  // direction — so pointing the dials at it would ask the lane to write the
+  // chosen direction's document before anything is chosen.
+  const canvass = full();
+  assert.match(canvass, /THE THREE DIALS, PER DIRECTION/);
+  assert.match(canvass, /direction-<slug>\.md/);
+  for (const dial of DESIGN_DIALS) assert.ok(canvass.includes(dial));
+  const expanded = expand();
+  assert.match(expanded, /design-refs\/direction\.md/);
+  for (const dial of DESIGN_DIALS) assert.ok(expanded.includes(dial));
+});
+
+test("A CANVASS NEVER MARKS MOTION, even on a machine that has the video tool", () => {
+  // `planVideoLegs` takes the FIRST marked refs up to the cap, and on a
+  // canvass-then-expand manifest the canvass refs come FIRST — so a mark here
+  // would animate a still from a direction the owner is about to discard, on a
+  // metered key, before he has chosen.
+  const p = full({ capability: { ...CAP, video: true } });
+  assert.match(p, /DO NOT MARK ANYTHING FOR MOTION ON THIS STAGE/);
+  assert.doesNotMatch(p, /"animate": true/, "the mark is not in the canvass template");
+  assert.equal(planFromTemplate(p).legs.length, 0, "and the template, copied literally, plans no leg");
+  // AND IT DOES NOT CLAIM THE MACHINE HAS NO TOOL. That sentence used to be the
+  // `else` of the motion branch; adding a third arm to it would have emitted
+  // "there is no image-to-video tool installed" on a video-capable canvass.
+  assert.doesNotMatch(p, /no image-to-video tool installed/);
+});
+
+test("THE DISCARDED DIRECTIONS REACH NEITHER THE BUILD NOR THE GRADER", () => {
+  // THE UNCHOSEN DIRECTIONS ARE A RECORD, NOT A RESULT. They stay on disk and on
+  // the wire; nothing that builds or grades may name one.
+  const chosenRef = `${WS}/design-refs/editorial-slab-01-hero.png`;
+  const manifest = parseDesignManifest(
+    JSON.stringify({
+      version: 1,
+      directions: [
+        { slug: "editorial-slab", name: "Editorial slab", distinction: "d", notes: null },
+        { slug: "quiet-grid", name: "Quiet grid", distinction: "d", notes: null },
+      ],
+      chosenDirection: "editorial-slab",
+      directionChoice: { by: "owner", reason: "r", at: "2026-08-03T10:00:00.000Z" },
+      refs: [
+        { path: chosenRef, section: "hero", aspect: "16:9", intent: "chosen", direction: "editorial-slab" },
+        {
+          path: `${WS}/design-refs/quiet-grid-01-hero.png`,
+          section: "hero",
+          aspect: "16:9",
+          intent: "offered",
+          direction: "quiet-grid",
+        },
+      ],
+      locked: chosenRef,
+      lockedBy: "owner",
+      lockedReason: "r",
+      lockedAt: "2026-08-03T10:00:00.000Z",
+    }),
+    WS,
+  ) as DesignManifest;
+  assert.equal(manifest.refs.length, 2, "both are in the manifest");
+
+  const handoff = designHandoffSection({ manifest, mode: "full", workspace: WS, dials: "" });
+  assert.ok(handoff.includes("editorial-slab-01-hero.png"), "the chosen direction is what the build is given");
+  assert.ok(!handoff.includes("quiet-grid-01-hero.png"), "the discarded one is not");
+
+  const gate = visualGatePrompt({ manifest, workspace: WS, previewUrl: "http://127.0.0.1:4173" });
+  assert.ok(gate.includes("editorial-slab-01-hero.png"));
+  assert.ok(!gate.includes("quiet-grid-01-hero.png"), "the grader may not compare the build to a design nobody built");
+  assert.match(gate, /Resembling a different mockup from the set is not a pass/, "the LOCKED rule is unchanged");
 });

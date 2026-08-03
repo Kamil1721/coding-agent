@@ -38,7 +38,14 @@
  * a cosmetic loss, never a wrong claim about which design was built.
  */
 
-import type { DesignLockState, RunDetail, Screenshot } from "./api-types";
+import type {
+  DesignDirectionState,
+  DesignLockState,
+  DesignStage,
+  DesignRenderRequest,
+  RunDetail,
+  Screenshot,
+} from "./api-types";
 import { basename } from "./screenshots";
 
 /** The server's `DESIGN_MOCKUP_LABEL`. The dash is an em dash; do not "clean" it. */
@@ -66,12 +73,70 @@ export function isPublishedAs(mockupPath: string, refPath: string): boolean {
   return ref !== "" && basename(mockupPath) === `${MOCKUP_COPY_PREFIX}${ref}`;
 }
 
+/* ------------------------------------------------------------------ */
+/* READING THE NINE FIELDS ADDED ON 2026-08-03                         */
+/*                                                                     */
+/* `api.ts` casts responses with `parsed as T` and validates nothing,  */
+/* and the three runs on disk answer with a `designLock` that has none */
+/* of these keys. `lock.directions.length` on one of those bodies is a */
+/* TypeError inside a render — a blank run page. These three readers   */
+/* are the only sanctioned way in, and every consumer uses them.       */
+/* ------------------------------------------------------------------ */
+
+/** `[]` for a lock recorded before directions existed. */
+export function directionsOf(lock: DesignLockState): readonly DesignDirectionState[] {
+  return Array.isArray(lock.directions) ? lock.directions : [];
+}
+
+/** `[]` for a lock recorded before the design dialogue existed. */
+export function requestsOf(lock: DesignLockState): readonly DesignRenderRequest[] {
+  return Array.isArray(lock.requests) ? lock.requests : [];
+}
+
 /**
- * The lock as one of four renderable states.
+ * `"none"` for a lock the server sent without a stage.
+ *
+ * IT IS NOT DERIVED FROM `directions.length` — the server owns the stage and a
+ * second derivation here could disagree with it. The only thing decided here is
+ * what an ABSENT value reads as, and it reads as the pre-2026-08-03 shape.
+ */
+export function stageOf(lock: DesignLockState): DesignStage {
+  const stage: unknown = lock.stage;
+  return stage === "canvass" || stage === "expanding" || stage === "settled" ? stage : "none";
+}
+
+/** A counter the wire did not carry reads 0, NEVER "unlimited". */
+export function countOf(value: number | undefined | null): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** The direction the owner picked, or null while the canvass is open. */
+export function chosenDirectionOf(lock: DesignLockState): DesignDirectionState | null {
+  if (lock.chosenDirection === null || lock.chosenDirection === undefined) return null;
+  return directionsOf(lock).find((direction) => direction.slug === lock.chosenDirection) ?? null;
+}
+
+/**
+ * The lock as one of five renderable states.
  *
  * `settled` IS TESTED FIRST AND THAT ORDER IS LOAD-BEARING. A recorded choice is
  * the fact about this run whatever its status says; asking `awaiting` first would
  * let a stale park record repaint a locked run as still asking.
+ *
+ * `expanding` IS TESTED BEFORE `unlocked`, AND THAT ORDER IS THE 2026-08-03 BUG
+ * THIS FUNCTION EXISTS TO NOT SHIP. Between the direction choice and the hero
+ * lock the record reads `{awaiting: false, locked: null}` — for the whole of
+ * stage B, which is a full per-section image set and minutes long. The old
+ * ordering returned `unlocked` for that window, whose panel copy is "The DESIGN
+ * lane finished without a design to lock": the exact opposite of what is
+ * happening. `stage` is the only field that separates them.
+ *
+ * (It sits BELOW the `locked` test rather than above it because the two are
+ * mutually exclusive by construction — the server moves the stage to `settled`
+ * on the same write that locks the hero — and because `settled`-first is pinned
+ * by `design-lock.unit.spec.ts` for the stale-park reason above. A run that
+ * somehow carried both would be read as locked, which is the fact with evidence
+ * behind it.)
  *
  * `closing` IS NOT `unlocked`. When the timeout fires, the server locks
  * automatically and moves the run to `queued` — and `status` arrives over SSE
@@ -82,13 +147,14 @@ export function isPublishedAs(mockupPath: string, refPath: string): boolean {
  * degraded lane. The status is what separates them, so it is what this switches
  * on — and `closing` is the cue to re-read, never a claim about an outcome.
  */
-export type DesignLockPhase = "pending" | "closing" | "settled" | "unlocked";
+export type DesignLockPhase = "pending" | "closing" | "expanding" | "settled" | "unlocked";
 
 export function designLockPhase(
   status: RunDetail["status"],
   lock: DesignLockState,
 ): DesignLockPhase {
   if (lock.locked !== null) return "settled";
+  if (stageOf(lock) === "expanding") return "expanding";
   if (!lock.awaiting) return "unlocked";
   return status === "awaiting_input" ? "pending" : "closing";
 }
@@ -161,5 +227,70 @@ export function splitCaptures(
   }
 
   return { product, references };
+}
+
+/**
+ * The reference group, split again by WHAT EACH STILL IS — which after
+ * 2026-08-03 is three different things under one heading.
+ *
+ * WHY THIS EXISTS. `splitCaptures` was written when every published mockup
+ * belonged to the one direction the run was built to, so `references` could
+ * honestly be labelled "the mockups the run was built to". A canvassed run
+ * publishes stills from directions that were OFFERED AND DISCARDED, plus stills
+ * the owner ASKED FOR while parked; two thirds of that heading is then a false
+ * claim, and the discarded ones are the claim the whole two-stage shape exists
+ * to avoid — the run was never graded against them.
+ *
+ * `requested` IS TESTED FIRST, and off `requests[].mockup` rather than off any
+ * naming convention. That field is the host's own record of what it rendered on
+ * demand, so it cannot disagree with itself; whether a direction's `mockups`
+ * list happens to include its on-demand stills is then irrelevant here.
+ *
+ * `ungrouped` IS NOT AN ERROR AND IS THE WHOLE OF A PRE-DIRECTIONS RUN. With no
+ * directions on the wire every reference lands here and the caller keeps its
+ * original heading, which is what "old runs render unchanged" means mechanically.
+ */
+export interface ReferenceGroups {
+  /** Stills of the direction the build was made to and graded against. */
+  readonly built: readonly Screenshot[];
+  /** Stills of a direction that was offered and NOT built. */
+  readonly offered: readonly Screenshot[];
+  /** Stills the owner asked for at the park. */
+  readonly requested: readonly Screenshot[];
+  /** Everything no direction claims — every still on a run that had none. */
+  readonly ungrouped: readonly Screenshot[];
+}
+
+export function groupReferences(
+  references: readonly Screenshot[],
+  lock: DesignLockState | null,
+): ReferenceGroups {
+  const built: Screenshot[] = [];
+  const offered: Screenshot[] = [];
+  const requested: Screenshot[] = [];
+  const ungrouped: Screenshot[] = [];
+
+  const directions = lock === null ? [] : directionsOf(lock);
+  const onDemand = new Set(
+    (lock === null ? [] : requestsOf(lock))
+      .map((request) => request.mockup)
+      .filter((path): path is string => typeof path === "string" && path !== ""),
+  );
+  const chosen = lock === null ? null : lock.chosenDirection;
+  const inChosen = new Set(
+    directions.filter((direction) => direction.slug === chosen).flatMap((direction) => direction.mockups),
+  );
+  const inDiscarded = new Set(
+    directions.filter((direction) => direction.slug !== chosen).flatMap((direction) => direction.mockups),
+  );
+
+  for (const shot of references) {
+    if (onDemand.has(shot.path)) requested.push(shot);
+    else if (inChosen.has(shot.path)) built.push(shot);
+    else if (inDiscarded.has(shot.path)) offered.push(shot);
+    else ungrouped.push(shot);
+  }
+
+  return { built, offered, requested, ungrouped };
 }
 

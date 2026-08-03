@@ -391,13 +391,94 @@ export interface ApiAttachment {
  * two spellings is a compile-time check in api.test.ts ("CONTRACT: the wire's
  * lockedBy union names exactly the domain's DesignLockedBy"), not an import.
  */
+/**
+ * WHICH HALF OF THE TWO-STAGE DESIGN LANE THIS RUN IS IN.
+ *
+ * `"none"` IS EVERY RUN BEFORE 2026-08-03 and every lane that produced no
+ * directions, and it is what makes the old panel keep working: `directions` is
+ * `[]` and the client renders exactly what it rendered before.
+ *
+ * `"expanding"` IS THE ONE A RENDERER WILL GET WRONG. Between the direction
+ * choice and the hero lock the record reads `{awaiting: false, locked: null}`,
+ * which any "locked, else awaiting, else unlocked" ladder reports as UNLOCKED —
+ * "the DESIGN lane finished without a design to lock" — for the whole stage-B
+ * window, which is five to seven image generations long. Check `stage` before
+ * that ladder, not after it.
+ */
+export type ApiDesignStage = "none" | "canvass" | "expanding" | "settled";
+
+/** ONE of the directions the canvass offered. */
+export interface ApiDesignDirection {
+  readonly slug: string;
+  readonly name: string;
+  /** ONE sentence on what this does that the others do not. */
+  readonly distinction: string;
+  /**
+   * OFFERED, NOT BUILT. Derived from the chosen direction rather than stored, so
+   * it cannot disagree with it: false for every direction while the choice is
+   * still open. A discarded direction is never graded against and must never be
+   * shown as though it were built.
+   */
+  readonly discarded: boolean;
+  /**
+   * PUBLISHED copy paths, built the same way `ApiDesignLock.mockups[].path` is —
+   * the same strings, so a client groups cards by `Set` membership with no
+   * filename parsing and no fourth mirrored copy of the `design-` prefix. Empty
+   * on a degraded run, which has no stills at all.
+   *
+   * ONE PATH CAN BE HERE AND NOT IN `mockups`: the host computes this list from
+   * the manifest, while `mockups` lists the copies that were actually made, and a
+   * ref whose `copyFileSync` failed is warned about and skipped. Grouping by `Set`
+   * membership fails soft on that ref — the card simply is not there to group —
+   * which is the right direction. Do not invert the join and render a card FROM
+   * this list: the file behind it may not exist.
+   */
+  readonly mockups: readonly string[];
+  /** This direction's written art direction. Non-null on every degraded run. */
+  readonly notes: string | null;
+}
+
+/** One on-demand render the owner asked for while choosing. */
+export interface ApiDesignRenderRequest {
+  readonly at: string;
+  readonly section: string;
+  readonly direction: string;
+  /**
+   * OPEN VOCABULARY, `gateStopReason`'s precedent: a newer server may send a
+   * value this client has never heard of, so every renderer needs a default
+   * branch. Today's set is `rendered`, `rendered-off-brief`, `unknown-direction`,
+   * `no-section`, `turn-cap`, `render-cap`, `failed`.
+   */
+  readonly outcome: string;
+  readonly detail: string;
+  /** The PUBLISHED copy of the still, or null when it produced none. */
+  readonly mockup: string | null;
+}
+
 export interface ApiDesignLock {
-  /** The run is parked RIGHT NOW waiting for a mockup to be chosen. */
+  /** The run is parked RIGHT NOW waiting for a mockup or a direction to be chosen. */
   readonly awaiting: boolean;
   readonly mockups: readonly ApiScreenshot[];
   readonly locked: string | null;
   readonly lockedBy: "owner" | "ui-designer" | "fallback" | null;
   readonly reason: string | null;
+  /* ── added 2026-08-03 ── */
+  /** `[]` on every run before this date; `stage` is then `"none"` and the client renders as before. */
+  readonly directions: readonly ApiDesignDirection[];
+  readonly chosenDirection: string | null;
+  readonly chosenDirectionBy: "owner" | "ui-designer" | "fallback" | null;
+  readonly stage: ApiDesignStage;
+  /**
+   * THE CAPS, ON THE WIRE, because the panel has to say "no more renders on this
+   * run — pick one" rather than silently ignore him. `used` counts EVERY claimed
+   * message for turns and every generation ATTEMPTED for renders, including ones
+   * that failed: the call was made and the money was spent.
+   */
+  readonly turnsUsed: number;
+  readonly turnsMax: number;
+  readonly rendersUsed: number;
+  readonly rendersMax: number;
+  readonly requests: readonly ApiDesignRenderRequest[];
 }
 
 /**

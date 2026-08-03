@@ -106,33 +106,52 @@ import {
 } from "./design-capability.js";
 import type { CommandRunner, DesignPreflight } from "./design-capability.js";
 import { designSubprocessEnv, designTmpDirFor } from "./design-env.js";
+import { DESIGN_FROZEN_SUITE_NOTICE, DesignDialogueDriver } from "./design-dialogue.js";
+import type { DesignRenderResult, DesignRequest } from "./design-dialogue.js";
 import { designLaneMode, designSurfaceGate } from "./design-lane.js";
 import type { DesignLaneMode } from "./design-lane.js";
 import {
   DESIGN_MOCKUP_LABEL,
+  chooseDirection,
   chosenMockupRef,
   designLockPolicy,
+  designLockRemainingMs,
   designLockTimeoutMin,
   designLockExpired,
+  directionForMockup,
+  emptyDesignLockRecord,
   fallbackChoice,
+  fallbackDirectionChoice,
   lockManifest,
   publishedMockupPath,
   readChoiceFile,
   readDesignLock,
+  readDirectionChoiceFile,
   writeDesignLock,
 } from "./design-lock.js";
-import type { LockAttempt } from "./design-lock.js";
+import type { DesignDirectionRecord, DesignLockRecord, DirectionAttempt, LockAttempt } from "./design-lock.js";
 import {
+  builtManifest,
   countDesignPngs,
+  heroRefFor,
   pruneMissingRefs,
   readDesignDirection,
   readDesignManifest,
   refsDirFor,
+  refsForDirection,
   writeDesignManifest,
 } from "./design-manifest.js";
 import type { DesignManifest } from "./design-manifest.js";
 import { classifyDesignLane, designLaneFailureMessage, writeDesignLaneRecord } from "./design-outcome.js";
-import { designHandoffSection, designSegmentPrompt } from "./design-prompt.js";
+import {
+  DESIGN_DIRECTION_CHOICE_FILE,
+  MAX_DESIGN_LOCK_TURNS,
+  MAX_DESIGN_ON_DEMAND_RENDERS,
+  MIN_CANVASS_REFS,
+  MIN_DESIGN_REFS,
+  designHandoffSection,
+  designSegmentPrompt,
+} from "./design-prompt.js";
 import { defaultVideoCapabilityDeps, videoCapability } from "./design/video-capability.js";
 import { defaultSpawnLeg, runVideoLane } from "./design/video-lane.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
@@ -918,6 +937,127 @@ export function silenceOf(
   });
 }
 
+/* ---- WHAT `#buildPhase` DOES WITH A DESIGN SEGMENT THAT CAME BACK ------ */
+
+/**
+ * Where a resolved direction came from, said out loud rather than inferred.
+ *
+ * `"manifest"` is the ordinary case and the only one that needs no repair. The
+ * other three are all the manifest having LOST a choice the run had already made
+ * and already spent generations on, and they are ordered by how directly each
+ * one witnesses that spend.
+ */
+export type DesignDirectionSource = "manifest" | "record" | "expansion" | "fallback";
+
+/**
+ * The five destinations a returned design segment has, and every manifest reaches
+ * exactly one.
+ *
+ *   no-manifest    — nothing could be read. NOBODY IS ASKED and the run says so.
+ *   canvass-choice — stage A came back unanswered. The answer is a DIRECTION.
+ *   expand         — stage B came back, whatever shape it came back in.
+ *   mockup-choice  — the pre-2026-08-03 shape. The answer is a STILL.
+ *   settled        — the manifest already carries its own answer.
+ */
+export type DesignPostSegmentAction =
+  | { readonly kind: "no-manifest" }
+  | { readonly kind: "canvass-choice"; readonly manifest: DesignManifest }
+  /**
+   * `direction: null` IS "THERE IS NO DIRECTION TO LOCK", and it is one field
+   * rather than a nullable slug beside a nullable source so the two cannot be read
+   * apart: a slug with no source is a direction nobody can account for, and a
+   * source with no slug is an account of nothing.
+   */
+  | {
+      readonly kind: "expand";
+      readonly manifest: DesignManifest;
+      readonly direction: { readonly slug: string; readonly source: DesignDirectionSource } | null;
+    }
+  | { readonly kind: "mockup-choice"; readonly manifest: DesignManifest }
+  | { readonly kind: "settled"; readonly manifest: DesignManifest };
+
+/**
+ * WHICH ARM A RETURNED DESIGN SEGMENT TAKES — one rule, over (STAGE × STATE).
+ *
+ * PULLED OUT OF `#buildPhase` BECAUSE THE COVERAGE CLAIM IS THE POINT. The arms
+ * were a chain of `if`s over the manifest alone, and three rounds of fixes each
+ * corrected ONE of them while its siblings kept taking the identical input: the
+ * stage-A arm did not test `expandSegment` while its sibling did, and `after ===
+ * null` had no arm at all. A decision that lives inside a loop which spawns
+ * builder subprocesses can only be measured one (stage × state) pair per real
+ * run; here the whole table is a unit test, which is how "every arm's guard is
+ * complete" stops being a sentence in a comment.
+ *
+ * THE STAGE DECIDES FIRST, AND THAT IS THE RULE FINDING O NAMES. A park belongs
+ * to the segment whose question it is: stage A asks which direction, so only a
+ * CANVASS return may open it. Every EXPAND return goes to one arm — `expand` —
+ * because by the time stage B has run, the direction is a spend that has already
+ * happened and re-asking would be asking about money already gone.
+ *
+ * THE STATES ARE SIX AND NOT EIGHT. `parseDesignManifest` requires a chosen slug
+ * to be one the manifest declares (design-manifest.ts:582), so
+ * `directions.length === 0 && chosenDirection !== null` cannot be read off disk:
+ *
+ *   1. unreadable / absent                                  → no-manifest
+ *   2. directions, no choice                                → canvass-choice
+ *   3. directions, a choice, no lock                        → settled (stage B is owed)
+ *   4. directions, a choice, a lock                         → settled
+ *   5. no directions, no lock                               → mockup-choice
+ *   6. no directions, a lock                                → settled
+ *
+ * …and `expandSegment` overrides rows 2–6 wholesale.
+ *
+ * `recordedDirection` IS `design-lock.json`'s COPY, AND IT IS THE HOST'S OWN
+ * MEMORY. The expansion's manifest is written by the AGENT, so it can come back
+ * having dropped the choice `#applyDirectionChoice` wrote — the both-or-neither
+ * rule turns a truncated `directionChoice` into `chosenDirection: null`. The
+ * record was written by this process at the same instant as the manifest, so it
+ * is the first place to look; after it, the direction the expansion's OWN refs
+ * name, which is what the generations were actually spent on; and last the same
+ * "first in manifest order" the `auto` arm and the park's timer already fall back
+ * to. NULL ONLY WHEN THERE ARE NO DIRECTIONS AT ALL, which is the one shape that
+ * has nothing to be wrong about.
+ *
+ * THE MANIFEST TRAVELS ON THE RESULT rather than being re-tested at the call
+ * site. Four `after !== null` guards on four arms is precisely the shape that let
+ * `after === null` fall through all of them, so the null case is carried in the
+ * TYPE: `#buildPhase` cannot reach an arm without the manifest that arm is for.
+ */
+export function designPostSegmentAction(input: {
+  readonly expandSegment: boolean;
+  readonly manifest: DesignManifest | null;
+  readonly recordedDirection: string | null;
+}): DesignPostSegmentAction {
+  const manifest = input.manifest;
+  if (manifest === null) return { kind: "no-manifest" };
+  if (input.expandSegment) {
+    return { kind: "expand", manifest, direction: expandedDirection(manifest, input.recordedDirection) };
+  }
+  if (manifest.directions.length > 0 && manifest.chosenDirection === null) return { kind: "canvass-choice", manifest };
+  if (manifest.directions.length === 0 && manifest.lockedMockup === null) return { kind: "mockup-choice", manifest };
+  return { kind: "settled", manifest };
+}
+
+/** {@link designPostSegmentAction}'s four sources, in the order stated there. */
+function expandedDirection(
+  manifest: DesignManifest,
+  recorded: string | null,
+): { readonly slug: string; readonly source: DesignDirectionSource } | null {
+  const declared = (slug: string | null): boolean =>
+    slug !== null && manifest.directions.some((direction) => direction.slug === slug);
+  if (manifest.chosenDirection !== null) return { slug: manifest.chosenDirection, source: "manifest" };
+  if (recorded !== null && declared(recorded)) return { slug: recorded, source: "record" };
+  // WHAT THE EXPANSION ITSELF DREW. `origin: "expansion"` is written by the lane
+  // onto every still stage B produced, so this is the run's own receipt for the
+  // generations it spent — stronger evidence than manifest order, and the only
+  // source that survives a lane which chose while it drew and never wrote a
+  // record.
+  const drawn = manifest.refs.find((ref) => ref.origin === "expansion" && declared(ref.direction))?.direction ?? null;
+  if (drawn !== null) return { slug: drawn, source: "expansion" };
+  const first = manifest.directions[0];
+  return first === undefined ? null : { slug: first.slug, source: "fallback" };
+}
+
 export class Orchestrator {
   readonly #deps: OrchestratorDeps;
   #active: ActiveRun | null = null;
@@ -1049,6 +1189,26 @@ export class Orchestrator {
   }
 
   /**
+   * An owner message arrived for a run parked on a DESIGN CANVASS.
+   *
+   * THE THIRD AND LAST RUNG of `postMessage`'s ladder — `pushLiveMessage` →
+   * `deliverPlanReply` → this. The three are disjoint by construction and the
+   * order is what keeps them so: a running build's channel is never shadowed by a
+   * stale park record, and a design park's `plan.json` is FOLDED, which is exactly
+   * why `PlanDriver.#parked` declines it.
+   *
+   * FALSE FOR A MESSAGE THAT NAMES NO DIRECTION, even on a parked run and even
+   * when it names a section: that is a mid-run instruction, it stays pending, and
+   * it reaches the next build segment's prompt. Claiming it here would consume an
+   * instruction as a render request and stamp it delivered — which is exactly
+   * what a bare number in prose ("make the hero 2 lines instead of 3") did until
+   * `matchDirectionReference` stopped reading one as a direction.
+   */
+  deliverDesignRequest(runId: string): boolean {
+    return this.#design.deliver(runId);
+  }
+
+  /**
    * The PLAN park's live half, and the off-queue turn.
    *
    * CONSTRUCTED HERE RATHER THAN PER RUN because the timer map has to outlive
@@ -1061,6 +1221,20 @@ export class Orchestrator {
    * what keeps `plan-dialogue.test.ts` free of a store, a bus and a subscription.
    */
   readonly #plan: PlanDriver;
+
+  /**
+   * The DESIGN park's live half — the on-demand render dialogue.
+   *
+   * CONSTRUCTED HERE FOR `#plan`'s REASON: the run that armed the park is no
+   * longer executing, so a driver built inside `#buildPhase` would be collected
+   * with the frame that created it.
+   *
+   * IT OWNS NO TIMER. The park's clock is `#parkForDesignLock`'s, which
+   * `reconcileOnBoot` already re-arms for the REMAINDER — building a second one
+   * here would be a second bound on one park, and two clocks on one deadline
+   * disagree by construction.
+   */
+  readonly #design: DesignDialogueDriver;
 
   constructor(deps: OrchestratorDeps) {
     this.#deps = deps;
@@ -1091,6 +1265,23 @@ export class Orchestrator {
       followUp: (runId, input) => this.#planFollowUp(runId, input),
     };
     this.#plan = new PlanDriver(host);
+    this.#design = new DesignDialogueDriver({
+      env: deps.env,
+      resultsDir: (runId) => runPathsFor(deps.paths, runId).results,
+      getRun: (runId) => deps.store.getRun(runId),
+      manifest: (runId) => readDesignManifest(runPathsFor(deps.paths, runId).workspace),
+      pendingMessages: (runId) => deps.store.pendingMessages(runId),
+      markDelivered: (runId, seqs) => {
+        deps.store.markMessagesDelivered(runId, seqs);
+      },
+      log: (runId, level, text) => {
+        this.#emitLog(runId, level, text);
+      },
+      // NO `say`. The answer is HOST-COMPOSED — a mechanically built image prompt,
+      // no seat call — and db.ts's `ChatRole` forbids the server writing a `run`
+      // row of its own composition. It reaches the owner as the published still.
+      render: (runId, request) => this.#renderOnDemand(runId, request),
+    });
   }
 
   get activeRunId(): string | null {
@@ -1141,18 +1332,40 @@ export class Orchestrator {
     return queued;
   }
 
-  /** Cancel a run. A queued run is cancelled outright; an active one aborts. */
+  /**
+   * Cancel a run. A queued run is cancelled outright; an active one aborts.
+   *
+   * EVERY ARMED PARK GOES FIRST, BEFORE EITHER EXIT, AND THERE ARE TWO OF THEM.
+   * A cancelled run that still holds an armed park would be `resume()`d by it
+   * minutes later — refused, because `resume` declines a terminal run, but only
+   * after the timer had already logged that the window expired on a run nobody
+   * was waiting for. A plan turn in flight is handled inside `PlanDriver`, which
+   * re-reads the row after its seat call and declines to write onto a row that is
+   * no longer parked.
+   *
+   * THE DESIGN TIMER WAS NOT CLEARED HERE UNTIL 2026-08-03 (round 5), and this
+   * docblock reasoned about exactly that hazard while fixing it for the plan
+   * timer alone. `#clearDesignLockTimer` had three call sites — `resume`,
+   * `shutdown`, `#parkForDesignLock` — and cancel was not among them; a PARKED run
+   * has `#active === null`, so cancel takes the `#finish` branch below and never
+   * went near it. Up to thirty minutes after the owner cancelled a run parked on
+   * a canvass, that timer fired and wrote "no design choice arrived before the
+   * timeout; selecting automatically" onto the CANCELLED run at warn level, then
+   * called `resume`, which refused — so nothing was selected and the sentence was
+   * false.
+   *
+   * AND THE RECORD IS CLOSED, WHICH IS THE HALF A `clearTimeout` DOES NOT DO.
+   * `designLockOf` puts `awaiting` on the wire ungated by run status, and nothing
+   * else on the cancel path ever writes `awaiting: false` — so the park record
+   * stayed open for ever on a run that had ended, which is the same wire lie
+   * `#closeSettledPark` exists to prevent on the `resume` path.
+   */
   cancel(runId: string): boolean {
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
-    // THE PLAN TIMER GOES FIRST, BEFORE EITHER EXIT. A cancelled run that still
-    // holds an armed park would be `resume()`d by it minutes later — refused,
-    // because `resume` declines a terminal run, but only after the timer had
-    // already logged that the window expired on a run nobody was waiting for. A
-    // plan turn in flight is handled inside `PlanDriver`, which re-reads the row
-    // after its seat call and declines to write onto a row that is no longer
-    // parked.
     this.#plan.clearTimer(runId);
+    this.#clearDesignLockTimer(runId);
+    this.#closeDesignParkOnCancel(runId);
     if (this.#active !== null && this.#active.runId === runId) {
       this.#active.abort.abort(ABORT_CANCELLED);
       return true;
@@ -1170,7 +1383,7 @@ export class Orchestrator {
    * scored artefact would overwrite a real result with a second one taken under
    * different conditions.
    */
-  resume(runId: string, chosenMockup: string | null = null): boolean {
+  resume(runId: string, chosenMockup: string | null = null, chosenDirection: string | null = null): boolean {
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
     if (this.#active !== null && this.#active.runId === runId) return false;
@@ -1190,7 +1403,54 @@ export class Orchestrator {
     const park = readDesignLock(runPaths.results);
     if (row.status === "awaiting_input" && park !== null && park.awaiting) {
       const manifest = readDesignManifest(runPaths.workspace);
-      if (manifest !== null && manifest.lockedMockup === null) {
+      /* ---- THREE ARMS, AND EVERY MANIFEST MATCHES EXACTLY ONE -------------
+       *
+       * A CANVASS PARK AND A MOCKUP PARK ARE ANSWERED BY DIFFERENT THINGS, and
+       * which one this is is decided by `directions` — the field that says the
+       * lane canvassed. Both arms below therefore test it, and the `else` catches
+       * everything neither can answer:
+       *
+       *   directions, no choice   — STAGE A's park. The answer is a DIRECTION.
+       *   no directions, no lock  — the pre-2026-08-03 park. The answer is a STILL.
+       *   anything else           — a manifest that is already settled, or one
+       *                             that could not be read. Neither arm can answer
+       *                             it, so `#closeSettledPark` CLOSES it.
+       *
+       * THE SECOND ARM'S GUARD IS LOAD-BEARING AND WAS HALF-WRITTEN UNTIL
+       * 2026-08-03. It read `lockedMockup === null` alone, so a manifest that
+       * already carried a CHOICE (the crash window in `#applyDirectionChoice`
+       * writes the manifest and then the record; a dashboard that dies between the
+       * two comes back holding exactly that pair) skipped arm one — `chosenDirection`
+       * is non-null — and fell into arm two with `chosenMockup` null. `readChoiceFile
+       * ?? fallbackChoice` then locked `refs[0]`: the FIRST direction's canvass
+       * still, an image of two sections, on a run the owner had pointed somewhere
+       * else. `lockManifest` refuses the real hero afterwards ("this run already
+       * locked X"), so the gate grades the whole built page against a still drawn
+       * before the page was designed — and `resume` returns true, so the route
+       * answers 200.
+       *
+       * BOTH TRIGGER PATHS LAND IN ARM ONE. The owner's click arrives as
+       * `chosenDirection` (the panel knows the slug) or as `chosenMockup` (a click
+       * on one of the direction's cards, translated by `directionForMockup`); the
+       * timer and `reconcileOnBoot` arrive with both null and fall to
+       * `readDirectionChoiceFile ?? fallbackDirectionChoice`, which is exactly
+       * what the `auto` policy does in `#buildPhase`.
+       */
+      if (manifest !== null && manifest.directions.length > 0 && manifest.chosenDirection === null) {
+        const at = new Date().toISOString();
+        const slug =
+          chosenDirection ??
+          (chosenMockup === null ? null : directionForMockup(manifest, this.#mockupDir(runId), chosenMockup));
+        const attempt: DirectionAttempt | null =
+          slug === null
+            ? (readDirectionChoiceFile(refsDirFor(runPaths.workspace), manifest, at) ??
+              fallbackDirectionChoice(manifest, at, "no owner choice arrived before the timeout"))
+            : { slug, by: "owner", reason: "chosen by the owner in the dashboard", at };
+        // A REFUSED CHOICE LEAVES THE RUN PARKED, `#applyDesignLock`'s rule: a
+        // resume that proceeded anyway would expand nothing and build to a canvass
+        // while the API had just answered 200.
+        if (!this.#applyDirectionChoice(runId, runPaths, manifest, attempt)) return false;
+      } else if (manifest !== null && manifest.directions.length === 0 && manifest.lockedMockup === null) {
         const at = new Date().toISOString();
         const attempt: LockAttempt | null =
           chosenMockup === null
@@ -1213,9 +1473,56 @@ export class Orchestrator {
                 reason: "chosen by the owner in the dashboard",
                 at,
               };
-        // A REFUSED CHOICE LEAVES THE RUN PARKED. Resuming anyway would build to
-        // no design at all while the API had just answered 200.
-        if (!this.#applyDesignLock(runId, runPaths, manifest, attempt)) return false;
+        if (attempt === null) {
+          /*
+           * A PARK NOTHING CAN ANSWER IS STILL A PARK THAT HAS TO END, and this
+           * is the branch that ends it. `attempt` is null on exactly one input:
+           * `choice.json` named nothing this manifest owns AND `fallbackChoice`
+           * found no first ref to fall back to — which is a manifest with an
+           * EMPTY `refs` and, since this arm's guard was completed, no
+           * `directions` either.
+           *
+           * WHAT STILL REACHES IT, NARROWED 2026-08-03 SO THIS COMMENT DOES NOT
+           * CLAIM A LIVE PATH IT NO LONGER HAS: a park record written BEFORE
+           * `#buildPhase` grew its "nothing to choose between" entry guard, and a
+           * manifest a lane rewrote after the park opened. `#buildPhase` no longer
+           * OPENS a park on this shape, so nothing produces it fresh — the branch
+           * stays because the records it answers are on disk and the run they hold
+           * has no other exit. `A LEGACY PARK OVER A MANIFEST THAT NAMES NOTHING`
+           * in orchestrator.test.ts drives it.
+           *
+           * BEFORE THIS BRANCH THAT INPUT WAS AN INFINITE PARK:
+           * `#applyDesignLock(null)` logged "nothing to lock" and returned false,
+           * so `resume` returned false — and the caller is the TIMER, which has
+           * already deleted itself from `#designLockTimers`, or `reconcileOnBoot`,
+           * which ignores the answer. No timer, no click that could work,
+           * `awaiting_input` for ever, and nothing reporting it.
+           *
+           * IT PROCEEDS ON A RECORDED FALLBACK rather than hanging, which is the
+           * design lock's existing contract (§17.3 rule 1). The fallback here is
+           * "there was nothing to lock", written onto the record so a later
+           * reader sees why this run reached the gate with no reference — the
+           * same state a degraded lane reaches, and one `visual-criteria.ts`
+           * already grades.
+           *
+           * ONLY THE AUTOMATIC PATH REACHES IT. A click carries `chosenMockup`,
+           * which builds an attempt that is never null, so a REFUSED click still
+           * leaves the run parked with its timer intact — the property
+           * `#applyDesignLock`'s "FALSE MEANS THE RUN STAYS PARKED" is for.
+           */
+          const detail =
+            "the design park ended with nothing locked: this run's manifest carries no mockups, so there " +
+            "was never a choice to make. The build continues and the visual gate falls back to rule-based " +
+            "scoring with no reference image.";
+          this.#mergeDesignLock(runId, runPaths, { awaiting: false, reason: detail }, manifest, at);
+          this.#emitLog(runId, "warn", detail);
+        } else if (!this.#applyDesignLock(runId, runPaths, manifest, attempt)) {
+          // A REFUSED CHOICE LEAVES THE RUN PARKED. Resuming anyway would build to
+          // no design at all while the API had just answered 200.
+          return false;
+        }
+      } else {
+        this.#closeSettledPark(runId, runPaths, manifest, chosenDirection ?? chosenMockup);
       }
     }
     this.#clearDesignLockTimer(runId);
@@ -2568,10 +2875,13 @@ export class Orchestrator {
     const designLanes = new Set<string>([...DELIVERY_LANES.spec, ...DELIVERY_LANES.design]);
 
     let last: BuildOutcome | null = null;
-    // AT MOST TWO PASSES, and the bound is structural rather than defensive:
-    // `nextBuildSegment` returns a design segment only while the design is
-    // unfinished, and the first pass sets `designSegmentDone`.
-    for (let pass = 0; pass < 2; pass += 1) {
+    // AT MOST THREE PASSES SINCE 2026-08-03, and the bound is still structural.
+    // An `auto` run makes all three in ONE entry with no park between them:
+    // CANVASS (stage A) → `readDirectionChoiceFile ?? fallbackDirectionChoice` →
+    // EXPAND (stage B) → BUILD. Two passes would leave an unattended run reaching
+    // the gate with a canvass and no expansion — three comparable stills of an
+    // unbuilt page, graded as though they were the design.
+    for (let pass = 0; pass < 3; pass += 1) {
       // RE-READ, because the previous pass wrote `builderSessionId` and
       // `designSegmentDone`, and those two are exactly what decides this one.
       const row = store.getRun(runId);
@@ -2583,8 +2893,21 @@ export class Orchestrator {
         manifestLocked: manifest?.lockedMockup != null,
         sessionId: row.builderSessionId,
         designSegmentDone: row.designSegmentDone,
+        directionsOffered: (manifest?.directions.length ?? 0) > 0,
+        directionChosen: manifest?.chosenDirection != null,
+        // FROM THE RECORD, NOT FROM `lockedMockup`. A degraded run never locks a
+        // still, so deriving this from the lock would send it round the expand arm
+        // until the loop bound ran out and never reach the build.
+        expanded: readDesignLock(runPaths.results)?.expanded === true,
       });
-      const designSegment = segment === "design" || segment === "design-resume";
+      const expandSegment = segment === "design-expand" || segment === "design-expand-resume";
+      // BOTH DESIGN STAGES ARE `designSegment`. Leave the expand arm out and three
+      // things go wrong at once, silently: it runs with the FULL shortlist (build
+      // agents reachable from a design segment), the video lane runs against a
+      // manifest whose expansion has not happened yet, and — worst — the
+      // `if (!designSegment) return` below returns before the post-segment block,
+      // so the hero is never locked and the build never runs.
+      const designSegment = segment === "design" || segment === "design-resume" || expandSegment;
       const allowedAgents = designSegment
         ? fullShortlist.filter((agent) => designLanes.has(agent))
         : fullShortlist;
@@ -2638,7 +2961,15 @@ export class Orchestrator {
             // here would be a second derivation of one path, and the plan's own
             // hand-rolled `JSON.parse(join(workspace,"design-refs",…))` is
             // exactly that.
-            readManifest: () => manifest,
+            //
+            // PROJECTED THROUGH `builtManifest`, ADDED 2026-08-03, AND IT IS A
+            // SPEND CONTROL. `planVideoLegs` takes the FIRST marked refs up to the
+            // cap and the canvass refs come first in the array, so a mark on a
+            // still from a direction the owner DISCARDED would become the run's
+            // video — on a metered key, for a design nobody built. The canvass
+            // prompt also forbids the mark; this is the half that does not depend
+            // on a model obeying it.
+            readManifest: () => (manifest === null ? null : builtManifest(manifest)),
             spawnLeg: defaultSpawnLeg(videoCap.scriptPath ?? ""),
             emitGraph: (event) => this.#emit(runId, event),
             writeRecord: (path, json) => {
@@ -2710,6 +3041,15 @@ export class Orchestrator {
             mode: laneMode,
             capability: this.#capability(),
             autoChoose: policy === "auto",
+            stage: expandSegment ? "expand" : "canvass",
+            // THE CHOSEN DIRECTION, READ OFF THE MANIFEST RATHER THAN CARRIED IN
+            // MEMORY. The choice can be made by an owner while this process is
+            // not executing the run at all — the park outlives the frame — so
+            // there is no in-memory value to read on the second design segment.
+            chosen:
+              manifest === null || manifest.chosenDirection === null
+                ? null
+                : (manifest.directions.find((direction) => direction.slug === manifest.chosenDirection) ?? null),
           }) +
           designReferenceSection(references) +
           ownerNote
@@ -3037,7 +3377,34 @@ export class Orchestrator {
         imageCalls,
         keySource: this.#capability().key.source,
         preflight: this.#preflight.checks,
+        // THE STAGE DECIDES THE FLOOR. A canvass is 3 × 2 = 6 stills and an
+        // expansion is MIN_DESIGN_REFS+; grading a canvass against the stage-B
+        // floor would pass six by luck and report `too-few-images` the moment
+        // DESIGN_DIRECTION_COUNT or DESIGN_CANVASS_SECTIONS moved.
+        floor: expandSegment ? MIN_DESIGN_REFS : MIN_CANVASS_REFS,
       });
+      /*
+       * WRITTEN AFTER EACH DESIGN SEGMENT — AND IT IS ONE FILE, SO THE SECOND
+       * WRITE WINS. Stated because the two currencies in the surviving file are
+       * NOT taken over the same window, and a reader who assumes they are will
+       * misread the ratio:
+       *
+       *   `images`     — `countDesignPngs` over the FLAT refs directory, so on a
+       *                  two-stage run this is the canvass stills PLUS the
+       *                  expansion's PLUS every `-req-` still the owner asked
+       *                  for. Cumulative, for the whole run.
+       *   `imageCalls` — declared inside this loop, so it counts only the segment
+       *                  that just returned. On the surviving record that is the
+       *                  EXPANSION's generations, not the run's.
+       *   `failure`    — graded against THIS stage's floor (`MIN_CANVASS_REFS` on
+       *                  a canvass, `MIN_DESIGN_REFS` on an expansion). Writing
+       *                  once at the end would grade a canvass against the
+       *                  expansion's floor, which is why the write is here.
+       *
+       * The stage-A record exists only until stage B overwrites it; the loud
+       * half — `designLaneFailureMessage` — is emitted onto the run log at each
+       * stage and does survive.
+       */
       writeDesignLaneRecord(runPaths.results, record);
       // THE TRAP. A DESIGN lane that produced zero images must never look
       // successful, so this is an error-level line and a `failureReason` rather
@@ -3049,16 +3416,235 @@ export class Orchestrator {
       }
       this.#recordDesignMockups(runId, after);
 
-      if (after !== null && after.lockedMockup === null) {
-        if (policy === "ask") {
-          this.#parkForDesignLock(runId, runPaths);
-          return { kind: "parked" };
+      /* ---- WHICH ARM THIS RETURN TAKES: one decision, stated once --------
+       *
+       * EVERY ARM BELOW IS A CASE OF {@link designPostSegmentAction} AND NOT A
+       * GUARD OF ITS OWN, which is the 2026-08-03 (round 5) correction and the
+       * whole of it. These were five hand-written `if`s over `after`, and three
+       * separate rounds each fixed ONE of them while its siblings went on taking
+       * the identical input:
+       *
+       *   the stage-A arm did not test `expandSegment` and its sibling did, so an
+       *   EXPAND return could re-open stage A's park — with `awaiting: true`
+       *   merged onto a record still carrying `chosenDirection`, which
+       *   `designLockOf` reads as `stage: "expanding"`. Nobody was asked, and the
+       *   panel said the expansion was under way;
+       *
+       *   and all five required `after !== null` with no else, so a manifest that
+       *   would not parse reached NO arm: on a FULL lane `classifyDesignLane`
+       *   still said `no-manifest` out loud, but on a DEGRADED one
+       *   `design-outcome.ts` reports `failure: null` with a detail saying the
+       *   lane ran fine — so an `ask` run whose canvass wrote its directions and
+       *   no manifest went straight to the build with the owner never asked and
+       *   the run log silent.
+       *
+       * THE SWITCH IS EXHAUSTIVE AT COMPILE TIME (`default`'s `never`), so a sixth
+       * state added to that union cannot be left without an arm here again.
+       */
+      const action = designPostSegmentAction({
+        expandSegment,
+        manifest: after,
+        // THE HOST'S OWN MEMORY OF WHAT IT CHOSE, for the expand arm's repair. Read
+        // here rather than inside the arm so the decision has every input it needs
+        // and the arm has none of its own.
+        recordedDirection: readDesignLock(runPaths.results)?.chosenDirection ?? null,
+      });
+      switch (action.kind) {
+        /* ---- NOTHING COULD BE READ: the else, and it says which case ----
+         *
+         * IT DOES NOT PARK, and that is the same rule the mockup arm below
+         * applies: a park needs something to choose between, and a manifest that
+         * would not parse describes no directions and no stills — `resume` would
+         * have to close it unanswered. What the owner gets instead is the
+         * sentence, at warn level, naming BOTH harms: no choice could be offered,
+         * and on an `ask` run he is not asked.
+         */
+        case "no-manifest": {
+          this.#emitLog(
+            runId,
+            "warn",
+            "the design segment returned and this run's design manifest could not be read, so nothing on disk " +
+              "says what the lane produced: no direction could be offered and no mockup could be locked. " +
+              (policy === "ask"
+                ? "This run was to ASK which design to build and there is nothing to ask about, so the owner " +
+                  "is not asked and no park is opened. "
+                : "") +
+              "The build goes on and the visual gate falls back to rule-based scoring with no reference image.",
+          );
+          break;
         }
-        const at = new Date().toISOString();
-        const attempt =
-          readChoiceFile(refsDirFor(runPaths.workspace), after, at) ??
-          fallbackChoice(after, at, "ui-designer wrote no choice.json");
-        this.#applyDesignLock(runId, runPaths, after, attempt);
+
+        /* ---- STAGE A CAME BACK: the owner chooses a DIRECTION ----------
+         *
+         * ONLY A CANVASS REACHES THIS ARM NOW. `designPostSegmentAction` sends
+         * every EXPAND return to `expand` before this case is considered, which
+         * is the guard this arm was missing.
+         */
+        case "canvass-choice": {
+          if (policy === "ask") {
+            this.#parkForDesignLock(runId, runPaths, undefined, action.manifest);
+            return { kind: "parked" };
+          }
+          const at = new Date().toISOString();
+          const attempt =
+            readDirectionChoiceFile(refsDirFor(runPaths.workspace), action.manifest, at) ??
+            fallbackDirectionChoice(action.manifest, at, `ui-designer wrote no ${DESIGN_DIRECTION_CHOICE_FILE}`);
+          // A REFUSED CHOICE STOPS THE LANE HERE rather than falling through to the
+          // pre-2026-08-03 arm below — that arm locks a STILL, and locking a
+          // canvass still would make `lockManifest` refuse the real hero at the end
+          // of stage B with "this run already locked X".
+          if (!this.#applyDirectionChoice(runId, runPaths, action.manifest, attempt)) {
+            return { kind: "outcome", outcome, laneMode };
+          }
+          // …and round again, into the EXPAND segment, on the same session.
+          continue;
+        }
+
+        /* ---- STAGE B CAME BACK: the hero is locked, LAST ----------------
+         *
+         * `lockedMockup` KEEPS ITS MEANING — the one canonical still — and this is
+         * the only place a directions run sets it. Every existing consumer (the
+         * grading section of `design-prompt.ts`, `chosenMockupRef`, the verdict)
+         * then works unchanged, because what changed is WHICH still is canonical
+         * and not what the field means.
+         *
+         * IT TAKES EVERY EXPAND RETURN, INCLUDING THE ONES THAT CAME BACK WRONG.
+         * Its guard used to be `after.chosenDirection !== null`, which is a subset
+         * of what reaches it: the expansion's manifest is written by the AGENT, so
+         * it can come back with the choice dropped. Sending that to stage A's park
+         * asks the owner about a spend that has already happened; sending it
+         * nowhere is worse still — see {@link Orchestrator.#restoreExpandedDirection}
+         * for the two measured shapes of that, one of which terminates and looks
+         * healthy while the build is handed three designs at once.
+         */
+        case "expand": {
+          // `expanded` IS RECORDED WHETHER OR NOT A LOCK FOLLOWS, and now whether
+          // or not there was a direction to lock. A degraded run has no refs, so no
+          // hero and no lock — and `nextBuildSegment` would send it round the expand
+          // arm until the pass bound ran out if "stage B is over" were derived from
+          // the lock. Written first, for that reason.
+          this.#mergeDesignLock(runId, runPaths, { expanded: true }, action.manifest);
+          const chosen = action.direction;
+          if (chosen === null) {
+            this.#emitLog(
+              runId,
+              "warn",
+              "the expansion returned over a manifest that names no directions at all, so there is no " +
+                "direction to lock and nothing further to expand. The expansion is recorded as done — the run " +
+                "is not sent round it again — and the build goes on with no reference image.",
+            );
+            // …and round again, into the BUILD segment, on the same session.
+            continue;
+          }
+          const expanded =
+            chosen.source === "manifest"
+              ? action.manifest
+              : this.#restoreExpandedDirection(runId, runPaths, action.manifest, chosen.slug, chosen.source);
+          const hero = heroRefFor(expanded, chosen.slug);
+          if (hero === null) {
+            this.#emitLog(
+              runId,
+              "info",
+              `the "${chosen.slug}" direction was expanded but produced no still to lock, so the visual gate ` +
+                "will grade against the rule-based floor — which is what a degraded run does today",
+            );
+          } else {
+            const name = expanded.directions.find((direction) => direction.slug === chosen.slug)?.name ?? chosen.slug;
+            this.#applyDesignLock(runId, runPaths, expanded, {
+              path: hero.path,
+              by: expanded.directionChoice?.by ?? "fallback",
+              reason: `"${name}" — ${expanded.directionChoice?.reason ?? "no reason recorded"}`,
+              at: new Date().toISOString(),
+            });
+          }
+          // …and round again, into the BUILD segment, on the same session.
+          continue;
+        }
+
+        /* ---- NO DIRECTIONS: verbatim the pre-2026-08-03 branch ----------
+         *
+         * A lane that ignored the canvass ask, and every run whose manifest was
+         * written before this feature existed, lands here and behaves exactly as it
+         * did: park for a MOCKUP, or `readChoiceFile ?? fallbackChoice`. Degrading
+         * to today's behaviour beats hanging on a shape that never arrived.
+         *
+         * AND THE CONDITION CHECKS WHAT THE HEADING SAYS. Until 2026-08-03 it read
+         * `lockedMockup === null` (plus a `refs.length` guard added inside),
+         * neither of which is "no directions" — so a canvass that came back with a
+         * choice already on it took this arm, parked an `ask` run in front of six
+         * canvass cards on a run whose direction was settled, and locked an image
+         * of TWO SECTIONS whichever card was clicked. `lockManifest` then refuses
+         * the real hero at the end of stage B.
+         */
+        case "mockup-choice": {
+          /*
+           * A PARK NEEDS SOMETHING TO CHOOSE BETWEEN, AND THIS ARM HAS TO CHECK.
+           * The stage-A arm above cannot enter its park without `directions`; this
+           * one used to park on `lockedMockup === null` alone — so a manifest with
+           * an EMPTY `refs` (the shape the degraded canvass now writes) parked the
+           * run for a mockup it never generated, and the park's own log line then
+           * told the owner to `POST /resume {"chosenMockup":"<path>"}` with no path
+           * in existence. `resume` closes such a park now rather than hanging on
+           * it, but half an hour of an owner's time spent on a question with no
+           * possible answer is not a park worth opening.
+           */
+          if (policy === "ask" && action.manifest.refs.length === 0) {
+            this.#emitLog(
+              runId,
+              "warn",
+              "this run would have parked for a mockup, but the DESIGN lane produced none — there is nothing " +
+                "to choose between, so it does not park. The build continues and the visual gate falls back " +
+                "to rule-based scoring with no reference image.",
+            );
+          } else if (policy === "ask") {
+            this.#parkForDesignLock(runId, runPaths);
+            return { kind: "parked" };
+          }
+          const at = new Date().toISOString();
+          const attempt =
+            readChoiceFile(refsDirFor(runPaths.workspace), action.manifest, at) ??
+            fallbackChoice(action.manifest, at, "ui-designer wrote no choice.json");
+          this.#applyDesignLock(runId, runPaths, action.manifest, attempt);
+          break;
+        }
+
+        /* ---- NOTHING LEFT TO DECIDE HERE: written down --------------------
+         *
+         * THE ARMS ABOVE DO NOT COVER EVERY MANIFEST, and leaving that implicit is
+         * how the mockup arm came to be entered by a shape it was never for. What
+         * lands here is a CANVASS return over a manifest that already carries its
+         * own answer — `chosenDirection` set because the lane picked while it drew,
+         * or a lock already applied — and `nextBuildSegment` sends that to
+         * `design-expand` on the next pass. The decision is made; this loop only
+         * has to go round.
+         *
+         * IT NEVER PARKS, AND THAT IS THE POINT. An `ask` policy is a question the
+         * owner has to sit in front of for up to half an hour, and asking one that
+         * is already answered is exactly the defect this arm was carved out of.
+         *
+         * ONE SENTENCE, NOT A TERNARY OVER THE TWO FIELDS. Both are named because
+         * both are what "already answered" means here, and a branch per field
+         * would put a line in this file that nothing produces and no test reads.
+         */
+        case "settled": {
+          this.#emitLog(
+            runId,
+            "info",
+            "the design segment returned over a manifest that already answers the park's question — direction " +
+              `${action.manifest.chosenDirection ?? "none"}, lock ${action.manifest.lockedMockup ?? "none"} — so ` +
+              "no choice was asked for and none was applied; the run goes on to the segment it still owes.",
+          );
+          break;
+        }
+
+        default: {
+          // THE CLOSURE, ENFORCED BY THE COMPILER RATHER THAN BY A COMMENT. A
+          // sixth `DesignPostSegmentAction` that nothing here handles stops this
+          // file compiling; the alternative is what rounds 2 to 4 shipped, which
+          // is a state falling silently past every arm.
+          const unhandled: never = action;
+          throw new Error(`unhandled design post-segment action: ${JSON.stringify(unhandled)}`);
+        }
       }
       // …and round again, into the BUILD segment, on the same session.
     }
@@ -3272,8 +3858,10 @@ export class Orchestrator {
    * the run record, because §17.3 rule 5 makes a locked design a recorded INPUT
    * to the gate and the workspace is the artefact, not the record.
    *
-   * FALSE MEANS THE RUN STAYS PARKED. A refused choice that resumed anyway would
-   * build to no design at all while the API had just answered 200.
+   * FALSE MEANS THE RUN STAYS PARKED, ON THE ONE PATH THAT CAN PARK. A refused
+   * choice that resumed anyway would build to no design at all while the API had
+   * just answered 200. `#buildPhase`'s `auto` arm ignores the answer, because
+   * there is no park there to stay in.
    */
   #applyDesignLock(
     runId: string,
@@ -3282,6 +3870,11 @@ export class Orchestrator {
     attempt: LockAttempt | null,
   ): boolean {
     if (attempt === null) {
+      // AND THIS ARM IS NOW UNREACHABLE FROM `resume`, deliberately: a null
+      // attempt there is a park with no possible answer, and returning false into
+      // it left the run `awaiting_input` with its timer already spent. `resume`
+      // closes that park itself and says so; what is left here is `#buildPhase`'s
+      // `auto` arm, where "no mockups" is a lane report and not a decision.
       this.#emitLog(runId, "warn", "there is nothing to lock: the DESIGN lane produced no mockups");
       return false;
     }
@@ -3291,44 +3884,415 @@ export class Orchestrator {
       return false;
     }
     writeDesignManifest(runPaths.workspace, result.manifest);
-    writeDesignLock(runPaths.results, {
-      awaiting: false,
-      parkedAt: attempt.at,
-      locked: attempt.path,
-      lockedBy: attempt.by,
-      reason: attempt.reason,
-    });
+    // MERGED ONTO THE RECORD ON DISK, NEVER REBUILT. This was a fresh literal
+    // until 2026-08-03, and after the dialogue landed a fresh literal here would
+    // wipe `turnsUsed`, `rendersUsed` and `requests` on the very write that
+    // records the lock — so a render the owner already paid for becomes free
+    // again, and the record of what he asked for disappears.
+    this.#mergeDesignLock(
+      runId,
+      runPaths,
+      { awaiting: false, locked: attempt.path, lockedBy: attempt.by, reason: attempt.reason },
+      result.manifest,
+      attempt.at,
+    );
     this.#emitLog(runId, "info", `design locked by ${attempt.by}: ${attempt.path} — ${attempt.reason}`);
     return true;
   }
 
   /**
-   * The park: `awaiting_input`, the record on disk, and the timer that ends it.
+   * Validate the DIRECTION choice, write it into BOTH places, and say whether it
+   * took — {@link Orchestrator.#applyDesignLock}'s twin, one stage earlier.
    *
-   * `parkedAt` IS AN ARGUMENT so `reconcileOnBoot` can re-arm for the REMAINDER
-   * of the original window rather than starting a fresh one — a dashboard that
-   * restarts every few minutes would otherwise push the deadline forward each
-   * time and rule 1's "never blocks indefinitely" would hold only on paper.
+   * FALSE MEANS THE RUN STAYS PARKED, for the same reason: a refused choice that
+   * resumed anyway would expand nothing and build to a canvass.
+   *
+   * IT NEVER TOUCHES `lockedMockup`. The canonical still is settled at the END of
+   * stage B, from the expanded set; locking one of the two canvass stills here
+   * would make `lockManifest` refuse the real hero later ("this run already
+   * locked X") and the gate would grade the whole page against a hero rendered
+   * before the page existed.
    */
-  #parkForDesignLock(runId: string, runPaths: RunPaths, parkedAt = new Date().toISOString()): void {
-    writeDesignLock(runPaths.results, {
-      awaiting: true,
-      parkedAt,
-      locked: null,
-      lockedBy: null,
-      reason: null,
-    });
-    this.#deps.store.updateRun(runId, { status: "awaiting_input", queuePosition: null });
-    this.#emit(runId, { type: "status", status: "awaiting_input" });
-    const timeoutMin = designLockTimeoutMin(this.#deps.env);
+  #applyDirectionChoice(
+    runId: string,
+    runPaths: RunPaths,
+    manifest: DesignManifest,
+    attempt: DirectionAttempt | null,
+  ): boolean {
+    if (attempt === null) {
+      this.#emitLog(runId, "warn", "there is nothing to choose: the DESIGN lane offered no directions");
+      return false;
+    }
+    const result = chooseDirection(manifest, attempt);
+    if (!result.ok) {
+      this.#emitLog(runId, "warn", `the design direction was refused: ${result.error}`);
+      return false;
+    }
+    writeDesignManifest(runPaths.workspace, result.manifest);
+    this.#mergeDesignLock(
+      runId,
+      runPaths,
+      {
+        awaiting: false,
+        chosenDirection: attempt.slug,
+        chosenDirectionBy: attempt.by,
+        chosenDirectionReason: attempt.reason,
+      },
+      result.manifest,
+      attempt.at,
+    );
+    const name = result.manifest.directions.find((direction) => direction.slug === attempt.slug)?.name ?? attempt.slug;
     this.#emitLog(
       runId,
       "info",
-      `the DESIGN lane produced its mockups and the run is waiting for one to be chosen. ` +
-        `POST /api/runs/${runId}/resume {"chosenMockup":"<path>"} locks it; with no choice inside ` +
-        `${String(timeoutMin)} minutes, ui-designer picks and the choice is recorded as automatic.`,
+      `design direction chosen by ${attempt.by}: "${name}" — ${attempt.reason}. It is now expanded to the ` +
+        `full set; the other ${String(result.manifest.directions.length - 1)} stay on disk as a record of what ` +
+        "was offered and are never built or graded against.",
     );
-    const remaining = Math.max(0, timeoutMin * 60_000 - Math.max(0, Date.now() - Date.parse(parkedAt)));
+    return true;
+  }
+
+  /**
+   * A CANCEL ENDS THE DESIGN PARK ON DISK, not just the timer that would have.
+   *
+   * `#clearDesignLockTimer` stops the run being told a choice is being made for
+   * it. This stops `design-lock.json` claiming for ever that a cancelled run is
+   * waiting for one: `designLockOf` reads `awaiting` ungated by run status, so
+   * the record is the only thing that says the park is over.
+   *
+   * NOTHING BUT `awaiting` IS TOUCHED, and the manifest argument is `null` for
+   * that reason. A cancel decides nothing — there is no choice to mirror and no
+   * lock to explain — so `reason`, `chosenDirection` and the directions mirror all
+   * stay exactly as the park left them, and the run's log carries the why.
+   *
+   * SILENT WHEN THERE IS NO OPEN PARK, which is every run that never reached the
+   * DESIGN lane: writing a record here would invent one for a run that has none,
+   * and `readDesignLock` returning null is what "this run never parked" means to
+   * every reader.
+   */
+  #closeDesignParkOnCancel(runId: string): void {
+    const runPaths = runPathsFor(this.#deps.paths, runId);
+    const park = readDesignLock(runPaths.results);
+    if (park === null || !park.awaiting) return;
+    this.#mergeDesignLock(runId, runPaths, { awaiting: false }, null);
+    this.#emitLog(
+      runId,
+      "warn",
+      "the run was cancelled while it was waiting for a design choice, so the design park is closed with " +
+        "nothing chosen and nothing locked. The window's timer is disarmed: it would otherwise have fired on a " +
+        "cancelled run and said a design was being selected automatically, which nothing would then have done.",
+    );
+  }
+
+  /**
+   * PUT BACK A CHOICE THE EXPANSION'S OWN MANIFEST WRITE DROPPED.
+   *
+   * THE EXPANSION'S MANIFEST IS THE AGENT'S FILE, NOT THE HOST'S, which is the
+   * whole reason this exists. `#applyDirectionChoice` writes `chosenDirection`
+   * and `directionChoice` together; stage B's prompt tells the lane to leave both
+   * exactly as they are, and a lane that rewrites the file and truncates the
+   * choice object hands back a manifest `parseDesignManifest` reads as an
+   * unanswered canvass (the both-or-neither rule, design-manifest.ts:577).
+   *
+   * REPAIRING BEATS BOTH ALTERNATIVES, AND THAT IS THE ARGUMENT. Re-parking asks
+   * the owner about five to seven generations that have already been spent, and
+   * does it invisibly — the record still says `chosenDirection`, so the panel
+   * renders the expansion as under way. Doing nothing is worse, and it is worse in
+   * two different ways depending on whether a hero locks — MEASURED, both of them,
+   * by running the expand arm with this call removed:
+   *
+   *   A FULL EXPANSION STILL LOCKS ITS HERO (`refsForDirection` filters on
+   *   `ref.direction`, not on `chosenDirection`), so the run terminates and looks
+   *   healthy — but `builtManifest` and `refsForStage` DO filter on
+   *   `chosenDirection`, so with it null the build segment is handed every
+   *   direction's stills and told to build to "it", and the visual gate grades
+   *   against a set of three incompatible designs.
+   *
+   *   A DEGRADED EXPANSION HAS NO HERO AND SO NO LOCK, and there
+   *   `nextBuildSegment` reads `directionsOffered && !directionChosen` off the
+   *   manifest and returns `design-resume`: the CANVASS re-runs, six more
+   *   generations no cap counts, and the pass bound is gone before the build
+   *   segment is reached.
+   *
+   * THE PROVENANCE IS NOT INVENTED. `by` is the record's own `chosenDirectionBy`
+   * only when the RECORD is what supplied the slug — that is the same value
+   * `#applyDirectionChoice` wrote, so "owner" stays "owner". When the slug came
+   * from the expansion's refs or from manifest order, nobody's judgement is
+   * being restored and `by` is `"fallback"`, which is what
+   * {@link fallbackDirectionChoice} means by the word.
+   *
+   * AND THAT DOWNGRADE IS VISIBLE DOWNSTREAM, WHICH IS WHY IT IS THE SAFE
+   * DIRECTION AND NOT A FREE ONE. `#applyDesignLock` takes `lockedBy` from
+   * `directionChoice.by`, and `cron/cron-report.ts:112` branches on `=== "owner"`
+   * — so a run whose owner clicked a direction and whose `design-lock.json` was
+   * then lost is reported as "chosen automatically". Claiming "owner" on evidence
+   * that is a filename would be the worse error of the two: the report would name
+   * a person for a pick nobody made.
+   *
+   * A REFUSAL LEAVES THE MANIFEST ALONE and returns it unchanged: the caller then
+   * finds no hero for the slug and says so. `chooseDirection` refuses a slug the
+   * manifest never declared, and `designPostSegmentAction` only ever hands over a
+   * declared one — so a refusal here means the file changed under the run again.
+   */
+  #restoreExpandedDirection(
+    runId: string,
+    runPaths: RunPaths,
+    manifest: DesignManifest,
+    slug: string,
+    source: DesignDirectionSource,
+  ): DesignManifest {
+    const record = readDesignLock(runPaths.results);
+    const recorded = record?.chosenDirectionReason ?? "";
+    const why =
+      source === "record"
+        ? "restored from this run's own design-lock record, which the host wrote when the choice was applied"
+        : source === "expansion"
+          ? "restored from the stills the expansion itself drew, which is what the generations were spent on"
+          : "no source survived, so the first direction in manifest order was taken, with no judgement applied";
+    const attempt: DirectionAttempt = {
+      slug,
+      by: source === "record" ? (record?.chosenDirectionBy ?? "fallback") : "fallback",
+      reason: source === "record" && recorded.trim().length > 0 ? recorded : why,
+      at: new Date().toISOString(),
+    };
+    const result = chooseDirection(manifest, attempt);
+    if (!result.ok) {
+      this.#emitLog(runId, "warn", `the expanded direction could not be restored: ${result.error}`);
+      return manifest;
+    }
+    writeDesignManifest(runPaths.workspace, result.manifest);
+    this.#mergeDesignLock(
+      runId,
+      runPaths,
+      { chosenDirection: slug, chosenDirectionBy: attempt.by, chosenDirectionReason: attempt.reason },
+      result.manifest,
+      attempt.at,
+    );
+    this.#emitLog(
+      runId,
+      "warn",
+      `the expansion returned a manifest with no direction on it — its own write dropped the choice this run ` +
+        `had already made and already spent generations on. "${slug}" is put back (${why}) and the run does NOT ` +
+        `go back to the canvass: re-asking would ask the owner about a spend that has already happened, and ` +
+        `re-running stage A would spend it a second time.`,
+    );
+    return result.manifest;
+  }
+
+  /**
+   * `resume`'s THIRD ARM: the park had nothing left to answer, so CLOSE it.
+   *
+   * WITHOUT THIS ARM `resume` HAD TWO `if`s AND NO `else`, and every input neither
+   * one matched — a manifest that could not be read, or one where the direction
+   * and the hero were both already settled (the crash window in `#applyDesignLock`
+   * writes the manifest and then the record) — fell straight through to the timer
+   * clear and proceeded with `awaiting: true` LEFT ON DISK. Nothing else ever
+   * closes that record: `designLockOf` puts `awaiting` on the wire ungated by run
+   * status, so the panel shows an open park with a countdown on a run that is
+   * building or already finished, and every later `reconcileOnBoot` re-parks it.
+   *
+   * IT RECONCILES THE RECORD TO THE MANIFEST RATHER THAN JUST FLIPPING `awaiting`,
+   * and that is the half a smaller fix would miss. The panel's `stage` is derived
+   * from the RECORD — `directions.length > 0 && chosenDirection === null` reads as
+   * `"canvass"` — so closing the park while leaving `chosenDirection` null would
+   * swap one wire lie for another: no countdown, and a run that is expanding and
+   * then building still reported as asking. The manifest is the source of truth
+   * and this is `#mergeDesignLock`'s existing mirror rule applied to every field
+   * the two files share.
+   *
+   * WHAT THE RESUME CARRIED IS NAMED, NOT APPLIED. A run that has already chosen
+   * cannot choose again — `chooseDirection` refuses a second choice precisely
+   * because the expansion has already spent its generations on the first — so a
+   * click that arrives after the fact changes nothing, and the log says so rather
+   * than letting a 200 imply it took.
+   */
+  #closeSettledPark(
+    runId: string,
+    runPaths: RunPaths,
+    manifest: DesignManifest | null,
+    posted: string | null,
+  ): void {
+    const at = new Date().toISOString();
+    const settled =
+      manifest === null
+        ? "this run's design manifest could not be read, so neither arm could answer the park"
+        : manifest.chosenDirection !== null
+          ? `this run had already chosen the "${manifest.chosenDirection}" direction`
+          : `this run had already locked ${String(manifest.lockedMockup)}`;
+    const detail =
+      `the design park is closed without a further choice being applied: ${settled}. ` +
+      (posted === null ? "" : `The choice this resume carried ("${posted}") was not applied. `) +
+      "The record is closed here rather than left saying the run is waiting, because nothing else would " +
+      "ever close it — the panel would show an open park with a countdown on a run that is building, and " +
+      "every restart would re-park it. The run proceeds from where it stopped.";
+    // MIRRORED FROM THE MANIFEST, FIELD BY FIELD, so the record the API serves
+    // agrees with the artefact. `#mergeDesignLock` recomputes `directions` on the
+    // same write, which is the other half of the same disagreement.
+    const mirrored: Partial<DesignLockRecord> =
+      manifest === null
+        ? {}
+        : {
+            chosenDirection: manifest.chosenDirection,
+            chosenDirectionBy: manifest.directionChoice?.by ?? null,
+            chosenDirectionReason: manifest.directionChoice?.reason ?? null,
+            locked: manifest.lockedMockup,
+            lockedBy: manifest.lockedBy,
+          };
+    this.#mergeDesignLock(
+      runId,
+      runPaths,
+      // `reason` EXPLAINS THE LOCK WHEN THERE IS ONE and the park's end when there
+      // is not — the field is the record's only prose and overwriting a real
+      // lock's reason with this sentence would lose why the gate's reference was
+      // picked.
+      { ...mirrored, awaiting: false, reason: manifest?.lockedReason ?? detail },
+      manifest,
+      at,
+    );
+    this.#emitLog(runId, "warn", detail);
+  }
+
+  /**
+   * Read `design-lock.json`, apply a patch, write it back — and RECOMPUTE the
+   * direction mirror on every write.
+   *
+   * THE MIRROR IS RECOMPUTED RATHER THAN PATCHED because `toDetail` reads ONE
+   * file (§17.3 rule 5's precedent: the record already duplicates
+   * `locked`/`lockedBy`/`reason` out of the manifest, because the workspace is
+   * the artefact and `results/` is the record the API may open). A mirror updated
+   * only where someone remembered to update it is a wire that disagrees with the
+   * manifest, and the manifest is the source of truth.
+   *
+   * `parkedAt` IS ONLY MINTED WHEN THERE IS NO RECORD AT ALL. Every merge onto an
+   * existing record carries the original instant forward — `PlanDriver.park`'s
+   * rule, and the reason a chatty owner cannot push the deadline away by asking
+   * questions.
+   */
+  #mergeDesignLock(
+    runId: string,
+    runPaths: RunPaths,
+    patch: Partial<DesignLockRecord>,
+    manifest: DesignManifest | null,
+    at: string = new Date().toISOString(),
+  ): DesignLockRecord {
+    const base = readDesignLock(runPaths.results) ?? emptyDesignLockRecord(at);
+    const next: DesignLockRecord = {
+      ...base,
+      ...patch,
+      directions: manifest === null ? base.directions : this.#mirrorDirections(runId, manifest),
+    };
+    writeDesignLock(runPaths.results, next);
+    return next;
+  }
+
+  /**
+   * The record's copy of the directions, with each one's PUBLISHED mockup paths.
+   *
+   * PUBLISHED, NOT WORKSPACE, and they are the identical strings
+   * `ApiDesignLock.mockups[].path` carries — so the client groups cards by `Set`
+   * membership with no filename parsing and no fourth mirrored literal. The
+   * requested stills are excluded here for the same reason `refsForDirection`
+   * excludes them: they are previews the owner asked for, not part of the set the
+   * lane offered.
+   */
+  #mirrorDirections(runId: string, manifest: DesignManifest): readonly DesignDirectionRecord[] {
+    const dir = this.#mockupDir(runId);
+    return manifest.directions.map((direction) => ({
+      slug: direction.slug,
+      name: direction.name,
+      distinction: direction.distinction,
+      notes: direction.notes,
+      mockups: refsForDirection(manifest, direction.slug).map((ref) => publishedMockupPath(dir, ref.path)),
+    }));
+  }
+
+  /**
+   * The park: `awaiting_input`, the record on disk, and the timer that ends it.
+   *
+   * `parkedAt` IS AN ARGUMENT so `reconcileOnBoot` can seed a record it is
+   * re-arming rather than minting a new instant for it — a dashboard that
+   * restarts every few minutes would otherwise push the deadline forward each
+   * time and rule 1's "never blocks indefinitely" would hold only on paper.
+   *
+   * IT SEEDS THE RECORD AND NOTHING ELSE. The window below is measured from
+   * `record.parkedAt` — the merged, durable value — so a caller that defaults this
+   * argument on a re-park cannot hand the run a second full window.
+   */
+  #parkForDesignLock(
+    runId: string,
+    runPaths: RunPaths,
+    parkedAt = new Date().toISOString(),
+    manifest: DesignManifest | null = null,
+  ): void {
+    // MERGED, NOT REBUILT — and `parkedAt` is only the argument's value when
+    // there is no record yet. A re-park after an on-demand render carries the
+    // ORIGINAL instant forward (`#mergeDesignLock` keeps `base.parkedAt` unless
+    // the patch names one), which is `PlanDriver.park`'s rule: re-minting it would
+    // walk the deadline forward with every question the owner asked, and a chatty
+    // exchange would park for ever while the code claimed a 30-minute bound.
+    const existing = readDesignLock(runPaths.results);
+    const record = this.#mergeDesignLock(
+      runId,
+      runPaths,
+      {
+        awaiting: true,
+        // MINTED ONCE, LIKE `PlanRecord.askedAfterSeq`. The OPENING park cuts the
+        // message stream where the mockups appeared, so an instruction the owner
+        // typed before he could see them is not read as a request for one; every
+        // re-park keeps the cut where the first ask put it.
+        ...(existing === null || existing.askedAfterSeq === null
+          ? { askedAfterSeq: this.#pendingHighWater(runId) }
+          : {}),
+        ...(existing === null ? { parkedAt } : {}),
+      },
+      manifest,
+      parkedAt,
+    );
+    this.#deps.store.updateRun(runId, { status: "awaiting_input", queuePosition: null });
+    this.#emit(runId, { type: "status", status: "awaiting_input" });
+    const timeoutMin = designLockTimeoutMin(this.#deps.env);
+    /* ---- ONE NUMBER FOR THE TIMER AND FOR THE SENTENCE -------------------
+     *
+     * FROM `record.parkedAt`, NOT FROM THE `parkedAt` ARGUMENT. The argument only
+     * ever SEEDS a fresh record — `#mergeDesignLock` keeps `base.parkedAt` on
+     * every merge — so on a re-park with the argument defaulted the two disagree,
+     * and arming from the argument would run a fresh full window against a record
+     * that says the park opened half an hour ago.
+     *
+     * AND THE LINE NAMES WHAT THE TIMER WAS GIVEN. `ApiDesignLock` carries neither
+     * `parkedAt` nor the timeout, so this sentence is the only place the deadline
+     * is published: `designParkClock` (dashboard/src/lib/design-directions.ts)
+     * parses `inside <n> minutes` out of it and draws the owner's countdown as
+     * `the line's own instant + n`. Naming the FULL window on a re-arm that is
+     * giving him one minute is a clock he can plan around and be wrong about.
+     * Tenths of a minute, so a fresh park still reads `30` and a nearly-lapsed
+     * one reads `0.4` rather than rounding up to a minute it does not have.
+     */
+    const remaining = designLockRemainingMs(record.parkedAt, Date.now(), timeoutMin);
+    const remainingMin = Math.round(remaining / 6_000) / 10;
+    this.#emitLog(
+      runId,
+      "info",
+      record.directions.length === 0
+        ? `the DESIGN lane produced its mockups and the run is waiting for one to be chosen. ` +
+          `POST /api/runs/${runId}/resume {"chosenMockup":"<path>"} locks it; with no choice inside ` +
+          `${String(remainingMin)} minutes, ui-designer picks and the choice is recorded as automatic.`
+        : `the DESIGN lane offered ${String(record.directions.length)} directions — ` +
+          `${record.directions.map((direction, index) => `${String(index + 1)}. ${direction.name}`).join(", ")} — ` +
+          `and the run is waiting for one to be chosen. Ask for a section in a direction ("show me the ` +
+          `contact section in 2") and it is rendered here, up to ${String(MAX_DESIGN_ON_DEMAND_RENDERS)} ` +
+          `renders and ${String(MAX_DESIGN_LOCK_TURNS)} questions; with no choice inside ` +
+          // WHAT ACTUALLY HAPPENS AT THE EXPIRY, NOT WHAT THE MOCKUP PARK'S
+          // SENTENCE SAYS. An `ask` run is built with `autoChoose: false`, so the
+          // canvass prompt never names `direction-choice.json` and the lane
+          // writes none — `readDirectionChoiceFile` finds nothing and
+          // `fallbackDirectionChoice` resolves it. Promising that "ui-designer
+          // picks" would claim a judgement nobody makes; the run measured this
+          // (`THE CANVASS PARK EXPIRES AND PROCEEDS` records `by: "fallback"`).
+          `${String(remainingMin)} minutes the FIRST direction is chosen automatically, with no judgement ` +
+          `applied. ` +
+          DESIGN_FROZEN_SUITE_NOTICE,
+    );
     this.#clearDesignLockTimer(runId);
     const timer = setTimeout(() => {
       this.#designLockTimers.delete(runId);
@@ -3340,6 +4304,197 @@ export class Orchestrator {
     // `shutdown()` clearing the map as well.
     timer.unref();
     this.#designLockTimers.set(runId, timer);
+  }
+
+  /** The highest owner message this run has not taken up. `PlanDriver`'s twin. */
+  #pendingHighWater(runId: string): number {
+    let high = 0;
+    for (const message of this.#deps.store.pendingMessages(runId)) high = Math.max(high, message.seq);
+    return high;
+  }
+
+  /**
+   * ONE on-demand still: "show me the contact section in 2", answered.
+   *
+   * THE PROMPT IS BUILT MECHANICALLY AND NO SEAT IS CALLED. The direction's own
+   * `direction-<slug>.md` plus the section name is the whole of it, and the
+   * direction's hero goes in as `-i` — the same term that holds the palette
+   * across the canvass. A model turn here would be a second author for one
+   * direction, and the owner would be comparing an image the lane made against an
+   * image something else made.
+   *
+   * ONE GENERATION, NO RETRY, DELIBERATELY. An on-demand still is a PREVIEW, not
+   * a build reference: it never becomes `lockedMockup` (`refsForDirection`
+   * excludes `origin: "requested"`), so it carries no closed-loop critique and
+   * `MAX_IMAGE_RETRIES` does not apply. So `rendersUsed` counts one per
+   * generation ATTEMPTED, which is the cap's arithmetic exactly.
+   *
+   * ATTEMPTED, NOT REQUESTED, AND THE DIFFERENCE IS THREE ARMS OF THIS METHOD.
+   * The returns before `run(script, args)` — no direction, an unreadable
+   * manifest, no image generation on this machine — never reach the tool, so they
+   * carry `attempted: false` and cost the owner nothing. It said the opposite
+   * until 2026-08-03, and the docblock said so too: a DEGRADED park, where the
+   * answer is always "there is nothing to draw with", charged a render for every
+   * question and told him after six that his budget was spent.
+   *
+   * IT NEVER THROWS. The owner is sitting in the park; an exception here would
+   * take down a dialogue rather than answer it. Every failure is a
+   * `DesignRenderResult` with a sentence in it.
+   */
+  async #renderOnDemand(runId: string, request: DesignRequest): Promise<DesignRenderResult> {
+    const direction = request.resolved;
+    if (direction === null) {
+      return { outcome: "failed", detail: "no direction to render", path: null, attempted: false };
+    }
+    const runPaths = runPathsFor(this.#deps.paths, runId);
+    const manifest = readDesignManifest(runPaths.workspace);
+    if (manifest === null) {
+      return {
+        outcome: "failed",
+        detail: "this run's design manifest could not be read",
+        path: null,
+        attempted: false,
+      };
+    }
+    const capability = this.#capability();
+    const script = capability.imageScript;
+    if (script === null || !capability.key.available) {
+      // THE DEGRADED PARK STILL TAKES QUESTIONS AND STILL ANSWERS THEM HONESTLY.
+      // There is nothing to draw with, and saying so beats a silent no-op.
+      //
+      // AND IT IS FREE. `attempted: false`, because no tool was invoked and no
+      // money moved: this lane can never draw anything, so charging its budget
+      // would replace an honest sentence with "no more renders on this run" after
+      // six of them — a cap the owner hit without a single image existing.
+      return {
+        outcome: "failed",
+        detail:
+          `there is no image generation on this machine, so "${request.section}" could not be drawn in ` +
+          `"${direction.name}". The written art direction for it is what this run has; choose from those.`,
+        path: null,
+        attempted: false,
+      };
+    }
+
+    const hero = heroRefFor(manifest, direction.slug);
+    const notes = direction.notes !== null && existsSync(direction.notes) ? readFileSync(direction.notes, "utf8") : "";
+    const index = manifest.refs.filter((ref) => ref.origin === "requested").length + 1;
+    const target = join(
+      refsDirFor(runPaths.workspace),
+      `${direction.slug}-req-${String(index).padStart(2, "0")}-${request.section.replace(/[^a-z0-9-]/giu, "-")}.png`,
+    );
+    // THE ASPECT OF THE DIRECTION'S OWN SET, so the new still is comparable with
+    // the ones already in front of him rather than a different shape of picture.
+    const aspect = hero?.aspect ?? "16:9";
+    const prompt =
+      `The "${direction.name}" art direction, rendered for the "${request.section}" section of this page.\n` +
+      `What makes this direction itself: ${direction.distinction}\n` +
+      (notes.trim().length === 0 ? "" : `\nThe direction, in full:\n${notes.slice(0, 4000)}\n`) +
+      `\nRender ONLY the ${request.section} section, in that direction, at the same palette, type system ` +
+      `and density as the reference image. This is a preview for the owner, not a new direction.`;
+
+    const args = [prompt, "-a", aspect, "-o", target, ...(hero === null ? [] : ["-i", hero.path])];
+    // THROUGH THE INJECTED SEAM, never the script path directly: `designRun` is
+    // what keeps a test on a machine that HAS a Gemini key from spending the
+    // owner's money to check a code path.
+    const run = this.#deps.designRun ?? execCommandRunner;
+    let result: { code: number; stderr: string };
+    try {
+      result = await run(script, args);
+    } catch (error) {
+      // ATTEMPTED FROM HERE DOWN, INCLUDING A SPAWN THAT THREW. The call was
+      // made; what failed is the call, and a cap that forgave it would be a bound
+      // on luck rather than on spend.
+      return {
+        outcome: "failed",
+        detail: `the image tool could not be run: ${describeError(error)}`,
+        path: null,
+        attempted: true,
+      };
+    }
+    if (result.code !== 0 || !existsSync(target)) {
+      return {
+        outcome: "failed",
+        detail:
+          `"${request.section}" in "${direction.name}" could not be generated (exit ${String(result.code)}). ` +
+          `The render was spent; ${result.stderr.slice(0, 300)}`.trim(),
+        path: null,
+        attempted: true,
+      };
+    }
+
+    /* ---- THE MANIFEST IS RE-READ HERE, AND THE APPEND GOES ONTO THAT COPY ----
+     *
+     * NEVER ONTO THE `manifest` READ AT ENTRY. A generation is a minute wide and
+     * this method used to read the manifest before it and write `{...manifest,
+     * refs}` after it, so every write that landed in between was clobbered.
+     * Measured 2026-08-03: the owner asked for a still and then clicked a
+     * direction while it drew; `resume` → `#applyDirectionChoice` wrote
+     * `chosenDirection`, this write erased it back to null, and `#buildPhase` —
+     * which re-reads the manifest each pass — saw `directionChosen: false` with
+     * `designSegmentDone: true` and RE-RAN THE CANVASS: six more generations no
+     * cap counts, a second park, and a fallback that built direction 1 while the
+     * record said "no owner choice arrived before the timeout".
+     *
+     * A RE-READ AND AN APPEND RATHER THAN A LOCK, because the thing that must not
+     * be held across the await is the file: this run's build agents, the expand
+     * segment and the choice all write it. Appending onto whatever is there now
+     * cannot lose a field it has never heard of.
+     *
+     * NO WRITE AT ALL IF IT CANNOT BE RE-READ — the same treatment the entry check
+     * gives an unreadable manifest. Writing the stale copy back would resurrect a
+     * file something else had just replaced, which is the defect this block
+     * exists to remove rather than a recovery from it. The still is on disk and
+     * the render is charged either way; what is lost is the ref, said out loud.
+     *
+     * `target`/`index` ARE STILL THE PRE-AWAIT ONES, and that is safe rather than
+     * overlooked: `DesignDialogueDriver` runs one turn per run at a time, so no
+     * second `-req-` name can be minted while this one generates. The image is
+     * already written at `target`; renaming it here would only move the race.
+     */
+    const current = readDesignManifest(runPaths.workspace);
+    if (current === null) {
+      return {
+        outcome: "failed",
+        detail:
+          `"${request.section}" in "${direction.name}" was generated, but this run's design manifest could ` +
+          `not be re-read afterwards, so the still was not recorded. The render was spent.`,
+        path: null,
+        attempted: true,
+      };
+    }
+    // THE REF JOINS THE MANIFEST MARKED `requested`, WRITTEN BY THE HOST. A later
+    // reader can then tell what the lane OFFERED from what the owner ASKED FOR,
+    // and `refsForDirection` keeps it out of the direction's set — so it can never
+    // become the hero the gate grades against.
+    const withRef: DesignManifest = {
+      ...current,
+      refs: [
+        ...current.refs,
+        {
+          path: target,
+          section: request.section,
+          aspect,
+          intent: `asked for by the owner while choosing a direction: the ${request.section} section in "${direction.name}"`,
+          direction: direction.slug,
+          origin: "requested",
+        },
+      ],
+    };
+    writeDesignManifest(runPaths.workspace, withRef);
+    // PUBLISHED INTO THE SAME PANEL he is already looking at, which IS the answer
+    // — there is no `run` chat row to put it in.
+    this.#recordDesignMockups(runId, withRef);
+    return {
+      outcome: request.offBrief ? "rendered-off-brief" : "rendered",
+      detail: request.offBrief
+        ? `here is "${request.section}" in "${direction.name}". It is NOT one of the sections this build ` +
+          `will produce — the ticket did not ask for it — so it is a look at the direction rather than a ` +
+          `preview of the page. ${DESIGN_FROZEN_SUITE_NOTICE}`
+        : `here is the ${request.section} section in "${direction.name}". ${DESIGN_FROZEN_SUITE_NOTICE}`,
+      path: target,
+      attempted: true,
+    };
   }
 
   #clearDesignLockTimer(runId: string): void {

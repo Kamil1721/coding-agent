@@ -30,7 +30,19 @@
 
 import type { GraphSseEvent } from "./api-types.js";
 
-export type BuildSegment = "design" | "design-resume" | "build" | "build-resume";
+/**
+ * THREE SEGMENTS SINCE 2026-08-03, NOT TWO. `design` is stage A (the canvass);
+ * `design-expand` is stage B, which runs only after a direction has been chosen.
+ * Both still run on the ONE session — `design-expand-resume` passes the same
+ * `resumeSessionId`, so the file header's "one session, one id" holds unchanged.
+ */
+export type BuildSegment =
+  | "design"
+  | "design-resume"
+  | "design-expand"
+  | "design-expand-resume"
+  | "build"
+  | "build-resume";
 
 /**
  * WHICH SEGMENT RUNS NEXT — and the reason this is a function with a test rather
@@ -73,9 +85,46 @@ export function nextBuildSegment(input: {
   sessionId: string | null;
   /** The design segment returned of its own accord (not cancelled, not rate-limited). */
   designSegmentDone: boolean;
+  /**
+   * The manifest declares one or more DIRECTIONS — i.e. the lane canvassed.
+   *
+   * READ, UNLIKE `manifestExists`, and it is read for the opposite reason: a
+   * manifest alone says nothing about whether the lane finished, but a manifest
+   * with DIRECTIONS and no choice says exactly that the run is between the two
+   * stages. `false` is every manifest written before 2026-08-03 and every lane
+   * that ignored the canvass ask, and both of those take the pre-2026-08-03
+   * branch below verbatim — an agent that does not canvass degrades to today's
+   * behaviour rather than hanging.
+   */
+  directionsOffered: boolean;
+  /** A direction has been chosen (owner, `ui-designer` or fallback). READ. */
+  directionChosen: boolean;
+  /**
+   * The EXPAND segment already returned. READ, and it is a separate input rather
+   * than `manifestLocked` on purpose.
+   *
+   * A DEGRADED RUN NEVER LOCKS A STILL — `refs` is empty, `heroRefFor` is null,
+   * no lock is applied — so deriving "stage B is over" from `manifestLocked`
+   * would send a degraded run back into the expand arm on every pass until the
+   * loop bound ran out, and `#buildPhase` would return WITHOUT EVER RUNNING THE
+   * BUILD SEGMENT. Degraded runs build fine today; that is the regression this
+   * input exists to prevent.
+   */
+  expanded: boolean;
 }): BuildSegment {
   if (input.laneMode === "off") return input.sessionId === null ? "build" : "build-resume";
-  const designFinished = input.manifestLocked || input.designSegmentDone;
+  // STAGE B COMES FIRST, BEFORE `designFinished` IS EVEN ASKED. On the full path
+  // `designSegmentDone` is already true when the choice lands, so a `designFinished`
+  // test ahead of this one would answer "yes" and go straight to the build —
+  // skipping the expansion entirely and building to two canvass stills.
+  if (input.directionsOffered && input.directionChosen && !input.expanded) {
+    return input.sessionId === null ? "design-expand" : "design-expand-resume";
+  }
+  // A CANVASS AWAITING A CHOICE IS NOT A FINISHED DESIGN. Without the second
+  // clause a run whose canvass returned would fall through to the build arm the
+  // moment anything requeued it, and the owner's choice would decide nothing.
+  const designFinished =
+    input.manifestLocked || (input.designSegmentDone && !(input.directionsOffered && !input.directionChosen));
   if (!designFinished) return input.sessionId === null ? "design" : "design-resume";
   return input.sessionId === null ? "build" : "build-resume";
 }

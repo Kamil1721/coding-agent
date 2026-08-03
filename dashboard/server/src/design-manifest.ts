@@ -66,12 +66,65 @@ export const DESIGN_ASPECTS: readonly DesignAspect[] = Object.freeze([
  */
 export type DesignLockedBy = "owner" | "ui-designer" | "fallback";
 
+/**
+ * How a still came to exist. `"requested"` is written by the HOST when it
+ * services an on-demand render, never by an agent — so a missing `origin` can
+ * never be a lost `"requested"`.
+ */
+export type DesignRefOrigin = "canvass" | "requested" | "expansion";
+
+/**
+ * A direction slug, which is a FILENAME PREFIX AND A SERVED BASENAME.
+ *
+ * Validated on parse under the same wholesale-null rule `path` gets, and for the
+ * same reason: `<slug>-01-hero.png` is written into `design-refs/` by an agent
+ * and its basename is then published as `design-<slug>-01-hero.png` and served by
+ * `GET /api/runs/:id/screenshots/:file`. That is a path-safety property, not a
+ * taste one — a slug containing `/` or `..` would put an agent-authored string
+ * into a path the host builds.
+ */
+const DIRECTION_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/u;
+
+/**
+ * ONE of the distinct directions the canvass offered.
+ *
+ * THE UNCHOSEN ONES ARE A RECORD AND NOT A RESULT. They stay in this array after
+ * a choice is made — `directionDiscarded` derives their status rather than a
+ * field storing it — so a later reader can see what was offered. Nothing that
+ * grades the build may name one: `designHandoffSection` and `visualGatePrompt`
+ * both iterate `refs` and lean on `lockedMockup`, which stage B sets to the
+ * CHOSEN direction's hero.
+ */
+export interface DesignDirection {
+  readonly slug: string;
+  /** Short human name, e.g. "Editorial slab". */
+  readonly name: string;
+  /** ONE sentence on what makes this different from the OTHER directions. */
+  readonly distinction: string;
+  /** `<refsDir>/direction-<slug>.md`, absolute, or null when none was written. */
+  readonly notes: string | null;
+}
+
+/** Who chose the DIRECTION and why. Same vocabulary as `lockedBy`, §17.3 rule 4. */
+export interface DesignDirectionChoice {
+  readonly by: DesignLockedBy;
+  readonly reason: string;
+  readonly at: string;
+}
+
 export interface DesignRef {
   /** ABSOLUTE, and inside `<workspace>/design-refs/`. Both are enforced on parse. */
   readonly path: string;
   readonly section: string;
   readonly aspect: DesignAspect;
   readonly intent: string;
+  /**
+   * The direction this still belongs to. NULL MEANS A REF FROM A RUN THAT HAD NO
+   * DIRECTIONS, which is every ref written before 2026-08-03.
+   */
+  readonly direction: string | null;
+  /** Null for those same legacy refs. Absent on disk with directions present parses `"canvass"`. */
+  readonly origin: DesignRefOrigin | null;
   /** Phase 2c. Absent means 2b never considered it — never `false` by invention. */
   readonly animate?: boolean;
 }
@@ -90,10 +143,275 @@ export interface DesignLock {
 export interface DesignManifest extends DesignLock {
   readonly version: 1;
   readonly refs: readonly DesignRef[];
+  /**
+   * Disk key `directions`. `[]` on every manifest written before 2026-08-03, and
+   * `[]` is what makes such a manifest take today's single-direction path
+   * everywhere — the orchestrator, the segment chooser and the wire all branch on
+   * `directions.length > 0`.
+   */
+  readonly directions: readonly DesignDirection[];
+  /** Disk key `chosenDirection`. Null while stage A is open, or when there are no directions. */
+  readonly chosenDirection: string | null;
+  /** Disk key `directionChoice`. Null EXACTLY when `chosenDirection` is null. */
+  readonly directionChoice: DesignDirectionChoice | null;
+  /** UNCHANGED MEANING: the one canonical still. Set at the END of stage B. */
   readonly lockedMockup: string | null;
   readonly lockedBy: DesignLockedBy | null;
   readonly lockedReason: string | null;
   readonly lockedAt: string | null;
+}
+
+/**
+ * DERIVED, never stored, so it cannot disagree with `chosenDirection`.
+ *
+ * False while stage A is still open: nothing has been discarded until something
+ * has been chosen, and rendering two of three as "discarded" before the owner has
+ * picked would be the panel answering a question he has not been asked.
+ */
+export function directionDiscarded(manifest: DesignManifest, slug: string): boolean {
+  return manifest.chosenDirection !== null && manifest.chosenDirection !== slug;
+}
+
+/**
+ * The direction's stills, manifest order, `origin !== "requested"`.
+ *
+ * ON-DEMAND STILLS ARE EXCLUDED because they are previews the owner asked for
+ * mid-park, not part of the set the lane offered or built — including one would
+ * let a request for "the contact page in 3" become direction 3's hero, and the
+ * gate would then grade the build against an image nobody designed the run
+ * around. They are still in `refs` and still published; `origin` is what tells
+ * the two apart, AT TWO SITES AND NOT ONE: here, which decides the hero and the
+ * panel's per-direction groups, and {@link builtManifest}, which decides what the
+ * build agent and the visual gate are shown. Until 2026-08-03 only this one
+ * existed, so a preview stayed out of the lock and crossed both prompts anyway.
+ *
+ * A REF WHOSE `direction` IS NULL MATCHES NOTHING HERE. On a manifest that has
+ * directions that is a defect, and it is reported: `classifyDesignLane` fails the
+ * lane `manifest-invalid` rather than letting stage B silently produce no hero.
+ */
+export function refsForDirection(manifest: DesignManifest, slug: string): readonly DesignRef[] {
+  return manifest.refs.filter((ref) => ref.direction === slug && ref.origin !== "requested");
+}
+
+/**
+ * The canonical still of a direction: the FIRST of {@link refsForDirection}.
+ *
+ * FIRST IN MANIFEST ORDER, exactly as `fallbackChoice` picks, and said plainly:
+ * the prompt asks the lane to put the hero first, so this is the hero when the
+ * lane did as it was asked and an arbitrary-but-recorded still when it did not.
+ * Null when the direction has no stills — a degraded run, where `refs` is empty
+ * and no hero lock is applied at all.
+ */
+export function heroRefFor(manifest: DesignManifest, slug: string): DesignRef | null {
+  return refsForDirection(manifest, slug)[0] ?? null;
+}
+
+/**
+ * THE STILLS THE STAGE THAT JUST RAN OWED — the only count a per-stage floor may
+ * be compared against.
+ *
+ * WHY THIS EXISTS. `classifyDesignLane` grades each design segment against that
+ * stage's floor, and until 2026-08-03 it compared that floor against CUMULATIVE
+ * inputs: `countDesignPngs` over the flat refs directory and `manifest.refs.length`
+ * across every direction. Stage B's floor of 5 was therefore already satisfied by
+ * stage A's 6 canvass stills, so `too-few-images` could not fire on an expansion
+ * however little it produced — and an expansion that generated nothing left a
+ * healthy-looking record while the lock fell back on a 2-section canvass still.
+ *
+ * THE STAGE IS DERIVED FROM THE MANIFEST rather than passed in, so it cannot
+ * disagree with the file the same call is grading. It matches `#buildPhase`'s own
+ * arm because of WHEN the choice is written: the canvass is classified BEFORE
+ * `#applyDirectionChoice` runs, so `chosenDirection` is null there; the choice is
+ * on disk before the expand segment starts, so it is set when the expansion is
+ * classified.
+ *
+ *   no directions        — every ref. One stage, which is every run before
+ *                          2026-08-03.
+ *   a canvass (no choice) — every non-requested ref, ACROSS the directions: stage
+ *                          A's deliverable is directions × sections, so the floor
+ *                          this set meets is a TOTAL. It is not the whole of stage
+ *                          A and must not be read as it: a total alone passed six
+ *                          stills of one direction, so {@link auditCanvass} holds
+ *                          the per-direction floor and the comparability, and
+ *                          `classifyDesignLane` applies all three.
+ *   an expansion         — the CHOSEN direction's set, which is what `expandBrief`
+ *                          asks for: "at least MIN_DESIGN_REFS PNGs for the
+ *                          direction", its canvass stills included ("Its 2 canvass
+ *                          stills are already on disk and already in the
+ *                          manifest"). Counting only `origin === "expansion"`
+ *                          would grade against a floor of 5 NEW on top of the 2 —
+ *                          a number no prompt asks for — and would fail a lane
+ *                          that generated all five and did not write the field,
+ *                          which `readOrigin` reads as `"canvass"`.
+ *
+ * A PREVIEW IS NEVER A STAGE'S OUTPUT. `origin: "requested"` is excluded at both
+ * arms: three stills the owner asked for while choosing would otherwise let a
+ * four-still canvass clear a floor of six.
+ */
+export function refsForStage(manifest: DesignManifest): readonly DesignRef[] {
+  if (manifest.directions.length === 0) return manifest.refs;
+  const chosen = manifest.chosenDirection;
+  if (chosen === null) return manifest.refs.filter((ref) => ref.origin !== "requested");
+  return refsForDirection(manifest, chosen);
+}
+
+/**
+ * The manifest as ANYTHING THAT BUILDS OR GRADES must see it: only the stills the
+ * LANE produced for the direction that was CHOSEN.
+ *
+ * TWO KINDS OF REF ARE REMOVED, FOR TWO DIFFERENT REASONS, and the second was
+ * missing until 2026-08-03.
+ *
+ *  THE UNCHOSEN DIRECTIONS ARE A RECORD, NOT A RESULT. They stay on disk and in
+ *  `directions`, so the panel can show what was offered and a later reader can
+ *  see it — but nothing that BUILDS or GRADES may name one.
+ *  `designHandoffSection` would otherwise hand a build agent nine stills of three
+ *  incompatible designs and tell it to build to them; `visualGatePrompt` would
+ *  ask the grader to compare the built page against a design nobody built; and
+ *  `planVideoLegs` takes the FIRST marked refs, which on a canvass-then-expand
+ *  manifest are the canvass ones — so a discarded direction's still would become
+ *  the run's video.
+ *
+ *  AN ON-DEMAND STILL IS A PREVIEW FOR THE OWNER, NOT A BUILD REFERENCE. He asks
+ *  "show me the pricing page in 2" while he is choosing, gets a ref with
+ *  `origin: "requested"` and a section the ticket never asked for, and then picks
+ *  that direction. Filtering on `direction` alone carried that picture into both
+ *  prompts: the build agent was told to build to it, and the gate was told to
+ *  read it as a pair against a site that has no pricing section — a gate failure
+ *  manufactured out of a picture he asked for out of curiosity. It stays in
+ *  `refs`, stays published and stays on his screen; it does not cross these two
+ *  seams. EXCLUDED WHETHER OR NOT A CHOICE HAS BEEN MADE, because a preview is a
+ *  preview one segment earlier too.
+ *
+ * IDENTITY WHEN THERE IS NOTHING TO REMOVE, which is every manifest written
+ * before 2026-08-03 (`origin` is null there and `chosenDirection` with it) and
+ * every stage-A manifest the owner asked nothing of.
+ */
+export function builtManifest(manifest: DesignManifest): DesignManifest {
+  const chosen = manifest.chosenDirection;
+  const refs = manifest.refs.filter(
+    (ref) => ref.origin !== "requested" && (chosen === null || ref.direction === chosen),
+  );
+  if (refs.length === manifest.refs.length) return manifest;
+  const lockedSurvives = manifest.lockedMockup !== null && refs.some((ref) => ref.path === manifest.lockedMockup);
+  return {
+    ...manifest,
+    refs,
+    lockedMockup: lockedSurvives ? manifest.lockedMockup : null,
+    lockedBy: lockedSurvives ? manifest.lockedBy : null,
+    lockedReason: lockedSurvives ? manifest.lockedReason : null,
+    lockedAt: lockedSurvives ? manifest.lockedAt : null,
+  };
+}
+
+/**
+ * WHAT ONE DIRECTION ACTUALLY OFFERED, as the canvass's own claim can be checked
+ * against it. One entry per DECLARED direction, including a direction with no
+ * stills at all — an empty card is the fault, so it may not be an absent row.
+ */
+export interface CanvassDirectionAudit {
+  readonly slug: string;
+  /**
+   * DISTINCT sections, normalised, in manifest order. Two stills of one section
+   * are ONE section: the count that matters is how many things the owner can
+   * compare, not how many files were written.
+   */
+  readonly sections: readonly string[];
+  /** Sections the OTHER directions rendered and this one did not. */
+  readonly missing: readonly string[];
+  /** Distinct aspects this direction used, in manifest order. */
+  readonly aspects: readonly DesignAspect[];
+}
+
+/**
+ * A SECTION NAME IS AN AGENT'S FREE TEXT, so `"Hero"`, `"hero"` and `" hero "`
+ * are one section. Comparing them raw would manufacture an incomparable canvass
+ * out of prose casing — a failure the lane could not act on because nothing
+ * visible would be wrong.
+ */
+function canvassSection(section: string): string {
+  return section.trim().toLowerCase();
+}
+
+/**
+ * THE CANVASS AUDITED PER DIRECTION — the half of stage A that `MIN_CANVASS_REFS`
+ * cannot see, added 2026-08-03.
+ *
+ * WHY IT EXISTS. `MIN_CANVASS_REFS` is DESIGN_DIRECTION_COUNT ×
+ * DESIGN_CANVASS_SECTIONS and was compared against the canvass's TOTAL, with no
+ * per-direction floor anywhere. Six stills of ONE direction therefore cleared
+ * stage A: the owner was offered a choice of one direction and two empty cards,
+ * and — because {@link refsForStage} grades the CHOSEN direction's whole set —
+ * choosing the fat one handed stage B a floor of 5 already met by canvass stills,
+ * so an expansion that generated nothing was silent too. The reviewer's scenario
+ * was reachable through a lopsided canvass, and this is where it is stopped.
+ *
+ * AND COMPARABILITY IS THE FEATURE, NOT A PREFERENCE. "Three distinct directions
+ * rendering THE SAME SECTIONS at the same aspect" is what makes the canvass a
+ * choice rather than three unrelated pictures; until now it was a sentence in a
+ * prompt, and a request to a model is not a feature. Both properties are read off
+ * fields the manifest already carries — `section` and `aspect` — so this is a
+ * check and not a hope.
+ *
+ * WHAT IT CANNOT SEE, STATED SO NOTHING DOWNSTREAM OVERCLAIMS:
+ *   - whether the three directions are VISUALLY distinct. `distinction` is a
+ *     sentence the lane wrote about its own work; three renderings of one layout
+ *     in three accent colours pass every check here.
+ *   - whether the sections chosen are the ones THE TICKET makes important. A
+ *     canvass of three comparable footers is comparable.
+ *   - ORDER. The brief asks for the same sections in the same order and this
+ *     compares SETS, because the panel groups by direction and a reader compares
+ *     cards, not positions — a lane that emitted `work, hero` for one direction
+ *     has not made the owner's choice harder, and failing a run for it would be a
+ *     false alarm bought with nothing.
+ *
+ * THE LENGTH OF THIS ARRAY IS ITSELF ONE OF THE CHECKS. It is one entry per
+ * DECLARED direction, so `classifyDesignLane` reads it to fail a canvass that
+ * offered fewer directions than the lane was asked for — declaring one direction
+ * and rendering six comparable sections of it satisfies every per-direction
+ * property below, because a single direction has nothing to disagree with.
+ *
+ * EMPTY EXCEPT AT STAGE A, and the gate is the manifest's own, so it cannot
+ * disagree with {@link refsForStage}: no directions is a pre-2026-08-03 run, and
+ * a chosen direction means the expansion has run and the chosen direction is
+ * SUPPOSED to carry sections the discarded ones do not. An empty result therefore
+ * means "not a canvass" and never "a canvass with nothing wrong with it" — which
+ * is why the count check above is gated on there being at least one entry.
+ */
+export function auditCanvass(manifest: DesignManifest): readonly CanvassDirectionAudit[] {
+  if (manifest.directions.length === 0 || manifest.chosenDirection !== null) return [];
+  const rendered = manifest.directions.map((direction) => {
+    const refs = refsForDirection(manifest, direction.slug);
+    return {
+      slug: direction.slug,
+      sections: [...new Set(refs.map((ref) => canvassSection(ref.section)))],
+      aspects: [...new Set(refs.map((ref) => ref.aspect))],
+    };
+  });
+  const every = [...new Set(rendered.flatMap((entry) => entry.sections))];
+  return rendered.map((entry) => ({
+    ...entry,
+    missing: every.filter((section) => !entry.sections.includes(section)),
+  }));
+}
+
+/**
+ * Refs whose `direction` cannot be resolved against `directions`.
+ *
+ * TWO SHAPES, ONE REPORT, and neither is wholesale-null. A ref naming a slug that
+ * was never declared, and — on a manifest that HAS directions — a ref naming no
+ * direction at all. Both break `refsForDirection`, so both break the hero lock,
+ * and a hero that never locks looks exactly like a degraded run: the build
+ * proceeds, the gate falls back to the rule-based floor, and nothing says why.
+ * Dropping the ref instead would hide the fault behind a smaller set.
+ *
+ * EMPTY ON EVERY MANIFEST WRITTEN BEFORE 2026-08-03, because `directions` is `[]`
+ * there and the second shape is gated on it.
+ */
+export function unresolvedDirectionRefs(manifest: DesignManifest): readonly DesignRef[] {
+  if (manifest.directions.length === 0) return [];
+  const declared = new Set(manifest.directions.map((direction) => direction.slug));
+  return manifest.refs.filter((ref) => ref.direction === null || !declared.has(ref.direction));
 }
 
 export function refsDirFor(workspace: string): string {
@@ -105,7 +423,17 @@ export function manifestPathFor(workspace: string): string {
 }
 
 export function emptyManifest(): DesignManifest {
-  return { version: 1, refs: [], lockedMockup: null, lockedBy: null, lockedReason: null, lockedAt: null };
+  return {
+    version: 1,
+    refs: [],
+    directions: [],
+    chosenDirection: null,
+    directionChoice: null,
+    lockedMockup: null,
+    lockedBy: null,
+    lockedReason: null,
+    lockedAt: null,
+  };
 }
 
 /** Inside `dir`, or `dir` itself. Not a permission check — a validation one. */
@@ -119,7 +447,16 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function readRef(raw: unknown, refsDir: string): DesignRef | null {
+function readOrigin(value: unknown, hasDirections: boolean): DesignRefOrigin | null {
+  if (value === "canvass" || value === "requested" || value === "expansion") return value;
+  // ABSENT WITH DIRECTIONS PRESENT IS `"canvass"`, NOT NULL. `"requested"` is
+  // written only by the host, so defaulting can never manufacture one — the worst
+  // this can get wrong is calling an expansion still a canvass one, which changes
+  // nothing downstream (`refsForDirection` excludes only `"requested"`).
+  return hasDirections ? "canvass" : null;
+}
+
+function readRef(raw: unknown, refsDir: string, hasDirections: boolean): DesignRef | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
   const path = readString(record["path"]);
@@ -130,17 +467,64 @@ function readRef(raw: unknown, refsDir: string): DesignRef | null {
   if (!insideDir(path, refsDir)) return null;
   if (typeof aspect !== "string" || !DESIGN_ASPECTS.includes(aspect as DesignAspect)) return null;
   const animate = record["animate"];
+  // NOT VALIDATED AGAINST `directions` HERE, ON PURPOSE. A ref naming a slug
+  // nobody declared is kept as written and reported by `unresolvedDirectionRefs`
+  // → `classifyDesignLane`; dropping it wholesale would turn a loud, non-blocking
+  // fault into a smaller set with no explanation. Only the SHAPE is checked, and
+  // an unusable shape reads as "no direction" rather than as a path fragment.
+  const direction = readString(record["direction"]);
   return {
     path,
     section,
     aspect: aspect as DesignAspect,
     intent,
+    direction: direction !== null && DIRECTION_SLUG.test(direction) ? direction : null,
+    origin: readOrigin(record["origin"], hasDirections),
     ...(typeof animate === "boolean" ? { animate } : {}),
   };
 }
 
+/**
+ * One direction, or null — and null is WHOLESALE, exactly as an invalid `path`
+ * is. The slug becomes a filename prefix and a served basename, so a manifest
+ * that carries a bad one is not partially honoured.
+ */
+function readDirection(raw: unknown, refsDir: string): DesignDirection | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const slug = readString(record["slug"]);
+  const name = readString(record["name"]);
+  const distinction = readString(record["distinction"]);
+  if (slug === null || name === null || distinction === null) return null;
+  if (!DIRECTION_SLUG.test(slug)) return null;
+  const notes = readString(record["notes"]);
+  // A NOTES PATH IS A `Read` TARGET IN A PROMPT, the same seam `refs[].path`
+  // guards: it is carried into the build segment's handoff, so it is fenced to
+  // the refs directory or it is not carried at all.
+  return { slug, name, distinction, notes: notes !== null && insideDir(notes, refsDir) ? notes : null };
+}
+
 function readLockedBy(value: unknown): DesignLockedBy | null {
   return value === "owner" || value === "ui-designer" || value === "fallback" ? value : null;
+}
+
+/**
+ * The direction choice, or null.
+ *
+ * NULL HERE DROPS `chosenDirection` TOO — see `parseDesignManifest`. The pair is
+ * written only by `chooseDirection`, so a file carrying a chosen slug and no
+ * provenance is a claim an agent made without the authority to make it, and it is
+ * dropped for the reason `locked` is dropped: recording it would let stage B
+ * expand a direction nobody can be shown to have picked.
+ */
+function readDirectionChoice(raw: unknown): DesignDirectionChoice | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const by = readLockedBy(record["by"]);
+  const reason = readString(record["reason"]);
+  const at = readString(record["at"]);
+  if (by === null || reason === null || at === null) return null;
+  return { by, reason, at };
 }
 
 /**
@@ -161,12 +545,41 @@ export function parseDesignManifest(text: string, workspace: string): DesignMani
   if (!Array.isArray(rawRefs)) return null;
 
   const refsDir = refsDirFor(workspace);
+
+  // ABSENT IS `[]`, WHICH IS EVERY MANIFEST WRITTEN BEFORE 2026-08-03 and is the
+  // whole of the old-manifest compatibility story: three runs on disk carry no
+  // `directions` key, parse to `[]`, and take the single-direction path
+  // everywhere downstream. PRESENT-BUT-NOT-AN-ARRAY is wholesale-null, exactly as
+  // a malformed `refs` is — a manifest whose shape we cannot read is not a
+  // manifest we half-honour.
+  const rawDirections = record["directions"];
+  if (rawDirections !== undefined && !Array.isArray(rawDirections)) return null;
+  const directions: DesignDirection[] = [];
+  const slugs = new Set<string>();
+  for (const entry of rawDirections ?? []) {
+    const direction = readDirection(entry, refsDir);
+    // UNIQUE WITHIN A MANIFEST, and a duplicate is wholesale-null rather than
+    // last-one-wins: `<slug>-01-hero.png` is one filename, so two directions
+    // sharing a slug write over each other's stills and `refsForDirection` then
+    // returns one direction's set for both.
+    if (direction === null || slugs.has(direction.slug)) return null;
+    slugs.add(direction.slug);
+    directions.push(direction);
+  }
+
   const refs: DesignRef[] = [];
   for (const entry of rawRefs) {
-    const ref = readRef(entry, refsDir);
+    const ref = readRef(entry, refsDir, directions.length > 0);
     if (ref === null) return null;
     refs.push(ref);
   }
+
+  // BOTH OR NEITHER. `directionChoice` is null exactly when `chosenDirection` is,
+  // which is what lets every consumer test one field and read the other without a
+  // second null check.
+  const claimedDirection = readString(record["chosenDirection"]);
+  const choice = readDirectionChoice(record["directionChoice"]);
+  const chosenDirection = claimedDirection !== null && slugs.has(claimedDirection) && choice !== null ? claimedDirection : null;
 
   // A `locked` path the agent invented points the gate at a file nobody
   // generated. It is dropped rather than honoured, and dropping it is visible:
@@ -177,6 +590,9 @@ export function parseDesignManifest(text: string, workspace: string): DesignMani
   return {
     version: 1,
     refs,
+    directions,
+    chosenDirection,
+    directionChoice: chosenDirection === null ? null : choice,
     lockedMockup: locked,
     lockedBy: locked === null ? null : readLockedBy(record["lockedBy"]),
     lockedReason: locked === null ? null : readString(record["lockedReason"]),
@@ -184,11 +600,28 @@ export function parseDesignManifest(text: string, workspace: string): DesignMani
   };
 }
 
+/**
+ * EVERY FIELD OF THE INTERFACE, BY HAND, AND THAT IS THE HAZARD.
+ *
+ * This is an object literal rather than a spread, so a field added to
+ * {@link DesignManifest} and not added here compiles, passes every type check,
+ * and is ERASED by the next host write. That write is `#applyDesignLock` →
+ * `writeDesignManifest` — the one that locks the hero at the END of stage B — so
+ * the erasure would land on the last write of the run, after the panel had
+ * already shown the directions: types green, tests green, feature gone.
+ *
+ * The control that condemns it was executed: deleting the `directions` key here
+ * turns `parse → serialise → parse` red on the directions, and nothing else in
+ * the suite notices.
+ */
 export function serialiseDesignManifest(manifest: DesignManifest): string {
   return `${JSON.stringify(
     {
       version: manifest.version,
       refs: manifest.refs,
+      directions: manifest.directions,
+      chosenDirection: manifest.chosenDirection,
+      directionChoice: manifest.directionChoice,
       locked: manifest.lockedMockup,
       lockedBy: manifest.lockedBy,
       lockedReason: manifest.lockedReason,
@@ -240,11 +673,22 @@ export function readDesignManifest(workspace: string): DesignManifest | null {
  */
 export function pruneMissingRefs(manifest: DesignManifest): DesignManifest {
   const refs = manifest.refs.filter((ref) => existsSync(ref.path));
-  if (refs.length === manifest.refs.length) return manifest;
+  // A NOTES PATH IS A `Read` TARGET TOO, and the argument above is the whole of
+  // the argument here: `designHandoffSection` puts `direction-<slug>.md` in front
+  // of a build agent, and a file nobody wrote surfaces as that agent's confusion
+  // several turns deep rather than as a design fault. The DIRECTION survives with
+  // `notes: null` — losing the name and the distinction would lose the record of
+  // what was offered, which is the one thing the unchosen directions are for.
+  const directions = manifest.directions.map((direction) =>
+    direction.notes !== null && !existsSync(direction.notes) ? { ...direction, notes: null } : direction,
+  );
+  const notesChanged = directions.some((direction, index) => direction !== manifest.directions[index]);
+  if (refs.length === manifest.refs.length && !notesChanged) return manifest;
   const lockedSurvives = manifest.lockedMockup !== null && refs.some((r) => r.path === manifest.lockedMockup);
   return {
     ...manifest,
     refs,
+    directions,
     lockedMockup: lockedSurvives ? manifest.lockedMockup : null,
     lockedBy: lockedSurvives ? manifest.lockedBy : null,
     lockedReason: lockedSurvives ? manifest.lockedReason : null,
@@ -263,13 +707,31 @@ export function writeDesignManifest(workspace: string, manifest: DesignManifest)
  * nothing rather than a heading over a hole.
  */
 export function readDesignDirection(workspace: string): string {
-  const path = join(refsDirFor(workspace), "direction.md");
+  const path = designDirectionPath(workspace);
   if (!existsSync(path)) return "";
   try {
     return readFileSync(path, "utf8");
   } catch {
     return "";
   }
+}
+
+/**
+ * `direction.md` — THE CHOSEN DIRECTION'S DOCUMENT, and its meaning is unchanged
+ * by the two-stage canvass.
+ *
+ * `readDesignDirection` and `designHandoffSection`'s `dials.length > 0` test are
+ * its two consumers, and both must not go blind: stage B's prompt asks the lane
+ * to write it, and the host copies `direction-<slug>.md` over it if the lane did
+ * not. Declared as a function so the two spellings of the filename cannot drift.
+ */
+export function designDirectionPath(workspace: string): string {
+  return join(refsDirFor(workspace), "direction.md");
+}
+
+/** `<refsDir>/direction-<slug>.md`. The per-direction art direction, chosen or not. */
+export function directionNotesPath(workspace: string, slug: string): string {
+  return join(refsDirFor(workspace), `direction-${slug}.md`);
 }
 
 /**

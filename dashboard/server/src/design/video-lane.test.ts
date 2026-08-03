@@ -54,10 +54,13 @@ const AVAILABLE: VideoCapability = {
 const MANIFEST: DesignManifest = {
   version: 1,
   refs: [
-    { path: "/ws/design-refs/01.png", section: "descent", aspect: "16:9", intent: "i", animate: true },
-    { path: "/ws/design-refs/02.png", section: "arrival", aspect: "16:9", intent: "i", animate: true },
-    { path: "/ws/design-refs/03.png", section: "outro", aspect: "16:9", intent: "i", animate: true },
+    { path: "/ws/design-refs/01.png", section: "descent", aspect: "16:9", intent: "i", direction: null, origin: null, animate: true },
+    { path: "/ws/design-refs/02.png", section: "arrival", aspect: "16:9", intent: "i", direction: null, origin: null, animate: true },
+    { path: "/ws/design-refs/03.png", section: "outro", aspect: "16:9", intent: "i", direction: null, origin: null, animate: true },
   ],
+  directions: [],
+  chosenDirection: null,
+  directionChoice: null,
   lockedMockup: null,
   lockedBy: null,
   lockedReason: null,
@@ -376,11 +379,14 @@ test("THE MANIFEST THIS PROGRAM WRITES SAYS `refs`, AND THE PLANNER READS `secti
     const refs = [1, 2, 3].map((n) => {
       const path = join(refsDir, `0${String(n)}-section.png`);
       writeFileSync(path, "not really a png", "utf8");
-      return { path, section: `section-${String(n)}`, aspect: "16:9" as const, intent: "x", animate: true };
+      return { path, section: `section-${String(n)}`, aspect: "16:9" as const, intent: "x", direction: null, origin: null, animate: true };
     });
     writeDesignManifest(dir, {
       version: 1,
       refs,
+      directions: [],
+      chosenDirection: null,
+      directionChoice: null,
       lockedMockup: null,
       lockedBy: null,
       lockedReason: null,

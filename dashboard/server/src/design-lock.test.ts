@@ -1,22 +1,29 @@
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { DesignManifest } from "./design-manifest.js";
 import {
   DEFAULT_DESIGN_LOCK_TIMEOUT_MIN,
+  DESIGN_LOCK_RECORD_FILE,
+  chooseDirection,
   chosenMockupRef,
   designLockExpired,
   designLockPolicy,
   designLockTimeoutMin,
+  directionForMockup,
+  emptyDesignLockRecord,
   fallbackChoice,
+  fallbackDirectionChoice,
   lockManifest,
   publishedMockupPath,
   readChoiceFile,
   readDesignLock,
+  readDirectionChoiceFile,
   writeDesignLock,
 } from "./design-lock.js";
+import { DESIGN_DIRECTION_CHOICE_FILE } from "./design-prompt.js";
 
 const WS = "/runs/r1/workspace";
 const A = `${WS}/design-refs/01-hero.png`;
@@ -26,9 +33,12 @@ const AT = "2026-07-29T10:00:00.000Z";
 const MANIFEST: DesignManifest = {
   version: 1,
   refs: [
-    { path: A, section: "hero", aspect: "21:9", intent: "opening" },
-    { path: B, section: "work", aspect: "16:9", intent: "projects" },
+    { path: A, section: "hero", aspect: "21:9", intent: "opening", direction: null, origin: null },
+    { path: B, section: "work", aspect: "16:9", intent: "projects", direction: null, origin: null },
   ],
+  directions: [],
+  chosenDirection: null,
+  directionChoice: null,
   lockedMockup: null,
   lockedBy: null,
   lockedReason: null,
@@ -147,8 +157,8 @@ test("PREFIX-ADD, NEVER PREFIX-STRIP: a ref that is itself named design-… maps
   const manifest: DesignManifest = {
     ...MANIFEST,
     refs: [
-      { path: plain, section: "hero", aspect: "21:9", intent: "opening" },
-      { path: prefixed, section: "hero, second take", aspect: "21:9", intent: "opening" },
+      { path: plain, section: "hero", aspect: "21:9", intent: "opening", direction: null, origin: null },
+      { path: prefixed, section: "hero, second take", aspect: "21:9", intent: "opening", direction: null, origin: null },
     ],
   };
   assert.equal(chosenMockupRef(manifest, SHOTS, `${SHOTS}/design-hero.png`), plain);
@@ -182,7 +192,7 @@ test("RULE 5: the lock record round-trips, and a park's clock is on DISK", () =>
   // The timeout has to survive a dashboard restart, and a timer does not. The
   // park time is written down so `reconcileOnBoot` can ask how long it has been.
   const dir = mkdtempSync(join(tmpdir(), "design-lock-"));
-  const record = { awaiting: true, parkedAt: AT, locked: null, lockedBy: null, reason: null } as const;
+  const record = { ...emptyDesignLockRecord(AT), awaiting: true };
   writeDesignLock(dir, record);
   assert.deepEqual(readDesignLock(dir), record);
   assert.equal(readDesignLock(mkdtempSync(join(tmpdir(), "design-lock-empty-"))), null);
@@ -195,7 +205,7 @@ test("RULE 5: a RESOLVED lock round-trips — the path, the chooser and the reas
   // attempt.path, lockedBy: attempt.by, reason: attempt.reason}`), and `locked`
   // is the gate's input — rule 5 is exactly the claim that it is written down.
   const dir = mkdtempSync(join(tmpdir(), "design-lock-resolved-"));
-  const record = { awaiting: false, parkedAt: AT, locked: B, lockedBy: "ui-designer", reason: "denser grid" } as const;
+  const record = { ...emptyDesignLockRecord(AT), locked: B, lockedBy: "ui-designer" as const, reason: "denser grid" };
   writeDesignLock(dir, record);
   assert.deepEqual(readDesignLock(dir), record);
   assert.equal(readDesignLock(dir)?.locked, B, "the gate's input is the field that must not be dropped");
@@ -302,4 +312,203 @@ test("RULE 1: the timer's deadline and the restart deadline are the SAME instant
   const oneBefore = new Date(Date.parse(AT) + delayMs - 1).toISOString();
   assert.equal(designLockExpired(AT, atDeadline, timeoutMin), true, "the instant the timer fires, the park IS expired");
   assert.equal(designLockExpired(AT, oneBefore, timeoutMin), false, "and not one millisecond before it");
+});
+
+/* ══ the DIRECTION choice, and the record that survives a restart ══════════ */
+
+const DIRECTIONS_MANIFEST: DesignManifest = {
+  version: 1,
+  refs: [
+    {
+      path: `${WS}/design-refs/editorial-slab-01-hero.png`,
+      section: "hero",
+      aspect: "16:9",
+      intent: "a",
+      direction: "editorial-slab",
+      origin: "canvass",
+    },
+    {
+      path: `${WS}/design-refs/quiet-grid-01-hero.png`,
+      section: "hero",
+      aspect: "16:9",
+      intent: "b",
+      direction: "quiet-grid",
+      origin: "canvass",
+    },
+  ],
+  directions: [
+    { slug: "editorial-slab", name: "Editorial slab", distinction: "slab masthead", notes: null },
+    { slug: "quiet-grid", name: "Quiet grid", distinction: "hairline grid", notes: null },
+  ],
+  chosenDirection: null,
+  directionChoice: null,
+  lockedMockup: null,
+  lockedBy: null,
+  lockedReason: null,
+  lockedAt: null,
+};
+
+test("chooseDirection MIRRORS lockManifest: a second choice, an undeclared slug and a blank reason", () => {
+  const ok = chooseDirection(DIRECTIONS_MANIFEST, { slug: "quiet-grid", by: "owner", reason: "  it reads  ", at: AT });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.ok && ok.manifest.chosenDirection, "quiet-grid");
+  assert.equal(ok.ok && ok.manifest.directionChoice?.reason, "it reads", "trimmed, and recorded with its provenance");
+  assert.equal(ok.ok && ok.manifest.directionChoice?.by, "owner");
+  assert.equal(ok.ok && ok.manifest.lockedMockup, null, "choosing a DIRECTION never locks a still");
+
+  // A SECOND CHOICE. The expansion has already spent five to seven generations on
+  // the first one, so re-choosing either strands that spend or leaves
+  // `chosenDirection` disagreeing with the stills that were actually built.
+  const second = chooseDirection(ok.ok ? ok.manifest : DIRECTIONS_MANIFEST, {
+    slug: "editorial-slab",
+    by: "owner",
+    reason: "changed my mind",
+    at: AT,
+  });
+  assert.equal(second.ok, false);
+  assert.match(second.ok ? "" : second.error, /already chose/);
+
+  const invented = chooseDirection(DIRECTIONS_MANIFEST, { slug: "made-up", by: "owner", reason: "r", at: AT });
+  assert.equal(invented.ok, false);
+  assert.match(invented.ok ? "" : invented.error, /not one of this run's 2 directions/);
+
+  const blank = chooseDirection(DIRECTIONS_MANIFEST, { slug: "quiet-grid", by: "owner", reason: "   ", at: AT });
+  assert.equal(blank.ok, false);
+  assert.match(blank.ok ? "" : blank.error, /needs a reason/);
+});
+
+test("readDirectionChoiceFile takes a SLUG and validates it; fallback names itself a fallback", () => {
+  const refsDir = mkdtempSync(join(tmpdir(), "design-dirchoice-"));
+  assert.equal(readDirectionChoiceFile(refsDir, DIRECTIONS_MANIFEST, AT), null, "absent is null, not a throw");
+
+  const write = (body: unknown): void => {
+    writeFileSync(join(refsDir, DESIGN_DIRECTION_CHOICE_FILE), JSON.stringify(body), "utf8");
+  };
+  write({ chosen: "quiet-grid", reason: "the grid carries it" });
+  assert.deepEqual(readDirectionChoiceFile(refsDir, DIRECTIONS_MANIFEST, AT), {
+    slug: "quiet-grid",
+    by: "ui-designer",
+    reason: "the grid carries it",
+    at: AT,
+  });
+
+  // A SLUG NOBODY DECLARED IS REFUSED, exactly as `readChoiceFile` refuses a path
+  // that is not a ref: this file is written by an agent and read by the host.
+  write({ chosen: "invented", reason: "r" });
+  assert.equal(readDirectionChoiceFile(refsDir, DIRECTIONS_MANIFEST, AT), null);
+  // AND A PATH IS NOT A SLUG. An agent that wrote `choice.json`'s shape into this
+  // file must not have it silently honoured.
+  write({ chosen: `${WS}/design-refs/editorial-slab-01-hero.png`, reason: "r" });
+  assert.equal(readDirectionChoiceFile(refsDir, DIRECTIONS_MANIFEST, AT), null);
+  write({ chosen: "quiet-grid" });
+  assert.equal(readDirectionChoiceFile(refsDir, DIRECTIONS_MANIFEST, AT)?.reason, "no reason given");
+
+  const fallback = fallbackDirectionChoice(DIRECTIONS_MANIFEST, AT, "no owner choice arrived");
+  assert.equal(fallback?.slug, "editorial-slab", "first in manifest order");
+  assert.equal(fallback?.by, "fallback", "recording it as ui-designer would be a lie about provenance");
+  assert.match(String(fallback?.reason), /no judgement applied/);
+  assert.equal(fallbackDirectionChoice({ ...DIRECTIONS_MANIFEST, directions: [] }, AT, "x"), null);
+});
+
+test("directionForMockup translates a PUBLISHED click back to a direction, and nothing else", () => {
+  const shots = "/results/screenshots/r1";
+  const published = publishedMockupPath(shots, `${WS}/design-refs/quiet-grid-01-hero.png`);
+  assert.equal(directionForMockup(DIRECTIONS_MANIFEST, shots, published), "quiet-grid");
+  // The host's own paths (a workspace ref) travel through unchanged.
+  assert.equal(directionForMockup(DIRECTIONS_MANIFEST, shots, `${WS}/design-refs/editorial-slab-01-hero.png`), "editorial-slab");
+  // A PATH THAT NAMES NOTHING IS NULL, never a guess. The caller then has no slug
+  // and leaves the run parked rather than choosing for him.
+  assert.equal(directionForMockup(DIRECTIONS_MANIFEST, shots, "/tmp/whatever.png"), null);
+  // AND A LEGACY MANIFEST YIELDS NULL RATHER THAN INVENTING A DIRECTION.
+  assert.equal(directionForMockup(MANIFEST, shots, A), null);
+});
+
+test("A design-lock.json WRITTEN BEFORE 2026-08-03 READS, and its caps are ZERO not unlimited", () => {
+  // THE DEFECT THIS REPLACES: `readDesignLock` was `JSON.parse(...) as
+  // DesignLockRecord` — a cast the compiler checks about the TYPE and nothing
+  // checks about the BYTES. Three files on this machine carry none of the eleven
+  // fields added that day, so `turnsUsed` would be `undefined`, and
+  // `undefined >= MAX_DESIGN_LOCK_TURNS` is FALSE — both caps reading as
+  // unlimited on exactly the runs that predate them.
+  const dir = mkdtempSync(join(tmpdir(), "design-lock-legacy-"));
+  writeFileSync(
+    join(dir, DESIGN_LOCK_RECORD_FILE),
+    JSON.stringify({ awaiting: false, parkedAt: AT, locked: B, lockedBy: "ui-designer", reason: "the only faithful one" }),
+    "utf8",
+  );
+  const record = readDesignLock(dir);
+  assert.ok(record !== null, "an old record still reads");
+  assert.equal(record.locked, B, "and the five fields it does carry are untouched");
+  assert.equal(record.lockedBy, "ui-designer");
+  assert.equal(record.turnsUsed, 0, "NOT undefined — a falsy absent value must never read as unlimited");
+  assert.equal(record.rendersUsed, 0);
+  assert.deepEqual(record.directions, []);
+  assert.deepEqual(record.requests, []);
+  assert.equal(record.chosenDirection, null);
+  assert.equal(record.expanded, false);
+  assert.equal(record.askedAfterSeq, null, "null = every pending message is a candidate");
+
+  // AND THE SAME FOR HOSTILE-SHAPED VALUES. `?? 0` would pass a null straight
+  // through; `Number.isFinite` is what makes the cap a number.
+  writeFileSync(
+    join(dir, DESIGN_LOCK_RECORD_FILE),
+    JSON.stringify({ awaiting: true, parkedAt: AT, turnsUsed: null, rendersUsed: "6", requests: "none" }),
+    "utf8",
+  );
+  const hostile = readDesignLock(dir);
+  assert.equal(hostile?.turnsUsed, 0);
+  assert.equal(hostile?.rendersUsed, 0);
+  assert.deepEqual(hostile?.requests, []);
+});
+
+test("EVERY design-lock.json ON THIS MACHINE READS — the real files, not a fixture of them", () => {
+  const runsDir = join(import.meta.dirname, "..", "..", "runs");
+  if (!existsSync(runsDir)) return;
+  for (const entry of readdirSync(runsDir)) {
+    const results = join(runsDir, entry, "results");
+    if (!existsSync(join(results, DESIGN_LOCK_RECORD_FILE))) continue;
+    const record = readDesignLock(results);
+    assert.ok(record !== null, `${entry}'s lock record must still read`);
+    assert.equal(record.turnsUsed, 0, `${entry} predates the caps and must read as spent-nothing, not unlimited`);
+    assert.equal(record.rendersUsed, 0);
+    assert.deepEqual(record.directions, [], `${entry} predates directions`);
+  }
+});
+
+test("the record round-trips with a dialogue in it — the caps and the requests survive the disk", () => {
+  // WHAT THIS CATCHES: a `writeDesignLock` caller that reconstructs the record
+  // instead of spreading onto it. `#applyDesignLock` and `#parkForDesignLock`
+  // both built fresh literals before the dialogue existed, and a fresh literal
+  // resets `rendersUsed` — so the render the owner already paid for becomes free
+  // again on the write that records his choice.
+  const dir = mkdtempSync(join(tmpdir(), "design-lock-dialogue-"));
+  const record = {
+    ...emptyDesignLockRecord(AT),
+    awaiting: true,
+    directions: [
+      {
+        slug: "quiet-grid",
+        name: "Quiet grid",
+        distinction: "hairline grid",
+        notes: null,
+        mockups: ["/results/screenshots/r1/design-quiet-grid-01-hero.png"],
+      },
+    ],
+    turnsUsed: 2,
+    rendersUsed: 1,
+    askedAfterSeq: 7,
+    requests: [
+      {
+        seq: 8,
+        at: AT,
+        section: "contact",
+        direction: "quiet-grid",
+        outcome: "rendered" as const,
+        detail: "rendered the contact section in Quiet grid",
+        path: `${WS}/design-refs/quiet-grid-req-01-contact.png`,
+      },
+    ],
+  };
+  writeDesignLock(dir, record);
+  assert.deepEqual(readDesignLock(dir), record);
 });

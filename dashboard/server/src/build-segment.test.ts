@@ -10,6 +10,13 @@ function segment(over: Partial<Parameters<typeof nextBuildSegment>[0]> = {}) {
     manifestLocked: false,
     sessionId: null,
     designSegmentDone: false,
+    // THE PRE-2026-08-03 SHAPE IS THE DEFAULT: no directions, so no choice and
+    // nothing to expand. Every test written before the canvass therefore keeps
+    // measuring exactly what it measured, which is the point — a lane that does
+    // not canvass must degrade to today's behaviour rather than hang.
+    directionsOffered: false,
+    directionChosen: false,
+    expanded: false,
     ...over,
   });
 }
@@ -208,4 +215,102 @@ test("remaps compose — a third segment extends the graph again rather than res
   ].map(makeSegmentRemap(afterTwo));
   assert.equal((segmentThree[0] as Extract<GraphSseEvent, { type: "graph_agent" }>).node, "n1");
   assert.equal((segmentThree[1] as Extract<GraphSseEvent, { type: "graph_agent" }>).node, "n5");
+});
+
+/* ══ THE TWO-STAGE DESIGN LANE (2026-08-03) ════════════════════════════════ */
+
+test("A CANVASS AWAITING A CHOICE IS NOT A FINISHED DESIGN", () => {
+  // The canvass segment RETURNED, so `designSegmentDone` is true — and without
+  // the second clause of `designFinished` the run would fall through to the build
+  // arm the moment anything requeued it, and the owner's choice would decide
+  // nothing. Nothing is locked either: stage B has not run.
+  assert.equal(
+    segment({ designSegmentDone: true, directionsOffered: true, directionChosen: false, sessionId: "s1" }),
+    "design-resume",
+  );
+});
+
+test("A CHOSEN DIRECTION IS THE NEXT WORK, WHATEVER ELSE IS TRUE", () => {
+  // THE ORDER IS THE TEST. On the full path `designSegmentDone` is already true
+  // when the choice lands, so a `designFinished` check ahead of the expand arm
+  // answers "yes" and goes straight to the build — skipping the expansion and
+  // building to two canvass stills.
+  assert.equal(
+    segment({ designSegmentDone: true, directionsOffered: true, directionChosen: true, sessionId: "s1" }),
+    "design-expand-resume",
+  );
+  assert.equal(
+    segment({ designSegmentDone: true, directionsOffered: true, directionChosen: true, sessionId: null }),
+    "design-expand",
+  );
+});
+
+test("ONCE EXPANDED, THE BUILD RUNS — and `expanded` is what says so, not the lock", () => {
+  // A DEGRADED RUN NEVER LOCKS A STILL: `refs` is empty, `heroRefFor` is null, no
+  // lock is applied. Deriving "stage B is over" from `manifestLocked` would send
+  // it round the expand arm on every pass until the loop bound ran out, and
+  // `#buildPhase` would return WITHOUT EVER RUNNING THE BUILD SEGMENT. Degraded
+  // runs build fine today; this is the regression that input exists to prevent.
+  assert.equal(
+    segment({
+      laneMode: "degraded",
+      designSegmentDone: true,
+      directionsOffered: true,
+      directionChosen: true,
+      expanded: true,
+      manifestLocked: false,
+      sessionId: "s1",
+    }),
+    "build-resume",
+  );
+  // And on the full path, where the hero DID lock, the same answer.
+  assert.equal(
+    segment({
+      designSegmentDone: true,
+      directionsOffered: true,
+      directionChosen: true,
+      expanded: true,
+      manifestLocked: true,
+      sessionId: "s1",
+    }),
+    "build-resume",
+  );
+});
+
+test("THE THREE PASSES OF AN `auto` RUN, IN ORDER — canvass, expand, build", () => {
+  // The sequence `#buildPhase` walks in ONE entry with no park between, which is
+  // why its loop bound had to move from 2 to 3.
+  const canvass = segment({ sessionId: null });
+  assert.equal(canvass, "design");
+  const expand = segment({
+    designSegmentDone: true,
+    directionsOffered: true,
+    directionChosen: true,
+    sessionId: "s1",
+  });
+  assert.equal(expand, "design-expand-resume");
+  const build = segment({
+    designSegmentDone: true,
+    directionsOffered: true,
+    directionChosen: true,
+    expanded: true,
+    manifestLocked: true,
+    sessionId: "s1",
+  });
+  assert.equal(build, "build-resume");
+});
+
+test("A LANE THAT NEVER CANVASSED DEGRADES TO TODAY'S BEHAVIOUR, NOT TO A HANG", () => {
+  // `directionsOffered: false` is every manifest written before 2026-08-03 and
+  // every lane that ignored the canvass ask. Both take the pre-canvass branch
+  // verbatim: the design is finished when it is locked or when the segment
+  // returned, and there is nothing to expand.
+  assert.equal(segment({ designSegmentDone: true, sessionId: "s1" }), "build-resume");
+  assert.equal(segment({ manifestLocked: true, sessionId: "s1" }), "build-resume");
+  assert.equal(segment({ sessionId: "s1" }), "design-resume");
+  // AND `laneMode: "off"` STILL SHORT-CIRCUITS EVERYTHING, directions or not.
+  assert.equal(
+    segment({ laneMode: "off", directionsOffered: true, directionChosen: true, sessionId: null }),
+    "build",
+  );
 });

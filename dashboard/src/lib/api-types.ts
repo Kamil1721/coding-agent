@@ -285,6 +285,72 @@ export interface Attachment {
 }
 
 /**
+ * WHICH OF THE TWO STAGES the DESIGN lane is in — the server's `ApiDesignStage`.
+ *
+ * `none` is EVERY RUN RECORDED BEFORE 2026-08-03 and every run whose lane
+ * offered no directions at all. It is not a degraded reading: the panel renders
+ * exactly what it rendered before directions existed.
+ *
+ * `canvass`   the lane offered N distinct directions and none is chosen yet.
+ *             This is the park the owner is being asked to answer.
+ * `expanding` a direction is chosen and the lane is rendering the rest of its
+ *             sections. NOT "nothing was locked" — see `designLockPhase`, which
+ *             would otherwise print exactly that for the whole window.
+ * `settled`   the expansion returned.
+ */
+export type DesignStage = "none" | "canvass" | "expanding" | "settled";
+
+/**
+ * ONE of the distinct directions the canvass offered — the server's
+ * `ApiDesignDirection`, mirrored by hand.
+ *
+ * `mockups` CARRIES PUBLISHED COPY PATHS, byte-identical to the strings in
+ * `DesignLockState.mockups[].path`. That identity is the whole grouping
+ * mechanism on this side: a `Set` of these paths partitions the flat mockup list
+ * with no filename parsing and no third mirrored literal (`lib/mockups.ts`
+ * already carries two, and both fail soft on purpose).
+ *
+ * `notes` IS THE ONLY THING A DEGRADED RUN HAS. With no image key the lane
+ * writes art direction instead of stills, so `mockups` is empty and `notes`
+ * names the `direction-<slug>.md` it wrote. A panel that renders directions only
+ * when there are images shows a degraded owner nothing to choose from.
+ */
+export interface DesignDirectionState {
+  readonly slug: string;
+  readonly name: string;
+  /** ONE sentence on what makes this different from the others. */
+  readonly distinction: string;
+  /** Offered, not built. Never graded against, never shown as though it were built. */
+  readonly discarded: boolean;
+  /** PUBLISHED copy paths, matching `DesignLockState.mockups[].path` exactly. */
+  readonly mockups: readonly string[];
+  /** Absolute HOST path of this direction's written art direction, or null. */
+  readonly notes: string | null;
+}
+
+/**
+ * ONE on-demand render the owner asked for while parked — the server's
+ * `ApiDesignRenderRequest`, mirrored by hand.
+ *
+ * `outcome` IS OPEN VOCABULARY, `gateStopReason`'s precedent. The server's set
+ * today is `rendered`, `rendered-off-brief`, `unknown-direction`, `no-section`,
+ * `turn-cap`, `render-cap`, `failed`; it is typed `string` on both sides
+ * deliberately, so EVERY renderer needs a default branch. A value this build has
+ * never heard of is a newer server, not a bug.
+ *
+ * `mockup` IS THE PUBLISHED COPY or null — null is an outcome that produced no
+ * image (a refusal, or a generation that failed), and it still spent its render.
+ */
+export interface DesignRenderRequest {
+  readonly at: string;
+  readonly section: string;
+  readonly direction: string;
+  readonly outcome: string;
+  readonly detail: string;
+  readonly mockup: string | null;
+}
+
+/**
  * The DESIGN lane's lock — the server's `ApiDesignLock`, mirrored by hand.
  *
  * NOTHING BUT `contract-parity.test.ts` COMPARES THIS WITH THE SERVER. The two
@@ -297,6 +363,21 @@ export interface Attachment {
  * browser cannot open it. `src/lib/screenshots.ts` turns it into a URL on
  * `GET /api/runs/:id/screenshots/:file`, which is the route these images are
  * served by (spec §17.1: no new image route exists for this).
+ *
+ * ══ THE NINE FIELDS ADDED ON 2026-08-03 ARE ABSENT FROM EVERY RECORDED RUN ══
+ *
+ * And that is not a theoretical absence. `lib/api.ts` casts every response with
+ * `parsed as T` and validates NOTHING, so this type lies at runtime about the
+ * three runs already on disk: measured against the running backend on
+ * 2026-08-02, `GET /api/runs/run-2026-07-30T20-16-40-242Z-052c6e02` answers with
+ * a `designLock` carrying five keys and none of these. `lock.directions.length`
+ * on that body is a TypeError inside a render — a blank page on the screen whose
+ * job is showing a reader what happened.
+ *
+ * SO EVERY ARRAY BELOW IS READ `?? []` AND `stage` IS READ `?? "none"` AT THE
+ * POINT OF USE. `lib/mockups.ts` exports `directionsOf`, `requestsOf` and
+ * `stageOf` for exactly that, and they are the sanctioned readers; a component
+ * that touches these fields directly is one old run away from a blank page.
  */
 export interface DesignLockState {
   /** The run is parked RIGHT NOW waiting for a mockup to be chosen. */
@@ -305,6 +386,18 @@ export interface DesignLockState {
   readonly locked: string | null;
   readonly lockedBy: "owner" | "ui-designer" | "fallback" | null;
   readonly reason: string | null;
+  /** `[]` on every run before 2026-08-03; `stage` is then `"none"`. */
+  readonly directions: readonly DesignDirectionState[];
+  readonly chosenDirection: string | null;
+  readonly chosenDirectionBy: "owner" | "ui-designer" | "fallback" | null;
+  readonly stage: DesignStage;
+  /** Owner turns spent at this park, and the cap. Every claimed message costs one. */
+  readonly turnsUsed: number;
+  readonly turnsMax: number;
+  /** On-demand generations spent on this RUN, and the cap. A failure still spends one. */
+  readonly rendersUsed: number;
+  readonly rendersMax: number;
+  readonly requests: readonly DesignRenderRequest[];
 }
 
 /**

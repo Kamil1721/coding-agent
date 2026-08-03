@@ -226,8 +226,8 @@ test("CONTRACT: the client's RunDetail declares designLock, with the server's sh
   // parser. Counting first makes the truncation say so itself.
   assert.equal(
     state.split(";").length - 1,
-    5,
-    "the DesignLockState region did not parse as five fields — re-point this parser, do not delete it",
+    14,
+    "the DesignLockState region did not parse as fourteen fields — re-point this parser, do not delete it",
   );
   for (const field of [
     /readonly awaiting: boolean;/,
@@ -235,6 +235,19 @@ test("CONTRACT: the client's RunDetail declares designLock, with the server's sh
     /readonly locked: string \| null;/,
     /readonly lockedBy: "owner" \| "ui-designer" \| "fallback" \| null;/,
     /readonly reason: string \| null;/,
+    // THE NINE ADDED 2026-08-03. Their TYPES are pinned here and not only their
+    // names, which is what the whole-shape check further down cannot see: a
+    // client that declared `stage: string` would mirror the field and lose the
+    // four states the panel branches on.
+    /readonly directions: readonly DesignDirectionState\[\];/,
+    /readonly chosenDirection: string \| null;/,
+    /readonly chosenDirectionBy: "owner" \| "ui-designer" \| "fallback" \| null;/,
+    /readonly stage: DesignStage;/,
+    /readonly turnsUsed: number;/,
+    /readonly turnsMax: number;/,
+    /readonly rendersUsed: number;/,
+    /readonly rendersMax: number;/,
+    /readonly requests: readonly DesignRenderRequest\[\];/,
   ]) {
     assert.match(state, field, `the client's DesignLockState is missing ${String(field)}`);
   }
@@ -728,7 +741,36 @@ const DETAIL_SHAPES: readonly {
   {
     server: "ApiDesignLock",
     client: "DesignLockState",
-    fields: ["awaiting", "mockups", "locked", "lockedBy", "reason"],
+    // FOURTEEN SINCE 2026-08-03. The nine added fields carry the two-stage
+    // canvass, and every one of them is a field the panel cannot render if the
+    // client omits it — `stage` most of all: without it the panel reports
+    // "unlocked" for the whole five-to-seven-generation stage-B window.
+    fields: [
+      "awaiting",
+      "mockups",
+      "locked",
+      "lockedBy",
+      "reason",
+      "directions",
+      "chosenDirection",
+      "chosenDirectionBy",
+      "stage",
+      "turnsUsed",
+      "turnsMax",
+      "rendersUsed",
+      "rendersMax",
+      "requests",
+    ],
+  },
+  {
+    server: "ApiDesignDirection",
+    client: "DesignDirectionState",
+    fields: ["slug", "name", "distinction", "discarded", "mockups", "notes"],
+  },
+  {
+    server: "ApiDesignRenderRequest",
+    client: "DesignRenderRequest",
+    fields: ["at", "section", "direction", "outcome", "detail", "mockup"],
   },
   {
     server: "ApiAdversaryPass",

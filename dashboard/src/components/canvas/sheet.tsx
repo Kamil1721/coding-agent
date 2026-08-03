@@ -807,10 +807,19 @@ export function RunSheet({
              * `exactOptionalPropertyTypes` is on, so the prop is required and the
              * caller does the flattening.
              */}
+            {/*
+             * THE WHOLE LOCK, NOT JUST ITS MOCKUPS, SINCE 2026-08-03. A canvassed
+             * run publishes stills from directions it OFFERED AND DISCARDED and
+             * stills the owner ASKED FOR at the park, and the panel's disclosure
+             * calls all of them "the mockups the run was built to" — a false claim
+             * about two thirds of them, and the discarded ones are precisely what
+             * the run was NOT graded against. Which is which is only decidable
+             * from `directions[]` and `requests[]`.
+             */}
             <ScreenshotsPanel
               runId={run.runId}
               screenshots={run.screenshots}
-              mockups={run.designLock?.mockups ?? []}
+              designLock={run.designLock ?? null}
             />
 
             {/*

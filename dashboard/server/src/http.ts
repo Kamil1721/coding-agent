@@ -143,6 +143,8 @@ import { DEFAULT_PORT, LOOPBACK_HOST } from "./dashboard-url.js";
 import { ADVERSARY_RECORD_FILE, adversaryPassFromRecord } from "./adversary.js";
 import type {
   ApiAdversaryPass,
+  ApiDesignLock,
+  ApiDesignStage,
   ApiErrorResponse,
   ApiProjectLogs,
   ApiProjectStartResponse,
@@ -153,6 +155,7 @@ import type {
   HealthResponse,
   ModelOption,
   RunDetail,
+  ApiScreenshot,
   RunGraphResponse,
   RunSummary,
 } from "./api-types.js";
@@ -174,7 +177,9 @@ import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import { isTerminal } from "./db.js";
 import type { RunRow, RunStore } from "./db.js";
-import { DESIGN_MOCKUP_LABEL, readDesignLock } from "./design-lock.js";
+import { DESIGN_MOCKUP_COPY_PREFIX, DESIGN_MOCKUP_LABEL, readDesignLock } from "./design-lock.js";
+import type { DesignLockRecord } from "./design-lock.js";
+import { MAX_DESIGN_LOCK_TURNS, MAX_DESIGN_ON_DEMAND_RENDERS } from "./design-prompt.js";
 import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
 import { describeError, silenceOf } from "./orchestrator.js";
@@ -306,7 +311,7 @@ export interface RunController {
    * router turns that into a 409 and does not distinguish the two, because only
    * the orchestrator holds the manifest that could.
    */
-  resume(runId: string, chosenMockup?: string | null): boolean;
+  resume(runId: string, chosenMockup?: string | null, chosenDirection?: string | null): boolean;
   /**
    * Push an owner message into a RUNNING segment's session.
    *
@@ -336,6 +341,20 @@ export interface RunController {
    * at the type level and at run time.
    */
   deliverPlanReply?(runId: string): boolean;
+  /**
+   * Hand an owner message to a run parked on a DESIGN CANVASS.
+   *
+   * `true` means this run will read it as a request to render a named section in
+   * a named direction. FALSE FOR A MESSAGE THAT NAMES NEITHER, even on a parked
+   * run — that is a mid-run instruction, it stays pending, and it reaches the
+   * next build segment. This is the one way it differs from `deliverPlanReply`,
+   * where every message on a parked run is a candidate answer.
+   *
+   * OPTIONAL, AND WITH THE SAME COST STATED ON `deliverPlanReply`: `?.` swallows
+   * a rename, so `orchestrator.test.ts` asserts the real `Orchestrator` still
+   * carries it.
+   */
+  deliverDesignRequest?(runId: string): boolean;
 }
 
 export interface HttpDeps {
@@ -468,6 +487,93 @@ function readAdversaryPass(resultsDir: string): ApiAdversaryPass | null {
   }
 }
 
+/**
+ * `design-lock.json`, as the panel needs it — READ FROM ONE FILE.
+ *
+ * THE DIRECTIONS ARE MIRRORED INTO THE RECORD BY THE HOST rather than read out of
+ * the workspace manifest here, following §17.3 rule 5's existing precedent: this
+ * record already duplicates `locked`/`lockedBy`/`reason` for exactly that reason
+ * — the workspace is the ARTEFACT and `results/` is the RECORD, and `results/` is
+ * what the API may open. The manifest stays the single source of truth; every
+ * host write of `design-lock.json` recomputes the mirror.
+ */
+function designLockOf(lock: DesignLockRecord, screenshots: readonly ApiScreenshot[]): ApiDesignLock {
+  /*
+   * `expanding` IS CHECKED BEFORE `settled`, and that ordering is the whole
+   * reason `stage` is on the wire. Between the direction choice and the hero lock
+   * the record reads `{awaiting: false, locked: null, chosenDirection: "x"}` —
+   * which every "locked, else awaiting, else unlocked" ladder reports as UNLOCKED
+   * ("the DESIGN lane finished without a design to lock") for the whole stage-B
+   * window, five to seven generations long.
+   *
+   * `expanded` RATHER THAN `locked !== null` decides `settled`, because a
+   * DEGRADED run finishes stage B with no still to lock at all — deriving it from
+   * the lock would leave a completed degraded run reading `expanding` for ever.
+   */
+  const stage: ApiDesignStage =
+    lock.directions.length === 0
+      ? "none"
+      : lock.chosenDirection === null
+        ? "canvass"
+        : lock.expanded
+          ? "settled"
+          : "expanding";
+  return {
+    awaiting: lock.awaiting,
+    // Filtered on the label the lane wrote, whose ONE definition is
+    // `DESIGN_MOCKUP_LABEL` in design-lock.ts. A second spelling here
+    // is how the owner's mockup cards quietly become empty.
+    mockups: screenshots.filter((shot) => shot.label.startsWith(DESIGN_MOCKUP_LABEL)),
+    locked: lock.locked,
+    lockedBy: lock.lockedBy,
+    reason: lock.reason,
+    directions: lock.directions.map((direction) => ({
+      slug: direction.slug,
+      name: direction.name,
+      distinction: direction.distinction,
+      // DERIVED, never stored, so it cannot disagree with `chosenDirection`, and
+      // FALSE WHILE THE CHOICE IS OPEN — nothing is discarded until something is
+      // chosen, and showing two of three as discarded before the owner has picked
+      // would be the panel answering a question he has not been asked.
+      discarded: lock.chosenDirection !== null && lock.chosenDirection !== direction.slug,
+      mockups: direction.mockups,
+      notes: direction.notes,
+    })),
+    chosenDirection: lock.chosenDirection,
+    chosenDirectionBy: lock.chosenDirectionBy,
+    stage,
+    turnsUsed: lock.turnsUsed,
+    turnsMax: MAX_DESIGN_LOCK_TURNS,
+    rendersUsed: lock.rendersUsed,
+    rendersMax: MAX_DESIGN_ON_DEMAND_RENDERS,
+    requests: lock.requests.map((request) => ({
+      at: request.at,
+      section: request.section,
+      direction: request.direction,
+      outcome: request.outcome,
+      detail: request.detail,
+      // THE PUBLISHED COPY, matching a card's `path` exactly — the workspace ref
+      // the record carries is not servable and must never reach the browser.
+      mockup: publishedCopyOf(request.path, screenshots),
+    })),
+  };
+}
+
+/**
+ * The SERVED copy of a workspace ref, or null.
+ *
+ * MATCHED AGAINST THE SCREENSHOTS THE RUN ACTUALLY PUBLISHED rather than built by
+ * string concatenation, so a request whose still failed to copy reports `null`
+ * instead of a path the screenshot route would 404. The prefix is added, never
+ * stripped — `publishedMockupPath`'s rule, and the reason a ref genuinely named
+ * `design-hero.png` matches its own copy and nothing else's.
+ */
+function publishedCopyOf(refPath: string | null, screenshots: readonly ApiScreenshot[]): string | null {
+  if (refPath === null) return null;
+  const wanted = `${DESIGN_MOCKUP_COPY_PREFIX}${basename(refPath)}`;
+  return screenshots.find((shot) => basename(shot.path) === wanted)?.path ?? null;
+}
+
 function toDetail(
   row: RunRow,
   store: RunStore,
@@ -563,19 +669,7 @@ function toDetail(
     // went wrong and not necessarily the one that ended the run. api-types.ts
     // carries both caveats for the client that renders it.
     failureReason: row.failureReason,
-    designLock:
-      lock === null
-        ? null
-        : {
-            awaiting: lock.awaiting,
-            // Filtered on the label the lane wrote, whose ONE definition is
-            // `DESIGN_MOCKUP_LABEL` in design-lock.ts. A second spelling here
-            // is how the owner's mockup cards quietly become empty.
-            mockups: screenshots.filter((shot) => shot.label.startsWith(DESIGN_MOCKUP_LABEL)),
-            locked: lock.locked,
-            lockedBy: lock.lockedBy,
-            reason: lock.reason,
-          },
+    designLock: lock === null ? null : designLockOf(lock, screenshots),
     // ABSENT MEANS "NO PASS RECORD ON THIS RUN", which is what EVERY run says
     // today: the lane needs a `previewUrl` and has never executed. The
     // distinction this field is here for is the one INSIDE a record —
@@ -985,6 +1079,7 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
   // in order to add a feature that path has no opinion about.
   if (segments.length === 4 && segments[3] === "resume" && method === "POST") {
     let chosenMockup: string | null = null;
+    let chosenDirection: string | null = null;
     const text = await readBody(request);
     if (text.trim().length > 0) {
       let parsed: unknown;
@@ -1004,15 +1099,27 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
         return;
       }
       chosenMockup = typeof chosen === "string" ? chosen : null;
+      // THE DIRECTION CHOICE TRAVELS ON THE SAME ROUTE, added 2026-08-03. A
+      // canvass park is ended by naming a DIRECTION (a slug the panel already
+      // has) or by clicking one of its cards, which arrives as `chosenMockup`
+      // and is translated by `directionForMockup`. A second route would be a
+      // second way to end one park.
+      const direction = (parsed as Record<string, unknown>)["chosenDirection"];
+      if (direction !== undefined && direction !== null && typeof direction !== "string") {
+        sendError(response, 400, "invalid_body", "chosenDirection must be a string when present", null);
+        return;
+      }
+      chosenDirection = typeof direction === "string" ? direction : null;
     }
-    const resumed: boolean = deps.orchestrator.resume(runId, chosenMockup);
+    const resumed: boolean = deps.orchestrator.resume(runId, chosenMockup, chosenDirection);
     if (!resumed) {
       sendError(
         response,
         409,
         "not_resumable",
         `run ${runId} is ${row.status} and cannot be resumed` +
-          (chosenMockup === null ? "" : `, or ${chosenMockup} is not one of its mockups`),
+          (chosenMockup === null ? "" : `, or ${chosenMockup} is not one of its mockups`) +
+          (chosenDirection === null ? "" : `, or ${chosenDirection} is not one of its directions`),
         "A finished run is not resumed: re-running a scored artefact would overwrite a real result " +
           "with a second one taken under different conditions. Submit a new run instead.",
       );
@@ -1359,6 +1466,30 @@ async function postMessage(
   const planned = live ? false : (deps.orchestrator.deliverPlanReply?.(runId) ?? false);
 
   /*
+   * THE THIRD RUNG, AND THE LAST. A run parked on a DESIGN CANVASS reads a
+   * message that names a section and a direction as a request to render it —
+   * "show me the contact section in 2" — and answers with the still, in the same
+   * panel, before he commits to anything.
+   *
+   * THE THREE ARE DISJOINT BY CONSTRUCTION, not by luck: `pushLiveMessage`
+   * refuses a parked run, `PlanDriver` refuses a FOLDED `plan.json` (which is
+   * exactly what a run parked for a design has), and the design driver requires a
+   * canvass with no choice yet.
+   *
+   * NOT STAMPED HERE, for `deliverPlanReply`'s reason: the render is
+   * asynchronous, and the driver stamps only after `design-lock.json` is written.
+   *
+   * THE DIRECTION IS WHAT MAKES A MESSAGE A REQUEST, AND A SECTION ALONE IS NOT
+   * ENOUGH. A message that does not name one of the directions on offer — in
+   * this park's own words, not in any sentence with a digit in it — is DECLINED
+   * and stays pending, because it is a mid-run instruction ("make the hero
+   * taller" names a section and asks for a change) and the boundary drain carries
+   * it to the build. `matchDirectionReference` in design-dialogue.ts is the whole
+   * of that judgement and states the tie-break it turns on.
+   */
+  const designed = live || planned ? false : (deps.orchestrator.deliverDesignRequest?.(runId) ?? false);
+
+  /*
    * ON THE EVENT STREAM TOO, so the trace shows the redirection in the same
    * timeline as the work it changed. Without this the run record would show the
    * behaviour changing with no visible cause.
@@ -1371,7 +1502,10 @@ async function postMessage(
         ? "owner message delivered into the running session"
         : planned
           ? "owner message taken up by the plan dialogue, before any criteria are written"
-          : "owner message queued for the next segment boundary") +
+          : designed
+            ? "owner message taken up at the design park as a request to render a section in one of the " +
+              "directions on offer"
+            : "owner message queued for the next segment boundary") +
       (written.length > 0 ? ` with ${String(written.length)} image(s)` : "") +
       `: ${text.slice(0, 200)}`,
   });

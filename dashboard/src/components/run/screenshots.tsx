@@ -24,8 +24,17 @@
  * `designLock.mockups`, with the mockup label as a fail-soft secondary; read its
  * docblock for what that does and does not guarantee. The product captures come
  * first under a heading that says whose site they are; the references collapse
- * into a shut `<details>` below, because the dock already showed them big at the
+ * into shut `<details>` below, because the dock already showed them big at the
  * moment they mattered.
+ *
+ * AND SINCE 2026-08-03 THAT IS UP TO FOUR DISCLOSURES RATHER THAN ONE, because
+ * "reference" stopped being one thing. A canvassed run publishes the direction
+ * it was BUILT to, the directions that were OFFERED AND NOT BUILT, and stills
+ * the owner ASKED FOR while parked — and the single old heading, "the mockups
+ * the run was built to", is a false claim about two of those three. The grouping
+ * is `groupReferences`, which decides it from `directions[]` and `requests[]`
+ * rather than from filenames; a run with neither yields one group and the
+ * original heading, verbatim.
  *
  * NATURAL ASPECT, NO CROP, NO HEIGHT CAP. The captures are VIEWPORT-sized by
  * construction — the scorer shoots one per breakpoint, and the three on the run
@@ -46,9 +55,9 @@
 
 import { useState, type ReactNode } from "react";
 
-import type { Screenshot } from "@/lib/api-types";
+import type { DesignLockState, Screenshot } from "@/lib/api-types";
 import { formatClock } from "@/lib/format";
-import { splitCaptures } from "@/lib/mockups";
+import { groupReferences, splitCaptures } from "@/lib/mockups";
 import { screenshotSrc } from "@/lib/screenshots";
 import { EmptyState, Lightbox, MonoPath, Panel } from "@/components/ui";
 
@@ -132,22 +141,63 @@ function Shot({ shot, runId }: { shot: Screenshot; runId: string }): ReactNode {
   );
 }
 
+/**
+ * One collapsed group of references. Shut by default, exactly as the single
+ * disclosure was: the dock already showed these big at the moment they mattered.
+ */
+function ReferenceGroup({
+  runId,
+  shots,
+  summary,
+}: {
+  runId: string;
+  shots: readonly Screenshot[];
+  summary: string;
+}): ReactNode {
+  return (
+    <details className="mt-2 rounded border border-line bg-canvas/40">
+      <summary className="cursor-pointer px-3 py-2 text-[11.5px] text-ink-dim marker:text-ink-faint">
+        {summary}
+      </summary>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] items-start gap-2 px-3 pb-3">
+        {shots.map((shot) => (
+          <Shot key={`${shot.path}:${shot.capturedAt}`} shot={shot} runId={runId} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function ScreenshotsPanel({
   runId,
   screenshots,
-  mockups,
+  designLock,
 }: {
   runId: string;
   screenshots: readonly Screenshot[];
   /**
-   * `run.designLock?.mockups ?? []` — the server's own list of published
-   * mockups, and REQUIRED rather than optional so a caller with no design lane
-   * passes `[]` explicitly. (`exactOptionalPropertyTypes` is on: an optional
-   * prop here would refuse the `undefined` that `?.` produces.)
+   * `run.designLock ?? null` — the whole lock, and REQUIRED rather than optional
+   * so a caller with no design lane passes `null` explicitly.
+   * (`exactOptionalPropertyTypes` is on: an optional prop here would refuse the
+   * `undefined` that `?.` produces.)
+   *
+   * IT WAS `mockups: readonly Screenshot[]` UNTIL 2026-08-03, and the widening
+   * is what lets the disclosure below stop making a false claim — see
+   * `groupReferences`. `null` and a lock with no directions both collapse to the
+   * pre-canvass rendering.
    */
-  mockups: readonly Screenshot[];
+  designLock: DesignLockState | null;
 }): ReactNode {
+  const mockups = designLock === null ? [] : designLock.mockups;
   const { product, references } = splitCaptures(screenshots, mockups);
+  /*
+   * THE REFERENCES, SPLIT AGAIN BY WHAT EACH STILL ACTUALLY IS.
+   *
+   * On a pre-canvass run every one of them lands in `ungrouped` and the
+   * disclosure keeps its original heading verbatim — which is what "old runs
+   * render unchanged" means here, mechanically rather than by intention.
+   */
+  const groups = groupReferences(references, designLock);
 
   return (
     <Panel
@@ -189,18 +239,50 @@ export function ScreenshotsPanel({
         </div>
       )}
 
-      {references.length > 0 && (
-        <details className="mt-3 rounded border border-line bg-canvas/40">
-          <summary className="cursor-pointer px-3 py-2 text-[11.5px] text-ink-dim marker:text-ink-faint">
-            Design references ({references.length}) — the mockups the run was built
-            to, shown full-size on the design dock
-          </summary>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] items-start gap-2 px-3 pb-3">
-            {references.map((shot) => (
-              <Shot key={`${shot.path}:${shot.capturedAt}`} shot={shot} runId={runId} />
-            ))}
-          </div>
-        </details>
+      {/*
+       * ONE DISCLOSURE PER KIND, AND THE HEADINGS ARE THE POINT.
+       *
+       * `built` really is "the mockups the run was built to". `offered` is a
+       * direction the lane proposed and the owner did not take — the run was
+       * never graded against it, and filing it under the first heading is the
+       * exact wrong claim the two-stage shape exists to avoid. `requested` is a
+       * still the owner commissioned at the park, which the build may not even
+       * contain a section for.
+       *
+       * `ungrouped` KEEPS THE ORIGINAL SENTENCE, WORD FOR WORD. It is the whole
+       * of a pre-canvass run, and this panel must read on those three runs
+       * exactly as it read before directions existed.
+       */}
+      {groups.ungrouped.length > 0 && (
+        <ReferenceGroup
+          runId={runId}
+          shots={groups.ungrouped}
+          summary={`Design references (${String(groups.ungrouped.length)}) — the mockups the run was built to, shown full-size on the design dock`}
+        />
+      )}
+
+      {groups.built.length > 0 && (
+        <ReferenceGroup
+          runId={runId}
+          shots={groups.built}
+          summary={`The direction that was built (${String(groups.built.length)}) — the mockups this run was made to, and graded against`}
+        />
+      )}
+
+      {groups.offered.length > 0 && (
+        <ReferenceGroup
+          runId={runId}
+          shots={groups.offered}
+          summary={`Directions that were offered and not built (${String(groups.offered.length)}) — kept as a record of the choice; nothing was graded against these`}
+        />
+      )}
+
+      {groups.requested.length > 0 && (
+        <ReferenceGroup
+          runId={runId}
+          shots={groups.requested}
+          summary={`Stills you asked for at the design park (${String(groups.requested.length)}) — previews, not necessarily sections the build produced`}
+        />
       )}
 
       {screenshots.length > 0 && (

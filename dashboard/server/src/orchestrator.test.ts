@@ -42,8 +42,21 @@ import {
   writeDesignLock,
 } from "./design-lock.js";
 import type { DesignLockRecord } from "./design-lock.js";
-import { readDesignManifest, writeDesignManifest } from "./design-manifest.js";
-import type { DesignManifest } from "./design-manifest.js";
+import {
+  DESIGN_MANIFEST_FILE,
+  heroRefFor,
+  parseDesignManifest,
+  readDesignManifest,
+  refsForDirection,
+  writeDesignManifest,
+} from "./design-manifest.js";
+import type { DesignManifest, DesignRef } from "./design-manifest.js";
+import {
+  DESIGN_DIRECTION_CHOICE_FILE,
+  MAX_DESIGN_LOCK_TURNS,
+  MAX_DESIGN_ON_DEMAND_RENDERS,
+  MIN_CANVASS_REFS,
+} from "./design-prompt.js";
 import { readDesignLaneRecord } from "./design-outcome.js";
 import { foldGraphAll } from "./graph.js";
 import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
@@ -55,10 +68,12 @@ import {
   DASHBOARD_SANDBOX,
   Orchestrator,
   abortReasonOf,
+  designPostSegmentAction,
   highestArchivedAttempt,
   recordedNetworkPolicy,
   renderEvidence,
 } from "./orchestrator.js";
+import type { DesignPostSegmentAction } from "./orchestrator.js";
 import { attemptPath, liveResultPath, readAttempt, scorerOutRoot, scoresRoot } from "./gate-attempts.js";
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
@@ -475,6 +490,65 @@ interface FakeBuilderOptions {
    * real rate-limited run, which is not a test anyone can schedule.
    */
   readonly onRequest?: (request: BuildRequest) => void;
+  /**
+   * CANVASS THREE DIRECTIONS, then expand the chosen one — the 2026-08-03 shape.
+   *
+   * Default `false`, and every test above this line therefore drives the
+   * PRE-CANVASS lane verbatim: a manifest with no `directions`, which is exactly
+   * what a run written before this date and a lane that ignored the ask both
+   * produce. That those tests still pass unchanged IS the compatibility claim.
+   */
+  readonly directions?: boolean;
+  /**
+   * A MANIFEST WITH AN EMPTY `refs` ARRAY, WHICH 2026-08-03 MADE A NORMAL SHAPE.
+   *
+   * `design-prompt.ts`'s degraded canvass tells the lane to write the manifest
+   * "with an EMPTY refs array — there are no stills on this run" and one entry
+   * per written direction, because every park condition downstream reads
+   * `directions.length > 0` off that file.
+   *
+   *   "canvass" — that file verbatim: no stills, three directions, three
+   *               `direction-<slug>.md` documents.
+   *   "bare"    — the same empty `refs` with NO directions, which is what the
+   *               file looks like when the lane wrote it before it had named
+   *               anything. No prompt asks for this one, and that is exactly why
+   *               it is a fixture: the park's exit is the run's only exit, so it
+   *               has to survive a manifest nobody asked for.
+   */
+  readonly emptyRefs?: "canvass" | "bare";
+  /**
+   * THE CANVASS WRITES THE CHOICE INTO THE MANIFEST ITSELF — six stills, three
+   * directions, AND `chosenDirection` already set when stage A returns.
+   *
+   * A SHAPE THE OTHER FIXTURES CANNOT PRODUCE, WHICH IS WHY IT EXISTS. Round 3's
+   * park test could only build "a manifest with a choice on it" through
+   * `emptyRefs: "canvass"`, so every arm it drove had `refs: []` — and the arm
+   * that reads `refs.length` looked guarded while the arm that reads `directions`
+   * was not. The lane writes this whole file, `chosenDirection` included, so a
+   * lane that picks while it draws produces exactly this; it is also what the
+   * crash window in `#applyDirectionChoice` leaves on disk (manifest written,
+   * `design-lock.json` not).
+   */
+  readonly canvassChoice?: string;
+  /**
+   * STAGE B WRITES THE MANIFEST BACK HAVING LOST SOMETHING — the two shapes the
+   * post-expansion arms have to survive.
+   *
+   *   "choice"     — `directionChoice` truncated (no `at`). The both-or-neither
+   *                  rule then reads `chosenDirection` as null, so the file READS
+   *                  as an unanswered canvass with all three directions intact.
+   *   "directions" — `directions: []` as well. The same rule kills the choice from
+   *                  the other side (a slug no surviving direction declares) and
+   *                  there is no direction left to lock at all.
+   *
+   * THE ROUTE IS THE REAL ONE AND IT IS WHY THIS IS A RAW `writeFileSync`. The
+   * expansion's manifest is written by the AGENT, and `writeDesignManifest` cannot
+   * express either shape: `DesignManifest.directionChoice` is typed, so a fixture
+   * going through it would be testing a state the disk can hold and the type
+   * cannot. The `at` key is the one omitted because `readDirectionChoice` requires
+   * all three of `by`/`reason`/`at` and returns null for any of them.
+   */
+  readonly expandDrops?: "choice" | "directions";
 }
 
 class FakeBuilder implements SubscriptionBuilder {
@@ -530,7 +604,12 @@ class FakeBuilder implements SubscriptionBuilder {
     });
 
     const design = request.prompt.startsWith("DESIGN LANE — art direction");
-    if (design) this.#runDesignSegment(request);
+    if (design) {
+      const emptyRefs = this.#options.emptyRefs;
+      if (emptyRefs !== undefined) this.#runEmptyRefsSegment(request, emptyRefs);
+      else if (this.#options.directions === true) this.#runCanvassSegment(request);
+      else this.#runDesignSegment(request);
+    }
 
     const inputTokens = this.#options.segmentTokens[index] ?? 0;
     const tokens: TokenTotals = {
@@ -561,6 +640,172 @@ class FakeBuilder implements SubscriptionBuilder {
     };
   }
 
+  /**
+   * The two-stage lane, driven off the PROMPT the host actually sent.
+   *
+   * THE STAGE IS READ, NOT COUNTED. A fixture that keyed on `calls.length`
+   * would agree with the orchestrator's loop by construction and could not see
+   * it ask for the expansion twice, or never — which is precisely the
+   * regression the degraded path has.
+   */
+  #runCanvassSegment(request: BuildRequest): void {
+    const workspace = this.#options.workspace();
+    const refsDir = join(workspace, "design-refs");
+    mkdirSync(refsDir, { recursive: true });
+    const existing = readDesignManifest(workspace);
+    const expanding = request.prompt.includes("STAGE B — EXPAND");
+    const slugs = ["editorial-slab", "quiet-grid", "warm-stack"];
+    const write = (slug: string, index: number, section: string): DesignRef => {
+      const path = join(refsDir, `${slug}-${String(index).padStart(2, "0")}-${section}.png`);
+      writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, index]));
+      request.sink.tool(
+        "Bash",
+        `command: ${join(workspace, "..", "..", "..", GEMINI_STUB_NAME)} "a prompt" -a 16:9 -o ${path}`,
+      );
+      return {
+        path,
+        section,
+        aspect: "16:9" as const,
+        intent: "x",
+        direction: slug,
+        origin: expanding ? ("expansion" as const) : ("canvass" as const),
+      };
+    };
+
+    if (!expanding) {
+      const refs: DesignRef[] = [];
+      for (const slug of slugs) {
+        refs.push(write(slug, 1, "hero"));
+        refs.push(write(slug, 2, "work"));
+        writeFileSync(join(refsDir, `direction-${slug}.md`), `DESIGN_VARIANCE: 3 (${slug})\n`, "utf8");
+      }
+      const chosen = this.#options.canvassChoice ?? null;
+      writeDesignManifest(workspace, {
+        version: 1,
+        refs,
+        directions: slugs.map((slug) => ({
+          slug,
+          name: slug,
+          distinction: `what ${slug} does that the others do not`,
+          notes: join(refsDir, `direction-${slug}.md`),
+        })),
+        chosenDirection: chosen,
+        directionChoice:
+          chosen === null
+            ? null
+            : { by: "ui-designer", reason: "the lane picked while it drew", at: new Date().toISOString() },
+        lockedMockup: null,
+        lockedBy: null,
+        lockedReason: null,
+        lockedAt: null,
+      });
+      if (request.prompt.includes(DESIGN_DIRECTION_CHOICE_FILE)) {
+        writeFileSync(
+          join(refsDir, DESIGN_DIRECTION_CHOICE_FILE),
+          JSON.stringify({ chosen: "quiet-grid", reason: "the grid carries the page at every width" }),
+          "utf8",
+        );
+      }
+      return;
+    }
+
+    // STAGE B: APPEND, never replace, and only for the chosen direction.
+    if (existing === null || existing.chosenDirection === null) return;
+    const chosen = existing.chosenDirection;
+    const added: DesignRef[] = [];
+    for (const [offset, section] of ["about", "contact", "footer", "services", "gallery"].entries()) {
+      added.push(write(chosen, offset + 3, section));
+    }
+    writeFileSync(join(refsDir, "direction.md"), `DESIGN_VARIANCE: 3 (${chosen})\n`, "utf8");
+    const refs = [...existing.refs, ...added];
+    const drops = this.#options.expandDrops;
+    if (drops !== undefined) {
+      // THE AGENT'S OWN WRITE, in the agent's own currency: the on-disk keys, not
+      // `DesignManifest`'s. `locked` is the disk spelling of `lockedMockup`
+      // (design-manifest.ts:618) and getting it wrong here would silently drop a
+      // lock rather than a choice, which is a different defect.
+      writeFileSync(
+        join(refsDir, DESIGN_MANIFEST_FILE),
+        `${JSON.stringify(
+          {
+            version: 1,
+            refs,
+            directions: drops === "directions" ? [] : existing.directions,
+            chosenDirection: chosen,
+            // TRUNCATED, NOT ABSENT: `readDirectionChoice` needs all three of
+            // `by`/`reason`/`at`. On the `"directions"` shape the choice dies of
+            // the OTHER half of the same rule — a slug no surviving direction
+            // declares — which is why one fixture reaches both.
+            directionChoice: { by: "ui-designer", reason: "the grid carries the page at every width" },
+            locked: existing.lockedMockup,
+            lockedBy: existing.lockedBy,
+            lockedReason: existing.lockedReason,
+            lockedAt: existing.lockedAt,
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+      return;
+    }
+    writeDesignManifest(workspace, { ...existing, refs });
+  }
+
+  /**
+   * A design segment that generates NOTHING and writes the manifest anyway.
+   *
+   * THE DEGRADED LANE'S OWN INSTRUCTION, followed. `design-prompt.ts` asks for
+   * `"refs": []` plus a `directions` entry per written direction when no image
+   * generation is available, so this is the shape a keyless run produces — and
+   * the "bare" variant is the same file from a lane that named nothing.
+   */
+  #runEmptyRefsSegment(request: BuildRequest, shape: "canvass" | "bare"): void {
+    const workspace = this.#options.workspace();
+    const refsDir = join(workspace, "design-refs");
+    mkdirSync(refsDir, { recursive: true });
+    const slugs = ["editorial-slab", "quiet-grid", "warm-stack"];
+    // STAGE B WRITES THE CHOSEN DIRECTION'S DOCUMENT AND LEAVES THE MANIFEST
+    // ALONE: there are no stills to append, and the prompt says so in as many
+    // words ("LEAVE THE MANIFEST'S `directions`, `chosenDirection` … EXACTLY AS
+    // THEY ARE"). A fixture that rewrote it here would erase the host's choice.
+    if (request.prompt.includes("STAGE B — EXPAND")) {
+      writeFileSync(join(refsDir, "direction.md"), "DESIGN_VARIANCE: 3 (written, not drawn)\n", "utf8");
+      return;
+    }
+    if (shape === "bare") writeFileSync(join(refsDir, "direction.md"), "DESIGN_VARIANCE: 3\n", "utf8");
+    else {
+      for (const slug of slugs) {
+        writeFileSync(join(refsDir, `direction-${slug}.md`), `DESIGN_VARIANCE: 3 (${slug})\n`, "utf8");
+      }
+    }
+    // `writeManifest: false` REACHES THIS SEGMENT TOO, and it did not until
+    // 2026-08-03. A degraded canvass that wrote its `direction-<slug>.md`
+    // documents and no manifest is the one shape that makes `#buildPhase`'s
+    // post-segment arms ALL miss — every one of them requires a manifest — and it
+    // could not be built here, so the hole could not be measured.
+    if (!this.#options.writeManifest) return;
+    writeDesignManifest(workspace, {
+      version: 1,
+      refs: [],
+      directions:
+        shape === "bare"
+          ? []
+          : slugs.map((slug) => ({
+              slug,
+              name: slug,
+              distinction: `what ${slug} does that the others do not`,
+              notes: join(refsDir, `direction-${slug}.md`),
+            })),
+      chosenDirection: null,
+      directionChoice: null,
+      lockedMockup: null,
+      lockedBy: null,
+      lockedReason: null,
+      lockedAt: null,
+    });
+  }
+
   #runDesignSegment(request: BuildRequest): void {
     const workspace = this.#options.workspace();
     const refsDir = join(workspace, "design-refs");
@@ -579,6 +824,8 @@ class FakeBuilder implements SubscriptionBuilder {
         section: `section-${String(n + 1)}`,
         aspect: "16:9" as const,
         intent: "x",
+        direction: null,
+        origin: null,
         ...(this.#options.animateRefs ? { animate: true } : {}),
       });
       // The tool events the image-call counter reads, IN THE DRIVER'S OWN SHAPE.
@@ -593,6 +840,9 @@ class FakeBuilder implements SubscriptionBuilder {
     writeDesignManifest(workspace, {
       version: 1,
       refs,
+      directions: [],
+      chosenDirection: null,
+      directionChoice: null,
       lockedMockup: null,
       lockedBy: null,
       lockedReason: null,
@@ -802,6 +1052,24 @@ async function designRun(options: {
   segmentTokens?: readonly number[];
   env?: NodeJS.ProcessEnv;
   onRequest?: (request: BuildRequest) => void;
+  /** Drive the 2026-08-03 two-stage lane. Default false — see FakeBuilderOptions. */
+  directions?: boolean;
+  /** A design segment that draws nothing and writes the manifest — see FakeBuilderOptions. */
+  emptyRefs?: "canvass" | "bare";
+  /** A canvass that writes `chosenDirection` itself — see FakeBuilderOptions. */
+  canvassChoice?: string;
+  /** An EXPANSION whose manifest write loses the choice — see FakeBuilderOptions. */
+  expandDrops?: "choice" | "directions";
+  /**
+   * Runs INSIDE an ON-DEMAND generation, before its PNG exists.
+   *
+   * The real one is a minute of Gemini time, and everything the orchestrator does
+   * to a parked run — the timer firing, the owner clicking a direction, a cancel —
+   * can land in the middle of it. This is the only seam a test can put a write
+   * THERE rather than before or after. Keyed on the `-req-` target because
+   * `designPreflight` runs through this same injected runner.
+   */
+  duringRender?: () => void;
 }): Promise<DesignHarness> {
   const dir = mkdtempSync(join(tmpdir(), "dash-design-"));
   const home = join(dir, "home");
@@ -834,6 +1102,10 @@ async function designRun(options: {
     segmentTokens: options.segmentTokens ?? [],
     writeManifest: options.writeManifest ?? true,
     animateRefs: options.animateRefs ?? false,
+    directions: options.directions ?? false,
+    ...(options.emptyRefs === undefined ? {} : { emptyRefs: options.emptyRefs }),
+    ...(options.canvassChoice === undefined ? {} : { canvassChoice: options.canvassChoice }),
+    ...(options.expandDrops === undefined ? {} : { expandDrops: options.expandDrops }),
     ...(options.onRequest === undefined ? {} : { onRequest: options.onRequest }),
   });
 
@@ -863,7 +1135,23 @@ async function designRun(options: {
     makeBuilder: () => builder,
     // The real preflight spawns `npx impeccable`, which reaches a registry. A
     // sequencing test that pays for that learns nothing about sequencing.
-    designRun: async () => ({ code: 0, stderr: "" }),
+    // THE INJECTED IMAGE RUNNER, AND IT WRITES THE FILE. The real preflight
+    // spawns `npx impeccable`, which reaches a registry — a sequencing test that
+    // pays for that learns nothing about sequencing. But `#renderOnDemand` runs
+    // through this same seam and checks the output EXISTS, so a runner that only
+    // returns 0 could exercise nothing but the failure arm.
+    designRun: async (_command: string, args: readonly string[]) => {
+      const out = args.indexOf("-o");
+      const target = out < 0 ? null : args[out + 1];
+      // ON-DEMAND ONLY. `designPreflight` runs through this same runner at the top
+      // of the build phase, long before the run parks, so an unconditional hook
+      // would fire against a run that has no manifest yet.
+      if (target !== undefined && target !== null && target.includes("-req-")) options.duringRender?.();
+      if (target !== undefined && target !== null) {
+        writeFileSync(target, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]));
+      }
+      return { code: 0, stderr: "" };
+    },
     designCanWrite: () => true,
   });
 
@@ -1056,7 +1344,10 @@ test("the published path and the ref are still DIFFERENT strings — the transla
   // WHAT CHANGED: the wire value now resolves to the ref, and only to the ref.
   const manifest: DesignManifest = {
     version: 1,
-    refs: [{ path: ref, section: "hero", aspect: "21:9", intent: "opening" }],
+    refs: [{ path: ref, section: "hero", aspect: "21:9", intent: "opening", direction: null, origin: null }],
+    directions: [],
+    chosenDirection: null,
+    directionChoice: null,
     lockedMockup: null,
     lockedBy: null,
     lockedReason: null,
@@ -2350,5 +2641,1534 @@ test("a shutdown during the GATE leaves the run resumable, not failed on a suite
   } finally {
     await h.orchestrator.shutdown();
     h.cleanup();
+  }
+});
+
+/* ══ THE TWO-STAGE DESIGN LANE (2026-08-03) ════════════════════════════════ */
+
+test("AUTO: canvass, choose, EXPAND, then build — three passes in one #buildPhase entry", async () => {
+  // THE COST ARGUMENT MADE EXECUTABLE. Stage A renders MIN_CANVASS_REFS stills
+  // across three directions; the chosen one is then expanded to today's shape;
+  // the other two stay on disk and are never built or graded against.
+  //
+  // CONTROL: revert `for (let pass = 0; pass < 3; …)` to `< 2` in `#buildPhase`
+  // and this goes red at the segment count — the auto run reaches the gate with
+  // an unexpanded canvass, which is three pictures of a page nobody built.
+  const h = await designRun({ designLock: "auto", directions: true });
+  try {
+    await h.settle(60_000);
+    const design = h.builderCalls.filter((call) => call.prompt.startsWith("DESIGN LANE — art direction"));
+    assert.equal(design.length, 2, "one canvass and one expansion");
+    assert.match(String(design[0]?.prompt), /STAGE A — CANVASS/);
+    assert.match(String(design[1]?.prompt), /STAGE B — EXPAND/);
+    assert.equal(h.builderCalls.length, 3, "and then the BUILD segment, on the same session");
+    assert.equal(h.builderCalls[2]?.resumeSessionId, h.builderCalls[0]?.observedSessionId, "one session throughout");
+
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    assert.ok(manifest !== null);
+    assert.equal(manifest.directions.length, 3, "all three stay on disk as a record of what was offered");
+    assert.equal(manifest.chosenDirection, "quiet-grid", "ui-designer's direction-choice.json was honoured");
+    assert.equal(manifest.directionChoice?.by, "ui-designer");
+
+    // THE HERO LOCK IS THE LAST THING STAGE B DOES, and it lands on the CHOSEN
+    // direction's first still — `lockedMockup` keeps its meaning exactly.
+    const hero = heroRefFor(manifest, "quiet-grid");
+    assert.ok(hero !== null);
+    assert.equal(manifest.lockedMockup, hero.path, "the canonical still is the chosen direction's hero");
+    assert.ok(String(manifest.lockedMockup).includes("quiet-grid"), "and not one of the discarded directions'");
+    assert.equal(manifest.lockedBy, "ui-designer", "the provenance is the DIRECTION choice's, carried forward");
+    assert.match(String(manifest.lockedReason), /quiet-grid/, "and the reason names the direction");
+    assert.ok(
+      refsForDirection(manifest, "quiet-grid").length >= MIN_CANVASS_REFS,
+      "the chosen direction was expanded past its two canvass stills",
+    );
+    assert.equal(refsForDirection(manifest, "editorial-slab").length, 2, "the discarded ones were NOT expanded");
+
+    // AND THE BUILD SEGMENT SEES ONE DESIGN, NOT THREE. A handoff naming nine
+    // stills of three incompatible designs is an instruction to build to "it".
+    const build = String(h.builderCalls[2]?.prompt);
+    assert.ok(build.includes("quiet-grid"), "the chosen direction's stills cross the handoff");
+    assert.ok(!build.includes("editorial-slab"), "a discarded direction never reaches the build");
+    assert.ok(!build.includes("warm-stack"));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("THE RECORD AND THE WIRE CARRY THE DIRECTIONS, and stage is `settled` once expanded", async () => {
+  const h = await designRun({ designLock: "auto", directions: true });
+  try {
+    await h.settle(60_000);
+    const record = h.lock();
+    assert.ok(record !== null);
+    assert.equal(record.directions.length, 3, "mirrored into results/, which is what toDetail may read");
+    assert.equal(record.chosenDirection, "quiet-grid");
+    assert.equal(record.chosenDirectionBy, "ui-designer");
+    assert.equal(record.expanded, true, "NOT derived from `locked`: a degraded run never locks a still");
+
+    // THE MIRROR CARRIES PUBLISHED PATHS, byte-identical to the cards' own, so a
+    // client groups by Set membership with no filename parsing.
+    const cards = new Set(h.mockups().map((shot) => shot.path));
+    for (const direction of record.directions) {
+      assert.ok(direction.mockups.length > 0, `${direction.slug} has published stills`);
+      for (const path of direction.mockups) {
+        assert.ok(cards.has(path), `${path} must be one of the cards the API lists`);
+      }
+    }
+
+    const server = await h.serve();
+    try {
+      const detail = (await (await fetch(`${server.base}/api/runs/${h.runId}`)).json()) as RunDetail;
+      assert.equal(detail.designLock?.stage, "settled");
+      assert.equal(detail.designLock?.directions.length, 3);
+      // FROM THE CONSTANTS, NOT FROM TWO LITERALS. The panel says these numbers to
+      // the owner, so what has to hold is that the wire carries the caps the
+      // driver enforces — a second spelling here would keep agreeing with itself
+      // while the two drifted apart, which is how `turnsMax: 4` sat under
+      // `rendersMax: 6` and made the render cap unreachable.
+      assert.equal(
+        detail.designLock?.rendersMax,
+        MAX_DESIGN_ON_DEMAND_RENDERS,
+        "the caps are on the wire so the panel can say them",
+      );
+      assert.equal(detail.designLock?.turnsMax, MAX_DESIGN_LOCK_TURNS);
+      const discarded = detail.designLock?.directions.filter((direction) => direction.discarded) ?? [];
+      assert.equal(discarded.length, 2, "offered, not built — and marked as such");
+      assert.ok(discarded.every((direction) => direction.slug !== "quiet-grid"));
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("ASK: the run PARKS on the canvass, and the panel is told the suite is frozen", async () => {
+  const h = await designRun({ designLock: "ask", directions: true, interactive: true });
+  try {
+    assert.equal(h.status(), "awaiting_input");
+    const record = h.lock();
+    assert.equal(record?.awaiting, true);
+    assert.equal(record?.chosenDirection, null, "nothing is chosen until he chooses");
+    assert.equal(record?.directions.length, 3);
+    assert.equal(readDesignManifest(runPathsFor(h.paths, h.runId).workspace)?.lockedMockup, null, "and nothing is locked");
+
+    // REQUIRED PANEL COPY, and it is on the run log when the park opens. An owner
+    // who asks for a whole new page here is asking for something the verdict will
+    // not check, and letting him believe otherwise is the failure.
+    const logs = h.store
+      .eventsSince(h.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log")
+      .map((event) => JSON.stringify(event));
+    assert.ok(
+      logs.some((line) => line.includes("frozen in the spec phase")),
+      "the frozen-suite sentence must be on the run log when the park opens",
+    );
+    assert.ok(logs.some((line) => line.includes("show me the contact section")), "and how to ask for a render");
+
+    const server = await h.serve();
+    try {
+      const detail = (await (await fetch(`${server.base}/api/runs/${h.runId}`)).json()) as RunDetail;
+      assert.equal(detail.designLock?.stage, "canvass");
+      assert.equal(detail.designLock?.awaiting, true);
+      assert.deepEqual(
+        detail.designLock?.directions.map((direction) => direction.discarded),
+        [false, false, false],
+        "NOTHING is discarded before anything is chosen",
+      );
+      assert.ok(
+        detail.designLock?.directions.every((direction) => direction.notes !== null),
+        "each direction's written art direction is a Read target on the wire",
+      );
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("THE OWNER CHOOSES A DIRECTION over HTTP, the run expands it, and the hero locks", async () => {
+  const h = await designRun({ designLock: "ask", directions: true, interactive: true });
+  try {
+    assert.equal(h.status(), "awaiting_input");
+    const server = await h.serve();
+    try {
+      const response = await fetch(`${server.base}/api/runs/${h.runId}/resume`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chosenDirection: "warm-stack" }),
+      });
+      assert.equal(response.status, 200);
+    } finally {
+      await server.close();
+    }
+    await h.settle(60_000);
+
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    assert.equal(manifest?.chosenDirection, "warm-stack");
+    assert.equal(manifest?.directionChoice?.by, "owner", "his choice is recorded as HIS, not as automatic");
+    assert.equal(manifest?.lockedMockup, heroRefFor(manifest, "warm-stack")?.path);
+    assert.equal(manifest?.lockedBy, "owner");
+    assert.ok(refsForDirection(manifest as DesignManifest, "warm-stack").length > 2, "and it was expanded");
+
+    // A DIRECTION THAT DOES NOT EXIST IS REFUSED AND THE RUN STAYS PARKED — the
+    // same property `#applyDesignLock` has, one stage earlier.
+    const second = await designRun({ designLock: "ask", directions: true, interactive: true });
+    try {
+      const srv = await second.serve();
+      try {
+        const bad = await fetch(`${srv.base}/api/runs/${second.runId}/resume`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ chosenDirection: "no-such-direction" }),
+        });
+        assert.equal(bad.status, 409, "a refused choice is a 409, not a silent proceed");
+      } finally {
+        await srv.close();
+      }
+      assert.equal(second.status(), "awaiting_input", "and the run is still waiting for a real one");
+      assert.equal(second.lock()?.chosenDirection, null);
+    } finally {
+      await second.cleanup();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A CLICK ON A CANVASS CARD NAMES ITS DIRECTION — the published path is the only handle", async () => {
+  const h = await designRun({ designLock: "ask", directions: true, interactive: true });
+  try {
+    const card = h.mockups().find((shot) => shot.path.includes("editorial-slab"));
+    assert.ok(card !== undefined, "the canvass stills are published as cards");
+    const server = await h.serve();
+    try {
+      const response = await fetch(`${server.base}/api/runs/${h.runId}/resume`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chosenMockup: card.path }),
+      });
+      assert.equal(response.status, 200);
+    } finally {
+      await server.close();
+    }
+    await h.settle(60_000);
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    assert.equal(manifest?.chosenDirection, "editorial-slab", "the click resolved to the card's DIRECTION");
+    // AND IT DID NOT LOCK THE CARD. That still is a canvass still of two
+    // sections; locking it would have made `lockManifest` refuse the real hero.
+    assert.equal(manifest?.lockedMockup, heroRefFor(manifest, "editorial-slab")?.path);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("THE CANVASS PARK EXPIRES AND PROCEEDS — no owner, no answer, still a built design", async () => {
+  // §17.3 rule 1, on the new park: the window is finite and its lapse RESOLVES
+  // the run rather than leaving it waiting. `ui-designer`'s direction-choice.json
+  // is honoured on the way through, exactly as `choice.json` was.
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "0.01" },
+  });
+  try {
+    assert.equal(h.status(), "awaiting_input");
+    await h.waitFor(() => h.status() !== "awaiting_input", 20_000, "the park never expired");
+    await h.settle(60_000);
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    // AN `ask` RUN NEVER ASKED FOR A CHOICE FILE — `autoChoose` is false, so the
+    // prompt does not name `direction-choice.json` and the lane writes none. The
+    // fallback is what resolves it, and it says so rather than dressing an
+    // arbitrary pick up as a judgement.
+    assert.equal(manifest?.chosenDirection, "editorial-slab", "first in manifest order");
+    assert.equal(manifest?.directionChoice?.by, "fallback", "recording it as ui-designer would be a lie");
+    assert.match(String(manifest?.directionChoice?.reason), /no judgement applied/);
+    assert.equal(manifest?.lockedMockup, heroRefFor(manifest, "editorial-slab")?.path, "and the hero still locked");
+    assert.equal(h.lock()?.expanded, true, "the expansion ran after the expiry, not instead of it");
+    assert.equal(h.lock()?.chosenDirectionBy, "fallback");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A PARK NOTHING CAN ANSWER IS STILL ENDED BY ITS OWN EXIT — the run proceeds, it does not wait for ever", async () => {
+  /*
+   * THE ONE FAILURE THIS FEATURE MUST NOT HAVE: A PARK WITH NO EXIT — and
+   * 2026-08-03 made its input a NORMAL shape, because the degraded canvass is
+   * now told to write `refs: []`.
+   *
+   * WHAT THIS TEST'S SUBJECT ACTUALLY IS, STATED SO THE DOCBLOCK DOES NOT CLAIM
+   * MORE THAN THE CODE BELOW MEASURES: the DURABLE PAIR — a park record saying
+   * `awaiting: true` beside a manifest whose question is already answered — and
+   * what the automatic exit does when handed it. The pair is written here
+   * directly, and it is the crash window in `#applyDirectionChoice`: that method
+   * writes the MANIFEST (`writeDesignManifest`) and then `design-lock.json`
+   * (`#mergeDesignLock`), so a dashboard that dies between the two comes back
+   * holding exactly this. READ OFF THAT METHOD, not measured here; if those two
+   * writes are ever reordered or made atomic this test still holds, because its
+   * subject is the pair, whatever produced it.
+   *
+   * WHICH ARM ANSWERS IT, CORRECTED 2026-08-03 WITH THE CODE. This used to fall
+   * to the MOCKUP arm — the choice is made, so the direction arm is skipped, and
+   * that arm's guard did not check `directions` — where `fallbackChoice` over an
+   * empty `refs` was null and the park closed on "nothing to lock". That was the
+   * right ending reached through the wrong arm, and on a manifest with STILLS the
+   * same route locked the first direction's canvass still on a run pointed
+   * somewhere else (`THE OWNER CLICKS ONE DIRECTION AND GETS THAT ONE`). The pair
+   * is now answered by `#closeSettledPark`, which closes the record BECAUSE the
+   * question is already answered and mirrors the manifest's answer onto it.
+   *
+   * MEASURED BEFORE THE ORIGINAL FIX: this test failed at the wait below with
+   *   "the park was never resolved (last status: awaiting_input)".
+   */
+  const h = await designRun({
+    designLock: "ask",
+    emptyRefs: "canvass",
+    noKey: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    // THE CONTROL FOR EVERY ASSERTION BELOW: the park is real, the fixture
+    // reached it, and it is the DEGRADED one — words, no stills, nothing to click.
+    assert.equal(h.status(), "awaiting_input", "the degraded canvass parks: three directions and no images");
+    assert.equal(h.lock()?.awaiting, true);
+    assert.equal(h.lock()?.directions.length, 3, "on WORDS: the directions are on the record, the stills do not exist");
+    assert.equal(h.mockups().length, 0, "and there is not one card to click");
+
+    // The pair, written as the two files it consists of. They are two files and
+    // they CAN disagree — asserted rather than assumed, because a record that
+    // could not lag its manifest would make this state unreachable and this test
+    // a check on nothing.
+    const workspace = runPathsFor(h.paths, h.runId).workspace;
+    const manifest = readDesignManifest(workspace);
+    assert.ok(manifest !== null);
+    writeDesignManifest(workspace, {
+      ...manifest,
+      chosenDirection: "quiet-grid",
+      directionChoice: { by: "owner", reason: "chosen by the owner in the dashboard", at: new Date().toISOString() },
+    });
+    assert.equal(
+      readDesignManifest(workspace)?.chosenDirection,
+      "quiet-grid",
+      "the manifest carries the choice…",
+    );
+    assert.equal(h.lock()?.chosenDirection, null, "…and the record beside it does not: two files, two writes");
+    assert.equal(h.lock()?.awaiting, true, "so the record still says the run is waiting — that IS the state");
+
+    // THE WINDOW LAPSES AND THE DASHBOARD COMES BACK UP — the durable half of
+    // the bound, which is the path that has to resolve a park no timer survives.
+    h.rewindParkTime(31 * 60_000);
+    h.orchestrator.reconcileOnBoot();
+    await h.waitFor(() => h.status() !== "awaiting_input", 20_000, "the park was never resolved");
+    await h.settle(60_000);
+
+    const park = h.lock();
+    assert.equal(park?.awaiting, false, "the record must not still say the run is waiting for a click");
+    assert.equal(park?.locked, null, "nothing was locked, because there was nothing to lock");
+    assert.ok(
+      String(park?.reason).includes('already chosen the "quiet-grid" direction'),
+      `the park closed on a RECORDED reason that names the answer it found: ${String(park?.reason)}`,
+    );
+    // AND THE RECORD WAS RECONCILED TO THE MANIFEST, not merely closed: the
+    // panel's `stage` is derived from THIS field, so a close that left it null
+    // would report a run that is expanding and then building as still asking.
+    assert.equal(park?.chosenDirection, "quiet-grid");
+    // AND IT PROCEEDED: the expansion and the build both ran on the direction
+    // that was chosen. A park that ends by giving up is not what rule 1 asks for.
+    assert.equal(readDesignManifest(workspace)?.chosenDirection, "quiet-grid");
+    assert.equal(h.lock()?.expanded, true, "stage B ran after the park ended");
+    assert.equal(h.builderCalls.length, 3, "canvass, expand, build — the run finished the work it parked in the middle of");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A LEGACY PARK OVER A MANIFEST THAT NAMES NOTHING still ends on `nothing to lock`", async () => {
+  /*
+   * THE MOCKUP ARM'S `attempt === null` BRANCH, WHICH ITS OWN COMMENT NOW CLAIMS
+   * ONLY A NARROW PATH FOR — and this is that path, driven. `#buildPhase` stopped
+   * OPENING a park on a manifest with nothing to choose between, so nothing
+   * produces this shape fresh; what reaches the branch is a park record written
+   * before that entry guard existed, sitting on disk beside a manifest that names
+   * neither a direction nor a still.
+   *
+   * WITHOUT THIS TEST THE BRANCH IS UNREACHED BY THE SUITE. `A PARK NOTHING CAN
+   * ANSWER` drove it until the mockup arm's guard was completed and now takes the
+   * `#closeSettledPark` arm instead — so a comment that says "the records it
+   * answers are on disk" would be a claim with no measurement behind it.
+   */
+  const h = await designRun({
+    designLock: "ask",
+    emptyRefs: "canvass",
+    noKey: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    assert.equal(h.status(), "awaiting_input", "the degraded canvass parks: three directions and no images");
+    const workspace = runPathsFor(h.paths, h.runId).workspace;
+    const manifest = readDesignManifest(workspace);
+    assert.ok(manifest !== null);
+    // THE LEGACY SHAPE: a lane that named nothing. No directions, no refs, no
+    // lock — so the mockup arm takes it and has nothing to fall back on.
+    writeDesignManifest(workspace, { ...manifest, directions: [] });
+    assert.equal(h.lock()?.awaiting, true, "and the park record is still open beside it");
+
+    h.rewindParkTime(31 * 60_000);
+    h.orchestrator.reconcileOnBoot();
+    await h.waitFor(() => h.status() !== "awaiting_input", 20_000, "the park was never resolved");
+    await h.settle(60_000);
+
+    const park = h.lock();
+    assert.equal(park?.awaiting, false, "the park ended rather than hanging");
+    assert.equal(park?.locked, null, "and nothing was locked, because there was nothing to lock");
+    assert.ok(
+      String(park?.reason).includes("no mockups"),
+      `it closed on a RECORDED fallback that says why: ${String(park?.reason)}`,
+    );
+    assert.equal(h.builderCalls.length, 2, "canvass, then build — no expansion, because nothing was chosen");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A PARK WITH NOTHING TO CHOOSE BETWEEN IS NOT ENTERED — an empty manifest builds, it does not wait", async () => {
+  /*
+   * THE OTHER HALF OF THE SAME BUG, AT THE ENTRY. `#buildPhase`'s pre-canvass
+   * arm parks an `ask` run whenever `lockedMockup` is null, without asking
+   * whether there is a single mockup to choose from — and its log line then
+   * tells the owner to `POST /resume {"chosenMockup":"<path>"}` with no path in
+   * existence. Nothing he can do ends that park.
+   *
+   * MEASURED BEFORE THE FIX: this test failed at the first assertion with
+   *   "there is nothing to click, so the question has no answer: 'awaiting_input' != 'awaiting_input'".
+   */
+  const h = await designRun({
+    designLock: "ask",
+    emptyRefs: "bare",
+    noKey: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    assert.notEqual(h.status(), "awaiting_input", "there is nothing to click, so the question has no answer");
+    // THE CONTROL: the design lane RAN. "It never parked" is only a result if the
+    // segment that would have produced the mockups actually happened — an `off`
+    // lane would pass the assertion above and measure nothing.
+    assert.ok(String(h.builderCalls[0]?.prompt).startsWith("DESIGN LANE"), "the design segment ran");
+    assert.equal(h.builderCalls.length, 2, "and the BUILD segment ran rather than waiting the window out");
+    // NO RECORD AT ALL, which is `a DEGRADED lane still runs both segments`'s
+    // rule: nothing was locked and nothing was asked, so nothing is invented.
+    assert.equal(h.lock(), null, "no park was opened and no choice was recorded");
+    const warnings = h.store
+      .eventsSince(h.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log" && event.level === "warn")
+      .map((event) => (event.type === "log" ? event.text : ""));
+    assert.ok(
+      warnings.some((text) => text.includes("nothing to choose between")),
+      `an ask run that does not ask must SAY so: ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("THE OWNER CLICKS ONE DIRECTION AND GETS THAT ONE — a canvass park is never answered by the MOCKUP arm", async () => {
+  /*
+   * `resume`'s MOCKUP ARM WAS GATED ON `lockedMockup === null` ALONE, with no test
+   * that this is a manifest with no DIRECTIONS — which is the one thing the arm is
+   * for. Its sibling's own comment says why that guard is load-bearing ("falling
+   * through would set `lockedMockup` to an image of two sections"), and the guard
+   * it had only covered `chosenDirection === null`.
+   *
+   * THE INPUT IS THE CRASH WINDOW IN `#applyDirectionChoice`, which writes the
+   * MANIFEST and then `design-lock.json`: a dashboard that dies between the two
+   * comes back with a choice on the manifest beside an `awaiting: true` record.
+   * The owner then clicks a direction — and the DIRECTION arm is skipped, because
+   * `chosenDirection` is non-null ON THE MANIFEST, so the arm below runs with
+   * `chosenMockup` null and `fallbackChoice` locks `refs[0]`: EDITORIAL SLAB's
+   * canvass still, on a run he pointed at QUIET GRID. `#applyDesignLock` succeeds
+   * and the route answers 200.
+   *
+   * MEASURED BEFORE THE FIX: this test failed at the `lockedMockup` assertion with
+   *   "the hero of the direction HE CLICKED, not refs[0] of the one he did not:
+   *    '…/editorial-slab-01-hero.png' !== '…/quiet-grid-01-hero.png'".
+   */
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    assert.equal(h.status(), "awaiting_input", "the canvass park is real and the fixture reached it");
+    const workspace = runPathsFor(h.paths, h.runId).workspace;
+    const canvassed = readDesignManifest(workspace);
+    assert.ok(canvassed !== null);
+    // THE CONTROL FOR THE WHOLE TEST: this manifest has STILLS. Round 3's park
+    // test could only reach this pair through `emptyRefs: "canvass"`, so the
+    // non-empty branch — the one where a wrong lock is possible — was uncovered.
+    assert.equal(canvassed.refs.length, 6, "three directions, two comparable sections each");
+
+    // The pair, written as the two files it is. They CAN disagree, and that is the
+    // state: the manifest carries the choice, the record beside it does not.
+    writeDesignManifest(workspace, {
+      ...canvassed,
+      chosenDirection: "quiet-grid",
+      directionChoice: { by: "owner", reason: "chosen by the owner in the dashboard", at: new Date().toISOString() },
+    });
+    assert.equal(h.lock()?.chosenDirection, null, "two files, two writes");
+    assert.equal(h.lock()?.awaiting, true, "so the record still says the run is waiting — that IS the state");
+
+    const server = await h.serve();
+    try {
+      const response = await fetch(`${server.base}/api/runs/${h.runId}/resume`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chosenDirection: "quiet-grid" }),
+      });
+      assert.equal(response.status, 200);
+    } finally {
+      await server.close();
+    }
+    await h.settle(60_000);
+
+    const manifest = readDesignManifest(workspace);
+    assert.ok(manifest !== null);
+    assert.equal(manifest.chosenDirection, "quiet-grid");
+    assert.equal(
+      manifest.lockedMockup,
+      heroRefFor(manifest, "quiet-grid")?.path,
+      "the hero of the direction HE CLICKED, not refs[0] of the one he did not",
+    );
+    assert.ok(
+      !String(manifest.lockedMockup).includes("editorial-slab"),
+      `the gate must not grade a quiet-grid build against editorial slab: ${String(manifest.lockedMockup)}`,
+    );
+    assert.ok(refsForDirection(manifest, "quiet-grid").length > 2, "and stage B ran: the choice was EXPANDED");
+
+    /* THE RECORD IS RECONCILED TO THE MANIFEST, NOT MERELY CLOSED. `designLockOf`
+     * (http.ts) derives the panel's `stage` from the RECORD — `directions.length >
+     * 0 && chosenDirection === null` reads as `"canvass"` — so an else-arm that
+     * flipped `awaiting` and left `chosenDirection` null would swap one wire lie
+     * for another: no countdown, and a run that is expanding and then building
+     * reported as still asking. */
+    const park = h.lock();
+    assert.equal(park?.awaiting, false, "the record must not still say the run is waiting for a click");
+    assert.equal(park?.chosenDirection, "quiet-grid", "and the panel's stage is read off THIS field");
+    assert.equal(park?.chosenDirectionBy, "owner");
+    assert.equal(park?.expanded, true);
+    assert.equal(park?.locked, heroRefFor(manifest, "quiet-grid")?.path);
+  } finally {
+    await h.cleanup();
+  }
+
+  /* ---- AND A LATE CLICK IS DISCARDED OUT LOUD, NOT APPLIED --------------
+   *
+   * WHAT THIS FIX DOES NOT DO, MEASURED SO IT IS NOT LEFT AS PROSE. The arm
+   * above stops the wrong IMAGE being locked; it does not make a click that
+   * arrives after the run has already settled take effect, and it cannot:
+   * `chooseDirection` refuses a second choice because the expansion has already
+   * spent its generations on the first, so re-choosing would leave the manifest
+   * pointing at a direction the stills were never drawn for. So the route still
+   * answers 200 and the run still builds what it had chosen — and the ONE
+   * defence against that being invisible is that the log names both. This
+   * asserts that sentence exists, because a defence nothing checks is prose.
+   */
+  const late = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    const workspace = runPathsFor(late.paths, late.runId).workspace;
+    const canvassed = readDesignManifest(workspace);
+    assert.ok(canvassed !== null);
+    writeDesignManifest(workspace, {
+      ...canvassed,
+      chosenDirection: "quiet-grid",
+      directionChoice: { by: "owner", reason: "chosen by the owner in the dashboard", at: new Date().toISOString() },
+    });
+
+    assert.equal(late.orchestrator.resume(late.runId, null, "warm-stack"), true);
+    await late.settle(60_000);
+
+    const manifest = readDesignManifest(workspace);
+    assert.ok(manifest !== null);
+    assert.equal(manifest.chosenDirection, "quiet-grid", "the settled choice stands: a second one is refused");
+    assert.equal(manifest.lockedMockup, heroRefFor(manifest, "quiet-grid")?.path);
+    const warnings = late.store
+      .eventsSince(late.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log" && event.level === "warn")
+      .map((event) => (event.type === "log" ? event.text : ""));
+    assert.ok(
+      warnings.some((text) => text.includes('"warm-stack"') && text.includes('"quiet-grid"')),
+      `a click that was NOT applied must name itself and the choice that stood: ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    await late.cleanup();
+  }
+});
+
+test("A PARK NEITHER ARM CAN ANSWER IS CLOSED BY AN EXPLICIT ELSE — nothing is left saying `awaiting`", async () => {
+  /*
+   * THE SECOND SYMPTOM OF THE SAME MISSING ARM. `resume`'s design-lock block was
+   * two `if`s and no `else`, so every input neither one matched — an unreadable
+   * manifest, or directions+choice+lock all present after the crash window in
+   * `#applyDesignLock` — fell straight through to the timer clear and proceeded
+   * with `awaiting: true` LEFT ON DISK. Nothing ever closed that record:
+   * `designLockOf` puts `awaiting` on the wire ungated by run status, so the panel
+   * shows an open park with a countdown on a run that is building or already
+   * finished, and every later `reconcileOnBoot` re-parks it.
+   *
+   * MEASURED BEFORE THE FIX: this test failed at the first post-resume assertion
+   *   "the record must not still say the run is waiting: true !== false".
+   */
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    assert.equal(h.status(), "awaiting_input");
+    const workspace = runPathsFor(h.paths, h.runId).workspace;
+    // NEITHER ARM CAN READ THIS. `readDesignManifest` answers null for a corrupt
+    // file by design (it is a `try`/`catch`), and null is what both arms test
+    // first — so this is the input that matches nothing at all.
+    writeFileSync(join(workspace, "design-refs", "manifest.json"), "{ this is not json", "utf8");
+    assert.equal(readDesignManifest(workspace), null, "the control: the manifest really is unreadable");
+    assert.equal(h.lock()?.awaiting, true);
+
+    assert.equal(h.orchestrator.resume(h.runId, null, "quiet-grid"), true, "the park still has to END");
+    await h.settle(60_000);
+
+    const park = h.lock();
+    assert.equal(park?.awaiting, false, "the record must not still say the run is waiting");
+    assert.ok(
+      String(park?.reason).length > 0,
+      `and it says WHY it closed, so the panel is not left inventing one: ${String(park?.reason)}`,
+    );
+    const warnings = h.store
+      .eventsSince(h.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log" && event.level === "warn")
+      .map((event) => (event.type === "log" ? event.text : ""));
+    assert.ok(
+      warnings.some((text) => text.includes("could not be read")),
+      `a park that ends on nothing must SAY so on the run's own log: ${JSON.stringify(warnings)}`,
+    );
+
+    /* THE CONTROL FOR "NOTHING EVER CLOSES IT": the record is what
+     * `reconcileOnBoot` reads, and a dead builder leaves its row `running`. With
+     * `awaiting: true` still on disk the next boot re-parks a run that had already
+     * left the park — for ever, once per boot. */
+    h.store.updateRun(h.runId, { status: "running" });
+    h.orchestrator.reconcileOnBoot();
+    assert.equal(h.lock()?.awaiting, false, "and the next boot does not re-park a run whose park is over");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A CANVASS THAT ALREADY CARRIES A CHOICE DOES NOT PARK FOR A MOCKUP — `#buildPhase`'s third arm", async () => {
+  /*
+   * THE SAME SHAPE AT THE OTHER SITE. `#buildPhase`'s last arm is commented "NO
+   * DIRECTIONS: verbatim the pre-2026-08-03 branch" and its condition checked no
+   * such thing: round 3 added a guard on `refs.length`, not on `directions`. So a
+   * canvass that returns with a choice already on it — three directions, six
+   * stills, `chosenDirection` set — took the MOCKUP arm, parked the owner in front
+   * of six canvass cards, and told him to `POST /resume {"chosenMockup":"<path>"}`
+   * on a run whose direction was already settled. Whichever card he clicked,
+   * `lockManifest` would set `lockedMockup` to an image of TWO SECTIONS and refuse
+   * the real hero at the end of stage B.
+   *
+   * MEASURED BEFORE THE FIX: this test failed at the first assertion with
+   *   "the direction is already settled, so there is no question to ask:
+   *    'awaiting_input' != 'awaiting_input'".
+   */
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    canvassChoice: "warm-stack",
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    assert.notEqual(h.status(), "awaiting_input", "the direction is already settled, so there is no question to ask");
+    // THE CONTROL: the design lane RAN and produced the cards it would have parked
+    // on. "It never parked" is only a result if there was something to park over.
+    assert.ok(String(h.builderCalls[0]?.prompt).startsWith("DESIGN LANE"), "the canvass segment ran");
+    assert.equal(h.mockups().length > 0, true, "and it published cards — this is not an empty-refs run");
+    assert.equal(h.builderCalls.length, 3, "canvass, expand, build — it went round rather than waiting");
+
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    assert.ok(manifest !== null);
+    assert.equal(manifest.chosenDirection, "warm-stack");
+    assert.equal(
+      manifest.lockedMockup,
+      heroRefFor(manifest, "warm-stack")?.path,
+      "the EXPANDED direction's hero is what locks, never one of the canvass stills",
+    );
+    assert.ok(refsForDirection(manifest, "warm-stack").length > 2, "and stage B actually ran");
+    // AND THE FOURTH ARM SAID SO. A shape that matches none of the three deciding
+    // arms passes through in silence unless this line exists, and silence is what
+    // made the third arm's guard look adequate for three rounds.
+    const infos = h.store
+      .eventsSince(h.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log" && event.level === "info")
+      .map((event) => (event.type === "log" ? event.text : ""));
+    assert.ok(
+      infos.some((text) => text.includes("already answers the park's question") && text.includes("warm-stack")),
+      `the arm that decided NOT to ask has to say so: ${JSON.stringify(infos.slice(0, 40))}`,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A RESTART DURING A CANVASS PARK RE-ARMS FOR THE REMAINDER, and the clock does not restart", async () => {
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    const before = h.lock()?.parkedAt;
+    assert.ok(before !== undefined);
+    // 29 of the 30 minutes gone. A boot that re-minted `parkedAt` would give the
+    // run another 30, and a dashboard restarted every few minutes would park for
+    // ever while the code claimed a bound.
+    h.rewindParkTime(29 * 60_000);
+    const rewound = h.lock()?.parkedAt;
+    h.orchestrator.reconcileOnBoot();
+    assert.equal(h.status(), "awaiting_input", "still parked: the window has not lapsed");
+    assert.equal(h.lock()?.parkedAt, rewound, "and the deadline did not walk forward");
+    assert.equal(h.lock()?.chosenDirection, null);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("THE ORCHESTRATOR STILL CARRIES deliverDesignRequest — `?.` swallows a rename", async () => {
+  // `RunController.deliverDesignRequest` is OPTIONAL, for the reason
+  // `deliverPlanReply` is: eight test doubles implement that interface. The cost
+  // is that renaming the method here would silently disable the design intake
+  // rather than fail to compile, so the real class is asserted to carry it.
+  const h = await designRun({ designLock: "ask", directions: true, interactive: true });
+  try {
+    assert.equal(typeof h.orchestrator.deliverDesignRequest, "function");
+    // A message that does not name a DIRECTION is DECLINED, so it stays pending
+    // and reaches the next build segment. A section alone is not enough, and
+    // neither is a digit in a sentence — design-dialogue.ts owns that judgement.
+    h.store.appendMessage(h.runId, { role: "owner", text: "keep it accessible", images: [] });
+    assert.equal(h.orchestrator.deliverDesignRequest(h.runId), false);
+    assert.equal(h.store.pendingMessages(h.runId).length, 1);
+    // AND THE SAME ROUTE, ON A SENTENCE THAT NAMES A SECTION AND A NUMBER: still
+    // an instruction, still unclaimed, still on its way to the builder.
+    h.store.appendMessage(h.runId, {
+      role: "owner",
+      text: "put the phone number 2 lines below the address in the footer",
+      images: [],
+    });
+    assert.equal(h.orchestrator.deliverDesignRequest(h.runId), false);
+    assert.equal(h.store.pendingMessages(h.runId).length, 2);
+    assert.equal(h.lock()?.rendersUsed, 0, "and it cost him no render");
+    assert.equal(h.lock()?.turnsUsed, 0, "and no turn");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AN ON-DEMAND RENDER JOINS THE MANIFEST MARKED `requested`, and can never become the hero", async () => {
+  // THE HOST WRITES `origin`, never an agent, which is what makes a missing
+  // `origin` unable to be a lost `"requested"`. `refsForDirection` excludes them,
+  // so a preview the owner asked for mid-park cannot become the still the visual
+  // gate grades the whole build against.
+  //
+  // CONTROL: write `origin: "canvass"` on the ref in `#renderOnDemand` and this
+  // goes red at `refsForDirection` — the preview enters the direction's set.
+  const h = await designRun({ designLock: "ask", directions: true, interactive: true });
+  try {
+    h.store.appendMessage(h.runId, { role: "owner", text: "show me the contact section in 1", images: [] });
+    assert.equal(h.orchestrator.deliverDesignRequest(h.runId), true, "it is heard as a request");
+    await h.waitFor(() => (h.lock()?.requests.length ?? 0) > 0, 30_000, "the render was never recorded");
+
+    const record = h.lock();
+    assert.equal(record?.rendersUsed, 1, "one generation, on disk, so a restart cannot make it free");
+    assert.equal(record?.turnsUsed, 1);
+    const request = record?.requests[0];
+    assert.equal(request?.direction, "editorial-slab");
+    assert.equal(request?.section, "contact");
+    // OFF-BRIEF, AND SAID SO. The canvass rendered hero and work; `contact` is
+    // not one of the sections this build will produce, so the still is drawn —
+    // refusing would be the dashboard deciding what he may look at — and reported
+    // as a look at the DIRECTION rather than a preview of the page.
+    assert.equal(request?.outcome, "rendered-off-brief", `the stub script returns 0: ${String(request?.detail)}`);
+    assert.match(String(request?.detail), /NOT one of the sections this build will produce/);
+    assert.match(String(request?.detail), /frozen in the spec phase/);
+
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    assert.ok(manifest !== null);
+    const requested = manifest.refs.filter((ref) => ref.origin === "requested");
+    assert.equal(requested.length, 1, "the ref joined the manifest");
+    assert.equal(requested[0]?.direction, "editorial-slab");
+    assert.ok(String(requested[0]?.path).includes("-req-"), "and the distinction survives on disk as well");
+    assert.ok(
+      !refsForDirection(manifest, "editorial-slab").some((ref) => ref.origin === "requested"),
+      "and it is OUT of the direction's set, so it can never be the hero",
+    );
+
+    // THE PARK IS THE SAME PARK. `parkedAt` unchanged, still awaiting, still
+    // nothing chosen — the clock kept running through the exchange.
+    assert.equal(record?.awaiting, true);
+    assert.equal(record?.chosenDirection, null);
+    assert.equal(h.status(), "awaiting_input");
+    // AND THE STILL IS IN THE PANEL, which IS the answer: there is no `run` chat
+    // row for a host-composed sentence.
+    assert.ok(
+      h.mockups().some((shot) => shot.path.includes("-req-")),
+      "the on-demand still is published as a card",
+    );
+
+    // AND A SECTION THE CANVASS DID RENDER IS ON-BRIEF, which is what makes the
+    // flag above a measurement rather than a constant.
+    h.store.appendMessage(h.runId, { role: "owner", text: "now the hero in 2", images: [] });
+    assert.equal(h.orchestrator.deliverDesignRequest(h.runId), true);
+    await h.waitFor(() => (h.lock()?.requests.length ?? 0) > 1, 30_000, "the second render");
+    const second = h.lock()?.requests[1];
+    assert.equal(second?.outcome, "rendered");
+    assert.equal(second?.direction, "quiet-grid");
+    assert.equal(h.lock()?.rendersUsed, 2, "two generations, counted twice");
+
+    // AND THE SPEND SURVIVES THE CHOICE. `#applyDirectionChoice` writes
+    // `design-lock.json` on the way past; a caller that REBUILT that record
+    // instead of merging onto it would reset `rendersUsed` to 0 and the renders
+    // he already paid for would become free again — with the images already
+    // generated and the record of what he asked for gone.
+    assert.equal(h.orchestrator.resume(h.runId, null, "quiet-grid"), true);
+    await h.settle(60_000);
+    const after = h.lock();
+    assert.equal(after?.rendersUsed, 2, "the spend survived the write that recorded the choice");
+    assert.equal(after?.turnsUsed, 2);
+    assert.equal(after?.requests.length, 2, "and so did the record of what he asked for");
+    assert.equal(after?.chosenDirection, "quiet-grid");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A GENERATION THAT WAS NEVER ATTEMPTED IS NOT CHARGED — the cap bounds SPEND", async () => {
+  /*
+   * THE DEGRADED PARK'S BILL. With no key `#renderOnDemand` returns before it
+   * runs anything — there is nothing to draw with, and it says so — and the
+   * driver charged that non-event a render anyway. Two docblocks said the
+   * opposite in as many words ("the call was made and the money was spent";
+   * "what makes `rendersUsed` count requests and generations identically"), so
+   * on the one lane where the answer is always "no image generation on this
+   * machine" the owner was told, after six questions, that he had spent a budget
+   * nothing had ever drawn against.
+   *
+   * MEASURED BEFORE THE FIX: `rendersUsed` was 1 with `attempts` at 0.
+   */
+  let attempts = 0;
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    noKey: true,
+    duringRender: () => {
+      attempts += 1;
+    },
+  });
+  try {
+    h.store.appendMessage(h.runId, { role: "owner", text: "show me the contact section in 1", images: [] });
+    assert.equal(h.orchestrator.deliverDesignRequest(h.runId), true, "the question is still heard");
+    await h.waitFor(() => (h.lock()?.requests.length ?? 0) > 0, 30_000, "the answer was never recorded");
+
+    const record = h.lock();
+    assert.equal(attempts, 0, "no image tool was invoked: there is no key on this run");
+    assert.equal(record?.rendersUsed, 0, "so nothing was charged — the cap bounds spend, and none happened");
+    assert.equal(record?.turnsUsed, 1, "the TURN is still spent: he asked, and the park answered him");
+    assert.equal(record?.requests[0]?.outcome, "failed");
+    assert.match(String(record?.requests[0]?.detail), /no image generation on this machine/);
+    // AND THE PARK IS UNCHANGED underneath the answer — same clock, same question.
+    assert.equal(record?.awaiting, true);
+    assert.equal(h.status(), "awaiting_input");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A DIRECTION CHOSEN WHILE A RENDER IS IN FLIGHT SURVIVES THE RENDER'S OWN WRITE", async () => {
+  /*
+   * THE READ-MODIFY-WRITE WINDOW, AND IT IS THE WORST FAILURE THIS PARK HAS.
+   * `#renderOnDemand` read the manifest at entry and wrote `{...manifest, refs}`
+   * after the generation — one `await` wide, with no re-read — so any write that
+   * landed in between was clobbered.
+   *
+   * THE SCENARIO, VERBATIM: the owner asks for a still, then clicks a direction
+   * while the image is generating. `resume` → `#applyDirectionChoice` writes
+   * `chosenDirection`; the render's stale write erases it back to null;
+   * `#buildPhase` re-reads the manifest, sees `directionChosen: false` with
+   * `designSegmentDone: true`, and `nextBuildSegment` returns `design` — SO THE
+   * CANVASS RE-RUNS, six more generations no cap counts, then re-parks, and that
+   * park's timer falls to `fallbackDirectionChoice` and builds DIRECTION 1,
+   * recorded as "no owner choice arrived before the timeout" rather than the
+   * direction he clicked.
+   *
+   * THE SENTINEL IS THE PUBLISHED CARD, NOT THE RECORD. `design-lock.json` is not
+   * written at all on the buggy path — the same await window returns before
+   * `#commit` — so waiting on `requests.length` would hang instead of failing.
+   */
+  const during: { fire: () => void } = { fire: () => undefined };
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    duringRender: () => {
+      during.fire();
+    },
+  });
+  try {
+    // THE CLICK, through the same public entry the HTTP route uses.
+    during.fire = () => {
+      assert.equal(h.orchestrator.resume(h.runId, null, "quiet-grid"), true, "the click was accepted");
+    };
+    h.store.appendMessage(h.runId, { role: "owner", text: "show me the contact section in 1", images: [] });
+    assert.equal(h.orchestrator.deliverDesignRequest(h.runId), true, "the request is heard");
+    await h.waitFor(
+      () => h.mockups().some((shot) => shot.path.includes("-req-")),
+      30_000,
+      "the on-demand still was never published",
+    );
+
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    assert.equal(manifest?.chosenDirection, "quiet-grid", "the render's write must not erase the direction he chose");
+    assert.equal(manifest?.directionChoice?.by, "owner", "and the record must not say nobody chose");
+
+    await h.settle(60_000);
+    const canvasses = h.builderCalls.filter((call) => call.prompt.includes("STAGE A — CANVASS"));
+    assert.equal(canvasses.length, 1, "the canvass ran ONCE: a lost choice is six more generations no cap counts");
+    assert.equal(h.lock()?.chosenDirectionBy, "owner", "and the built direction is the one he clicked");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A RE-ARMED PARK ANNOUNCES THE REMAINDER, not a window it is not giving him", async () => {
+  /*
+   * ONE NUMBER, TWO CONSUMERS. `#parkForDesignLock` arms its timer for the
+   * REMAINDER of the original window (`reconcileOnBoot` hands it the original
+   * `parkedAt`) while its log line named the FULL `timeoutMin` — and that line is
+   * the only place the deadline is published: `ApiDesignLock` carries neither
+   * `parkedAt` nor the timeout, so `designParkClock` (dashboard/src/lib) parses
+   * this sentence and draws the owner's countdown from it. A line naming 30 on a
+   * park with one minute left is a clock he can plan around and be wrong about.
+   *
+   * IT ALSO COMPUTED `remaining` FROM THE ARGUMENT rather than from the record it
+   * had just merged. The two agree on this path; on a re-park with the argument
+   * defaulted they do not, and the timer then runs a fresh full window while the
+   * record — the durable half of the bound — keeps the original instant.
+   */
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    const windows = (of: DesignHarness): number[] =>
+      of.store
+        .eventsSince(of.runId, 0)
+        .map((stored) => JSON.stringify(stored.event))
+        .filter((line) => line.includes("DESIGN lane") && line.includes("to be chosen"))
+        .map((line) => Number.parseFloat(/inside (\d+(?:\.\d+)?) minutes/u.exec(line)?.[1] ?? "NaN"));
+
+    assert.deepEqual(windows(h), [30], "the opening park names the whole window, because it has the whole window");
+
+    // 25 of the 30 minutes gone, then the dashboard comes back up.
+    h.rewindParkTime(25 * 60_000);
+    h.orchestrator.reconcileOnBoot();
+    assert.equal(h.status(), "awaiting_input", "still parked: the window has not lapsed");
+
+    const announced = windows(h);
+    assert.equal(announced.length, 2, "the re-arm announced itself");
+    const remaining = announced[1] ?? Number.NaN;
+    assert.ok(
+      remaining > 4 && remaining <= 5,
+      `the re-arm must name the ~5 minutes it is actually giving him, not a fresh window: ${String(remaining)}`,
+    );
+
+    // THE PRE-CANVASS PARK SAYS IT THE SAME WAY, and it is the sentence
+    // `dashboard/tests/design-park-clock.unit.spec.ts` quotes as the producer. A
+    // fresh park must still read `30` — the remainder is computed in tenths of a
+    // minute, and `29.9` here would be six seconds of the owner's countdown lost
+    // to arithmetic rather than to time.
+    const mockupPark = await designRun({
+      designLock: "ask",
+      interactive: true,
+      env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+    });
+    try {
+      assert.deepEqual(windows(mockupPark), [30], "a run with no directions parks with the whole window named");
+      assert.ok(
+        mockupPark.store
+          .eventsSince(mockupPark.runId, 0)
+          .map((stored) => JSON.stringify(stored.event))
+          .some((line) => line.includes("with no choice inside 30 minutes, ui-designer picks")),
+        "and the pre-2026-08-03 sentence is unchanged, word for word",
+      );
+    } finally {
+      await mockupPark.cleanup();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A RUN WITH NO DIRECTIONS TAKES THE PRE-2026-08-03 PATH, VERBATIM", async () => {
+  // A lane that ignored the canvass ask degrades to today's behaviour rather than
+  // hanging: it parks for a MOCKUP, `stage` is `"none"`, and the client renders
+  // exactly what it rendered before.
+  const h = await designRun({ designLock: "auto" });
+  try {
+    await h.settle(60_000);
+    const manifest = readDesignManifest(runPathsFor(h.paths, h.runId).workspace);
+    assert.deepEqual(manifest?.directions, []);
+    assert.equal(manifest?.chosenDirection, null);
+    assert.ok(manifest?.lockedMockup !== null, "and a still is still locked, by choice.json");
+    const design = h.builderCalls.filter((call) => call.prompt.startsWith("DESIGN LANE — art direction"));
+    assert.equal(design.length, 1, "one design segment, not two: there is nothing to expand");
+
+    const server = await h.serve();
+    try {
+      const detail = (await (await fetch(`${server.base}/api/runs/${h.runId}`)).json()) as RunDetail;
+      assert.equal(detail.designLock?.stage, "none");
+      assert.deepEqual(detail.designLock?.directions, []);
+      assert.equal(detail.designLock?.rendersUsed, 0, "a falsy absent value must never read as unlimited");
+      assert.equal(detail.designLock?.turnsUsed, 0);
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/* ==================================================================== *
+ * ROUND 5 — `#buildPhase`'s POST-SEGMENT ARMS, CLOSED OVER (STAGE × STATE)
+ * ==================================================================== */
+
+test("FINDING O: AN EXPANSION THAT LOSES THE CHOICE NEVER RE-OPENS STAGE A's PARK", async () => {
+  /*
+   * THE SECOND PARK IS INVISIBLE, WHICH IS WHAT MAKES IT WORSE THAN A LOUD ONE.
+   * `#buildPhase`'s stage-A arm guarded on `after.directions.length > 0 &&
+   * after.chosenDirection === null` and did NOT test `expandSegment`, while its
+   * sibling did — so a pass that ran the EXPAND segment could fall into stage A's
+   * park. The route is real: the expansion's manifest is written by the AGENT, and
+   * `parseDesignManifest`'s both-or-neither rule drops `chosenDirection` the moment
+   * `directionChoice` will not parse.
+   *
+   * `#parkForDesignLock` merges `awaiting: true` onto the record but never clears
+   * `chosenDirection`, so `designLockOf` computes `stage: "expanding"` — the panel
+   * renders "your direction is chosen, the rest is being rendered now" while the
+   * run sits waiting for a click nobody was asked for.
+   *
+   * CONTROL: revert `#buildPhase`'s expand arm to `expandSegment && after !== null
+   * && after.chosenDirection !== null` and put the stage-A arm back in front of it
+   * without `!expandSegment`, and this goes red at `awaiting_input`.
+   */
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    expandDrops: "choice",
+    // THE FULL WINDOW, DELIBERATELY. A short timeout would let the park's own
+    // timer resolve the run and the test would measure the timer rather than the
+    // arm: 30 minutes means a run that is still parked when `settle` returns is
+    // parked because this arm parked it.
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    assert.equal(h.status(), "awaiting_input", "stage A's park, which is the one this test is NOT about");
+    assert.equal(h.orchestrator.resume(h.runId, null, "quiet-grid"), true, "the owner picks a direction");
+    await h.waitFor(() => h.status() !== "awaiting_input", 30_000, "the run never left the canvass park");
+    await h.settle(60_000);
+
+    // THE CONTROL, FIRST. "It never parked again" is also true of a run that
+    // stopped before stage B ever ran, so the segments are asserted before the
+    // status is.
+    const prompts = h.builderCalls.map((call) => call.prompt);
+    assert.equal(prompts.filter((p) => p.includes("STAGE A — CANVASS")).length, 1, "exactly one canvass");
+    assert.equal(prompts.filter((p) => p.includes("STAGE B — EXPAND")).length, 1, "and exactly one expansion");
+
+    assert.notEqual(h.status(), "awaiting_input", "the expansion must not re-open the canvass park");
+    const record = h.lock();
+    assert.equal(record?.awaiting, false, "and nothing on disk may say this run is waiting");
+    assert.equal(record?.expanded, true, "the expansion happened, and the record is what says so");
+    assert.equal(record?.chosenDirection, "quiet-grid", "the direction he clicked is the one carried forward");
+    assert.ok(
+      prompts.some((p) => !p.startsWith("DESIGN LANE — art direction")),
+      "and the BUILD segment ran rather than the run stalling on a park nobody answered",
+    );
+
+    /*
+     * AND THE REPAIR IS SAID OUT LOUD, WITH ITS SOURCE. Recording `expanded: true`
+     * over a choice-less manifest is not on its own enough to make the run
+     * terminate: `nextBuildSegment` reads `directionChosen` off the MANIFEST, so
+     * leaving it null sends the run to `design-resume` and the CANVASS re-runs.
+     * The choice has to go back on the file, and an owner reading the log has to
+     * be able to tell a restored choice from one he made.
+     */
+    const lines = h.store
+      .eventsSince(h.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log")
+      .map((event) => (event.type === "log" ? event.text : ""));
+    assert.ok(
+      lines.some((text) => text.includes("its own write dropped the choice")),
+      `the dropped choice must be named, not silently repaired: ${JSON.stringify(lines.slice(-6))}`,
+    );
+    assert.ok(
+      lines.some((text) => text.includes("restored from this run's own design-lock record")),
+      "and the source of the restored direction is on the record, so it is not read as a fresh judgement",
+    );
+    assert.equal(
+      readDesignManifest(runPathsFor(h.paths, h.runId).workspace)?.chosenDirection,
+      "quiet-grid",
+      "the MANIFEST carries it too — `nextBuildSegment` reads that file, not the record",
+    );
+
+    /*
+     * AND THE BUILD SEES ONE DESIGN, NOT THREE. MEASURED: with the restore removed
+     * this run still LOCKS its hero (`refsForDirection` filters on `ref.direction`,
+     * not on `chosenDirection`) and still terminates, so every assertion above
+     * except the two log lines goes on passing — but `builtManifest` and
+     * `refsForStage` DO filter on `chosenDirection`, so a manifest left choice-less
+     * hands the build agent nine stills of three incompatible designs and tells it
+     * to build to "it". This is the assertion that catches that.
+     */
+    const build = prompts.find((prompt) => !prompt.startsWith("DESIGN LANE — art direction")) ?? "";
+    assert.ok(build.includes("quiet-grid"), "the chosen direction's stills cross the handoff");
+    assert.ok(!build.includes("editorial-slab"), "and a direction nobody chose never reaches the build");
+    assert.ok(!build.includes("warm-stack"));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("FINDING P: A CANCELLED RUN DOES NOT KEEP AN ARMED DESIGN TIMER", async () => {
+  /*
+   * `cancel()` cleared `#plan.clearTimer` ALONE. `#clearDesignLockTimer` had three
+   * call sites — `resume`, `shutdown`, `#parkForDesignLock` — and `cancel` was not
+   * among them, and nothing on the cancel path wrote `awaiting: false`. A parked
+   * run has `#active === null`, so cancel takes the `#finish` branch and never
+   * touches the design timer.
+   *
+   * THE SCENARIO: the owner cancels a run parked on a canvass. Up to thirty
+   * minutes later the timer fires and writes "no design choice arrived before the
+   * timeout; selecting automatically" onto the CANCELLED run at warn level, then
+   * calls `resume`, which refuses because the row is terminal — so nothing is
+   * selected and the sentence is false. `design-lock.json` keeps `awaiting: true`
+   * for ever.
+   *
+   * CONTROL: remove the `#clearDesignLockTimer(runId)` line from `cancel()` and the
+   * timeout sentence reappears on the cancelled run; remove the park close and
+   * `awaiting` stays true.
+   */
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    // 0.01 min = 600ms. The park must be able to OUTLIVE the cancel inside this
+    // test, or "the timer never fired" is a statement about the test's runtime.
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "0.01" },
+  });
+  try {
+    assert.equal(h.status(), "awaiting_input", "the run is parked on the canvass");
+    assert.equal(h.lock()?.awaiting, true, "with an open park on disk");
+    assert.equal(h.orchestrator.cancel(h.runId), true, "the owner cancels it");
+    assert.equal(h.status(), "cancelled");
+
+    // PAST THE DEADLINE, MEASURED RATHER THAN ASSUMED. 600ms is the whole window,
+    // so a timer still armed has fired by the time this resolves.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+
+    const lines = h.store
+      .eventsSince(h.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log")
+      .map((event) => (event.type === "log" ? event.text : ""));
+    assert.ok(
+      !lines.some((text) => text.includes("no design choice arrived before the timeout")),
+      `a cancelled run must not be told a choice is being made for it: ${JSON.stringify(lines)}`,
+    );
+    assert.equal(h.lock()?.awaiting, false, "and the park record is closed, not left saying the run waits");
+    assert.equal(h.status(), "cancelled", "the cancel still stands");
+
+    /*
+     * THE SHAPE THE CANCEL LEAVES ON THE WIRE, PINNED HERE RATHER THAN GUESSED AT.
+     * `designLockOf` derives `stage` from `directions`/`chosenDirection`/`expanded`
+     * and puts `awaiting` beside it ungated, so a cancelled canvass park publishes
+     * `{stage: "canvass", awaiting: false}` — a pair the contract already admits
+     * (api.test.ts pins stage over exactly those three fields and never over
+     * `awaiting`) and one the panel previously only saw in passing. The directions
+     * survive because `#closeDesignParkOnCancel` passes no manifest and
+     * `#mergeDesignLock` keeps `base.directions` in that case.
+     */
+    const server = await h.serve();
+    try {
+      const detail = (await (await fetch(`${server.base}/api/runs/${h.runId}`)).json()) as RunDetail;
+      assert.equal(detail.designLock?.awaiting, false, "the wire says the park is over");
+      assert.equal(detail.designLock?.stage, "canvass", "and still says which stage the run stopped in");
+      assert.equal(detail.designLock?.directions.length, 3, "what was offered is not erased by the cancel");
+      assert.equal(detail.designLock?.locked, null, "nothing was chosen and nothing is claimed to be");
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("FINDING Q: A DESIGN SEGMENT THAT RETURNS NO READABLE MANIFEST SAYS SO", async () => {
+  /*
+   * `#buildPhase`'s post-segment arms ALL required `after !== null` and there was
+   * no else. On a FULL lane the hole is loud — `classifyDesignLane` returns
+   * `no-manifest` and an error line is emitted — but on a DEGRADED lane
+   * `design-outcome.ts` returns `failure: null` with a detail saying the lane ran
+   * fine, so NOTHING was logged at all.
+   *
+   * THE SCENARIO: a degraded `ask` run's canvass writes its three
+   * `direction-<slug>.md` documents and no manifest. `after` is null, no arm fires,
+   * no park opens, nothing is written; `nextBuildSegment` then sees
+   * `manifestExists: false` with `designSegmentDone: true` and goes straight to
+   * build-resume. The owner is never asked which direction to build and the run log
+   * says nothing at all.
+   *
+   * CONTROL: delete the `no-manifest` arm and this goes red on the log assertion
+   * while every other assertion here still passes — which is exactly how the hole
+   * survived four rounds.
+   */
+  const h = await designRun({
+    designLock: "ask",
+    interactive: true,
+    noKey: true,
+    emptyRefs: "canvass",
+    writeManifest: false,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    await h.settle(60_000);
+    // THE CONTROLS. The lane RAN and it ran DEGRADED — the two facts that make the
+    // silence a defect rather than an absence of anything to say.
+    assert.ok(String(h.builderCalls[0]?.prompt).startsWith("DESIGN LANE"), "the design segment ran");
+    const lane = readDesignLaneRecord(runPathsFor(h.paths, h.runId).results);
+    assert.equal(lane?.mode, "degraded", "and degraded, where the lane record reports no failure at all");
+    assert.equal(lane?.failure, null, "which is why nothing else on this path can speak");
+    assert.equal(readDesignManifest(runPathsFor(h.paths, h.runId).workspace), null, "and there is no manifest");
+
+    const lines = h.store
+      .eventsSince(h.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log" && (event.level === "warn" || event.level === "error"))
+      .map((event) => (event.type === "log" ? event.text : ""));
+    assert.ok(
+      lines.some((text) => text.includes("could not be read")),
+      `an unreadable manifest must be named on the run log: ${JSON.stringify(lines)}`,
+    );
+    assert.ok(
+      lines.some((text) => text.includes("is not asked")),
+      `and an ASK run that cannot ask must say the owner is not asked: ${JSON.stringify(lines)}`,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/**
+ * A manifest in exactly the shape a given (state) row needs, and nothing else.
+ *
+ * HAND-BUILT RATHER THAN ROUND-TRIPPED THROUGH `parseDesignManifest`, because the
+ * table below has to name states the PARSER guarantees are impossible in order to
+ * say they are impossible — and a builder that went through the parser could only
+ * produce the states the parser already allows.
+ */
+function tableManifest(input: {
+  readonly directions?: readonly string[];
+  readonly chosen?: string | null;
+  readonly locked?: string | null;
+  /** A stage-B still (`origin: "expansion"`) naming this direction. */
+  readonly drewFor?: string | null;
+}): DesignManifest {
+  const at = "2026-08-03T00:00:00.000Z";
+  const locked = input.locked ?? null;
+  const chosen = input.chosen ?? null;
+  const drewFor = input.drewFor ?? null;
+  const refs: DesignRef[] = [];
+  if (locked !== null) {
+    refs.push({ path: locked, section: "hero", aspect: "16:9", intent: "x", direction: chosen, origin: null });
+  }
+  if (drewFor !== null) {
+    refs.push({
+      path: `/refs/${drewFor}-03-about.png`,
+      section: "about",
+      aspect: "16:9",
+      intent: "x",
+      direction: drewFor,
+      origin: "expansion",
+    });
+  }
+  return {
+    version: 1,
+    refs,
+    directions: (input.directions ?? []).map((slug) => ({
+      slug,
+      name: slug,
+      distinction: `what ${slug} does that the others do not`,
+      notes: null,
+    })),
+    chosenDirection: chosen,
+    directionChoice: chosen === null ? null : { by: "owner", reason: "he clicked it", at },
+    lockedMockup: locked,
+    lockedBy: locked === null ? null : "owner",
+    lockedReason: locked === null ? null : "the strongest hero of the set",
+    lockedAt: locked === null ? null : at,
+  };
+}
+
+test("THE POST-SEGMENT TABLE IS CLOSED: every (STAGE × STATE) pair has exactly one arm", () => {
+  /*
+   * WHAT ROUNDS 2, 3 AND 4 EACH MISSED, MEASURED AS A TABLE INSTEAD OF AS A RUN.
+   * `#buildPhase`'s arms can only be exercised one pair per real run — each one
+   * spawns builder segments and a sealed gate — so a per-arm proof through
+   * `designRun` is a proof nobody will keep running, and the arms drifted for
+   * three rounds underneath tests that each drove one input.
+   *
+   * THE STAGE IS HALF THE KEY, AND THAT IS FINDING O. A table over the six
+   * manifest states alone would have passed on every round-4 build while the
+   * stage-A arm was being entered by EXPAND returns.
+   */
+  const canvassStills = "/refs/quiet-grid-01-hero.png";
+  const rows: readonly {
+    readonly state: string;
+    readonly manifest: DesignManifest | null;
+    readonly onCanvass: DesignPostSegmentAction["kind"];
+    readonly onExpand: DesignPostSegmentAction["kind"];
+  }[] = [
+    { state: "1. unreadable or absent", manifest: null, onCanvass: "no-manifest", onExpand: "no-manifest" },
+    {
+      state: "2. directions, no choice",
+      manifest: tableManifest({ directions: ["a", "b"] }),
+      onCanvass: "canvass-choice",
+      onExpand: "expand",
+    },
+    {
+      state: "3. directions, a choice, no lock",
+      manifest: tableManifest({ directions: ["a", "b"], chosen: "a" }),
+      onCanvass: "settled",
+      onExpand: "expand",
+    },
+    {
+      state: "4. directions, a choice, a lock",
+      manifest: tableManifest({ directions: ["a", "b"], chosen: "a", locked: canvassStills }),
+      onCanvass: "settled",
+      onExpand: "expand",
+    },
+    { state: "5. no directions, no lock", manifest: tableManifest({}), onCanvass: "mockup-choice", onExpand: "expand" },
+    {
+      state: "6. no directions, a lock",
+      manifest: tableManifest({ locked: canvassStills }),
+      onCanvass: "settled",
+      onExpand: "expand",
+    },
+  ];
+
+  const produced = new Set<string>();
+  for (const row of rows) {
+    for (const expandSegment of [false, true]) {
+      const action = designPostSegmentAction({ expandSegment, manifest: row.manifest, recordedDirection: null });
+      const expected = expandSegment ? row.onExpand : row.onCanvass;
+      assert.equal(
+        action.kind,
+        expected,
+        `${row.state} on the ${expandSegment ? "EXPAND" : "CANVASS"} pass must reach ${expected}`,
+      );
+      produced.add(action.kind);
+      // FINDING O AS A PROPERTY RATHER THAN AS ONE ROW: no expand return may reach
+      // either arm that can open a park. The parks belong to the stages whose
+      // questions they are, and stage B's question was answered before it ran.
+      if (expandSegment) {
+        assert.notEqual(action.kind, "canvass-choice", `${row.state} must not re-open stage A's park`);
+        assert.notEqual(action.kind, "mockup-choice", `${row.state} must not open the mockup park after stage B`);
+      }
+    }
+  }
+
+  // THE CONTROL ON THE TABLE ITSELF. Five kinds, five arms: a kind no row produces
+  // is an arm no row proves, and a table that quietly stopped producing one would
+  // otherwise go on passing.
+  assert.deepEqual(
+    [...produced].sort(),
+    ["canvass-choice", "expand", "mockup-choice", "no-manifest", "settled"],
+    "every arm of the union is reached by this table",
+  );
+
+  // THE SEVENTH STATE THE PARSER MAKES UNCONSTRUCTIBLE, stated so the count of six
+  // is a claim and not an assumption: `parseDesignManifest` drops a chosen slug
+  // that is not one of the declared directions (design-manifest.ts:582), so
+  // `directions.length === 0 && chosenDirection !== null` cannot be read off disk.
+  assert.equal(
+    parseDesignManifest(
+      JSON.stringify({
+        version: 1,
+        refs: [],
+        directions: [],
+        chosenDirection: "a",
+        directionChoice: { by: "owner", reason: "r", at: "2026-08-03T00:00:00.000Z" },
+      }),
+      "/nowhere",
+    )?.chosenDirection,
+    null,
+    "a chosen slug with no declared directions does not survive the parser",
+  );
+});
+
+test("THE EXPANDED DIRECTION IS RESOLVED IN ONE ORDER: manifest, record, what was drawn, then order", () => {
+  /*
+   * THE REPAIR'S OWN LADDER, WHICH IS THE HALF OF FINDING O THAT DECIDES WHETHER
+   * THE RUN TERMINATES. Recording `expanded: true` over a choice-less manifest is
+   * not enough on its own: `nextBuildSegment` reads `directionChosen` off the
+   * MANIFEST, so `directionsOffered && !directionChosen` sends the run back to
+   * `design-resume` — the canvass re-runs, six more generations no cap counts, and
+   * the pass bound is gone before the build segment. The choice has to go back on
+   * the file, and where it comes from has to be honest.
+   */
+  const drew = tableManifest({ directions: ["a", "b", "c"], drewFor: "b" });
+
+  assert.deepEqual(
+    designPostSegmentAction({
+      expandSegment: true,
+      manifest: tableManifest({ directions: ["a", "b"], chosen: "b" }),
+      recordedDirection: "a",
+    }),
+    {
+      kind: "expand",
+      manifest: tableManifest({ directions: ["a", "b"], chosen: "b" }),
+      direction: { slug: "b", source: "manifest" },
+    },
+    "the manifest is the source of truth and the record never overrides it",
+  );
+
+  const fromRecord = designPostSegmentAction({ expandSegment: true, manifest: drew, recordedDirection: "a" });
+  assert.deepEqual(
+    fromRecord.kind === "expand" ? fromRecord.direction : null,
+    { slug: "a", source: "record" },
+    "the host's own record beats the stills, because the host is what applied the choice",
+  );
+
+  const fromStills = designPostSegmentAction({ expandSegment: true, manifest: drew, recordedDirection: null });
+  assert.deepEqual(
+    fromStills.kind === "expand" ? fromStills.direction : null,
+    { slug: "b", source: "expansion" },
+    "with no record, the direction the expansion DREW is the run's own receipt for the spend",
+  );
+
+  // AN UNDECLARED RECORDED SLUG IS NOT HONOURED. `chooseDirection` would refuse it
+  // and the repair would leave the manifest choice-less — so the ladder has to
+  // skip it here rather than hand it on and log a refusal.
+  const bogus = designPostSegmentAction({ expandSegment: true, manifest: drew, recordedDirection: "not-a-slug" });
+  assert.deepEqual(
+    bogus.kind === "expand" ? bogus.direction : null,
+    { slug: "b", source: "expansion" },
+    "a recorded slug the manifest never declared is skipped, not passed on to be refused",
+  );
+
+  const noneLeft = designPostSegmentAction({
+    expandSegment: true,
+    manifest: tableManifest({ directions: ["a", "b"] }),
+    recordedDirection: null,
+  });
+  assert.deepEqual(
+    noneLeft.kind === "expand" ? noneLeft.direction : null,
+    { slug: "a", source: "fallback" },
+    "and last the first in manifest order, the same fallback the auto arm and the park's timer take",
+  );
+
+  // NOTHING TO BE WRONG ABOUT: no directions at all is the one shape with no
+  // direction to resolve, and it must report that rather than invent one.
+  const nothing = designPostSegmentAction({
+    expandSegment: true,
+    manifest: tableManifest({}),
+    recordedDirection: "a",
+  });
+  assert.equal(nothing.kind === "expand" ? nothing.direction : "wrong-kind", null);
+});
+
+test("FINDING O, THE OTHER HALF: AN EXPANSION THAT LOSES THE DIRECTIONS TOO STILL FINISHES", async () => {
+  /*
+   * THE ARM THE TABLE NAMES AND NO RUN REACHED. States 5 and 6 (no directions)
+   * on the EXPAND pass resolve to `expand` with `direction: null`, and before this
+   * round they fell into the MOCKUP arm instead — which for an `ask` policy called
+   * `#parkForDesignLock` and returned `{kind: "parked"}`. So the old code answered
+   * a lost canvass by opening a SECOND park, for a mockup, after the expansion had
+   * already been paid for; the new code records the expansion as done and goes on.
+   * Asserting that only in the pure table would be asserting the decision and not
+   * the arm.
+   *
+   * CONTROL: delete the `chosen === null` branch from `#buildPhase`'s expand arm
+   * and this throws on `heroRefFor(expanded, chosen.slug)` with `chosen` null —
+   * the compiler catches that one, which is the point of carrying `direction` as
+   * a single nullable field rather than as two.
+   */
+  const h = await designRun({
+    designLock: "ask",
+    directions: true,
+    interactive: true,
+    expandDrops: "directions",
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "30" },
+  });
+  try {
+    assert.equal(h.status(), "awaiting_input", "stage A's park");
+    assert.equal(h.orchestrator.resume(h.runId, null, "quiet-grid"), true, "the owner picks a direction");
+    await h.waitFor(() => h.status() !== "awaiting_input", 30_000, "the run never left the canvass park");
+    await h.settle(60_000);
+
+    const prompts = h.builderCalls.map((call) => call.prompt);
+    assert.equal(prompts.filter((p) => p.includes("STAGE B — EXPAND")).length, 1, "the expansion ran");
+    assert.notEqual(h.status(), "awaiting_input", "and no second park was opened after it");
+    assert.equal(
+      readDesignManifest(runPathsFor(h.paths, h.runId).workspace)?.directions.length,
+      0,
+      "the manifest really did come back with its directions gone",
+    );
+    assert.equal(h.lock()?.expanded, true, "the expansion is recorded as done so the run is not sent round it again");
+    assert.equal(h.lock()?.awaiting, false, "and nothing on disk says the run is waiting");
+    const lines = h.store
+      .eventsSince(h.runId, 0)
+      .map((stored) => stored.event)
+      .filter((event) => event.type === "log" && event.level === "warn")
+      .map((event) => (event.type === "log" ? event.text : ""));
+    assert.ok(
+      lines.some((text) => text.includes("names no directions at all")),
+      `the case must be named rather than passed over: ${JSON.stringify(lines)}`,
+    );
+    assert.ok(
+      prompts.some((p) => !p.startsWith("DESIGN LANE — art direction")),
+      "and the BUILD segment ran",
+    );
+  } finally {
+    await h.cleanup();
   }
 });

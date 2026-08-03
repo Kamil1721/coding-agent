@@ -28,25 +28,50 @@
  * may a card keep looking interactive once the lock has resolved: outside
  * `pending` there is no button in the tree at all, not a disabled one.
  *
- * WHAT IS DELIBERATELY NOT SHOWN. There is no countdown, because the deadline is
- * not on the wire — `ApiDesignLock` carries neither `parkedAt` nor the configured
- * timeout, and a clock invented in the browser would be a number the owner could
- * plan around and be wrong about. And there is no `intent` line: `DesignRef`
- * carries one on the server, `Screenshot` does not, and the label is the only
- * place a section reaches this side.
+ * WHAT IS DELIBERATELY NOT SHOWN. There is no `intent` line: `DesignRef` carries
+ * one on the server, `Screenshot` does not, and the label is the only place a
+ * section reaches this side.
+ *
+ * ─── 2026-08-03: TWO STAGES, AND WHERE EACH OF THEM IS DRAWN ───
+ *
+ * The lane now offers DISTINCT DIRECTIONS first (stage A) and expands only the
+ * chosen one (stage B). The owner's own question is what made that necessary —
+ * "will it give me design alternatives of the image I sent if I ask?" — because
+ * the answer was no and this panel implied yes: seven stills of ONE design, and
+ * a pick that decided which of them the gate would grade against.
+ *
+ * `directions.length === 0` IS EVERY RUN RECORDED BEFORE THAT DATE and takes
+ * every branch it took before: the mockup grid below, unchanged, with no empty
+ * "directions" box anywhere on the page. A run WITH directions hands the deck,
+ * the reply box and the comparison layer to `design-directions.tsx`; this file
+ * keeps the panel, the phase copy, the connector and the settled record.
+ *
+ * THE COUNTDOWN CAME BACK, AND ITS OLD REFUSAL IS WORTH KEEPING IN VIEW. This
+ * docblock used to say there is none "because the deadline is not on the wire …
+ * a clock invented in the browser would be a number the owner could plan around
+ * and be wrong about". That is still true of the wire — `ApiDesignLock` carries
+ * neither `parkedAt` nor the timeout — so the number is NOT invented here: it is
+ * read off the run's own park log line, the way `lib/plan-dialogue.ts` reads the
+ * plan park's, and it is ABSENT rather than guessed when that line is not in the
+ * trace. `lib/design-directions.ts` carries the parsing and its limits.
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import type { RunDetail, Screenshot } from "@/lib/api-types";
 import {
+  chosenDirectionOf,
   designLockPhase,
+  directionsOf,
   isPublishedAs,
   lockedMockup,
   mockupSection,
   type DesignLockPhase,
 } from "@/lib/mockups";
+import { designParkClock } from "@/lib/design-directions";
 import { screenshotSrc } from "@/lib/screenshots";
+import type { TraceEntry } from "@/lib/use-run-stream";
+import { DesignCanvass } from "@/components/run/design-directions";
 import { Badge, EmptyState, Lightbox, MonoPath, Panel, cx } from "@/components/ui";
 import type { Tone } from "@/lib/presentation";
 
@@ -283,6 +308,14 @@ const SUBTITLE: Readonly<Record<DesignLockPhase, string>> = {
   pending:
     "One of these is built and graded against. Pick it, or let the window close and ui-designer picks.",
   closing: "The window closed. Re-reading the run to see which design was locked.",
+  /*
+   * THE WINDOW THIS ENTRY EXISTS FOR. Between the direction choice and the hero
+   * lock the record reads `{awaiting: false, locked: null}` for the whole of
+   * stage B — a full per-section image set, minutes long — and the phase that
+   * shape used to derive was `unlocked`, whose subtitle is "The DESIGN lane
+   * finished without a design to lock". The opposite of what is happening.
+   */
+  expanding: "Your direction is chosen. The rest of its sections are being rendered now.",
   settled: "The design this run was built to, and graded against.",
   unlocked: "The DESIGN lane finished without a design to lock.",
 };
@@ -355,15 +388,55 @@ function ReasonBlock({ reason }: { reason: string }): ReactNode {
   );
 }
 
+/**
+ * Who chose the DIRECTION, in one sentence that does not flatter a fallback.
+ *
+ * SEPARATE FROM `chooserOf` BECAUSE THE TWO CHOICES ARE DIFFERENT FACTS. The
+ * direction decides what gets BUILT; the locked still decides what the finished
+ * site is GRADED against. On an owner-chosen run they can even have different
+ * choosers — he picks the direction, and the hero of that direction is locked
+ * automatically at the end of the expansion, carrying his attribution forward.
+ */
+function directionSentence(
+  by: "owner" | "ui-designer" | "fallback" | null,
+  name: string,
+  others: number,
+): string {
+  const rest =
+    others === 0
+      ? ""
+      : ` The other ${String(others)} ${others === 1 ? "direction was" : "directions were"} offered and not built — nothing was graded against them.`;
+  if (by === "owner") return `You chose ${name}.${rest}`;
+  if (by === "ui-designer") {
+    return `No choice arrived in time, so ui-designer chose ${name}.${rest}`;
+  }
+  if (by === "fallback") {
+    return `Neither you nor ui-designer produced a usable choice, so the first direction offered — ${name} — was taken, with no judgement applied.${rest}`;
+  }
+  return `The run was built in the ${name} direction and recorded no chooser.${rest}`;
+}
+
 export function DesignLockPanel({
   run,
   busy,
+  nowMs,
+  trace,
   onChoose,
+  onChooseDirection,
+  onSendRequest,
   onRefresh,
 }: {
   run: RunDetail;
   busy: boolean;
+  /** The browser's clock, ticking, for the park countdown. */
+  nowMs: number;
+  /** The run's own log — the ONLY honest source for this park's deadline. */
+  trace: readonly TraceEntry[];
   onChoose: (path: string) => void;
+  /** Stage A's answer: a direction slug, never a mockup path. */
+  onChooseDirection: (slug: string) => void;
+  /** One on-demand render request, down the ordinary chat channel. */
+  onSendRequest: (text: string) => Promise<void>;
   onRefresh: () => void;
 }): ReactNode {
   const lock = run.designLock;
@@ -404,6 +477,36 @@ export function DesignLockPanel({
   const chooser = chooserOf(lock.lockedBy);
   const pending = phase === "pending";
 
+  /*
+   * THE TWO SHAPES THIS PANEL NOW SERVES, AND THE ONE FIELD THAT SEPARATES THEM.
+   *
+   * `directions` is `[]` on every run recorded before 2026-08-03 — including all
+   * three on this machine, whose `designLock` carries five keys and none of the
+   * nine added since. Every branch below tests `hasDirections`, so those runs
+   * take the code they always took: the mockup grid, the same copy, no empty
+   * "directions" box anywhere. `directionsOf` is what makes reading the field
+   * safe at all; see its docblock.
+   */
+  const directions = directionsOf(lock);
+  const hasDirections = directions.length > 0;
+  const chosenDirection = chosenDirectionOf(lock);
+  /**
+   * The canvass is unanswered AND the run is still parked on it.
+   *
+   * DELIBERATELY NOT `stageOf(lock) === "canvass"`, and that is the one seam on
+   * this screen where a server-side spelling could silently remove the owner's
+   * only move. `stage` is a derived field the server computes; if it ever
+   * arrives absent, misspelled or from an older build, `stageOf` reads `"none"`
+   * — `hasDirections` would still be true, so the deck would render with NO
+   * choose buttons and NO reply box, and the park's only exit would be expiry.
+   * The two fields this tests instead are the ones the choice is made of:
+   * directions exist, none is chosen, and the run is parked. `stage` is left
+   * responsible for `expanding`, where being wrong costs a subtitle.
+   */
+  const canvassOpen =
+    pending && hasDirections && (lock.chosenDirection ?? null) === null;
+  const clock = designParkClock(trace);
+
   return (
     <Panel
       title="Design lock"
@@ -413,6 +516,12 @@ export function DesignLockPanel({
           <Badge tone={chooser.tone}>{chooser.badge}</Badge>
         ) : phase === "unlocked" ? (
           <Badge tone="warn">nothing locked</Badge>
+        ) : phase === "expanding" ? (
+          <Badge tone="info">expanding</Badge>
+        ) : canvassOpen ? (
+          <Badge tone="warn">
+            {String(directions.length)} directions
+          </Badge>
         ) : undefined
       }
       bodyClassName="p-0"
@@ -420,17 +529,53 @@ export function DesignLockPanel({
       <div className="space-y-3 px-3 py-3">
         {phase === "pending" && (
           <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-            Every build agent is given the locked mockup, and the visual gate grades the
-            finished site against it rather than against the set. Choosing is not required:
-            if the window closes first, ui-designer picks and the run records that the pick
-            was automatic.
+            {hasDirections
+              ? "The direction you pick is expanded into the rest of its sections, and the build is made to it. The others stay on record as what was offered. Choosing is not required: if the window closes first, ui-designer picks and the run records that the pick was automatic."
+              : "Every build agent is given the locked mockup, and the visual gate grades the finished site against it rather than against the set. Choosing is not required: if the window closes first, ui-designer picks and the run records that the pick was automatic."}
+          </p>
+        )}
+
+        {/*
+         * STAGE B, WHICH IS NEITHER A PARK NOR A RESULT. The choice is made and
+         * the lane is rendering the rest of that direction's sections; nothing is
+         * locked yet and nothing is being asked of the owner.
+         */}
+        {phase === "expanding" && chosenDirection !== null && (
+          <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
+            {directionSentence(
+              lock.chosenDirectionBy,
+              chosenDirection.name,
+              directions.length - 1,
+            )}{" "}
+            The rest of its sections are being rendered now; the one the gate grades against is
+            locked when they land.
+          </p>
+        )}
+
+        {(phase === "settled" || phase === "unlocked") && chosenDirection !== null && (
+          <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
+            {directionSentence(
+              lock.chosenDirectionBy,
+              chosenDirection.name,
+              directions.length - 1,
+            )}
           </p>
         )}
 
         {phase === "settled" && (
           <div className="space-y-2">
             <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-              {chooser.sentence}
+              {/*
+               * ON A CANVASSED RUN THE DIRECTION SENTENCE IS ALREADY ABOVE, and
+               * this one is about a different thing: which single still the gate
+               * graded against. Repeating "You picked this one" under "You chose
+               * Editorial slab" would read as one fact said twice, when what the
+               * owner picked (a direction) and what was locked (its hero) are two
+               * records with two choosers.
+               */}
+              {hasDirections
+                ? "The hero of that direction is the one still the visual gate graded the finished site against."
+                : chooser.sentence}
             </p>
             {/*
              * THE VERBATIM REASON IS SHOWN FOR `ui-designer` ONLY, and that is
@@ -473,7 +618,27 @@ export function DesignLockPanel({
          */}
         <LockConnector flowing={pending} />
 
-        {lock.mockups.length === 0 ? (
+        {/*
+         * THE DIRECTIONS BRANCH IS TESTED BEFORE THE MOCKUP COUNT, and that
+         * order is the degraded machine's whole rendering. With no image key the
+         * lane writes art direction instead of stills, so a canvassed run there
+         * has three directions and ZERO mockups — and the empty state below would
+         * tell an owner who has a real choice to make that there was nothing to
+         * publish. `DesignCanvass` draws a direction from its name, its sentence
+         * and its notes when it has no picture.
+         */}
+        {hasDirections ? (
+          <DesignCanvass
+            lock={lock}
+            runId={run.runId}
+            clock={clock}
+            nowMs={nowMs}
+            choosable={canvassOpen}
+            busy={busy}
+            onChooseDirection={onChooseDirection}
+            onSendRequest={onSendRequest}
+          />
+        ) : lock.mockups.length === 0 ? (
           <EmptyState>
             The DESIGN lane recorded no mockups on this run. Nothing here is missing from the
             page; there was nothing to publish.

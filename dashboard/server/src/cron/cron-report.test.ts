@@ -9,6 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ApiDesignLock, RunDetail } from "../api-types.js";
+// THE CAPS THE WIRE ACTUALLY CARRIES, IMPORTED RATHER THAN TRANSCRIBED. This
+// fixture hardcoded `turnsMax: 4` and stayed green while `MAX_DESIGN_LOCK_TURNS`
+// moved to 8 and `http.ts` started sending it — a fixture describing a wire shape
+// that no longer exists is a test that cannot see the drift it is standing in.
+import { MAX_DESIGN_LOCK_TURNS, MAX_DESIGN_ON_DEMAND_RENDERS } from "../design-prompt.js";
 import type { CronConfig } from "./cron-config.js";
 import type { CronRow, JournalRead } from "./cron-journal.js";
 import { CRON_DIRS, ensureCronDirs } from "./cron-queue.js";
@@ -228,12 +233,23 @@ test("the report names the files the owner should read, per run", () => {
 test("the design lock's provenance is reported — automatic is not the same as chosen", () => {
   // §17.3 rule 4: the choice is recorded either way, with who made it and why.
   // An unattended run has to be explainable after the fact.
+  // A PRE-2026-08-03 LOCK: no directions, `stage: "none"`, which is what the wire
+  // reports for every run that predates the two-stage canvass.
   const lock: ApiDesignLock = {
     awaiting: false,
     mockups: [],
     locked: "/w/design-refs/01.png",
     lockedBy: "ui-designer",
     reason: "denser grid",
+    directions: [],
+    chosenDirection: null,
+    chosenDirectionBy: null,
+    stage: "none",
+    turnsUsed: 0,
+    turnsMax: MAX_DESIGN_LOCK_TURNS,
+    rendersUsed: 0,
+    rendersMax: MAX_DESIGN_ON_DEMAND_RENDERS,
+    requests: [],
   };
   const md = renderCronReport(input({ runs: [detail({ designLock: lock })] }));
   assert.match(md, /ui-designer/);

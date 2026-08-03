@@ -123,6 +123,7 @@ import {
   cancelRun,
   errorMessage,
   resumeRun,
+  resumeWithDirection,
   runMessages,
   sendRunMessage,
   type ChatMessage,
@@ -309,6 +310,30 @@ export default function RunPage(): ReactNode {
     [runId, busy, refresh],
   );
 
+  /**
+   * Stage A's answer: a DIRECTION, by slug.
+   *
+   * IT SENDS `chosenDirection` AND NOT `chosenMockup`, and that is not
+   * belt-and-braces territory. The resume route validates `chosenMockup` against
+   * the manifest's refs — `design-lock.browser.spec.ts` records the 409 a
+   * published copy earns there — so adding one to a request that is otherwise a
+   * clean direction choice can only turn a valid answer into a refusal. The slug
+   * is what the server resolves the direction from; the click carries that, or
+   * the request does not go.
+   */
+  const onChooseDirection = useCallback(
+    (chosenDirection: string): void => {
+      if (runId === null || busy) return;
+      setBusy(true);
+      setActionError(null);
+      void resumeWithDirection(runId, chosenDirection)
+        .then(() => refresh())
+        .catch((cause: unknown) => setActionError(errorMessage(cause)))
+        .finally(() => setBusy(false));
+    },
+    [runId, busy, refresh],
+  );
+
   // Looked up rather than stored: hiding the housekeeping agents, or a run that
   // ends and re-folds, must not leave the sheet holding a node the canvas no
   // longer draws.
@@ -358,6 +383,40 @@ export default function RunPage(): ReactNode {
    */
   const planAnswerable = planParked && planDialogue !== null;
 
+  /**
+   * The DESIGN park, open right now.
+   *
+   * DERIVED BEFORE THE EARLY RETURNS because the poll below it is a hook, and
+   * duplicated rather than lifted out of the render body for the same reason.
+   */
+  const designParked =
+    run !== undefined &&
+    run.designLock !== null &&
+    designLockPhase(run.status, run.designLock) === "pending";
+
+  /*
+   * ONE POLL WHILE THE DESIGN PARK IS OPEN, and it is the design dialogue that
+   * needs it rather than the cards.
+   *
+   * `pollIntervalFor` gives an `awaiting_input` run 20 seconds, which is right
+   * for a park nobody is interacting with. This one the owner is: he asks for a
+   * section to be rendered, the host generates it, publishes the copy and writes
+   * the request onto `designLock.requests` — and until the next read, the panel
+   * he is staring at shows neither. Twenty seconds of nothing after a click that
+   * spends an image generation reads as a dropped request, which is the failure
+   * the caps and the request log exist to prevent.
+   *
+   * It stops the instant the park closes, so a run that canvasses for two
+   * minutes and then builds for two hours polls for two minutes.
+   */
+  useEffect(() => {
+    if (runId === null || !designParked) return;
+    const timer = window.setInterval(refresh, 6_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [runId, designParked, refresh]);
+
   /*
    * ONE POLL, BOUNDED BY THE ONE STATE THAT NEEDS IT.
    *
@@ -397,6 +456,32 @@ export default function RunPage(): ReactNode {
    * a plan reply that 409s on a run that has just left the park must say so, not
    * look sent.
    */
+  /**
+   * One on-demand render request from the design park.
+   *
+   * THE SAME `sendRunMessage` THE CHAT AND THE PLAN PANEL USE, for the reason
+   * `onSendPlanReply` gives directly below: the park's dialogue is a rung in the
+   * server's existing message intake, so a request typed here and one typed in
+   * the Chat tab are the same kind of thing to the run. A second intake would be
+   * a second thing to keep in step with the parser.
+   *
+   * IT REJECTS RATHER THAN SWALLOWING. A refused ask keeps the owner's words in
+   * the box; an ask that looked sent and was not would cost him a turn he never
+   * spent and a still he never gets.
+   */
+  const onSendDesignRequest = useCallback(
+    async (text: string): Promise<void> => {
+      if (runId === null) return;
+      await sendRunMessage(runId, text, []);
+      loadMessages();
+      // The host answers with a published still and a `requests[]` entry, both
+      // of which arrive on the next read of the run — so pull it forward rather
+      // than leaving the panel showing a request that appears to have vanished.
+      refresh();
+    },
+    [runId, loadMessages, refresh],
+  );
+
   const onSendPlanReply = useCallback(
     async (text: string): Promise<void> => {
       if (runId === null) return;
@@ -745,7 +830,19 @@ export default function RunPage(): ReactNode {
                    * same panel as a record gets less. Same panel, two weights.
                    */
                   lockIsBlocking
-                    ? "ring-2 ring-accent/50"
+                    ? /*
+                       * A `vh` CAP ON THE BLOCKING WEIGHT TOO, ADDED 2026-08-03 —
+                       * and for the same measured reason the plan panel has one.
+                       * A canvassed park stacks three directions of full-aspect
+                       * stills in this 360px column; uncapped, that panel is
+                       * thousands of pixels tall and simply runs off the bottom of
+                       * the viewport, because the percentage caps on the dock
+                       * itself resolve to `none` against an indefinite height (see
+                       * the block above). The comparison layer is where the deck is
+                       * meant to be read; this keeps the dock's copy of it a panel
+                       * rather than a takeover.
+                       */
+                      "max-h-[62vh] ring-2 ring-accent/50"
                     /*
                      * RAISED 132/200 → 200/380 ON 2026-07-30, because the cap was
                      * doing two jobs and only one of them was wanted.
@@ -766,7 +863,11 @@ export default function RunPage(): ReactNode {
                 <DesignLockPanel
                   run={run}
                   busy={busy}
+                  nowMs={nowMs}
+                  trace={trace}
                   onChoose={onChooseMockup}
+                  onChooseDirection={onChooseDirection}
+                  onSendRequest={onSendDesignRequest}
                   onRefresh={refresh}
                 />
               </div>
