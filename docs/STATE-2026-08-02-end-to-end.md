@@ -313,3 +313,52 @@ Carried forward, from the second adversarial review (5 should-fix, 1 nit):
    are not from the fixed code — the fix pass proved its own fixtures leak nothing by
    comparing PIDs rather than counts. Clear with
    `ps -eo pid,ppid,command | awk '$2==1 && /node -e/ {print $1}' | xargs kill`.
+
+---
+
+## OPEN, HANDED TO A LATER SESSION (2026-08-03)
+
+### 21 of 34 agent spawns lose their parent, and it is not the hooks
+
+Found while answering "is the guessed-parent edge even needed, since the orchestrator
+calls the agents?" — a fair question, and the measurement contradicts the reassuring
+answer. On `run-2026-07-30T20-16-40-242Z-052c6e02`:
+
+```
+graph_agent          exact  13     inferred  21
+graph_hook           exact   0     inferred  13
+graph_tool           exact 482     inferred   0
+graph_result          exact 27     inferred   0
+graph_agent_status    exact 54     inferred   0
+```
+
+**`graph_hook` being inferred is by design** — hook messages carry no task identity, so
+attributing one to an agent is always a deduction (`graph-emit.ts:403`, parented to root
+unconditionally). That is the honest half.
+
+**`graph_agent` at 21 inferred against 13 exact is NOT explained.** It should be rare.
+`graph-emit.ts:278` marks a `task_started` exact whenever
+`#spawnOrigin.get(tool_use_id)` resolves — i.e. whenever the Agent block that spawned
+the task was seen and recorded. Three candidate causes, none yet distinguished:
+
+1. `task_started.tool_use_id` arriving `null`.
+2. The spawning Agent block never recorded, because `#spawnOrigin.set` (`:359`) is
+   gated on `canSpawn(use) && this.#spawnOrigin.size < SPAWN_MEMORY`. `SPAWN_MEMORY`
+   is **512** and its comment reads *"Far above any real run's count"* — that claim
+   is worth measuring rather than trusting, but 34 spawns is nowhere near 512, so the
+   cap is probably NOT the cause on this run.
+3. `canSpawn` refusing the block: it matches `Agent`/`Task` by name, else requires
+   `subagent_type` or `isolation` in the input. A delegation shaped some other way is
+   never recorded, and every task it spawns is then a guess. **This is the most likely
+   one and the cheapest to check** — dump the tool-use names and input keys for the 21
+   and see what shape they actually had.
+
+WHY IT MATTERS BEYOND THE LABEL: an inferred edge is parented to the ROOT, so a
+subagent that delegates further is drawn hanging off the orchestrator instead of off its
+real parent. The canvas then under-reports the depth of the agent tree — it shows a flat
+fan where there was a chain. The edge treatment is honest about the uncertainty; the
+SHAPE is still wrong, and no amount of relabelling fixes that.
+
+FIRST STEP FOR WHOEVER PICKS THIS UP: for each of the 21, print the `task_started`
+payload's `tool_use_id` and, where it is non-null, whether any earlier assistant turn
+carried a tool use with that id. That separates cause 1 from causes 2 and 3 in one query.
