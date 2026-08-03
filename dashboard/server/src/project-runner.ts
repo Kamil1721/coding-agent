@@ -72,7 +72,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import type { Stats } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactForPersistence } from "bakeoff/dist/redact.js";
 import type {
   ApiProject,
@@ -216,6 +216,11 @@ export type ProjectRefusalCode =
   | "invalid_project"
   | "unknown_project"
   | "no_start_script"
+  // The machine has no `sandbox-exec`, so a published project cannot be confined
+  // and is therefore not started at all. See {@link projectSandboxProfile}: this
+  // is the fail-closed arm of a boundary that was measured leaking, not a
+  // capability gap to be worked around.
+  | "no_sandbox"
   | "no_free_port"
   | "start_failed"
   | "start_exited"
@@ -925,6 +930,40 @@ export class ProjectRunner {
           "index.html, or use the run's preview route.",
       );
     }
+    // THE SEATBELT MOVED A FAILURE MODE, AND THIS PUTS IT BACK. Before the
+    // wrapper, a machine with no `npm` on the child's PATH failed at `spawn`
+    // with ENOENT and this method answered `start_failed`. With the wrapper the
+    // spawn succeeds — `sandbox-exec` is there — and it is the INNER exec that
+    // fails, which surfaced as `start_exited` (code 71,
+    // `sandbox-exec: execvp() of 'npm' failed`). That is a worse answer to the
+    // same question, so the condition is checked here instead of being read back
+    // out of a child's stderr.
+    if (commandOnPath(this.#env, "npm") === null) {
+      return refuse(
+        500,
+        "start_failed",
+        // `ENOENT` is kept in the sentence deliberately. It is the errno the
+        // pre-seatbelt spawn produced and the string an owner searches for; the
+        // check moved earlier, the diagnosis must not get vaguer.
+        `npm is not on this dashboard's PATH, so ${resolved.slug} cannot be started: spawn npm ENOENT`,
+        SPAWN_REMEDIATION,
+      );
+    }
+    // BEFORE A PORT IS TAKEN, because a refusal that has already allocated a
+    // resource is a leak. Fail closed: no seatbelt, no start. See
+    // {@link projectSandboxProfile} for the reproduction this refuses to allow.
+    if (!sandboxAvailable()) {
+      return refuse(
+        503,
+        "no_sandbox",
+        `${SANDBOX_EXEC} is not on this machine, and a published project is agent-written code that would ` +
+          "otherwise run unconfined as you, two directories from the sealed acceptance suites",
+        "This is deliberate rather than a missing feature: an unconfined child can read " +
+          "acceptance/<ticket>/holdout and print it to a log this dashboard serves, which makes every " +
+          "heldOutPass for that ticket meaningless with nothing recording that it happened. Run the project " +
+          "yourself in a shell you trust if you need it up.",
+      );
+    }
     const port = await freeLoopbackPort(this.#range.min, this.#range.max, this.#takenPorts());
     if (port === null) {
       return refuse(
@@ -940,7 +979,12 @@ export class ProjectRunner {
     const logs = new LogRing();
     let child: ChildProcess;
     try {
-      child = spawn("npm", ["run", "start"], {
+      // THE CHILD IS AGENT-WRITTEN CODE AND IS CONFINED BEFORE IT RUNS. See
+      // {@link projectSandboxProfile} for the reproduction that made this
+      // mandatory. `sandbox-exec -p <profile> npm run start` rather than a bare
+      // `npm`: the profile has to be applied by the thing that execs, and
+      // wrapping the command is the only place it can be.
+      child = spawn(SANDBOX_EXEC, ["-p", projectSandboxProfile(this.#paths), "npm", "run", "start"], {
         cwd: resolved.directory,
         // SEE THE FILE HEADER, POINT 3. Without this the child shares the
         // dashboard's process group and the group kill below becomes a kill of
@@ -1271,6 +1315,94 @@ export class ProjectRunner {
  * loopback: this module allocates a loopback port and a child that bound
  * 0.0.0.0 instead would put agent-written code on the network.
  */
+/**
+ * The sandbox profile the started project runs under, and WHY IT EXISTS.
+ *
+ * REPRODUCED 2026-08-03, end to end, against this code before this function
+ * existed. A published project's `package.json` was
+ * `{"scripts":{"start":"node server.mjs"}}` and its `server.mjs` opened
+ * `../../dashboard/acceptance/<file>`; the bytes came back out of
+ * `GET /api/projects/:slug/logs`:
+ *
+ *     "text":"READ-UP-TWO: SEALED-SUITE-REACHABILITY-SENTINEL-1785733812"
+ *
+ * The whole chain is ordinary use: a build agent writes the start script,
+ * `project-publish.ts` copies `package.json` verbatim (it is not in
+ * `PROJECT_EXCLUDED_ENTRIES`), the owner clicks Start, and `npm run start` —
+ * which also runs `prestart` — executes it. `cwd` is `projects/<slug>`, so the
+ * sealed suite is two directories up. Nothing marked the run.
+ *
+ * WHY THIS IS THE REPO'S CRITICAL AND NOT A GENERIC ONE. `STATUS.md` §0 credits
+ * four layers with keeping a build out of `acceptance/<ticket>/holdout/`, and all
+ * four are `Options` built for the Claude CLI in `claude-builder.ts`. A bare
+ * `spawn` reaches none of them. A suite that has been read makes `heldOutPass`
+ * and `falseFinish` meaningless for that ticket, and §0 states there is no
+ * tripwire — so the damage is silent and unrecoverable after the fact.
+ *
+ * DENY-LIST OVER AN ALLOW-LIST, DELIBERATELY. `(allow default)` then four denies:
+ * a published project is ordinary software that may read its own tree, the Node
+ * install, and the user's caches, and an allow-list would break it in ways the
+ * owner would debug for an evening. The four roots are the ones whose contents
+ * decide a verdict or hold a credential.
+ *
+ * `paths.projects` IS NOT DENIED and must not be: it is the child's own cwd.
+ */
+export function projectSandboxProfile(paths: DashboardPaths): string {
+  // `realpathSync` because the seatbelt matches the REAL path: on this machine a
+  // `/tmp` root resolves to `/private/tmp`, and a profile written in the spelled
+  // form denies nothing while looking correct.
+  const sealed = [paths.acceptance, paths.data, paths.results, paths.runs].map((root) => {
+    try {
+      return realpathSync(root);
+    } catch {
+      // Absent today is not absent for the life of the child, and a root that
+      // cannot be resolved must still be denied by the spelling we have.
+      return resolve(root);
+    }
+  });
+  const subpaths = sealed.map((root) => `    (subpath ${JSON.stringify(root)})`).join("\n");
+  return `(version 1)\n(allow default)\n(deny file-read* file-write*\n${subpaths})\n`;
+}
+
+/**
+ * FAIL CLOSED. A machine without `sandbox-exec` does not get an unconfined child
+ * — it gets a refusal, because the alternative is the reproduction above running
+ * on a host where nothing stops it. macOS has shipped `sandbox-exec` at this path
+ * since 10.5; it is deprecated and still functional, and if Apple removes it this
+ * refusal is the correct failure rather than a silent downgrade.
+ */
+export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+
+/**
+ * Where `name` resolves on the CHILD's PATH, or null.
+ *
+ * The child's PATH, not this process's: `childEnv` hands over an allowlisted
+ * environment, and asking a different question than the child will be asked is
+ * how a check passes for a spawn that then fails.
+ */
+export function commandOnPath(source: NodeJS.ProcessEnv, name: string): string | null {
+  const path = source["PATH"];
+  if (path === undefined || path.length === 0) return null;
+  for (const dir of path.split(":")) {
+    if (dir.length === 0) continue;
+    const candidate = join(dir, name);
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Not here; try the next entry. An unreadable PATH entry is not an error.
+    }
+  }
+  return null;
+}
+
+export function sandboxAvailable(): boolean {
+  try {
+    return statSync(SANDBOX_EXEC).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export function childEnv(source: NodeJS.ProcessEnv, port: number): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const name of CHILD_ENV_ALLOWLIST) {

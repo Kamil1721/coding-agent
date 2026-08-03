@@ -117,6 +117,23 @@ export interface AttachmentCandidate {
  * ---------------------------------------------------------------------- */
 
 /** `ticket-refs.ts#MAX_REFERENCE_IMAGES`. */
+/**
+ * Does this brief say anything a person could read?
+ *
+ * THE CLIENT'S COPY. `dashboard/server/src/ticket.ts` holds the authority and the
+ * full account; this one decides only whether the Start button looks pressable,
+ * and the two must agree or the owner sees an enabled button that the server
+ * then refuses.
+ *
+ * The short version: `trim()` does not remove the Unicode FORMAT category, so a
+ * brief of eight U+200B characters trims to length 8 while rendering as an empty
+ * textarea. Both guards on the most expensive action in this app were that
+ * check, and a line pasted out of a PDF routinely carries those characters.
+ */
+export function briefHasContent(brief: string): boolean {
+  return brief.replace(/\p{Cf}/gu, "").trim().length > 0;
+}
+
 export const MAX_REFERENCE_IMAGES = 6;
 
 /** `ticket-refs.ts#MAX_REFERENCE_IMAGE_BYTES` — DECODED, not base64 length. */

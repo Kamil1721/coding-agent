@@ -64,6 +64,7 @@ import {
   childEnv,
   listeningPortsForGroup,
   processSignature,
+  projectSandboxProfile,
   resolveProjectDir,
   safeToSignalGroup,
   startCommandFor,
@@ -1231,5 +1232,76 @@ test("the list names the run that published each folder, and says whether it has
     assert.equal(existsSync(join(dir, ".git")), true);
   } finally {
     await harness.cleanup();
+  }
+});
+
+test("A STARTED PROJECT CANNOT READ THE SEALED SUITE — the reproduction, as a test", TEST_OPTIONS, async () => {
+  // REPRODUCED against this code on 2026-08-03, before the seatbelt existed. A
+  // published project's package.json was {"scripts":{"start":"node server.mjs"}}
+  // and its server.mjs read `../../dashboard/acceptance/<file>`; the bytes came
+  // back out of `GET /api/projects/:slug/logs`:
+  //
+  //     "text":"READ-UP-TWO: SEALED-SUITE-REACHABILITY-SENTINEL-1785733812"
+  //
+  // Every step is ordinary use — a build agent writes the start script,
+  // `project-publish.ts` copies package.json verbatim, the owner clicks Start.
+  // STATUS.md §0 credits FOUR layers with keeping a build out of the sealed
+  // suite; all four are Claude-CLI `Options`, and a bare `spawn` reaches none of
+  // them.
+  const harness = makeHarness();
+  try {
+    const sentinel = "SEALED-REACHABILITY-SENTINEL-DO-NOT-LEAK";
+    mkdirSync(harness.paths.acceptance, { recursive: true });
+    const target = join(harness.paths.acceptance, "sentinel.txt");
+    writeFileSync(target, sentinel, "utf8");
+
+    writeProject(harness.paths, "sealed-probe", {
+      server: [
+        'import { readFileSync } from "node:fs";',
+        'import { createServer } from "node:http";',
+        `try { console.log("SEALED-READ:", readFileSync(${JSON.stringify(target)}, "utf8").trim()); }`,
+        'catch (e) { console.log("SEALED-READ-REFUSED:", e.code); }',
+        'createServer((_q, s) => s.end("ok")).listen(Number(process.env.PORT ?? 3000), "127.0.0.1");',
+      ].join("\n"),
+    });
+
+    const started = await harness.runner.start("sealed-probe");
+    // A boundary that breaks the feature is not a fix: it must still start.
+    assert.equal(started.ok, true, `the project did not start: ${JSON.stringify(started)}`);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const text = JSON.stringify(harness.runner.logs("sealed-probe"));
+
+    // THE ASSERTION THAT MATTERS IS ON THE SENTINEL, not on the refusal message:
+    // a future change that stops the child printing anything would satisfy
+    // "no EPERM appears" while leaking exactly as badly.
+    assert.equal(text.includes(sentinel), false, `the sealed suite reached the log ring: ${text}`);
+    assert.ok(text.includes("SEALED-READ-REFUSED"), `expected a refused read, got: ${text}`);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("the sandbox profile names every root whose contents decide a verdict or hold a credential", () => {
+  // A deny-list, so an omission is silent. `projects` must NOT be on it — it is
+  // the child's own cwd, and denying it would mean nothing ever starts.
+  const harness = makeHarness();
+  try {
+    const profile = projectSandboxProfile(harness.paths);
+    for (const root of ["acceptance", "data", "results", "runs"] as const) {
+      mkdirSync(harness.paths[root], { recursive: true });
+      assert.ok(
+        profile.includes(JSON.stringify(realpathSync(harness.paths[root]))) ||
+          profile.includes(JSON.stringify(harness.paths[root])),
+        `${root} is not denied:\n${profile}`,
+      );
+    }
+    assert.equal(
+      profile.includes(`(subpath ${JSON.stringify(harness.paths.projects)})`),
+      false,
+      "denying the child its own cwd would break every start",
+    );
+    assert.ok(profile.startsWith("(version 1)"), profile);
+  } finally {
+    void harness.cleanup();
   }
 });

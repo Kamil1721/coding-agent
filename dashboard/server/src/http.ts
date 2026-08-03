@@ -194,7 +194,7 @@ import {
   secretStoreFile,
 } from "./secret-intake.js";
 import type { SecretIntakeStatus } from "./secret-intake.js";
-import { ticketWithReferences } from "./ticket.js";
+import { briefHasContent, ticketWithReferences } from "./ticket.js";
 import {
   MAX_REFERENCE_IMAGES,
   MAX_REFERENCE_IMAGE_BYTES,
@@ -1605,8 +1605,18 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
   const deploy = body["deploy"];
   const designLock = body["designLock"];
 
-  if (typeof ticketText !== "string" || ticketText.trim().length === 0) {
-    sendError(response, 400, "invalid_ticket", "ticketText must be a non-empty string", null);
+  // `briefHasContent`, NOT `.trim()`: a brief of zero-width or format characters
+  // trims to a non-empty string while rendering as an empty field, and this
+  // route is the one that spends money. See the function's own docblock for the
+  // measurement.
+  if (typeof ticketText !== "string" || !briefHasContent(ticketText)) {
+    sendError(
+      response,
+      400,
+      "invalid_ticket",
+      "ticketText must be a non-empty string — a brief of only invisible characters is empty",
+      null,
+    );
     return;
   }
   if (ticketText.length > MAX_TICKET_CHARS) {

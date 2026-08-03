@@ -55,6 +55,45 @@ export const DASHBOARD_TICKET_TIER: TicketTier = "medium";
  * `Ticket.title` is documented as "never given to the builder", and it is not:
  * only `brief` reaches the build prompt.
  */
+/**
+ * Does this brief say anything a person could read?
+ *
+ * `trim().length > 0` IS NOT THAT, AND THE DIFFERENCE WAS DEMONSTRATED against
+ * the running dashboard on 2026-08-03. A brief of eight U+200B (zero-width
+ * space) characters renders as a visibly EMPTY textarea, and:
+ *
+ *     "​​​​​​​​".trim().length          -> 8   (passes a > 0 check)
+ *     visible graphemes                 -> 0
+ *
+ * `String.prototype.trim` removes whitespace, which by its definition includes
+ * NBSP and the BOM but NOT the format category — so U+200B, U+00AD (soft
+ * hyphen), U+2060 (word joiner) and U+202E (right-to-left override) all read as
+ * content. Both guards on this app's most expensive action were that check: the
+ * client's disabled-submit at `src/app/page.tsx`, and this package's own
+ * `POST /api/runs` validation. An owner who pastes a line copied out of a PDF or
+ * a web page — which routinely carries these — could arm a billed build from a
+ * field he can see is empty.
+ *
+ * WHY IT IS WORSE THAN A WASTED RUN. The acceptance suite is authored from the
+ * brief and then FROZEN BY DIGEST before any code exists. A suite authored from
+ * nothing is not a yardstick; it is sixteen inferred criteria and a verdict that
+ * describes guesses. That is the exact failure `spec-assumptions.ts` and the
+ * plan phase exist to reduce.
+ *
+ * `\p{Cf}` IS THE WHOLE FORMAT CATEGORY, deliberately, rather than the four
+ * code points that were demonstrated: enumerating them is how the next one gets
+ * in. Combining marks are NOT stripped — a lone combining mark is degenerate,
+ * but stripping the category would break scripts where marks carry meaning, and
+ * this predicate must never refuse a brief written in one.
+ *
+ * THE CLIENT HAS ITS OWN COPY, at `dashboard/src/lib/attachments.ts`, because the
+ * two packages share no code. This one is the authority: the client's copy only
+ * decides whether a button looks pressable.
+ */
+export function briefHasContent(brief: string): boolean {
+  return brief.replace(/\p{Cf}/gu, "").trim().length > 0;
+}
+
 export function titleFromBrief(brief: string): string {
   const firstMeaningfulLine =
     brief

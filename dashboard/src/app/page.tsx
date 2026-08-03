@@ -19,6 +19,7 @@ import { Badge, Button, Dot, Panel, cx } from "@/components/ui";
 import { createRun, errorMessage } from "@/lib/api";
 import {
   acceptAttribute,
+  briefHasContent,
   dataUrlsOfKind,
   planAttachmentIntake,
   readAttachments,
@@ -264,9 +265,16 @@ export default function NewTicketPage(): ReactNode {
     [attachments],
   );
 
+  // `briefHasContent`, NOT `.trim()`. Eight U+200B characters render as an empty
+  // textarea and `trim()` reports eight, so this guard — the only thing standing
+  // in front of a billed multi-hour build — went green over a field the owner
+  // could see was blank. Demonstrated against this page on 2026-08-03; the
+  // server's own copy of the predicate (`server/src/ticket.ts`) is the
+  // authority, and this one only decides whether the button looks pressable.
+  const hasBrief = briefHasContent(ticketText);
   const trimmed = ticketText.trim();
   const blockedReason: string | null =
-    trimmed === ""
+    !hasBrief
       ? "Write the brief first."
       : modelId === null
         ? "Pick a model."
