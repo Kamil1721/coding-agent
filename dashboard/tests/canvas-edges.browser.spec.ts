@@ -131,11 +131,31 @@ test.describe("the inferred edge", () => {
 
     // The recorded values. A palette change is allowed to fail this — it should
     // be a decision, not a drift.
+    //
+    // THE STROKE IS READ FROM THE TOKEN, NOT RETYPED. Updated 2026-08-03, when
+    // the guess edge stopped being grey: this used to hardcode
+    // `rgb(111, 120, 135)`, so the test pinned a literal that no longer had a
+    // name anywhere. Three fixtures elsewhere in this repo drifted exactly that
+    // way — each built its own object instead of reading the constant, and each
+    // stayed green while describing a shape the code no longer produced.
+    // Resolving `--edge-guess` here means a palette change still fails the
+    // assertion below (the opacity and the dash are still literals, and the
+    // colour must still differ from the settled edge), while a RENAME of the
+    // token cannot pass by accident.
+    const guess = await page.evaluate(() => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--edge-guess)";
+      document.body.append(probe);
+      const resolved = getComputedStyle(probe).color;
+      probe.remove();
+      return resolved;
+    });
+    expect(guess, "--edge-guess is not defined").not.toBe("");
     expect(inferred).toEqual({
-      stroke: "rgb(111, 120, 135)",
+      stroke: guess,
       "stroke-width": "2.5px",
       "stroke-dasharray": "2px, 7px",
-      opacity: "0.55",
+      opacity: "0.72",
     } satisfies Record<EdgeProp, string>);
     expect(settled).toEqual({
       // A `<linearGradient>` reference, not a colour, and that is the fact worth
@@ -181,16 +201,34 @@ test.describe("the inferred edge", () => {
     await expect(settledGroup.locator("path.conduit-body")).toHaveCount(1);
   });
 
-  test("carries the word `inferred` on the edge itself", async ({ page }) => {
+  test("names the claim it is uncertain about, on the edge itself", async ({ page }) => {
     await openCanvas(page);
     // ON THE CONNECTOR — scoped to React Flow's edge-label layer, not to the
-    // page. The agent card also says `inferred`, and a page-wide text match
-    // would be satisfied by the card alone while the edge carried nothing.
-    await expect(
-      page.locator(".react-flow__edgelabel-renderer").getByText("inferred", {
-        exact: true,
-      }),
-    ).toBeVisible();
+    // page. The agent CARD also carries an `inferred` badge, and a page-wide
+    // text match would be satisfied by the card alone while the edge carried
+    // nothing.
+    //
+    // THE WORD CHANGED 2026-08-03 AND THE ASSERTION FOLLOWED THE MEANING, not
+    // the string: `inferred` was this codebase's name for the server's
+    // attribution step, and the edge's job is to say WHICH CLAIM is a guess —
+    // that it knows who spawned whom. The card keeps `inferred` because there it
+    // qualifies the agent and has a tooltip; the edge IS the claim.
+    const label = page.locator(".react-flow__edgelabel-renderer").getByText("guessed parent", {
+      exact: true,
+    });
+    await expect(label).toBeVisible();
+
+    // AND IT IS NOT DRAWN AS CHROME. The label used to be grey on grey, which
+    // put the one thing the server admits it does not know into the same visual
+    // class as every dim border on the canvas. It now carries the same hue as
+    // the stroke, and that hue is deliberately no role's — so this asserts the
+    // colour is SET rather than inherited from the faint-ink default.
+    const color = await label.evaluate((el) => getComputedStyle(el).color);
+    expect(color, "the guessed-parent label is still drawn in default chrome grey").not.toBe("");
+    const inkFaint = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue("--color-ink-faint").trim(),
+    );
+    expect(color).not.toBe(inkFaint);
   });
 
   test("never flows, even though its child agent is running", async ({ page }) => {

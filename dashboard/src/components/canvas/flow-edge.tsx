@@ -148,13 +148,28 @@ export function DelegationEdge({
         <path d={path} className="conduit-casing" />
         <path id={`${safeId(id)}-inferred`} d={path} className="conduit-guess" />
         <EdgeLabelRenderer>
+          {/*
+            * "GUESSED PARENT", NOT "INFERRED". The old label was this codebase's
+            * word for the mechanism, not the reader's word for what happened:
+            * `inferred` names the server's attribution step, while what the
+            * owner needs to know is WHICH CLAIM is uncertain — that this edge
+            * says who spawned whom, and that part is a guess. The node badge
+            * keeps saying `inferred` because there it qualifies the AGENT and
+            * the tooltip explains the mechanism; here the edge IS the claim.
+            *
+            * Coloured, not grey, and the border matches the stroke so the label
+            * reads as part of the wire rather than as chrome floating over it.
+            * See `--edge-guess` for why that hue.
+            */}
           <div
-            className="nodrag nopan pointer-events-none absolute rounded-full border border-dashed border-line-strong bg-canvas/90 px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.14em] text-ink-faint"
+            className="nodrag nopan pointer-events-none absolute rounded-full border border-dashed bg-canvas/90 px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.14em]"
             style={{
               transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)`,
+              borderColor: "var(--edge-guess)",
+              color: "var(--edge-guess)",
             }}
           >
-            inferred
+            guessed parent
           </div>
         </EdgeLabelRenderer>
       </>

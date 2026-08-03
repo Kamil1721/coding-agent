@@ -206,6 +206,44 @@ body {
   --role-unmapped: oklch(0.63 0.012 258);
 
   /*
+   * A GUESSED PARENT LINK, AND IT IS DELIBERATELY NOT A ROLE HUE.
+   *
+   * These edges used to be drawn in `--color-ink-faint` — grey — which put them
+   * in the same visual class as every other dim chrome on the canvas and made
+   * "this link is a guess" read as "this line is unimportant". They are the
+   * opposite: the one thing on the graph the server is admitting it does not
+   * know, so they should be legible AS a guess rather than fade out.
+   *
+   * WHY 242. The eight role hues in use are 32, 78, 120, 168, 212, 258, 272 and
+   * 330; the largest free band on the wheel is 212 (frontend) to 272 (spec), so
+   * 242 is the furthest a new hue can sit from every role — 30 degrees clear of
+   * both. It must not collide with a role, or a reader learns to read colour as
+   * lane and this edge lies to them in the one place the canvas is being honest.
+   *
+   * Cool on purpose: 32 (review) and 330 (design) are the warm end, and a rose
+   * or amber guess would read as a failure. A guess is not an error — nothing
+   * went wrong, the server simply had no task identity to key on.
+   *
+   * HUE ALONE COULD NOT CARRY THIS, AND THAT IS WORTH RECORDING RATHER THAN
+   * DISCOVERING AGAIN. With eight roles on the wheel the widest free band is 60
+   * degrees, so the best any new hue can manage is 30 from its neighbours —
+   * and at 30 from frontend (212) this read as "a dimmer frontend edge" on the
+   * real canvas rather than as its own thing. Checked against a screenshot of
+   * `run-2026-07-30T20-16-40-242Z-052c6e02`, not against the numbers.
+   *
+   * So it separates on a SECOND axis as well: lightness 0.82 and chroma 0.13 put
+   * it above every role (0.745-0.8 and 0.07-0.1). Nothing else on the canvas is
+   * both this light and this saturated, so it reads as "not a lane" even where
+   * the hue is ambiguous. That is the opposite of the usual instinct for a
+   * low-confidence element, and it is deliberate: the dotted stroke, the missing
+   * casing, the missing gradient and the refusal to animate are the four signals
+   * that say GUESS. Dimming it on top of those did not add humility, it just
+   * made the one thing the server admits it does not know the hardest thing on
+   * the page to see.
+   */
+  --edge-guess: oklch(0.82 0.13 242);
+
+  /*
    * `--run-chrome` WAS HERE AND IS DELETED — 2026-07-30.
    *
    * It was the run canvas's `100dvh - <chrome>` subtraction: a MEASURED constant
@@ -351,11 +389,18 @@ body {
  */
 .conduit-guess {
   fill: none;
-  stroke: var(--color-ink-faint);
+  /* See `--edge-guess`: not grey, and not any role's hue. */
+  stroke: var(--edge-guess);
   stroke-width: 2.5;
   stroke-linecap: round;
   stroke-dasharray: 2 7;
-  opacity: 0.55;
+  /*
+   * 0.72 rather than the old 0.55. The dotted stroke, the absent casing, the
+   * absent gradient and the fact that it never animates are what say "guess" —
+   * four signals that survive at any opacity. Dimming it further only made it
+   * hard to see, which is not the same as making it look uncertain.
+   */
+  opacity: 0.72;
 }
 
 .conduit-comet {
