@@ -54,3 +54,14 @@ dashboard/test-results/
 # `project-publish.ts` so the owner can find his code without a 44-character
 # run id. The run keeps its own copy under dashboard/runs/<id>/workspace/.
 /projects/
+
+# Agent evidence screenshots. Reviewers and adversaries drop PNGs beside the file
+# they were testing, and a `git add -A` sweeps them into the repo root — six
+# arrived that way in 53824b7 and one in an earlier commit. They are evidence for
+# a report, not source, and this repo is public. Scoped to the ROOT so a real
+# asset under dashboard/ or projects/ is unaffected.
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
