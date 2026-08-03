@@ -610,6 +610,61 @@ test("THE FOUR SHAPES THE OLD EXPRESSION LEAKED — a lead character, and a quot
   }
 });
 
+test("A VALUE SEPARATED FROM ITS FLAG BY A SPACE — the shape `=` never saw", () => {
+  // Found by /debugfix on 2026-08-03, after the `=` shapes were already fixed:
+  // the expression only fired on an assignment, so `--token sk-live-9f2a` and
+  // `--admin-password hunter2swordfish` reached the pushed README verbatim. The
+  // docblock named only the POSITIONAL case as uncovered, so a reader auditing
+  // it had no way to learn this one existed.
+  const key = "sk-live-9f2a";
+  const pw = "hunter2swordfish";
+  const s = scratch();
+  try {
+    writeFileSync(
+      join(s.dir, "package.json"),
+      JSON.stringify({ name: "site", scripts: { start: `node server.mjs --token ${key} --admin-password ${pw}` } }),
+      "utf8",
+    );
+    writeFileSync(join(s.dir, "server.mjs"), "process.env.PORT;\n", "utf8");
+
+    const detail = discoverStartCommand(s.dir).detail;
+    assert.equal(detail.includes(key), false, `the token survived — ${detail}`);
+    assert.equal(detail.includes(pw), false, `the password survived — ${detail}`);
+    // THE FLAG NAMES SURVIVE: without them the owner cannot tell what to set.
+    assert.ok(detail.includes("--token"), detail);
+    assert.ok(detail.includes("--admin-password"), detail);
+
+    handoverProject(request(s.dir, { git: missingGit }));
+    const readme = readFileSync(join(s.dir, "README.md"), "utf8");
+    assert.equal(readme.includes(key), false, "the token reached README.md");
+    assert.equal(readme.includes(pw), false, "the password reached README.md");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a flag followed by another FLAG keeps its neighbour, and over-redaction is deliberate", () => {
+  // The negative control for the rule above. `--watch --port 3000` must not eat
+  // `--port`; `--port 3000` losing its value is accepted cost, stated in the
+  // docblock — nothing here can tell a port from a password, and the README says
+  // the command is `npm start`.
+  const s = scratch();
+  try {
+    writeFileSync(
+      join(s.dir, "package.json"),
+      JSON.stringify({ name: "site", scripts: { start: "node server.mjs --watch --port 3000" } }),
+      "utf8",
+    );
+    writeFileSync(join(s.dir, "server.mjs"), "process.env.PORT;\n", "utf8");
+    const detail = discoverStartCommand(s.dir).detail;
+    assert.ok(detail.includes("--watch"), `a flag before another flag was eaten — ${detail}`);
+    assert.ok(detail.includes("--port"), detail);
+    assert.equal(detail.includes("3000"), false, `over-redaction is the documented direction — ${detail}`);
+  } finally {
+    s.cleanup();
+  }
+});
+
 test("redaction takes the value and NOT the name, and leaves a valueless assignment alone", () => {
   // The negative controls for the test above. Over-redaction is the safe
   // direction and is asserted rather than tolerated — nothing here can tell a

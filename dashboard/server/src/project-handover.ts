@@ -911,10 +911,17 @@ export const REDACTED_VALUE = "<redacted>";
  *     shapes (`sk-ant-…`, `AKIA…`, JWTs, PEM blocks), a credential in a URL's
  *     userinfo, and 40+ character mixed-case-plus-digit tokens.
  *
+ *   · a value SEPARATED FROM ITS FLAG BY A SPACE (`--token sk-live-9f2a`),
+ *     added 2026-08-03 after it was measured surviving verbatim into a pushed
+ *     README. The flag is kept, the value goes, and a following token that is
+ *     itself a flag is left alone.
+ *
  * WHAT IS NOT CAUGHT, AND THIS SENTENCE IS THE ONE THAT MUST NOT BE DROPPED: a
  * secret passed as a bare POSITIONAL argument (`node server.mjs hunter2`) is
  * caught only if `redactForPersistence` recognises its shape, and a short
- * arbitrary value has no shape. This is a redaction, not a guarantee.
+ * arbitrary value has no shape. Nothing here can tell a positional secret from a
+ * filename, and guessing would redact the command into uselessness. This is a
+ * redaction, not a guarantee.
  */
 export function redactStartScript(script: string): string {
   // CORRECTED 2026-08-03, AND THE OLD SHAPE IS NAMED BECAUSE ITS TEST WAS GREEN
@@ -938,11 +945,27 @@ export function redactStartScript(script: string): string {
   // before is not part of a name", which is exactly what must not be enumerated
   // by hand — enumerating it is how the first three escaped. And the value is
   // matched quote-aware, longest form first, so a quoted value goes whole.
-  const named = script.replace(
+  const assigned = script.replace(
     /(?<![A-Za-z0-9_])((?:[A-Za-z_][A-Za-z0-9_]*|--?[A-Za-z0-9][A-Za-z0-9_-]*)=)(?:"[^"]*"|'[^']*'|\S+)/g,
     (_whole, name: string) => `${name}${REDACTED_VALUE}`,
   );
-  return redactForPersistence(named);
+  // AND THE SPACE-SEPARATED FORM, added 2026-08-03. The rule above only fires on
+  // `=`, so `--token sk-live-9f2a` and `--admin-password hunter2swordfish`
+  // survived verbatim — measured against this file — and the docblock named only
+  // the POSITIONAL case as uncovered, so a reader had no way to know.
+  // `redactForPersistence` does not save it either: its named-credential rule
+  // requires `[:=]` between the name and the value, and its entropy rule needs
+  // 40+ mixed-case-plus-digit characters.
+  //
+  // The VALUE is taken and the flag is kept, and a token that is itself a flag is
+  // left alone so `--watch --port 3000` does not eat `--port`. Over-redaction
+  // stays the safe direction: `--port <redacted>` costs the owner a glance at his
+  // own package.json, and the alternative costs him a key.
+  const spaced = assigned.replace(
+    /(?<![A-Za-z0-9_])(--?[A-Za-z0-9][A-Za-z0-9_-]*)(\s+)(?!-)(?:"[^"]*"|'[^']*'|\S+)/g,
+    (_whole, flag: string, gap: string) => `${flag}${gap}${REDACTED_VALUE}`,
+  );
+  return redactForPersistence(spaced);
 }
 
 /**
