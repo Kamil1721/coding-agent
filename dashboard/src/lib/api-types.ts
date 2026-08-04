@@ -608,8 +608,12 @@ export interface ApiMotionEntry {
  * so do not render it as "no animation found".
  *
  * THE SERVER SENDS IT SINCE 2026-08-04, off the run's reference manifest, for
- * any ticket submitted with a `motionUrl` that could be read. Nothing in this
- * app renders it yet — see `RunDetail.motion`.
+ * any ticket submitted with a `motionUrl` that could be read. It is rendered by
+ * `components/run/motion.tsx` on the RunSheet's Ticket tab, which
+ * `tests/motion-readout.browser.spec.ts` drives against all three states and a
+ * body carrying no `motion` key at all. That spec, not `contract-parity`, is
+ * what proves a renderer exists: parity compares two declarations and passed on
+ * the day this field arrived with nothing reading it.
  */
 export interface ApiMotionSpec {
   readonly url: string;
@@ -802,8 +806,12 @@ export interface RunDetail extends RunSummary {
    * reference; collapsing the two in a renderer would report an opened,
    * watched page as an ignored one.
    *
-   * NOTHING IN THIS APP READS IT YET, which is the `references`/`documents`
-   * shape at its second stage: the data arrives and no component renders it.
+   * `MotionReadoutPanel` (`components/run/motion.tsx`) READS IT, mounted on the
+   * RunSheet's Ticket tab beside `TicketAttachmentsPanel`. It went unread for
+   * the first hours of its existence — the `references`/`documents` shape at its
+   * second stage, where the data arrives and no component renders it — and the
+   * check that closed that is a browser one, `tests/motion-readout.browser.spec.ts`,
+   * because a type parity test passes while a field renders nowhere.
    *
    * ABSENT ENTIRELY ON EVERY RUN RECORDED BEFORE THIS FIELD EXISTED — the same
    * trap `references` and `documents` carry, and for the same reason:
@@ -970,10 +978,13 @@ export interface CreateRunRequest {
    * response does not come back until it is done.
    *
    * A FAILED READING STILL CREATES THE RUN; the reason arrives as a `warn` on
-   * the run's event stream. What was read comes back on `RunDetail.motion`,
-   * which the server has filled since 2026-08-04 — and which nothing in this app
-   * renders, so a form that promises a readout is still promising a component
-   * that does not exist.
+   * the run's event stream. What was read comes back on `RunDetail.motion` and
+   * is shown by `MotionReadoutPanel` on the RunSheet's Ticket tab, so a form
+   * that promises a readout now names a screen that exists. A DECLINE HAS NO
+   * SCREEN OF ITS OWN: the panel renders nothing for `motion: null`, and that
+   * `null` covers a refused address and a browser that would not start as well
+   * as a ticket that named no reference. The event stream is the only place the
+   * difference is stated.
    */
   readonly motionUrl?: string | null;
 }

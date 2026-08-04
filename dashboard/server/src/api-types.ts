@@ -1242,10 +1242,14 @@ export interface RunDetail extends RunSummary {
    * reading. Rendering the middle one as an absence would tell the owner his
    * link was ignored when it was opened and watched.
    *
-   * NOTHING RENDERS IT YET. The field is on the wire and mirrored in the client,
-   * and no component in `dashboard/src` reads it — so this is the
-   * `references`/`documents` shape again, one step further along: the data now
-   * arrives.
+   * IT IS RENDERED, and only a browser check can say so. `MotionReadoutPanel`
+   * (`dashboard/src/components/run/motion.tsx`) reads it on the RunSheet's
+   * Ticket tab and `dashboard/tests/motion-readout.browser.spec.ts` drives all
+   * three states above plus a body with no `motion` key. For a few hours after
+   * this field went on the wire nothing read it — the `references`/`documents`
+   * shape one step further along — while `contract-parity.test.ts` passed
+   * throughout, because parity compares two declarations and cannot see a
+   * component.
    *
    * DECLARED BEFORE ANYTHING SENDS IT, DELIBERATELY. `references` and
    * `documents` went the other way round — server first, client mirror months
