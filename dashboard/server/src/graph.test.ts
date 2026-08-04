@@ -1011,3 +1011,67 @@ test("LANE: every historical run in the owner's database folds, and the spec one
     db.close();
   }
 });
+
+/* ==================================================================
+ * THE WORDS ON SCREEN
+ *
+ * WHY THIS EXISTS. The rename landed once already and did not reach the owner:
+ * the plain-English strings were written into `spec-pipeline.ts`, which renders
+ * NOTHING, while `STAGE_LABEL` here kept saying "Spec seat" / "Audit seat" /
+ * "Freeze". Every test in the file stayed green, because until now not one of
+ * them asserted a single user-visible word — the review that caught it said so
+ * in as many words. A vocabulary nothing tests is a vocabulary that drifts back.
+ * ================================================================== */
+
+test("COPY: no seat jargon reaches a string the owner reads", () => {
+  /*
+   * BANNED AS WORDS, NOT AS CONCEPTS. "Seat" is this repo's own term for a
+   * structurally separate model call and stays load-bearing in the code; it is
+   * meaningless on a canvas. "Digest" and "suite" are the same trade. The freeze
+   * stage still has to promise the builder cannot read the tests — that
+   * guarantee is asserted separately below, so shortening the sentence cannot
+   * quietly drop it.
+   */
+  const banned = [/\bseat\b/i, /\bdigest\b/i, /\bsuite\b/i, /\bfreeze\b/i];
+  const seen: string[] = [];
+  for (const phase of ["plan", "spec"] as const) {
+    for (const stage of foldGraphAll([{ type: "phase", phase }]).stages ?? []) {
+      seen.push(stage.label, stage.detail);
+    }
+  }
+  assert.ok(seen.length > 0, "folded no stages at all, so this test would pass vacuously");
+  for (const text of seen) {
+    for (const pattern of banned) {
+      assert.ok(
+        !pattern.test(text),
+        `${pattern.source} is back in a string the owner reads: ${JSON.stringify(text)}`,
+      );
+    }
+  }
+});
+
+test("COPY: each pre-build stage says what it does, and freeze keeps its promise", () => {
+  const byId = new Map(
+    (foldGraphAll([{ type: "phase", phase: "spec" }]).stages ?? []).map((s) => [s.id, s]),
+  );
+  assert.equal(byId.get("capture")?.label, "Reading the reference page");
+  assert.equal(byId.get("author")?.label, "Writing the tests");
+  assert.equal(byId.get("audit")?.label, "Attacking the tests");
+  assert.equal(byId.get("freeze")?.label, "Sealing the tests");
+  assert.equal(
+    foldGraphAll([{ type: "phase", phase: "plan" }]).stages?.find((s) => s.id === "orchestrator")
+      ?.label,
+    "Orchestrator",
+    "the owner kept this word on purpose — it is one of the two that already meant something",
+  );
+
+  /*
+   * THE SHORTENING MUST NOT COST THE GUARANTEE. "Seals the suite by digest, so
+   * the builder can never see it" became "Locks the tests so the builder can
+   * never read them". Losing the word `digest` is the point; losing the promise
+   * that the builder cannot read them would be a different product.
+   */
+  const freeze = byId.get("freeze")?.detail ?? "";
+  assert.match(freeze, /builder/i, `freeze no longer names the builder: ${JSON.stringify(freeze)}`);
+  assert.match(freeze, /never/i, `freeze no longer states the guarantee: ${JSON.stringify(freeze)}`);
+});

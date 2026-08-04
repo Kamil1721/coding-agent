@@ -471,12 +471,30 @@ const STAGE_ORDER: readonly GraphStageId[] = [
 /** The four the spec phase runs. `plan` precedes them; `orchestrator` follows. */
 const SPEC_STAGES: readonly GraphStageId[] = ["capture", "author", "audit", "freeze"];
 
+/*
+ * THE STRINGS THE OWNER ACTUALLY READS. Renamed 2026-08-04 on his instruction:
+ * "spec seat audit seat freeze. These dont really mean anything to me. For
+ * example PLan means something, orchestrator means something, ui agent etc."
+ *
+ * So `plan` and `orchestrator` keep their words — they were never the problem —
+ * and the four seat names become what the seat DOES. "Seat" is this system's own
+ * word for a structurally separate model call with its own prompt and no shared
+ * history; it is load-bearing in the code and meaningless on a canvas.
+ *
+ * `audit` is "Attacking the tests" rather than the softer "Checking": the seat
+ * exists to find untestable and gameable criteria, and a label that undersells
+ * that would misdescribe the one step whose whole value is adversarial.
+ *
+ * `spec-pipeline.ts` carries an identical vocabulary and renders none of it —
+ * see the note there. Two vocabularies for one pipeline is how the dead one gets
+ * copied forward, so change both together or neither.
+ */
 const STAGE_LABEL: Readonly<Record<GraphStageId, string>> = {
   plan: "Plan",
-  capture: "Reference capture",
-  author: "Spec seat",
-  audit: "Audit seat",
-  freeze: "Freeze",
+  capture: "Reading the reference page",
+  author: "Writing the tests",
+  audit: "Attacking the tests",
+  freeze: "Sealing the tests",
   orchestrator: "Orchestrator",
 };
 
@@ -486,8 +504,10 @@ const PLAN_RUNNING =
 const PLAN_PARKED_DETAIL =
   "Waiting for an answer in the run panel. The window closes on its own, and the run then " +
   "proceeds on what it had to assume.";
+// "the sealed suite" was the last piece of vocabulary the rename missed, and the
+// copy test caught it rather than the owner. It says the same thing in his words.
 const ORCHESTRATOR_PENDING =
-  "Waits for the sealed suite. Whatever it delegates to appears beside it.";
+  "Waits until the tests are locked, then spawns the agents that do the work.";
 const ORCHESTRATOR_RUNNING = "Running the build. Every agent it spawned is on this canvas.";
 const ORCHESTRATOR_DONE = "The build phase is over.";
 
@@ -496,11 +516,14 @@ const STAGE_PENDING: Readonly<Record<GraphStageId, string>> = {
   plan: PLAN_RUNNING,
   // NOT "loading the page": the fold cannot see the ticket, so it does not know
   // whether there is a page. See the header note on what moving this cost.
-  capture: "Waiting to hear whether the ticket named a page to capture.",
-  author: "Waiting for the capture.",
-  audit:
-    "Attacks the suite for untestable and gameable criteria. Reports only when it finishes.",
-  freeze: "Seals the suite by digest, so the builder can never see it.",
+  //
+  // SHORTENED 2026-08-04 ("reduce the amount of text"). "Suite" and "digest"
+  // are gone as words, not as guarantees — the freeze line still states the
+  // property that matters, which is that the builder cannot read the tests.
+  capture: "Waiting to see whether your ticket named a page.",
+  author: "Starts once the reference is done.",
+  audit: "Tries to break the tests, and reports only at the end.",
+  freeze: "Locks the tests so the builder can never read them.",
   orchestrator: ORCHESTRATOR_PENDING,
 };
 
