@@ -362,3 +362,58 @@ SHAPE is still wrong, and no amount of relabelling fixes that.
 FIRST STEP FOR WHOEVER PICKS THIS UP: for each of the 21, print the `task_started`
 payload's `tool_use_id` and, where it is non-null, whether any earlier assistant turn
 carried a tool use with that id. That separates cause 1 from causes 2 and 3 in one query.
+
+#### ANSWERED 2026-08-04 — it is none of the three, and the headline above is wrong
+
+Measured while running Step 1 of Task 3 of `plans/2026-08-04-motion-capture-plan-a.md`,
+whose whole task was to widen `canSpawn` for cause 3. **The widening was not shipped:
+it would have fixed 0 of the 21.** `graph-emit.ts` is untouched.
+
+**The query the plan shipped to separate the causes cannot separate anything.** It reads
+`payload.toolUseId`; the field is `payload.sdk.toolUseId` (`graph-emit.ts:296`). So
+`!p.toolUseId` is true for every event and the query returns "cause 1" whatever the data
+says. Run verbatim it gives `{total:34, nullId:21, unseen:0}`. Corrected, the same run
+gives `{total:34, exact:13, nullId:1, unseen:20}` — the opposite reading. A probe that
+can only return one answer, which is this repository's recurring defect and the reason
+the number above went 24 hours unexplained.
+
+**What the 20 non-null ids actually point at: `Bash`, not a delegation.** All 20 carry
+`agent: null` — the CLI sent no `subagent_type`, so it did not describe them as
+delegations — and 14 of the 20 carry a raw shell string where an agent's description
+would be:
+
+```
+n4…n13  /Users/kamilborzecki/.claude/scripts/gemini-image.sh "FAITHFUL RECONSTRUCTION…
+n21     node "$TMPDIR/harness.mjs" && node "$TMPDIR/harness2.mjs" && …
+n28     cd $TMPDIR && python3 -m venv ftenv >/dev/null 2>&1 && ./ftenv/bin/pip -q …
+n17/n18 "Retry headless shell in single-process mode" / "Launch headless screenshot in background"
+```
+
+The remaining six are Bash `description` strings. In every one of the 20 the nearest
+preceding `graph_tool` is `Bash`. These are BACKGROUND SHELLS — `run_in_background`
+Bash calls, which the CLI reports as `task_started` — and `canSpawn` refuses `Bash`
+correctly. The second run agrees: `…3d4d1ccb` is 9 inferred, all 9 `agent: null`, all 9
+behind a Bash call.
+
+**Why the proposed widening reaches none of them.** It added the names
+`Dispatch`/`SendMessage`/`Workflow` and the input keys `agent_type`/`agentType`.
+`Bash` is not among the names, and Bash's input keys (`command`, `description`,
+`run_in_background`, `timeout`) intersect the key list nowhere. 20 Bash-origin + 1
+null-id = 21, and the change reaches neither group.
+
+**The one genuine delegation that was inferred is n29** (`human-factors-adversary`) and
+its `tool_use_id` is null — cause 1, which widening also cannot reach.
+
+**So the headline is wrong and so is commit `7045d05`'s.** 34 is a count of EVENTS: the
+root re-announces itself 5 times across the two resume points, leaving 29 distinct nodes.
+Genuine agent delegations drawn as guesses: **one**. The canvas is not showing a flat fan
+of orphaned subagents — it is showing background shells as agent nodes, parented to root
+and dashed. The depth of the real agent tree was never the thing being under-reported.
+
+LEFT OPEN DELIBERATELY, BECAUSE IT IS A DESIGN CALL AND NOT A BUG FIX: a background
+Bash block IS the true origin of the task it starts, so recording `Bash` +
+`run_in_background: true` in `#spawnOrigin` would make 20 of these `exact` and parent
+them to the agent that ran the shell rather than to the root. That changes what `exact`
+means for a task that is not a delegation, and it presumes a background shell should be
+an agent node at all. Neither question is one to settle inside a task whose instruction
+was to stop.
