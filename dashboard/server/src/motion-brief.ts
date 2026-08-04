@@ -21,12 +21,19 @@
  * place a role passes through before it is composed in. `safeRole` below is that
  * check; it is a shape test, not knowledge of what the element was.
  */
-import type { MotionEntry, MotionSpec } from "./motion-types.js";
+import type { MotionEntry, MotionFamily, MotionSpec } from "./motion-types.js";
 
 export const MOTION_BLOCK_BEGIN = "--- MOTION READ FROM THE REFERENCE PAGE (BEGIN) ---";
 export const MOTION_BLOCK_END = "--- MOTION READ FROM THE REFERENCE PAGE (END) ---";
 
-const FAMILY_PROSE: Record<string, string> = {
+/**
+ * Every family, keyed by the union rather than by `string`, so a thirteenth
+ * family is a compile error here. Keyed by `string` it would fall back to
+ * printing the raw slug — `route-transition` — into a brief that is hashed into
+ * the ticket id, which is a silent wrong answer where a build failure is
+ * available. `spec-assumptions.ts` takes the same position about its own union.
+ */
+const FAMILY_PROSE: Record<MotionFamily, string> = {
   "load-entrance": "on load, entering",
   "scroll-reveal": "revealed once on scroll into view",
   "scroll-linked": "driven by scroll position rather than by time",
@@ -95,7 +102,7 @@ function safeRole(role: string): string {
 }
 
 function entryLine(entry: MotionEntry): string {
-  const words: string[] = [`  ${safeRole(entry.role)} — ${FAMILY_PROSE[entry.family] ?? entry.family}`];
+  const words: string[] = [`  ${safeRole(entry.role)} — ${FAMILY_PROSE[entry.family]}`];
   if (entry.props.length > 0) words.push(`animating ${entry.props.join(" and ")}`);
   if (!entry.parity) {
     words.push("— presence only: this was observed to run, and its content was NOT compared");
