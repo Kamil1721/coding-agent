@@ -97,12 +97,20 @@ function RecentRuns(): ReactNode {
  * `"ask"` IS FIRST AND IS THE DEFAULT because it is what this form already sent
  * before the row existed (`api.ts:205`); the row discloses that behaviour and adds
  * a way out of it, and was deliberately not the occasion to change it.
+ *
+ * THE LABELS LOST THE WORD "mockup" ON 2026-08-04, and only the labels: the values
+ * are the wire's and are untouched, so `model-picker.browser.spec.ts:196`'s whole
+ * body `toEqual` still sees `designLock: "ask"`. The row these render in is now
+ * headed "Mockups", so the first choice was saying the noun twice within one line
+ * of itself. No spec resolves either control by its label text (checked: the only
+ * matches for "ui-designer pick" under `tests/` are in `design-park-clock` and the
+ * run page's own deck, neither of which loads this screen).
  */
 const DESIGN_CHOICES: readonly {
   readonly value: "ask" | "auto";
   readonly label: string;
 }[] = [
-  { value: "ask", label: "Ask me which mockup to build" },
+  { value: "ask", label: "Ask me which to build" },
   { value: "auto", label: "Let ui-designer pick" },
 ];
 
@@ -510,10 +518,15 @@ export default function NewTicketPage(): ReactNode {
               >
                 Attach images or documents
               </button>
-              <span className="text-[11px] text-ink-faint">
-                or paste and drop them into the brief above.
-              </span>
               {/*
+                * THE "or paste and drop them into the brief above" HINT IS CUT
+                * (2026-08-04, the redundancy pass). It taught an affordance that
+                * costs nothing to discover and refuses nothing when it is not
+                * discovered: the picker below reaches the same intake, and the
+                * paste and drop handlers on the textarea are unchanged. What it
+                * cost was a line of permanent tutorial prose on the screen the
+                * owner reads most, which is the complaint this pass answers.
+                *
                 * ONE INPUT FOR BOTH KINDS, NOT TWO, and the reason is a test
                 * rather than tidiness: `ticket-references.browser.spec.ts:131`
                 * attaches through `input[type="file"]` `.first()`, so a second
@@ -549,12 +562,23 @@ export default function NewTicketPage(): ReactNode {
               * attachment. That is decided server-side per seat and reported on
               * the run's own event stream, and no sentence on this form claims it
               * for images either.
+              *
+              * IT IS NOW CONDITIONAL ON THERE BEING A FILE, AND SHORTER (2026-08-04,
+              * the redundancy pass). The RULE is load-bearing and was not cut: an
+              * attached file changes the ticket id, so it changes which frozen
+              * suite the build is graded against, and a person who does not know
+              * that will attach a screenshot to a ticket they think they already
+              * submitted. But it is a fact about ATTACHMENTS, and on the empty
+              * form it was a paragraph about a thing that had not happened. It now
+              * appears at the moment it starts applying, which is the first chip.
+              * The wording lost "frozen acceptance suite" for "its own tests",
+              * which is the vocabulary the rest of this pass moved to.
               */}
-            <p className="text-[11px] leading-snug text-ink-faint">
-              A reference or a document is part of the ticket&rsquo;s identity: the same
-              words with a different file is a different ticket, with its own frozen
-              acceptance suite.
-            </p>
+            {attachments.length > 0 && (
+              <p className="text-[11px] leading-snug text-ink-faint">
+                A different file makes this a different ticket, with its own tests.
+              </p>
+            )}
 
             {/*
               * THE CAPTURE SENTENCE, SHOWN ONLY WHEN THE BRIEF LINKS SOMEWHERE.
@@ -588,25 +612,45 @@ export default function NewTicketPage(): ReactNode {
               * those end with a `warn` on the run's stream rather than a refused
               * submission. Without the clause the sentence is false on exactly
               * those paths.
+              *
+              * COMPRESSED 2026-08-04 FROM FOUR LINES TO THREE SENTENCES, and one
+              * thing was DELIBERATELY NOT COMPRESSED: the design spec for this
+              * pass (`docs/superpowers/specs/2026-08-04-canvas-redesign.md`,
+              * section 6.2 item 4) shortened this to two sentences by dropping the
+              * unreachable clause while keeping the opening assertion that the
+              * link IS captured. That is the exact combination the paragraph above
+              * says goes false when `refuseHost` declines the host or the fetch
+              * times out, so the clause was kept and the spec is reported as
+              * corrected. What was cut instead is the parenthetical inventory of
+              * WHAT the capture produces ("an outline into the ticket text and
+              * screenshots for the builder"): it names an internal artefact split
+              * the owner cannot act on while writing the brief, and the sentence
+              * is true without it.
               */}
             {linksToAPage(ticketText) && (
               <p className="text-[11px] leading-snug text-ink-faint">
-                The first link in this brief is captured before the suite is written —
-                an outline into the ticket text and screenshots for the builder. The
-                live page is never opened again: grading runs with no network, so
-                anything your build is measured against can only be what was taken now.
-                If the page cannot be reached the run says so and the ticket is your
-                words alone.
+                The first link in this brief is captured before the tests are written.
+                The live page is never opened again, so anything your build is measured
+                against is what was taken then. If the page cannot be reached the run
+                says so and the ticket is your words alone.
               </p>
             )}
           </div>
 
           <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 border-t border-line px-3 py-1.5 text-[11px] text-ink-faint">
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span>
-                The acceptance criteria are authored from this text before any code is
-                written. Ambiguity here becomes an untestable criterion later.
-              </span>
+              {/*
+               * THE CRITERIA SENTENCE THAT SAT HERE IS DELETED (2026-08-04, the
+               * redundancy pass). It read "The acceptance criteria are authored
+               * from this text before any code is written. Ambiguity here becomes
+               * an untestable criterion later." Both halves are already on the
+               * screen: the panel subtitle four inches above says "Describe what
+               * you want built, and how you will know it works", which is the same
+               * instruction in the imperative, and the note below states the one
+               * consequence of ambiguity a person can actually act on. Two
+               * paragraphs restating each other is the specific complaint this
+               * pass answers, and this is the pair that was restating.
+               */}
               {/*
                * THE GATE'S ONE LIMIT, SAID BEFORE THE TICKET IS WRITTEN rather than
                * discovered after the run. The sealed scorer runs `--network=none`
@@ -631,11 +675,23 @@ export default function NewTicketPage(): ReactNode {
                * this sentence is a restatement. NOTHING KEEPS THEM IN SYNC — the
                * parity test covers SSE event names, not prose — so an edit to the
                * server's note will not be reflected here by any mechanism.
+               *
+               * COMPRESSED FROM THREE LINES TO ONE, AND KEPT PERMANENT (2026-08-04,
+               * the redundancy pass). Every other long note on this form either got
+               * shorter or became conditional; this one had no condition available
+               * to hang it on. Nothing on the client can tell whether a brief
+               * implies a payment provider or a hosted database, and a keyword
+               * sniff would be a guess that hides the note on the tickets that need
+               * it most. Putting it behind a disclosure was considered and refused
+               * for the same reason: it changes what a person WRITES, so it has to
+               * be readable while they are writing. The named brands went — Stripe
+               * is an example, not the rule — and the category survived, as did
+               * "graded against a stub" rather than "fails", which is the half the
+               * reasoning above exists to protect.
                */}
               <span>
-                Grading happens with no network and no credentials, so a criterion that
-                needs Stripe, a hosted database or third-party login is judged against
-                whatever stub gets built — which can pass as easily as fail.
+                Grading runs with no network and no logins, so anything needing a real
+                payment provider, database or login is graded against a stub.
               </span>
             </div>
             <span className="numeric shrink-0">{trimmed.length} chars</span>
@@ -643,157 +699,239 @@ export default function NewTicketPage(): ReactNode {
         </Panel>
 
         {/*
-         * A LINK WHOSE MOTION IS WANTED AND WHOSE CONTENT IS NOT. The brief's own
-         * first URL still means "copy this site" and still feeds the outline
-         * capture disclosed above; this one means only "move like this". Keeping
-         * them apart is what lets the owner say he likes how something moves
-         * without inheriting its headings and its palette.
+         * THREE PANELS BECAME ONE (2026-08-04, the redundancy pass).
          *
-         * IT SITS BELOW THE BRIEF AND THAT IS LOAD-BEARING, for the same reason
-         * the file input above carries its own ordering note:
-         * `ticket-references.browser.spec.ts` drives the brief as
-         * `getByRole("textbox").first()` and its two accelerator tests submit
-         * through it, so a URL field placed ABOVE the Ticket panel would silently
-         * retarget four existing specs at a control they were not written for.
-         * `ticket-motion.browser.spec.ts` asserts the ordering rather than leaving
-         * it to whoever next moves a panel.
+         * `Motion reference`, `Design` and `Delivery` were three `Panel`s, which
+         * is three uppercase headers, three borders and three body paddings for
+         * one URL field, one radio pair and one checkbox. Two of those headers
+         * were also worse names than the controls under them: "Design" sat above
+         * a question about who picks a mockup, and "Delivery" above a checkbox
+         * that already said "when it passes". They are now three rows in ONE
+         * panel, separated by the same hairline the recent-runs list uses, each
+         * row carrying a plain-English label in place of its old header.
          *
-         * NO VALIDATION HERE, DELIBERATELY. The server owns the refusal list —
-         * `site-capture.ts` refuses localhost, private and link-local ranges — and
-         * a second copy on the client would drift from it. This field's job is to
-         * carry the string; what the run did with it is on the run's own event
-         * stream, which is the same rule every other disclosure on this form
-         * follows.
+         * THE ORDER IS UNCHANGED AND THE ORDER IS THE TEST. Motion stays first
+         * inside the panel and the panel stays below the Ticket panel, because
+         * `ticket-motion.browser.spec.ts:161` asserts `getByRole("textbox")
+         * .first()` is still the brief's TEXTAREA. Moving this block above the
+         * Ticket panel silently retargets four specs at a URL field.
          *
-         * THE COPY DESCRIBES A READING, NEVER A GRADE. Nothing in this system
-         * compares a build to the live page — the sealed scorer runs with no
-         * network — so the sentence says what is taken and how coarsely, and stops
-         * there.
-         *
-         * AND IT IS WRITTEN IN A TENSE THIS COMMIT CAN SUPPORT. An earlier draft
-         * opened "Read once when the ticket is submitted", which asserts a
-         * server-side behaviour that is not in the tree yet — the same defect as
-         * the notice below, pointed at the owner from a different paragraph. The
-         * note therefore states the LIMITS of any reading and hands the fact of
-         * one to the run's own event stream, which is the rule the attachment
-         * disclosure above already follows: sending a file is not the same as a
-         * seat reading it, and the run's log is where the truth for a given run
-         * is. `ticket-motion.browser.spec.ts` pins the deferring sentence, so a
-         * rewrite back into the present tense has to delete a test to do it.
+         * THE ROWS OWN THEIR PADDING, AND `bodyClassName="p-0"` IS NOT HOW YOU GET
+         * THAT. `Panel` writes `px-3 py-2.5` on its body (`components/ui.tsx:54`)
+         * and appends `bodyClassName` after it, but Tailwind v4 emits `padding`
+         * before `padding-inline`, so `p-0` LOSES the cascade to `px-3` no matter
+         * which order the class names are written in. Measured on this page
+         * 2026-08-04: `getComputedStyle(body).padding` is `10px 12px` with
+         * `p-0` applied, on this panel and on `RecentRuns`, which has carried the
+         * same inert override since it was written. The negative margins below
+         * cancel the real padding by the same amounts, so the divider runs the
+         * full width of the panel and reads as a seam between two rows instead of
+         * an underline on one. `RecentRuns` is left alone: its rows are links with
+         * their own hover fill, and a full-bleed row there is a separate change.
          */}
-        <Panel title="Motion reference">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium text-ink">
-              A page whose animation you want matched
-            </span>
+        <Panel title="Options">
+          <div className="-mx-3 -my-2.5 divide-y divide-line">
             {/*
-              * `type="url"` FOR THE KEYBOARD, NOT FOR VALIDATION. It is not inside
-              * a field set this form validates and the submit path never reads
-              * `checkValidity`, so a malformed string still posts and the server
-              * still answers; what the type buys is the URL keyboard on a phone
-              * and the browser's own autofill behaviour.
-              */}
-            <input
-              type="url"
-              inputMode="url"
-              placeholder="https://…"
-              value={motionUrl}
-              onChange={(event) => setMotionUrl(event.target.value)}
-              // The bordered-field idiom this app already has, copied from the
-              // plan dialogue's answer box rather than invented: `bg-canvas`
-              // against the panel's `bg-surface` is what makes a field read as a
-              // field, and `focus:border-line-strong` is the focus affordance
-              // every other input on this side of the app uses.
-              className="w-full rounded-sm border border-line bg-canvas px-2 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-line-strong focus:outline-none"
-            />
-          </label>
-          <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
-            Only the motion is taken from a page named here — not its words, its layout
-            or its colours — and durations are rounded, because two readings of the same
-            page never agree exactly. What the run made of the link is on the run&rsquo;s
-            own event stream.
-          </p>
-        </Panel>
-
-        {/*
-         * THE RUN STOPS, AND UNTIL NOW THE FORM NEVER SAID SO. Every submission
-         * from this page went out as `"ask"` and a dashboard submission is
-         * interactive by both of the server's tests, so the DESIGN lane's mockups
-         * park the run at `awaiting_input` mid-build (`orchestrator.ts:1505-1509`)
-         * and it waits for a click the ticket form gave no warning about — on a run
-         * the owner had every reason to leave unattended. The row discloses the
-         * stop and, with `"auto"`, is the way past it.
-         *
-         * WHAT THIS ROW DOES NOT COVER, since it reads like a promise that every
-         * run stops: the park needs the lane to have RUN and to have produced
-         * mockups with none locked. `designLaneMode` returns "off" for a ticket
-         * with no UI surface and "degraded" when the stills capability is missing,
-         * and neither produces a mockup to choose between — so on those tickets
-         * "Ask" changes nothing at all. This form cannot tell which it is: the
-         * surface is classified server-side from the brief, after submit, and no
-         * endpoint predicts it. The wording below therefore says what happens
-         * "once the mockups exist" rather than "every run".
-         *
-         * NO DURATION IS NAMED, DELIBERATELY. The wait is
-         * `DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN` minutes
-         * (`design-lock.ts:54-57`), the env var overrides the built-in default,
-         * and no route on this API exposes the resolved value — so any number
-         * printed here would be a guess that goes silently wrong the day the
-         * variable is set. "The window closes" is the phrase the mockup deck
-         * already uses for the same event (`design-lock.tsx`'s `SUBTITLE.pending`),
-         * kept identical so the two screens are one vocabulary.
-         */}
-        <Panel title="Design">
-          <div
-            role="radiogroup"
-            aria-label="Design"
-            className="flex flex-wrap gap-x-5 gap-y-1.5"
-          >
-            {DESIGN_CHOICES.map((choice) => (
-              <label
-                key={choice.value}
-                className="flex cursor-pointer items-center gap-2"
-              >
+             * A LINK WHOSE MOTION IS WANTED AND WHOSE CONTENT IS NOT. The brief's own
+             * first URL still means "copy this site" and still feeds the outline
+             * capture disclosed above; this one means only "move like this". Keeping
+             * them apart is what lets the owner say he likes how something moves
+             * without inheriting its headings and its palette.
+             *
+             * IT SITS BELOW THE BRIEF AND THAT IS LOAD-BEARING, for the same reason
+             * the file input above carries its own ordering note:
+             * `ticket-references.browser.spec.ts` drives the brief as
+             * `getByRole("textbox").first()` and its two accelerator tests submit
+             * through it, so a URL field placed ABOVE the Ticket panel would silently
+             * retarget four existing specs at a control they were not written for.
+             * `ticket-motion.browser.spec.ts` asserts the ordering rather than leaving
+             * it to whoever next moves a panel.
+             *
+             * NO VALIDATION HERE, DELIBERATELY. The server owns the refusal list —
+             * `site-capture.ts` refuses localhost, private and link-local ranges — and
+             * a second copy on the client would drift from it. This field's job is to
+             * carry the string; what the run did with it is on the run's own event
+             * stream, which is the same rule every other disclosure on this form
+             * follows.
+             *
+             * THE COPY DESCRIBES A READING, NEVER A GRADE. Nothing in this system
+             * compares a build to the live page — the sealed scorer runs with no
+             * network — so the sentence says what is taken and how coarsely, and stops
+             * there.
+             *
+             * AND IT IS WRITTEN IN A TENSE THIS COMMIT CAN SUPPORT. An earlier draft
+             * opened "Read once when the ticket is submitted", which asserts a
+             * server-side behaviour that is not in the tree yet — the same defect as
+             * the notice below, pointed at the owner from a different paragraph. The
+             * note therefore states the LIMITS of any reading and hands the fact of
+             * one to the run's own event stream, which is the rule the attachment
+             * disclosure above already follows: sending a file is not the same as a
+             * seat reading it, and the run's log is where the truth for a given run
+             * is. `ticket-motion.browser.spec.ts` pins the deferring sentence, so a
+             * rewrite back into the present tense has to delete a test to do it.
+             */}
+            <div className="px-3 py-3">
+              <label className="flex flex-col gap-1.5">
+                {/*
+                  * THIS SENTENCE IS THE ROW'S LABEL NOW, and it is verbatim on
+                  * purpose: `ticket-motion.browser.spec.ts:122` resolves the field
+                  * with `getByLabel(/animation you want matched/i)` and four tests
+                  * drive it. The deleted `Motion reference` panel header was the
+                  * redundancy — it named the same thing twice, once in internal
+                  * vocabulary and once in words a person uses.
+                  */}
+                <span className="text-[13px] font-medium text-ink">
+                  A page whose animation you want matched
+                </span>
+                {/*
+                  * `type="url"` FOR THE KEYBOARD, NOT FOR VALIDATION. It is not inside
+                  * a field set this form validates and the submit path never reads
+                  * `checkValidity`, so a malformed string still posts and the server
+                  * still answers; what the type buys is the URL keyboard on a phone
+                  * and the browser's own autofill behaviour.
+                  */}
                 <input
-                  type="radio"
-                  // A SHARED `name` IS THE GROUPING, which is what gives arrow-key
-                  // navigation and one-tab-stop behaviour for free. It is never
-                  // read off the form — the value goes to `createRun` from state —
-                  // so it only has to be unique within this form.
-                  name="designLock"
-                  value={choice.value}
-                  checked={designLock === choice.value}
-                  onChange={() => setDesignLock(choice.value)}
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://…"
+                  value={motionUrl}
+                  onChange={(event) => setMotionUrl(event.target.value)}
+                  // The bordered-field idiom this app already has, copied from the
+                  // plan dialogue's answer box rather than invented: `bg-canvas`
+                  // against the panel's `bg-surface` is what makes a field read as a
+                  // field, and `focus:border-line-strong` is the focus affordance
+                  // every other input on this side of the app uses.
+                  className="w-full rounded-sm border border-line bg-canvas px-2 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-line-strong focus:outline-none"
+                />
+              </label>
+              {/*
+                * SHORTENED 2026-08-04. The rounding clause ("durations are rounded,
+                * because two readings of the same page never agree exactly") is cut:
+                * it described the precision of a reading rather than anything the
+                * owner decides while pasting a URL, and the run's own event stream,
+                * which the surviving sentence still points at, is where a specific
+                * reading is reported. The two em-dashes went with it; the sentence is
+                * a comma list now.
+                */}
+              <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
+                Only the movement is taken from this page, not its words, layout or
+                colours. What the run made of the link is on the run&rsquo;s own event
+                stream.
+              </p>
+            </div>
+
+            {/*
+             * THE RUN STOPS, AND UNTIL NOW THE FORM NEVER SAID SO. Every submission
+             * from this page went out as `"ask"` and a dashboard submission is
+             * interactive by both of the server's tests, so the DESIGN lane's mockups
+             * park the run at `awaiting_input` mid-build (`orchestrator.ts:1505-1509`)
+             * and it waits for a click the ticket form gave no warning about — on a run
+             * the owner had every reason to leave unattended. The row discloses the
+             * stop and, with `"auto"`, is the way past it.
+             *
+             * WHAT THIS ROW DOES NOT COVER, since it reads like a promise that every
+             * run stops: the park needs the lane to have RUN and to have produced
+             * mockups with none locked. `designLaneMode` returns "off" for a ticket
+             * with no UI surface and "degraded" when the stills capability is missing,
+             * and neither produces a mockup to choose between — so on those tickets
+             * "Ask" changes nothing at all. This form cannot tell which it is: the
+             * surface is classified server-side from the brief, after submit, and no
+             * endpoint predicts it. The wording below therefore says what happens
+             * "once the mockups exist" rather than "every run".
+             *
+             * NO DURATION IS NAMED, DELIBERATELY. The wait is
+             * `DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN` minutes
+             * (`design-lock.ts:54-57`), the env var overrides the built-in default,
+             * and no route on this API exposes the resolved value — so any number
+             * printed here would be a guess that goes silently wrong the day the
+             * variable is set. "The window closes" is the phrase the mockup deck
+             * already uses for the same event (`design-lock.tsx`'s `SUBTITLE.pending`),
+             * kept identical so the two screens are one vocabulary.
+             *
+             * THAT LAST TIE IS DELIBERATELY BROKEN AS OF 2026-08-04. "The window
+             * closes" is the phrase the mockup deck uses, and it is also a phrase that
+             * means nothing until you have already seen a run park, which is the exact
+             * class of vocabulary this whole pass exists to remove. The note now says
+             * "if you do not answer in time". The two screens are no longer one string
+             * for this event; they are one FACT, stated at the reading level each
+             * screen's reader is at. The deck can be brought to this wording later.
+             *
+             * WHAT DID NOT GET SHORTENED IS "once the mockups exist", and that is not
+             * an oversight: the paragraph above is the reason. Without it the sentence
+             * promises that asking always stops the run, which is false for every
+             * ticket `designLaneMode` classifies as "off" or "degraded". The design
+             * spec for this pass dropped that clause; it is kept and the spec is
+             * reported as corrected.
+             */}
+            <div className="px-3 py-3">
+              {/*
+                * THE ROW LABEL IS THE THING, NOT THE DEPARTMENT. "Design" was a panel
+                * header above a question about who chooses a mockup, which is vaguer
+                * than the control it introduced. With "Mockups" carrying the noun, the
+                * first choice reads "Ask me which to build" rather than repeating the
+                * word one line under itself.
+                */}
+              <p className="text-[13px] font-medium text-ink">Mockups</p>
+              <div
+                role="radiogroup"
+                aria-label="Mockups"
+                className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1.5"
+              >
+                {DESIGN_CHOICES.map((choice) => (
+                  <label
+                    key={choice.value}
+                    className="flex cursor-pointer items-center gap-2"
+                  >
+                    <input
+                      type="radio"
+                      // A SHARED `name` IS THE GROUPING, which is what gives arrow-key
+                      // navigation and one-tab-stop behaviour for free. It is never
+                      // read off the form — the value goes to `createRun` from state —
+                      // so it only has to be unique within this form.
+                      name="designLock"
+                      value={choice.value}
+                      checked={designLock === choice.value}
+                      onChange={() => setDesignLock(choice.value)}
+                      className="size-3.5 shrink-0 accent-[var(--color-accent)]"
+                    />
+                    <span className="text-[13px] font-medium text-ink">{choice.label}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
+                Asking stops the run once the mockups exist and waits for your pick. If you
+                do not answer in time, ui-designer picks and the run carries on.
+              </p>
+            </div>
+
+            {/*
+              * "Delivery" WAS THE WORST OF THE FOUR HEADERS. It named a department
+              * above a checkbox whose own label already ended "when it passes", so the
+              * screen said the same idea twice in two vocabularies, one of them
+              * internal. The row label takes the condition and the checkbox keeps only
+              * the action.
+              *
+              * "Off by default" WENT WITH IT. An unchecked checkbox states its own
+              * default; a sentence restating it is the redundancy this pass is named
+              * for. What survives is the half a person cannot see from the control:
+              * where the build ends up when the box is off.
+              */}
+            <div className="px-3 py-3">
+              <p className="text-[13px] font-medium text-ink">When it passes</p>
+              <label className="mt-1.5 flex cursor-pointer items-center gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={deploy}
+                  onChange={(event) => setDeploy(event.target.checked)}
                   className="size-3.5 shrink-0 accent-[var(--color-accent)]"
                 />
-                <span className="text-[13px] font-medium text-ink">{choice.label}</span>
+                <span className="text-[13px] text-ink">Deploy a preview</span>
               </label>
-            ))}
+              <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
+                When off, the build stays on this machine.
+              </p>
+            </div>
           </div>
-          <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
-            Asking stops the run once the mockups exist and waits for your pick; if the
-            window closes before you answer, ui-designer picks and the run carries on.
-          </p>
-        </Panel>
-
-        <Panel title="Delivery">
-          <label className="flex cursor-pointer items-start gap-2.5">
-            <input
-              type="checkbox"
-              checked={deploy}
-              onChange={(event) => setDeploy(event.target.checked)}
-              className="mt-[3px] size-3.5 shrink-0 accent-[var(--color-accent)]"
-            />
-            <span className="min-w-0">
-              <span className="text-[13px] font-medium text-ink">
-                Deploy a preview when it passes
-              </span>
-              <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">
-                Off by default. When off the artifact stays on this machine and the run
-                reports a local path instead of a URL.
-              </span>
-            </span>
-          </label>
         </Panel>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -836,11 +974,15 @@ export default function NewTicketPage(): ReactNode {
             * the day it changes. It is phrased as the policy rather than as
             * progress: this client cannot see whether a capture is actually
             * running, and on a refused host the answer is that none is.
+            *
+            * SHORTENED 2026-08-04. It is read while a disabled button says
+            * "Submitting…", so the comparison to a submit without a link was
+            * describing a run that is not happening. What a person waiting needs is
+            * the cause and the expectation, which is what is left.
             */}
           {submitting && linksToAPage(ticketText) && (
             <span className="text-[12px] text-ink-faint">
-              A link in the brief is captured before the run is created, so this
-              submit is slower than one without.
+              Capturing the link first, so this takes a moment.
             </span>
           )}
           {submitError !== null && (
