@@ -38,15 +38,31 @@
  * events at all, folds to an empty graph, and lands here with zero nodes. That
  * is a first-class state with its own copy, not an error and not a feature flag.
  *
- * TWO THINGS ON THIS CANVAS ARE NOT AGENTS, AND BOTH SAY SO. The spec stages in
- * the empty overlay, and the terminal preview card at the end of the flow. Both
- * are LAYOUT CONSTRUCTS the canvas adds from what the run recorded — never
+ * TWO THINGS ON THIS CANVAS ARE NOT AGENTS, AND BOTH SAY SO. The PRE-BUILD LANE
+ * at the left, and the terminal preview card at the end of the flow. Both are
+ * LAYOUT CONSTRUCTS the canvas draws from what the run recorded — never
  * `graph_agent` events, because every invariant in the server's graph is keyed on
  * a real agent event arriving first for its node id, and a synthetic id would be
- * a forged event. `src/lib/spec-pipeline.ts` holds the reasoning and both
- * derivations; `PreviewSiteCard` below is the card, and it is deliberately the
+ * a forged event. `PreviewSiteCard` below is the card, and it is deliberately the
  * only thing on the canvas that is not selectable, not in the arrow-key grid, and
  * not the width of an agent card.
+ *
+ * THE LANE USED TO BE A PANEL AND IS NOW PART OF THE GRAPH — 2026-08-04, the
+ * owner's ask D. It was rendered inside the `showEmptyOverlay || !ready` branch
+ * at the bottom of this file: a box floating over a canvas with zero nodes, which
+ * VANISHED the moment the build started. So the run's first eighty minutes and
+ * the rest of it were two different pictures, and "you're still on the actual
+ * same canvas" was false by construction. It is now `placement.stages` —
+ * `stage`-type React Flow nodes wired by `LaneEdge` into the root card — present
+ * continuously, pannable, focusable and openable like everything else here.
+ *
+ * ITS DATA COMES FROM `GraphState.stages`, WHICH IS WHY IT SURVIVES A RELOAD. The
+ * old panel read `specPipelineFrom(trace, …)`, and `trace` is the live SSE sink:
+ * `use-run-stream.ts` never opens a socket for a terminal run, so the lane was
+ * blank on every run the owner opened after it finished. `foldGraph` is the one
+ * reducer behind both the REST snapshot and the live tail, so a stage folded
+ * there is identical replayed and live. `src/lib/spec-pipeline.ts` still holds the
+ * superseded derivation and says so at its head.
  */
 
 import "@xyflow/react/dist/base.css";
@@ -84,7 +100,6 @@ import {
   PREVIEW_UNREACHABLE,
   previewSiteFrom,
   type PreviewSite,
-  type SpecStage,
   type TerminalPreview,
 } from "@/lib/spec-pipeline";
 import { Button, Dot, cx } from "@/components/ui";
@@ -97,8 +112,14 @@ import {
   type ColumnFlowNode,
   type GroupFlowNode,
 } from "./agent-node";
-import { DelegationEdge, type FlowEdge } from "./flow-edge";
-import { NODE_WIDTH, PREVIEW_WIDTH, placeGraph } from "./layout";
+import {
+  StageHeaderNode,
+  StageNode,
+  type StageFlowNode,
+  type StageHeaderFlowNode,
+} from "./stage-node";
+import { DelegationEdge, LaneEdge, type FlowEdge, type LaneFlowEdge } from "./flow-edge";
+import { NODE_WIDTH, PREVIEW_WIDTH, STAGE_WIDTH, placeGraph } from "./layout";
 import { ROLE_LABEL, ROLE_MEANING, ROLE_ORDER, roleColorVar, type AgentRole } from "./roles";
 
 /**
@@ -112,10 +133,12 @@ const NODE_TYPES = {
   agent: AgentNode,
   group: GroupNode,
   column: ColumnNode,
+  stage: StageNode,
+  stageHeader: StageHeaderNode,
   // A function DECLARATION below, so it is hoisted and this const can name it.
   preview: PreviewSiteCard,
 } as const;
-const EDGE_TYPES = { flow: DelegationEdge } as const;
+const EDGE_TYPES = { flow: DelegationEdge, lane: LaneEdge } as const;
 
 const MIN_ZOOM = 0.12;
 const MAX_ZOOM = 1.5;
@@ -231,6 +254,14 @@ interface EmptyCopy {
  * ternary written twice. Called only when the PLACEMENT is empty; `graphNodeCount` is
  * the unfiltered count, so `> 0` here means every node on the run was filtered out as
  * housekeeping.
+ *
+ * THE BODIES WERE CUT TO A CLAUSE EACH — 2026-08-04 ("there is just too much text and
+ * explanation around each button that almost looks like some sort of tutorial"). The
+ * FOUR CASES SURVIVE, because the paragraphs above are about which fact is true, not
+ * about how long it takes to say; what went is the explanation stacked on top of each
+ * one. The spec-phase case in particular no longer has to explain that the suite is
+ * written before any agent exists — the lane on the canvas now SHOWS that, beside
+ * this box, with a wire into the orchestrator.
  */
 function emptyCanvasCopy(state: {
   readonly graphNodeCount: number;
@@ -240,24 +271,24 @@ function emptyCanvasCopy(state: {
   if (state.graphNodeCount > 0) {
     return {
       title: "Only housekeeping so far",
-      body: "Every agent on this run is housekeeping. Use the housekeeping toggle to show them.",
+      body: "Use the housekeeping toggle to show them.",
     };
   }
   if (state.runStatus === "queued") {
     return {
       title: "Waiting for the run ahead of it",
-      body: "This run is queued. The orchestrator runs one at a time, so nothing is drawn here until the runs ahead of it finish. When it starts, the acceptance suite is written and frozen first — the graph appears once the build begins.",
+      body: "Runs go one at a time.",
     };
   }
   if (state.runIsActive) {
     return {
-      title: "The agents have not started yet",
-      body: "The acceptance suite is being written and frozen first — that happens before any agent is spawned, so there is nothing to draw yet. The graph appears as soon as the build starts.",
+      title: "No agents yet",
+      body: "The suite is written and frozen first.",
     };
   }
   return {
     title: "No delegation recorded",
-    body: "This run emitted no graph events. Runs recorded before the canvas existed, and runs on the Codex provider, contain none — the run sheet's trace is their full record.",
+    body: "This run emitted no graph events; the trace is its full record.",
   };
 }
 
@@ -280,75 +311,35 @@ function RelativeSince({ atMs }: { atMs: number }): ReactNode {
 }
 
 
-/**
- * Explains a long gap, once there is one to explain.
+/*
+ * `QuietNote`, `STAGE_TONE` AND `SpecStageCard` ARE DELETED — 2026-08-04. All
+ * three belonged to the floating "Before the build" panel, which is now a row of
+ * real nodes on the canvas (`stage-node.tsx`). What each of them was, and what
+ * happened to the reasoning inside it:
  *
- * Its own component for the same reason as {@link RelativeSince}: the ticking
- * clock must not re-render the canvas.
+ *   · `SpecStageCard` drew a stage as an `<li>` with a hand-drawn connector — "a
+ *     plain border between cards rather than a React Flow edge: these are not
+ *     graph nodes and must not be reachable by the canvas's selection, keyboard or
+ *     edge machinery". That constraint is GONE rather than violated: the stages
+ *     are now first-class nodes with their own ids, their own edge type and their
+ *     own place in the arrow-key grid, which is precisely what the owner asked
+ *     for. Its halo-not-dot pulse note survives as `STAGE_LOOK.running` in
+ *     `stage-node.tsx`, where the marker is a solid dot and the animation is on
+ *     the card border instead.
+ *   · `STAGE_TONE` was the four-state colour table; it is `STAGE_LOOK` there now,
+ *     with the fifth state (`unresolved`) the fold can produce and the old table
+ *     could not express.
+ *   · `QuietNote` printed, after three minutes of silence, "Long gaps are normal
+ *     here. The spec seat reports when it starts and when it finishes, not while
+ *     it works — on the last run that passed, this phase took about 80 minutes and
+ *     went quiet for 43 of them." The MEASUREMENT is still true and still worth
+ *     knowing; the paragraph is not, for two reasons. It was the longest single
+ *     piece of the tutorial copy the owner asked to be cut, and the silence it
+ *     apologised for is no longer silence: `subscription-caller.ts` now reports
+ *     the seat's progress every 30 seconds, so the run says something while it
+ *     works. If the seat ever goes quiet again, the honest replacement is a stall
+ *     detector, not a sentence explaining that stalls look like this.
  */
-function QuietNote({ atMs }: { atMs: number }): ReactNode {
-  const nowMs = useNow(10_000);
-  if (nowMs - atMs < 3 * 60_000) return null;
-  return (
-    <p className="mt-2 text-[10px] leading-relaxed text-ink-dim/70">
-      Long gaps are normal here. The spec seat reports when it starts and when it
-      finishes, not while it works — on the last run that passed, this phase took
-      about 80 minutes and went quiet for 43 of them.
-    </p>
-  );
-}
-
-
-const STAGE_TONE: Readonly<Record<SpecStage["state"], { dot: string; label: string }>> = {
-  done: { dot: "bg-pass", label: "text-ink" },
-  running: { dot: "bg-accent", label: "text-ink" },
-  pending: { dot: "bg-line", label: "text-ink-dim" },
-  skipped: { dot: "bg-line", label: "text-ink-dim" },
-};
-
-/**
- * One stage of the spec phase, drawn in the agent cards' visual language.
- *
- * The connector is a plain border between cards rather than a React Flow edge:
- * these are not graph nodes and must not be reachable by the canvas's selection,
- * keyboard or edge machinery, all of which are keyed on real node ids.
- */
-function SpecStageCard({ stage, isLast }: { stage: SpecStage; isLast: boolean }): ReactNode {
-  const tone = STAGE_TONE[stage.state];
-  return (
-    <li className="relative pb-3 pl-5 text-left">
-      {/*
-        * THE PULSE IS A HALO, NOT THE DOT. `animate-pulse` drives opacity to
-        * near zero, so pulsing the dot itself leaves the running stage with no
-        * marker at all for part of every cycle — the one stage a reader is
-        * looking for, intermittently invisible. The dot stays solid; a ring
-        * around it breathes.
-        */}
-      <span aria-hidden className={cx("absolute left-0 top-[6px] h-2 w-2 rounded-full", tone.dot)} />
-      {stage.state === "running" && (
-        <span
-          aria-hidden
-          className="absolute left-[-3px] top-[3px] h-3.5 w-3.5 rounded-full bg-accent/30 motion-safe:animate-pulse"
-        />
-      )}
-      {!isLast && <span aria-hidden className="absolute left-[3.5px] top-[14px] h-full w-px bg-line" />}
-      <div className={cx("text-[12px] font-medium", tone.label)}>
-        {stage.label}
-        {stage.state === "skipped" && (
-          <span className="ml-1.5 text-[10px] font-normal text-ink-dim">not needed</span>
-        )}
-      </div>
-      {/*
-        * CLAMPED, AND THE PADDING IS ON THE `li` RATHER THAN HERE. `line-clamp`
-        * is `overflow: hidden` on a `-webkit-box`, and padding on the clamped
-        * element itself is INSIDE that box — so the clipped fourth line renders
-        * into the padding and collides with the next stage's heading. Measured
-        * on this very card before the padding moved.
-        */}
-      <p className="mt-0.5 line-clamp-3 text-[11px] leading-relaxed text-ink-dim">{stage.detail}</p>
-    </li>
-  );
-}
 
 /* ------------------------------------------------------------------
  * The terminal preview card
@@ -612,15 +603,17 @@ export interface CanvasProps {
    * is enough to tell "working" from "stopped", and claims nothing else.
    */
   readonly latestActivity?: { readonly text: string; readonly atMs: number } | null;
-  /**
-   * The spec phase's four stages, for the ~80 minutes before a node exists.
+  /*
+   * `specStages` IS GONE — 2026-08-04, and its removal is the ask, not a tidy-up.
    *
-   * Empty outside the spec phase, where the REAL graph takes over. See
-   * `src/lib/spec-pipeline.ts` for why these are layout constructs and never
-   * `graph_agent` events, and for the rule that every state is read off a log
-   * line the run actually wrote rather than advanced on a timer.
+   * The run page used to compute the lane with `specPipelineFrom(trace, phase,
+   * ticketText, runIsActive)` and hand it down here as a prop, and both halves of
+   * that were wrong for the job: `trace` is the live socket, which a finished run
+   * never opens, and the derivation returned `[]` for every phase past `spec`. The
+   * lane now arrives inside `graph` as `GraphState.stages`, folded by the same
+   * reducer as the nodes, so it is on the canvas replayed and live, before the
+   * build and after it. Nothing needs to be passed.
    */
-  readonly specStages?: readonly SpecStage[];
   /**
    * The run's status, when the caller knows it.
    *
@@ -694,11 +687,24 @@ function CanvasInner({
   rightInset: requestedInset = 0,
   runIsActive = false,
   latestActivity = null,
-  specStages = [],
   runStatus,
   preview = null,
 }: CanvasProps): ReactNode {
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+
+  /**
+   * Which pre-build stages the reader has opened.
+   *
+   * SEPARATE FROM `expandedGroups`, and separate from `selectedId`. A group's
+   * expansion changes the LAYOUT — its members are placed under it — so it has to
+   * reach `placeGraph`. A stage's does not: the lane is one row, an opened card
+   * grows downward into empty canvas and nothing else moves. And it is not
+   * selection because selection opens the run sheet, which resolves its key
+   * against `graph.nodes`; a stage is not in there and never will be.
+   */
+  const [expandedStages, setExpandedStages] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
 
@@ -887,6 +893,18 @@ function CanvasInner({
   const nav = useMemo((): readonly (readonly NavCell[])[] => {
     const byColumn = new Map<string, NavCell[]>();
     const order: string[] = [];
+    /*
+     * THE LANE IS PART OF THE GRID, one card per column, ahead of the agents.
+     * Each stage is alone at its x, so it is its own column by the same rule the
+     * agents follow — and ArrowLeft from the orchestrator walks back up the
+     * pre-build chain, which is the order the run performed it in. Leaving the
+     * stages out would have put cards on the canvas that the keyboard could not
+     * reach, which is the accessibility failure this grid exists to prevent.
+     */
+    for (const stage of placement.stages) {
+      byColumn.set(stage.key, [{ key: stage.key, y: stage.y }]);
+      order.push(stage.key);
+    }
     for (const entry of placement.nodes) {
       const list = byColumn.get(entry.column);
       if (list === undefined) {
@@ -899,13 +917,25 @@ function CanvasInner({
     return order.map((column) =>
       [...(byColumn.get(column) ?? [])].sort((a, b) => a.y - b.y),
     );
-  }, [placement.nodes]);
+  }, [placement.nodes, placement.stages]);
 
   const navRef = useRef(nav);
   navRef.current = nav;
 
   const groupsRef = useRef(placement.groupKeys);
   groupsRef.current = placement.groupKeys;
+
+  /*
+   * Read through a ref for the same reason `groupsRef` is: `activate` is handed to
+   * every card as part of its `data`, so closing over the key list would rebuild
+   * every node on the canvas each time the lane changed.
+   */
+  const stageKeys = useMemo(
+    () => placement.stages.map((stage) => stage.key),
+    [placement.stages],
+  );
+  const stageKeysRef = useRef(stageKeys);
+  stageKeysRef.current = stageKeys;
 
   const flow = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -958,10 +988,21 @@ function CanvasInner({
       if (element === null) return;
       element.focus({ preventScroll: true });
 
-      const target = placement.nodes.find((entry) => entry.key === key);
+      // Stages are on the canvas and in the arrow-key grid, so they are here too:
+      // focusing a card the pane cannot show and then not panning to it is the
+      // failure this whole function exists to avoid. Their box is narrower, which
+      // is the only thing that differs.
+      const placed = placement.nodes.find((entry) => entry.key === key);
+      const stage = placement.stages.find((entry) => entry.key === key);
+      const target =
+        placed !== undefined
+          ? { x: placed.x, y: placed.y, width: NODE_WIDTH, height: placed.height }
+          : stage !== undefined
+            ? { x: stage.x, y: stage.y, width: STAGE_WIDTH, height: stage.height }
+            : undefined;
       const box = shell.current?.getBoundingClientRect();
       if (target === undefined || box === undefined) return;
-      const centreX = target.x + NODE_WIDTH / 2;
+      const centreX = target.x + target.width / 2;
       const centreY = target.y + target.height / 2;
       const screen = flow.flowToScreenPosition({ x: centreX, y: centreY });
       const margin = 60;
@@ -979,11 +1020,20 @@ function CanvasInner({
         duration: reduce ? 0 : 320,
       });
     },
-    [flow, placement.nodes, insetOf],
+    [flow, placement.nodes, placement.stages, insetOf],
   );
 
   const toggleGroup = useCallback((key: string): void => {
     setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleStage = useCallback((key: string): void => {
+    setExpandedStages((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -997,9 +1047,22 @@ function CanvasInner({
         toggleGroup(key);
         return;
       }
+      /*
+       * A STAGE OPENS IN PLACE RATHER THAN OPENING THE SHEET, and that is a
+       * mechanism decision rather than a preference. The run sheet resolves the
+       * selected key against `graph.nodes` — `page.tsx` does
+       * `graph.nodes.find(node => node.id === selectedId)` — so selecting a stage
+       * would clear the ring off whatever was selected and then show nothing. The
+       * canvas already has an in-place disclosure for a card that is not an agent
+       * (a folded group), and this is the same one.
+       */
+      if (stageKeysRef.current.includes(key)) {
+        toggleStage(key);
+        return;
+      }
       onSelect(key === selectedId ? null : key);
     },
-    [onSelect, selectedId, toggleGroup],
+    [onSelect, selectedId, toggleGroup, toggleStage],
   );
 
   /*
@@ -1149,7 +1212,10 @@ function CanvasInner({
     void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, hudRef.current));
   }, [flow]);
 
-  const firstKey = placement.nodes[0]?.key ?? null;
+  // The lane comes first when the run has one and no agents yet: on a run parked
+  // in the plan phase the only card on the canvas is a stage, and a tab stop
+  // pointing at nothing would leave the keyboard with no way in.
+  const firstKey = placement.nodes[0]?.key ?? placement.stages[0]?.key ?? null;
   const tabStop = tabbable ?? selectedId ?? firstKey;
 
   const built = useMemo((): Node[] => {
@@ -1157,12 +1223,50 @@ function CanvasInner({
       id: `column:${column.column}`,
       type: "column",
       position: { x: column.x, y: column.y },
-      data: { label: column.label, note: column.note, count: column.count },
+      data: { label: column.label, count: column.count },
       draggable: false,
       selectable: false,
       focusable: false,
       width: NODE_WIDTH,
     }));
+
+    /*
+     * THE PRE-BUILD LANE, AS NODES.
+     *
+     * `draggable` LIKE EVERY OTHER CARD. These are not chrome pinned to a corner;
+     * they are part of the graph, and the owner's arrangement of the graph is his.
+     * The same `draggedRef`/`positionOf` machinery carries them, so a moved stage
+     * stays moved and `tidy up` puts it back.
+     */
+    const stageCards: StageFlowNode[] = placement.stages.map((entry) => ({
+      id: entry.key,
+      type: "stage",
+      position: positionOf(entry.key, entry.x, entry.y),
+      data: {
+        stage: entry.stage,
+        expanded: expandedStages.has(entry.key),
+        tabbable: entry.key === tabStop,
+        onCardKeyDown,
+      },
+      draggable: true,
+      width: STAGE_WIDTH,
+    }));
+
+    const stageHeaders: StageHeaderFlowNode[] =
+      placement.stageHeader === null
+        ? []
+        : [
+            {
+              id: "column:prebuild",
+              type: "stageHeader",
+              position: { x: placement.stageHeader.x, y: placement.stageHeader.y },
+              data: { count: placement.stageHeader.count },
+              draggable: false,
+              selectable: false,
+              focusable: false,
+              width: STAGE_WIDTH,
+            },
+          ];
 
     const cards: (AgentFlowNode | GroupFlowNode)[] = placement.nodes.map((entry) => {
       const shared = {
@@ -1243,13 +1347,14 @@ function CanvasInner({
             },
           ];
 
-    return [...columns, ...cards, ...previewNodes];
+    return [...columns, ...stageHeaders, ...stageCards, ...cards, ...previewNodes];
   }, [
     placement,
     positionOf,
     selectedId,
     tabStop,
     onCardKeyDown,
+    expandedStages,
     stablePreview,
     previewSite,
     graph.nodes.length,
@@ -1317,7 +1422,26 @@ function CanvasInner({
   }, [selectedId, hovered]);
 
   const edges = useMemo((): Edge[] => {
-    return placement.edges.map((edge): FlowEdge => {
+    /*
+     * THE LANE'S LINKS, FIRST IN THE ARRAY AND FIRST IN THE RUN.
+     *
+     * A SEPARATE TYPE, NOT A `flow` EDGE WITH DIFFERENT DATA. `DelegationEdge`
+     * draws a per-edge gradient from the parent's role hue to the child's, and a
+     * stage has no role because nothing spawned it. Painting a sequence in two
+     * agents' colours would be the canvas asserting a hand-off that no event
+     * carried. See `LaneEdge`.
+     */
+    const lane: LaneFlowEdge[] = placement.stageEdges.map((edge) => ({
+      id: edge.id,
+      source: edge.from,
+      target: edge.to,
+      type: "lane",
+      data: { live: edge.live, pending: edge.pending, centerX: edge.centerX },
+      selectable: false,
+      focusable: false,
+    }));
+
+    const delegation = placement.edges.map((edge): FlowEdge => {
       // LIVE MEANS "THIS DELEGATION IS ACTIVE NOW", which is a fact about the
       // CHILD: the parent is almost always still running too, so keying on the
       // parent would light up every edge on the canvas for the whole run.
@@ -1343,7 +1467,9 @@ function CanvasInner({
         focusable: false,
       };
     });
-  }, [placement.edges, pointedAt, sweeping]);
+
+    return [...lane, ...delegation];
+  }, [placement.edges, placement.stageEdges, pointedAt, sweeping]);
 
   /* ----------------------------------------------------------------
    * The one fit, and the one sweep
@@ -1385,8 +1511,14 @@ function CanvasInner({
    * returned early on it, leaving the viewport at the identity transform with the
    * card wherever the layout put it. That run is not hypothetical: it is every run
    * recorded before the canvas existed.
+   *
+   * THE LANE COUNTS TOO, for the same reason and a sharper case: a run parked in
+   * the plan phase draws ONE stage and no agents, and it is the run the owner is
+   * most likely to be watching live. An unfitted viewport would leave that card at
+   * a negative x, off the left edge of the pane.
    */
-  const drawnCount = placement.nodes.length + (placement.preview === null ? 0 : 1);
+  const drawnCount =
+    placement.nodes.length + placement.stages.length + (placement.preview === null ? 0 : 1);
 
   useEffect(() => {
     if (hasFitted.current) return;
@@ -1571,7 +1703,12 @@ function CanvasInner({
    */
   const onNodeClick = useCallback<NodeMouseHandler>(
     (_event, node) => {
-      if (node.type === "column" || node.type === "preview") return;
+      // A STAGE IS CLICKABLE and the other two are not: `activate` opens a stage
+      // in place rather than selecting it, so it never reaches the sheet's
+      // `graph.nodes` lookup. The lane's HEADER is chrome, like a column header.
+      if (node.type === "column" || node.type === "stageHeader" || node.type === "preview") {
+        return;
+      }
       activate(node.id);
     },
     [activate],
@@ -1580,7 +1717,9 @@ function CanvasInner({
   const onNodeMouseEnter = useCallback<NodeMouseHandler>((_event, node) => {
     // `hovered` energises the edges into and out of a key; the preview has none,
     // so hovering it would only clear whatever the reader was pointing at.
-    if (node.type === "column" || node.type === "preview") return;
+    if (node.type === "column" || node.type === "stageHeader" || node.type === "preview") {
+      return;
+    }
     setHovered(node.id);
   }, []);
 
@@ -1636,8 +1775,15 @@ function CanvasInner({
    *
    * THE LOADING OVERLAY IS UNAFFECTED. `!ready` is about the graph snapshot being
    * in flight and says nothing about the workspace.
+   *
+   * AND IT STANDS DOWN WHEN THE LANE IS DRAWN, which is the same rule for a
+   * stronger reason — 2026-08-04. "The agents have not started yet", centred over
+   * a chain of stage cards that visibly say which of them is running, is the
+   * display contradicting itself; the stages ARE the answer to "why is nothing
+   * here yet", which is what the overlay's paragraph used to be for.
    */
-  const showEmptyOverlay = empty && placement.preview === null;
+  const showEmptyOverlay =
+    empty && placement.preview === null && placement.stages.length === 0;
 
   /*
    * Derived unconditionally rather than inside the overlay's branch: it is four
@@ -1732,15 +1878,17 @@ function CanvasInner({
        */}
       <div className="pointer-events-none absolute bottom-3 right-3 z-10 flex items-center gap-2 min-[900px]:bottom-auto min-[900px]:top-3">
         {placement.groupKeys.length > 0 && (
+          /*
+           * NO `title` ON ANY OF THESE THREE — 2026-08-04. Each carried a sentence
+           * restating its own label ("Fold every group of identical tasks back into
+           * one card each." over a button that reads `fold 2`), which is the
+           * tutorial voice the owner asked to be cut. The labels are verbs with
+           * counts and the effect is immediate and reversible.
+           */
           <Button
             variant="default"
             className="pointer-events-auto"
             onClick={toggleAllGroups}
-            title={
-              allExpanded
-                ? "Fold every group of identical tasks back into one card each."
-                : "Show every folded task as its own card."
-            }
           >
             {allExpanded
               ? `fold ${String(placement.groupKeys.length)}`
@@ -1754,29 +1902,25 @@ function CanvasInner({
           * teaches the reader to distrust the others.
           */}
         {moved > 0 && (
-          <Button
-            variant="default"
-            className="pointer-events-auto"
-            onClick={tidy}
-            title="Put every card back where the layout puts it, and frame the whole run again."
-          >
+          <Button variant="default" className="pointer-events-auto" onClick={tidy}>
             tidy up
           </Button>
         )}
         {ambientCount > 0 && (
           /*
-           * `skip_transcript` IS GONE FROM THE TOOLTIP — 2026-07-30. It is the CLI
-           * field this filter reads (`GraphNode.ambient`, see `layout.ts`), and
-           * naming it here asked the reader to know an SDK flag to understand a
-           * button. The sentence now says what the agents ARE, in the same words the
-           * run sheet uses; the two are hand-kept copies of one string and nothing
-           * compares them, so change both together.
+           * THE TOOLTIP IS GONE — 2026-08-04. It read "These agents are
+           * housekeeping — not an agent step. Show or hide them on the canvas.",
+           * which is the button's own label plus a description of what pressing a
+           * toggle does. The 2026-07-30 note it replaced is still worth keeping:
+           * the SDK field behind this filter is `skip_transcript`
+           * (`GraphNode.ambient`), and naming it in UI copy asked the reader to
+           * know an SDK flag to understand a button. It was not named then and it
+           * is not named now.
            */
           <Button
             variant={showAmbient ? "primary" : "default"}
             className="pointer-events-auto"
             onClick={() => onShowAmbient(!showAmbient)}
-            title="These agents are housekeeping — not an agent step. Show or hide them on the canvas."
           >
             housekeeping {ambientCount}
           </Button>
@@ -1843,51 +1987,16 @@ function CanvasInner({
              * each; note that the queued one cannot be reached until the run page
              * passes `runStatus` (see the prop).
              */
-            <div className="max-w-[420px] rounded border border-line bg-surface/90 px-5 py-4 text-center">
-              {specStages.length > 0 && (
-                /*
-                 * THE SPEC PHASE HAS A SHAPE, AND THIS DRAWS IT. Before this the
-                 * screen said only "not started" for ~80 minutes of a ~105-minute
-                 * run — true, and useless: it named what was ABSENT instead of what
-                 * was happening. These four stages are what the run is actually
-                 * doing, in order, with the states it has actually reported.
-                 */
-                <>
-                <p className="mb-2.5 text-left text-[10px] uppercase tracking-wide text-ink-dim">
-                  Before the build
-                </p>
-                <ol className="mb-3 space-y-0">
-                  {specStages.map((stage, index) => (
-                    <SpecStageCard
-                      key={stage.id}
-                      stage={stage}
-                      isLast={index === specStages.length - 1}
-                    />
-                  ))}
-                </ol>
-                </>
-              )}
-              {specStages.length > 0 ? (
-                /*
-                 * THE STAGES ARE THE EXPLANATION, so the old copy is not merely
-                 * redundant beneath them — it CONTRADICTS them. "The agents have
-                 * not started yet" printed under a list of things visibly
-                 * happening reads as a bug in the display. What still needs
-                 * saying is only the part the stages do not: why there is no
-                 * graph, and when one appears.
-                 */
-                <p className="text-[11px] leading-relaxed text-ink-dim">
-                  These run before any agent is spawned, so there is no delegation graph yet. It
-                  appears as soon as the build starts.
-                </p>
-              ) : (
-                <>
-                  <p className="text-[13px] font-semibold text-ink">{emptyCopy.title}</p>
-                  <p className="mt-1.5 text-[12px] leading-relaxed text-ink-dim">
-                    {emptyCopy.body}
-                  </p>
-                </>
-              )}
+            /*
+             * NO STAGES IN HERE ANY MORE. The lane they were drawn in is on the
+             * canvas behind this overlay, and this branch cannot run while it has
+             * cards — see `showEmptyOverlay`. What is left is the case the lane
+             * genuinely cannot explain: a run with no pre-build rows at all, which
+             * is every run recorded before the phases existed.
+             */
+            <div className="max-w-[380px] rounded border border-line bg-surface/90 px-5 py-4 text-center">
+              <p className="text-[13px] font-semibold text-ink">{emptyCopy.title}</p>
+              <p className="mt-1.5 text-[12px] leading-relaxed text-ink-dim">{emptyCopy.body}</p>
               {runIsActive && latestActivity !== null && (
                 /*
                  * SHOWN ONLY WHILE THE RUN IS LIVE. On a terminal run the last
@@ -1900,33 +2009,20 @@ function CanvasInner({
                       aria-hidden
                       className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent motion-safe:animate-pulse"
                     />
-                    <span className="text-[10px] uppercase tracking-wide text-ink-dim">
-                      still working
+                    {/*
+                      * `aria-live="polite"`: a screen reader should hear the run
+                      * move on, but must not have every log line interrupt it.
+                      */}
+                    <span
+                      aria-live="polite"
+                      className="line-clamp-1 text-[11px] text-ink-dim"
+                    >
+                      {latestActivity.text}
                     </span>
                   </div>
-                  {/*
-                    * `aria-live="polite"`: a screen reader should hear the run move
-                    * on, but must not have every log line interrupt it.
-                    */}
-                  <p aria-live="polite" className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-ink-dim">
-                    {latestActivity.text}
-                  </p>
                   <p className="mt-1 text-[10px] text-ink-dim/70">
                     <RelativeSince atMs={latestActivity.atMs} />
                   </p>
-                  {/*
-                    * THE SILENCE IS EXPECTED, AND SAYING SO IS THE WHOLE POINT.
-                    * Measured on the run that passed: across its 79.5-minute spec
-                    * phase only SIX events fired, five of them routine quota
-                    * telemetry, with gaps of 32 and 43 minutes between them. So a
-                    * long "N min ago" here is the normal shape of this phase, not
-                    * a stall — and without this sentence the honest timestamp
-                    * above reads as the opposite of what it means.
-                    *
-                    * It appears only once the gap is real, so it does not shout
-                    * about a silence that has not happened yet.
-                    */}
-                  <QuietNote atMs={latestActivity.atMs} />
                 </div>
               )}
             </div>

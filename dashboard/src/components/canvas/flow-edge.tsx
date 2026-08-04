@@ -52,6 +52,11 @@
  * never the animated comet: a blur re-rasterises whenever its input changes, and
  * filtering the comet would pay for a Gaussian on every frame.
  *
+ * A SECOND CONNECTOR LIVES AT THE BOTTOM OF THIS FILE — 2026-08-04. `LaneEdge`
+ * joins the pre-build stages to each other and to the orchestrator. It shares the
+ * groove and nothing else, because "and then" is not "delegated to"; see its own
+ * docblock for the argument. Everything above this line is about delegation.
+ *
  * REDUCED MOTION is handled in globals.css, where the comet's dash pattern is
  * replaced by a solid stroke as well as being stopped — the same reasoning the
  * previous implementation used, for the sharper version of the same failure: a
@@ -324,6 +329,108 @@ export function DelegationEdge({
             style={cometStyle}
           />
         </>
+      )}
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------
+ * The pre-build link — "and then", which is not "delegated to"
+ * ---------------------------------------------------------------- */
+
+/**
+ * The connector between two pre-build stages, and from the last of them into the
+ * orchestrator.
+ *
+ * IT IS A DIFFERENT COMPONENT BECAUSE IT MAKES A DIFFERENT CLAIM. Every
+ * `DelegationEdge` on this canvas means "this agent spawned that one" — the
+ * header above says there is no second meaning available, and until the lane
+ * landed there was not. A stage link means "this happened, and then that did":
+ * nothing was delegated, nothing was spawned, and the run reported both ends
+ * itself. Drawing it with the role gradient would colour a sequence as a
+ * hand-off between two agents, one of which does not exist.
+ *
+ * SO IT KEEPS THE GROOVE AND DROPS THE GRADIENT. Rim and casing are shared with
+ * every other wire, because the lane is part of the same canvas and a hairline
+ * beside a 10.5px cable would read as chrome. What it carries instead of a
+ * per-edge gradient is ONE state colour, taken from the far end:
+ *
+ *   pending  — nothing downstream has started. Dim, and no core.
+ *   live     — the far end is running. Accent, plus the same travelling comet a
+ *              live delegation gets, because it means the same thing here.
+ *   settled  — the far end has an outcome. The pass green the stage chip uses.
+ *
+ * THE COLOUR IS INLINE RATHER THAN A CLASS. A `.conduit-lane` rule would have to
+ * live in `globals.css`, which was outside this change's file scope — the same
+ * constraint `LiveRim` records. The class on the path is a test hook with no
+ * styles behind it, so counting `path.lane-conduit` counts lane links and cannot
+ * accidentally count delegations.
+ */
+export type LaneEdgeData = {
+  /** The far end is running now. */
+  readonly live: boolean;
+  /** The far end has not started, so nothing has gone down this link yet. */
+  readonly pending: boolean;
+  readonly centerX: number | null;
+};
+
+export type LaneFlowEdge = Edge<LaneEdgeData, "lane">;
+
+export function LaneEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  data,
+}: EdgeProps<LaneFlowEdge>): ReactNode {
+  const centerX = data?.centerX;
+  const [path] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    borderRadius: CORNER_RADIUS,
+    offset: HANDLE_OFFSET,
+    ...(centerX === null || centerX === undefined ? {} : { centerX }),
+  });
+
+  const live = data?.live === true;
+  const pending = data?.pending === true;
+  const stroke = pending
+    ? "var(--color-line-strong)"
+    : live
+      ? "var(--color-accent)"
+      : "var(--color-pass)";
+
+  return (
+    <>
+      <path d={path} className="conduit-rim" />
+      <path d={path} className="conduit-casing" />
+      <path
+        id={`${safeId(id)}-lane`}
+        d={path}
+        className="lane-conduit"
+        data-state={pending ? "pending" : live ? "live" : "settled"}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={pending ? 2.5 : 4.5}
+        strokeLinecap="round"
+        opacity={pending ? 0.5 : 1}
+      />
+      {live && (
+        // The same comet as a live delegation, for the same reason: something is
+        // moving down this link right now. It stops when the far end stops.
+        <path
+          d={path}
+          pathLength={1000}
+          className="conduit-comet conduit-comet--hot conduit-comet--live"
+          stroke="var(--color-accent)"
+        />
       )}
     </>
   );

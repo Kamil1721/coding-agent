@@ -41,7 +41,7 @@ import type { GraphNode, GraphNodeState } from "@/lib/api-types";
 import type { Tone } from "@/lib/presentation";
 import { formatTokens } from "@/lib/format";
 import { cx } from "@/components/ui";
-import { GROUP_PREVIEW, NODE_WIDTH, PILL_CAP } from "./layout";
+import { GROUP_PREVIEW, NODE_WIDTH, PILL_CAP, latestNarration } from "./layout";
 import { ROLE_LABEL, ROLE_MEANING, roleColorVar, type AgentRole } from "./roles";
 
 /**
@@ -381,6 +381,10 @@ export function AgentCard({
     [node.hooks],
   );
 
+  // Read through the same helper `estimateHeight` uses, so the row the layout
+  // reserved and the row the card draws cannot disagree about whether it exists.
+  const narration = useMemo(() => latestNarration(node), [node]);
+
   return (
     <article
       style={{ width: NODE_WIDTH }}
@@ -449,6 +453,36 @@ export function AgentCard({
           >
             <span className="underline decoration-dotted underline-offset-2">inferred</span>
           </Pill>
+        </p>
+      )}
+
+      {narration !== null && (
+        /*
+         * WHAT THE AGENT LAST SAID, IN ITS OWN WORDS — the owner's ask B,
+         * "showing how its thinking … like it does in terminal with claude code".
+         *
+         * IT IS THE MODEL'S PROSE AND NOTHING ELSE. `graph_narration` carries one
+         * assistant turn; the thinking BLOCKS are unavailable and measured so —
+         * 7,037 of them in the local corpus, zero non-empty, the content
+         * encrypted — so nothing here may be captioned as reasoning. The rule on
+         * the left edge and the smaller face are what separate it from the task
+         * description above, which is the ORCHESTRATOR's sentence about this
+         * agent rather than the agent's own.
+         *
+         * TWO LINES, WITH THE WHOLE TURN IN THE TOOLTIP AND THE ORDERED
+         * TRANSCRIPT BEHIND A CLICK. A card is read at whatever zoom the graph
+         * fits at; a wall of prose here would cost every sibling its shape.
+         *
+         * NO EYEBROW LABEL. "Latest narration" over a line of the model's own
+         * writing is a caption on a thing that is already legible, and this pass
+         * is cutting exactly that kind of copy.
+         */
+        <p
+          data-testid="node-narration"
+          title={narration}
+          className="mt-2 line-clamp-2 border-l border-accent/40 pl-2 text-[11px] italic leading-[16px] text-ink-dim"
+        >
+          {narration}
         </p>
       )}
 
@@ -543,8 +577,14 @@ export function AgentCard({
  * flattening the card into spans to satisfy that would cost the heading a screen
  * reader can jump to. The keyboard contract a button would have given is
  * implemented explicitly — Enter and Space open, arrows move, Escape closes.
+ *
+ * EXPORTED, so the pre-build lane's cards use THIS shell rather than a second one
+ * — 2026-08-04. `stage-node.tsx` draws boxes that are not agents, but they are on
+ * the same canvas and have to behave identically under the roving tabindex, the
+ * arrow-key grid and the connector handles. A parallel shell would have been a
+ * second focus contract for the reader to discover the hard way.
  */
-function NodeShell({
+export function NodeShell({
   nodeKey,
   data,
   label,
@@ -773,10 +813,16 @@ export function GroupNode({ id, data }: NodeProps<GroupFlowNode>): ReactNode {
 /* The column header                                                   */
 /* ------------------------------------------------------------------ */
 
-/** A node so it pans and zooms with the column it labels. */
+/**
+ * A node so it pans and zooms with the column it labels.
+ *
+ * `note` IS GONE — 2026-08-04. It was a hover tooltip glossing the label
+ * ("Build" -> "Writing it.") and it went with the rest of the canvas's
+ * explanatory copy; `COLUMN_NOTE` in `layout.ts` records what the strings were
+ * and why they are not worth a hover.
+ */
 export type ColumnNodeData = {
   readonly label: string;
-  readonly note: string;
   readonly count: number;
 };
 
@@ -784,7 +830,7 @@ export type ColumnFlowNode = Node<ColumnNodeData, "column">;
 
 export function ColumnNode({ data }: NodeProps<ColumnFlowNode>): ReactNode {
   return (
-    <div style={{ width: NODE_WIDTH }} className="select-none" title={data.note}>
+    <div style={{ width: NODE_WIDTH }} className="select-none">
       <div className="flex items-baseline gap-2 border-b border-line pb-2">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-ink-dim">
           {data.label}

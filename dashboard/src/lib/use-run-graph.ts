@@ -201,7 +201,29 @@ export function useRunGraph(runId: string | null): RunGraph {
   } else if (data !== undefined && !accumulator.settled) {
     dispatch({
       kind: "snapshot",
-      state: { nodes: data.nodes, edges: data.edges, inventory: data.inventory },
+      /*
+       * `stages` IS REBUILT HERE TOO, AND FORGETTING IT WAS INVISIBLE.
+       *
+       * This object is written field by field rather than spread, so a new member
+       * of `GraphState` is dropped SILENTLY — it is optional on the wire type, so
+       * omitting it compiles. `stages` is the pre-build lane, and the snapshot is
+       * the ONLY source a finished run has (see fact 1 in this file's header), so
+       * dropping it here meant the lane folded correctly on the server, serialised
+       * correctly, arrived correctly, and was thrown away one line before the
+       * canvas on exactly the runs the owner opens after the fact.
+       *
+       * `?? []` RATHER THAN A REQUIRED FIELD. `GraphState.stages` stays optional
+       * because making it required fails `tsc` in four places outside this change
+       * (`api.test.ts`, `graph-fixture.ts`, `canvas-roles.unit.spec.ts`, and this
+       * line) and a red typecheck blocks every concurrent build. The empty array is
+       * what the canvas reads as "this run never had a pre-build lane".
+       */
+      state: {
+        nodes: data.nodes,
+        edges: data.edges,
+        inventory: data.inventory,
+        stages: data.stages ?? [],
+      },
       atSeq: data.atSeq,
     });
   } else if (error !== undefined && !accumulator.settled) {

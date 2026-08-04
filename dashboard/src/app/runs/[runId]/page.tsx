@@ -134,7 +134,6 @@ import { useModels } from "@/lib/hooks";
 import { isTerminalStatus, type RunDetail } from "@/lib/api-types";
 import { designLockPhase } from "@/lib/mockups";
 import { useLiveRun, useNow } from "@/lib/use-run-stream";
-import { specPipelineFrom } from "@/lib/spec-pipeline";
 
 /**
  * What actually happens to a message typed RIGHT NOW — or null when
@@ -622,17 +621,21 @@ export default function RunPage(): ReactNode {
          * than an empty row implying a message that did not come.
          */
         /*
-         * The spec phase's stages, derived from the trace the page already holds.
-         * Pure and tested (`spec-pipeline.unit.spec.ts`) so the honesty rules —
-         * never advance a stage on a timer, never light one the run has not
-         * reported — are checkable rather than a matter of trust.
+         * `specStages` IS NO LONGER PASSED — 2026-08-04, and the reason is a
+         * defect rather than a tidy-up.
+         *
+         * It was `specPipelineFrom(trace, run.phase, run.ticketText, …)`, and
+         * `trace` is the LIVE SSE sink: `use-run-stream.ts` never opens a socket
+         * for a terminal run, so the pre-build lane was empty on every run opened
+         * after it finished — which is most of the runs anyone looks at. The
+         * derivation also returned `[]` for every phase past `spec`, so the lane
+         * deleted itself at the build boundary.
+         *
+         * The canvas now reads `GraphState.stages`, folded by `foldGraph` from the
+         * same `phase` and `log` rows this page's `trace` is built from — but on
+         * the REST snapshot as well as the socket, which is what makes it survive a
+         * reload. Nothing has to be threaded through this component any more.
          */
-        specStages={specPipelineFrom(
-          trace,
-          run.phase,
-          run.ticketText,
-          !isTerminalStatus(run.status),
-        )}
         latestActivity={
           trace.length === 0
             ? null

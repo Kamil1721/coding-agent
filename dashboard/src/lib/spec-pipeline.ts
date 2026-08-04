@@ -10,8 +10,32 @@
  * different about it.
  *
  * =========================================================================
- * SECTION ONE — THE SPEC PIPELINE
+ * SECTION ONE — THE SPEC PIPELINE. SUPERSEDED 2026-08-04. NOTHING RENDERS IT.
  * =========================================================================
+ *
+ * READ THIS BEFORE CHANGING ANYTHING BELOW, AND BEFORE ADDING A CALLER.
+ *
+ * The pre-build lane is now folded on the SERVER — `foldGraph` projects it from
+ * the same `phase` and `log` rows this scanner reads, into `GraphState.stages` —
+ * and the canvas draws it as real nodes (`components/canvas/stage-node.tsx`). The
+ * run page no longer calls `specPipelineFrom` at all.
+ *
+ * THE REASONING IN THIS SECTION SURVIVED THE MOVE; THE LOCATION WAS THE DEFECT.
+ * Two things could not be fixed here:
+ *
+ *   1. IT READ THE LIVE `trace` SINK. `use-run-stream.ts` never opens an
+ *      EventSource for a terminal run, so every stage below was blank on every
+ *      run opened after it finished — the case the owner is in most of the time.
+ *   2. `specPipelineFrom` RETURNED `[]` FOR EVERY PHASE PAST `spec` (the guard
+ *      still sitting there). The lane deleted itself at the build boundary, which
+ *      is the opposite of "you're still on the actual same canvas".
+ *
+ * WHY IT IS STILL HERE. `tests/spec-pipeline.unit.spec.ts` is 175 lines of live
+ * checks against these functions and belongs to another lane; deleting the
+ * derivation without its spec would be a red suite for someone else. The
+ * resolution is to delete BOTH, together, and this paragraph is the note that
+ * says so. Do not port a fix into this section — port it into
+ * `server/src/graph.ts`, which is what runs.
  *
  * WHY THIS FILE EXISTS. The canvas draws `graph_agent` events, and those come
  * from the BUILDER's SDK projection — which does not exist until the build

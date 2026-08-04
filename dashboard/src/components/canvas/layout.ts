@@ -41,11 +41,16 @@
  *      a group can never hide a failure, never hide a guess, and never hide a
  *      node that delegated to something else.
  *
- * ONE BOX HERE IS NOT AN AGENT: the terminal preview (`PREVIEW_KEY`), placed one
- * column past the last one the run used. This module is told only WHETHER to
- * reserve it — see `PlaceOptions.withPreview` — and never what it says, because
- * "where every node sits" is the whole of this file's job and a verdict is not a
- * position.
+ * TWO KINDS OF BOX HERE ARE NOT AGENTS.
+ *
+ *   1. The terminal preview (`PREVIEW_KEY`), placed one column past the last one
+ *      the run used. This module is told only WHETHER to reserve it — see
+ *      `PlaceOptions.withPreview` — and never what it says, because "where every
+ *      node sits" is the whole of this file's job and a verdict is not a position.
+ *   2. The PRE-BUILD LANE (`stageKeyOf`), placed to the LEFT of the root column
+ *      and running into it. See `THE PRE-BUILD LANE` below for why it is drawn as
+ *      real nodes on this canvas rather than as a panel floating over it, and why
+ *      the chain's last link lands on the root card itself.
  *
  * SPACING IS DELIBERATELY LOOSE. The gutters below are wide enough that every
  * edge has visible run length rather than nodes butting into each other — the
@@ -54,7 +59,14 @@
  * overlap, and whitespace is what was asked for.
  */
 
-import type { GraphNode, GraphNodeState, GraphState, RunLane } from "@/lib/api-types";
+import type {
+  GraphNode,
+  GraphNodeState,
+  GraphStage,
+  GraphStageId,
+  GraphState,
+  RunLane,
+} from "@/lib/api-types";
 import { roleOf, type AgentRole } from "./roles";
 
 /** Card width. Also `--node-width` in globals.css; change both together. */
@@ -135,16 +147,19 @@ export const COLUMN_LABEL: Readonly<Record<ColumnKey, string>> = {
   gate: "Gate",
 };
 
-export const COLUMN_NOTE: Readonly<Record<ColumnKey, string>> = {
-  root: "The run's own session. Everything else was delegated from here.",
-  tasks:
-    "Work the orchestrator ran directly, that the CLI named no lane for. Repeated identical tasks are folded into one card.",
-  spec: "Turning the ticket into requirements.",
-  design: "Deciding how it should look.",
-  build: "Writing it.",
-  review: "Checking it.",
-  gate: "The held-out gate.",
-};
+/*
+ * `COLUMN_NOTE` IS GONE — 2026-08-04, at the owner's instruction ("there is just
+ * too much text and explanation around each button that almost looks like some
+ * sort of tutorial").
+ *
+ * It was a `title=` tooltip on each column header: "Writing it.", "Checking it.",
+ * "Work the orchestrator ran directly, that the CLI named no lane for. Repeated
+ * identical tasks are folded into one card." Every one of them restated the
+ * column's own one-word label, and the longest one described a folding rule the
+ * deck card already announces on its face. The LABEL survives; the gloss does
+ * not, and `PlacedColumn` no longer carries a `note` for anything to render.
+ */
+
 
 export interface PlacedNode {
   /** The React Flow node id. A node's own id, or `group:<n>` for a fold. */
@@ -166,7 +181,6 @@ export interface PlacedNode {
 export interface PlacedColumn {
   readonly column: ColumnKey;
   readonly label: string;
-  readonly note: string;
   readonly x: number;
   readonly y: number;
   readonly count: number;
@@ -193,10 +207,103 @@ export interface PlacedEdge {
   readonly depth: number;
 }
 
+/* ------------------------------------------------------------------
+ * The pre-build lane
+ * ---------------------------------------------------------------- */
+
+/**
+ * A stage card, and the gap between two of them.
+ *
+ * NARROWER THAN AN AGENT CARD (268px) BECAUSE IT CARRIES LESS. A stage has a
+ * label, a state and one sentence the server wrote; an agent card carries pills,
+ * counters and a result. Drawing them the same width would make the lane the
+ * widest thing on the canvas while being the emptiest.
+ *
+ * THE STEP IS WIDER THAN THE CARD BY ROUGHLY THE COLUMN GUTTER, for the same
+ * reason `COLUMN_GAP` is: every link needs visible run length, and the lane's
+ * links are the only ones on this canvas that say "and then".
+ */
+export const STAGE_WIDTH = 216;
+export const STAGE_GAP = 88;
+export const STAGE_STEP = STAGE_WIDTH + STAGE_GAP;
+
+/**
+ * The collapsed card's height, used ONLY to centre the lane against the root.
+ *
+ * AN OPENED STAGE GROWS DOWNWARD FROM THE SAME TOP EDGE and this number does not
+ * change, which is deliberate: the lane is one row, so a taller card cannot
+ * collide with anything, and holding the top edge fixed means opening a stage
+ * moves nothing else on the canvas. That is not true of the agent columns, where
+ * `estimateHeight` has to be an upper bound or two cards overlap.
+ */
+export const STAGE_HEIGHT = 118;
+
+/**
+ * The React Flow id of a stage card.
+ *
+ * IT CANNOT COLLIDE WITH A NODE ID for the same reason `PREVIEW_KEY` cannot: the
+ * server mints node ids as `n<number>`, and this canvas reserves `group:<n>`,
+ * `column:<key>` and `layout:` for things it added itself. The prefix says out
+ * loud that a stage is a projection of the run's log rows, not an agent.
+ */
+export function stageKeyOf(id: GraphStageId): string {
+  return `stage:${id}`;
+}
+
+/** Where one stage card sits. Its content is the component's business. */
+export interface PlacedStage {
+  readonly key: string;
+  readonly stage: GraphStage;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * One link in the pre-build chain.
+ *
+ * IT IS NOT A `PlacedEdge`, AND THE DIFFERENCE IS THE CLAIM. Every `PlacedEdge`
+ * on this canvas means "this agent delegated to that one"; these mean "this
+ * happened, and then that did". Folding them into one list would put a sequence
+ * and a delegation behind one renderer and one legend entry, which is the canvas
+ * asserting something the run never said.
+ */
+export interface PlacedStageEdge {
+  readonly id: string;
+  readonly from: string;
+  readonly to: string;
+  /** The thing at the FAR end is working now — the same rule delegation uses. */
+  readonly live: boolean;
+  /** Nothing downstream has started, so the link is drawn as unused. */
+  readonly pending: boolean;
+  /** The x the cable turns vertical at, or `null` for a straight run. */
+  readonly centerX: number | null;
+}
+
+/** The lane's own header, above its first card. Null when there is no lane. */
+export interface PlacedStageHeader {
+  readonly x: number;
+  readonly y: number;
+  readonly count: number;
+}
+
 export interface Placement {
   readonly nodes: readonly PlacedNode[];
   readonly columns: readonly PlacedColumn[];
   readonly edges: readonly PlacedEdge[];
+  /**
+   * The pre-build lane, left to right, ending where the agent graph begins.
+   *
+   * EMPTY FOR EVERY RUN THAT NEVER HAD ONE, which is most of them: `foldGraph`
+   * only projects stages from `phase` and `log` rows, and a stream whose first
+   * phase row is `build` folds to a state with no stages at all
+   * (`server/src/graph.ts`'s `foldPhaseStages`). So an old run's canvas is
+   * unchanged by this, node for node and edge for edge.
+   */
+  readonly stages: readonly PlacedStage[];
+  readonly stageEdges: readonly PlacedStageEdge[];
+  readonly stageHeader: PlacedStageHeader | null;
   /** Groups that exist in this placement, collapsed or not. For the HUD. */
   readonly groupKeys: readonly string[];
   /** How many nodes are currently folded out of sight. 0 when all are open. */
@@ -256,6 +363,35 @@ export interface Placement {
  * paragraph is the whole of what is known, and the paragraph it replaced was a
  * check nobody could run.
  */
+/**
+ * The last thing this agent SAID, or null when it has said nothing.
+ *
+ * `graph_narration` is one turn of the model's own prose, capped at 1,200
+ * characters by the emitter and folded into `activity` as `kind: "narration"`
+ * with an empty `name` — so this branches on the KIND and never on the name, per
+ * the wire type's own instruction. Before that event existed the builder dropped
+ * every prose-only turn into a generic `log` row beside the token telemetry, and
+ * the canvas had no way to tell one from the other.
+ *
+ * NEWEST WINS, and only one is drawn. `activity` is the whole ordered
+ * transcript — that belongs behind a click, not on a card that has to stay
+ * readable at 0.3 zoom with twenty siblings.
+ *
+ * IT LIVES IN THIS FILE, NOT IN `agent-node.tsx`, TO AVOID AN IMPORT CYCLE:
+ * `agent-node.tsx` already imports `NODE_WIDTH` and `PILL_CAP` from here, and
+ * `estimateHeight` below has to reserve a row for exactly the same string the
+ * card draws or the layout under-estimates and two cards collide.
+ */
+export function latestNarration(node: GraphNode): string | null {
+  for (let index = node.activity.length - 1; index >= 0; index -= 1) {
+    const entry = node.activity[index];
+    if (entry === undefined || entry.kind !== "narration") continue;
+    const text = entry.detail.trim();
+    if (text !== "") return text;
+  }
+  return null;
+}
+
 export function estimateHeight(node: GraphNode): number {
   // padding 16 top + 16 bottom, lane/status header row, title row.
   let height = 32 + 22 + 22;
@@ -269,6 +405,11 @@ export function estimateHeight(node: GraphNode): number {
 
   // The `inferred` chip is its own row when the attribution was a guess.
   if (node.attribution === "inferred") height += 26;
+
+  // The narration block: a rule, two clamped lines and the margin above it.
+  // Reserved only when there IS one, so a run recorded before `graph_narration`
+  // existed places identically to how it always did.
+  if (latestNarration(node) !== null) height += 48;
 
   // `cap + 1` because the group renders `cap` pills plus one `+N` overflow chip.
   const rows = (count: number, cap: number): number =>
@@ -682,7 +823,6 @@ export function placeGraph(graph: GraphState, options: PlaceOptions): Placement 
   const columns: PlacedColumn[] = occupied.map((column) => ({
     column,
     label: COLUMN_LABEL[column] ?? String(column),
-    note: COLUMN_NOTE[column] ?? "",
     x: xOf.get(column) ?? 0,
     y: (firstCardY.get(column) ?? LANE_LABEL_HEIGHT) - LANE_LABEL_HEIGHT,
     count: counts.get(column) ?? 0,
@@ -790,12 +930,19 @@ export function placeGraph(graph: GraphState, options: PlaceOptions): Placement 
    * column, and this column has none — a header reading "Result 1" would be
    * counting a thing that never ran. The card says what it is itself.
    *
-   * AND IT GETS NO EDGE. Every edge on this canvas means one agent delegated to
-   * another; there is no third meaning available, `inferred` already being "we
-   * guessed which agent". Drawing a wire from the last agent to this box would
-   * assert a delegation that did not happen, and this box is a fact about the
-   * WORKSPACE rather than about anything an agent returned. The gap is the honest
-   * rendering.
+   * AND IT GETS NO EDGE. Every `PlacedEdge` on this canvas means one agent
+   * delegated to another, `inferred` already being "we guessed which agent".
+   * Drawing a wire from the last agent to this box would assert a delegation that
+   * did not happen, and this box is a fact about the WORKSPACE rather than about
+   * anything an agent returned. The gap is the honest rendering.
+   *
+   * A SECOND EDGE KIND EXISTS NOW AND STILL DOES NOT APPLY HERE — 2026-08-04.
+   * `PlacedStageEdge` below means "and then", not "delegated to", which is why it
+   * is a separate list with a separate renderer. It does not reach the preview
+   * either: the lane says what the run did BEFORE the agents, in the order the
+   * server reported it, and nothing ever reported handing this artefact to
+   * anybody. An "and then" into the preview would be a sequence claim about a
+   * directory listing.
    *
    * CENTRED ON THE SAME AXIS AS THE COLUMNS, so it sits level with the middle of
    * the flow rather than at the top of an empty column. With no visible nodes at
@@ -814,5 +961,113 @@ export function placeGraph(graph: GraphState, options: PlaceOptions): Placement 
         }
       : null;
 
-  return { nodes, columns, edges, groupKeys, foldedCount, preview };
+  /* ----------------------------------------------------------------
+   * THE PRE-BUILD LANE — Planning ── Orchestrator ── whatever it spawned
+   *
+   * THE OWNER'S ASK, IN HIS OWN SKETCH: "Planning (node) ----- Orchestrator
+   * (node) ------ (then whatever the orchestrator spawns.)" It used to be a panel
+   * floating over the canvas, drawn ONLY while the graph had zero nodes and
+   * replaced the moment the build started — so the run's first eighty minutes and
+   * the rest of it were two different pictures with nothing joining them.
+   *
+   * THE CHAIN RUNS LEFTWARD FROM THE ROOT COLUMN'S ORIGIN, which is what makes it
+   * continuous. The agent graph's own x-axis is untouched: the root column stays
+   * at x = 0 and every lane card sits at a NEGATIVE x, so the build's layout is
+   * identical with a lane and without one, and the arrival of the first agent does
+   * not shove the lane sideways under the reader.
+   *
+   * THE ORCHESTRATOR IS ONE BOX ACROSS THE WHOLE RUN, AND THAT IS THE WHOLE POINT
+   * OF THE ASK ("you don't have the thing where the orchestrator doesn't show").
+   * Before the build there is no `graph_agent` for it, so the lane's own
+   * `orchestrator` stage stands at x = 0 as a real card. The moment the builder
+   * mints the root node, that card is dropped and the chain's last link lands on
+   * the ROOT CARD instead — same position, same place in the chain, more
+   * information. Two orchestrator boxes on one canvas would be the display
+   * inventing a hand-off that nothing performed.
+   *
+   * THE LANE IS VERTICALLY CENTRED ON THE ROOT CARD when there is one, so the last
+   * link is a straight horizontal run rather than a rake across the canvas. With
+   * no root — the pre-build case — it centres on the same axis the columns do,
+   * which with an empty graph is the origin.
+   * ------------------------------------------------------------- */
+
+  const lane = graph.stages ?? [];
+  const rootEntry = nodes.find(
+    (entry) => entry.kind === "agent" && entry.node.parent === null,
+  );
+  // The lane's `orchestrator` stage and the root card are the same actor. Exactly
+  // one of them is ever drawn.
+  const drawnStages = rootEntry === undefined ? lane : lane.filter((s) => s.id !== "orchestrator");
+  const orchestratorDrawn = drawnStages.some((stage) => stage.id === "orchestrator");
+  // Index of the card that owns x = 0. With the orchestrator drawn that is the
+  // orchestrator itself; without it, the slot the root card occupies.
+  const anchorIndex = drawnStages.length - (orchestratorDrawn ? 1 : 0);
+  const laneY =
+    rootEntry === undefined
+      ? LANE_LABEL_HEIGHT + Math.round((tallest - STAGE_HEIGHT) / 2)
+      : rootEntry.y + Math.round((rootEntry.height - STAGE_HEIGHT) / 2);
+
+  const stages: PlacedStage[] = drawnStages.map((stage, index) => ({
+    key: stageKeyOf(stage.id),
+    stage,
+    x: (index - anchorIndex) * STAGE_STEP,
+    y: laneY,
+    width: STAGE_WIDTH,
+    height: STAGE_HEIGHT,
+  }));
+
+  const stageEdges: PlacedStageEdge[] = [];
+  for (let index = 0; index + 1 < stages.length; index += 1) {
+    const from = stages[index];
+    const to = stages[index + 1];
+    if (from === undefined || to === undefined) continue;
+    stageEdges.push({
+      id: `${from.key}->${to.key}`,
+      from: from.key,
+      to: to.key,
+      // THE FAR END'S STATE, which is the same rule `PlacedEdge.childState`
+      // follows: the near end is almost always finished, so keying on it would
+      // light the whole chain for the rest of the run.
+      live: to.stage.state === "running",
+      pending: to.stage.state === "pending",
+      centerX: to.x - STAGE_GAP / 2,
+    });
+  }
+
+  /*
+   * THE LINK THE ASK IS ABOUT: `… ── Orchestrator`.
+   *
+   * Drawn only when both ends exist. A lane with no root card already ends at its
+   * own orchestrator stage, and a root card with no lane — every run recorded
+   * before the phases existed — gets nothing new attached to it.
+   */
+  const lastStage = stages[stages.length - 1];
+  if (rootEntry !== undefined && lastStage !== undefined) {
+    stageEdges.push({
+      id: `${lastStage.key}->${rootEntry.key}`,
+      from: lastStage.key,
+      to: rootEntry.key,
+      live: rootEntry.node.state === "running",
+      pending: false,
+      centerX: null,
+    });
+  }
+
+  const first = stages[0];
+  const stageHeader: PlacedStageHeader | null =
+    first === undefined
+      ? null
+      : { x: first.x, y: first.y - LANE_LABEL_HEIGHT, count: stages.length };
+
+  return {
+    nodes,
+    columns,
+    edges,
+    groupKeys,
+    foldedCount,
+    preview,
+    stages,
+    stageEdges,
+    stageHeader,
+  };
 }
