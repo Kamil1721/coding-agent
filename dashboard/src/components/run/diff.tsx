@@ -34,8 +34,9 @@
  *    MEASURED rather than asserted: a 160-character line has to leave this
  *    block's own scroller with a scroll range, which goes to zero the moment the
  *    scroller is deleted. See the note at the scroller for the three forms of
- *    the stronger "nothing is painted outside" check that could NOT go red and
- *    were thrown away rather than kept as decoration.
+ *    the stronger "nothing is painted outside" check that were thrown away
+ *    rather than kept as decoration — two of them could not go red at all, and
+ *    the third went red on a neighbour's layout in both builds.
  *
  * 4. THE CAP IS STATED ON SCREEN, IN NUMBERS. `GraphDiff.additions` and
  *    `deletions` always count the WHOLE patch; `hunks` is what fitted the wire
@@ -203,8 +204,9 @@ export function FileDiff({ diff, tool }: { diff: GraphDiff; tool: string }): Rea
          * container and false of a box whose content merely overflows. Delete the
          * `overflow-auto` and that goes to zero, which is the check. The stronger
          * claim — that nothing is PAINTED outside the card — could not be
-         * measured from the harness; three attempts and why each of them was
-         * unfalsifiable are recorded in `tests/diff-render.browser.spec.ts`.
+         * measured from the harness. Three attempts and why each was worthless —
+         * two that could not fail, one that failed on a NEIGHBOUR'S layout in
+         * both builds — are recorded in `tests/diff-render.browser.spec.ts`.
          */
         <div data-testid="diff-scroller" className="max-h-[260px] min-w-0 overflow-auto">
           <ol className="w-max min-w-full font-mono text-[11px] leading-[16px]">

@@ -63,10 +63,13 @@
  *   5. `run/diff.tsx` — `overflow-auto` removed from the scroller AND
  *      `overflow-hidden` from the card, so the patch spills over the panel.
  *      1 of 6 RED: the scroller stopped having a scroll range at all (`0`).
- *      THE SAME MUTATION IS HOW THREE OTHER FORMS OF THAT TEST WERE FOUND TO BE
- *      UNABLE TO FAIL, and they were removed rather than kept — the list is at
- *      the test itself, because "we tried to measure the spill and could not"
- *      is worth more to the next reader than a green line that means nothing.
+ *      THE SAME MUTATION IS HOW THREE OTHER FORMS OF THAT TEST WERE DISQUALIFIED
+ *      — two that stayed green against a spilling patch, and one that went red
+ *      against a NEIGHBOUR'S layout in both builds, which is the more dangerous
+ *      of the two failures because it looks like a working control. All three
+ *      were removed rather than kept; the list is at the test itself, because
+ *      "we tried to measure the spill and could not" is worth more to the next
+ *      reader than a green line that means nothing.
  *
  * A SIXTH MUTATION IS RECORDED AS NOT REDDENING ANYTHING, because a control that
  * fails to control is worth more written down than deleted: removing `min-w-0`
@@ -476,13 +479,14 @@ test.describe("an applied edit, drawn on a run that has already finished", () =>
      * `whitespace-pre` IS THE RIGHT CHOICE AND IT HAS A COST, so the cost is
      * measured. THE FIRST VERSION OF THIS TEST MEASURED THE WRONG THING and is
      * recorded rather than quietly replaced: it compared the DOCUMENT's
-     * `scrollWidth` to its `clientWidth`, which cannot fail here. `DetailSheet`
-     * is `position: fixed`, and a fixed element's overflow does not extend the
-     * document's scrollable area — so that assertion stayed green with `min-w-0`
-     * deleted AND with the diff's `overflow-auto` and `overflow-hidden` both
+     * `scrollWidth` to its `clientWidth`, which cannot fail here. The sheet is
+     * `absolute` inside a canvas wrapper that is `relative h-full
+     * overflow-hidden`, so the document's scroll width is unmoved whatever
+     * happens in the panel — that assertion stayed green with `min-w-0` deleted
+     * AND with the diff's `overflow-auto` and the card's `overflow-hidden` both
      * removed, i.e. against a patch spilling straight over the panel. A check
      * that could only observe success is this repository's signature defect, so
-     * it was replaced by the two below rather than kept for comfort.
+     * it was replaced rather than kept for comfort.
      */
     const scroller = page
       .locator('[data-diff-path="src/app/globals.css"]')
@@ -522,10 +526,15 @@ test.describe("an applied edit, drawn on a run that has already finished", () =>
      *   · `elementFromPoint` twenty pixels right of the card — the sheet is
      *     docked to the RIGHT EDGE of the viewport, so that point is off-screen
      *     and the call returns `null` regardless of what is painted.
-     *   · walking every ancestor for `scrollWidth > clientWidth` — the only
-     *     element that ever reports one is React Flow's own canvas wrapper, in
-     *     BOTH builds, which is its transformed viewport and nothing to do with
-     *     this patch. The sheet's own scroll container reported none in either.
+     *   · walking every ancestor for `scrollWidth > clientWidth` — and THIS ONE
+     *     did go red under the mutation, which is why it survived two rounds
+     *     before being caught. It named `DIV.relative h-full overflow-hidden
+     *     border-y`: React Flow's own canvas wrapper, whose transformed viewport
+     *     legitimately has a scroll range and has nothing to do with this patch.
+     *     It named the same element in the CORRECT build too, so its red and its
+     *     green were both measuring a neighbour. The sheet's own scroll container
+     *     reported no horizontal range in either build, spilling or not — which
+     *     is the fact that makes this whole family of checks unusable here.
      *
      * So the scroll range above is the whole of what is measured here, and it is
      * enough: a line that had escaped would not have left one behind.
