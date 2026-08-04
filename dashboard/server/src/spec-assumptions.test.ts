@@ -27,6 +27,8 @@ import type { AcceptanceCriterion } from "bakeoff/dist/contracts.js";
 // the drift test below would then compare the label table against nothing —
 // a check that can only observe success, which is the defect this repo ships.
 import { ALL_GATE_IDS, GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
+import { motionReferenceReading } from "./motion-brief.js";
+import type { MotionSpec } from "./motion-types.js";
 import {
   GATE_LABELS,
   extractAssumptions,
@@ -310,4 +312,176 @@ test("NEGATIVE CONTROL: inferred is still not owner-sourced", () => {
   // while `countInferredAssumptions` reported zero guesses on every run.
   assert.equal(isStatedByOwner(sourced("inferred")), false);
   assert.equal(isStatedByOwner(sourced("default")), false);
+});
+
+/* -------------------------------------------------------------------------
+ * WHAT ACTUALLY SETS `reference` — the tracer's fifth branch
+ *
+ * THE DEFECT THESE WERE WRITTEN FROM (2026-08-04). The union member and
+ * `isStatedByOwner`'s third case landed with the two tests above and NOTHING
+ * produced the label: `grep -rn 'source: "reference"' dashboard/server/src/`
+ * returned only tests. So every criterion the spec seat authored from a captured
+ * motion block was stamped INFERRED — `orchestrator.ts#recordAssumptions` feeds
+ * this module `ticketProse(stripPlanBlock(brief))`, which cuts the motion block
+ * back off before any token is matched — and the feature moved its own headline
+ * number in the wrong direction while escalating the run log to `warn`.
+ *
+ * THE RULE MIRRORS `answeredSupportFor`'s, AND THE SECOND CONDITION IS THE
+ * WHOLE OF IT. A criterion must share {@link MIN_SHARED_CONTENT_TOKENS} content
+ * tokens with ONE observation line AND at least one of those tokens must be part
+ * of the MEASUREMENT — a role, a property, a duration, an easing family. The
+ * rest of an observation line is `FAMILY_PROSE`, which is the dashboard's own
+ * wording, and matching on it is the machine agreeing with itself: the exact
+ * cheat condition 2 refuses over in the `answered` branch.
+ * ---------------------------------------------------------------------- */
+
+/** Two entries, quantized as `normaliseMotion` leaves them. */
+const MOTION: MotionSpec = {
+  url: "https://example.com/motion",
+  capturedAt: "2026-08-04T00:00:00.000Z",
+  entries: [
+    {
+      family: "scroll-reveal",
+      role: "div.card",
+      props: ["opacity", "transform"],
+      durationMs: 500,
+      staggerMs: 120,
+      easing: "ease-out",
+      iterations: 1,
+      scrollRatio: null,
+      parity: true,
+    },
+    {
+      family: "load-entrance",
+      role: "h1",
+      props: ["opacity"],
+      durationMs: 800,
+      staggerMs: null,
+      easing: "ease-out",
+      iterations: 1,
+      scrollRatio: null,
+      parity: true,
+    },
+  ],
+  libraries: ["gsap"],
+  respectsReducedMotion: true,
+};
+
+/**
+ * A ticket that says NOTHING about motion, which is the real case: the owner
+ * pasted a link into the motion field and typed one sentence about the job.
+ */
+const MOTION_PROSE = "Build me a portfolio for the studio.";
+
+test("a criterion carrying what was MEASURED off the referenced page is `reference`", () => {
+  const a = extractAssumptions(
+    MOTION_PROSE,
+    [c("REQ-M1", "the project cards shall fade in opacity and transform over 500ms")],
+    [],
+    motionReferenceReading(MOTION),
+  );
+  const x = a.find((v) => v.criterionId === "REQ-M1");
+  assert.equal(x?.source, "reference", "a duration read off his own page is neither his sentence nor a guess");
+  assert.match(String(x?.because), /example\.com\/motion/, "the record must name the page it came from");
+  assert.match(String(x?.because), /div\.card/, "and quote the observation the spec seat actually read");
+});
+
+test("NEGATIVE CONTROL: a criterion that traces to NOTHING is still `inferred`", () => {
+  // THE FAILURE MODE THIS FILE IS DESIGNED AGAINST. A change that relabelled
+  // every criterion `reference` the moment a reading existed would drive
+  // `inferredCriteria` to zero and make the number mean nothing. The reading is
+  // PASSED HERE, in full, and this criterion must still come back a guess.
+  const a = extractAssumptions(
+    MOTION_PROSE,
+    [c("REQ-M2", "a contact form sends a message to the owner's inbox")],
+    [],
+    motionReferenceReading(MOTION),
+  );
+  const x = a.find((v) => v.criterionId === "REQ-M2");
+  assert.equal(x?.source, "inferred");
+  assert.doesNotMatch(String(x?.because), /referenced|example\.com/, "an inference must not cite a page it did not come from");
+});
+
+test("NEGATIVE CONTROL: a criterion in the owner's OWN typed words is still `ticket`", () => {
+  // The reference branch sits BELOW the ticket branch on purpose. A criterion he
+  // wrote out himself, which the captured page also happens to describe, is his
+  // sentence — crediting the page instead would tell him the dashboard read
+  // something he had already said, and would quietly move a `ticket` line into a
+  // bucket he cannot edit.
+  const a = extractAssumptions(
+    "Build me a portfolio for the studio with project cards that fade in opacity and transform.",
+    [c("REQ-M3", "the project cards shall fade in opacity and transform over 500ms")],
+    [],
+    motionReferenceReading(MOTION),
+  );
+  const x = a.find((v) => v.criterionId === "REQ-M3");
+  assert.equal(x?.source, "ticket");
+  assert.match(String(x?.because), /you wrote/);
+});
+
+test("NEGATIVE CONTROL: the dashboard's OWN wording in the block cannot carry a match", () => {
+  // `FAMILY_PROSE` supplies "revealed once on scroll into view" — four content
+  // tokens the capture did not measure. Without the measured-token condition
+  // this criterion shares FOUR words with the observation line and is stamped
+  // `reference`: the machine crediting the owner with its own sentence, which is
+  // the cheat `answeredSupportFor`'s condition 2 exists to refuse.
+  const a = extractAssumptions(
+    MOTION_PROSE,
+    [c("REQ-M4", "content is revealed as it scrolls into view, animating smoothly")],
+    [],
+    motionReferenceReading(MOTION),
+  );
+  assert.equal(a.find((v) => v.criterionId === "REQ-M4")?.source, "inferred");
+});
+
+test("NEGATIVE CONTROL: a reading with no entries credits nothing", () => {
+  // `manifestMotion` keeps "a page was read and nothing moved" distinct from "no
+  // page was read", and the two must reach the same answer HERE: an empty
+  // reading is not evidence for anything.
+  const a = extractAssumptions(
+    MOTION_PROSE,
+    [c("REQ-M5", "the project cards shall fade in opacity and transform over 500ms")],
+    [],
+    motionReferenceReading({ ...MOTION, entries: [] }),
+  );
+  assert.equal(a.find((v) => v.criterionId === "REQ-M5")?.source, "inferred");
+});
+
+test("a run with no motion reference reads EXACTLY as it did before the fifth branch", () => {
+  // The `answered` default made the same promise for the same reason: every
+  // caller that predates this change keeps producing byte-identical output, so a
+  // number that moves is attributable to this change and to nothing else.
+  const criteria = [
+    c("C-1", "the contact form submits and shows confirmation"),
+    c("C-2", "a project list renders at least three entries"),
+    c("C-3", "npm run build succeeds with no errors"),
+  ];
+  const ticket = "Build a portfolio with a contact form for the studio";
+  assert.deepEqual(extractAssumptions(ticket, criteria), extractAssumptions(ticket, criteria, [], null));
+});
+
+test("the rendered record gives the referenced page its own section and its own figure", () => {
+  // A criterion filed under `reference` but rendered nowhere is an inference the
+  // owner cannot see, which is the failure this whole module exists to prevent —
+  // and the figure is what makes the section's emptiness readable rather than
+  // indistinguishable from a renderer that dropped it.
+  const a = extractAssumptions(
+    MOTION_PROSE,
+    [
+      c("REQ-M1", "the project cards shall fade in opacity and transform over 500ms"),
+      c("REQ-M2", "a contact form sends a message to the owner's inbox"),
+    ],
+    [],
+    motionReferenceReading(MOTION),
+  );
+  const md = renderAssumptions(a);
+  assert.match(md, /Of 2 criteria: 1 inferred by the grader, .*1 read from the page you referenced\./);
+  const section = md.slice(md.indexOf("## READ FROM THE PAGE YOU REFERENCED"));
+  assert.ok(section.length > 0, "the reference section is missing from the record");
+  assert.match(section, /REQ-M1/);
+  assert.doesNotMatch(
+    md.slice(md.indexOf("## INFERRED"), md.indexOf("## ANSWERED BY YOU")),
+    /REQ-M1/,
+    "a criterion read off his own page is still being reported as the grader's guess",
+  );
 });

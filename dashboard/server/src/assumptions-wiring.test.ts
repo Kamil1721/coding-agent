@@ -48,11 +48,31 @@
  *      no-question case (`if (answered === 0 || credited === 0) return`)
  *                                                                     → 1 red,
  *      the second test — the run where he answered and nothing was credited
+ *
+ * ─── AND THE SAME AGAIN FOR THE FIFTH SOURCE (2026-08-04) ───
+ *
+ * THE THIRD TEST BELOW EXISTS BECAUSE THE HOLE THIS FILE'S HEADER DESCRIBES WAS
+ * DUG A SECOND TIME, ONE SOURCE ALONG. `AssumptionSource` gained `reference` and
+ * `isStatedByOwner` gained its third case with NOTHING setting the label — the
+ * tests over in `spec-assumptions.test.ts` pass the reading in themselves, so
+ * they were green against an orchestrator that never read a manifest. Applied to
+ * `dist-<slug>/`, not to the source, for the reason W1-W4 give:
+ *
+ *  W5  `#recordAssumptions` passes `null` instead of
+ *      `this.#referenceReading(runId)` — the reading never leaves the disk,
+ *      which is the exact state this change found                     → 1 red
+ *      (the other two tests stay GREEN, correctly: no manifest is written for
+ *      them. That is the control on W5.)
+ *  W6  `isStatedByOwner` drops its `reference` case (`assumption.source ===
+ *      "reference"` → `false`) — the label is set but counted as a guess, so
+ *      `inferredCriteria` reads 2 for a run in which the owner supplied more
+ *                                                     → 1 red here, 1 red in
+ *      `spec-assumptions.test.ts`
  */
 
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -67,6 +87,7 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import { ModelCatalog } from "./models.js";
+import type { MotionSpec } from "./motion-types.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { foldPlanIntoBrief } from "./plan-brief.js";
@@ -74,7 +95,9 @@ import { writePlanRecord } from "./plan-record.js";
 import type { PlanQuestionState, PlanState } from "./plan-state.js";
 import { PreviewHost } from "./preview.js";
 import { ASSUMPTIONS_FILE } from "./run-report.js";
-import { ticketFromText } from "./ticket.js";
+import { ticketFromStoredReferences } from "./ticket.js";
+import type { ReferenceManifest } from "./ticket-refs.js";
+import { referenceDirFor, writeReferenceManifest } from "./ticket-refs.js";
 
 const PROSE = "I want a copy of my site, everything on it.";
 
@@ -118,8 +141,17 @@ function harness(): Harness {
  *
  * THE SECOND IS THE CONTROL. A wiring that credited him with everything the
  * moment a plan record existed would satisfy every assertion about the first.
+ *
+ * THE FIRST STATEMENT IS OVERRIDABLE so the motion test below can put a
+ * criterion carrying a MEASURED number where this one puts a criterion carrying
+ * his reply. The default is unchanged, so every assertion already in this file
+ * is measuring the same run it measured yesterday.
  */
-function draftFor(ticketId: string, ticketSha256: string): SuiteDraft {
+function draftFor(
+  ticketId: string,
+  ticketSha256: string,
+  firstStatement = "The site shall render four project entries with their taglines.",
+): SuiteDraft {
   const visible = ["import test from \"node:test\";", "test(\"T-1 the document responds\", () => {});", ""].join("\n");
   const heldOut = ["import test from \"node:test\";", "test(\"T-2 the entries are there\", () => {});", ""].join("\n");
   return {
@@ -128,7 +160,7 @@ function draftFor(ticketId: string, ticketSha256: string): SuiteDraft {
     criteria: [
       {
         id: "REQ-001",
-        statement: "The site shall render four project entries with their taglines.",
+        statement: firstStatement,
         evidenceRequired: "holdout test T-2 PASS",
         tier: "FUNCTIONAL",
         holdoutTestIds: ["T-2"],
@@ -276,8 +308,22 @@ function logTextFor(store: RunStore, runId: string): string {
  * already amended the brief, so `#planPhase` returns immediately and the stored
  * text is the amended one. Anything else here would be testing the plan phase
  * rather than the record it feeds.
+ *
+ * THE MANIFEST IS WRITTEN BEFORE THE TICKET IS DERIVED, AND THE SUITE IS FROZEN
+ * UNDER THE DERIVED ID RATHER THAN UNDER `ticketFromText`. `orchestrator.ts:1738`
+ * reads the manifest and calls `ticketFromStoredReferences`, and a motion
+ * reading's URL is folded into the identity material there — so freezing under
+ * the prose-only id would miss `assertSuiteIntact` and send `#specPhase` off to
+ * author a real suite against the owner's subscription. That is the quota hazard
+ * this file's header describes, and the `verifySuiteIntact` assertion below plus
+ * the "reusing the sealed acceptance suite" log line are what hold it shut.
  */
-async function runWith(h: Harness, runId: string, state: PlanState): Promise<string> {
+async function runWith(
+  h: Harness,
+  runId: string,
+  state: PlanState,
+  options: { readonly motion?: MotionSpec; readonly firstStatement?: string } = {},
+): Promise<string> {
   const amended = foldPlanIntoBrief(PROSE, state);
   h.store.createRun({
     runId,
@@ -303,10 +349,21 @@ async function runWith(h: Harness, runId: string, state: PlanState): Promise<str
     state,
   });
 
+  const manifest: ReferenceManifest | null =
+    options.motion === undefined ? null : { images: [], capture: null, documents: [], motion: options.motion };
+  if (manifest !== null) {
+    const referenceDir = referenceDirFor(h.paths.runs, runId);
+    mkdirSync(referenceDir, { recursive: true });
+    writeReferenceManifest(referenceDir, manifest);
+  }
+
   const row = h.store.getRun(runId);
   assert.ok(row !== null);
-  const ticket = ticketFromText(row.ticketText);
-  const draft = draftFor(ticket.id, ticket.sha256);
+  // `ticketFromStoredReferences(text, null)` IS `ticketFromText(text)` — the
+  // read-back path documents that degradation — so the runs with no manifest
+  // freeze under the identical id they froze under before this parameter existed.
+  const ticket = ticketFromStoredReferences(row.ticketText, manifest);
+  const draft = draftFor(ticket.id, ticket.sha256, options.firstStatement);
   freezeSuite(
     { suite: suiteFrom(draft), plan: planFromDraft(draft), files: draft.files, auditFindings: [] },
     { acceptanceRoot: h.paths.acceptance },
@@ -359,6 +416,98 @@ test("a run hands the answers off its own plan.json to the tracer, and says so o
       logTextFor(h.store, runId),
       /you answered 1 question\(s\) before this run was frozen, and 1 of its criteria are credited to those answers/,
     );
+  } finally {
+    h.cleanup();
+  }
+});
+
+/**
+ * A reading of a page the owner named, as `readReferenceManifest` hands it back.
+ *
+ * The `h1` entry is the one a criterion below traces to; the `div.card` entry is
+ * there so the tracer has to CHOOSE, rather than having one observation and no
+ * way to be wrong about which it quoted.
+ */
+const MOTION: MotionSpec = {
+  url: "https://example.com/moves",
+  capturedAt: "2026-08-04T00:00:00.000Z",
+  entries: [
+    {
+      family: "load-entrance",
+      role: "h1",
+      props: ["opacity"],
+      durationMs: 800,
+      staggerMs: null,
+      easing: "ease-out",
+      iterations: 1,
+      scrollRatio: null,
+      parity: true,
+    },
+    {
+      family: "scroll-reveal",
+      role: "div.card",
+      props: ["opacity", "transform"],
+      durationMs: 500,
+      staggerMs: 120,
+      easing: "ease-out",
+      iterations: 1,
+      scrollRatio: null,
+      parity: true,
+    },
+  ],
+  libraries: ["gsap"],
+  respectsReducedMotion: true,
+};
+
+test("a run hands the motion reading off its own manifest to the tracer", async () => {
+  // THE GAP THIS CLOSES, AND IT IS THE SAME SHAPE AS THE ONE THE HEADER OF THIS
+  // FILE DESCRIBES. `AssumptionSource` gained `reference` and `isStatedByOwner`
+  // gained its third case on 2026-08-04, and `grep -rn 'source: "reference"'`
+  // over the sources returned NOTHING: the bucket was set by no code path, so
+  // every criterion authored out of a captured motion block still counted as the
+  // grader's guess and the run log still escalated to `warn` about it.
+  //
+  // `spec-assumptions.test.ts` cannot catch that. It passes the reading in
+  // itself, so deleting `this.#referenceReading(runId)` at the one call site in
+  // `orchestrator.ts#recordAssumptions` leaves every assertion over there green.
+  // This test drives the whole `#execute` and reads what the RUN wrote.
+  const h = harness();
+  try {
+    const runId = "run-motion";
+    const assumptions = await runWith(h, runId, planStateFor(), {
+      motion: MOTION,
+      // Carries `opacity` and `800ms` — both MEASURED off the page, neither
+      // anywhere in his prose or in his reply.
+      firstStatement: "The hero heading shall fade in opacity over 800ms.",
+    });
+
+    // WHAT WAS MEASURED IS CREDITED TO THE PAGE HE CHOSE, and the record names
+    // the page and quotes the observation, so the one check it invites — go and
+    // look — is one he can run.
+    assert.match(assumptions, /## READ FROM THE PAGE YOU REFERENCED/);
+    const read = assumptions.slice(assumptions.indexOf("## READ FROM THE PAGE YOU REFERENCED"));
+    assert.match(
+      read,
+      /REQ-001[\s\S]*example\.com\/moves/,
+      "the criterion carrying a measured duration is not credited to the page it was read off",
+    );
+    assert.match(read, /h1 —/, "the record does not quote the observation the spec seat actually read");
+
+    // AND THE OTHER CRITERION IS THE CONTROL. REQ-002 is about a contact route:
+    // nothing on that page was measured about it, and a wiring that credited
+    // everything the moment a manifest existed would move it too.
+    const inferred = assumptions.slice(
+      assumptions.indexOf("## INFERRED"),
+      assumptions.indexOf("## ANSWERED BY YOU"),
+    );
+    assert.match(inferred, /REQ-002/, "a criterion the reading says nothing about was credited to it anyway");
+    assert.doesNotMatch(inferred, /REQ-001/);
+
+    // THE NUMBER THE FEATURE IS JUDGED BY, off the run row. Without the call
+    // site both criteria are the grader's guess and this is 2 — which is the
+    // measurement that says whether capturing the page bought anything.
+    assert.equal(h.store.getRun(runId)?.inferredCriteria, 1);
+    assert.match(assumptions, /1 read from the page you referenced\./);
   } finally {
     h.cleanup();
   }

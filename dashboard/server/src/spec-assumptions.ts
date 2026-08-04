@@ -108,10 +108,12 @@ import type { DomFindingKind } from "bakeoff/dist/scorer-protocol.js";
  * in opposite directions, so it gets its own name — the same argument that
  * earned `answered` its own case.
  *
- * NOTHING SETS `reference` YET. This union member and the two functions that
- * branch on it landed ahead of the capture that produces it, so that the code
- * folding a captured reading into the brief cannot be written without a bucket
- * to file it under. Until then it is reachable only from tests.
+ * WHAT SETS IT: {@link referenceSupportFor}, from a {@link ReferenceReading} the
+ * caller passes BESIDE the prose. It is documented at {@link ReferenceReading},
+ * and the one thing worth knowing here is that it is not "a reading exists" — a
+ * criterion has to carry words the reading MEASURED before it lands in this
+ * bucket. It landed as an unset union member first (2026-08-04) and every motion
+ * criterion read as `inferred` for as long as that was true.
  */
 export type AssumptionSource = "ticket" | "inferred" | "default" | "answered" | "reference";
 
@@ -741,6 +743,178 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/* -------------------------------------------------------------------------
+ * WHAT WAS READ OFF THE PAGE HE POINTED AT — the fifth source, and the reason
+ * it cannot be "a reading exists"
+ *
+ * MEASURED DEFECT (2026-08-04). `AssumptionSource` gained `reference` and
+ * `isStatedByOwner` gained its third case, and `grep -rn 'source: "reference"'
+ * dashboard/server/src/` returned nothing outside the tests. So the bucket was
+ * set by nothing: every criterion the spec seat authored out of a captured
+ * motion block came back `inferred`, `RunDetail.inferredCriteria` went UP for a
+ * run in which the owner had supplied more, and `orchestrator.ts#recordAssump-
+ * tions` escalated the run log to `warn` about it.
+ *
+ * WHY THE TRACER CANNOT FIND IT ON ITS OWN. `#recordAssumptions` feeds this
+ * module `ticketProse(stripPlanBlock(ticket.brief))`, and `ticketProse` cuts the
+ * motion block back off — deliberately, because `classifySurface` reads the same
+ * brief and a captured vocabulary there decides the delegation lane. The reading
+ * therefore arrives BESIDE the prose, exactly as the plan phase's pairs do, and
+ * for the same reason: folding it into the traced text would credit the owner
+ * with the dashboard's own sentences.
+ *
+ * THE OBVIOUS CHEAT, NAMED SO IT CAN BE REFUSED — it is `answeredSupportFor`'s,
+ * one door down. Relabelling a criterion because a reading EXISTS would drive
+ * `inferredCriteria` toward zero and make the number mean nothing; it moves in
+ * the direction that HIDES an inference, which is the false-pass shape this
+ * module exists to prevent. So the rule is two conditions, not one:
+ *   1. the criterion shares at least {@link MIN_SHARED_CONTENT_TOKENS} content
+ *      tokens with ONE observation; and
+ *   2. at least one of those shared tokens is part of what was MEASURED.
+ *
+ * WHY CONDITION 2 IS NOT OPTIONAL, and it is the whole of this branch. An
+ * observation line is half measurement and half the dashboard's own prose:
+ * `motion-brief.ts:FAMILY_PROSE` writes "revealed once on scroll into view",
+ * which is four content tokens nobody read off the page. Without condition 2 the
+ * criterion "content is revealed as it scrolls into view, animating smoothly"
+ * shares four words with that line and is stamped as the owner's — the machine
+ * agreeing with itself, which is precisely what the `answered` branch refuses
+ * about a question's wording.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * One thing a reference page was observed to do.
+ *
+ * `line` IS QUOTED VERBATIM IN THE RECORD and is the same string the spec seat
+ * read in the brief, so the one check this record invites — find this line in
+ * the block, find these words in the criterion — is one the owner can run.
+ *
+ * `measured` IS RAW TEXT, NOT TOKENS, and that is deliberate: {@link
+ * contentTokens} is applied to it HERE, so "what counts as a content word" keeps
+ * the single definition this file's header says the negative controls depend on.
+ * A producer that pre-tokenized would be a second, drifting copy of that filter.
+ *
+ * WHAT MAY GO IN `measured`: only what was read off the page — the element role,
+ * the properties that changed, the durations, the easing family, a ratio. WHAT
+ * MAY NOT: the family's prose, the block's framing sentences, anything the
+ * dashboard wrote. Putting a word of the dashboard's own in here re-opens the
+ * cheat condition 2 exists to close.
+ */
+export interface ReferenceObservation {
+  /** The observation as the spec seat read it. Quoted, never re-worded. */
+  readonly line: string;
+  /** What was read off the page, in the reading's own spelling. */
+  readonly measured: readonly string[];
+}
+
+/**
+ * A page the owner named as a reference, and what was observed on it.
+ *
+ * PRODUCED BY `motion-brief.ts:motionReferenceReading` TODAY and typed here
+ * rather than there so this module does not import a renderer that pulls in the
+ * motion types. Nothing about the shape is motion-specific: a future capture
+ * that reads something else off a page he chose files under the same source and
+ * obeys the same two conditions.
+ *
+ * A READING WITH NO OBSERVATIONS IS NOT THE SAME AS NO READING, and both reach
+ * the same answer here — nothing can be credited to either — which is the
+ * distinction `ticket-refs.ts:manifestMotion` insists on keeping upstream. "A
+ * page was read and nothing moved" is evidence about the page; it is evidence
+ * for no criterion.
+ */
+export interface ReferenceReading {
+  /** The page's address, named in the record so he can go and look. */
+  readonly url: string;
+  readonly observations: readonly ReferenceObservation[];
+}
+
+interface ReferenceSupport {
+  readonly observation: ReferenceObservation;
+  /** Shared with the observation, the measured words first. */
+  readonly shared: readonly string[];
+  /** The subset that was actually measured. Non-empty, or there is no support. */
+  readonly fromMeasurement: readonly string[];
+}
+
+/**
+ * The observation that best supports this criterion, or null.
+ *
+ * BEST = most MEASURED words shared, then most shared overall, then first in the
+ * reading. The first key is `answeredSupportFor`'s and is deliberate for the
+ * same reason: between an observation sharing two measured words and one sharing
+ * one measured word and three of the dashboard's, the record should quote the
+ * line that actually says it. The reading's order is stable — `normaliseMotion`
+ * sorts it — so the final tie-break is stable across runs too.
+ *
+ * WHAT IT DOES NOT DO: it does not check that the criterion is ABOUT the thing
+ * measured, only that it carries its words. "Cards fade in opacity over 500ms"
+ * and "cards must NOT fade in opacity over 500ms" trace identically. The
+ * asymmetry argument in this file's header is what makes that acceptable —
+ * both are the owner reviewing a line he can recognise — and it is stated here
+ * rather than implied because it is a real limit.
+ *
+ * IT IS SPELLING-SENSITIVE, AND THAT IS THE CHEAP DIRECTION. `500ms` in the
+ * reading does not match `500 ms` in a criterion: the tokenizer splits on the
+ * space and neither half survives as the same token. Widening it by emitting
+ * alternate spellings would put the bare token `500` in the measured set, where
+ * any criterion mentioning any 500 of anything would match it — a manufactured
+ * overlap, which this file's header calls the first error and not the second.
+ */
+function referenceSupportFor(
+  statement: string,
+  reading: ReferenceReading | null,
+): ReferenceSupport | null {
+  if (reading === null) return null;
+  const criterionTokens = contentTokens(statement);
+  let best: ReferenceSupport | null = null;
+  for (const observation of reading.observations) {
+    const lineTokens = new Set(contentTokens(observation.line));
+    const measuredTokens = new Set(observation.measured.flatMap((value) => contentTokens(value)));
+    const shared = criterionTokens.filter((t) => lineTokens.has(t) || measuredTokens.has(t));
+    const fromMeasurement = shared.filter((t) => measuredTokens.has(t));
+    // BOTH CONDITIONS, AND THE SECOND IS THE ONE THAT REFUSES THE CHEAT —
+    // watched red on 2026-08-04 with only the first in place: the criterion
+    // "content is revealed as it scrolls into view, animating smoothly" came
+    // back `reference` on the strength of four words this repository wrote into
+    // `FAMILY_PROSE`, with nothing measured behind any of them.
+    if (shared.length < MIN_SHARED_CONTENT_TOKENS || fromMeasurement.length === 0) continue;
+    const candidate: ReferenceSupport = {
+      observation,
+      // The measured words lead, because those are the ones he can check
+      // against the reading rather than against the dashboard's phrasing.
+      shared: [...fromMeasurement, ...shared.filter((t) => !measuredTokens.has(t))],
+      fromMeasurement,
+    };
+    if (
+      best === null ||
+      candidate.fromMeasurement.length > best.fromMeasurement.length ||
+      (candidate.fromMeasurement.length === best.fromMeasurement.length &&
+        candidate.shared.length > best.shared.length)
+    ) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+/**
+ * Why a criterion carries `reference`, in the owner's terms.
+ *
+ * NAMES THE PAGE AND QUOTES THE LINE, for the reason `answeredReason` quotes
+ * both sides: the address alone would credit him with a page rather than a fact,
+ * and the line alone would leave him unable to go and look. The words are
+ * printed as the tracer sees them — `singularise` and all, the same minor cost
+ * the `answered` branch already accepts — so every printed word is still findable
+ * in the quoted line as a prefix.
+ */
+function referenceReason(support: ReferenceSupport, url: string): string {
+  return (
+    `read off the page you gave as a motion reference (${url}). Its reading says: ` +
+    `"${oneLine(support.observation.line)}" — the measured wording this criterion carries: ` +
+    `${support.fromMeasurement.join(", ")}.`
+  );
+}
+
 /**
  * One record per criterion, in criteria order. Never fewer — a criterion with no
  * record is an inference the owner cannot see.
@@ -751,11 +925,17 @@ function oneLine(text: string): string {
  * change in any of their numbers is attributable to this change and to nothing
  * else. `spec-assumptions.answered.test.ts` measures the same fixture with and
  * without pairs for exactly that reason.
+ *
+ * `reference` DEFAULTS TO NULL ON THE SAME ARGUMENT. A run with no motion
+ * reference — which is every run before 2026-08-04 and most runs after it —
+ * produces the record it produced yesterday, byte for byte, and there is a test
+ * asserting the two calls are deep-equal.
  */
 export function extractAssumptions(
   ticket: string,
   criteria: readonly AcceptanceCriterion[],
   answered: readonly AnsweredQuestion[] = [],
+  reference: ReferenceReading | null = null,
 ): readonly Assumption[] {
   const ticketTokens = new Set(contentTokens(ticket));
   const ticketVocabulary = [...ticketTokens];
@@ -844,6 +1024,28 @@ export function extractAssumptions(
       return { ...base, source: "answered" as const, because: answeredReason(support) };
     }
 
+    /*
+     * BELOW `ticket`, BELOW THE HOUSE RULES, AND BELOW `answered` — three
+     * orderings, each of which changes a number, and none of them a tie.
+     *
+     *   BELOW `ticket`: a criterion he typed out himself, which the captured
+     *   page also happens to describe, is HIS SENTENCE. Crediting the page
+     *   instead would move a line he can edit into a bucket he cannot.
+     *
+     *   BELOW THE HOUSE RULES: `countInferredAssumptions` counts `default` and
+     *   excludes `reference`, so a house rule relabelled here would drop the
+     *   number for a check that runs whatever the ticket says — the dashboard
+     *   moving its own score by what it happened to capture.
+     *
+     *   BELOW `answered`: his reply is his own words; a reading is a measurement
+     *   he never saw. Both are his, and when both fit, the record should quote
+     *   the one he can recognise.
+     */
+    const fromReference = referenceSupportFor(criterion.statement, reference);
+    if (fromReference !== null && reference !== null) {
+      return { ...base, source: "reference" as const, because: referenceReason(fromReference, reference.url) };
+    }
+
     return { ...base, source: "inferred" as const, because: inferenceReason(shared, ticketVocabulary) };
   });
 }
@@ -895,6 +1097,7 @@ export function renderAssumptions(a: readonly Assumption[]): string {
   const defaults = a.filter((x) => x.source === "default");
   const fromTicket = a.filter((x) => x.source === "ticket");
   const answered = a.filter((x) => x.source === "answered");
+  const fromReference = a.filter((x) => x.source === "reference");
 
   const lines: string[] = [
     "# What the grader assumed",
@@ -910,12 +1113,22 @@ export function renderAssumptions(a: readonly Assumption[]): string {
     // appended rather than inserted so the sentence the owner already scans for
     // ("Of 16 criteria: 15 inferred by the grader…") reads the same up to the
     // comma.
+    // THE FIFTH FIGURE IS A SEPARATE SENTENCE, not a fifth clause, and that is a
+    // compatibility decision rather than a stylistic one: `assumptions-wiring.
+    // test.ts:355` and `assumptions-answered.test.ts:257` both anchor on the
+    // full stop after "when the dashboard asked", and moving it would redden two
+    // assertions about a number this change does not touch.
     `Of ${a.length} criteria: ${inferred.length} inferred by the grader, ` +
       `${defaults.length} house defaults, ${fromTicket.length} traced to words you wrote, ` +
-      `${answered.length} answered by you when the dashboard asked.`,
+      `${answered.length} answered by you when the dashboard asked. ` +
+      `${fromReference.length} read from the page you referenced.`,
     "",
     section("INFERRED — the grader's guesses. READ THESE FIRST.", inferred),
     section("ANSWERED BY YOU — you settled these before anything was frozen.", answered),
+    // AFTER `ANSWERED` AND NOT BESIDE `INFERRED`: the document's order is the
+    // owner's reading order, and these need no review from him in the way an
+    // inference does — he chose the page they were read off.
+    section("READ FROM THE PAGE YOU REFERENCED — measured, not guessed.", fromReference),
     section("HOUSE DEFAULTS — checked on every run, nothing to correct.", defaults),
     section("FROM YOUR TICKET — you already asked for these.", fromTicket),
   ];

@@ -81,7 +81,7 @@ import {
   isStatedByOwner,
   renderAssumptions,
 } from "./spec-assumptions.js";
-import type { AnsweredQuestion, Assumption } from "./spec-assumptions.js";
+import type { AnsweredQuestion, Assumption, ReferenceReading } from "./spec-assumptions.js";
 import { renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
 
@@ -146,14 +146,17 @@ function forAssumptions(criteria: readonly ApiCriterion[]): readonly AcceptanceC
 /**
  * `answered` DEFAULTS TO EMPTY — the same control as on `extractAssumptions`.
  * A run with no plan phase, and every caller written before there was one,
- * produces the byte-identical record it produced yesterday.
+ * produces the byte-identical record it produced yesterday. `reference` defaults
+ * to `null` on the identical argument: a run with no motion reference — which is
+ * every run before 2026-08-04 — is unmoved by this parameter existing.
  */
 export function assumptionsFor(
   ticketText: string,
   criteria: readonly ApiCriterion[],
   answered: readonly AnsweredQuestion[] = [],
+  reference: ReferenceReading | null = null,
 ): readonly Assumption[] {
-  return extractAssumptions(ticketText, forAssumptions(criteria), answered);
+  return extractAssumptions(ticketText, forAssumptions(criteria), answered, reference);
 }
 
 export interface AssumptionRecord {
@@ -187,14 +190,22 @@ export interface AssumptionRecord {
  * DECLINED questions too, and a declined question's wording in the traced text
  * would manufacture overlap and credit the owner with a requirement he refused
  * to state. The caller passes what he actually answered, in his own words.
+ *
+ * `reference` IS BESIDE THE PROSE FOR THE MIRROR-IMAGE REASON. The motion block
+ * IS in the composed brief, and `ticketProse` cuts it back off before this
+ * function is ever reached — deliberately, since `classifySurface` reads the
+ * same brief and a captured vocabulary there would pick the delegation lane. So
+ * the reading has to arrive as its own argument or the fifth source is set by
+ * nothing, which is exactly what it was for a day.
  */
 export function writeAssumptions(
   resultsDir: string,
   ticketText: string,
   criteria: readonly ApiCriterion[],
   answered: readonly AnsweredQuestion[] = [],
+  reference: ReferenceReading | null = null,
 ): AssumptionRecord {
-  const assumptions = assumptionsFor(ticketText, criteria, answered);
+  const assumptions = assumptionsFor(ticketText, criteria, answered, reference);
   mkdirSync(resultsDir, { recursive: true });
   const path = join(resultsDir, ASSUMPTIONS_FILE);
   writeFileSync(path, `${renderAssumptions(assumptions)}\n`, "utf8");

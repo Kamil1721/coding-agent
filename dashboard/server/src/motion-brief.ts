@@ -22,6 +22,12 @@
  * check; it is a shape test, not knowledge of what the element was.
  */
 import type { MotionEntry, MotionFamily, MotionSpec } from "./motion-types.js";
+// A TYPE-ONLY IMPORT, AND IT HAS TO STAY ONE. This module's header claims it is
+// pure and that every line it emits is hashed into the ticket id; importing the
+// tracer's runtime would put a second module on that path for no gain. Nothing
+// in `spec-assumptions.ts` imports this file back, so there is no cycle either
+// way — but the erasure is what makes that a guarantee rather than a habit.
+import type { ReferenceObservation, ReferenceReading } from "./spec-assumptions.js";
 
 export const MOTION_BLOCK_BEGIN = "--- MOTION READ FROM THE REFERENCE PAGE (BEGIN) ---";
 export const MOTION_BLOCK_END = "--- MOTION READ FROM THE REFERENCE PAGE (END) ---";
@@ -119,6 +125,69 @@ function entryLine(entry: MotionEntry): string {
   if (entry.iterations === null) clauses.push("repeating without end");
   const head = words.join(" ");
   return clauses.length === 0 ? head : `${head}, ${clauses.join(", ")}`;
+}
+
+/**
+ * What was MEASURED on one entry, in the spelling the brief printed it in.
+ *
+ * ONLY WHAT THE LINE ACTUALLY PRINTS. A presence-only entry states no duration,
+ * no easing and no stagger — {@link entryLine} returns before any of them — so
+ * none of them may be listed here either: a criterion could not have been
+ * authored from a number the spec seat never saw, and calling it "read off the
+ * page" would credit the owner with a fact nothing put in front of anyone.
+ *
+ * THE ROLE IS THE SAFE ONE, NOT THE RAW ONE, and that is load-bearing rather
+ * than tidy. `safeRole` turns a path or a filename into `an element`; listing
+ * the raw role here would let its words back in, and `spec-assumptions.ts`
+ * QUOTES the shared tokens into the owner's record — so a role the brief refused
+ * to print would reappear in `assumptions.md`. The one guard would then have a
+ * hole exactly the width of this function.
+ *
+ * WHAT IS DELIBERATELY ABSENT: the family. Its slug (`scroll-reveal`) and its
+ * prose ("revealed once on scroll into view") are the dashboard's own
+ * classification and the dashboard's own words. Admitting either would let a
+ * criterion match the sentence this file wrote rather than anything read off the
+ * page — the cheat `spec-assumptions.ts:referenceSupportFor` states it refuses,
+ * and the negative control that pins it goes red the moment they are added.
+ */
+function measuredWords(entry: MotionEntry): readonly string[] {
+  const words: string[] = [safeRole(entry.role), ...entry.props];
+  if (!entry.parity) return words;
+  words.push(`${String(entry.durationMs)}ms`);
+  if (entry.easing !== null) words.push(entry.easing);
+  if (entry.staggerMs !== null) words.push(`${String(entry.staggerMs)}ms`);
+  if (entry.scrollRatio !== null) words.push(entry.scrollRatio.toFixed(2));
+  return words;
+}
+
+/**
+ * The reading the assumption tracer traces against.
+ *
+ * WHY THIS EXISTS AT ALL: `orchestrator.ts#recordAssumptions` feeds the tracer
+ * `ticketProse(stripPlanBlock(brief))`, which cuts this file's block back off
+ * before a single token is matched. Without a reading passed beside the prose,
+ * every criterion the spec seat authored out of the motion block came back
+ * `inferred` — measured 2026-08-04, with the `reference` bucket in the union and
+ * nothing setting it.
+ *
+ * ONE OBSERVATION PER ENTRY, QUOTING THE LINE THE SPEC SEAT ACTUALLY READ. It is
+ * `entryLine`'s own output rather than a paraphrase, so the record the owner gets
+ * and the brief the criteria were written from say the same thing in the same
+ * words; a paraphrase here would be a second description of the page, free to
+ * drift from the one that was graded against.
+ *
+ * AN EMPTY SPEC STILL PRODUCES A READING, with no observations. That is not the
+ * same value as `null` and it is deliberate — `ticket-refs.ts:manifestMotion`
+ * keeps "a page was read and nothing moved" apart from "no page was read" — but
+ * the two reach the SAME answer in the tracer, because neither is evidence for
+ * any criterion. Only the run log distinguishes them.
+ */
+export function motionReferenceReading(spec: MotionSpec): ReferenceReading {
+  const observations: ReferenceObservation[] = spec.entries.map((entry) => ({
+    line: entryLine(entry).trim(),
+    measured: measuredWords(entry),
+  }));
+  return { url: spec.url, observations };
 }
 
 export function motionBriefLines(spec: MotionSpec): readonly string[] {

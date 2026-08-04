@@ -201,7 +201,8 @@ import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { publishProject } from "./project-publish.js";
 import { writeAssumptions, writeRunVerdict } from "./run-report.js";
-import type { AnsweredQuestion } from "./spec-assumptions.js";
+import type { AnsweredQuestion, ReferenceReading } from "./spec-assumptions.js";
+import { motionReferenceReading } from "./motion-brief.js";
 import { describeTokens, mergeTokenTotals, toApiTokens, zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
 import {
@@ -220,6 +221,7 @@ import {
   builderReferenceSection,
   designReferenceSection,
   manifestDocuments,
+  manifestMotion,
   readReferenceManifest,
   referenceDirFor,
   ticketProse,
@@ -2679,6 +2681,7 @@ export class Orchestrator {
         ticketProse(stripPlanBlock(ticket.brief)),
         this.#deps.store.listCriteria(runId),
         this.#answeredQuestions(runPaths),
+        this.#referenceReading(runId),
       );
       this.#deps.store.updateRun(runId, { inferredCriteria: record.inferredCriteria });
       this.#emitLog(
@@ -2716,6 +2719,36 @@ export class Orchestrator {
     const record = readPlanRecord(runPaths.results);
     if (record === null) return [];
     return answeredInOwnerWords(record.state);
+  }
+
+  /**
+   * What was read off the page the owner named as a motion reference.
+   *
+   * THIS CALL IS THE WHOLE OF THE FIFTH SOURCE. `AssumptionSource` gained
+   * `reference` and `isStatedByOwner` gained its third case on 2026-08-04 with
+   * nothing anywhere setting the label — `grep -rn 'source: "reference"'` over
+   * the sources returned only tests — so every criterion the spec seat authored
+   * out of the captured motion block was counted as the grader's guess, and the
+   * log line below escalated to `warn` for a run in which the owner had supplied
+   * MORE than usual, not less.
+   *
+   * READ OFF THE MANIFEST, NOT PARSED BACK OUT OF THE BRIEF. `ticketProse` cuts
+   * the motion block off the text the tracer measures, and re-extracting it from
+   * between the markers would give "what was captured" a second definition free
+   * to drift from `motion-brief.ts`'s. `references.json` holds the quantized spec
+   * that composed the block in the first place.
+   *
+   * EVERY ABSENCE IS `null`, AND THEY ARE NOT DISTINGUISHED HERE: no manifest, a
+   * manifest predating motion, and a ticket with no motion reference all mean
+   * "nothing was read off a page he chose", which is the same input to the
+   * tracer. A reading whose `entries` are EMPTY is deliberately still a reading —
+   * `manifestMotion` keeps "a page was read and nothing moved" apart from "no
+   * page was read" — and the tracer credits it with nothing anyway, because an
+   * observation is what a criterion has to match and there are none.
+   */
+  #referenceReading(runId: string): ReferenceReading | null {
+    const motion = manifestMotion(readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId)));
+    return motion === null ? null : motionReferenceReading(motion);
   }
 
   /**
