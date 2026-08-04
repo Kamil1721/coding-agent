@@ -482,6 +482,34 @@ const SAMPLER_SOURCE = `
  * negative control relies on exactly that: the scroll-linked entry must still be
  * found, or "the probe returned nothing" could not be told apart from "the probe
  * is broken".
+ *
+ * TWO SEPARATE MECHANISMS, AND EACH NEEDS ITS OWN TEST. This stylesheet and the
+ * `reducedMotion` context option are not two halves of one switch; they overlap
+ * on nothing. The stylesheet stops CSS motion on any page whatever it prefers.
+ * The context option sets a media feature and changes NOTHING unless the page
+ * itself reads it. `forceReducedMotion` turns on both at once, and that is what
+ * hid the following defect for a release:
+ *
+ *   covered by       "a page with animations disabled reports NO motion"
+ *   ...the stylesheet only. It runs against `motion-fixture.html`, which
+ *   declares no `prefers-reduced-motion` block, so the media feature is a
+ *   measured no-op there — the 98-vs-96 reading above IS that measurement.
+ *   PROVEN by mutation: replacing the context option below with an
+ *   unconditional "reduce" left this test, and every other one in the file at
+ *   the time, green.
+ *
+ *   covered by       "a page that HONOURS reduced motion is still read as
+ *                     moving"
+ *   ...the context option only. It runs against
+ *   `test-fixtures/motion-fixture-reduced.html`, whose `@media` block does read
+ *   the preference, and it never sets `forceReducedMotion`, so no stylesheet is
+ *   injected. The same mutation reddens it, `undefined !== 800`. That test also
+ *   pins the SECOND site the media feature is set at — `probeReducedMotion`'s
+ *   own hardcoded "reduce" below, which the mutation above does not touch and
+ *   which its `respectsReducedMotion` assertion reddens separately.
+ *
+ * Neither test covers the other mechanism. Changing one of the two means running
+ * the test that names it; a green run of the other proves nothing about it.
  */
 const SUPPRESS_MOTION_SOURCE = `
 (() => {

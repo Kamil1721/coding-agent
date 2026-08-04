@@ -15,13 +15,22 @@
  * px — so an assertion here is against a number a human wrote, not against a
  * number a previous run of this same code produced.
  *
- * THE SECOND TEST IS THE POINT OF THE WHOLE FILE. A probe that cannot report
- * ZERO for a page that is not moving can only ever observe success: wire the
- * capture to the wrong context options, or break the sampler outright, and the
- * remaining three tests look exactly the same as they do now. So the control
- * asserts BOTH halves — no time-driven motion AND the scroll-linked parallax
- * still found — because "returned nothing" and "was still looking and found
- * nothing" are different results and only the second one is a control.
+ * THE CONTROLS ARE TWO TESTS, NOT ONE, BECAUSE SUPPRESSION IS TWO MECHANISMS.
+ * A probe that cannot report ZERO for a page that is not moving can only ever
+ * observe success — break the sampler outright and the measuring tests look
+ * exactly as they do now. So the second test asserts BOTH halves: no
+ * time-driven motion AND the scroll-linked parallax still found, because
+ * "returned nothing" and "was still looking and found nothing" are different
+ * results and only the second one is a control.
+ *
+ * That test covers the INJECTED STYLESHEET and only that. It runs against
+ * `motion-fixture.html`, which declares no `prefers-reduced-motion` block, so
+ * the capture's `reducedMotion` CONTEXT OPTION is a measured no-op there. It was
+ * proven no-op by mutation: replacing that option with an unconditional "reduce"
+ * left all five of the tests below green. The LAST test in this file is the one
+ * that covers the context option, against a second fixture that honours the
+ * preference. Neither control substitutes for the other, and a change to either
+ * mechanism should be checked against the test that names it.
  *
  * WHAT THIS FILE DOES NOT PROVE. It runs one chromium, on one machine, against
  * one hand-written page. It says nothing about a real site's motion being
@@ -47,6 +56,21 @@ import { normaliseMotion } from "./motion-spec.js";
  */
 const FIXTURE_URL = pathToFileURL(
   join(import.meta.dirname, "..", "src", "test-fixtures", "motion-fixture.html"),
+).href;
+
+/**
+ * The page that HONOURS `prefers-reduced-motion`, and why it is a second file.
+ *
+ * `motion-fixture.html` carries no `@media (prefers-reduced-motion: reduce)`
+ * block, and that absence is a recorded MEASUREMENT rather than an oversight:
+ * `SUPPRESS_MOTION_SOURCE`'s docblock and the negative control below both quote
+ * the 98-vs-96 h1-state reading taken against it. Adding a media block there
+ * would falsify two written measurements and would leave the negative control
+ * with both suppression mechanisms firing at once — the exact confusion that let
+ * the context option go untested.
+ */
+const HONOURING_FIXTURE_URL = pathToFileURL(
+  join(import.meta.dirname, "..", "src", "test-fixtures", "motion-fixture-reduced.html"),
 ).href;
 
 test("REAL CHROMIUM: the declared 800ms hero entrance is measured within a bucket", async () => {
@@ -165,4 +189,65 @@ test("REAL CHROMIUM: scroll-linked motion is told apart from time-driven motion"
   const spec = normaliseMotion(result.reading);
   const parallax = spec.entries.find((e) => e.family === "scroll-linked");
   strictEqual(parallax?.scrollRatio, 0.25);
+});
+
+test("REAL CHROMIUM: a page that HONOURS reduced motion is still read as moving", async () => {
+  /*
+   * THE CONTROL FOR THE CONTEXT OPTION, WHICH THE ONE ABOVE DOES NOT PROVIDE.
+   *
+   * An adversarial reviewer replaced `captureMotion`'s context option
+   *
+   *     reducedMotion: suppressed ? "reduce" : "no-preference"
+   *
+   * with an unconditional "reduce", and all five tests above stayed green:
+   * `motion-fixture.html` ignores the preference, so playwright's media feature
+   * is a no-op against it and the negative control was only ever exercising the
+   * injected stylesheet. PRODUCTION CONSEQUENCE HAD IT REGRESSED: `POST
+   * /api/runs` is the only caller and never sets `forceReducedMotion`, so every
+   * reference site that does honour the preference would have been captured
+   * motionless and no test would have gone red.
+   *
+   * TWO ASSERTIONS, TWO DIFFERENT MUTATIONS, AND NEITHER ONE IS SUFFICIENT.
+   * Both mutations were RUN, not reasoned about, and each reddened this test on a
+   * different line while the other five stayed green:
+   *
+   *   the 800ms hero entry     kills the MAIN context's option. Replacing it with
+   *                            an unconditional "reduce" stills this page and
+   *                            there is no `load-entrance` to find:
+   *                            `undefined !== 800`. It says NOTHING about
+   *                            `probeReducedMotion`, which opens its own context
+   *                            with its own hardcoded value — under that mutation
+   *                            `respectsReducedMotion` was still `true`, so this
+   *                            assertion alone is what caught it.
+   *
+   *   respectsReducedMotion    kills `probeReducedMotion`'s hardcoded "reduce".
+   *                            Flipping that one to "no-preference" left the hero
+   *                            assertion GREEN and reddened this one instead:
+   *                            `false !== true`. It is also what proves the
+   *                            fixture's @media block parses at all — without it a
+   *                            typo'd media query would pass the hero assertion
+   *                            and the first mutation would stop reddening.
+   *
+   * WHAT NEITHER ASSERTION COVERS: the injected `SUPPRESS_MOTION_SOURCE`
+   * stylesheet, which this test never turns on. The negative control above owns
+   * that mechanism and owns nothing here.
+   *
+   * WHY THE HERO NUMBER AND NOT A NON-EMPTY COUNT: 800ms is declared in the
+   * fixture's stylesheet by a human, so this stays an assertion against a written
+   * number rather than against whatever a previous run produced.
+   */
+  const result = await captureMotion({ url: HONOURING_FIXTURE_URL });
+  ok(result.ok, result.ok ? "" : result.reason);
+  const spec = normaliseMotion(result.reading);
+  const hero = spec.entries.find((e) => e.family === "load-entrance" && e.role.startsWith("h1"));
+  strictEqual(
+    hero?.durationMs,
+    800,
+    "the default capture must read a honouring page at no-preference, or it reports every such reference as motionless",
+  );
+  strictEqual(
+    result.reading.respectsReducedMotion,
+    true,
+    "this fixture's @media block is the point of the file; a false here means the preference never reached the page",
+  );
 });
