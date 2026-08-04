@@ -104,6 +104,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 
 import { DesignLockPanel } from "@/components/run/design-lock";
 import { PlanDialoguePanel } from "@/components/run/plan-dialogue";
+import { PreBuildPanel } from "@/components/run/prebuild-panel";
+import { ticketLabel, ticketTooltip } from "@/lib/ticket-title";
 import { planDialogueFrom } from "@/lib/plan-dialogue";
 import {
   ApiDownNotice,
@@ -222,6 +224,43 @@ export default function RunPage(): ReactNode {
   const [showAmbient, setShowAmbient] = useState(false);
   const [runSheetOpen, setRunSheetOpen] = useState(false);
   const [runSheetTab, setRunSheetTab] = useState<RunSheetTab>("ticket");
+
+  /**
+   * The pre-build panel is open on the left dock.
+   *
+   * A BOOLEAN HERE RATHER THAN A VALUE IN `selectedId`. Selection means "show me
+   * this agent's detail" and every consumer of it — the sheet, the agent index,
+   * the card ring — resolves the key against `graph.nodes`. A stage is not in
+   * there and never will be: it is projected from `phase` and `log` rows, not
+   * from `graph_agent`. Putting the Plan card in `selectedId` would open a sheet
+   * that could find nothing to show.
+   *
+   * IT LIVES ON THE PAGE AND NOT IN THE CANVAS because the panel is docked by this
+   * file and sourced by this file, from the same `graph` snapshot the canvas is
+   * drawn from. The canvas is told, so it can draw the card as selected.
+   */
+  const [planPanelOpen, setPlanPanelOpen] = useState(false);
+  const closePlanPanel = useCallback((): void => {
+    setPlanPanelOpen(false);
+  }, []);
+
+  /**
+   * The sections the Plan card stands for, straight off the graph snapshot.
+   *
+   * `graph.stages` AND NEVER `trace`. `use-run-stream.ts:820-822` refuses to open
+   * an EventSource for a terminal run, so a panel derived from the live sink is
+   * blank on every finished run — which is most of the runs anyone opens, and is
+   * exactly how the pre-build lane shipped empty once already. The stages arrive
+   * inside `graph`, folded by the same reducer on the REST snapshot as on the
+   * socket, so this is populated on a cold open of a run that ended last week.
+   *
+   * The orchestrator is dropped because it is its own card on the canvas, not a
+   * section of this one.
+   */
+  const preBuildMembers = useMemo(
+    () => (graph.stages ?? []).filter((stage) => stage.id !== "orchestrator"),
+    [graph.stages],
+  );
 
   /*
    * THE OWNER↔RUN CHAT.
@@ -609,6 +648,8 @@ export default function RunPage(): ReactNode {
         // An empty graph on a live run and on a dead one are the same value and
         // different facts; only this page knows which.
         runIsActive={!isTerminalStatus(run.status)}
+        planPanelOpen={planPanelOpen}
+        onPlanPanel={setPlanPanelOpen}
         /*
          * THE ~80 MINUTES BEFORE ANY NODE EXISTS. Measured on the run that
          * passed: the spec phase took 79.5 minutes of a 105-minute run, and for
@@ -690,18 +731,53 @@ export default function RunPage(): ReactNode {
            * them changes the box for every other run in a way this pass did not
            * measure.
            */
-          <div className="pointer-events-auto flex max-h-[40%] w-[min(360px,calc(100vw-32px))] flex-col gap-2 overflow-y-auto min-[900px]:max-h-[62%]">
-            <RunHud
-              run={run}
-              model={model}
-              nowMs={nowMs}
-              busy={busy}
-              onCancel={onCancel}
-              onResume={onResume}
-              onOpenDetail={openRunSheet}
-            />
-
+          /*
+           * 360 -> 400 ON 2026-08-04, WITH `HUD_WIDTH` IN THE CANVAS, and the two
+           * numbers have to move together: the canvas reserves this much of its
+           * pane on the left when it fits the graph, so a dock wider than the
+           * reservation covers cards the fit believed were visible.
+           */
+          <div className="pointer-events-auto flex max-h-[40%] w-[min(400px,calc(100vw-32px))] flex-col gap-2 overflow-y-auto min-[900px]:max-h-[62%]">
             {/*
+             * THE SWAP THE OWNER ASKED FOR, AND EXACTLY HOW FAR IT GOES.
+             *
+             * "When you click on the plan node a menu on the left side of the
+             * screen comes up … replacing this." What it replaces is the run chip
+             * and the chat button. It does NOT replace the notices,
+             * `PlanDialoguePanel` or `DesignLockPanel` below, and that limit is
+             * load-bearing rather than cautious: those two are the ANSWER surfaces
+             * for a run that is stopped waiting on him. A Plan panel that covered a
+             * plan park would mean clicking a card on the canvas costs the owner
+             * the only control that can un-stick his run. The note further down
+             * this file records what it cost the last time a generic notice sat
+             * where an answer surface belonged.
+             *
+             * `preBuildMembers` IS EMPTY FOR EVERY RUN WITH NO LANE — most of them,
+             * since `foldGraph` only projects stages from `phase` and `log` rows.
+             * The Plan card is not drawn for those runs either (`layout.ts`), so
+             * the panel is unreachable and the fallback is the chip.
+             */}
+            {planPanelOpen && preBuildMembers.length > 0 ? (
+              <PreBuildPanel
+                members={preBuildMembers}
+                runIsActive={!isTerminalStatus(run.status)}
+                ticketLabel={ticketLabel(run.ticketTitle)}
+                ticketTooltip={ticketTooltip(run.ticketTitle, run.ticketText)}
+                onClose={closePlanPanel}
+              />
+            ) : (
+              <>
+                <RunHud
+                  run={run}
+                  model={model}
+                  nowMs={nowMs}
+                  busy={busy}
+                  onCancel={onCancel}
+                  onResume={onResume}
+                  onOpenDetail={openRunSheet}
+                />
+
+                {/*
              * THE CHAT ENTRY POINT. Two things about it are load-bearing.
              *
              * IT IS DIRECTLY UNDER THE CHIP, ABOVE EVERY NOTICE. This dock is
@@ -726,14 +802,16 @@ export default function RunPage(): ReactNode {
              * be a count of messages, not of unread ones, and it would sit at a
              * permanent non-zero on every run that ever spoke.
              */}
-            <Button
-              onClick={openChat}
-              className="w-full justify-between"
-              title="Send this run an instruction or a reference image. Whether it is delivered live or queued for the next prompt depends on the run's state; the panel says which, and every message carries its own delivery state."
-            >
-              chat
-              <span className="font-normal text-ink-faint">instruct · attach</span>
-            </Button>
+                <Button
+                  onClick={openChat}
+                  className="w-full justify-between"
+                  title="Send this run an instruction or a reference image. Whether it is delivered live or queued for the next prompt depends on the run's state; the panel says which, and every message carries its own delivery state."
+                >
+                  chat
+                  <span className="font-normal text-ink-faint">instruct · attach</span>
+                </Button>
+              </>
+            )}
 
             {actionError !== null && (
               <Notice tone="fail" title="That action did not go through">

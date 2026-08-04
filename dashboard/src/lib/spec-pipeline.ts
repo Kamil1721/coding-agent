@@ -209,12 +209,12 @@ export function planStageFrom(
   }
 
   if (over !== null) {
-    return { id: "plan", label: "Plan", detail: over.text, state: "done", atMs: over.atMs };
+    return { id: "plan", label: "Reading the ticket", detail: over.text, state: "done", atMs: over.atMs };
   }
   if (nothing !== null) {
     return {
       id: "plan",
-      label: "Plan",
+      label: "Reading the ticket",
       detail: nothing.reason,
       state: "skipped",
       atMs: nothing.entry.atMs,
@@ -223,10 +223,10 @@ export function planStageFrom(
   if (parked !== null) {
     return {
       id: "plan",
-      label: "Plan",
+      label: "Reading the ticket",
       detail:
-        "Waiting for an answer in the run panel. The window closes on its own, and the run then " +
-        "proceeds on what it had to assume.",
+        "Waiting for your answer below. If you do not answer, it carries on with what it had to " +
+        "assume.",
       state: "running",
       atMs: parked.atMs,
     };
@@ -234,10 +234,8 @@ export function planStageFrom(
   if (phase === "plan") {
     return {
       id: "plan",
-      label: "Plan",
-      detail:
-        "Reading the ticket and anything attached to it, and working out what it cannot infer. " +
-        "It reports when it has something to ask.",
+      label: "Reading the ticket",
+      detail: "Reading your ticket and working out what it cannot guess.",
       state: "running",
       atMs: null,
     };
@@ -311,48 +309,61 @@ export function specPipelineFrom(
   const auditState: SpecStageState = seen.auditDone !== null ? "done" : "pending";
   const freezeState: SpecStageState = seen.sealed !== null ? "done" : "pending";
 
+  /*
+   * THE LABELS AND THE SENTENCES BELOW WERE REWRITTEN IN PLAIN ENGLISH ON
+   * 2026-08-04 — "Reference capture", "Spec seat", "Audit seat" and "Freeze" are
+   * gone, at the owner's instruction ("these dont really mean anything to me").
+   *
+   * THIS FILE RENDERS NONE OF THEM AND THE CHANGE IS STILL WORTH MAKING. The head
+   * of this module already records that the canvas reads `GraphState.stages` and
+   * that this derivation is superseded; the strings a reader actually sees are
+   * `STAGE_LABEL` in `server/src/graph.ts`. Two vocabularies for one pipeline is
+   * how the next person copies the dead one forward, so they are kept identical
+   * rather than left to drift.
+   */
   const stages: readonly SpecStage[] = [
     {
       id: "capture",
-      label: "Reference capture",
+      label: "Reading the reference page",
       detail:
         captureState === "done"
           ? (seen.captured?.text ?? "")
           : captureState === "skipped"
-            ? "No URL in the ticket, so nothing was captured."
-            : "Loading the page and reading its structure.",
+            ? "No link in the ticket, so there was nothing to read."
+            : "Reading the page your ticket links to.",
       state: captureState,
       atMs: seen.captured?.atMs ?? null,
     },
     {
       id: "author",
-      label: "Spec seat",
+      label: "Writing the tests",
       detail:
         authorState === "done"
           ? (seen.specDone?.text ?? "")
           : authorState === "running"
-            ? "Writing the held-out acceptance suite from the ticket and the capture."
-            : "Waiting for the capture.",
+            ? "Writing the tests this build will be graded against."
+            : "Waiting for the reference page.",
       state: authorState,
       atMs: (seen.specDone ?? seen.authoring)?.atMs ?? null,
     },
     {
       id: "audit",
-      label: "Audit seat",
+      label: "Attacking the tests",
       detail:
         auditState === "done"
           ? (seen.auditDone?.text ?? "")
-          : "Attacks the suite for untestable and gameable criteria. Reports only when it finishes.",
+          : "A second seat will try to break these tests, looking for anything untestable or easy " +
+            "to fake. It only reports when it is done.",
       state: auditState,
       atMs: seen.auditDone?.atMs ?? null,
     },
     {
       id: "freeze",
-      label: "Freeze",
+      label: "Sealing the tests",
       detail:
         freezeState === "done"
           ? (seen.sealed?.text ?? "")
-          : "Seals the suite by digest, so the builder can never see it.",
+          : "Locks the tests so the builder cannot see them while it works.",
       state: freezeState,
       atMs: seen.sealed?.atMs ?? null,
     },

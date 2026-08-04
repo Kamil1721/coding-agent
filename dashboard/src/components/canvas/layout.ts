@@ -64,6 +64,7 @@ import type {
   GraphNodeState,
   GraphStage,
   GraphStageId,
+  GraphStageState,
   GraphState,
   RunLane,
 } from "@/lib/api-types";
@@ -137,14 +138,27 @@ export const COLUMN_ORDER: readonly ColumnKey[] = [
   "gate",
 ];
 
+/*
+ * PLAIN ENGLISH, NOT THIS PIPELINE'S INTERNAL VOCABULARY — 2026-08-04, at the
+ * owner's instruction ("reduce the amount of text and label them more simply …
+ * these dont really mean anything to me. For example PLan means something,
+ * orchestrator means something").
+ *
+ * Three of the seven moved and the reason each one moved is a fact about the
+ * column, not a preference: `root` held the one node with no parent, which IS the
+ * orchestrator, and "Session" named nothing on screen; `spec` is where the ticket
+ * becomes requirements, which is what `ROLE_MEANING.spec` already says in words;
+ * `gate` is where the sealed suite grades the build. `Direct tasks`, `Design`,
+ * `Build` and `Review` were already plain and are untouched.
+ */
 export const COLUMN_LABEL: Readonly<Record<ColumnKey, string>> = {
-  root: "Session",
+  root: "Orchestrator",
   tasks: "Direct tasks",
-  spec: "Spec",
+  spec: "Requirements",
   design: "Design",
   build: "Build",
   review: "Review",
-  gate: "Gate",
+  gate: "Scoring",
 };
 
 /*
@@ -214,29 +228,37 @@ export interface PlacedEdge {
 /**
  * A stage card, and the gap between two of them.
  *
- * NARROWER THAN AN AGENT CARD (268px) BECAUSE IT CARRIES LESS. A stage has a
- * label, a state and one sentence the server wrote; an agent card carries pills,
- * counters and a result. Drawing them the same width would make the lane the
- * widest thing on the canvas while being the emptiest.
+ * THE SAME WIDTH AS AN AGENT CARD, SINCE 2026-08-04 — and the paragraph that
+ * argued for 216 is corrected rather than deleted, because its premise stopped
+ * being true. It read: "narrower than an agent card because it carries less. A
+ * stage has a label, a state and one sentence." That was a fact about SIX cards
+ * each standing for one stage. There is now ONE card standing for five of them,
+ * carrying a five-segment progress rail as well as the sentence, so it carries
+ * more rather than less. 268 is `NODE_WIDTH`, which also means the chain does not
+ * change width under the reader at the moment the orchestrator's stage card is
+ * dropped for the real root card.
  *
- * THE STEP IS WIDER THAN THE CARD BY ROUGHLY THE COLUMN GUTTER, for the same
- * reason `COLUMN_GAP` is: every link needs visible run length, and the lane's
- * links are the only ones on this canvas that say "and then".
+ * THE GAP IS `COLUMN_GAP` (184) RATHER THAN A SECOND, TIGHTER RHYTHM. With the
+ * card at `NODE_WIDTH` the step then equals `COLUMN_STEP` exactly, so the
+ * pre-build chain sits on the same x grid the agent columns do. Every link still
+ * gets the visible run length that makes it read as "and then"; it is now the
+ * same run length as everything else on the canvas.
  */
-export const STAGE_WIDTH = 216;
-export const STAGE_GAP = 88;
+export const STAGE_WIDTH = 268;
+export const STAGE_GAP = 184;
 export const STAGE_STEP = STAGE_WIDTH + STAGE_GAP;
 
 /**
- * The collapsed card's height, used ONLY to centre the lane against the root.
+ * The card's height. A CONSTANT, AND NOW LITERALLY SO.
  *
- * AN OPENED STAGE GROWS DOWNWARD FROM THE SAME TOP EDGE and this number does not
- * change, which is deliberate: the lane is one row, so a taller card cannot
- * collide with anything, and holding the top edge fixed means opening a stage
- * moves nothing else on the canvas. That is not true of the agent columns, where
- * `estimateHeight` has to be an upper bound or two cards overlap.
+ * THIS USED TO BE "the collapsed height, used only to centre the lane", because a
+ * card grew in place when the reader opened it. That is the defect the owner
+ * reported as "when i click them they break funny": the card grew inside a fixed
+ * React Flow layout and collided with whatever was beside it. The detail moved to
+ * the left panel, which scrolls, and the card renders to this number in every
+ * state — `stage-node.tsx` sums the rows that make it up.
  */
-export const STAGE_HEIGHT = 118;
+export const STAGE_HEIGHT = 136;
 
 /**
  * The React Flow id of a stage card.
@@ -253,11 +275,136 @@ export function stageKeyOf(id: GraphStageId): string {
 /** Where one stage card sits. Its content is the component's business. */
 export interface PlacedStage {
   readonly key: string;
+  /**
+   * The HEAD stage: the first pre-build stage for the folded card, and
+   * `orchestrator` for its own.
+   */
   readonly stage: GraphStage;
+  /**
+   * Every stage this card stands for, in chain order.
+   *
+   * ONE ENTRY FOR THE ORCHESTRATOR, EVERY PRE-BUILD STAGE FOR THE FOLDED CARD —
+   * the same thing `PlacedNode.members` means for a folded sibling group, which is
+   * why it is the same word. Usually five, and NOT ALWAYS FIVE: a reused suite
+   * makes `foldLogStages` drop `capture`, `author` and `audit` outright
+   * (`server/src/graph.ts`'s `REUSED` arm), and a stream whose first phase row is
+   * `spec` never seeds `plan`. Anything counting these must count the array.
+   */
+  readonly members: readonly GraphStage[];
   readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
+}
+
+/* ------------------------------------------------------------------
+ * The rollup — five sections, one word
+ *
+ * IT LIVES HERE, NOT IN THE COMPONENT, FOR THE REASON THE HEAD OF THIS FILE
+ * GIVES ABOUT PLACEMENT: it has a right answer, so it is a function a test can
+ * call rather than behaviour only a browser can observe. It has six branches, and
+ * six seeded graphs in a browser to cover them is six minutes per run of the
+ * suite; six calls is milliseconds.
+ * ---------------------------------------------------------------- */
+
+export type StageRollup =
+  | "working"
+  | "stopped"
+  | "done"
+  | "waiting"
+  | "not-started"
+  | "never-ran";
+
+/** The activity line when a dead run never mentioned any of this. */
+export const NOTHING_WAS_MENTIONED = "The run ended before any of this was mentioned.";
+
+/** One section's detail when a dead run never mentioned that section. */
+export const SECTION_NEVER_MENTIONED = "The run ended before this was mentioned.";
+
+/**
+ * One word for five sections, and it needs to know whether the run is still going.
+ *
+ * `runIsActive` IS NOT DECORATION AND A VERSION WITHOUT IT IS WRONG. The owner's
+ * own run was cancelled with `plan:done capture:pending author:unresolved
+ * audit:pending freeze:pending`. Without the flag, rules 4 and 5 answer "waiting"
+ * and "not started" — both of which promise future work about a run that will
+ * never continue, which is exactly what `api-types.ts` warns `pending` reads as on
+ * a finished run. Rule 6 is the terminal collapse of those two: on a dead run
+ * there is no difference worth drawing between "we heard some of it" and "we heard
+ * none of it", and `never-ran` says the one true thing about both.
+ *
+ * FIRST MATCH WINS, and the order is the claim. `done` is deliberately unreachable
+ * while anything is still `pending`, so a four-of-five card never says done.
+ *
+ * The token never contains a space: `not-started` and `never-ran` are hyphenated
+ * because they land in `data-state`, and the chip renders its own spaced words.
+ */
+export function rollupOf(
+  members: readonly GraphStage[],
+  runIsActive: boolean,
+): StageRollup {
+  if (members.length === 0) return runIsActive ? "not-started" : "never-ran";
+  const has = (state: GraphStageState): boolean =>
+    members.some((member) => member.state === state);
+
+  if (runIsActive && has("running")) return "working";
+  // A stage still reading `running` on a run that is over is the same fact
+  // `unresolved` records: nobody was watching by the time it ended.
+  if (has("unresolved") || (!runIsActive && has("running"))) return "stopped";
+  if (!has("pending")) return "done";
+  if (runIsActive && (has("done") || has("skipped"))) return "waiting";
+  if (runIsActive) return "not-started";
+  return "never-ran";
+}
+
+/**
+ * The one sentence the folded card shows: the furthest thing the run said.
+ *
+ * NOT THE FIRST THING IT SAID. A reader looking at a card wants to know where the
+ * run got to, and on the owner's run the first non-pending section is `plan`,
+ * whose sentence is about a step that finished hours ago.
+ */
+export function rollupActivityOf(
+  members: readonly GraphStage[],
+  runIsActive: boolean,
+): string {
+  const running = members.find((member) => member.state === "running");
+  if (running !== undefined && running.detail.trim() !== "") return running.detail;
+
+  for (let index = members.length - 1; index >= 0; index -= 1) {
+    const member = members[index];
+    if (member === undefined || member.state === "pending") continue;
+    if (member.detail.trim() !== "") return member.detail;
+  }
+
+  // Everything is pending. A forward-looking placeholder on a dead run is the
+  // same lie rule 6 above exists to refuse, one level down.
+  if (!runIsActive) return NOTHING_WAS_MENTIONED;
+  const head = members[0];
+  return head === undefined || head.detail.trim() === "" ? NOTHING_WAS_MENTIONED : head.detail;
+}
+
+/**
+ * The newest instant any of these sections carried, or null when none did.
+ *
+ * NULL IS A REAL ANSWER AND MUST STAY ONE. `at` is nullable — a row written before
+ * the wire carried one has none — and the card's rule is that a row with no
+ * instant gets no time at all rather than the browser's clock.
+ */
+export function rollupAtOf(members: readonly GraphStage[]): number | null {
+  let newest: number | null = null;
+  for (const member of members) {
+    if (member.at === null) continue;
+    const parsed = Date.parse(member.at);
+    if (!Number.isFinite(parsed)) continue;
+    if (newest === null || parsed > newest) newest = parsed;
+  }
+  return newest;
+}
+
+/** How many of these sections the run said finished. */
+export function rollupDoneCount(members: readonly GraphStage[]): number {
+  return members.filter((member) => member.state === "done").length;
 }
 
 /**
@@ -281,12 +428,18 @@ export interface PlacedStageEdge {
   readonly centerX: number | null;
 }
 
-/** The lane's own header, above its first card. Null when there is no lane. */
-export interface PlacedStageHeader {
-  readonly x: number;
-  readonly y: number;
-  readonly count: number;
-}
+/*
+ * `PlacedStageHeader` IS GONE — 2026-08-04, with `StageHeaderNode` and the string
+ * "Before the build".
+ *
+ * What it was: an x, a y and a count, placed one label-height above the lane's
+ * first card, so the lane read like a column of the agent graph. That was a fact
+ * about a lane of SIX cards. The lane is now two — one folded Plan card and the
+ * orchestrator — and a header reading "Before the build 2" over two named cards is
+ * chrome that repeats what the cards already say. The count it carried is in the
+ * left panel instead, as `<n> of <total> done`, where it is a fact rather than a
+ * label.
+ */
 
 export interface Placement {
   readonly nodes: readonly PlacedNode[];
@@ -303,7 +456,6 @@ export interface Placement {
    */
   readonly stages: readonly PlacedStage[];
   readonly stageEdges: readonly PlacedStageEdge[];
-  readonly stageHeader: PlacedStageHeader | null;
   /** Groups that exist in this placement, collapsed or not. For the HUD. */
   readonly groupKeys: readonly string[];
   /** How many nodes are currently folded out of sight. 0 when all are open. */
@@ -995,21 +1147,59 @@ export function placeGraph(graph: GraphState, options: PlaceOptions): Placement 
   const rootEntry = nodes.find(
     (entry) => entry.kind === "agent" && entry.node.parent === null,
   );
-  // The lane's `orchestrator` stage and the root card are the same actor. Exactly
-  // one of them is ever drawn.
-  const drawnStages = rootEntry === undefined ? lane : lane.filter((s) => s.id !== "orchestrator");
-  const orchestratorDrawn = drawnStages.some((stage) => stage.id === "orchestrator");
+
+  /*
+   * FIVE CARDS BECOME ONE — 2026-08-04, and the ask was the owner's: "Is it really
+   * necessary to have all these different nodes? I think there should just be one
+   * plan node linking to orchestrator."
+   *
+   * `plan`, `capture`, `author`, `audit` and `freeze` are folded into a single
+   * card keyed on the FIRST of them the run actually mentioned. They are not
+   * dropped: every one of them travels on the card as `members`, drives one
+   * segment of its progress rail, and is a row in the left panel. What is gone is
+   * five boxes on a canvas whose only relationship was "and then".
+   *
+   * THE HEAD IS THE FIRST PRESENT MEMBER, NOT `plan`. A stream whose first phase
+   * row is `spec` never seeds `plan` at all (`foldPhaseStages`), and keying the
+   * card on a stage that is not there would place a card standing for nothing.
+   *
+   * The orchestrator keeps its own card and keeps the rule under it: it and the
+   * root card are the same actor, and exactly one of them is ever drawn.
+   */
+  const preBuild = lane.filter((stage) => stage.id !== "orchestrator");
+  const orchestratorStage =
+    rootEntry === undefined ? lane.find((stage) => stage.id === "orchestrator") : undefined;
+
+  const folded: { key: string; stage: GraphStage; members: readonly GraphStage[] }[] = [];
+  const head = preBuild[0];
+  if (head !== undefined) {
+    // KEYED `stage:plan` WHATEVER THE HEAD IS. The key names the CARD, and the
+    // card is called Plan on its face, in its accessible name and in the panel it
+    // opens. Keying it on whichever section happened to be seeded first would
+    // change the React Flow id — and every selector that follows it — depending on
+    // where a stream started, which is not a fact about the card.
+    folded.push({ key: stageKeyOf("plan"), stage: head, members: preBuild });
+  }
+  if (orchestratorStage !== undefined) {
+    folded.push({
+      key: stageKeyOf("orchestrator"),
+      stage: orchestratorStage,
+      members: [orchestratorStage],
+    });
+  }
+
   // Index of the card that owns x = 0. With the orchestrator drawn that is the
   // orchestrator itself; without it, the slot the root card occupies.
-  const anchorIndex = drawnStages.length - (orchestratorDrawn ? 1 : 0);
+  const anchorIndex = folded.length - (orchestratorStage === undefined ? 0 : 1);
   const laneY =
     rootEntry === undefined
       ? LANE_LABEL_HEIGHT + Math.round((tallest - STAGE_HEIGHT) / 2)
       : rootEntry.y + Math.round((rootEntry.height - STAGE_HEIGHT) / 2);
 
-  const stages: PlacedStage[] = drawnStages.map((stage, index) => ({
-    key: stageKeyOf(stage.id),
-    stage,
+  const stages: PlacedStage[] = folded.map((entry, index) => ({
+    key: entry.key,
+    stage: entry.stage,
+    members: entry.members,
     x: (index - anchorIndex) * STAGE_STEP,
     y: laneY,
     width: STAGE_WIDTH,
@@ -1053,12 +1243,6 @@ export function placeGraph(graph: GraphState, options: PlaceOptions): Placement 
     });
   }
 
-  const first = stages[0];
-  const stageHeader: PlacedStageHeader | null =
-    first === undefined
-      ? null
-      : { x: first.x, y: first.y - LANE_LABEL_HEIGHT, count: stages.length };
-
   return {
     nodes,
     columns,
@@ -1068,6 +1252,5 @@ export function placeGraph(graph: GraphState, options: PlaceOptions): Placement 
     preview,
     stages,
     stageEdges,
-    stageHeader,
   };
 }

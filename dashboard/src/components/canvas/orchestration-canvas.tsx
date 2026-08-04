@@ -112,14 +112,19 @@ import {
   type ColumnFlowNode,
   type GroupFlowNode,
 } from "./agent-node";
-import {
-  StageHeaderNode,
-  StageNode,
-  type StageFlowNode,
-  type StageHeaderFlowNode,
-} from "./stage-node";
+import { StageNode, type StageFlowNode } from "./stage-node";
 import { DelegationEdge, LaneEdge, type FlowEdge, type LaneFlowEdge } from "./flow-edge";
-import { NODE_WIDTH, PREVIEW_WIDTH, STAGE_WIDTH, placeGraph } from "./layout";
+import { NODE_WIDTH, PREVIEW_WIDTH, STAGE_WIDTH, placeGraph, stageKeyOf } from "./layout";
+
+/**
+ * The folded pre-build card's React Flow id, and a constant rather than a lookup.
+ *
+ * `placeGraph` keys that card `stage:plan` whichever section it actually leads
+ * with, precisely so this is knowable without asking the placement — the key names
+ * the CARD, which is called Plan everywhere a reader meets it. The orchestrator's
+ * own card is the other stage id and it opens nothing.
+ */
+const PLAN_STAGE_KEY = stageKeyOf("plan");
 import { ROLE_LABEL, ROLE_MEANING, ROLE_ORDER, roleColorVar, type AgentRole } from "./roles";
 
 /**
@@ -134,7 +139,11 @@ const NODE_TYPES = {
   group: GroupNode,
   column: ColumnNode,
   stage: StageNode,
-  stageHeader: StageHeaderNode,
+  /*
+   * `stageHeader` IS GONE — 2026-08-04. The lane it labelled was six cards; it is
+   * two, and both of them are named on their own faces. See the note at the foot
+   * of `stage-node.tsx`.
+   */
   // A function DECLARATION below, so it is hoisted and this const can name it.
   preview: PreviewSiteCard,
 } as const;
@@ -160,7 +169,14 @@ const MAX_ZOOM = 1.5;
  * `maxZoom: 1` stops a two-node run being blown up to 150%: cards are designed at
  * 1 and a magnified 268px card looks like a mistake.
  */
-const HUD_WIDTH = 360;
+/*
+ * 360 -> 400 ON 2026-08-04, and the dock's own `w-[min(…)]` moved with it in the
+ * same commit. The left dock now carries the pre-build panel — a five-row list
+ * with a sentence per row — and 40px is the difference between two-line and
+ * three-line wraps on every one of them. It is the one structural number this
+ * redesign moved; `HUD_RESERVE` below is built from it, so the fit follows.
+ */
+const HUD_WIDTH = 400;
 const WIDE_ENOUGH_TO_FLANK = 900;
 
 /**
@@ -669,6 +685,17 @@ export interface CanvasProps {
    * would break that call site.
    */
   readonly preview?: TerminalPreview | null;
+  /**
+   * The pre-build panel is open on the left dock.
+   *
+   * THE CANVAS DOES NOT OWN IT, and that is deliberate. The panel is docked by the
+   * run page, over this component, and the page is also what sources it from
+   * `GraphState.stages`; a copy of the flag in here would be a second value that
+   * can disagree with the panel actually on screen. What this component does with
+   * it is exactly two things: draw the Plan card as selected, and toggle it.
+   */
+  readonly planPanelOpen?: boolean;
+  readonly onPlanPanel?: (open: boolean) => void;
 }
 
 interface NavCell {
@@ -689,24 +716,25 @@ function CanvasInner({
   latestActivity = null,
   runStatus,
   preview = null,
+  planPanelOpen = false,
+  onPlanPanel,
 }: CanvasProps): ReactNode {
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
 
-  /**
-   * Which pre-build stages the reader has opened.
+  /*
+   * `expandedStages` IS GONE — 2026-08-04, and deleting it is the fix rather than
+   * a tidy-up.
    *
-   * SEPARATE FROM `expandedGroups`, and separate from `selectedId`. A group's
-   * expansion changes the LAYOUT — its members are placed under it — so it has to
-   * reach `placeGraph`. A stage's does not: the lane is one row, an opened card
-   * grows downward into empty canvas and nothing else moves. And it is not
-   * selection because selection opens the run sheet, which resolves its key
-   * against `graph.nodes`; a stage is not in there and never will be.
+   * It recorded which stage cards the reader had opened, and a card that was open
+   * swapped its clamped sentence for the whole one — growing inside a React Flow
+   * layout that had already reserved its box, into whatever was beside it. That is
+   * the owner's "when i click them they break funny". The detail now lives in the
+   * left dock's pre-build panel, which scrolls, so there is nothing left to open in
+   * place and no state to hold it. Clicking the Plan card opens the panel; the
+   * flag for that lives on the run page, beside the panel it controls.
    */
-  const [expandedStages, setExpandedStages] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
 
   /*
    * DRAGGED POSITIONS LIVE IN A REF, AND THEY OVERRIDE THE LAYOUT FOREVER.
@@ -937,6 +965,7 @@ function CanvasInner({
   const stageKeysRef = useRef(stageKeys);
   stageKeysRef.current = stageKeys;
 
+
   const flow = useReactFlow();
   const nodesInitialized = useNodesInitialized();
   const hasFitted = useRef(false);
@@ -1032,15 +1061,6 @@ function CanvasInner({
     });
   }, []);
 
-  const toggleStage = useCallback((key: string): void => {
-    setExpandedStages((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
   const activate = useCallback(
     (key: string): void => {
       if (groupsRef.current.includes(key)) {
@@ -1048,21 +1068,29 @@ function CanvasInner({
         return;
       }
       /*
-       * A STAGE OPENS IN PLACE RATHER THAN OPENING THE SHEET, and that is a
-       * mechanism decision rather than a preference. The run sheet resolves the
-       * selected key against `graph.nodes` — `page.tsx` does
-       * `graph.nodes.find(node => node.id === selectedId)` — so selecting a stage
-       * would clear the ring off whatever was selected and then show nothing. The
-       * canvas already has an in-place disclosure for a card that is not an agent
-       * (a folded group), and this is the same one.
+       * THE PLAN CARD OPENS THE LEFT PANEL, AND IT IS NOT SELECTION.
+       *
+       * The run sheet resolves the selected key against `graph.nodes` —
+       * `page.tsx` does `graph.nodes.find(node => node.id === selectedId)` — so
+       * selecting a stage would clear the ring off whatever was selected and then
+       * show nothing. Selection is cleared here instead, so the right-hand sheet
+       * and the left panel can never both be open over the same card.
+       *
+       * THE ORCHESTRATOR CARD OPENS NOTHING, and swallowing the click is the
+       * point: it stands for one stage, its whole sentence is already on its face,
+       * and a panel listing one row is a panel with nothing in it. Its card is
+       * drawn without hover or press feedback to say so.
        */
       if (stageKeysRef.current.includes(key)) {
-        toggleStage(key);
+        if (key === PLAN_STAGE_KEY && onPlanPanel !== undefined) {
+          onSelect(null);
+          onPlanPanel(!planPanelOpen);
+        }
         return;
       }
       onSelect(key === selectedId ? null : key);
     },
-    [onSelect, selectedId, toggleGroup, toggleStage],
+    [onSelect, onPlanPanel, planPanelOpen, selectedId, toggleGroup],
   );
 
   /*
@@ -1244,29 +1272,18 @@ function CanvasInner({
       position: positionOf(entry.key, entry.x, entry.y),
       data: {
         stage: entry.stage,
-        expanded: expandedStages.has(entry.key),
+        members: entry.members,
+        // Threaded from the page, which is the only thing that knows the run's
+        // status. Without it the folded card promises future work on a run that
+        // ended; `rollupOf` in `layout.ts` records what that costs.
+        runIsActive,
+        isSelected: planPanelOpen && entry.key === PLAN_STAGE_KEY,
         tabbable: entry.key === tabStop,
         onCardKeyDown,
       },
       draggable: true,
       width: STAGE_WIDTH,
     }));
-
-    const stageHeaders: StageHeaderFlowNode[] =
-      placement.stageHeader === null
-        ? []
-        : [
-            {
-              id: "column:prebuild",
-              type: "stageHeader",
-              position: { x: placement.stageHeader.x, y: placement.stageHeader.y },
-              data: { count: placement.stageHeader.count },
-              draggable: false,
-              selectable: false,
-              focusable: false,
-              width: STAGE_WIDTH,
-            },
-          ];
 
     const cards: (AgentFlowNode | GroupFlowNode)[] = placement.nodes.map((entry) => {
       const shared = {
@@ -1347,14 +1364,14 @@ function CanvasInner({
             },
           ];
 
-    return [...columns, ...stageHeaders, ...stageCards, ...cards, ...previewNodes];
+    return [...columns, ...stageCards, ...cards, ...previewNodes];
   }, [
     placement,
     positionOf,
     selectedId,
     tabStop,
     onCardKeyDown,
-    expandedStages,
+    planPanelOpen,
     stablePreview,
     previewSite,
     graph.nodes.length,
@@ -1703,10 +1720,10 @@ function CanvasInner({
    */
   const onNodeClick = useCallback<NodeMouseHandler>(
     (_event, node) => {
-      // A STAGE IS CLICKABLE and the other two are not: `activate` opens a stage
-      // in place rather than selecting it, so it never reaches the sheet's
-      // `graph.nodes` lookup. The lane's HEADER is chrome, like a column header.
-      if (node.type === "column" || node.type === "stageHeader" || node.type === "preview") {
+      // A STAGE IS CLICKABLE and the other two are not: `activate` opens the left
+      // panel for a stage rather than selecting it, so it never reaches the
+      // sheet's `graph.nodes` lookup.
+      if (node.type === "column" || node.type === "preview") {
         return;
       }
       activate(node.id);
@@ -1717,7 +1734,7 @@ function CanvasInner({
   const onNodeMouseEnter = useCallback<NodeMouseHandler>((_event, node) => {
     // `hovered` energises the edges into and out of a key; the preview has none,
     // so hovering it would only clear whatever the reader was pointing at.
-    if (node.type === "column" || node.type === "stageHeader" || node.type === "preview") {
+    if (node.type === "column" || node.type === "preview") {
       return;
     }
     setHovered(node.id);
@@ -1727,9 +1744,15 @@ function CanvasInner({
     setHovered(null);
   }, []);
 
+  /*
+   * EMPTY CANVAS CLEARS BOTH PANELS. It already cleared selection; the pre-build
+   * panel is the fourth way back out of it and the most reachable one, because a
+   * reader who wants the graph back clicks the graph.
+   */
   const onPaneClick = useCallback((): void => {
     onSelect(null);
-  }, [onSelect]);
+    onPlanPanel?.(false);
+  }, [onSelect, onPlanPanel]);
 
   /** Roles actually present, so the legend is four entries and not always eight. */
   const rolesPresent = useMemo((): readonly AgentRole[] => {
