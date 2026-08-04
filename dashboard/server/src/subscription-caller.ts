@@ -347,16 +347,59 @@ export const SEAT_PROGRESS_INTERVAL_MS = 30_000;
  */
 export const SEAT_PROGRESS_CHARS = 240;
 
+/**
+ * How much already-reported text is carried forward AS REDACTION CONTEXT.
+ *
+ * THE RULE THIS EXISTS TO HONOUR IS WRITTEN IN `orchestrator.ts`: "a credential
+ * split across two writes cannot be matched by a regex applied to each write
+ * separately, which is why `redact.ts` ships no per-chunk function at all". A
+ * coalescer that redacted each report's buffer in isolation would be exactly the
+ * per-chunk redact that file forbids — the report boundary is a write boundary.
+ *
+ * `ReassemblingRedactor`, the sanctioned answer, CANNOT BE USED HERE and the
+ * reason is arithmetic rather than taste: it withholds `OVERLAP_WINDOW_CHARS`
+ * (16,384) of tail before flushing anything, which is 68x this excerpt and
+ * roughly 80 seconds of a model's output. A liveness signal that reports nothing
+ * for the first eighty seconds is not a liveness signal. That class exists for the
+ * build LOG, which is explicitly allowed to lag the live stream.
+ *
+ * SO THE MITIGATION IS PARTIAL AND ITS RESIDUE IS NAMED. Carrying 512 characters
+ * of already-streamed text into the next report's redaction window means a
+ * credential straddling a report boundary is matched — in the report AFTER the
+ * split. The half that ended the EARLIER report was shown before its other half
+ * existed, and no amount of buffering fixes that without withholding the tail.
+ * 512 exceeds every span in `CREDENTIAL_RULES` except a PEM block and an
+ * unusually long JWT.
+ *
+ * WHAT MAKES THE RESIDUE SMALL RATHER THAN ACCEPTABLE-BY-ASSERTION: this seat has
+ * `tools: []`. It cannot read a file, run a command or see an environment
+ * variable, so a credential can only reach its output by being in the ticket or an
+ * attached document and then reproduced verbatim — in which case it is already in
+ * the run's own ticket row and already on the owner's screen.
+ */
+export const SEAT_PROGRESS_CARRY_CHARS = 512;
+
 /** One coalesced progress report from a seat call in flight. */
 export interface SeatProgress {
-  /** The `SeatCallRequest.purpose` of the call this is about. */
+  /**
+   * The `SeatCallRequest.purpose` of the call this is about.
+   *
+   * NOT RENDERED BY THE ORCHESTRATOR TODAY, and kept anyway: it is the only field
+   * that distinguishes "authoring attempt 1" from "attempt 3" for a consumer that
+   * wants to, and a sink that has to be told which call it is listening to is a
+   * sink that will eventually be told wrong.
+   */
   readonly purpose: string;
   /**
-   * The NEWEST text, redacted, whitespace-collapsed and clipped to
-   * {@link SEAT_PROGRESS_CHARS}. The TAIL and not the head: the question this
-   * answers is "what is it doing now", and on a seat streaming a JSON suite the
-   * tail names the criterion currently being written. Empty when the call has
-   * produced nothing since the last report.
+   * The NEWEST {@link SEAT_PROGRESS_CHARS} characters of the stream, redacted and
+   * whitespace-collapsed.
+   *
+   * A ROLLING WINDOW OVER THE CALL, not "everything since the last report". The
+   * TAIL and not the head: the question this answers is "what is it doing now",
+   * and on a seat streaming a JSON suite the tail names the criterion currently
+   * being written. A slow interval that produced only ten characters therefore
+   * still shows 240 — the ten new ones with the previous 230 for context — rather
+   * than ten characters of nothing.
    */
   readonly text: string;
   /** Characters streamed by this call so far, in total. Never reset. */
@@ -416,18 +459,24 @@ function tail(text: string, max: number): string {
  * can be measured rather than waited out. `subscription-caller.progress.test.ts`
  * feeds 2,000 deltas and asserts 1 report.
  *
- * REDACTION RUNS BEFORE THE CLIP, NOT AFTER. `redactText` is the same function
- * this file already applies to a failure message, and applying it to the whole
- * pending buffer means a credential that straddles the clip boundary is still
- * matched — clipping first would hand the redactor a fragment it cannot see.
+ * REDACTION RUNS OVER A WINDOW THAT OUTLIVES THE REPORT, AND BEFORE THE CLIP.
+ * `redactText` is the same function this file already applies to a failure
+ * message. It is given `carry + pending` rather than `pending`, so a credential
+ * split across a REPORT boundary is still matched — the boundary this class
+ * creates is a write boundary, and `orchestrator.ts` states plainly why redacting
+ * each write separately is wrong. Read {@link SEAT_PROGRESS_CARRY_CHARS} for what
+ * that fixes and, more importantly, for the half it does not.
  */
 export class SeatProgressCoalescer {
   readonly #purpose: string;
   readonly #sink: SeatProgressSink;
   readonly #intervalMs: number;
   readonly #chars: number;
+  readonly #carryChars: number;
   readonly #now: () => number;
   readonly #startedAt: number;
+  /** Already-reported text, held only so the redactor can see across the seam. */
+  #carry = "";
   #pending = "";
   #total = 0;
   #reports = 0;
@@ -439,6 +488,7 @@ export class SeatProgressCoalescer {
     options: {
       readonly intervalMs?: number;
       readonly chars?: number;
+      readonly carryChars?: number;
       /** Test seam. Production passes nothing and gets `Date.now`. */
       readonly now?: () => number;
     } = {},
@@ -447,6 +497,7 @@ export class SeatProgressCoalescer {
     this.#sink = sink;
     this.#intervalMs = options.intervalMs ?? SEAT_PROGRESS_INTERVAL_MS;
     this.#chars = options.chars ?? SEAT_PROGRESS_CHARS;
+    this.#carryChars = options.carryChars ?? SEAT_PROGRESS_CARRY_CHARS;
     this.#now = options.now ?? Date.now;
     this.#startedAt = this.#now();
     this.#lastAt = this.#startedAt;
@@ -474,7 +525,12 @@ export class SeatProgressCoalescer {
     if (!due) return;
     this.#lastAt = now;
     this.#reports += 1;
-    const text = tail(oneLine(redactText(this.#pending).text), this.#chars);
+    // THE WINDOW, NOT THE CHUNK. `#carry` is text this call has already reported;
+    // it is here so the redactor can see a credential that straddles the seam,
+    // and it doubles as the context that keeps a slow interval's excerpt readable.
+    const window = this.#carry + this.#pending;
+    const text = tail(oneLine(redactText(window).text), this.#chars);
+    this.#carry = window.slice(-this.#carryChars);
     this.#pending = "";
     this.#sink({
       purpose: this.#purpose,
@@ -1625,11 +1681,17 @@ export interface SubscriptionCallerOptions {
    * OPTIONAL, AND ABSENCE IS THE PRE-PROGRESS PATH BYTE FOR BYTE. Without it
    * `includePartialMessages` stays `false`, so the CLI never serialises a delta
    * frame and nothing crosses the pipe that did not cross it before — which is
-   * what keeps the seats that have no consumer (every existing test, and
-   * `judge.ts`, which builds its own caller) at their old cost. A stream of
+   * what keeps the seats that have no consumer at their old cost. A stream of
    * `stream_event` frames for a 64,000-token response is 20,000-30,000 IPC
    * messages; paying for them where nobody reads them would be a regression
    * dressed as a feature.
+   *
+   * ONE SEAT IS STILL SILENT AND IT IS NAMED HERE RATHER THAN LEFT TO BE FOUND.
+   * `judge.ts:282` builds its OWN `SubscriptionSeatCaller` for the code-reading
+   * judge (32,000-token ceiling) and passes no `onProgress`, so that phase reports
+   * nothing. The fix is this one option plus a sink from whoever owns that file;
+   * `orchestrator.seat-progress.test.ts`'s wiring check counts the constructions
+   * in `orchestrator.ts` only, and says so.
    */
   readonly onProgress?: SeatProgressSink;
   /**
@@ -1883,10 +1945,24 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
       for await (const message of session) {
         if (message.type === "stream_event") {
           // THE DELTAS ARE NOT ACCUMULATED INTO `text`, DELIBERATELY. The SDK
-          // yields the completed `assistant` frame as well as the partials, and
+          // yields the completed `assistant` frame AS WELL AS the partials, and
           // `text` is built from that frame alone — so turning progress on
           // cannot change one byte of what the parser downstream receives. The
           // coalescer holds its own copy and throws it away.
+          //
+          // "AS WELL AS" IS READ, NOT ASSUMED, AND IT IS READ STATICALLY. The SDK
+          // turns the option into the CLI flag `--include-partial-messages`
+          // (`sdk.mjs`: `if (Ft) H.push("--include-partial-messages")`), whose
+          // name is additive; the CLI's own stream loop assembles and yields a
+          // `type:"assistant"` message at each content-block boundary in the same
+          // loop that yields `stream_event`, and the only thing that loop
+          // `continue`s past is a ping. What was NOT done is a live call — the
+          // fallback if that read is ever wrong is the result frame's
+          // `if (text.length === 0) text = message.result` below, which already
+          // covers a turn that produced no assistant frame. The one thing that
+          // WOULD degrade is `isOutputOverflowFrame`, which only inspects
+          // assistant frames; signals (3) and (4) — the pair actually measured on
+          // the run that died — do not depend on it, so the ladder still fires.
           if (progress !== null) progress.push(partialAssistantText(message));
         } else if (message.type === "assistant") {
           text += assistantText(message);

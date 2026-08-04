@@ -31,6 +31,11 @@
  * reads `orchestrator.ts` and requires every seat constructed in it to pass
  * `onProgress`, so a fourth seat added later is red until it reports too.
  *
+ * IT READS ONE FILE, WHICH IS NOT "EVERY SEAT IN THE REPOSITORY". `judge.ts:282`
+ * builds a fourth `SubscriptionSeatCaller` — the code-reading judge — and is
+ * outside this lane's file list, so that seat is still silent. The test title says
+ * "the orchestrator constructs" for that reason and not for style.
+ *
  * ─── NEGATIVE CONTROLS ───
  *
  * Applied to production code, run, watched red, reverted — recorded at the tail.

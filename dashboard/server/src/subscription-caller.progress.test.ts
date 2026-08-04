@@ -378,6 +378,55 @@ test("the excerpt is the newest text, whitespace-collapsed and redacted", () => 
   assert.ok(redacted.text.includes("[REDACTED:"), redacted.text);
 });
 
+/**
+ * A CREDENTIAL SPLIT ACROSS A REPORT BOUNDARY — the defect `orchestrator.ts`
+ * names when it says `redact.ts` ships no per-chunk function "because a
+ * credential split across two writes cannot be matched by a regex applied to each
+ * write separately". A report boundary is a write boundary, so a coalescer that
+ * redacted `#pending` alone would be exactly that forbidden per-chunk redact.
+ *
+ * AND THE HALF THIS CANNOT FIX IS ASSERTED TOO, deliberately, because a test that
+ * only showed the win would be claiming a whole repair. The first half is shown by
+ * report 1, at a moment when the second half does not exist and no rule can match
+ * what is there. Nothing short of withholding the tail — which is what
+ * `ReassemblingRedactor` does, at 16,384 characters, 68x this excerpt — closes it,
+ * and withholding the tail is withholding the liveness signal.
+ */
+test("a credential split across a report boundary is caught by the carried window", () => {
+  // Long enough that the leading report fires on push 1 — which is what puts the
+  // seam between the two halves instead of joining them in one buffer.
+  const PAD = "acceptance criteria for the landing page, continued. ".repeat(3);
+  const HALF_ONE = "sk-ant-a1B2a1B2";
+  const HALF_TWO = "a1B2a1B2a1B2 and then some ordinary prose";
+  let clock = 0;
+  const seen: SeatProgress[] = [];
+  const coalescer = new SeatProgressCoalescer("audit", (p) => seen.push(p), {
+    intervalMs: 1000,
+    chars: 120,
+    now: () => clock,
+  });
+
+  coalescer.push(PAD + HALF_ONE);
+  clock = 2000;
+  coalescer.push(HALF_TWO);
+
+  assert.equal(seen.length, 2);
+  // THE RESIDUE, STATED. Half a key, shown before the rest of it arrived. It is
+  // not a key yet and `ANTHROPIC_KEY_SHAPE` requires 16 characters after the
+  // prefix, so nothing here could have matched it.
+  const first = seen[0]?.text ?? "";
+  assert.ok(first.includes(HALF_ONE), first);
+  assert.equal(first.includes("[REDACTED:"), false);
+
+  // THE REPAIR. Report 2's window reaches back over the seam, the whole key
+  // matches, and neither half survives into the row that is persisted.
+  const second = seen[1]?.text ?? "";
+  assert.ok(second.includes("[REDACTED:ANTHROPIC_KEY_SHAPE]"), second);
+  assert.ok(!second.includes(HALF_ONE), second);
+  assert.ok(!second.includes("a1B2a1B2a1B2"), second);
+  assert.ok(second.endsWith("and then some ordinary prose"), second);
+});
+
 /* -------------------------------------------------------------------------
  * 8. A report with nothing to say is not made
  * ---------------------------------------------------------------------- */
@@ -424,4 +473,8 @@ test("an empty delta neither reports nor counts", () => {
  *  M7  subscription-caller.ts: `tail()` returns the HEAD (`text.slice(0, max)`)
  *                                                                       → test 7
  *      red.
+ *  M8  subscription-caller.ts: `const window = this.#pending` (the carried
+ *      redaction context removed, which is the per-chunk redact
+ *      `orchestrator.ts:5895-5898` forbids)                    → "a credential
+ *      split across a report boundary" red.
  */
