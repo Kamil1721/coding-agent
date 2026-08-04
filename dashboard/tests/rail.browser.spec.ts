@@ -109,8 +109,9 @@ test.describe("the rail's interface", () => {
     /*
      * AND EVERY ONE CARRIES A SENTENCE, on `aria-label` and on `title` alike. An
      * icon-only rail with no text affordance is a guessing game; the tooltip is
-     * not polish. MUTATION, NOT RUN: drop the `title` attribute from `RailButton`;
-     * the second loop asserts it equals the accessible name.
+     * not polish. MUTATION APPLIED: dropped the `title` attribute from
+     * `RailButton`. The second loop went red on the first entry it reached.
+     * Reverted.
      */
     for (const entry of ["overview", "chat", "files", "result", "activity"]) {
       const button = page.getByTestId(`rail-${entry}`);
@@ -516,7 +517,9 @@ test.describe("a run that is stopped waiting on an answer", () => {
     /*
      * AND THE RAIL SAYS IT WITHOUT BEING OPENED. The dot is the whole reason a
      * reader who closed the panel can still tell the run wants something.
-     * MUTATION, NOT RUN: pass `questionsDot={null}` unconditionally.
+     * MUTATION APPLIED: passed `questionsDot={null}` unconditionally from
+     * `runs/[runId]/page.tsx`. This went red — the icon carried no `bg-warn`.
+     * Reverted.
      */
     const dot = await page
       .getByTestId("rail-questions")
