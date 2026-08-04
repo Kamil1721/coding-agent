@@ -25,6 +25,22 @@
  * dating a two-hour-old run to the moment somebody opened it, which is the same
  * rule `GraphActivityEntry.at` states for the agent cards.
  *
+ * MEASURED AGAINST THE OWNER'S OWN DATABASE, NOT ONLY AGAINST A FIXTURE. All four
+ * runs in `dashboard/data/runs.db` project a lane through the current fold, and
+ * the two states no fixture exercises both appear there: `run-2026-08-04T11-08-10-
+ * 487Z-162b186d` — the run this whole investigation started from — reads
+ * `plan:done capture:pending author:UNRESOLVED audit:pending freeze:pending
+ * orchestrator:pending` with ZERO agent nodes. So the card has to be legible in
+ * two combinations the harness never shows: a `pending` stage whose `at` is null,
+ * which renders a state word and no time at all, and an `unresolved` one that has
+ * a time and no outcome. Both were folded and read before this shipped.
+ *
+ * `at` IS NOT NULL ON THE REAL SNAPSHOT even though the persisted payload has no
+ * such field: `http.ts:1609` folds `{...row.event, at: row.at}`, so the instant
+ * comes off the events table's own column. Folding the payload alone — which is
+ * what a quick script does — shows every stage with `at: null` and is an artefact
+ * of the script, not of production.
+ *
  * NO HEADING ELEMENT FOR THE LABEL, DELIBERATELY. The run panel already renders
  * `<h_>Plan</h_>` for the plan dialogue, and a second accessible heading named
  * "Plan" on the same page makes `getByRole("heading", {name: "Plan"})` ambiguous

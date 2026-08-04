@@ -37,6 +37,15 @@
  * says so. Do not port a fix into this section — port it into
  * `server/src/graph.ts`, which is what runs.
  *
+ * AND ONE OF THAT SPEC'S TESTS NOW ASSERTS THE OPPOSITE OF WHAT THE CANVAS DOES,
+ * WHICH IS WORTH SAYING OUT LOUD RATHER THAN LEAVING TO BE DISCOVERED.
+ * `tests/spec-pipeline.unit.spec.ts:45` — "outside the spec phase it draws
+ * NOTHING — the real graph owns that screen" — is green, will stay green, and is
+ * a statement about a function NOTHING CALLS. The canvas draws the lane through
+ * the build phase and after it, on purpose; that was the ask. Read that test as
+ * documentation of the superseded derivation, never as the shipped behaviour, and
+ * delete it with the code it covers.
+ *
  * WHY THIS FILE EXISTS. The canvas draws `graph_agent` events, and those come
  * from the BUILDER's SDK projection — which does not exist until the build
  * segment. Measured on the run that passed, that is 79 min 30 s into a
