@@ -27,7 +27,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
-import { ticketFromStoredBrief, ticketFromText, ticketWithReferences } from "./ticket.js";
+import { ticketDigest } from "bakeoff/dist/hash.js";
+
+import { ticketFromStoredBrief, ticketFromStoredReferences, ticketFromText, ticketWithReferences } from "./ticket.js";
+import { MOTION_BLOCK_BEGIN } from "./motion-brief.js";
 import {
   CAPTURE_BLOCK_BEGIN,
   MAX_REFERENCE_IMAGES,
@@ -45,6 +48,7 @@ import {
   writeReferenceManifest,
 } from "./ticket-refs.js";
 import type { ReferenceImage } from "./ticket-refs.js";
+import type { MotionSpec } from "./motion-types.js";
 import type { SiteCapture } from "./site-capture.js";
 
 const PROSE = "Make a copy of kamilborzecki.dev\n\nSame structure, same tone.";
@@ -72,6 +76,26 @@ const CAPTURE: SiteCapture = {
     links: ["Home", "Work", "Contact"],
     palette: ["#111111", "#f5f5f5"],
   },
+};
+
+const MOTION: MotionSpec = {
+  url: "https://motion.example/",
+  capturedAt: "2026-08-04T09:00:00.000Z",
+  entries: [
+    {
+      family: "scroll-reveal",
+      role: "div.card",
+      props: ["opacity", "transform"],
+      durationMs: 500,
+      staggerMs: 120,
+      easing: "ease-out",
+      iterations: 1,
+      scrollRatio: null,
+      parity: true,
+    },
+  ],
+  libraries: ["gsap"],
+  respectsReducedMotion: true,
 };
 
 /* -------------------------------------------------------------------------
@@ -350,7 +374,204 @@ test("the manifest round-trips, and every unreadable form comes back null", () =
     // recorded before documents existed carries no `documents` key, and it must
     // read back as "there are none" rather than as unreadable; anything else
     // would make every pre-document run look corrupt.
-    assert.deepEqual(readReferenceManifest(dir), { images: [], capture: null, documents: [] });
+    // `motion` NORMALISES THE SAME WAY, and is asserted in the same literal
+    // rather than beside it: a `deepEqual` against the whole shape is what makes
+    // a field that reads back as `undefined` — the state that would make the
+    // read-back path derive a different ticket id — fail here.
+    assert.deepEqual(readReferenceManifest(dir), { images: [], capture: null, documents: [], motion: null });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * 6. The MOTION reading — identity, the brief, and the prose it must not keep
+ *
+ * WHY THIS SECTION EXISTS AT ALL. A motion reading enters the ticket by two
+ * different doors — its prose is composed into the brief (so it moves `sha256`
+ * and the id together, exactly as the captured outline does) and its ADDRESS is
+ * folded into the identity material (so it moves the id alone, exactly as an
+ * uploaded image's digest does). The failure mode of the second door is silent:
+ * a fold at intake that the read-back path does not repeat produces a different
+ * id at build time, which authors a SECOND acceptance suite on the owner's quota
+ * and fails no compile and throws nothing. `ticket.ts:273-295` records a live
+ * instance of that same defect class.
+ * ---------------------------------------------------------------------- */
+
+test("THE GOLDEN ID IS UNCHANGED when no motion is captured", () => {
+  // The same literal §1 pins, asserted again through the widened signature: a
+  // caller that passes `motion: null` explicitly, and one that omits the key
+  // because it has never heard of motion, must both land on the id every suite
+  // already sealed under `dashboard/acceptance/<id>/` is addressed by.
+  const omitted = ticketWithReferences({ prose: PROSE, images: [], capture: null });
+  const explicit = ticketWithReferences({ prose: PROSE, images: [], capture: null, motion: null });
+  assert.equal(omitted.id, "t-6bdfb7960f460ae1");
+  assert.deepEqual(explicit, omitted, "an explicit `null` is the same ticket as no key at all");
+});
+
+test("a captured motion spec CHANGES the ticket id", () => {
+  const without = ticketWithReferences({ prose: PROSE, images: [], capture: null });
+  const with_ = ticketWithReferences({ prose: PROSE, images: [], capture: null, motion: MOTION });
+  assert.notEqual(without.id, with_.id, "the same words with a motion reference are a different ticket");
+  assert.ok(with_.brief.includes(MOTION_BLOCK_BEGIN), "and the block is in the text the suite is authored from");
+});
+
+test("THE ADDRESS IS IDENTITY EVEN WHEN THE READING READS THE SAME", () => {
+  // THE TEST THAT MAKES THE FOLD NON-VACUOUS. Two pages that move identically
+  // compose a BYTE-IDENTICAL brief — `motionBriefLines` prints no URL — so
+  // without the address in `referenceIdentityMaterial` these two submissions
+  // would share one frozen suite while naming two different references. The
+  // owner's rule (this module's header) is that they are two tickets.
+  const one = ticketWithReferences({ prose: PROSE, images: [], capture: null, motion: MOTION });
+  const two = ticketWithReferences({
+    prose: PROSE,
+    images: [],
+    capture: null,
+    motion: { ...MOTION, url: "https://other.example/" },
+  });
+  assert.equal(one.brief, two.brief, "the brief cannot tell them apart, which is why the id must");
+  assert.notEqual(one.id, two.id);
+});
+
+test("NEGATIVE CONTROL: capturedAt is NOT part of the identity", () => {
+  // THE FOLD'S ONE FATAL FAILURE MODE. `capturedAt` is a fresh timestamp on
+  // every capture. Folding the whole spec in would mint a new ticket id on
+  // EVERY resubmission of the same words against the same page, re-authoring
+  // the acceptance suite each time on the owner's quota — the exact spend the
+  // reuse branch in `orchestrator.ts` exists to prevent, and it would not fail
+  // to compile and would not throw.
+  const early = ticketWithReferences({ prose: PROSE, images: [], capture: null, motion: MOTION });
+  const later = ticketWithReferences({
+    prose: PROSE,
+    images: [],
+    capture: null,
+    motion: { ...MOTION, capturedAt: "2027-01-01T00:00:00.000Z" },
+  });
+  assert.equal(later.id, early.id);
+  assert.equal(later.sha256, early.sha256);
+});
+
+test("intake and read-back derive the SAME id", () => {
+  // ticket.ts:273-295 records this exact defect class shipping once already: it
+  // does not fail to compile, does not throw, and authors a second suite.
+  const atIntake = ticketWithReferences({ prose: PROSE, images: [image("a")], capture: null, motion: MOTION });
+  const onReadBack = ticketFromStoredReferences(atIntake.brief, {
+    images: [image("a")],
+    capture: null,
+    motion: MOTION,
+  });
+  assert.deepEqual(onReadBack, atIntake);
+
+  // AND THE FAILURE IT IS EXPOSED TO, demonstrated rather than assumed: a
+  // manifest that lost its motion gives a DIFFERENT ticket, which is why the
+  // orchestrator compares its derived id against the persisted one and warns.
+  assert.notEqual(ticketFromStoredReferences(atIntake.brief, { images: [image("a")], capture: null }).id, atIntake.id);
+});
+
+test("sha256 stays exactly ticketDigest(brief), motion or not", () => {
+  // `assertTicketUnedited` (bakeoff/src/spec-agent.ts) refuses a ticket whose
+  // sha256 is not exactly this, so a motion digest that widened it would fail
+  // the run at the first seat rather than here.
+  const ticket = ticketWithReferences({ prose: PROSE, images: [], capture: null, motion: MOTION });
+  assert.equal(ticket.sha256, ticketDigest(ticket.brief));
+});
+
+test("a reading that observed NOTHING still names a page the owner chose", () => {
+  // TWO DIFFERENT FACTS, KEPT APART. `motion: null` is "no reference was read";
+  // a spec with no entries is "a page was read and nothing moved in the sampling
+  // window" (motion-capture.ts says those two must never be conflated). The
+  // brief cannot carry the difference — an empty spec renders no block — so the
+  // id is where it lives, on the same rule an uploaded image follows.
+  const none = ticketWithReferences({ prose: PROSE, images: [], capture: null });
+  const empty = ticketWithReferences({ prose: PROSE, images: [], capture: null, motion: { ...MOTION, entries: [] } });
+  assert.equal(empty.brief, none.brief, "no entries, no block");
+  assert.notEqual(empty.id, none.id);
+});
+
+test("ticketProse strips the MOTION block as well as the capture block", () => {
+  // `classifySurface` reads the brief to pick the delegation shortlist and the
+  // design lane; a captured motion vocabulary left in the prose would flip that
+  // classification, and the lane would be decided by someone else's animation.
+  const motionOnly = ticketWithReferences({ prose: PROSE, images: [], capture: null, motion: MOTION });
+  assert.equal(ticketProse(motionOnly.brief), PROSE, "the motion-only brief: no capture marker to cut at");
+
+  // BOTH BLOCKS PRESENT, which is the case a `lastIndexOf` over one marker gets
+  // wrong in the other direction: the cut must be at the EARLIER marker, not the
+  // later one, or the owner's prose keeps whichever block was composed first.
+  const both = ticketWithReferences({ prose: PROSE, images: [], capture: CAPTURE, motion: MOTION });
+  assert.equal(ticketProse(both.brief), PROSE);
+  assert.ok(!ticketProse(both.brief).includes(MOTION_BLOCK_BEGIN));
+  assert.ok(!ticketProse(both.brief).includes(CAPTURE_BLOCK_BEGIN));
+});
+
+test("NEGATIVE CONTROL: a motion spec with no entries composes NO block", () => {
+  const ticket = ticketWithReferences({
+    prose: PROSE,
+    images: [],
+    capture: null,
+    motion: { ...MOTION, entries: [] },
+  });
+  assert.ok(!ticket.brief.includes("MOTION READ FROM"), "a heading above an empty list states nothing");
+});
+
+test("the brief NEVER carries a path or an attachment sentence because of the motion block", () => {
+  // The same wall §2 asserts for images, applied to the second block. The
+  // reading is TEXT and reaches a text-only seat legitimately; what must not
+  // ride in with it is a file the seat cannot open.
+  const ticket = ticketWithReferences({
+    prose: PROSE,
+    images: [image("a")],
+    capture: CAPTURE,
+    motion: MOTION,
+  });
+  assert.ok(!/\battach/i.test(ticket.brief));
+  assert.ok(!ticket.brief.includes("/tmp/refs/"));
+  assert.ok(!/\bimage\b/i.test(ticket.brief));
+});
+
+test("a motion reading with entries is something to say to the builder and the design lane", () => {
+  const manifest = { images: [], capture: null, motion: MOTION };
+  assert.equal(hasReferences(manifest), true);
+
+  const build = builderReferenceSection(manifest);
+  assert.ok(build.includes("https://motion.example/"));
+  assert.equal(
+    (build.match(/READ EACH ONE BEFORE ACTING/g) ?? []).length,
+    0,
+    "there is no file to read for a motion reading — the block is in the ticket text",
+  );
+  assert.match(build, /nothing in this run compares/i, "the prompt must not imply a gate that does not exist");
+
+  const design = designReferenceSection(manifest);
+  assert.ok(design.includes("https://motion.example/"));
+  assert.match(design, /nothing in this run compares/i);
+});
+
+test("NEGATIVE CONTROL: a motion reading with NO entries is nothing to say", () => {
+  // Without this the widened `hasReferences` could be `manifest.motion !== null`
+  // and both sections would print a heading over a reading that observed
+  // nothing — the failure `shots.length > 0` already exists to prevent.
+  const empty = { images: [], capture: null, motion: { ...MOTION, entries: [] } };
+  assert.equal(hasReferences(empty), false);
+  assert.equal(builderReferenceSection(empty), "");
+  assert.equal(designReferenceSection(empty), "");
+});
+
+test("a manifest written before motion existed reads back as no motion, not as unreadable", () => {
+  const root = mkdtempSync(join(tmpdir(), "refs-motion-"));
+  try {
+    const dir = referenceDirFor(root, "run-2026-08-04-abcd");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "references.json"), JSON.stringify({ images: [], capture: null }), "utf8");
+    const back = readReferenceManifest(dir);
+    assert.equal(back?.motion ?? null, null, "the absent key is 'none', exactly as `documents` is");
+
+    // AND THE ROUND TRIP THE READ-BACK ID DEPENDS ON: the spec that comes back
+    // off disk must derive the same ticket as the one folded in at intake.
+    writeReferenceManifest(dir, { images: [], capture: null, motion: MOTION });
+    const stored = readReferenceManifest(dir);
+    const minted = ticketWithReferences({ prose: PROSE, images: [], capture: null, motion: MOTION });
+    assert.equal(ticketFromStoredReferences(minted.brief, stored).id, minted.id);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

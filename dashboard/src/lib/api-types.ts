@@ -607,8 +607,9 @@ export interface ApiMotionEntry {
  * observed to move inside the sampling window", never "this page is static" —
  * so do not render it as "no animation found".
  *
- * NOTHING SENDS IT YET. `RunDetail.motion` is `null` on every run today; see the
- * field for who is not writing it.
+ * THE SERVER SENDS IT SINCE 2026-08-04, off the run's reference manifest, for
+ * any ticket submitted with a `motionUrl` that could be read. Nothing in this
+ * app renders it yet — see `RunDetail.motion`.
  */
 export interface ApiMotionSpec {
   readonly url: string;
@@ -790,10 +791,19 @@ export interface RunDetail extends RunSummary {
    * How the page the owner named as a MOTION REFERENCE was observed to move, or
    * `null` when this ticket named none.
    *
-   * `null` ON EVERY RUN TODAY, AND FOR A REASON THAT IS NOT ABOUT THE OWNER. The
-   * server's `toDetail` hardcodes it: the intake that would fill it from the
-   * run's reference manifest is not written yet. So this is "no producer", not
-   * "you attached nothing", and a panel must not print the second sentence.
+   * `null` NOW MEANS WHAT IT SAYS: no reading was taken for this run — no
+   * `motionUrl` was submitted, or the address was refused, or the browser would
+   * not start. The server's `toDetail` filled this field from the reference
+   * manifest on 2026-08-04; before that it hardcoded `null` and this paragraph
+   * warned that the absence was about the server rather than about the owner.
+   *
+   * A SPEC WITH AN EMPTY `entries` IS NOT THAT. It means a page WAS read and
+   * nothing moved inside the sampling window, which is a fact about the
+   * reference; collapsing the two in a renderer would report an opened,
+   * watched page as an ignored one.
+   *
+   * NOTHING IN THIS APP READS IT YET, which is the `references`/`documents`
+   * shape at its second stage: the data arrives and no component renders it.
    *
    * ABSENT ENTIRELY ON EVERY RUN RECORDED BEFORE THIS FIELD EXISTED — the same
    * trap `references` and `documents` carry, and for the same reason:
@@ -960,8 +970,10 @@ export interface CreateRunRequest {
    * response does not come back until it is done.
    *
    * A FAILED READING STILL CREATES THE RUN; the reason arrives as a `warn` on
-   * the run's event stream. What was read comes back on `RunDetail.motion` —
-   * which no producer fills yet, so do not build a form that promises a readout.
+   * the run's event stream. What was read comes back on `RunDetail.motion`,
+   * which the server has filled since 2026-08-04 — and which nothing in this app
+   * renders, so a form that promises a readout is still promising a component
+   * that does not exist.
    */
   readonly motionUrl?: string | null;
 }

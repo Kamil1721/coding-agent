@@ -1229,14 +1229,23 @@ export interface RunDetail extends RunSummary {
    * How the page the owner named as a MOTION REFERENCE was observed to move, or
    * `null` when this ticket named none.
    *
-   * NOTHING WRITES IT YET, AND THAT IS SAID HERE RATHER THAN LEFT TO BE FOUND.
-   * `http.ts#toDetail` constructs this response and hardcodes `motion: null` on
-   * every run today; the manifest read that would fill it belongs with the
-   * intake wiring, in another wave. So `null` currently means "no producer",
-   * NOT "this ticket named no reference", and a panel that renders the absence
-   * as "you attached nothing" would be making a claim about the owner from a
-   * fact about this server. The same admission {@link RunDetail.gateStopReason}
-   * carries about its own unwritten column.
+   * `null` MEANS THE TICKET NAMED NO REFERENCE THAT COULD BE READ, and since
+   * 2026-08-04 that is the whole of what it means: `http.ts#toDetail` fills this
+   * from the run's reference manifest, which the intake writes when a
+   * `motionUrl` is submitted. Until that wiring landed this field was hardcoded
+   * `null` and the sentence here said so.
+   *
+   * THREE STATES, NOT TWO, AND A PANEL MUST KEEP THEM APART: `null` is "no
+   * reading was taken" — no reference given, an address refused as private, or a
+   * browser that would not start; a spec whose `entries` is EMPTY is "a page was
+   * read and nothing moved inside the sampling window"; a spec with entries is a
+   * reading. Rendering the middle one as an absence would tell the owner his
+   * link was ignored when it was opened and watched.
+   *
+   * NOTHING RENDERS IT YET. The field is on the wire and mirrored in the client,
+   * and no component in `dashboard/src` reads it — so this is the
+   * `references`/`documents` shape again, one step further along: the data now
+   * arrives.
    *
    * DECLARED BEFORE ANYTHING SENDS IT, DELIBERATELY. `references` and
    * `documents` went the other way round — server first, client mirror months

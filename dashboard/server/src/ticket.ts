@@ -31,8 +31,9 @@
 
 import type { Ticket, TicketTier } from "bakeoff/dist/contracts.js";
 import { ticketDigest } from "bakeoff/dist/hash.js";
-import { composeBrief, manifestDocuments, referenceIdentityMaterial } from "./ticket-refs.js";
+import { composeBrief, manifestDocuments, manifestMotion, referenceIdentityMaterial } from "./ticket-refs.js";
 import type { ReferenceDocument, ReferenceImage, ReferenceManifest } from "./ticket-refs.js";
+import type { MotionSpec } from "./motion-types.js";
 import type { SiteCapture } from "./site-capture.js";
 
 /** Longest title kept. Titles are for the UI list; they are never sent anywhere. */
@@ -163,6 +164,22 @@ export interface TicketReferences {
    * this file consumes it).
    */
   readonly documents?: readonly ReferenceDocument[];
+  /**
+   * How a page the owner named as a MOTION REFERENCE was observed to move.
+   *
+   * OPTIONAL ON THE SAME TERMS AS `documents`, and the omitted case is the old
+   * behaviour exactly: a caller that passes four fields gets the id it has always
+   * got, because a `null` motion contributes nothing to the brief and nothing to
+   * the identity material. With `exactOptionalPropertyTypes` on, a caller that
+   * has none must OMIT this key or pass `null` — never `undefined`.
+   *
+   * IT IS BOTH TEXT AND IDENTITY, WHICH NO OTHER FIELD HERE IS. Its prose is
+   * composed into `brief` (so it moves `sha256` and the id together, like the
+   * capture's outline) AND its address is folded into the identity material (so
+   * it moves the id alone, like an image's digest). `referenceIdentityMaterial`
+   * says why the address is the only part folded and why `capturedAt` is not.
+   */
+  readonly motion?: MotionSpec | null;
 }
 
 /**
@@ -184,7 +201,8 @@ export interface TicketReferences {
  *              digests: `spec-agent.ts:632` and `runner.ts:1124` both refuse a
  *              ticket whose `sha256` is not exactly the digest of its `brief`,
  *              so widening this field would fail the run at the first seat.
- *   `id`     = sha256(brief + the image digests + the document digests). Nothing
+ *   `id`     = sha256(brief + the image digests + the document digests + the
+ *              motion reference's address). Nothing
  *              in bakeoff recomputes an id from a brief — it is used as a path
  *              segment (`spec-freeze.ts:80`) and as a label — which is precisely
  *              why the extra material can live here and nowhere else. Grepped
@@ -215,9 +233,10 @@ export interface TicketReferences {
  * prevent.
  */
 export function ticketWithReferences(references: TicketReferences): Ticket {
-  const brief = composeBrief(references.prose, references.capture);
+  const motion = references.motion ?? null;
+  const brief = composeBrief(references.prose, references.capture, motion);
   return {
-    ...ticketOver(brief, references.images, references.documents ?? []),
+    ...ticketOver(brief, references.images, references.documents ?? [], motion),
     title: titleFromBrief(references.prose),
   };
 }
@@ -230,14 +249,22 @@ export function ticketWithReferences(references: TicketReferences): Ticket {
  * two chances for one of them to drift into covering the other's material — a
  * drift that shows up as `spec-agent.ts:632` refusing the ticket at the first
  * seat, or worse, as a silently different id that authors a second suite.
+ *
+ * EVERY PARAMETER IS REQUIRED, INCLUDING `motion`, AND THAT IS THE POINT OF
+ * TAKING IT HERE. A default would let the read-back path below keep compiling
+ * while computing an id the intake never minted — the failure `ticketFromStored-
+ * Brief` documents as a live instance of this exact class. Required, the
+ * compiler is what enforces that both paths fold the same material; a test could
+ * only notice afterwards.
  */
 function ticketOver(
   brief: string,
   images: readonly ReferenceImage[],
   documents: readonly ReferenceDocument[],
+  motion: MotionSpec | null,
 ): Ticket {
   return {
-    id: ticketIdFor(referenceIdentityMaterial(brief, images, documents)),
+    id: ticketIdFor(referenceIdentityMaterial(brief, images, documents, motion)),
     tier: DASHBOARD_TICKET_TIER,
     title: titleFromBrief(brief),
     brief,
@@ -267,7 +294,7 @@ function ticketOver(
  * {@link ticketFromStoredBrief}.
  */
 export function ticketFromStoredReferences(brief: string, manifest: ReferenceManifest | null): Ticket {
-  return ticketOver(brief, manifest?.images ?? [], manifestDocuments(manifest));
+  return ticketOver(brief, manifest?.images ?? [], manifestDocuments(manifest), manifestMotion(manifest));
 }
 
 /**
@@ -275,10 +302,12 @@ export function ticketFromStoredReferences(brief: string, manifest: ReferenceMan
  * {@link ticketFromStoredReferences} and kept because its callers are outside
  * this file.
  *
- * WHAT IT DOES NOT DO, SAID PLAINLY: it does not fold DOCUMENT digests. A run
- * whose ticket carried an attached document derives a DIFFERENT id through this
- * function than the intake wrote to `runs.ticket_id`, so the run will not find
- * that ticket's frozen suite and will author a second one. That is not a
+ * WHAT IT DOES NOT DO, SAID PLAINLY: it does not fold DOCUMENT digests, and
+ * since 2026-08-04 it does not fold a MOTION reference's address either — its
+ * signature holds neither, and both are passed as empty here. A run whose ticket
+ * carried an attached document OR a motion reference derives a DIFFERENT id
+ * through this function than the intake wrote to `runs.ticket_id`, so the run
+ * will not find that ticket's frozen suite and will author a second one. That is not a
  * hypothetical — `orchestrator.ts` still derives its ticket with
  * `ticketFromStoredBrief(row0.ticketText, manifest?.images ?? [])`, and the
  * outstanding change is to make that expression
@@ -318,5 +347,5 @@ export function ticketFromStoredReferences(brief: string, manifest: ReferenceMan
  * `authorAndFreezeSuite`, which spawns the real CLI and spends quota.
  */
 export function ticketFromStoredBrief(brief: string, images: readonly ReferenceImage[]): Ticket {
-  return ticketOver(brief, images, []);
+  return ticketOver(brief, images, [], null);
 }

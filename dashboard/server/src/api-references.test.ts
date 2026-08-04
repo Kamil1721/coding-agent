@@ -29,7 +29,9 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 
-import type { CreateRunResponse, SseEvent } from "./api-types.js";
+import type { CreateRunResponse, RunDetail, SseEvent } from "./api-types.js";
+import { MOTION_BLOCK_BEGIN } from "./motion-brief.js";
+import type { MotionCaptureResult } from "./motion-types.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
@@ -41,7 +43,7 @@ import type { DashboardPaths } from "./paths.js";
 import { ensureDirs, resolvePaths } from "./paths.js";
 import type { SiteCapture, SiteCaptureResult } from "./site-capture.js";
 import { readReferenceManifest, referenceDirFor } from "./ticket-refs.js";
-import { ticketFromText } from "./ticket.js";
+import { ticketFromStoredReferences, ticketFromText } from "./ticket.js";
 
 const FAKE_MODELS: readonly ModelInfo[] = [
   {
@@ -74,17 +76,55 @@ function fakeCapture(url: string): SiteCapture {
   };
 }
 
+/**
+ * A raw motion reading, as the injected `captureMotion` seam returns one.
+ *
+ * RAW AND NOT NORMALISED, DELIBERATELY. `captureMotion` returns a
+ * `MotionReading` and the ROUTE is what calls `normaliseMotion` on it, so a stub
+ * that handed back a finished spec would leave the route's own quantization step
+ * untested — the 487 ms below must reach the manifest as 500.
+ */
+function fakeMotion(url: string): MotionCaptureResult {
+  return {
+    ok: true,
+    reading: {
+      url,
+      capturedAt: "2026-08-04T09:00:00.000Z",
+      observations: [
+        {
+          family: "scroll-reveal",
+          role: "div.card",
+          props: ["opacity", "transform"],
+          durationMs: 487,
+          firstChangeMs: 200,
+          easing: "ease-out",
+          iterations: 1,
+          scrollRatio: null,
+        },
+      ],
+      libraries: ["gsap"],
+      respectsReducedMotion: true,
+    },
+  };
+}
+
 interface Harness {
   readonly base: string;
   readonly store: RunStore;
   readonly paths: DashboardPaths;
   /** Every URL the route asked to capture. Empty means it never tried. */
   readonly captureCalls: string[];
+  /** Every URL the route asked to READ THE MOTION OF. Kept apart from the above:
+   * the two capture paths take different inputs and a test that could not tell
+   * them apart would pass while the route sent a motion reference to the outline
+   * capture. */
+  readonly motionCalls: string[];
   close(): Promise<void>;
 }
 
 async function startHarness(
   capture: (url: string) => SiteCaptureResult | Promise<SiteCaptureResult>,
+  motion: (url: string) => MotionCaptureResult | Promise<MotionCaptureResult> = fakeMotion,
 ): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "dash-refs-"));
   const paths = resolvePaths({ DASHBOARD_HOME: dir });
@@ -112,6 +152,7 @@ async function startHarness(
     pushLiveMessage: () => false,
   };
   const captureCalls: string[] = [];
+  const motionCalls: string[] = [];
 
   const deps: HttpDeps = {
     store,
@@ -125,6 +166,10 @@ async function startHarness(
       captureCalls.push(options.url);
       return await capture(options.url);
     },
+    captureMotion: async (options) => {
+      motionCalls.push(options.url);
+      return await motion(options.url);
+    },
   };
   const server = createDashboardServer(deps);
   await new Promise<void>((resolve) => server.listen({ host: LOOPBACK_HOST, port: 0 }, resolve));
@@ -135,6 +180,7 @@ async function startHarness(
     store,
     paths,
     captureCalls,
+    motionCalls,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
@@ -359,6 +405,217 @@ test("captureUrl null is the opt-out, and a string overrides the scan", async ()
 
     const bad = await submit(harness, { ticketText: "x", captureUrl: 7 });
     assert.equal(bad.status, 400);
+  } finally {
+    await harness.close();
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * The MOTION reference — a second, separately addressed capture
+ *
+ * THE SAME STUBBING RULE AS ABOVE, and it matters more here: `captureMotion`
+ * drives a real chromium through five phases. Every assertion below is about
+ * what the ROUTE does with a reading, and none of them is evidence that a real
+ * reading is correct — `motion-capture.browser.test.ts` is the file that owns
+ * that claim, and it launches an actual browser to make it.
+ * ---------------------------------------------------------------------- */
+
+test("a motion reference is read, quantized, and becomes part of what the ticket IS", async () => {
+  const harness = await startHarness(okCapture);
+  try {
+    const text = "Build me a portfolio page";
+    const response = await submit(harness, { ticketText: text, motionUrl: "https://motion.example/" });
+    assert.equal(response.status, 201);
+    const runId = ((await response.json()) as CreateRunResponse).runId;
+    const row = harness.store.getRun(runId);
+    assert.ok(row !== null);
+
+    assert.deepEqual(harness.motionCalls, ["https://motion.example/"]);
+    assert.deepEqual(harness.captureCalls, [], "a motion reference is not an outline capture");
+
+    // THE POINT OF THE WHOLE CHANGE, again: the spec seat has `tools: []` and
+    // reads `ticketText`. This block is the only way a duration read off a real
+    // page can reach the criteria it authors.
+    assert.ok(row?.ticketText.includes(MOTION_BLOCK_BEGIN), "the reading is part of the brief");
+    assert.ok(row?.ticketText.includes("500ms"), "and the ROUTE quantized it — the stub reported 487ms");
+    assert.ok(row?.ticketText.startsWith(text), "the owner's words are still first and unedited");
+    assert.notEqual(row?.ticketId, ticketFromText(text).id, "a motion ticket is not the prose-only ticket");
+    assert.equal(row?.ticketSha256, ticketFromText(row.ticketText).sha256, "sha256 is still the brief's digest");
+
+    // NO ATTACHMENT SENTENCE. The same wall the images are behind: this block
+    // goes to a seat that cannot open anything.
+    assert.ok(!/\battach/i.test(row?.ticketText ?? ""));
+
+    const manifest = readReferenceManifest(referenceDirFor(harness.paths.runs, runId));
+    assert.equal(manifest?.motion?.entries.length, 1, "the reading is persisted for the read-back id and the prompts");
+    assert.equal(manifest?.motion?.entries[0]?.durationMs, 500);
+
+    const logs = logLines(harness, runId);
+    assert.ok(
+      logs.some((line) => line.level === "info" && line.text.includes("https://motion.example/")),
+      "the owner is told the reading happened",
+    );
+    assert.ok(
+      logs.some((line) => /nothing in this run compares|no gate/i.test(line.text)),
+      "and is told that nothing measures it, so the reading is not read as an enforced check",
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("THE READ-BACK ID MATCHES THE ONE THE ROUTE PERSISTED", async () => {
+  // THE FAILURE THIS CATCHES IS SILENT AND EXPENSIVE. `orchestrator.ts` rebuilds
+  // the ticket from `row.ticketText` plus the manifest on disk; if the intake
+  // folds something into the id that the manifest does not carry, the run
+  // derives a different id, does not find the frozen suite, and authors a second
+  // one on the owner's quota. It does not throw and it does not fail to compile.
+  const harness = await startHarness(okCapture);
+  try {
+    const response = await submit(harness, {
+      ticketText: "Build me a portfolio page",
+      motionUrl: "https://motion.example/",
+    });
+    const runId = ((await response.json()) as CreateRunResponse).runId;
+    const row = harness.store.getRun(runId);
+    const manifest = readReferenceManifest(referenceDirFor(harness.paths.runs, runId));
+    assert.equal(ticketFromStoredReferences(row?.ticketText ?? "", manifest).id, row?.ticketId);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("A FAILED MOTION READING STILL CREATES THE RUN, and says so — the negative control", async () => {
+  const harness = await startHarness(okCapture, () => ({
+    ok: false,
+    reason: "the browser could not be started: no chromium",
+  }));
+  try {
+    const text = "Build me a portfolio page";
+    const response = await submit(harness, { ticketText: text, motionUrl: "https://motion.example/" });
+    assert.equal(response.status, 201, "a third-party site being slow is not a reason to refuse a ticket");
+    const runId = ((await response.json()) as CreateRunResponse).runId;
+    const row = harness.store.getRun(runId);
+
+    assert.equal(row?.ticketText, text, "with no reading the brief is the prose, byte for byte");
+    assert.equal(row?.ticketId, ticketFromText(text).id, "and the ticket is the prose-only ticket");
+
+    const warning = logLines(harness, runId).find((line) => line.level === "warn");
+    assert.ok(warning !== undefined, "a silent failure here is a ticket that quietly lost its reference");
+    assert.match(warning.text, /was NOT read/);
+    assert.match(warning.text, /no chromium/, "the real cause survives into the trace");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("A READING THAT OBSERVED NOTHING is not a failure, and is not silence either", async () => {
+  // TWO ANSWERS THAT MUST NOT COLLAPSE INTO ONE (motion-capture.ts says so): a
+  // page that could not be read, and a page that was read and does not move.
+  const harness = await startHarness(okCapture, (url) => ({
+    ok: true,
+    reading: {
+      url,
+      capturedAt: "2026-08-04T09:00:00.000Z",
+      observations: [],
+      libraries: [],
+      respectsReducedMotion: false,
+    },
+  }));
+  try {
+    const text = "Build me a portfolio page";
+    const response = await submit(harness, { ticketText: text, motionUrl: "https://still.example/" });
+    const runId = ((await response.json()) as CreateRunResponse).runId;
+    const row = harness.store.getRun(runId);
+
+    assert.ok(!row?.ticketText.includes(MOTION_BLOCK_BEGIN), "no entries, no block — nothing to author from");
+    assert.notEqual(row?.ticketId, ticketFromText(text).id, "but a page WAS chosen, and that is identity");
+    const manifest = readReferenceManifest(referenceDirFor(harness.paths.runs, runId));
+    assert.equal(manifest?.motion?.entries.length, 0, "the empty reading is persisted, not discarded");
+    assert.equal(
+      ticketFromStoredReferences(row?.ticketText ?? "", manifest).id,
+      row?.ticketId,
+      "and the read-back agrees, which is the only reason the id above is safe to move",
+    );
+    assert.ok(logLines(harness, runId).some((line) => /nothing was observed to move/i.test(line.text)));
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a motion reference pointing at this machine is never fetched", async () => {
+  const harness = await startHarness(okCapture);
+  try {
+    const response = await submit(harness, {
+      ticketText: "Build me a portfolio page",
+      motionUrl: "http://127.0.0.1:4176/api/runs",
+    });
+    assert.equal(response.status, 201);
+    const runId = ((await response.json()) as CreateRunResponse).runId;
+    // THE SAME REFUSAL LIST THE OUTLINE CAPTURE USES, reached through the same
+    // function: a second copy of it here would drift from the first.
+    assert.deepEqual(harness.motionCalls, [], "the browser was never even asked");
+    assert.ok(logLines(harness, runId).some((line) => line.level === "warn" && /this machine/.test(line.text)));
+  } finally {
+    await harness.close();
+  }
+});
+
+test("THE TICKET TEXT IS NOT SCANNED for a motion reference", async () => {
+  // THE DELIBERATE ASYMMETRY WITH `captureUrl`. A URL in the prose means "copy
+  // this site" and is scanned for; wanting a page's MOVEMENT is never implied by
+  // mentioning it, so this one is explicit or absent. Without this assertion the
+  // route could quietly read the motion of every page any ticket cites — half a
+  // minute more on a submit button, and a second reason for a ticket id to move
+  // when somebody else's site does.
+  const harness = await startHarness(okCapture);
+  try {
+    const response = await submit(harness, { ticketText: "Make a copy of https://kamilborzecki.dev" });
+    const runId = ((await response.json()) as CreateRunResponse).runId;
+    assert.deepEqual(harness.motionCalls, []);
+    assert.deepEqual(harness.captureCalls, ["https://kamilborzecki.dev/"], "the outline capture still scans");
+    assert.ok(!logLines(harness, runId).some((line) => /\bmoves\b|\bmotion\b/i.test(line.text)));
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a motionUrl that is not a string, null or absent is refused", async () => {
+  const harness = await startHarness(okCapture);
+  try {
+    const bad = await submit(harness, { ticketText: "x", motionUrl: 7 });
+    assert.equal(bad.status, 400);
+    assert.equal(((await bad.json()) as { error: string }).error, "invalid_body");
+
+    const suppressed = await submit(harness, { ticketText: "x", motionUrl: null });
+    assert.equal(suppressed.status, 201, "null is the ordinary 'no motion reference'");
+    assert.deepEqual(harness.motionCalls, []);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the reading comes back on the run detail, so a panel has something to render", async () => {
+  // THE FAILURE THIS PINS SHIPPED ONCE ALREADY. `references`/`documents` were
+  // written into the manifest and never put on the wire, and the whole suite
+  // stayed green because nothing asserted the response carried them.
+  const harness = await startHarness(okCapture);
+  try {
+    const withMotion = await submit(harness, { ticketText: "x", motionUrl: "https://motion.example/" });
+    const withMotionId = ((await withMotion.json()) as CreateRunResponse).runId;
+    const detail = (await (await fetch(`${harness.base}/api/runs/${withMotionId}`)).json()) as RunDetail;
+    assert.equal(detail.motion?.url, "https://motion.example/");
+    assert.equal(detail.motion?.entries.length, 1);
+    assert.equal(detail.motion?.entries[0]?.durationMs, 500);
+    assert.equal(detail.motion?.respectsReducedMotion, true);
+
+    // AND THE NEGATIVE CONTROL: a run with no motion reference reports `null`
+    // rather than an empty spec, because "he named none" and "it read nothing"
+    // are different facts and a renderer must be able to tell them apart.
+    const plain = await submit(harness, { ticketText: "y" });
+    const plainId = ((await plain.json()) as CreateRunResponse).runId;
+    const plainDetail = (await (await fetch(`${harness.base}/api/runs/${plainId}`)).json()) as RunDetail;
+    assert.equal(plainDetail.motion, null);
   } finally {
     await harness.close();
   }

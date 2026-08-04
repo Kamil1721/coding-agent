@@ -206,6 +206,8 @@ import {
   decodeReferenceDataUrl,
   digestBytes,
   documentDirFor,
+  manifestMotion,
+  readReferenceManifest,
   referenceDirFor,
   writeReferenceManifest,
 } from "./ticket-refs.js";
@@ -219,6 +221,10 @@ import {
 import type { DecodedDocument } from "./document-intake.js";
 import { captureSite, captureTargetFor, captureTargetIn } from "./site-capture.js";
 import type { CaptureOptions, SiteCapture, SiteCaptureResult } from "./site-capture.js";
+import { captureMotion } from "./motion-capture.js";
+import type { MotionCaptureOptions } from "./motion-capture.js";
+import { normaliseMotion } from "./motion-spec.js";
+import type { MotionCaptureResult, MotionSpec } from "./motion-types.js";
 
 /**
  * DECLARED IN `dashboard-url.ts`, RE-EXPORTED HERE.
@@ -393,6 +399,24 @@ export interface HttpDeps {
    * the manifest, the id — be checked with no network and no browser.
    */
   readonly captureSite?: (options: CaptureOptions) => Promise<SiteCaptureResult>;
+  /**
+   * How a page the owner named as a MOTION REFERENCE gets read. Defaults to real
+   * chromium.
+   *
+   * A SECOND SEAM RATHER THAN A WIDENING OF THE FIRST, because the two drivers
+   * answer different questions and take different options: `captureSite` writes
+   * screenshots into a directory and parses markup, `captureMotion` opens two
+   * contexts at two reduced-motion settings and samples computed style per frame.
+   * One seam would force every test that stubs either to know about both.
+   *
+   * THE SAME REASON THE FIRST ONE EXISTS: this route decides the ticket's
+   * identity from what comes back, and a test that had to launch a browser to
+   * observe that is a test nobody runs. `api-references.test.ts` drives every
+   * outcome — a reading, a failure, an empty reading — through this seam with no
+   * browser, and `motion-capture.browser.test.ts` is the only file allowed to
+   * claim the real driver works.
+   */
+  readonly captureMotion?: (options: MotionCaptureOptions) => Promise<MotionCaptureResult>;
   /**
    * The supervisor for locally-started published projects.
    *
@@ -636,22 +660,24 @@ function toDetail(
     references: listAttachments(paths.runs, row.runId, "references"),
     documents: listAttachments(paths.runs, row.runId, "documents"),
     /*
-     * HARDCODED `null`, AND THIS LINE IS A STATEMENT ABOUT THIS SERVER RATHER
-     * THAN ABOUT THE TICKET.
+     * OFF THE MANIFEST ON DISK, like `references` and `documents` above, because
+     * the reading was taken at intake and SQLite never held it.
      *
-     * The field is on the wire contract and mirrored in the client so the two
-     * cannot lag apart — the `references`/`documents` failure this repo already
-     * shipped once — but the reading that would fill it is captured at intake
-     * and stored on the reference manifest, and that wiring is not written yet.
-     * Until it is, EVERY run reports `null` here, including one whose ticket
-     * named a motion reference and whose capture succeeded.
+     * `null` NOW MEANS WHAT A RENDERER WOULD ASSUME IT MEANS — no motion
+     * reference was read for this run — where until this commit it meant "this
+     * server has no producer". The three states are still distinguishable and a
+     * panel must keep them apart: `null` is "none was read", a spec with an
+     * empty `entries` is "a page was read and nothing moved in the sampling
+     * window", and a spec with entries is a reading. Only the first is an
+     * absence of a reference.
      *
-     * SO A RENDERER MUST NOT SAY "no motion reference" FOR THIS NULL. It says
-     * "this server has no producer". `api-types.ts` carries the same admission
-     * on the field, in the same words `gateStopReason` uses about its own
-     * column.
+     * A THIRD READ OF THE SAME SMALL FILE, and that is deliberate rather than
+     * unnoticed: `listAttachments` owns the other two and takes a directory
+     * rather than a manifest, so sharing one read means changing that module's
+     * signature for a JSON file of a few hundred bytes read once per detail
+     * request. Said here so the next reader knows it was weighed.
      */
-    motion: null,
+    motion: manifestMotion(readReferenceManifest(referenceDirFor(paths.runs, row.runId))),
     artifactPath: row.artifactPath,
     previewUrl: row.previewUrl,
     /*
@@ -1722,6 +1748,28 @@ function requestedCaptureTarget(body: Record<string, unknown>, ticketText: strin
   return captureTargetIn(ticketText);
 }
 
+/**
+ * Decide which page, if any, this request wants the MOTION of.
+ *
+ * TWO INPUTS, NOT THREE, AND THE MISSING ONE IS THE POINT. There is no scan of
+ * the ticket text here. A URL in the prose means "copy this site", which is why
+ * {@link requestedCaptureTarget} looks for one; wanting a page's MOVEMENT is
+ * never implied by mentioning it, and inferring it would spend most of a minute
+ * on the submit button for every ticket that cites a documentation page, and
+ * would tie the ticket id to how that page happens to animate today. So absent,
+ * `null` and an empty string all mean the same thing: no motion reference.
+ *
+ * THE REFUSAL LIST IS `captureTargetFor`'S, reached through the same function
+ * the outline capture uses rather than copied. localhost, private and link-local
+ * ranges are refused identically for both, and a second list here would drift
+ * from the first — this route's own API lives on exactly such an address.
+ */
+function requestedMotionTarget(body: Record<string, unknown>): ReturnType<typeof captureTargetFor> {
+  const explicit = body["motionUrl"];
+  if (typeof explicit !== "string" || explicit.trim().length === 0) return { kind: "none" };
+  return captureTargetFor(explicit.trim());
+}
+
 async function createRun(deps: HttpDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
   let payload: unknown;
   try {
@@ -1807,6 +1855,21 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
       "invalid_body",
       "captureUrl must be a string, null or absent",
       "null suppresses the capture; absent means the first URL in the ticket text is captured.",
+    );
+    return;
+  }
+  const motionUrl = body["motionUrl"];
+  if (motionUrl !== undefined && motionUrl !== null && typeof motionUrl !== "string") {
+    sendError(
+      response,
+      400,
+      "invalid_body",
+      "motionUrl must be a string, null or absent",
+      // A DIFFERENT SENTENCE FROM `captureUrl`'S, because the two fields behave
+      // differently and one wording for both would document a scan that this
+      // field deliberately does not have.
+      "It names a page whose ANIMATION you want read. Absent or null means none — the ticket text is " +
+        "never scanned for one, unlike captureUrl.",
     );
     return;
   }
@@ -1936,19 +1999,50 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
    * carry playwright's own default on top of that. A healthy page is a few
    * seconds; a hanging one is most of a minute with no progress shown, because
    * this is a plain POST with no streamed status.
+   *
+   * AND A SUBMISSION THAT ALSO NAMES A MOTION REFERENCE PAYS AGAIN, SEPARATELY.
+   * The motion reading is a SECOND browser launch with its own budget
+   * (`MOTION_BUDGET_MS` for its bounded calls, plus `MOTION_PHASE_MS` of
+   * deliberate waiting that no timeout covers because a healthy capture spends
+   * it on purpose). The two run one after the other, so a ticket carrying both a
+   * captured page and a motion reference is the sum of both figures. Nothing
+   * here is parallel: they are sequenced so that a failure of one names itself
+   * in the log rather than being lost in a `Promise.all` rejection.
    */
   const target = requestedCaptureTarget(body, ticketText);
   const capture = await runCapture(deps, target, referenceDir);
+  /*
+   * BEFORE `ticketWithReferences`, AND THAT ORDER IS THE WHOLE REQUIREMENT.
+   *
+   * The reading's prose is composed into the brief and its address is folded
+   * into the identity material, so it decides the ticket id — which is written
+   * to the row below and is the name of the frozen acceptance suite. Reading it
+   * afterwards would mean the row's `ticketId` and the ticket the run is graded
+   * under were different strings, silently, on the owner's quota.
+   */
+  const motion = await runMotionCapture(deps, requestedMotionTarget(body));
 
-  const ticket = ticketWithReferences({ prose: ticketText, images, documents, capture: capture.capture });
-  if (images.length > 0 || documents.length > 0 || capture.capture !== null) {
+  const ticket = ticketWithReferences({
+    prose: ticketText,
+    images,
+    documents,
+    capture: capture.capture,
+    motion: motion.spec,
+  });
+  if (images.length > 0 || documents.length > 0 || capture.capture !== null || motion.spec !== null) {
     // `mkdirSync` HERE TOO, and not only in the loops above: a ticket whose only
     // attachment is a document creates `documents/` and never `references/`, and
     // `writeReferenceManifest` deliberately does not create its own directory
     // (`ticket-refs.test.ts` pins that). Without this line such a ticket throws
     // ENOENT out of a route that had already decoded and written its bytes.
     mkdirSync(referenceDir, { recursive: true });
-    writeReferenceManifest(referenceDir, { images, capture: capture.capture, documents });
+    // THE MOTION SPEC IS PERSISTED HERE OR THE RUN AUTHORS A SECOND SUITE.
+    // `ticketFromStoredReferences` rebuilds the ticket at build time from
+    // `row.ticketText` plus this file; the address folded into the id above
+    // lives nowhere else. A manifest written without it derives a different id,
+    // finds no frozen suite, and pays to author another one — with no throw and
+    // no compile error. `api-references.test.ts` asserts the two ids agree.
+    writeReferenceManifest(referenceDir, { images, capture: capture.capture, documents, motion: motion.spec });
   }
   // §17.3 RULE 2'S TWO INPUTS, PERSISTED. Both are stated once, by the request
   // that created the run, and neither is patchable afterwards (db.ts says why:
@@ -1993,7 +2087,7 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
    * `warn` FOR A FAILED CAPTURE, not `error`: the run is fine, it is just less
    * well specified than the owner asked for.
    */
-  for (const line of captureNotes(capture, images.length, documents)) {
+  for (const line of captureNotes(capture, images.length, documents, motion)) {
     deps.bus.emit(runId, { type: "log", level: line.level, text: line.text });
   }
 
@@ -2041,6 +2135,58 @@ async function runCapture(
   }
 }
 
+/** A motion reading as `createRun` needs it: the spec, plus why there is none. */
+interface MotionAttempt {
+  /**
+   * The quantized reading, or `null`.
+   *
+   * `null` MEANS NO READING WAS TAKEN — no reference named, a refused address, a
+   * browser that would not start. It is NOT "the page does not move": that is a
+   * spec whose `entries` is empty, and the two are kept apart all the way to the
+   * ticket id (see `referenceIdentityMaterial`) because conflating them is how a
+   * probe ends up unable to report zero.
+   */
+  readonly spec: MotionSpec | null;
+  /** null when nothing was attempted; a sentence when something went wrong. */
+  readonly failure: string | null;
+  /** The address that was tried, for the log line. */
+  readonly url: string | null;
+}
+
+/**
+ * Read the reference's motion, or explain in one sentence why there is none.
+ *
+ * NEVER THROWS AND NEVER REFUSES THE RUN — the same contract as {@link runCapture}
+ * and for the same reason. `captureMotion` already promises not to throw; the
+ * try/catch is for the injected seam, and for the case where the module itself
+ * fails to load, because a ticket must not be rejected over an optional reading.
+ *
+ * IT NORMALISES HERE RATHER THAN IN THE DRIVER. `captureMotion` returns a RAW
+ * reading carrying `firstChangeMs` — an absolute start time measured to differ
+ * by 400 ms between two readings of the same page — and `normaliseMotion` is
+ * what drops it. Anything that persisted or hashed the raw reading would put
+ * that number in the ticket id, so the quantization happens before this function
+ * returns and the raw form never leaves it.
+ */
+async function runMotionCapture(
+  deps: HttpDeps,
+  target: ReturnType<typeof captureTargetFor>,
+): Promise<MotionAttempt> {
+  if (target.kind === "none") return { spec: null, failure: null, url: null };
+  if (target.kind === "refused") {
+    // The reason is a clause, so it reads as one sentence in `captureNotes`
+    // ("… was NOT read: it names this machine.").
+    return { spec: null, failure: target.reason, url: target.url };
+  }
+  try {
+    const result = await (deps.captureMotion ?? captureMotion)({ url: target.url });
+    if (!result.ok) return { spec: null, failure: result.reason, url: target.url };
+    return { spec: normaliseMotion(result.reading), failure: null, url: target.url };
+  } catch (error) {
+    return { spec: null, failure: describeError(error), url: target.url };
+  }
+}
+
 /**
  * What the owner is told about their references, on the run's event stream.
  *
@@ -2052,6 +2198,7 @@ function captureNotes(
   attempt: CaptureAttempt,
   imageCount: number,
   documents: readonly ReferenceDocument[],
+  motion: MotionAttempt,
 ): readonly { readonly level: "info" | "warn"; readonly text: string }[] {
   const notes: { readonly level: "info" | "warn"; readonly text: string }[] = [];
   if (imageCount > 0) {
@@ -2112,6 +2259,51 @@ function captureNotes(
         `${attempt.url ?? "the page named in this ticket"} was NOT captured: ${attempt.failure}. ` +
         "The acceptance suite for this run will be written from your words alone, with no knowledge " +
         "of what that page looks like.",
+    });
+  }
+  /*
+   * THE MOTION NOTE, IN THREE STATES RATHER THAN TWO.
+   *
+   * A reading with entries, a reading with NONE, and no reading at all are three
+   * different facts about this submission and each gets its own sentence. The
+   * middle one is the state a two-state note would lose: "the page was opened
+   * and nothing moved inside the sampling window" is a real answer about the
+   * reference, and printing it as a failure would tell the owner his link was
+   * broken when it was not.
+   *
+   * IT SAYS WHAT NOTHING DOES, WHICH IS THE HALF THAT COSTS MOST TO OMIT. The
+   * reading reaches the brief the acceptance suite is authored from and reaches
+   * the build and design prompts — that much is genuinely wired, in this commit.
+   * No gate compares what gets built to it: there is no motion check in the
+   * sealed scorer, which runs `--network none` and never loads that page. A note
+   * that let the owner believe otherwise would describe a mechanism that does
+   * not exist, which is the same failure the documents note is a `warn` about.
+   */
+  if (motion.spec !== null && motion.spec.entries.length > 0) {
+    notes.push({
+      level: "info",
+      text:
+        `read how ${motion.spec.url} MOVES and found ${String(motion.spec.entries.length)} thing(s) in ` +
+        "motion. That reading is part of the ticket text the acceptance suite is authored from, and it " +
+        "reaches the builder and the design lane. Durations are rounded, because two readings of the " +
+        "same page never agree exactly. NOTHING IN THIS RUN COMPARES what gets built to that page: " +
+        "there is no motion gate, and the sealed scorer has no network.",
+    });
+  } else if (motion.spec !== null) {
+    notes.push({
+      level: "warn",
+      text:
+        `${motion.spec.url} was read, and NOTHING WAS OBSERVED TO MOVE in the sampling window. That is ` +
+        "not the same as the page being static — the reading watches transform and opacity for a bounded " +
+        "time and reports what changed inside it. No motion block was added to your ticket text, so the " +
+        "acceptance suite will say nothing about movement.",
+    });
+  } else if (motion.failure !== null) {
+    notes.push({
+      level: "warn",
+      text:
+        `${motion.url ?? "the page you named as a motion reference"} was NOT read: ${motion.failure}. ` +
+        "The acceptance suite for this run will be written with no knowledge of how that page moves.",
     });
   }
   return notes;

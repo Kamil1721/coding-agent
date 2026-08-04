@@ -76,6 +76,8 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { MOTION_BLOCK_BEGIN, motionBriefLines } from "./motion-brief.js";
+import type { MotionSpec } from "./motion-types.js";
 import { safeSegment } from "./paths.js";
 import type { SiteCapture, SiteOutline } from "./site-capture.js";
 
@@ -187,9 +189,29 @@ export interface ReferenceManifest {
   readonly images: readonly ReferenceImage[];
   readonly capture: SiteCapture | null;
   readonly documents?: readonly ReferenceDocument[];
+  /**
+   * How the page the owner named as a MOTION REFERENCE was observed to move.
+   *
+   * OPTIONAL FOR THE SAME REASON `documents` IS — every manifest already on disk
+   * lacks the key, and a required field would make an existing manifest read
+   * back as a shape this type says is impossible. Read it through
+   * {@link manifestMotion}.
+   *
+   * IT IS THE QUANTIZED SPEC, NEVER THE RAW READING. `RawObservation` carries
+   * `firstChangeMs`, an absolute start time measured to differ by 400 ms between
+   * two readings of the same page (`motion-types.ts` records the measurement);
+   * persisting it would put a number in the file the read-back path derives the
+   * ticket id from, and a drifting id re-authors the acceptance suite.
+   *
+   * THIS FILE IS WHERE THE READ-BACK ID COMES FROM. `ticketFromStoredReferences`
+   * folds `motion.url` into the identity material at build time, and the intake
+   * folded the same string; if this key is lost, the run derives a different
+   * ticket and authors a second suite.
+   */
+  readonly motion?: MotionSpec | null;
 }
 
-export const EMPTY_REFERENCES: ReferenceManifest = { images: [], capture: null, documents: [] };
+export const EMPTY_REFERENCES: ReferenceManifest = { images: [], capture: null, documents: [], motion: null };
 
 /**
  * The documents a manifest carries, with "the key was never written" and "there
@@ -203,6 +225,28 @@ export const EMPTY_REFERENCES: ReferenceManifest = { images: [], capture: null, 
  */
 export function manifestDocuments(manifest: ReferenceManifest | null): readonly ReferenceDocument[] {
   return manifest?.documents ?? [];
+}
+
+/**
+ * The motion reading a manifest carries, with "the key was never written",
+ * "there is no manifest" and "no motion reference was given" flattened to the
+ * same `null`.
+ *
+ * THE SAME FLATTENING ARGUMENT `manifestDocuments` MAKES, and it holds for the
+ * same reason: a manifest with no `motion` key is one written before motion
+ * existed, which is a run that genuinely had none. There is no third state this
+ * hides, because the intake writes the key and the reading in one statement.
+ *
+ * WHAT IT DOES NOT FLATTEN, and the distinction is load-bearing: a spec with an
+ * EMPTY `entries` list is not `null`. That is "a page was read and nothing moved
+ * inside the sampling window", which `motion-capture.ts` insists is a different
+ * answer from "nothing was read". Both {@link referenceIdentityMaterial} and
+ * {@link hasReferences} treat them differently, in opposite directions — the
+ * first counts an empty reading as a reference the owner chose, the second
+ * refuses to print a prompt block about it.
+ */
+export function manifestMotion(manifest: ReferenceManifest | null): MotionSpec | null {
+  return manifest?.motion ?? null;
 }
 
 /** `runs/<id>/references` — DERIVED IN ONE PLACE, imported by both writers. */
@@ -267,6 +311,11 @@ export function readReferenceManifest(dir: string): ReferenceManifest | null {
       images: record.images,
       capture: record.capture ?? null,
       documents: Array.isArray(record.documents) ? record.documents : [],
+      // `motion` NORMALISES THE SAME WAY AND FOR THE SAME REASON as `documents`
+      // — a manifest written before motion existed must read back as "there was
+      // none" rather than as a hole. It is NOT validated field by field, on this
+      // function's stated grounds: this process wrote it, in its own directory.
+      motion: record.motion ?? null,
     };
   } catch {
     return null;
@@ -289,10 +338,25 @@ export function readReferenceManifest(dir: string): ReferenceManifest | null {
  * a seat is a separate, unwritten wiring step. Anything that changes that must
  * add a documents block with its own wording and its own emptiness check, not
  * widen this predicate.
+ *
+ * A MOTION READING IS COUNTED, AND THE RULE ABOVE IS WHY RATHER THAN AN
+ * EXCEPTION TO IT. The test is not "is this reference important" but "does the
+ * section below have anything to print". A document produces nothing — no path
+ * either function renders, no sentence either function writes — so counting it
+ * would print a heading over an empty list. A motion reading with entries
+ * produces a block with an address and a statement in it, which those functions
+ * do render, so it counts. A reading with NO entries produces nothing again, and
+ * is deliberately not counted: `entries.length > 0` here is the same guard as
+ * `shots.length > 0` inside the two sections, made once so the predicate and the
+ * blocks cannot disagree about whether there is anything to say.
  */
 export function hasReferences(manifest: ReferenceManifest | null): boolean {
   if (manifest === null) return false;
-  return manifest.images.length > 0 || (manifest.capture?.shots.length ?? 0) > 0;
+  return (
+    manifest.images.length > 0 ||
+    (manifest.capture?.shots.length ?? 0) > 0 ||
+    (manifest.motion?.entries.length ?? 0) > 0
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -323,10 +387,35 @@ const CAPTURE_BLOCK_END = "--- END OF THE PAGE READING ---";
  * partial, regex-derived summary of one page's markup at one moment; calling it
  * "the site" in front of a model that will write pass/fail criteria from it is
  * how a criterion ends up asserting a heading that a mis-parse invented.
+ *
+ * TWO BLOCKS NOW, AND THE ORDER IS FIXED RATHER THAN INCIDENTAL: prose, then the
+ * markup reading, then the motion reading. {@link ticketProse} cuts at the
+ * EARLIER marker present, so the order does not decide what the owner's prose is
+ * — but it does decide the bytes of the brief, and the brief is the ticket id.
+ * Reordering these two blocks changes every id minted from a ticket that carries
+ * both, which orphans the suites already sealed under them.
+ *
+ * THE MOTION BLOCK IS OMITTED ENTIRELY FOR A READING WITH NO ENTRIES, which is
+ * `motionBriefLines`' own rule and `outlineLines`' before it: a heading above an
+ * empty list invites the spec seat to author a criterion about motion nobody
+ * observed.
  */
-export function composeBrief(prose: string, capture: SiteCapture | null): string {
-  if (capture === null) return prose;
-  return [prose, "", "", CAPTURE_BLOCK_BEGIN, "", ...outlineLines(capture.outline), "", CAPTURE_BLOCK_END].join("\n");
+export function composeBrief(
+  prose: string,
+  capture: SiteCapture | null,
+  motion: MotionSpec | null = null,
+): string {
+  const lines: string[] = [prose];
+  if (capture !== null) {
+    lines.push("", "", CAPTURE_BLOCK_BEGIN, "", ...outlineLines(capture.outline), "", CAPTURE_BLOCK_END);
+  }
+  if (motion !== null) {
+    const motionLines = motionBriefLines(motion);
+    if (motionLines.length > 0) lines.push("", "", ...motionLines);
+  }
+  // WITH NEITHER BLOCK THIS RETURNS THE PROSE UNCHANGED, byte for byte: a
+  // one-element join adds nothing. That is the property the golden id rests on.
+  return lines.join("\n");
 }
 
 /**
@@ -342,11 +431,30 @@ export function composeBrief(prose: string, capture: SiteCapture | null): string
  * into their own prose gets their brief truncated here. The consequence is a
  * shorter string handed to a keyword classifier that fails towards the WIDEST
  * shortlist; it is not a boundary anything security-relevant depends on.
+ *
+ * THE EARLIEST MARKER WINS, AND `lastIndexOf` ALONE WOULD BE WRONG IN BOTH
+ * DIRECTIONS NOW THAT THERE ARE TWO BLOCKS. A brief carrying only the motion
+ * block would keep the whole reading in the prose (no capture marker to cut at),
+ * and a reordering of the two blocks would keep whichever was composed first.
+ * Taking the minimum of the markers that are PRESENT cuts everything machine-
+ * written in one line, whatever order they were composed in.
+ *
+ * WHAT IT STILL DOES NOT CUT: the planning block. `plan-brief.ts:218-233` offers
+ * `planBlockIndex` for exactly this minimum, and this function does not consult
+ * it — `orchestrator.ts` composes `ticketProse(stripPlanBlock(brief))` instead,
+ * and that composition is what removes it today. This function is unchanged in
+ * that respect and claims nothing about it.
+ *
+ * `lastIndexOf` WITHIN EACH MARKER is kept: an owner who types a marker into his
+ * own prose truncates his own brief rather than shifting the machine's block,
+ * which is the harmless spoof the paragraph above describes.
  */
 export function ticketProse(brief: string): string {
-  const index = brief.lastIndexOf(`\n${CAPTURE_BLOCK_BEGIN}`);
-  if (index < 0) return brief;
-  return brief.slice(0, index).replace(/\n+$/, "");
+  const indexes = [CAPTURE_BLOCK_BEGIN, MOTION_BLOCK_BEGIN]
+    .map((marker) => brief.lastIndexOf(`\n${marker}`))
+    .filter((index) => index >= 0);
+  if (indexes.length === 0) return brief;
+  return brief.slice(0, Math.min(...indexes)).replace(/\n+$/, "");
 }
 
 /**
@@ -441,34 +549,79 @@ const IDENTITY_SEPARATOR = "\u0000ticket-references\u0000";
 const DOCUMENT_IDENTITY_SEPARATOR = "\u0000ticket-documents\u0000";
 
 /**
+ * The motion reference's separator — a THIRD label, on the argument the second
+ * one makes: with a shared marker, a ticket carrying one image would encode
+ * identically to the same ticket carrying a motion reference whose address
+ * happened to spell that image's digest. Written as escapes for the reason the
+ * comment above `IDENTITY_SEPARATOR` gives — a raw NUL makes this whole file
+ * `data` to grep(1).
+ */
+const MOTION_IDENTITY_SEPARATOR = "\u0000ticket-motion\u0000";
+
+/**
  * The bytes a ticket's id is taken over: the brief, then what it carries.
  *
- * IMAGES FIRST, THEN DOCUMENTS, each list order-sensitive within itself for the
- * reason the image separator gives above. A list that is empty appends NOTHING —
- * not an empty separator, not a trailing marker — which is the property that
- * keeps `referenceIdentityMaterial(brief, [], [])` byte-identical to `brief`
- * and therefore keeps every suite frozen before this module existed addressable.
+ * IMAGES FIRST, THEN DOCUMENTS, THEN THE MOTION REFERENCE'S ADDRESS, each list
+ * order-sensitive within itself for the reason the image separator gives above.
+ * A list that is empty, and a `null` motion, append NOTHING — not an empty
+ * separator, not a trailing marker — which is the property that keeps
+ * `referenceIdentityMaterial(brief, [], [])` byte-identical to `brief` and
+ * therefore keeps every suite frozen before this module existed addressable.
  * `ticket-refs.test.ts` pins that against a hardcoded golden id.
  *
- * `documents` IS DEFAULTED RATHER THAN REQUIRED, and the reason is that the
- * DEFAULT IS THE IDENTITY-PRESERVING VALUE: a caller that has not heard of
- * documents computes the id this function has always computed, rather than a
+ * `documents` AND `motion` ARE DEFAULTED RATHER THAN REQUIRED, and the reason is
+ * that the DEFAULT IS THE IDENTITY-PRESERVING VALUE: a caller that has not heard
+ * of either computes the id this function has always computed, rather than a
  * different one. The dangerous direction — a default that silently invents a new
- * id — is not reachable through this parameter. The place where a default WOULD
- * be dangerous is the read-back path in `ticket.ts`, and it does not have one:
- * see `ticketFromStoredReferences`.
+ * id — is not reachable through these parameters. The place where a default
+ * WOULD be dangerous is the read-back path in `ticket.ts`, and it does not have
+ * one: see `ticketFromStoredReferences`.
+ *
+ * WHAT THE MOTION READING CONTRIBUTES IS ITS ADDRESS AND NOTHING ELSE, and the
+ * omissions are the whole design:
+ *
+ *   THE ADDRESS is here because the brief does not carry it. `motionBriefLines`
+ *   prints families, roles, durations and easings and never the URL, so two
+ *   pages that move identically compose a BYTE-IDENTICAL brief. Without this
+ *   line they would share one frozen suite while naming two different
+ *   references, against the owner's rule at the top of this file — the same rule
+ *   that puts an uploaded image's digest here even though the image adds no text.
+ *
+ *   `capturedAt` IS DELIBERATELY ABSENT. It is a fresh timestamp on every
+ *   capture. Folding it in would mint a new ticket id on every resubmission of
+ *   the same words against the same page, re-authoring the acceptance suite each
+ *   time on the owner's quota. There is a named test on this.
+ *
+ *   THE ENTRIES ARE DELIBERATELY ABSENT TOO, and not because they do not matter:
+ *   every number that survives normalisation is already printed into the brief,
+ *   which is digested into `sha256` and the id together, so a page that moves
+ *   differently already mints a different ticket. Adding them here would fold in
+ *   the ONE part the brief drops — the numbers of the two presence-only families,
+ *   which describe the sampling window rather than the page (`api-types.ts`
+ *   states that) and would move between two readings of an unchanged site.
+ *
+ *   A READING WITH NO ENTRIES STILL CONTRIBUTES. `null` means no page was read;
+ *   an empty spec means a page WAS read and nothing moved in the window, and
+ *   `motion-capture.ts` insists those are different answers. The brief cannot
+ *   carry the difference — it renders no block either way — so the id is the
+ *   only place it survives, on the same rule an uploaded image follows.
  */
 export function referenceIdentityMaterial(
   brief: string,
   images: readonly ReferenceImage[],
   documents: readonly ReferenceDocument[] = [],
+  motion: MotionSpec | null = null,
 ): string {
   const withImages =
     images.length === 0
       ? brief
       : brief + IDENTITY_SEPARATOR + images.map((image) => image.sha256).join("\n");
-  if (documents.length === 0) return withImages;
-  return withImages + DOCUMENT_IDENTITY_SEPARATOR + documents.map((document) => document.sha256).join("\n");
+  const withDocuments =
+    documents.length === 0
+      ? withImages
+      : withImages + DOCUMENT_IDENTITY_SEPARATOR + documents.map((document) => document.sha256).join("\n");
+  if (motion === null) return withDocuments;
+  return withDocuments + MOTION_IDENTITY_SEPARATOR + motion.url;
 }
 
 /**
@@ -538,6 +691,14 @@ export function builderReferenceSection(manifest: ReferenceManifest | null): str
     );
   }
 
+  // THE MOTION READING HAS NO FILE, and that is why this block reads differently
+  // from the two above: there is nothing to open, so there is no "READ EACH ONE"
+  // sentence to write. The reading itself is already in the ticket text — the
+  // builder is handed `ticket.brief` — so repeating the numbers here would put
+  // two copies of a hashed block in one prompt. This says where they are and
+  // what they are not.
+  lines.push(...motionPromptLines(refs.motion ?? null, "Match it."));
+
   lines.push(
     "WHAT THESE DO AND DO NOT CHANGE. They are the visual brief. They do not relax anything the",
     "ticket asks for in words, and they are not a licence to skip behaviour that is not visible in",
@@ -547,6 +708,37 @@ export function builderReferenceSection(manifest: ReferenceManifest | null): str
   );
 
   return lines.join("\n");
+}
+
+/**
+ * The motion reference, said once, for whichever prompt is asking.
+ *
+ * ONE FUNCTION AND TWO CLOSING SENTENCES, rather than two copies: the two facts
+ * that matter (which page, and that nothing measures the result) are identical
+ * for both seats, and the lane-specific part is one clause. The capture blocks
+ * above are deliberately NOT shared, because their content genuinely differs.
+ *
+ * `entries.length > 0` IS THE GUARD, matching `shots.length > 0` above and
+ * {@link hasReferences}: a reading that observed nothing has an address and no
+ * content, and a heading over it would tell an agent to match motion nobody saw.
+ *
+ * IT PROMISES NOTHING, ON PURPOSE. No gate in this tree compares a built site's
+ * motion to this reading — the sealed scorer runs `--network none` and there is
+ * no motion check in it — so the block says so in its own words. A prompt that
+ * implied a comparison would be describing a mechanism that does not exist.
+ */
+function motionPromptLines(motion: MotionSpec | null, closing: string): readonly string[] {
+  if (motion === null || motion.entries.length === 0) return [];
+  return [
+    `The owner also named a page for how it MOVES: ${motion.url}, sampled once on ${motion.capturedAt}.`,
+    `What was read off it is written out in the ticket text above, between the "MOTION READ FROM THE`,
+    `REFERENCE PAGE" markers — families, roles, bucketed durations and easings. There is no file to`,
+    `open for this one, and the numbers there are rounded rather than exact. ${closing}`,
+    "",
+    "NOTHING IN THIS RUN COMPARES WHAT YOU BUILD TO THAT PAGE. No check measures motion, and the",
+    "sealed scorer has no network and never loads it. This is direction you are trusted with.",
+    "",
+  ];
 }
 
 /**
@@ -594,6 +786,16 @@ export function designReferenceSection(manifest: ReferenceManifest | null): stri
       "",
     );
   }
+
+  // The lane's closing clause differs from the builder's because its output
+  // does: a still mockup cannot move, so the instruction it can actually follow
+  // is to design something the described motion would sit inside.
+  lines.push(
+    ...motionPromptLines(
+      refs.motion ?? null,
+      "Design for it: a layout that reveals in sequence is not the same layout as one that does not.",
+    ),
+  );
 
   return lines.join("\n");
 }
