@@ -171,6 +171,20 @@ test("the motion field sits BELOW the brief, so `textbox.first()` is still the t
   expect(await ticketBox(page).evaluate((element) => element.tagName)).toBe("TEXTAREA");
 });
 
+test("the panel defers what happened to the run's log rather than asserting a reading", async ({
+  page,
+}) => {
+  // THE TENSE IS THE CLAIM. Nothing server-side reads `motionUrl` in the commit
+  // that added this field, so a note opening "Read once when the ticket is
+  // submitted" would put a false sentence on the form — the same defect as the
+  // capture notice below, which this change exists to remove. The note states
+  // what any reading is limited to and hands the fact of one to the event
+  // stream, following the attachment disclosure's rule that sending a file is
+  // not the same as a seat reading it.
+  await serve(page);
+  await expect(page.getByText(/what the run made of the link is on the run/i)).toBeVisible();
+});
+
 test("the form no longer promises there is never a comparison against the live page", async ({
   page,
 }) => {

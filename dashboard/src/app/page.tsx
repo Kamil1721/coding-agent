@@ -337,11 +337,12 @@ export default function NewTicketPage(): ReactNode {
       // page's movement inherit its headings and its palette.
       //
       // IT CANNOT REFUSE A SUBMISSION EITHER WAY. `POST /api/runs` reads the body
-      // by named key and rejects nothing unrecognised (`http.ts` validates
-      // `ticketText`, `modelId`, `deploy`, `designLock`, `captureUrl`,
-      // `references` and `documents`, and looks at nothing else), so this key is
-      // carried whether or not the reader for it is in the tree. What the run
-      // actually did with it is on the run's own event stream, not here.
+      // by named key and rejects nothing unrecognised, so this key is carried
+      // whether or not the reader for it is in the tree. The enumeration of which
+      // keys that route validates is deliberately NOT copied here — this file has
+      // no way to notice when that list changes, and the surrounding comments
+      // record what a hand copy of a server fact is worth. What the run actually
+      // did with the link is on the run's own event stream, not here.
       //
       // THE ORDER OF `attachments` IS THE ORDER ON DISK. `http.ts:1105` names
       // the files `reference-1`, `reference-2`… by index, so the chip order the
@@ -668,6 +669,17 @@ export default function NewTicketPage(): ReactNode {
          * compares a build to the live page — the sealed scorer runs with no
          * network — so the sentence says what is taken and how coarsely, and stops
          * there.
+         *
+         * AND IT IS WRITTEN IN A TENSE THIS COMMIT CAN SUPPORT. An earlier draft
+         * opened "Read once when the ticket is submitted", which asserts a
+         * server-side behaviour that is not in the tree yet — the same defect as
+         * the notice below, pointed at the owner from a different paragraph. The
+         * note therefore states the LIMITS of any reading and hands the fact of
+         * one to the run's own event stream, which is the rule the attachment
+         * disclosure above already follows: sending a file is not the same as a
+         * seat reading it, and the run's log is where the truth for a given run
+         * is. `ticket-motion.browser.spec.ts` pins the deferring sentence, so a
+         * rewrite back into the present tense has to delete a test to do it.
          */}
         <Panel title="Motion reference">
           <label className="flex flex-col gap-1.5">
@@ -696,10 +708,10 @@ export default function NewTicketPage(): ReactNode {
             />
           </label>
           <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
-            Read once when the ticket is submitted, by opening the page and watching it
-            move. Only the motion is taken — not the words, the layout or the colours.
-            Durations are rounded, because two readings of the same page never agree
-            exactly.
+            Only the motion is taken from a page named here — not its words, its layout
+            or its colours — and durations are rounded, because two readings of the same
+            page never agree exactly. What the run made of the link is on the run&rsquo;s
+            own event stream.
           </p>
         </Panel>
 
