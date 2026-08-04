@@ -31,6 +31,7 @@ import type { SQLInputValue, SQLOutputValue } from "node:sqlite";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { redactForPersistence } from "bakeoff/dist/redact.js";
 import { SPEND_SEATS } from "./api-types.js";
+import { stripAnnotationMarkup } from "./message-markup.js";
 import type {
   ApiCriterion,
   ApiCriterionResult,
@@ -1048,21 +1049,36 @@ export class RunStore {
     return { seq, at, role: message.role, text, images: [...message.images], deliveredAt: null };
   }
 
-  /** Every message on a run, oldest first. What the chat panel renders. */
+  /**
+   * Every message on a run, oldest first. What the chat panel renders.
+   *
+   * MODEL ANNOTATION MARKUP IS STRIPPED FROM `run` ROWS HERE, ON THE WAY OUT.
+   * The stored text is left exactly as the run said it — `message-markup.ts`
+   * argues at length why the transcript stays verbatim on disk and why the
+   * already-leaked row is repaired by reading rather than by a migration. The
+   * gate is `role === "run"` and that is load-bearing, not tidiness: OWNER rows
+   * come back out of this same method through `pendingMessages` below and are
+   * folded into the next segment's prompt, so an owner who writes "<cite>" must
+   * have it reach the model byte for byte.
+   */
   messages(runId: string): readonly ChatMessage[] {
     const rows = this.#db
       .prepare(
         "SELECT seq, at, role, text, images, delivered_at FROM messages WHERE run_id = ? ORDER BY seq ASC",
       )
       .all(runId);
-    return rows.map((row) => ({
-      seq: num(row, "seq"),
-      at: str(row, "at"),
-      role: str(row, "role") === "run" ? "run" : "owner",
-      text: str(row, "text"),
-      images: str(row, "images") === "" ? [] : str(row, "images").split("\n"),
-      deliveredAt: row["delivered_at"] === null ? null : str(row, "delivered_at"),
-    }));
+    return rows.map((row) => {
+      const role: ChatRole = str(row, "role") === "run" ? "run" : "owner";
+      const stored = str(row, "text");
+      return {
+        seq: num(row, "seq"),
+        at: str(row, "at"),
+        role,
+        text: role === "run" ? stripAnnotationMarkup(stored) : stored,
+        images: str(row, "images") === "" ? [] : str(row, "images").split("\n"),
+        deliveredAt: row["delivered_at"] === null ? null : str(row, "delivered_at"),
+      };
+    });
   }
 
   /**
