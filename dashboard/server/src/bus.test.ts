@@ -368,6 +368,55 @@ test("a client that stops reading is dropped once its queue passes the bound", a
 });
 
 /*
+ * THE BOUND APPLIES TO REPLAY, not just to the live tail.
+ *
+ * The overflow test above drops a client that had already finished replaying.
+ * This one refuses from the very first byte, which is the realistic shape — a
+ * tab opened on a long finished run, on a slow pipe — and the one that used to
+ * hand the entire run to Node's buffer in a single synchronous loop.
+ *
+ * NEGATIVE CONTROL (run, red): delete
+ *   `if (this.#queuedBytes > this.#maxQueuedBytes) this.overflow();`
+ * from `SseChannel.#enqueue`. All 60 rows land in the queue, nothing is
+ * dropped, and both assertions fail.
+ *
+ * NOT a negative control, and I ran it expecting one: deleting the
+ * `channel.closed` guards in the replay row loop and in `write` leaves this
+ * GREEN. `onOverflow` fires synchronously at the moment the bound is crossed,
+ * so the reported watermark is already taken before any of that extra work
+ * happens, and `SseChannel.send` no-ops once closed. Those guards stop the pump
+ * doing pointless `JSON.stringify` into a dead socket; they change nothing
+ * observable, and no assertion here should pretend otherwise.
+ */
+test("a client refusing from the first byte is dropped mid-replay, not fed the run", async () => {
+  const fix = fixture("mid-slice");
+  const filler = "z".repeat(600);
+  for (let index = 0; index < 60; index += 1) emitLog(fix, `${filler}-${String(index)}`);
+
+  const sink = new FakeSink();
+  sink.accepting = false;
+  const overflows: SseOverflow[] = [];
+  const detach = attach(fix, sink, {
+    replayChunk: 60,
+    maxQueuedBytes: 2_048,
+    onOverflow: (overflow) => overflows.push(overflow),
+  });
+  try {
+    await settle();
+    assert.equal(sink.destroyed, true);
+    const overflow = overflows[0];
+    assert.ok(overflow !== undefined, "the drop is reported");
+    assert.ok(
+      overflow.watermark < 20,
+      `dropped early in the run, not after handing over all 60 rows (watermark ${String(overflow.watermark)})`,
+    );
+  } finally {
+    detach();
+    fix.close();
+  }
+});
+
+/*
  * The attach-race buffer is bounded on the same terms as the socket queue —
  * otherwise a run emitting hard during a paced replay just moves the unbounded
  * growth from one array to the other.

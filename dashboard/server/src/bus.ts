@@ -52,8 +52,12 @@
  * would be wrong here: it flushes the backlog first, which is the memory we
  * are trying to release.
  *
- * The drop is observable on both sides. Server-side, {@link SseAttachOptions.onOverflow}
- * fires with the watermark and the byte count. Client-side, `use-run-stream.ts`
+ * The drop is observable on the client. {@link SseAttachOptions.onOverflow} is
+ * offered for the server side and IS NOT WIRED UP: `http.ts:1050` still attaches
+ * with five arguments, so today a drop leaves no server-side record, and saying
+ * otherwise here would make this file the thing it is trying to fix. Passing
+ * `{ onOverflow }` from that call site is one line and belongs to whoever owns
+ * http.ts. Client-side, `use-run-stream.ts`
  * counts the error, shows `reconnecting`, and after five *consecutive* failures
  * — a reconnect that delivers even one frame resets the counter — closes the
  * source, marks `offline` and appends a visible trace row saying so. What we
@@ -120,7 +124,13 @@ export interface SseSink {
 /** Why a client's socket was dropped, for the server-side record. */
 export interface SseOverflow {
   readonly runId: string;
-  /** The last `seq` we handed to the socket. The client resumes at or below it. */
+  /**
+   * The highest `seq` ACCEPTED for this client — not the highest it saw. Frames
+   * still in the queue when the drop happened advanced this and were then
+   * discarded, so the socket is somewhere at or below it, and so is the client.
+   * That direction is the one that matters: a resume from the client's own last
+   * parsed id can only re-cover ground, never skip it.
+   */
   readonly watermark: number;
   readonly queuedBytes: number;
   readonly pendingEvents: number;
@@ -370,6 +380,11 @@ export function attachSse(
   });
 
   const write = (stored: StoredEvent): void => {
+    // Nothing observable depends on this — `send` no-ops on a closed channel
+    // anyway, and `onOverflow` reports the watermark at the instant of the drop.
+    // It is here so a pump that has not noticed yet stops serialising rows into
+    // a socket that is gone.
+    if (channel.closed) return;
     if (stored.seq <= watermark) return;
     watermark = stored.seq;
     /*
@@ -426,6 +441,9 @@ export function attachSse(
       if (channel.closed) return;
       const end = Math.min(index + replayChunk, rows.length);
       for (let cursor = index; cursor < end; cursor += 1) {
+        // Checked per ROW, not per slice: a slice can overflow halfway through,
+        // and the rest of it would otherwise be stringified into a dead socket.
+        if (channel.closed) return;
         const stored = rows[cursor];
         if (stored !== undefined) write(stored);
       }
