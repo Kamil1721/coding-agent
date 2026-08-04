@@ -15,9 +15,11 @@
  * `toBeVisible()` on a diff container passes against every one of them.
  *
  * WHY `FINISHED_RUN_ID`, AND WHY THAT IS THE POINT. `use-run-stream.ts:820-822`
- * never constructs an EventSource for a terminal run, so this page is rendered
- * from `GET /api/runs/:id/graph` ALONE. A feature that reaches the browser
- * through the live `trace` sink renders nothing here. Measuring on the finished
+ * never constructs an EventSource for a terminal run, so the canvas on this page
+ * is built from `GET /api/runs/:id/graph` and from nothing else — the run
+ * detail, the criteria and the workspace routes are still answered live by the
+ * harness API; it is the GRAPH that has no second source. A feature that reaches
+ * the browser through the live `trace` sink renders nothing here. Measuring on the finished
  * run is therefore a check that the diffs survive a reload — the exact defect
  * class the findings doc records at §5 and the one this repository keeps
  * shipping.
@@ -35,7 +37,7 @@
  * keep answering after the fold broke, which is how a fixture quietly becomes a
  * second implementation.
  *
- * FOUR MUTATIONS WERE APPLIED TO PRODUCTION CODE AND WATCHED — 2026-08-04, each
+ * FIVE MUTATIONS WERE APPLIED TO PRODUCTION CODE AND WATCHED — 2026-08-04, each
  * applied, run, reverted, and run green again. The counts are what the runner
  * actually printed, not what was expected:
  *
@@ -58,6 +60,19 @@
  *      but its measured count dropped. 1 of 6 RED, and only the carve-out test.
  *      That is mutation 3's complement: between them every test in this file has
  *      a mutation that reddens it.
+ *   5. `run/diff.tsx` — `overflow-auto` removed from the scroller AND
+ *      `overflow-hidden` from the card, so the patch spills over the panel.
+ *      1 of 6 RED: the scroller stopped having a scroll range at all (`0`).
+ *      THE SAME MUTATION IS HOW THREE OTHER FORMS OF THAT TEST WERE FOUND TO BE
+ *      UNABLE TO FAIL, and they were removed rather than kept — the list is at
+ *      the test itself, because "we tried to measure the spill and could not"
+ *      is worth more to the next reader than a green line that means nothing.
+ *
+ * A SIXTH MUTATION IS RECORDED AS NOT REDDENING ANYTHING, because a control that
+ * fails to control is worth more written down than deleted: removing `min-w-0`
+ * from the timeline row in `inspector.tsx` left all six green. The diff's own
+ * scroller holds the line without it. The comment there has been corrected to
+ * claim a reason rather than an observation.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -459,18 +474,61 @@ test.describe("an applied edit, drawn on a run that has already finished", () =>
 
     /*
      * `whitespace-pre` IS THE RIGHT CHOICE AND IT HAS A COST, so the cost is
-     * measured rather than assumed. A flex item's default `min-width` is its
-     * content, so one unwrapped 160-character line will widen the row, then the
-     * sheet, then the document — and the diff's own scroller never receives an
-     * overflow to scroll. The document must not scroll sideways.
+     * measured. THE FIRST VERSION OF THIS TEST MEASURED THE WRONG THING and is
+     * recorded rather than quietly replaced: it compared the DOCUMENT's
+     * `scrollWidth` to its `clientWidth`, which cannot fail here. `DetailSheet`
+     * is `position: fixed`, and a fixed element's overflow does not extend the
+     * document's scrollable area — so that assertion stayed green with `min-w-0`
+     * deleted AND with the diff's `overflow-auto` and `overflow-hidden` both
+     * removed, i.e. against a patch spilling straight over the panel. A check
+     * that could only observe success is this repository's signature defect, so
+     * it was replaced by the two below rather than kept for comfort.
      */
-    const overflow = await page.evaluate(() => {
-      const root = document.documentElement;
-      return root.scrollWidth - root.clientWidth;
+    const scroller = page
+      .locator('[data-diff-path="src/app/globals.css"]')
+      .getByTestId("diff-scroller");
+
+    /*
+     * IT SCROLLS — asked of the element by MOVING it, which is the only form of
+     * this question that distinguishes a real scroll container from a box whose
+     * content merely overflows. `scrollWidth` does NOT: it reports the content's
+     * extent for an `overflow: visible` box too, so it stays greater than
+     * `clientWidth` on a patch that is spilling over the panel. Setting
+     * `scrollLeft` on a non-scrollable element leaves it at 0.
+     */
+    const scrolledTo = await scroller.evaluate((node) => {
+      node.scrollLeft = 10_000;
+      const moved = node.scrollLeft;
+      node.scrollLeft = 0;
+      return moved;
     });
     expect(
-      overflow,
-      "the page scrolls sideways — a patch line escaped the diff's own scroller",
-    ).toBeLessThanOrEqual(0);
+      scrolledTo,
+      "the diff did not scroll horizontally — either the 160-character line wrapped, or it is overflowing something that is not a scroller",
+    ).toBeGreaterThan(0);
+
+    /*
+     * AND THE OTHER HALF OF THE CLAIM — "nothing escapes the box" — IS NOT
+     * ASSERTED, BECAUSE THREE FORMS OF IT WERE TRIED AND NONE COULD FAIL.
+     * Written down rather than deleted: a check that can only observe success is
+     * this repository's signature defect, and three of them were written here in
+     * one sitting before the mutation caught them out. All three stayed GREEN
+     * with the diff's `overflow-auto` and the card's `overflow-hidden` both
+     * removed, i.e. against a patch actually spilling:
+     *
+     *   · `document.documentElement.scrollWidth` — the sheet is `absolute` inside
+     *     a canvas wrapper that is `relative h-full overflow-hidden`, so the
+     *     document's scroll width cannot move whatever happens in here.
+     *   · `elementFromPoint` twenty pixels right of the card — the sheet is
+     *     docked to the RIGHT EDGE of the viewport, so that point is off-screen
+     *     and the call returns `null` regardless of what is painted.
+     *   · walking every ancestor for `scrollWidth > clientWidth` — the only
+     *     element that ever reports one is React Flow's own canvas wrapper, in
+     *     BOTH builds, which is its transformed viewport and nothing to do with
+     *     this patch. The sheet's own scroll container reported none in either.
+     *
+     * So the scroll range above is the whole of what is measured here, and it is
+     * enough: a line that had escaped would not have left one behind.
+     */
   });
 });

@@ -30,9 +30,12 @@
  * 3. `whitespace-pre`, NEVER `pre-wrap` — also `code-browser.tsx`'s rule, and
  *    kept for the same reason plus one more: a wrapped `-` line would start its
  *    second visual row with no prefix, which is exactly the case where colour
- *    becomes the only signal. Horizontal scroll is the honest trade and it is
- *    contained: the scroller is `overflow-auto` with `min-w-0` above it, so a
- *    160-character line moves this box and never the page.
+ *    becomes the only signal. Horizontal scroll is the honest trade, and it is
+ *    MEASURED rather than asserted: a 160-character line has to leave this
+ *    block's own scroller with a scroll range, which goes to zero the moment the
+ *    scroller is deleted. See the note at the scroller for the three forms of
+ *    the stronger "nothing is painted outside" check that could NOT go red and
+ *    were thrown away rather than kept as decoration.
  *
  * 4. THE CAP IS STATED ON SCREEN, IN NUMBERS. `GraphDiff.additions` and
  *    `deletions` always count the WHOLE patch; `hunks` is what fitted the wire
@@ -184,12 +187,26 @@ export function FileDiff({ diff, tool }: { diff: GraphDiff; tool: string }): Rea
       ) : (
         /*
          * THE SCROLLER. Both axes, and capped in height so a 12-hunk patch does
-         * not push everything under it off the panel. `min-w-0` on every ancestor
-         * up to the timeline row is what keeps a long line inside this box: without
-         * it a flex child sizes to its content and the sheet — then the page —
-         * scrolls sideways instead.
+         * not push everything under it off the panel.
+         *
+         * WHAT WAS MEASURED, because the first version of this comment claimed
+         * more than the measurement supported. It said `min-w-0` on the ancestors
+         * is what stops "the sheet — then the page — scrolling sideways". The
+         * page half is not observable at all: the sheet is `absolute` inside a
+         * canvas wrapper that is `relative h-full overflow-hidden`, so the
+         * document's scroll width cannot move whatever happens in here. Removing
+         * `min-w-0` from the timeline row, and removing this `overflow-auto`
+         * outright, both left the document exactly as wide.
+         *
+         * WHAT IS REAL AND IS TESTED: with a 160-character line this element must
+         * SCROLL — `scrollLeft` moves off zero, which is true of a scroll
+         * container and false of a box whose content merely overflows. Delete the
+         * `overflow-auto` and that goes to zero, which is the check. The stronger
+         * claim — that nothing is PAINTED outside the card — could not be
+         * measured from the harness; three attempts and why each of them was
+         * unfalsifiable are recorded in `tests/diff-render.browser.spec.ts`.
          */
-        <div className="max-h-[260px] min-w-0 overflow-auto">
+        <div data-testid="diff-scroller" className="max-h-[260px] min-w-0 overflow-auto">
           <ol className="w-max min-w-full font-mono text-[11px] leading-[16px]">
             {diff.hunks.map((hunk, hunkIndex) => (
               // The hunk's own coordinates are its identity; the index is the

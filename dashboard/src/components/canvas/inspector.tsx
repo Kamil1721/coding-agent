@@ -317,10 +317,16 @@ function timelineItems(activity: readonly GraphActivityEntry[]): readonly Timeli
  * one thing this panel is built to keep — the order. It also cannot be merged back
  * by time: `at` is nullable.
  *
- * `min-w-0` ON THE FLEX CHILD IS LOAD-BEARING. A flex item's default `min-width`
- * is `auto`, i.e. its content, so without this a 160-character patch line widens
- * the row, then the sheet, then the page — and the diff's own scroller never
- * receives an overflow to scroll.
+ * `min-w-0` ON THE FLEX CHILD, because a flex item's default `min-width` is
+ * `auto` — its content — and a 160-character patch line would otherwise widen
+ * this row rather than the diff's own scroller.
+ *
+ * SAID AS A REASON, NOT AS AN OBSERVATION. Deleting it and re-running the
+ * horizontal-overflow spec did NOT turn it red: the scroller inside `FileDiff`
+ * holds the line on its own, and `DetailSheet` is `position: fixed`, so nothing
+ * in here can move the document's scroll width. It stays because it is correct
+ * for a caller that does not have that scroller; it is not the thing keeping the
+ * page still, and the comment that said it was has been corrected.
  */
 function DiffRow({ item }: { item: Extract<TimelineItem, { type: "diff" }> }): ReactNode {
   return (
