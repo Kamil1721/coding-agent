@@ -202,8 +202,22 @@ const FIXTURE_STATE = planState(
   FIXTURE_ANSWERS.map((entry) => answered(entry.id, entry.question, entry.answer)),
 );
 
+// `reference` IS ZERO HERE AND THE SUM BELOW STILL NAMES FOUR, DELIBERATELY.
+// The record is exhaustive over the union because `Record<AssumptionSource, …>`
+// makes it so — that is what put this fifth key here at all. Nothing in this
+// file's fixtures can produce a `reference` criterion: it comes from a captured
+// motion reading, and this file exercises the plan phase. If one ever does
+// appear, the four-way sum below drops under `a.length` and goes red, which is
+// the alarm worth having — `renderAssumptions` has no section for the fifth
+// source, so such a criterion would be counted nowhere and printed nowhere.
 function bySource(assumptions: readonly Assumption[]): Record<AssumptionSource, number> {
-  const counts: Record<AssumptionSource, number> = { ticket: 0, inferred: 0, default: 0, answered: 0 };
+  const counts: Record<AssumptionSource, number> = {
+    ticket: 0,
+    inferred: 0,
+    default: 0,
+    answered: 0,
+    reference: 0,
+  };
   for (const entry of assumptions) counts[entry.source] += 1;
   return counts;
 }
@@ -222,7 +236,10 @@ test("MEASURED: three answered questions take inferredCriteria from 16 to 12 on 
   const before = assumptionsFor(FIXTURE_PROSE, FIXTURE_CRITERIA);
   assert.equal(before.length, 16);
   assert.equal(countInferredAssumptions(before), 16, "the number on disk in that run's own record");
-  assert.deepEqual(bySource(before), { ticket: 0, inferred: 15, default: 1, answered: 0 });
+  // `reference: 0` IS AN ASSERTION, NOT BOOKKEEPING. The comparison is a strict
+  // deep-equal, so naming the fifth bucket at zero is what says this run credits
+  // the owner with nothing read off a page — the same claim the other zeros make.
+  assert.deepEqual(bySource(before), { ticket: 0, inferred: 15, default: 1, answered: 0, reference: 0 });
 
   // AFTER: same prose, same criteria, his three replies passed alongside.
   const after = assumptionsFor(FIXTURE_PROSE, FIXTURE_CRITERIA, pairs);
@@ -232,7 +249,7 @@ test("MEASURED: three answered questions take inferredCriteria from 16 to 12 on 
     12,
     "answering three questions must move the number the phase is judged by",
   );
-  assert.deepEqual(bySource(after), { ticket: 0, inferred: 11, default: 1, answered: 4 });
+  assert.deepEqual(bySource(after), { ticket: 0, inferred: 11, default: 1, answered: 4, reference: 0 });
 
   // AND THE OWNER IS TOLD IN HIS TERMS, in the sentence he already scans for.
   assert.match(

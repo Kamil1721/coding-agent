@@ -100,11 +100,24 @@ import type { DomFindingKind } from "bakeoff/dist/scorer-protocol.js";
  * corrections — a `ticket` line is one he can edit, an `answered` line is one he
  * settled in a conversation that is over — and because keeping them apart is the
  * only way to measure whether asking him changed anything.
+ *
+ * `reference` is the owner's too, at one remove. He chose the page; a duration
+ * read off it is a fact he supplied without being a sentence he typed. Folding
+ * it into `ticket` would credit him with a number he never saw; folding it into
+ * `inferred` would call his own reference a guess by the grader. Both are lies
+ * in opposite directions, so it gets its own name — the same argument that
+ * earned `answered` its own case.
+ *
+ * NOTHING SETS `reference` YET. This union member and the two functions that
+ * branch on it landed ahead of the capture that produces it, so that the code
+ * folding a captured reading into the brief cannot be written without a bucket
+ * to file it under. Until then it is reachable only from tests.
  */
-export type AssumptionSource = "ticket" | "inferred" | "default" | "answered";
+export type AssumptionSource = "ticket" | "inferred" | "default" | "answered" | "reference";
 
 /**
- * True when the owner himself is the source, by ticket or by answer.
+ * True when the owner himself is the source — by ticket, by answer, or by a page
+ * he pointed at.
  *
  * ONE EXPRESSION, THREE CONSUMERS, and until this existed that claim was false:
  * `run-report.ts:countInferredAssumptions` and `verdict.ts:renderAssumptionSummary`
@@ -112,9 +125,20 @@ export type AssumptionSource = "ticket" | "inferred" | "default" | "answered";
  * saying it was "copied from verdict.ts deliberately". Two copies of a predicate
  * that has just grown a fourth case is how the API count and the page the owner
  * reads end up disagreeing about which criteria he stated.
+ *
+ * `reference` IS COUNTED AS HIS, AND THAT DECIDES A HEADLINE NUMBER.
+ * `countInferredAssumptions` is this predicate negated, and it feeds both
+ * `RunDetail.inferredCriteria` and the verdict's "N of M criteria were inferred
+ * rather than stated in your ticket". A criterion resting on a page he chose is
+ * not the grader's guess about his intent, so leaving it out here would raise
+ * that number for a run in which he supplied MORE, not less.
  */
 export function isStatedByOwner(assumption: Assumption): boolean {
-  return assumption.source === "ticket" || assumption.source === "answered";
+  return (
+    assumption.source === "ticket" ||
+    assumption.source === "answered" ||
+    assumption.source === "reference"
+  );
 }
 
 export interface Assumption {

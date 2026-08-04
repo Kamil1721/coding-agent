@@ -32,9 +32,11 @@ import {
   extractAssumptions,
   gateLabel,
   isQualityRollupId,
+  isStatedByOwner,
   qualityRollupLabel,
   renderAssumptions,
 } from "./spec-assumptions.js";
+import type { Assumption, AssumptionSource } from "./spec-assumptions.js";
 
 /** A minimal criterion. The tracer reads `id` and `statement` and nothing else. */
 function c(id: string, statement: string): AcceptanceCriterion {
@@ -274,4 +276,38 @@ test("an id the table does not know says so IN ENGLISH — the fallback is reach
   assert.notEqual(label, "QUALITY:something_renamed_upstream");
   assert.equal(isQualityRollupId("QUALITY:something_renamed_upstream"), true, "the PREFIX decides, not the table");
   assert.equal(isQualityRollupId("REQ-004"), false);
+});
+
+/*
+ * THE FIFTH SOURCE — `reference`.
+ *
+ * The two tests below are the motion-capture plan's, rewritten against this
+ * module's real predicate: the plan called it `ownerSourced(source)` and it is
+ * `isStatedByOwner(assumption)`, which reads the whole record rather than a bare
+ * string. Nothing else about them changed.
+ */
+
+/** A record carrying nothing that matters except the source under test. */
+const sourced = (source: AssumptionSource): Assumption => ({
+  id: "A-M1",
+  criterionId: "REQ-M1",
+  statement: "the hero enters over 800ms",
+  source,
+  because: "read from the page you referenced",
+});
+
+test("a fact taken from the owner's reference is neither his words nor a guess", () => {
+  // Without a fifth source the tracer stamps every motion criterion INFERRED —
+  // orchestrator.ts:2679 feeds `extractAssumptions` the brief through
+  // `ticketProse(stripPlanBlock(...))`, which strips the captured block back off
+  // before matching, so nothing in a motion criterion can overlap the prose. The
+  // feature would move its own headline metric the wrong way.
+  assert.equal(isStatedByOwner(sourced("reference")), true);
+});
+
+test("NEGATIVE CONTROL: inferred is still not owner-sourced", () => {
+  // Without this the fix could be `return true` and the test above would pass
+  // while `countInferredAssumptions` reported zero guesses on every run.
+  assert.equal(isStatedByOwner(sourced("inferred")), false);
+  assert.equal(isStatedByOwner(sourced("default")), false);
 });

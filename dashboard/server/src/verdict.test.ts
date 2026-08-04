@@ -246,6 +246,33 @@ test("an unmet criterion with no assumption record is still reported, as a grade
   assert.match(md, /NO STATEMENT WAS RECORDED/);
 });
 
+// ADDITIVE, and it exists because `AssumptionSource` grew a fifth member —
+// `reference`, a fact read off a page the owner linked rather than a sentence he
+// typed. The provenance switch gained a branch for it because the compiler
+// refused the switch without one, and a branch added to satisfy the compiler is
+// prose nobody has read. This is the read.
+test("a criterion read off the page the owner referenced is announced as neither his sentence nor a guess", () => {
+  const base = runWith({ unmet: [{ id: "C-M1", statement: "the hero enters over 800ms" }] });
+  const md = renderVerdict({
+    ...base,
+    assumptions: base.assumptions.map((entry) => ({
+      ...entry,
+      source: "reference" as const,
+      because: "measured on the page you linked: 800ms, eased out",
+    })),
+  });
+  assert.match(md, /READ FROM THE PAGE YOU REFERENCED/);
+  // BOTH WRONG LABELS, because there are two ways to get this wrong and they are
+  // wrong in opposite directions: calling his own reference a house default, or
+  // calling it the grader's guess about his intent.
+  assert.doesNotMatch(md, /A HOUSE DEFAULT/);
+  assert.doesNotMatch(md, /INFERRED, not something you wrote/);
+  // AND THE HEADLINE COUNT MOVES WITH IT. `renderAssumptionSummary` is
+  // `isStatedByOwner` negated, so a fifth source left out of that predicate would
+  // report this run as one inferred criterion out of one.
+  assert.doesNotMatch(md, /1 of 1 criteria were inferred/);
+});
+
 // ADDITIVE to the plan's eight, for the export the plan's own consumer needs:
 // calibration must assert the outcome AND THE FAILING TIER without parsing
 // markdown, and `fixtures.ts` says why — asserting the tier "stops a grader

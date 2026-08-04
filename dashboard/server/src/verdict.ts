@@ -352,12 +352,19 @@ function renderUnmetCriterion(
   // would have been announced to him as a house default he never stated. An
   // exhaustive switch over the union makes the next source added upstream a
   // COMPILE error here instead of a false sentence on his page.
+  //
+  // THE FIFTH SOURCE ARRIVED THAT WAY, and this is the branch it needed. A
+  // criterion carrying a duration read off a page the owner linked is neither
+  // his sentence nor the grader's guess, and there is no default branch here to
+  // absorb it quietly — the compile error is what routed it to its own line.
   const provenance = ((): string => {
     switch (assumption.source) {
       case "ticket":
         return `FROM YOUR TICKET — ${oneLine(assumption.because)}`;
       case "answered":
         return `YOU ANSWERED THIS when the dashboard asked — ${oneLine(assumption.because)}`;
+      case "reference":
+        return `READ FROM THE PAGE YOU REFERENCED — ${oneLine(assumption.because)}`;
       case "inferred":
         return `INFERRED, not something you wrote — ${oneLine(assumption.because)}`;
       case "default":
