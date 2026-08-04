@@ -207,6 +207,86 @@ function seatMaxTurns(env: NodeJS.ProcessEnv): number {
   return Number.isInteger(value) && value > 0 ? value : DEFAULT_SEAT_CALL_MAX_TURNS;
 }
 
+/* -------------------------------------------------------------------------
+ * The output ceiling: sending it, and recognising it being hit
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The ONLY lever that governs a seat call's output budget on this path.
+ *
+ * `Options` in `@anthropic-ai/claude-agent-sdk@0.3.220` carries no output-token
+ * field — the `maxOutputTokens` at `sdk.d.ts:1273` is a member of `ModelUsage`,
+ * i.e. a report of what was used, not a control. The CLI reads this variable
+ * (declared as an int in the SDK's own env schema, and named in the CLI's own
+ * over-length error text), and until 2026-08-04 nothing in this repository set
+ * it, so every seat ran at the CLI's 64,000 default while `plan-seat.ts`,
+ * `judge.ts` and `spec-types.ts` each declared a different number that was only
+ * ever checked AFTER the response came back.
+ *
+ * IT IS SET AFTER `subscriptionSubprocessEnv`, DELIBERATELY. That function is a
+ * SUBTRACTION, not an allowlist (`subprocess-env.ts` says so and
+ * `STRIPPED_ENV_NAMES` does not contain this name), so the value survives
+ * and no metered credential is re-added by setting it.
+ */
+export const MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS";
+
+/**
+ * The subprocess environment for ONE call, carrying that call's own ceiling.
+ *
+ * Per CALL and not per caller, because the ceiling is a property of the request:
+ * `plan-seat.ts` and `judge.ts` share a construction pattern and ask for wildly
+ * different budgets, and a seat could in principle make both kinds of call.
+ *
+ * A NON-POSITIVE OR NON-INTEGER VALUE LEAVES THE VARIABLE UNSET rather than
+ * writing garbage the CLI would parse as NaN and silently ignore. The base class
+ * rejects such a request outright (`anthropic-seat.ts` validates it), but this
+ * override does not call the base `call()`, so the degradation is stated here:
+ * the CLI's own default applies and the run continues.
+ */
+export function seatCallEnv(base: NodeJS.ProcessEnv, maxOutputTokens: number): NodeJS.ProcessEnv {
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) return { ...base };
+  return { ...base, [MAX_OUTPUT_TOKENS_ENV]: String(maxOutputTokens) };
+}
+
+/**
+ * The SDK's own name for an over-length turn: a declared member of
+ * `SDKAssistantMessageError` (`sdk.d.ts:2901`), set by the CLI on the synthetic
+ * assistant frame it emits when the API stream stops on `max_tokens`.
+ */
+const SDK_OVERFLOW_ERROR = "max_output_tokens";
+
+/** The API's stop reason for the same event, and what `spec-agent` keys off. */
+export const OVERFLOW_STOP_REASON = "max_tokens";
+
+/**
+ * The CLI's own complaint, matched on two independent fragments.
+ *
+ * PROSE MATCHING IS A FALLBACK AND IT IS HERE ON EVIDENCE, NOT ON PRINCIPLE. The
+ * only shape ever OBSERVED in this repository is the one that killed run
+ * `run-2026-08-04T11-08-10-487Z-162b186d`, and it arrived as prose: a result
+ * frame with `is_error` whose text the SDK's reader then re-threw as
+ * `Error("Claude Code returned an error result: API Error: Claude's response
+ * exceeded the 64000 output token maximum. To configure this behavior, set the
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.")`. By the time it reaches
+ * the `catch` there is no structured field left on it at all.
+ *
+ * So both alternatives are matched: the sentence, and the variable name the
+ * sentence names. The number in the middle is deliberately not anchored — it is
+ * whatever ceiling was in force, which is now ours to set.
+ */
+const OVERFLOW_PROSE = /output token maximum|CLAUDE_CODE_MAX_OUTPUT_TOKENS/i;
+
+/** True when a message, error text or result blob is the over-length failure. */
+export function isOutputOverflowText(text: string): boolean {
+  return OVERFLOW_PROSE.test(text);
+}
+
+/** True when an assistant frame carries the SDK's structured overflow marker. */
+export function isOutputOverflowFrame(message: SDKMessage): boolean {
+  if (message.type !== "assistant") return false;
+  return (message as { error?: unknown }).error === SDK_OVERFLOW_ERROR;
+}
+
 function subscriptionFieldStatus(): Readonly<Record<PriceField, PriceStatus>> {
   const status: Partial<Record<PriceField, PriceStatus>> = {};
   for (const field of PRICE_FIELDS) status[field] = "unverified";
@@ -1454,9 +1534,23 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
    *   - `jsonSchema`, when present, becomes `outputFormat: {json_schema}`. It
    *     is applied, not dropped: a schema silently discarded here would turn
    *     into "the model keeps returning unparseable suites" three layers up.
-   *   - `maxOutputTokens` has no SDK equivalent and is NOT silently ignored —
-   *     it is enforced after the fact by the caller's own truncation check
-   *     (`stop_reason`), which is what spec-agent already keys off.
+   *   - `maxOutputTokens` HAS NO SDK OPTION AND IS SENT ANYWAY, as
+   *     `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the subprocess environment (see
+   *     {@link seatCallEnv}). This docblock previously said it was "enforced
+   *     after the fact by the caller's own truncation check", which was an
+   *     accurate description of a check that could never run: over-length came
+   *     back as a THROWN error, so the truncation check downstream never saw a
+   *     result to check. Both halves are fixed — the number now governs the
+   *     call, and exceeding it now RETURNS with `stopReason: "max_tokens"`.
+   *
+   * THE OVER-LENGTH FAILURE IS THE ONE ERROR THIS METHOD DOES NOT THROW, and
+   * that is the whole point of the classification below. Run
+   * `run-2026-08-04T11-08-10-487Z-162b186d` spent 51 minutes in the spec phase
+   * and died on "Claude's response exceeded the 64000 output token maximum",
+   * three feet from a repair ladder in `spec-agent.ts` that detects exactly this,
+   * raises the budget and retries for free. It never fired, because the ladder
+   * reads a returned `SeatCallResult` and this method handed it an exception.
+   * Every OTHER failure still throws with its remediation text intact.
    *
    * `tools: []` and `settingSources: []` are load-bearing. The spec seat must
    * be a structurally separate agent with no shared history and no access to
@@ -1510,7 +1604,7 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
       settingSources: [],
       maxTurns: seatMaxTurns(this.#env),
       includePartialMessages: false,
-      env: { ...this.#env },
+      env: seatCallEnv(this.#env, request.maxOutputTokens),
       ...(request.jsonSchema === null
         ? {}
         : { outputFormat: { type: "json_schema" as const, schema: request.jsonSchema } }),
@@ -1522,6 +1616,12 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
     let tokens = zeroTokens("anthropic");
     let thinkingTokens: number | null = null;
     let failure: string | null = null;
+    // THE FOUR PLACES THE OVER-LENGTH FAILURE CAN SHOW ITSELF, all watched.
+    // (3) and (4) below are the pair that was MEASURED on the run that died;
+    // (1) and (2) are the ones the SDK's own types promise and which a future
+    // CLI is more likely to keep than it is to keep the wording of a sentence.
+    let overflowed = false;
+    let overflowDetail = "";
 
     // BUILT PER CALL, NOT PER CALLER. An async generator is single-use; a
     // prompt built once and reused would deliver the document to the first
@@ -1535,26 +1635,93 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
       for await (const message of session) {
         if (message.type === "assistant") {
           text += assistantText(message);
+          // (1) THE STRUCTURED SIGNAL. The CLI sets `error: "max_output_tokens"`
+          // on the synthetic assistant frame it emits when the API stream stops
+          // on max_tokens, and the SDK forwards that field verbatim. Preferred
+          // over the prose, per the rule that a structured field beats English.
+          if (isOutputOverflowFrame(message)) overflowed = true;
         } else if (message.type === "rate_limit_event") {
           this.#noteRateLimit(rateLimitFrom(message.rate_limit_info));
         } else if (message.type === "result") {
           stopReason = message.stop_reason;
           tokens = extractTokens(message.usage);
           thinkingTokens = readThinkingTokens(message.usage);
+          // (2) THE RESULT FRAME'S OWN STOP REASON. `SDKResultError` declares
+          // `stop_reason`, and the CLI's own diagnostic errors carry
+          // `stop_reason=max_tokens` in them. Not observed on the measured
+          // failure — which is why it is one signal of several, not the signal.
+          if (stopReason === OVERFLOW_STOP_REASON) overflowed = true;
           if (message.subtype === "success") {
             structured = message.structured_output;
             if (text.length === 0) text = message.result;
+            // (3) A "SUCCESS" SUBTYPE THAT IS NOT ONE. This is the shape the
+            // measured run produced: subtype "success", `is_error` set, and the
+            // CLI's complaint sitting in `result`. Read here rather than
+            // trusted to reappear later, because the SDK re-throws it as a bare
+            // Error with every structured field gone.
+            if (message.is_error && isOutputOverflowText(message.result)) {
+              overflowed = true;
+              overflowDetail = message.result;
+            }
           } else {
             failure = `${message.subtype}: ${resultErrorText(message)}`;
+            if (isOutputOverflowText(failure)) {
+              overflowed = true;
+              overflowDetail = failure;
+            }
           }
         }
       }
     } catch (error) {
-      throw this.#asCallError(error, request.purpose);
+      // (4) THE THROW, WHICH IS WHAT ACTUALLY HAPPENED. The SDK's reader
+      // replaces the subprocess exit error with
+      // `Error("Claude Code returned an error result: <text>")` and the stream
+      // rejects. Everything but an over-length failure still leaves by
+      // `#asCallError` with its remediation text unchanged; an over-length
+      // failure falls through to the return below so that `spec-agent`'s
+      // truncation ladder can act on it.
+      const message = error instanceof Error ? error.message : String(error);
+      if (!overflowed && !isOutputOverflowText(message)) {
+        throw this.#asCallError(error, request.purpose);
+      }
+      overflowed = true;
+      if (overflowDetail.length === 0) overflowDetail = message;
     }
 
+    // ACCOUNTING BEFORE ANY RETURN, INCLUDING THE OVERFLOW ONE. A truncated
+    // attempt still spent the tokens it emitted, and the ladder is about to make
+    // a SECOND call: dropping the first would understate the run's own cost
+    // figure by exactly the expensive half.
     this.#tokens = addTokens(this.#tokens, tokens);
     this.#calls += 1;
+
+    // Prefer the schema-validated object when one was requested and returned.
+    // spec-agent parses text, so a structured result is re-serialised rather
+    // than handed over as an object — same parse path, one less special case.
+    // HOISTED ABOVE THE OVERFLOW RETURN so both exits use one rule; a second
+    // copy of this expression is a second place for the two to drift.
+    const responseText = structured === undefined ? text : JSON.stringify(structured);
+
+    if (overflowed) {
+      return {
+        // THE SAME TEXT RULE AS THE SUCCESS RETURN, PLUS ONE FALLBACK. The
+        // structured-output preference is shared deliberately: a truncated turn
+        // that nonetheless produced a partial object must reach the parser by the
+        // route every other turn takes. When there is nothing at all, the CLI's
+        // own diagnostic stands in — `spec-agent` reads `stopReason` before it
+        // reads text so this changes nothing there, but `plan-seat.ts` logs `raw`
+        // "for the run log when the parse refused" and a blank string would be
+        // the only trace left of a turn that hit its ceiling.
+        text: responseText.length > 0 ? responseText : redactText(overflowDetail).text,
+        stopReason: OVERFLOW_STOP_REASON,
+        usage: subscriptionUsage(this.seat as AnthropicSeat, tokens, thinkingTokens),
+        pricingBasis: subscriptionPricingBasis(this.seat.modelId, startedAt),
+        precall: decision,
+        inputEstimateMeasured: false,
+        startedAt,
+        endedAt: new Date().toISOString(),
+      };
+    }
 
     if (failure !== null) {
       throw new SeatCallError(
@@ -1577,11 +1744,6 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
         this.#rateLimit.limited,
       );
     }
-
-    // Prefer the schema-validated object when one was requested and returned.
-    // spec-agent parses text, so a structured result is re-serialised rather
-    // than handed over as an object — same parse path, one less special case.
-    const responseText = structured === undefined ? text : JSON.stringify(structured);
 
     return {
       text: responseText,

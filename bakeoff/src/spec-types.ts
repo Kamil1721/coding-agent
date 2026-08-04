@@ -230,25 +230,83 @@ export const AUTHORING_BUDGET: BudgetPolicy = Object.freeze({
 export const MAX_STREAMABLE_OUTPUT_TOKENS = 128_000;
 
 /**
- * Default `max_tokens` for an authoring or audit call.
+ * What the Claude CLI gives a call when nothing sets
+ * `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
  *
- * 128,000, NOT the documented 64,000 floor for effort `xhigh`. Two things
- * share this budget and the second is easy to forget: adaptive thinking
- * tokens are billed as output AND count against `max_tokens`, and the spec
- * seat runs at `xhigh` precisely so it thinks hard. A hard ticket's suite is
- * up to 25 criteria plus eight or ten test files whose complete source is
- * carried inside JSON string literals; at 64,000 a deep thinking pass can
- * leave too little behind it.
+ * MEASURED OFF A DEAD RUN, NOT READ OUT OF A DOC. Run
+ * `run-2026-08-04T11-08-10-487Z-162b186d` died in the spec phase with the CLI's
+ * own words in the event log: "API Error: Claude's response exceeded the 64000
+ * output token maximum. To configure this behavior, set the
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable." Every constant in this
+ * file said 128,000 at the time; the number that actually governed was this one,
+ * because on the subscription path `maxOutputTokens` never reached the model
+ * (`dashboard/server/src/subscription-caller.ts`, which now sets the variable).
  *
- * A truncated response is the expensive failure mode here, because the model
- * cannot fix it — `max_tokens` is the harness's parameter, not the model's —
- * so a truncation would otherwise burn an authoring attempt on a defect no
- * amount of regeneration addresses, three times, and leave the two hard
- * tickets with no suite at all. Headroom is cheaper than that: the ceiling is
- * checked against the worst case either way, so the unused half of a 128,000
- * budget costs nothing and is never billed.
+ * Named rather than inlined so the ladder below starts on a rung this repo can
+ * point at, and so a test can assert the starting budget IS the CLI's default
+ * rather than a number someone liked.
  */
-export const DEFAULT_MAX_OUTPUT_TOKENS = MAX_STREAMABLE_OUTPUT_TOKENS;
+export const CLI_DEFAULT_MAX_OUTPUT_TOKENS = 64_000;
+
+/**
+ * The STARTING `max_tokens` for an authoring or audit call. The first rung, not
+ * the ceiling — {@link MAX_STREAMABLE_OUTPUT_TOKENS} is the ceiling.
+ *
+ * ─── WHAT THIS CONSTANT USED TO SAY, AND WHY IT NO LONGER SAYS IT ───
+ *
+ * Until 2026-08-04 this was `= MAX_STREAMABLE_OUTPUT_TOKENS`, argued as follows,
+ * and the argument is reproduced because the half of it that is still true is
+ * still load-bearing:
+ *
+ *   "128,000, NOT the documented 64,000 floor for effort `xhigh`. Two things
+ *   share this budget and the second is easy to forget: adaptive thinking tokens
+ *   are billed as output AND count against `max_tokens`, and the spec seat runs
+ *   at `xhigh` precisely so it thinks hard. A hard ticket's suite is up to 25
+ *   criteria plus eight or ten test files whose complete source is carried
+ *   inside JSON string literals; at 64,000 a deep thinking pass can leave too
+ *   little behind it. A truncated response is the expensive failure mode here,
+ *   because the model cannot fix it — `max_tokens` is the harness's parameter,
+ *   not the model's — so a truncation would otherwise burn an authoring attempt
+ *   on a defect no amount of regeneration addresses, three times, and leave the
+ *   two hard tickets with no suite at all. Headroom is cheaper than that."
+ *
+ * THE ARITHMETIC IS STILL RIGHT. Thinking still shares the budget, the spec seat
+ * still runs at `xhigh`, and a suite carrying eight files' complete source is
+ * still enormous. Nothing below rebuts any of that.
+ *
+ * WHAT IS REBUTTED IS THE PREMISE UNDERNEATH IT: "a truncation would burn an
+ * attempt on a defect no amount of regeneration addresses". That was true when
+ * the paragraph was written and it is not true now. `spec-agent.ts` detects a
+ * truncation, raises the budget to {@link MAX_STREAMABLE_OUTPUT_TOKENS} and
+ * retries WITHOUT consuming an attempt. Pre-emptive headroom was the cheapest
+ * way to avoid the expensive failure only while the expensive failure was
+ * unobservable.
+ *
+ * AND SETTING THIS EQUAL TO THE CEILING DISABLED THE THING THAT REPLACED IT. The
+ * ladder's guard is `if (outputTokens < MAX_STREAMABLE_OUTPUT_TOKENS)`. With the
+ * default AT the ceiling, the rung it climbs to was the rung it started on: the
+ * retry could never fire, and the only outcome a truncation could produce was
+ * the terminal "does not fit in a single response" error. A recovery mechanism
+ * that cannot execute is not headroom, it is decoration.
+ *
+ * SO THE START IS THE CLI'S OWN DEFAULT ({@link CLI_DEFAULT_MAX_OUTPUT_TOKENS}),
+ * WHICH IS ALSO WHAT ACTUALLY RAN. This is not a reduction from 128,000 in
+ * practice — on the subscription path the effective budget was already 64,000
+ * and the harness simply did not know it. What changes is that the number is now
+ * declared, sent (via `CLAUDE_CODE_MAX_OUTPUT_TOKENS`), observed when it is
+ * exceeded, and climbed out of. The API path (`anthropic-seat.ts` passes
+ * `max_tokens` straight through) starts one rung lower than it used to and pays
+ * for that with at most ONE extra call on the hardest tickets, on the owner's
+ * explicit ordering: "context loss is not ok, using up a lot of tokens is."
+ *
+ * ONE INTERACTION TO KNOW ABOUT, NOT A REGRESSION. {@link AUTHORING_BUDGET}
+ * caps wall clock at 30 minutes and `SpendCeiling.checkBeforeCall` refuses a
+ * dispatch once that is spent, so a first attempt that burns the half hour will
+ * have its free retry refused. That is not worse than before — before, there was
+ * no retry to refuse — and the dashboard, which is where the measured failure
+ * happened, supervises with `DASHBOARD_BUDGET` (four hours) instead.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = CLI_DEFAULT_MAX_OUTPUT_TOKENS;
 
 /** Default regeneration cap. Fail clean rather than loop (constraint 3). */
 export const DEFAULT_MAX_AUTHORING_ATTEMPTS = 3;

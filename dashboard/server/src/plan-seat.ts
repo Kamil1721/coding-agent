@@ -93,13 +93,52 @@ export interface PlanSeatCaller {
 /**
  * Output tokens for one planning turn.
  *
- * CHOSEN. A plan of at most {@link MAX_PLAN_LINES} lines and at most three
- * one-sentence questions with two candidate criteria each is a few hundred
- * tokens; this leaves room for the model's own preamble, which the parser throws
- * away. It is small ON PURPOSE — an overrun shows up as a truncated stop reason
- * rather than as a seat that wrote an essay nobody bounded.
+ * ─── 4000 → 16000, BECAUSE THE NUMBER STOPPED BEING DECORATIVE (2026-08-04) ───
+ *
+ * WHAT THIS CONSTANT USED TO SAY: "CHOSEN. A plan of at most
+ * {@link MAX_PLAN_LINES} lines and at most three one-sentence questions with two
+ * candidate criteria each is a few hundred tokens; this leaves room for the
+ * model's own preamble, which the parser throws away. It is small ON PURPOSE —
+ * an overrun shows up as a truncated stop reason rather than as a seat that
+ * wrote an essay nobody bounded."
+ *
+ * WHY THAT WAS SAFE TO BELIEVE AND IS NOT SAFE TO KEEP. On the subscription path
+ * this number never reached the model: `subscription-caller.ts` had no SDK option
+ * to put it in, so the CLI's own 64,000 default governed every plan turn ever
+ * measured, and 4000 was an assertion checked after the fact against a
+ * `stop_reason` that was itself unreachable. The caller now sends it as
+ * `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, so for the first time it CUTS.
+ *
+ * AND AT 4000 IT WOULD HAVE CUT REAL WORK. Seven plan turns are on record in
+ * `dashboard/data/runs.db` (the `plan seat — anthropic: … N output` lines): 273,
+ * 314, 324, 346, 710, 1149 and 3763 output tokens. The largest is 94% of 4000. A
+ * ceiling one bad turn away from the largest thing ever measured is not a
+ * boundary, it is a coin flip.
+ *
+ * WHERE THE 3763 WENT, WHICH IS THE ACTUAL DERIVATION. It is not plan text. The
+ * parsed content is hard-bounded by this module's own parser — {@link
+ * MAX_PLAN_LINES} lines plus at most three questions of {@link
+ * MAX_QUESTION_CHARS} characters with three short criteria strings each, a few
+ * hundred tokens in total — so nearly all of that turn was ADAPTIVE THINKING,
+ * which is billed as output AND counts against `max_tokens` (the same coupling
+ * `bakeoff/src/spec-types.ts` reasons about for the spec seat). Nothing in this
+ * repository bounds a thinking pass. So the ceiling has to clear the largest
+ * thinking pass observed, not the largest plan.
+ *
+ * 16000 IS FOUR TIMES THE LARGEST TURN ON RECORD, and it is still an eighth of
+ * the streamable ceiling — so the old constant's real intent survives: this seat
+ * remains bounded far below anything the spec seat may spend, and a genuinely
+ * runaway turn is still cut. What it no longer does is cut the turn that
+ * actually happened.
+ *
+ * IT IS SEVEN SAMPLES, AND THAT IS THE WEAKNESS. Every one of them was drawn
+ * with no ceiling in force, which makes them an honest picture of what this seat
+ * WANTS to spend, and none of them was drawn with a large attachment set. If a
+ * plan turn ever comes back with `stopReason: "max_tokens"`, this number is the
+ * thing to raise — the seat's parse will refuse and the phase will ask nothing,
+ * which is a bad turn rather than a failed run, but it is still a loss.
  */
-export const PLAN_SEAT_MAX_OUTPUT_TOKENS = 4000;
+export const PLAN_SEAT_MAX_OUTPUT_TOKENS = 16_000;
 
 /**
  * How many of the owner's pictures are in this message, and how many are not.

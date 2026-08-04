@@ -41,12 +41,49 @@ import { redactForPersistence } from "bakeoff/dist/redact.js";
 import { truncate } from "./claude-common.js";
 import type { RateLimitState } from "./claude-common.js";
 import { SubscriptionSeatCaller } from "./subscription-caller.js";
+import type { SeatSessionFactory } from "./subscription-caller.js";
 import type { TokenTotals } from "./tokens.js";
 import type { AnthropicSeat } from "bakeoff/dist/contracts.js";
 
 /** Hard cap on the diff handed to the judge. A judge is not a code search. */
 export const MAX_DIFF_CHARS = 120_000;
 export const MAX_EVIDENCE_CHARS = 20_000;
+
+/**
+ * Output tokens for the judge's one turn.
+ *
+ * NO JUDGE TURN HAS EVER BEEN MEASURED, AND THIS SAYS SO RATHER THAN DRESSING A
+ * GUESS AS AN OBSERVATION. `dashboard/data/runs.db` holds not a single
+ * `judge seat — anthropic: …` line; every run on record either failed before the
+ * judge or produced no diff for it to read. So unlike
+ * `PLAN_SEAT_MAX_OUTPUT_TOKENS`, which is derived from seven recorded turns,
+ * this number is derived from the INPUT and from the plan seat's ratio.
+ *
+ * WHY IT MOVED FROM 16000 AT ALL. Until 2026-08-04 the value never reached the
+ * model — `subscription-caller.ts` had no SDK option for it, so the CLI's 64,000
+ * default governed and 16000 was a number nobody could hit. It is now sent as
+ * `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, so it cuts, and a first real ceiling deserves
+ * an argument rather than the inherited literal.
+ *
+ * THE ARGUMENT. The judge's WRITTEN output is bounded loosely: a verdict, a
+ * one-sentence summary, and findings whose `detail` and `evidence` are each
+ * truncated at 400 characters by {@link parseReport} — but whose COUNT is not
+ * bounded at all, and a genuinely dirty diff produces many. Against that sits
+ * the input: up to {@link MAX_DIFF_CHARS} of diff plus {@link
+ * MAX_EVIDENCE_CHARS} of evidence, 140,000 characters of code this seat is asked
+ * to READ carefully. On the only seat where the split has been measured, the
+ * plan seat, adaptive thinking took roughly nine tenths of the turn on an input
+ * a fraction of this size — and thinking is billed as output and counts against
+ * `max_tokens`.
+ *
+ * 32000 IS TWICE THE OLD LITERAL AND A QUARTER OF THE CLI DEFAULT THAT WAS
+ * SILENTLY IN FORCE, so it is a real bound that is nonetheless not tighter than
+ * the regime this seat has actually been running under. Truncating the judge is
+ * cheap in run terms — {@link judgeArtifact} never fails a run — and expensive
+ * in signal terms: a cut-off report is reported as `unavailable`, and the
+ * memorisation table that only a reader catches goes uncaught.
+ */
+export const JUDGE_MAX_OUTPUT_TOKENS = 32_000;
 
 /**
  * The rubric. A FROZEN CONSTANT, and versioned as code.
@@ -131,6 +168,18 @@ export interface JudgeRequest {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly signal: AbortSignal;
+  /**
+   * The SDK's `query`, unless a test supplies a stream.
+   *
+   * OPTIONAL AND ABSENT IN PRODUCTION, exactly as `SubscriptionCallerOptions`
+   * declares it. This module builds its own caller — which is the right shape,
+   * since the judge is one turn with its own budget and nothing else shares it —
+   * and that left every branch below the call unreachable from a unit test,
+   * including the truncation branch this seam exists to cover. Passing it
+   * through is the whole of the change; the production call sites do not set it
+   * and therefore behave byte for byte as before.
+   */
+  readonly startQuery?: SeatSessionFactory;
 }
 
 function renderInputs(request: JudgeRequest): string {
@@ -235,13 +284,14 @@ export async function judgeArtifact(request: JudgeRequest): Promise<JudgeReport>
     cwd: request.cwd,
     env: request.env,
     abortController: abortControllerFor(request.signal),
+    ...(request.startQuery === undefined ? {} : { startQuery: request.startQuery }),
   });
 
   try {
     const call = await caller.call({
       system: JUDGE_SYSTEM_PROMPT,
       userTurns: [renderInputs(request)],
-      maxOutputTokens: 16_000,
+      maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS,
       // Free-form: the judge output is small and the extractor below is the
       // same shape spec-agent uses. One less request constraint to be wrong
       // about on a path that must never fail the run.
@@ -249,6 +299,31 @@ export async function judgeArtifact(request: JudgeRequest): Promise<JudgeReport>
       purpose: `code-reading judge ${request.ticket.id}`,
     });
     caller.assertUnused();
+
+    // A TRUNCATED REPORT IS NAMED, NOT MISREPORTED AS UNREADABLE JSON. Since
+    // 2026-08-04 an over-length turn comes back as a RESULT carrying this stop
+    // reason rather than as a thrown `SeatCallError` — which is what lets
+    // `spec-agent`'s truncation ladder work, and which would otherwise land this
+    // path in "the judge returned no parseable JSON object": true, useless, and
+    // pointing at the model instead of at the ceiling that cut it. This seat has
+    // no ladder of its own (it gets one turn and must never fail the run), so
+    // the honest move is to say which boundary was hit and name the constant
+    // that sets it.
+    if (call.stopReason === "max_tokens") {
+      return {
+        ran: true,
+        verdict: "unavailable",
+        findings: [],
+        summary:
+          `the judge's report was cut off at its ${String(JUDGE_MAX_OUTPUT_TOKENS)}-token output ` +
+          "ceiling, so it is a partial reading and is not treated as a verdict. Raise " +
+          "JUDGE_MAX_OUTPUT_TOKENS (judge.ts) or hand the seat a smaller diff.",
+        tokens: caller.tokens,
+        rateLimit: caller.rateLimit,
+        judgedBy,
+      };
+    }
+
     const parsed = parseReport(call.text);
     if (parsed === null) {
       return {

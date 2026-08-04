@@ -706,7 +706,25 @@ export function extractJsonObject(text: string): string | null {
   return null;
 }
 
-/** True when the response was cut off by `max_tokens` rather than finished. */
+/**
+ * True when the response was cut off by `max_tokens` rather than finished.
+ *
+ * IT READS A RETURNED RESULT, WHICH IS A CONSTRAINT ON THE CALLERS, NOT A
+ * DETAIL. Every path that can overflow the output budget must come back as a
+ * `SeatCallResult` carrying this stop reason, or the ladder in
+ * {@link generateAuditedSuite} is jumped straight over and the truncation
+ * presents as a dead run.
+ *
+ *   - API path: `anthropic-seat.ts` passes `max_tokens` to the Anthropic SDK and
+ *     returns the response's own `stop_reason`. Nothing to do.
+ *   - SUBSCRIPTION path: the CLI reports an over-length turn as an ERROR — a
+ *     result frame with `is_error` and prose, after which the SDK's own reader
+ *     throws. `subscription-caller.ts` classifies that shape and returns
+ *     `stopReason: "max_tokens"` instead of throwing, precisely so this
+ *     predicate can see it. Before 2026-08-04 it threw, and run
+ *     `run-2026-08-04T11-08-10-487Z-162b186d` died here having never reached
+ *     this line.
+ */
 function wasTruncated(call: SeatCallResult): boolean {
   return call.stopReason === "max_tokens";
 }
@@ -1142,6 +1160,12 @@ export async function generateAuditedSuite(
     // streamable ceiling and retry ONCE without consuming an attempt. If the
     // cap is already at the ceiling there is nothing higher to retry at, and
     // the honest answer is that the suite does not fit in one response.
+    //
+    // THE RUNG BELOW THE CEILING IS WHAT MAKES THIS EXECUTABLE, and it did not
+    // exist until 2026-08-04: `DEFAULT_MAX_OUTPUT_TOKENS` was defined AS
+    // `MAX_STREAMABLE_OUTPUT_TOKENS`, so the guard below was false on the very
+    // first attempt and this branch had never run. It now starts at the CLI's
+    // own default and climbs. See the docblock on `DEFAULT_MAX_OUTPUT_TOKENS`.
     if (!generated.ok && wasTruncated(generated.call) && !truncationRetried) {
       truncationRetried = true;
       if (outputTokens < MAX_STREAMABLE_OUTPUT_TOKENS) {
