@@ -109,6 +109,71 @@ content. When you delete it, replace the header's docblock reasoning with a note
 recording the removal and why (house rule 3: comments are load-bearing, UI copy is
 the task).
 
+### 2.1a The data seam, named so nobody invents one
+
+`PlacedStage` and `StageNodeData` each carry ONE `GraphStage` today. The rollup,
+the rail and the panel all need five. Three different shapes would work and they
+are three different test surfaces, so this picks one.
+
+```ts
+// layout.ts
+export interface PlacedStage {
+  readonly key: string;
+  /** The HEAD stage: `plan` for the folded card, `orchestrator` for its own. */
+  readonly stage: GraphStage;
+  /** Every stage this card stands for, in chain order. Length 5, or 1. */
+  readonly members: readonly GraphStage[];
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+```
+
+`members` mirrors `PlacedNode.members` (`layout.ts:171`), which already means
+exactly this for a folded sibling group: "one entry for an agent; every folded
+sibling for a group." One vocabulary for one idea.
+
+`StageNodeData` gains `readonly members: readonly GraphStage[]` and
+`readonly runIsActive: boolean`, and **loses** `expanded`.
+
+**The rollup lives in `layout.ts` as pure exported functions, not in the
+component.** `layout.ts:5-8` already makes this argument for placement: "placement
+is the part of the canvas that has a right answer, so it is a function that can be
+called from a test rather than behaviour that only a browser can observe." The
+rollup has a right answer too, and it has six branches that each need a fixture.
+
+```ts
+export type StageRollup =
+  | "working" | "stopped" | "done" | "waiting" | "not-started" | "never-ran";
+
+/** Section 2.4. Pure. */
+export function rollupOf(
+  members: readonly GraphStage[],
+  runIsActive: boolean,
+): StageRollup;
+
+/** Section 2.6. Pure. Returns the sentence, never empty. */
+export function rollupActivityOf(
+  members: readonly GraphStage[],
+  runIsActive: boolean,
+): string;
+
+/** Section 2.7. Pure. The newest parseable `at`, or null. */
+export function rollupAtOf(members: readonly GraphStage[]): number | null;
+
+/** Section 3.3.B. Pure. Sections whose state is `done`. */
+export function rollupDoneCount(members: readonly GraphStage[]): number;
+```
+
+This converts four of the negative controls in Section 7 from browser fixtures
+(one per state combination, each needing a seeded graph) into unit tests. Put them
+in a NEW file, `tests/prebuild-rollup.unit.spec.ts`: the `*.unit.spec.ts`
+convention is established (`canvas-roles.unit.spec.ts`, `ticket-title.unit.spec.ts`
+and nine others), but there is **no existing unit spec for `layout.ts`** to extend,
+which is checked rather than assumed. The browser specs then only have to prove the
+wiring, not the table.
+
 ### 2.2 Geometry, exact
 
 | Constant | Before | After | Why |
@@ -149,23 +214,40 @@ word from 2.4 (not a member state).
 
 ### 2.4 The rollup: one word from five states
 
-Evaluated in this order over the five folded sections. First match wins.
+**It takes `runIsActive`, and a version that does not is wrong.** That flag is
+already computed and passed at `runs/[runId]/page.tsx:611`; thread it to the node
+data. Without it, a run that was cancelled with `plan:done` and four `pending`
+sections produces a word that promises future work about a run that will never
+continue, which is exactly what `api-types.ts:1144-1147` warns `pending` reads as
+on a finished run, and exactly what the guard at `spec-pipeline.ts:363-367`
+existed to prevent.
 
-| # | Condition | Chip word | Chip classes | Card border | Meaning (the chip's `title`) |
-|---|---|---|---|---|---|
-| 1 | any section is `running` | `working` | `border-accent/35 bg-accent-dim/45 text-accent`, dot `bg-accent motion-safe:animate-pulse` | `border-accent/55` | "The run said one of these started and has not said it finished." |
-| 2 | else any section is `unresolved` | `stopped` | `border-line-strong bg-canvas/70 text-ink-dim`, dot `bg-ink-faint` | `border-dashed border-line-strong` | "The run moved on while one of these was still working, and never said how it ended. Not a failure. Nobody was watching by then." |
-| 3 | else no section is `pending` | `done` | `border-pass/30 bg-pass-dim/70 text-pass`, dot `bg-pass` | `border-pass/30` | "The run said every one of these finished, or said it was not needed." |
-| 4 | else any section is `done` or `skipped` | `waiting` | `border-line-strong bg-canvas/70 text-ink-dim`, dot `bg-ink-faint` | `border-line` | "Some of these finished. The run has not mentioned the next one." |
-| 5 | else (all five `pending`) | `not started` | `border-line-strong bg-canvas/70 text-ink-dim`, dot `bg-ink-faint` | `border-line` | "The run has not mentioned any of this yet." |
+Evaluated in this order over the five folded sections. First match wins.
+Machine token in `data-state`; visible word in the chip. They are different
+strings on purpose, so a copy change cannot break a selector.
+
+| # | Condition | `data-state` | Chip word | Chip classes | Card border | Meaning (the chip's `title`) |
+|---|---|---|---|---|---|---|
+| 1 | `runIsActive` and any section is `running` | `working` | `working` | `border-accent/35 bg-accent-dim/45 text-accent`, dot `bg-accent motion-safe:animate-pulse` | `border-accent/55` | "The run said one of these started and has not said it finished." |
+| 2 | any section is `unresolved`, OR any is `running` on a run that is over | `stopped` | `stopped` | `border-line-strong bg-canvas/70 text-ink-dim`, dot `bg-ink-faint` | `border-dashed border-line-strong` | "The run moved on while one of these was still working, and never said how it ended. Not a failure. Nobody was watching by then." |
+| 3 | else no section is `pending` | `done` | `done` | `border-pass/30 bg-pass-dim/70 text-pass`, dot `bg-pass` | `border-pass/30` | "The run said every one of these finished, or said it was not needed." |
+| 4 | else `runIsActive` and any section is `done` or `skipped` | `waiting` | `waiting` | `border-line-strong bg-canvas/70 text-ink-dim`, dot `bg-ink-faint` | `border-line` | "Some of these finished. The run has not mentioned the next one." |
+| 5 | else `runIsActive` (all five `pending`) | `not-started` | `not started` | same neutral set | `border-line` | "The run has not mentioned any of this yet." |
+| 6 | else (run is over, and something is still `pending`) | `never-ran` | `never ran` | same neutral set | `border-dashed border-line` | "The run ended before these were mentioned. Not a failure. They simply never happened." |
 
 Notes that are load-bearing:
 
 - **`done` is unreachable while anything is pending.** Rule 3 fires only when the
   `pending` set is empty. A four-of-five node never says done.
-- Rules 4 and 5 differ only in their word and their meaning sentence. Both are
-  neutral. Keeping them apart is the difference between "we have heard nothing"
-  and "we heard some of it", which are different facts about the same run.
+- **Rule 6 is the terminal collapse of rules 4 and 5**, and it is the reason this
+  function takes a second argument. On a dead run there is no difference worth
+  drawing between "we heard some of it" and "we heard none of it": neither is
+  going to change. `never ran` says the one true thing about both.
+- Rules 4 and 5 differ only on a LIVE run, where the difference is real: "we have
+  heard nothing yet" and "we heard some of it" are different facts about a run
+  that is still going.
+- `data-state` never contains a space. `not-started` and `never-ran` are hyphenated
+  tokens; the chip renders the spaced words.
 - Every class name above already exists in the theme. That check is not optional:
   `prebuild-lane.browser.spec.ts:373` scans this file's source for colour names
   `globals.css` does not define, because an undefined `bg-` compiles to nothing and
@@ -208,7 +290,10 @@ One sentence. Chosen by:
 1. If any section is `running`, its `detail`.
 2. Else, the `detail` of the **last section in chain order whose state is not
    `pending`**. That is the furthest thing the run actually said.
-3. Else (all five `pending`), the `detail` of `plan`.
+3. Else, all five are `pending`: if `runIsActive`, the `detail` of `plan`;
+   otherwise the fixed sentence **"The run ended before any of this was
+   mentioned."** A forward-looking placeholder on a dead run is the same lie the
+   rollup's rule 6 exists to refuse, one level down.
 
 On the owner's run this resolves to `author`'s sentence, so the node is not blank
 on the run he opens. Clamped to two lines. The whole string lives in the panel.
@@ -314,11 +399,26 @@ this dock resolve to `none` against an indefinite height, so they are inert.
 Surface `bg-surface/95 backdrop-blur border border-line rounded`, matching the run
 chip it replaces (`run-hud.tsx:95`). Inner width 368.
 
-**A. Return bar.** Height 34. `px-3.5 py-2`, `border-b border-line`.
-One left-aligned `<button>`: `Back to run`, `text-[12px] font-medium text-ink-dim
-hover:text-ink transition-colors`. No glyph. Three other ways back exist, all of
-which must work: `Escape` while focus is inside the panel; clicking the Plan node
-again; clicking empty canvas, which already clears selection.
+**A. Return bar.** Height 34. `px-3.5 py-2`, `border-b border-line`,
+`flex items-center justify-between gap-3`.
+
+- Left: `<button>` reading `Back to run`, `text-[12px] font-medium text-ink-dim
+  hover:text-ink transition-colors`. No glyph. Three other ways back exist and all
+  must work: `Escape` while focus is inside the panel; clicking the Plan node
+  again; clicking empty canvas, which already clears selection.
+- Right: **the page's `<h1>`**, carrying `ticketLabel(run)` with
+  `ticketTooltip(run)` as its `title` (both from `lib/ticket-title`, the same pair
+  `RunHud` uses). `text-[12px] font-medium text-ink-dim truncate min-w-0`.
+
+That `<h1>` is not decoration and it is not optional. `RunHud` owns the page's only
+`<h1>` (`run-hud.tsx:288`), and this panel replaces `RunHud`, so without it the run
+page has no top-level heading while the panel is open. It also keeps the reader
+told which run they are looking at, which the run chip was doing.
+
+Styling it at 12px is deliberate: heading LEVEL is document structure, heading SIZE
+is hierarchy, and here the panel's own `Plan` title is the visual head. Do not
+promote the `<h1>` to `text-lede`, and do not make the `Plan` title a heading, per
+2.3.
 
 **B. Header block.** `px-4 pt-3.5 pb-3`.
 
@@ -352,10 +452,19 @@ Row layout:
 | `done` | `border-l-transparent` | none | relative time, `numeric text-[10.5px] text-ink-faint` |
 | `unresolved` | `border-l-ink-faint/50` | none | the word `stopped`, `font-mono text-[10px] uppercase tracking-[0.14em] text-ink-dim` |
 | `skipped` | `border-l-transparent` | none | the word `skipped`, same mono style, `text-ink-faint` |
-| `pending` | `border-l-transparent` | none | empty |
+| `pending`, run still going | `border-l-transparent` | none | empty |
+| `pending`, run is over | `border-l-transparent` | none | the words `never ran`, same mono style, `text-ink-faint` |
 
 That is how the active section is distinguished: an accent left rule, a tinted row,
 and the only mono state word on screen. Everything else is quiet.
+
+**A `pending` row on a finished run does not show a forward-looking sentence.**
+When the run is over, replace that row's `detail` with the fixed line
+**"The run ended before this was mentioned."** The server's `STAGE_PENDING`
+sentences ("Waiting to read the page your ticket links to.") are promises about a
+run that is still going; rendered on a dead run they are the same defect as the
+rollup saying `waiting`, one level down. This is the row-level half of 2.4 rule 6
+and it needs the same `runIsActive` input.
 
 The right slot never carries two signals. A settled section shows *when*, an
 active one shows *what*, and one that has said nothing shows nothing.
@@ -589,7 +698,7 @@ resolves to the ticket. Merging keeps it below. Verify, do not assume.
 |---|---|---|---|
 | 1 | Ticket subtitle (`:382`) | "Describe what you want built, and how you will know it works." | **Keep.** It changes the output, not just the reader. |
 | 2 | Attach hint (`:513`) | "or paste and drop them into the brief above." | **Cut.** Tutorial text for an affordance that is discoverable. |
-| 3 | Ticket identity (`:553`) | "A reference or a document is part of the ticket's identity: the same words with a different file is a different ticket, with its own frozen acceptance suite." | **Shorten and make conditional on `attachments.length > 0`:** "A different file makes this a different ticket, with its own tests." Update the surrounding comment to record that the sentence became conditional and why. |
+| 3 | Ticket identity (`:553`) | "A reference or a document is part of the ticket's identity: the same words with a different file is a different ticket, with its own frozen acceptance suite." | **Shorten and make conditional on `attachments.length > 0`:** "A different file makes this a different ticket, with its own tests." Update the surrounding comment to record that the sentence became conditional and why. **Checked before specifying:** neither `tests/ticket-references.browser.spec.ts` nor `tests/document-intake.browser.spec.ts` asserts this string is visible. Their only matches for "different ticket" are a docblock at `document-intake.browser.spec.ts:10` and two test NAMES (`:270`, `ticket-references:149`), none of which is a `getByText`. The cut is safe; re-run the grep before landing it. |
 | 4 | Capture note (`:594`) | 4 lines | **Shorten to 2, keeping the pinned clause:** "The first link in this brief is captured before the tests are written. The live page is never opened again, so anything your build is measured against is what was taken now." `ticket-motion.browser.spec.ts:198` asserts `/the live page is never opened again/i` is visible; that clause is load-bearing and must survive verbatim. |
 | 5 | Criteria note (`:607`) | "The acceptance criteria are authored from this text before any code is written. Ambiguity here becomes an untestable criterion later." | **Cut.** It restates the panel subtitle (#1) in longer words. |
 | 6 | Gate limit (`:635`) | 3 lines about Stripe / hosted database / third-party login | **Shorten to 1, keep permanent:** "Grading runs with no network and no logins, so anything needing a real payment provider, database or login is graded against a stub." The substance is non-obvious and worth the line. Update the comment above it to record the compression. |
@@ -618,17 +727,34 @@ space is the deliverable.
 House rule 1: every test names AND runs the mutation that makes it fail. These are
 the mutations. Apply, watch red, revert, watch green, report both.
 
+**Unit tests** (new file `tests/prebuild-rollup.unit.spec.ts`, against the pure
+functions in 2.1a). These are the six-branch table; build them here, not in a browser.
+
+| Claim | Test asserts | Mutation that must go red |
+|---|---|---|
+| The rollup says `stopped` on the owner's run | `rollupOf([plan:done, capture:pending, author:unresolved, audit:pending, freeze:pending], false)` is `"stopped"` | Reorder so rule 3 (`done`) precedes rule 2 (`unresolved`). |
+| `done` is unreachable while anything is pending | `rollupOf([done, done, done, done, pending], true)` is `"waiting"` | Change rule 3's condition from "no section is `pending`" to "at least one is `done`". It returns `"done"`. |
+| A finished run never says `waiting` | `rollupOf([done, pending, pending, pending, pending], false)` is `"never-ran"`, and the same input with `true` is `"waiting"` | Delete the `runIsActive` parameter and hard-code `true`. The first assertion flips to `"waiting"`. **This is the control for the whole terminal branch and the one most likely to be dropped as an unused argument.** |
+| A finished run never says `not started` | `rollupOf([pending x5], false)` is `"never-ran"`; with `true` it is `"not-started"` | Same mutation as above. |
+| A `running` section on a dead run reads as stopped | `rollupOf([done, running, pending, pending, pending], false)` is `"stopped"` | Drop the `OR any is running on a run that is over` clause from rule 2. It falls through to `"waiting"`. |
+| The activity line is the furthest thing said | `rollupActivityOf` on the owner's run returns the `author` sentence | Change 2.6 step 2 to read the FIRST non-pending section. It returns the `plan` sentence. |
+| The activity line does not promise a future on a dead run | `rollupActivityOf([pending x5], false)` is `"The run ended before any of this was mentioned."` | Delete step 3's `runIsActive` branch. It returns the `plan` pending sentence. |
+| `data-state` carries no space | `rollupOf(...)` for every branch matches `/^[a-z-]+$/` | Return `"not started"` from rule 5. |
+
+**Browser tests** (`tests/prebuild-lane.browser.spec.ts`, rewritten). These prove
+the wiring, not the table.
+
 | Claim | Test asserts | Mutation that must go red |
 |---|---|---|
 | The canvas draws exactly two pre-build cards | `page.locator('[data-testid^="stage-card-"]')` has count 2, and their testids are `stage-card-plan` and `stage-card-orchestrator` | Restore any one of `capture`, `author`, `audit`, `freeze` to `drawnStages` in `layout.ts`. Count goes to 3. |
 | The Plan node never grows | Measure `boundingBox().height` of `stage-card-plan` before and after a click; assert equal and equal to 136 | Re-add `expanded ? "whitespace-pre-wrap" : "line-clamp-2 h-[32px]"` to the activity line. Height changes on click. |
-| The rollup says `stopped`, not `done` or `working`, on the owner's fixture | `stage-card-plan` has `data-state="stopped"` and its chip text is `stopped`, on a fixture folding to `plan:done capture:pending author:unresolved audit:pending freeze:pending` | Reorder the rollup so rule 3 (`done`) is evaluated before rule 2 (`unresolved`). It flips to `waiting` or `done`. |
-| The rollup never says `done` while a section is pending | Fixture `plan:done capture:done author:done audit:done freeze:pending` yields `waiting` | Change rule 3's condition from "no section is `pending`" to "at least one section is `done`". It flips to `done`. |
-| The activity line shows the furthest thing that was said, not a blank | On the owner's fixture, `stage-card-plan` contains the `author` sentence | Change 2.6 step 2 to read the FIRST non-pending section. It shows the `plan` sentence instead. |
+| The rollup reaches the DOM | `stage-card-plan` has `data-state="stopped"` and its chip text is `stopped`, on the owner's fixture | Hard-code `runIsActive` to `true` where it is threaded into the node data. It flips to `waiting`, which is the one wiring mistake the unit tests above cannot catch. |
+| A pending row on a dead run says so | Panel open on the owner's fixture: the `Reading the reference page` row contains "The run ended before this was mentioned." and does NOT contain "Waiting to read the page" | Render the server's `STAGE_PENDING` sentence unconditionally. Both halves go red. |
 | Clicking Plan opens the panel and hides the run chip | After click: the panel's `Back to run` is visible AND the run chip's `run detail` button is not | Delete the `planPanelOpen` branch that swaps them, so both render. Second assertion goes red. |
 | The panel does not hide a plan park | On an `awaiting_input` plan fixture with the panel open, `PlanDialoguePanel`'s question card is still visible | Move `PlanDialoguePanel` inside the `!planPanelOpen` branch. Goes red. |
 | Escape returns the default sidebar | Panel open, `Escape` with focus inside, run chip visible again | Remove the Escape handler. Goes red. |
 | Every section's detail is readable in full in the panel | Panel open on a fixture whose `author` detail is a 300-character token report; assert the panel's row text contains the report's LAST 20 characters | Add `line-clamp-2` to the panel row's detail. Playwright reads clamped text from the DOM, so assert on `evaluate` of `scrollHeight === clientHeight` for that element instead, and the mutation is the same class. |
+| The page keeps exactly one `h1` while the panel is open | `page.locator("h1")` has count 1 with the panel open, and its text is the ticket label | Drop the `<h1>` from the return bar (3.3.A). Count goes to 0, because `RunHud` owned it. |
 | The panel's "Plan" is not a second heading | `page.getByRole("heading", { name: "Plan", exact: true })` still resolves to exactly one element with the panel open on a plan-parked run | Render the panel title as `<h2>Plan</h2>`. `plan-dialogue.browser.spec.ts:58` goes red on a strict-mode violation, because `PlanDialoguePanel` already owns that heading. This is not hypothetical: `stage-node.tsx:43-48` records that the same collision was hit once already. |
 | The renames actually ship | `stage-card-plan` contains `Reading the ticket`, `Writing the tests`, `Attacking the tests` and `Sealing the tests` when the panel is open; and the page contains none of `Spec seat`, `Audit seat`, `Reference capture` | Revert one entry in `STAGE_LABEL` on the server. Both halves go red, and the "contains none of" half is the one that catches a half-done rename. |
 | No stage colour names something the theme does not define | Existing check at `prebuild-lane.browser.spec.ts:373`, extended to the new rail classes | Add `bg-run` (a colour that does not exist) to one rail segment. Goes red. It shipped once before. |
