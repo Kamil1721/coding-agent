@@ -691,12 +691,14 @@ export default function RunPage(): ReactNode {
            * THE DOCK IS CAPPED IN BOTH AXES, and both caps were added after
            * looking at it.
            *
-           * Width is the same 360px the canvas's fit reserves on the left, so the
-           * two cannot disagree about how much room this takes. Height is 62% of
-           * the canvas with its own scroll: a run parked on a design choice has a
-           * panel taller than the pane, and unconstrained it covered the graph
-           * completely — which is the complaint this redesign exists to answer,
-           * reintroduced by the fix for it.
+           * Width is the same number the canvas's fit reserves on the left (now
+           * 400, see below), so the two cannot disagree about how much room this
+           * takes. Height was written as 62% of the canvas with its own scroll: a
+           * run parked on a design choice has a panel taller than the pane, and
+           * unconstrained it covered the graph completely — which is the complaint
+           * this redesign exists to answer, reintroduced by the fix for it. THE
+           * PERCENTAGE NEVER APPLIED; it is `88vh` now, and the next two blocks are
+           * the measurement and the deletion.
            *
            * Below 900px there is no room to flank anything, so the fit reserves
            * the TOP instead and this dock overlaps the graph. That is the honest
@@ -727,27 +729,38 @@ export default function RunPage(): ReactNode {
            * against nothing. Every panel docked here needs one of its own; the
            * plan panel uses a `vh` cap for the same reason.
            *
-           * The classes are left as they are: they cost nothing, and removing
-           * them changes the box for every other run in a way this pass did not
-           * measure.
+           * BOTH PERCENTAGE CLASSES ARE NOW DELETED — 2026-08-04 — and the
+           * sentence that used to sit here ("the classes are left as they are:
+           * they cost nothing, and removing them changes the box for every other
+           * run in a way this pass did not measure") is what changed. The
+           * measurement above is what licenses the deletion: a declaration that
+           * resolves to `none` describes no box, so removing it changes none. The
+           * `min-[900px]` variant went with it, and the cap below is one number at
+           * every width.
            */
           /*
-           * A `vh` CAP ADDED BESIDE THEM — 2026-08-04, and it is the first cap on
-           * this dock that actually binds.
+           * `max-h-[88vh]` — 2026-08-04, THE FIRST CAP ON THIS DOCK THAT BINDS.
            *
-           * MEASURED, on the plan fixture at 1000x900 with the pre-build panel
-           * open: the dock came back 1198px tall with `scrollHeight ===
-           * clientHeight`, and the plan park's own send button sat at y = 1096 —
-           * off the bottom of the viewport, inside a page that is
-           * `overflow-hidden`. Nothing scrolled, because the percentages above
-           * resolve to `none`. So the ONE argument this whole redesign rests on —
-           * "the panel does not replace the surface a stopped run is answered
-           * from" — was true about covering and false about reach.
+           * MEASURED, on the plan fixture with the pre-build panel open: the dock
+           * came back 1198px tall with `scrollHeight === clientHeight`, and the
+           * plan park's own send button sat 300px below the fold of a page that is
+           * `overflow-hidden`. Nothing scrolled, because the percentages resolved
+           * to `none`. So the ONE argument this whole redesign rests on — "the
+           * panel does not replace the surface a stopped run is answered from" —
+           * was true about covering and false about reach. The control was not
+           * hidden. It was gone.
            *
-           * `88vh` leaves the canvas controls at the bottom-left clear, and the
-           * dock now scrolls instead of running off the page. It is a cap on the
-           * DOCK, not on any panel in it: each panel keeps its own measured cap, so
-           * this changes nothing for a run whose dock already fitted.
+           * WHAT IT DOES AND DOES NOT BUY, both looked at rather than assumed. The
+           * dock scrolls instead of running off the page, and every panel in it is
+           * reachable; `prebuild-lane.browser.spec.ts` asserts exactly that, with
+           * the mutation being this line reverted. It does NOT clear the canvas's
+           * zoom controls at the bottom-left: at an 800px viewport height the
+           * dock's lower content still sits over them. That is the same overlap the
+           * dock has always had at short heights, unchanged by this and not fixed
+           * by it.
+           *
+           * It is a cap on the DOCK, not on any panel in it: each panel keeps its
+           * own measured cap, so a run whose dock already fitted is untouched.
            */
           /*
            * 360 -> 400 ON 2026-08-04, WITH `HUD_WIDTH` IN THE CANVAS, and the two
@@ -799,7 +812,7 @@ export default function RunPage(): ReactNode {
              * THE CHAT ENTRY POINT. Two things about it are load-bearing.
              *
              * IT IS DIRECTLY UNDER THE CHIP, ABOVE EVERY NOTICE. This dock is
-             * `max-h-[40%]`/`62%` with its own scroll, and a parked run stacks a
+             * capped at `88vh` with its own scroll, and a parked run stacks a
              * notice AND `DesignLockPanel` — five mockup cards — underneath. Any
              * control placed after those is off the bottom of the dock in exactly
              * the state where typing at the run matters most, which is how "i dont
@@ -880,7 +893,7 @@ export default function RunPage(): ReactNode {
                    * THE SAME TWO WEIGHTS `DesignLockPanel` GETS, and the same
                    * measured cap: a decision the run is STOPPED on gets room and a
                    * ring, the settled record of one gets less and dims. The dock
-                   * is `max-h-[40%]`/`62%` with its own scroll, so an open
+                   * is capped at `88vh` with its own scroll, so an open
                    * dialogue that grows past the cap scrolls inside this box and
                    * the graph stays visible behind it.
                    */
