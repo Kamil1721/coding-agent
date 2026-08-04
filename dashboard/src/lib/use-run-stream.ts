@@ -10,6 +10,7 @@ import {
   type CriterionResult,
   type GraphAgentState,
   type GraphAttribution,
+  type GraphDiffHunk,
   type GraphMcpServer,
   type GraphSdkRef,
   type GraphState,
@@ -108,6 +109,11 @@ const EVENT_TYPES = [
   "graph_hook",
   "graph_result",
   "graph_inventory",
+  // Narration and diffs. Same rule, same failure mode: leaving one of these two
+  // out compiles clean on both sides, the socket stays open and looks healthy,
+  // and every prose turn and every green-and-red line is delivered to nobody.
+  "graph_narration",
+  "graph_diff",
 ] as const satisfies readonly RunEventType[];
 
 /**
@@ -233,6 +239,32 @@ function asSdkRef(value: unknown): GraphSdkRef | null {
   const taskId = asString(record["taskId"]);
   if (taskId === null) return null;
   return { taskId, toolUseId: asString(record["toolUseId"]) };
+}
+
+/**
+ * Diff hunks off the wire, rebuilt field by field like every other shape here.
+ *
+ * A MALFORMED HUNK IS SKIPPED AND THE REST OF THE DIFF SURVIVES, which is the
+ * opposite of the `node`/`attribution` rule above and is deliberate: a diff whose
+ * node cannot be read belongs to nobody and is not a diff, while a diff whose
+ * third hunk is rubbish is still a real edit with real counts. The counts come
+ * from their own fields and are unaffected either way.
+ */
+function asHunks(value: unknown): readonly GraphDiffHunk[] {
+  if (!Array.isArray(value)) return [];
+  const out: GraphDiffHunk[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) continue;
+    const hunk = item as Record<string, unknown>;
+    out.push({
+      oldStart: asCount(hunk["oldStart"]),
+      oldLines: asCount(hunk["oldLines"]),
+      newStart: asCount(hunk["newStart"]),
+      newLines: asCount(hunk["newLines"]),
+      lines: asStrings(hunk["lines"]),
+    });
+  }
+  return out;
 }
 
 function asMcpServers(value: unknown): readonly GraphMcpServer[] {
@@ -484,6 +516,51 @@ export function parseRunEvent(
         toolUses: asNullableNumber(record["toolUses"]),
         durationMs: asNullableNumber(record["durationMs"]),
         attribution,
+      };
+    }
+    case "graph_narration": {
+      const node = asNode(record["node"]);
+      const attribution = asAttribution(record["attribution"]);
+      const text = asString(record["text"]);
+      // A narration event with no text is not a quieter narration event. The
+      // server's fold drops an all-whitespace turn for the same reason: a blank
+      // row on the timeline beside the tool call it accompanied is noise.
+      if (node === null || attribution === null || text === null) return null;
+      return {
+        type: "graph_narration",
+        node,
+        text,
+        truncated: record["truncated"] === true,
+        attribution,
+        ...atOf(record),
+      };
+    }
+    case "graph_diff": {
+      const node = asNode(record["node"]);
+      const attribution = asAttribution(record["attribution"]);
+      const path = asString(record["path"]);
+      if (node === null || attribution === null || path === null || path === "") return null;
+      return {
+        type: "graph_diff",
+        node,
+        path,
+        tool: asString(record["tool"]) ?? "",
+        // `modified` IS THE FALLBACK BECAUSE IT CLAIMS LESS. `added` asserts the
+        // file did not exist before, and there is no third value to fall back to.
+        // The server's fold coerces identically, so the two ends cannot disagree
+        // about what an unreadable `change` means.
+        change: record["change"] === "added" ? "added" : "modified",
+        // COUNTS, NOT DERIVED FROM `hunks`. They describe the WHOLE patch, and
+        // `hunks` is only what fitted the wire budget — counting the lines here
+        // would report a capped diff as a small one.
+        additions: asCount(record["additions"]),
+        deletions: asCount(record["deletions"]),
+        hunks: asHunks(record["hunks"]),
+        capped: record["capped"] === true,
+        droppedHunks: asCount(record["droppedHunks"]),
+        droppedLines: asCount(record["droppedLines"]),
+        attribution,
+        ...atOf(record),
       };
     }
     case "graph_inventory":

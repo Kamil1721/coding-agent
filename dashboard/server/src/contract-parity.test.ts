@@ -30,11 +30,28 @@
  * below, by NAME, in both directions — a name the server has and the client does
  * not, and a name the client has and the server does not, both fail.
  *
- * WHAT IT DOES NOT COVER: shapes. It compares the `type` discriminators and
- * nothing else, so a client `graph_result` whose `totalTokens` is typed `number`
- * where the server sends `number | null` still passes here. It also does not
- * prove a `case` in `parseRunEvent` builds a correct event — only that the label
- * exists, which is the difference between "dropped silently" and "handled".
+ * IT NO LONGER COMPARES ONLY DISCRIMINATORS, AND THIS PARAGRAPH USED TO SAY IT
+ * DID. That sentence was true when the file held three checks; it has since grown
+ * per-field and whole-shape comparisons for `RunDetail`, the spend record and the
+ * motion readout, and on 2026-08-04 it grew two more kinds of check again. The
+ * scope, stated once and honestly:
+ *
+ *   · EVENT TYPE NAMES, across the three client sites (the original three tests).
+ *   · FIELD SETS, in both directions, for `RunDetail` and its nested shapes, for
+ *     the spend record, and now for the FOLDED CANVAS — `GraphState`, `GraphNode`,
+ *     `GraphActivityEntry`, `GraphDiff` and the rest.
+ *   · SELECTED FIELD TYPES, hand-written per shape, since the field-name
+ *     comparison cannot see a client that typed `kind: string`.
+ *   · THE FOLD'S ARMS — every event type this program claims to fold has a `case`
+ *     in `graph.ts`. That is declaration site SIX, and until this check existed it
+ *     was enforced by absolutely nothing: `foldGraph`'s `default:` returns the
+ *     state unchanged, so an event with no arm is received, parsed, folded to
+ *     nothing and rendered nowhere, with every other check in this file green.
+ *
+ * WHAT IT STILL DOES NOT COVER: whether a `case` builds a CORRECT event or a
+ * correct fold. It sees a label. That is the difference between "dropped
+ * silently" and "handled", which is the difference this file exists for, and it is
+ * not the difference between "handled" and "handled right".
  */
 
 import { strict as assert } from "node:assert";
@@ -64,9 +81,22 @@ const CLIENT_SRC = join(import.meta.dirname, "..", "..", "src");
  * matching nothing.
  */
 const SERVER_TYPES = join(import.meta.dirname, "..", "src", "api-types.ts");
+/**
+ * THE FOLD ITSELF, read as text for declaration site six.
+ *
+ * It is in THIS package and could have been imported — but `foldGraph`'s arms are
+ * not observable from its signature, and calling it with one event of each type to
+ * see whether the state changed proves nothing: several arms legitimately return
+ * the same state (an event naming an unknown node is DROPPED by design). The
+ * labels are the only thing that distinguishes "there is an arm" from "the default
+ * swallowed it", so the labels are what is read.
+ */
+const SERVER_FOLD = join(import.meta.dirname, "..", "src", "graph.ts");
 const CLIENT_LIB = join(CLIENT_SRC, "lib");
 const CLIENT_TYPES = join(CLIENT_LIB, "api-types.ts");
 const CLIENT_STREAM = join(CLIENT_LIB, "use-run-stream.ts");
+/** Where the browser rebuilds the snapshot before folding the live tail onto it. */
+const CLIENT_GRAPH_HOOK = join(CLIENT_LIB, "use-run-graph.ts");
 const CLIENT_API = join(CLIENT_LIB, "api.ts");
 /** The design-lock pair: the cards, and the page that hands their click a run id. */
 const CLIENT_CARDS = join(CLIENT_SRC, "components", "run", "design-lock.tsx");
@@ -990,3 +1020,367 @@ test("CONTRACT: the client's motion shape parses as nine fields and carries the 
     "the client's RunDetail mirror has no `motion: ApiMotionSpec | null`",
   );
 });
+
+/* -------------------------------------------------------------------------
+ * DECLARATION SITE SIX — every event type the fold claims to handle has an arm
+ *
+ * THE ONE THAT NOTHING WATCHED. Adding an `SseEvent` member is enforced at five
+ * places by now: `tsc` refuses the union without `SSE_EVENT_TYPES`, and the three
+ * checks at the top of this file refuse a client that has not mirrored it. Not one
+ * of them looks at `foldGraph`. Its `default:` returns the state unchanged — which
+ * is CORRECT and load-bearing, since a run recorded by an older build is a stream
+ * of types this version has never heard of — and the same branch silently swallows
+ * an event type this version DOES know and simply forgot to fold. The event
+ * arrives, parses, folds to nothing, and the canvas renders exactly as if the
+ * emitter had never run. That is the failure the whole observability lane exists
+ * to stop shipping, reached from the one side with no check on it.
+ *
+ * IT IS A PARTITION, NOT A COMPLETENESS CHECK, AND THAT DISTINCTION IS THE WHOLE
+ * DESIGN. "Every member of the union has an arm" is FALSE by design — `tool`,
+ * `criterion`, `screenshot`, `tokens`, `rate_limit` and `verdict` deliberately fold
+ * to nothing, because none of them says anything about the canvas. So the two
+ * lists below must together name the union EXACTLY: a new event type is a
+ * compile-clean, test-green nothing until somebody puts it in one list or the
+ * other, and putting it in the folded list without writing the arm is red.
+ *
+ * BOTH DIRECTIONS ARE CHECKED. An arm that appears for a type on the unfolded list
+ * is red too — not because writing it is wrong, but because the list is then a
+ * lie, and the next reader trusts the list.
+ * ---------------------------------------------------------------------- */
+
+/** Event types `foldGraph` must have a `case` for. */
+const FOLDED_EVENT_TYPES: readonly string[] = [
+  // The canvas's own events.
+  "graph_agent",
+  "graph_agent_status",
+  "graph_tool",
+  "graph_skill",
+  "graph_hook",
+  "graph_result",
+  "graph_inventory",
+  "graph_narration",
+  "graph_diff",
+  // A terminal status resolves a still-running node, and a still-running stage.
+  "status",
+  // The pre-build lane is projected from the rows the server has always written.
+  "phase",
+  "log",
+];
+
+/**
+ * Event types that fold to nothing ON PURPOSE, each for a stated reason.
+ *
+ *   · `tool` — the BUILD sink's flat tool line. The canvas's copy is `graph_tool`,
+ *     which carries a node; this one carries no attribution at all.
+ *   · `criterion`, `verdict` — the gate's record. It lands in `RunDetail`, which
+ *     the run sheet reads; nothing on the canvas is keyed on a criterion.
+ *   · `screenshot` — `RunDetail.screenshots` is the authoritative list and the
+ *     canvas's preview is derived from the run, not from the stream.
+ *   · `tokens`, `rate_limit` — counters and provider state. Neither names a node.
+ */
+const UNFOLDED_EVENT_TYPES: readonly string[] = [
+  "tool",
+  "criterion",
+  "screenshot",
+  "tokens",
+  "rate_limit",
+  "verdict",
+];
+
+/** The `case "x":` labels inside `foldGraph`, comments stripped. */
+function foldArms(): readonly string[] {
+  const fold = region(
+    readSource(SERVER_FOLD, "this package's own graph.ts"),
+    SERVER_FOLD,
+    "export function foldGraph(",
+    "\nexport ",
+  );
+  const found = literals(fold, /\bcase\s+"([a-z_]+)"\s*:/g);
+  assert.notEqual(
+    found.length,
+    0,
+    `${SERVER_FOLD}: foldGraph parsed as ZERO case labels — re-point this parser, do not delete it.`,
+  );
+  return found;
+}
+
+test("CONTRACT: every server event type is classified as folded or deliberately not", () => {
+  assert.deepEqual(
+    sorted([...FOLDED_EVENT_TYPES, ...UNFOLDED_EVENT_TYPES]),
+    sorted(SERVER),
+    "an SseEvent member is in neither list. Decide which it is: give it a `case` in " +
+      "graph.ts and add it to FOLDED_EVENT_TYPES, or add it to UNFOLDED_EVENT_TYPES with " +
+      "the reason it says nothing about the canvas. Leaving it unclassified is how an event " +
+      "type ships that the fold silently discards.",
+  );
+});
+
+test("CONTRACT: foldGraph has an arm for every event type this program folds", () => {
+  const arms = foldArms();
+  for (const type of FOLDED_EVENT_TYPES) {
+    assert.ok(
+      arms.includes(type),
+      `foldGraph has no \`case "${type}":\`. The event is delivered, parsed and dropped at ` +
+        "`default: return state`, and the canvas renders exactly as if nothing had been " +
+        "emitted — with tsc green in both packages and every other check in this file green.",
+    );
+  }
+  for (const type of UNFOLDED_EVENT_TYPES) {
+    assert.ok(
+      !arms.includes(type),
+      `foldGraph now folds "${type}", which UNFOLDED_EVENT_TYPES says it deliberately ignores. ` +
+        "Move it to FOLDED_EVENT_TYPES — the lists are what the next reader trusts.",
+    );
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * DECLARATION SITE SEVEN — the folded canvas, field for field, in both packages
+ *
+ * THE SAME HOLE `references`/`documents` SAT IN, one layer over. `GraphState` and
+ * everything hanging off it are hand-mirrored in `dashboard/src/lib/api-types.ts`,
+ * the two packages cannot import each other, and a field added on one side alone
+ * compiles clean on BOTH. The canvas is now the shape carrying the narration, the
+ * diffs and the pre-build lane, so this is where the next silent drop would be.
+ *
+ * `GraphActivityEntry.kind` IS THE FIELD THIS WAS WRITTEN FOR. It grew from two
+ * members to four. A client that mirrored the NAME and typed it `string` passes
+ * every field-name comparison in this file and loses the branch the renderer
+ * switches on, which is the same class of defect as a mirrored `stage: string` in
+ * `DesignLockState`. The literal union is pinned below.
+ *
+ * THE THREE LEGS ARE THE SPEND RECORD'S, for the reasons its header gives:
+ * hardcoded expectation, then server text against client text, and a parser that
+ * throws rather than reporting agreement between two empty parses.
+ * ---------------------------------------------------------------------- */
+
+/** Server interface -> client interface, and the fields both must declare. */
+const CANVAS_SHAPES: readonly {
+  readonly server: string;
+  readonly client: string;
+  readonly fields: readonly string[];
+}[] = [
+  {
+    // FOUR FIELDS, NOT THREE, SINCE 2026-08-04. `stages` is the pre-build lane,
+    // and the reason it is optional — plus the five lines that make it required —
+    // is written at its declaration in both packages.
+    server: "GraphState",
+    client: "GraphState",
+    fields: ["nodes", "edges", "inventory", "stages"],
+  },
+  {
+    server: "GraphNode",
+    client: "GraphNode",
+    fields: [
+      "id",
+      "parent",
+      "agent",
+      "lane",
+      "description",
+      "ambient",
+      "state",
+      "attribution",
+      "sdk",
+      "tools",
+      "skills",
+      "hooks",
+      "toolCalls",
+      "result",
+      "activity",
+      "activityDropped",
+    ],
+  },
+  {
+    // SIX SINCE THE DIFF LANDED. `diff` is present if and only if `kind` is
+    // `"diff"`; a client that never declared it renders every edit as a bare
+    // one-line summary with the green and red lines delivered and unread.
+    server: "GraphActivityEntry",
+    client: "GraphActivityEntry",
+    fields: ["at", "kind", "name", "detail", "truncated", "diff"],
+  },
+  {
+    server: "GraphDiff",
+    client: "GraphDiff",
+    fields: [
+      "path",
+      "change",
+      "additions",
+      "deletions",
+      "hunks",
+      "capped",
+      "droppedHunks",
+      "droppedLines",
+    ],
+  },
+  {
+    server: "GraphDiffHunk",
+    client: "GraphDiffHunk",
+    fields: ["oldStart", "oldLines", "newStart", "newLines", "lines"],
+  },
+  {
+    server: "GraphStage",
+    client: "GraphStage",
+    fields: ["id", "label", "detail", "state", "at"],
+  },
+  { server: "GraphEdge", client: "GraphEdge", fields: ["from", "to", "attribution"] },
+  {
+    server: "GraphResult",
+    client: "GraphResult",
+    fields: ["state", "summary", "totalTokens", "toolUses", "durationMs"],
+  },
+  { server: "GraphToolPill", client: "GraphToolPill", fields: ["name", "mcpServer", "count"] },
+  { server: "GraphSkillPill", client: "GraphSkillPill", fields: ["skill", "source", "count"] },
+  {
+    server: "GraphHookPill",
+    client: "GraphHookPill",
+    fields: ["event", "tool", "decision", "count"],
+  },
+  {
+    server: "GraphInventory",
+    client: "GraphInventory",
+    fields: [
+      "agents",
+      "skills",
+      "tools",
+      "allowedAgents",
+      "mcpServers",
+      "plugins",
+      "model",
+      "claudeCodeVersion",
+      "environmentHash",
+    ],
+  },
+  { server: "GraphSdkRef", client: "GraphSdkRef", fields: ["taskId", "toolUseId"] },
+  { server: "GraphMcpServer", client: "GraphMcpServer", fields: ["name", "status"] },
+];
+
+test("CONTRACT: the client mirrors every field of the folded canvas, in both directions", () => {
+  const client = readClient(CLIENT_TYPES);
+  const server = readSource(SERVER_TYPES, "this package's own api-types.ts");
+
+  for (const shape of CANVAS_SHAPES) {
+    const onServer = fieldNames(server, SERVER_TYPES, `export interface ${shape.server} {`);
+    const onClient = fieldNames(client, CLIENT_TYPES, `export interface ${shape.client} {`);
+
+    assert.deepEqual(
+      sorted(onClient),
+      sorted(shape.fields),
+      `${shape.client} in the client does not declare ${shape.fields.join(", ")} — it declares ` +
+        `${onClient.join(", ")}. The fold produces the full shape and the canvas cannot see what it omits.`,
+    );
+    assert.deepEqual(
+      sorted(onServer),
+      sorted(onClient),
+      `${shape.server} and ${shape.client} have drifted: the server declares ${onServer.join(", ")} ` +
+        `and the client ${onClient.join(", ")}. Nothing but this test compares them.`,
+    );
+  }
+});
+
+test("CONTRACT: the client's canvas fields carry the server's types, kind and stages most of all", () => {
+  const client = readClient(CLIENT_TYPES);
+
+  const entry = region(client, CLIENT_TYPES, "export interface GraphActivityEntry {", "}");
+  assert.equal(
+    entry.split(";").length - 1,
+    6,
+    "the GraphActivityEntry region did not parse as six fields — re-point this parser, do not delete it",
+  );
+  for (const field of [
+    // THE FOUR MEMBERS, SPELLED OUT. Unlike `family` in the motion readout — which
+    // is pinned as `string` so a newer server can send a thirteenth — this union is
+    // exhaustively rendered: every member has a branch, and a member the client has
+    // never heard of would be drawn by the fallback arm rather than dropped. The
+    // renderer is the reason the literal is pinned here.
+    /readonly kind: "tool" \| "skill" \| "narration" \| "diff";/,
+    /readonly at: string \| null;/,
+    /readonly name: string;/,
+    /readonly truncated: boolean;/,
+    // OPTIONAL, NOT `GraphDiff | null`. A client that typed it nullable would read
+    // `entry.diff === null` on every tool row and be right; it would also declare a
+    // key the server never sends, and `assert.deepEqual` against a folded state is
+    // how this repository checks the canvas.
+    /readonly diff\?: GraphDiff;/,
+  ]) {
+    assert.match(entry, field, `the client's GraphActivityEntry is missing ${String(field)}`);
+  }
+
+  const diff = region(client, CLIENT_TYPES, "export interface GraphDiff {", "}");
+  for (const field of [
+    /readonly path: string;/,
+    /readonly change: "added" \| "modified";/,
+    /readonly additions: number;/,
+    /readonly deletions: number;/,
+    /readonly hunks: readonly GraphDiffHunk\[\];/,
+    // THE FLAG THAT STOPS A PARTIAL DIFF READING AS A WHOLE ONE. A client that
+    // omitted or renamed it would render eighty lines of a three-thousand-line
+    // write with nothing on screen saying so.
+    /readonly capped: boolean;/,
+  ]) {
+    assert.match(diff, field, `the client's GraphDiff is missing ${String(field)}`);
+  }
+  assert.match(
+    region(client, CLIENT_TYPES, "export interface GraphDiffHunk {", "}"),
+    /readonly lines: readonly string\[\];/,
+    "the client's GraphDiffHunk does not carry its lines as strings, so the one field with the " +
+      "green and the red in it is unreadable",
+  );
+
+  const stage = region(client, CLIENT_TYPES, "export interface GraphStage {", "}");
+  assert.match(stage, /readonly id: GraphStageId;/);
+  assert.match(stage, /readonly state: GraphStageState;/);
+  const stageState = region(client, CLIENT_TYPES, "export type GraphStageState =", ";");
+  // `unresolved` IS THE MEMBER WITH THE ARGUMENT BEHIND IT. Without it a stage
+  // that was running when the run stopped has to be drawn as `pending` ("still to
+  // come", on a run that is over) or `failed` (a claim nothing made). The client's
+  // older `SpecStageState` had four members and chose `pending`.
+  assert.match(
+    stageState,
+    /"unresolved"/,
+    "the client's GraphStageState has no `unresolved`, so a stage the run abandoned must be " +
+      "drawn as pending or as failed, and both of those are claims the stream never made",
+  );
+
+  const state = region(client, CLIENT_TYPES, "export interface GraphState {", "}");
+  assert.match(
+    state,
+    /readonly stages\?: readonly GraphStage\[\];/,
+    "the client's GraphState does not carry the pre-build lane as an optional list of GraphStage",
+  );
+});
+
+test(
+  "CONTRACT: the browser's snapshot carries the pre-build lane",
+  // MARKED `todo`, AND THE MARK IS THE HANDOFF. This is the one place the optional
+  // `stages` field can be dropped without a compile error: `use-run-graph.ts`
+  // rebuilds the SNAPSHOT field by field, and the snapshot is the only thing a
+  // FINISHED run ever gets — the socket is never opened for one
+  // (`use-run-stream.ts:820-822`). So the lane would fold correctly on the server,
+  // serialise correctly, arrive correctly, and be discarded one line before it
+  // reached the canvas, on exactly the runs the owner opens after the fact.
+  //
+  // It is not fixed here because `use-run-graph.ts` belongs to the wave that
+  // renders this, and a red suite blocks every agent working in this tree. It is
+  // not deleted either: an unwatched hole is how the last four of these shipped.
+  // Whoever adds `stages: data.stages ?? []` at that line deletes this option and
+  // the test starts guarding it.
+  { todo: "wave 4 owns use-run-graph.ts; flip the field to required in the same commit" },
+  () => {
+    const snapshot = region(
+      readClient(CLIENT_GRAPH_HOOK),
+      CLIENT_GRAPH_HOOK,
+      // The COMMA is what makes this the dispatch and not the `Action` union
+      // member a few lines above it, which spells the same key with a semicolon.
+      'kind: "snapshot",',
+      "});",
+    );
+    assert.match(
+      snapshot,
+      /stages: data\.stages/,
+      "use-run-graph.ts rebuilds the snapshot as {nodes, edges, inventory} and drops `stages`. " +
+        "A finished run never opens the socket, so the snapshot is the only place its pre-build " +
+        "lane can come from, and this line is where it is thrown away. Fix: " +
+        "`stages: data.stages ?? []`, then make the field required in both api-types.ts files.",
+    );
+  },
+);

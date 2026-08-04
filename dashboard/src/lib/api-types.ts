@@ -1075,6 +1075,88 @@ export interface GraphMcpServer {
 }
 
 /**
+ * One hunk of a unified diff — the SDK's `structuredPatch[n]`, field for field.
+ *
+ * `lines` CARRIES THE LITERAL `" "` / `"+"` / `"-"` PREFIXES, which is the SDK's
+ * own encoding and what makes a coloured render a `startsWith` rather than a
+ * second array of flags that can disagree with the text.
+ *
+ * A LINE MAY ARRIVE PARTIALLY REWRITTEN, AND THAT IS NOT CORRUPTION. Every
+ * persisted event goes through the server's credential redactor, whose
+ * high-entropy and base64 rules match a lockfile's `sha512-…` integrity line, a
+ * minified bundle and an inlined data URL. `[REDACTED:HIGH_ENTROPY_TOKEN]` inside
+ * a diff line is the redactor working; rendering it verbatim is correct and
+ * "repairing" it is a credential leak.
+ */
+export interface GraphDiffHunk {
+  readonly oldStart: number;
+  readonly oldLines: number;
+  readonly newStart: number;
+  readonly newLines: number;
+  readonly lines: readonly string[];
+}
+
+/**
+ * One APPLIED file edit — the green and red lines.
+ *
+ * THE COUNTS ARE ALWAYS EXACT; THE BODY IS NOT ALWAYS WHOLE. `additions` and
+ * `deletions` count the FULL patch; `hunks` is what fitted the wire budget. When
+ * they disagree `capped` is true, and a capped diff drawn as if it were whole is
+ * the failure this flag exists to prevent — say "12 of 340 lines" or say nothing.
+ *
+ * `path` IS WORKSPACE-RELATIVE. The server's fold rewrites the host home prefix to
+ * `~`; the credential redactor does NOT cover paths, so that scrub is the only
+ * thing standing between the owner's home directory and this browser.
+ *
+ * NOTHING PRODUCES ONE OF THESE FOR A `Bash`-DRIVEN EDIT — `sed -i`, a heredoc,
+ * `npm init` — because the SDK computes no patch for them. A file that changed
+ * with no diff card is not a bug and the UI must say so rather than implying the
+ * list is complete.
+ */
+export interface GraphDiff {
+  readonly path: string;
+  readonly change: "added" | "modified";
+  readonly additions: number;
+  readonly deletions: number;
+  readonly hunks: readonly GraphDiffHunk[];
+  /** True when a hunk, a line, or part of a line was withheld. */
+  readonly capped: boolean;
+  readonly droppedHunks: number;
+  readonly droppedLines: number;
+}
+
+/**
+ * The pre-build lane, left to right, ending at the hand-off to the agent graph.
+ *
+ * `orchestrator` is the owner's ask literally: "Planning (node) ----- Orchestrator
+ * (node) ------ (then whatever the orchestrator spawns)". It is a member of the
+ * same list so the renderer draws one chain.
+ */
+export type GraphStageId =
+  | "plan"
+  | "capture"
+  | "author"
+  | "audit"
+  | "freeze"
+  | "orchestrator";
+
+/**
+ * `unresolved` = the run moved on, or ended, while this stage still read
+ * `running`, and nothing ever said how it finished. NOT `failed`, and not
+ * `pending`, which on a finished run reads as "still to come".
+ */
+export type GraphStageState = "pending" | "running" | "done" | "skipped" | "unresolved";
+
+export interface GraphStage {
+  readonly id: GraphStageId;
+  readonly label: string;
+  readonly detail: string;
+  readonly state: GraphStageState;
+  /** ISO instant of the row that set this state, or null when it carried none. */
+  readonly at: string | null;
+}
+
+/**
  * A node's state, including the one no emitter may claim.
  *
  * `unresolved` = the run ended while this agent still read `running`, and the
@@ -1124,10 +1206,22 @@ export interface GraphResult {
  */
 export interface GraphActivityEntry {
   readonly at: string | null;
-  readonly kind: "tool" | "skill";
+  /**
+   * FOUR KINDS IN ONE LIST, IN THE ORDER THEY HAPPENED — prose, a tool call, a
+   * diff, more prose. That interleaving is what the Claude Code terminal shows and
+   * it is the feature; three parallel lists would have to be merged back by `at`,
+   * which is nullable and therefore cannot always do it.
+   *
+   * PINNED AS A LITERAL UNION BY `contract-parity.test.ts`. Widening it to
+   * `string` here would mirror the field and lose the branch this renders on.
+   */
+  readonly kind: "tool" | "skill" | "narration" | "diff";
+  /** Tool or skill name. `diff` carries the tool; `narration` carries `""`. */
   readonly name: string;
   readonly detail: string;
   readonly truncated: boolean;
+  /** The edit's body. PRESENT IF AND ONLY IF `kind` is `"diff"`. */
+  readonly diff?: GraphDiff;
 }
 
 export interface GraphNode {
@@ -1182,6 +1276,36 @@ export interface GraphState {
   readonly nodes: readonly GraphNode[];
   readonly edges: readonly GraphEdge[];
   readonly inventory: GraphInventory | null;
+  /*
+   * The pre-build lane — see `GraphStage` above.
+   *
+   * NO BRACE OF ANY KIND IN THIS BLOCK, AND THAT IS NOT A STYLE CHOICE.
+   * `contract-parity.test.ts` reads this interface with a parser that slices RAW
+   * text to the first closing brace and strips comments only afterwards, so a
+   * brace inside a docblock — an at-link, most easily — truncates the region and
+   * every field below it vanishes from the comparison. The same trap is recorded
+   * in that file's own `fieldNames` docblock, where an at-link inside a comment
+   * made a five-field interface parse as two.
+   *
+   * IT LIVES HERE, AND NOT IN `spec-pipeline.ts`, BECAUSE OF WHERE THAT READ FROM.
+   * The old projection derived these stages from the live `trace` sink, and
+   * `use-run-stream.ts` never opens a socket for a terminal run — so the lane was
+   * blank on every run the owner opened after it finished, which is most of them.
+   * `foldGraph` is the one reducer behind both the durable snapshot and the live
+   * tail, so a stage folded there is identical on replay and live by construction.
+   *
+   * ABSENT MEANS THE STREAM NEVER MENTIONED A PRE-BUILD LANE, and it is never the
+   * empty array — `undefined` and `[]` are not two spellings of one fact. A run
+   * whose first `phase` row is `build` folds to a state with no `stages` key,
+   * exactly as it already folds to an empty canvas.
+   *
+   * READ IT AS `state.stages ?? []`. It is optional only because four object
+   * literals outside the lane that added it build a `GraphState` field by field —
+   * `use-run-graph.ts:204` is the dangerous one, since it rebuilds the SNAPSHOT
+   * and would drop the stages on the one path a finished run has. Making it
+   * required is five lines and is described at the server's declaration.
+   */
+  readonly stages?: readonly GraphStage[];
 }
 
 /**
@@ -1329,6 +1453,54 @@ export type RunEvent =
       readonly model: string;
       readonly claudeCodeVersion: string;
       readonly environmentHash: string;
+    }
+  /**
+   * WHAT THE MODEL SAID, IN ITS OWN WORDS, FOR ONE TURN — ask B's achievable half.
+   *
+   * ITS OWN TYPE BECAUSE THE CHANNEL IT SHARED WAS THE BUG. The builder already
+   * captures this and posts it as a generic `{type:"log", level:"info"}` — the
+   * same shape, the same level and the same channel as `spec seat — anthropic: 14
+   * input, 40187 cache read…`. No renderer can tell an agent explaining itself
+   * from a token count, so both get the same grey line or neither does.
+   *
+   * IT IS NOT THINKING AND MUST NOT BE LABELLED AS THINKING. 7,037 `thinking`
+   * blocks were counted across four models in the local corpus and every one of
+   * them is empty; the `signature` beside them is encrypted and no SDK option
+   * decrypts it. This is the assistant's visible prose, which is most of what the
+   * terminal shows anyway.
+   *
+   * NO LEVEL, DELIBERATELY. Narration has no severity — a model saying "this looks
+   * wrong, let me check" is not a warning — and giving it one would recreate the
+   * confusion the type exists to end.
+   */
+  | {
+      readonly type: "graph_narration";
+      readonly node: string;
+      readonly text: string;
+      readonly truncated: boolean;
+      readonly attribution: GraphAttribution;
+      readonly at?: string;
+    }
+  /**
+   * ONE APPLIED FILE EDIT — ask C. See {@link GraphDiff} before rendering it: the
+   * counts are whole, the body may not be, and `capped` is the only thing that
+   * says which.
+   */
+  | {
+      readonly type: "graph_diff";
+      readonly node: string;
+      readonly path: string;
+      /** The CLI's own tool name — `Edit`, `Write`, `NotebookEdit`. */
+      readonly tool: string;
+      readonly change: "added" | "modified";
+      readonly additions: number;
+      readonly deletions: number;
+      readonly hunks: readonly GraphDiffHunk[];
+      readonly capped: boolean;
+      readonly droppedHunks: number;
+      readonly droppedLines: number;
+      readonly attribution: GraphAttribution;
+      readonly at?: string;
     };
 
 export type RunEventType = RunEvent["type"];

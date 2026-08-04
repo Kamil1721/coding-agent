@@ -53,11 +53,17 @@
  * than beside the interface it caps.
  */
 import type {
+  ApiPhase,
   GraphActivityEntry,
+  GraphDiff,
+  GraphDiffHunk,
   GraphEdge,
   GraphHookPill,
   GraphNode,
   GraphSkillPill,
+  GraphStage,
+  GraphStageId,
+  GraphStageState,
   GraphState,
   GraphToolPill,
   SseEvent,
@@ -95,6 +101,87 @@ export const ACTIVITY_CAP = 400;
 
 /** How much of a tool's summary one activity entry keeps. */
 export const ACTIVITY_DETAIL_CHARS = 220;
+
+/**
+ * How much of ONE TURN of assistant prose an activity entry keeps.
+ *
+ * MEASURED, NOT PICKED. 1,539 assistant turns carrying visible prose in the local
+ * transcript corpus: p50 143 characters, p75 368, p90 2,265, p95 2,961, max
+ * 8,017. The distribution is bimodal — short "I'll do X next" lines and long
+ * closing reports — so a cap chosen anywhere in the middle either keeps a turn
+ * whole or keeps its opening paragraph. 1,200 keeps 82.6% of turns whole
+ * (17.4% exceed it) and the rest keep their first paragraph or two.
+ *
+ * WHY NOT THE 500 THE BUILDER ALREADY USES. `claude-builder.ts:1455` truncates to
+ * 500, and 22.2% of turns exceed that; five of the 217 `log` rows in the live
+ * `runs.db` sit exactly at the boundary, i.e. cut. Going 500 -> 1,200 rescues
+ * only ~5% more turns entirely, but it is the difference between a paragraph and
+ * a fragment on the turns that carry the reasoning the owner asked to see.
+ *
+ * THE WIRE ARITHMETIC, BECAUSE THIS IS A WIRE BUDGET AND NOT A DISPLAY ONE.
+ * `RunGraphResponse` is already 7.01 MB on a 32,000-row run. {@link ACTIVITY_CAP}
+ * bounds one node at 400 entries, so narration bounds a node at ~480 KB and only
+ * if every one of those 400 entries is a maximal narration turn, which no
+ * measured run comes near.
+ */
+export const NARRATION_CHARS = 1200;
+
+/**
+ * THE DIFF BUDGET — four numbers, because a diff can be too big in four ways.
+ *
+ * THE CASE THAT FORCES THEM: `Write` of a 3,000-line file produces ONE hunk whose
+ * `lines` is the entire file. There is nothing pathological about it — it is what
+ * creating a page looks like — and unbudgeted it puts the whole file on the event
+ * stream, into the events table, and into every future replay of that run.
+ *
+ * WORST CASE PER DIFF is `DIFF_MAX_LINES × DIFF_LINE_CHARS` ≈ 12.8 KB, against a
+ * typical `Edit` of one or two hunks and twenty-odd lines. `DIFF_BODIES_CAP` then
+ * bounds a NODE: past 40 diffs with bodies, later edits keep their counts and
+ * lose their lines, which holds a node at ~512 KB rather than at
+ * `ACTIVITY_CAP × 12.8 KB` ≈ 5 MB. The counts stay exact throughout — see
+ * {@link GraphDiff} — so a capped node still reports how much changed, and
+ * `capped` says that what is drawn is not all of it.
+ *
+ * EVERY ONE OF THESE IS ENFORCED IN THE FOLD, not at the emitter. The fold is the
+ * one place both a live socket frame and a row replayed out of SQLite pass
+ * through, so a row written by an emitter that has no cap — an older build, a
+ * future one, a bug — is capped on the way to the canvas anyway.
+ */
+export const DIFF_MAX_HUNKS = 12;
+export const DIFF_MAX_LINES = 80;
+export const DIFF_LINE_CHARS = 160;
+export const DIFF_BODIES_CAP = 40;
+
+/**
+ * Absolute host paths, rewritten to `~`.
+ *
+ * THE ONE ITEM WHERE A WRONG ANSWER LEAKS THE OWNER'S HOME DIRECTORY, so it is
+ * established by reading `bakeoff/src/redact.ts` rather than by trusting a name.
+ * `db.ts:1011` runs every persisted event through `redactForPersistence`, which
+ * is `redactDeep` -> `walk`: it DOES recurse arrays and nested objects, so diff
+ * hunk lines are covered — but every rule in `CREDENTIAL_RULES` is a CREDENTIAL
+ * rule. There is no path rule. `/Users/<name>/Projects/...` matches nothing and
+ * is persisted, served and rendered verbatim.
+ *
+ * SO THE SCRUB LIVES HERE, IN THE FOLD, and that placement is the point: the fold
+ * is the only code both the live tail and the durable snapshot pass through, so
+ * one call covers a socket frame and a two-month-old row equally. It is EXPORTED
+ * so the emitter (wave 3) can apply the same function at capture time and keep
+ * the durable row clean as well — this side cannot reach the persistence
+ * chokepoint, so until that lands the row in SQLite may still contain a host path
+ * that the browser never sees.
+ *
+ * IT REWRITES THE HOME PREFIX AND NOTHING ELSE. `/Users/kamil/Projects/x` becomes
+ * `~/Projects/x`, so the path stays readable and stays a path. A blanket
+ * `[REDACTED]` would make every diff card unattributable, and a container's
+ * `/root` or `/workspace` is not anybody's identity and is left alone.
+ */
+const HOST_HOME_RE =
+  /(?:\/(?:Users|home)\/[^/\s"'`:;,)\]}]+|[A-Za-z]:\\Users\\[^\\\s"'`;,)\]}]+)/g;
+
+export function scrubHostPaths(text: string): string {
+  return text.replace(HOST_HOME_RE, "~");
+}
 
 /** An empty canvas. What every run before this phase folds to. */
 export function emptyGraph(): GraphState {
@@ -174,12 +261,119 @@ function record(
   };
 }
 
-/** Cut a summary to the wire budget, and say so when it was cut. */
-function clip(detail: string): { detail: string; truncated: boolean } {
-  if (detail.length <= ACTIVITY_DETAIL_CHARS) {
+/**
+ * Cut a summary to the wire budget, and say so when it was cut.
+ *
+ * THE BUDGET IS A PARAMETER BECAUSE NARRATION IS NOT A TOOL SUMMARY. This was
+ * hardcoded to {@link ACTIVITY_DETAIL_CHARS}, and 220 characters of prose is a
+ * sentence fragment — a narration entry routed through the shared `record` path
+ * would have been silently cut to a fifth of {@link NARRATION_CHARS} with the
+ * measurement behind that number never reaching the wire.
+ */
+function clip(
+  detail: string,
+  budget: number = ACTIVITY_DETAIL_CHARS,
+): { detail: string; truncated: boolean } {
+  if (detail.length <= budget) {
     return { detail, truncated: false };
   }
-  return { detail: detail.slice(0, ACTIVITY_DETAIL_CHARS), truncated: true };
+  return { detail: detail.slice(0, budget), truncated: true };
+}
+
+/** A count off an unvalidated row: finite, non-negative, whole. Never throws. */
+function count(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return value < 0 ? 0 : Math.floor(value);
+}
+
+/**
+ * The hunks of an event, as a list this fold can walk.
+ *
+ * THE SERVER'S ROWS ARE NOT VALIDATED ON THE WAY IN. `http.ts` reads them as
+ * `JSON.parse(payload) as SseEvent` — an unchecked assertion over rows written by
+ * every previous version of this program — so `hunks` may be absent, null, or a
+ * string. The browser's `parseRunEvent` rebuilds each field and would have
+ * refused it; the snapshot path has no such gate, and this fold must not throw on
+ * either. See the file header: pure, total, and never throwing is the contract.
+ */
+function hunksOf(value: unknown): readonly GraphDiffHunk[] {
+  return Array.isArray(value) ? (value as readonly GraphDiffHunk[]) : [];
+}
+
+/**
+ * Apply the diff budget, and report exactly what was withheld.
+ *
+ * THE CAPS ARE ADDED TO WHAT THE EMITTER ALREADY DROPPED, never replaced by it.
+ * An emitter that has already cut a 3,000-line patch reports its own
+ * `droppedLines`; this pass may cut more, and a reader must be able to read one
+ * number for "how much of this change is not on screen". Two independent counters
+ * would make the sum a thing the UI has to remember to do.
+ *
+ * `bodies` IS THE NODE'S RUNNING TOTAL of diffs that still have lines. Past
+ * {@link DIFF_BODIES_CAP} the counts survive and the body does not, which is the
+ * same shape as `toolCalls` vs `tools`: the tally stays exact while the detail
+ * stops growing.
+ */
+function capDiff(
+  event: Extract<SseEvent, { readonly type: "graph_diff" }>,
+  bodies: number,
+): GraphDiff {
+  const source = hunksOf(event.hunks);
+  const hunks: GraphDiffHunk[] = [];
+  let droppedHunks = 0;
+  let droppedLines = 0;
+  let shortened = false;
+  let budget = bodies >= DIFF_BODIES_CAP ? 0 : DIFF_MAX_LINES;
+
+  for (const hunk of source) {
+    const lines = Array.isArray(hunk?.lines) ? hunk.lines : [];
+    if (hunks.length >= DIFF_MAX_HUNKS || budget <= 0) {
+      droppedHunks += 1;
+      droppedLines += lines.length;
+      continue;
+    }
+    const kept = lines.slice(0, budget);
+    droppedLines += lines.length - kept.length;
+    budget -= kept.length;
+    hunks.push({
+      oldStart: count(hunk.oldStart),
+      oldLines: count(hunk.oldLines),
+      newStart: count(hunk.newStart),
+      newLines: count(hunk.newLines),
+      lines: kept.map((line) => {
+        const safe = scrubHostPaths(typeof line === "string" ? line : "");
+        if (safe.length <= DIFF_LINE_CHARS) return safe;
+        shortened = true;
+        return safe.slice(0, DIFF_LINE_CHARS);
+      }),
+    });
+  }
+
+  return {
+    path: scrubHostPaths(event.path),
+    change: event.change === "added" ? "added" : "modified",
+    additions: count(event.additions),
+    deletions: count(event.deletions),
+    hunks,
+    // `capped` is not `droppedLines > 0`: one 40,000-character minified line is a
+    // whole diff cut in half with nothing missing from the line COUNT.
+    capped:
+      event.capped === true ||
+      shortened ||
+      droppedHunks + count(event.droppedHunks) > 0 ||
+      droppedLines + count(event.droppedLines) > 0,
+    droppedHunks: droppedHunks + count(event.droppedHunks),
+    droppedLines: droppedLines + count(event.droppedLines),
+  };
+}
+
+/** How many of this node's diffs still carry lines — the {@link DIFF_BODIES_CAP} tally. */
+function diffBodies(node: GraphNode): number {
+  let bodies = 0;
+  for (const entry of node.activity) {
+    if (entry.diff !== undefined && entry.diff.hunks.length > 0) bodies += 1;
+  }
+  return bodies;
 }
 
 /**
@@ -201,6 +395,325 @@ function clip(detail: string): { detail: string; truncated: boolean } {
  */
 function instantOf(event: SseEvent | SseWireEvent): string | null {
   return "at" in event && typeof event.at === "string" ? event.at : null;
+}
+
+/* =========================================================================
+ * THE PRE-BUILD LANE
+ *
+ * WHAT MOVED, AND WHAT DELIBERATELY DID NOT. `dashboard/src/lib/spec-pipeline.ts`
+ * has computed these stages since they existed, from the live `trace` sink. Its
+ * reasoning is right and is reproduced below; its LOCATION was the defect. The
+ * trace comes from the SSE socket, `use-run-stream.ts:820-822` never opens one for
+ * a terminal run, and `spec-pipeline.ts:246` returns `[]` the moment the phase
+ * leaves `spec` — so the lane was blank on every finished run and deleted itself
+ * at the build boundary. Computing it here makes it a property of the fold, which
+ * both the durable snapshot and the live tail already share.
+ *
+ * NOTHING HERE IS A TIMER, AND THAT IS THE RULE THE WHOLE DISPLAY RESTS ON. A
+ * stage is `running` only once the run has SAID it started and `done` only once
+ * the run has SAID it finished. The tempting version — start a stage after N
+ * seconds, advance it on a clock — is this repository's signature defect with a
+ * progress bar on it: a display reporting work it never observed.
+ *
+ * THE PHRASES ARE MATCHED LOOSELY, ON PURPOSE. They are prose log lines, not a
+ * contract. An anchored parse would stop recognising a stage the day somebody
+ * rewords a sentence, and a stage stuck on `pending` forever is exactly the "looks
+ * hung" defect this exists to remove. The cost is a false positive if wording ever
+ * collides, which is the cheaper direction.
+ *
+ * ONE THING IS LOST BY MOVING IT, AND IT IS LOST HONESTLY. `specPipelineFrom`
+ * takes the TICKET TEXT and lights `capture` as `running` when the ticket contains
+ * a URL. The fold is given one event at a time and never sees the ticket, and
+ * widening `foldGraph`'s signature would change both call sites in two packages.
+ * So `capture` stays `pending` until the server says `captured …` or
+ * `no reference capture` — strictly less claim than before, and the direction the
+ * rule above requires when in doubt.
+ *
+ * THE COPY IS DUPLICATED IN `spec-pipeline.ts` UNTIL THE RENDERER MOVES. Two live
+ * copies of these regexes is a real cost and it is temporary by design: this one
+ * feeds the canvas, that one still feeds the old overlay. Deduplicating across the
+ * package boundary is impossible (`dashboard/src` cannot import
+ * `dashboard/server`'s runtime values without the Turbopack failure documented at
+ * the top of this file), so the resolution is deletion, not extraction.
+ * ====================================================================== */
+
+const CAPTURED = /^captured https?:\/\//i;
+const AUTHORING = /authoring the held-out acceptance suite/i;
+const SPEC_TOKENS = /^spec seat —/i;
+const AUDIT_TOKENS = /^audit seat —/i;
+const SEALED = /^sealed suite /i;
+const REUSED = /^reusing the sealed acceptance suite/i;
+/** The ticket named no URL, so nothing was captured and nothing is pending. */
+const NO_CAPTURE = /no reference capture/i;
+const PLAN_PARKED = /waiting for an answer in the chat/i;
+const PLAN_NOTHING = /^plan phase (?:skipped|asked nothing)\s*[:—-]\s*(.+)$/i;
+const PLAN_OVER =
+  /^the plan dialogue (?:is over|is folded into the brief|ended with nothing to fold)/i;
+
+/** Left to right on the canvas. The orchestrator is always last. */
+const STAGE_ORDER: readonly GraphStageId[] = [
+  "plan",
+  "capture",
+  "author",
+  "audit",
+  "freeze",
+  "orchestrator",
+];
+
+/** The four the spec phase runs. `plan` precedes them; `orchestrator` follows. */
+const SPEC_STAGES: readonly GraphStageId[] = ["capture", "author", "audit", "freeze"];
+
+const STAGE_LABEL: Readonly<Record<GraphStageId, string>> = {
+  plan: "Plan",
+  capture: "Reference capture",
+  author: "Spec seat",
+  audit: "Audit seat",
+  freeze: "Freeze",
+  orchestrator: "Orchestrator",
+};
+
+const PLAN_RUNNING =
+  "Reading the ticket and anything attached to it, and working out what it cannot infer. " +
+  "It reports when it has something to ask.";
+const PLAN_PARKED_DETAIL =
+  "Waiting for an answer in the run panel. The window closes on its own, and the run then " +
+  "proceeds on what it had to assume.";
+const ORCHESTRATOR_PENDING =
+  "Waits for the sealed suite. Whatever it delegates to appears beside it.";
+const ORCHESTRATOR_RUNNING = "Running the build. Every agent it spawned is on this canvas.";
+const ORCHESTRATOR_DONE = "The build phase is over.";
+
+/** The forward-looking sentence a stage shows before it has said anything. */
+const STAGE_PENDING: Readonly<Record<GraphStageId, string>> = {
+  plan: PLAN_RUNNING,
+  // NOT "loading the page": the fold cannot see the ticket, so it does not know
+  // whether there is a page. See the header note on what moving this cost.
+  capture: "Waiting to hear whether the ticket named a page to capture.",
+  author: "Waiting for the capture.",
+  audit:
+    "Attacks the suite for untestable and gameable criteria. Reports only when it finishes.",
+  freeze: "Seals the suite by digest, so the builder can never see it.",
+  orchestrator: ORCHESTRATOR_PENDING,
+};
+
+function stageOf(state: GraphState, id: GraphStageId): GraphStage | undefined {
+  return state.stages?.find((stage) => stage.id === id);
+}
+
+/** True once this stream has said anything at all about a pre-build lane. */
+function hasPipeline(state: GraphState): boolean {
+  return state.stages !== undefined && state.stages.length > 0;
+}
+
+/**
+ * Insert or replace one stage, keeping {@link STAGE_ORDER}.
+ *
+ * RETURNS THE SAME STATE OBJECT WHEN NOTHING CHANGED, like every other path in
+ * this file — a `log` row that re-states a stage the fold already knows must not
+ * re-render the client canvas.
+ */
+function putStage(state: GraphState, stage: GraphStage): GraphState {
+  const stages = state.stages ?? [];
+  const index = stages.findIndex((entry) => entry.id === stage.id);
+  if (index >= 0) {
+    const existing = stages[index];
+    if (
+      existing !== undefined &&
+      existing.state === stage.state &&
+      existing.detail === stage.detail &&
+      existing.label === stage.label &&
+      existing.at === stage.at
+    ) {
+      return state;
+    }
+    const next = [...stages];
+    next[index] = stage;
+    return { ...state, stages: next };
+  }
+  const rank = STAGE_ORDER.indexOf(stage.id);
+  const next = [...stages];
+  const before = next.findIndex((entry) => STAGE_ORDER.indexOf(entry.id) > rank);
+  next.splice(before < 0 ? next.length : before, 0, stage);
+  return { ...state, stages: next };
+}
+
+/** A stage in its untouched, forward-looking form. */
+function pendingStage(id: GraphStageId): GraphStage {
+  return {
+    id,
+    label: STAGE_LABEL[id],
+    detail: STAGE_PENDING[id],
+    state: "pending",
+    at: null,
+  };
+}
+
+function settleStage(
+  state: GraphState,
+  id: GraphStageId,
+  next: GraphStageState,
+  detail: string,
+  at: string | null,
+  label: string = STAGE_LABEL[id],
+): GraphState {
+  // FIRST MENTION WINS, which is what `specPipelineFrom` did by scanning for the
+  // FIRST matching line. A stage that has already reported an outcome is not
+  // re-dated by a later line that says the same thing.
+  const existing = stageOf(state, id);
+  if (existing !== undefined && existing.state === next && next !== "running") return state;
+  return putStage(state, { id, label, detail, state: next, at });
+}
+
+/** Add the stage if this stream has never mentioned it; never overwrite. */
+function ensureStage(state: GraphState, id: GraphStageId): GraphState {
+  return stageOf(state, id) === undefined ? putStage(state, pendingStage(id)) : state;
+}
+
+/**
+ * A stage the run has moved past while it still read `running`.
+ *
+ * `unresolved`, NEVER `failed` AND NEVER `pending`. It is rule 4 of this file,
+ * applied to the lane instead of to a node: the run stopped telling us about this
+ * stage, which is not the same as the stage failing, and on a run that is over
+ * `pending` would read as "still to come".
+ */
+function unresolveStages(state: GraphState, ids: readonly GraphStageId[]): GraphState {
+  let next = state;
+  for (const id of ids) {
+    const stage = stageOf(next, id);
+    if (stage === undefined || stage.state !== "running") continue;
+    next = putStage(next, { ...stage, state: "unresolved" });
+  }
+  return next;
+}
+
+/**
+ * The spec phase's four stages, unless the suite was reused.
+ *
+ * A REUSED SUITE IS NOT A PIPELINE. The ticket's text already had a sealed suite,
+ * so nothing is authored and nothing is audited; three stages that could never
+ * move would invent work that is not happening. `freeze` already reading `done`
+ * before the skeleton is built can only mean the reuse line landed first, which is
+ * the one thing that closes the lane before it opens.
+ */
+function ensureSpecStages(state: GraphState): GraphState {
+  if (stageOf(state, "freeze")?.state === "done") return state;
+  let next = state;
+  for (const id of SPEC_STAGES) next = ensureStage(next, id);
+  return next;
+}
+
+function dropStages(state: GraphState, ids: readonly GraphStageId[]): GraphState {
+  const stages = state.stages;
+  if (stages === undefined) return state;
+  const next = stages.filter((stage) => !ids.includes(stage.id));
+  return next.length === stages.length ? state : { ...state, stages: next };
+}
+
+/**
+ * The lane, as far as one PHASE row moves it.
+ *
+ * A STREAM THAT OPENS AT `build` GETS NO LANE AT ALL, and that is deliberate
+ * rather than incidental. Every run recorded before the phases existed is a stream
+ * of `log`/`tool`/`status` rows plus, at most, `phase: build` — the same runs rule
+ * 3 of this file requires to fold to an empty canvas with no feature flag. A lane
+ * drawn for them would be five stages asserting a pre-build pipeline that nothing
+ * in the stream ever mentioned.
+ */
+function foldPhaseStages(state: GraphState, phase: ApiPhase, at: string | null): GraphState {
+  if (phase === "plan") {
+    const plan = stageOf(state, "plan");
+    const next =
+      plan === undefined
+        ? putStage(state, {
+            id: "plan",
+            label: STAGE_LABEL.plan,
+            detail: PLAN_RUNNING,
+            state: "running",
+            at,
+          })
+        : state;
+    return ensureStage(next, "orchestrator");
+  }
+  if (phase === "spec") {
+    // The plan phase is over. If its own closing line never landed, nothing said
+    // how it ended — which is precisely what `unresolved` is for.
+    const next = ensureSpecStages(unresolveStages(state, ["plan"]));
+    return ensureStage(next, "orchestrator");
+  }
+  if (!hasPipeline(state)) return state;
+  const settled = unresolveStages(state, SPEC_STAGES);
+  const orchestrator = stageOf(settled, "orchestrator");
+  if (orchestrator === undefined) return settled;
+  if (phase === "build") {
+    return orchestrator.state === "running"
+      ? settled
+      : putStage(settled, {
+          ...orchestrator,
+          state: "running",
+          detail: ORCHESTRATOR_RUNNING,
+          at,
+        });
+  }
+  // `gate`, `judge`, `done`: the run SAID it left the build, which is a recorded
+  // fact about the orchestrator. A terminal `status` is not — it is a statement
+  // about the run — so the orchestrator is never closed from one.
+  return orchestrator.state === "done"
+    ? settled
+    : putStage(settled, { ...orchestrator, state: "done", detail: ORCHESTRATOR_DONE, at });
+}
+
+/**
+ * The lane, as far as one LOG row moves it.
+ *
+ * ONLY A RECOGNISED SENTENCE STARTS THE LANE. An unmatched line returns the same
+ * state object, so a 32,000-row build is 32,000 regex tests against a state that
+ * never changes and a client that never re-renders.
+ */
+function foldLogStages(state: GraphState, text: string, at: string | null): GraphState {
+  let next = state;
+  if (REUSED.test(text)) {
+    // The three stages that will now never happen are REMOVED rather than left
+    // grey. Pending rows for work nobody is doing are the same lie as a running
+    // one, drawn in a quieter colour.
+    next = dropStages(next, ["capture", "author", "audit"]);
+    next = settleStage(next, "freeze", "done", text, at, "Acceptance suite");
+  } else if (CAPTURED.test(text)) {
+    next = settleStage(next, "capture", "done", text, at);
+  } else if (NO_CAPTURE.test(text)) {
+    next = settleStage(next, "capture", "skipped", "No URL in the ticket, so nothing was captured.", at);
+  } else if (SPEC_TOKENS.test(text)) {
+    next = settleStage(next, "author", "done", text, at);
+  } else if (AUDIT_TOKENS.test(text)) {
+    next = settleStage(next, "audit", "done", text, at);
+  } else if (SEALED.test(text)) {
+    next = settleStage(next, "freeze", "done", text, at);
+  } else if (AUTHORING.test(text)) {
+    // `running` only while nothing has closed it: the seat's token line is the
+    // close, and on a replay both lines are already in the stream.
+    next =
+      stageOf(next, "author")?.state === "done"
+        ? next
+        : settleStage(
+            next,
+            "author",
+            "running",
+            "Writing the held-out acceptance suite from the ticket and the capture.",
+            at,
+          );
+  } else if (PLAN_OVER.test(text)) {
+    next = settleStage(next, "plan", "done", text, at);
+  } else if (PLAN_PARKED.test(text)) {
+    next =
+      stageOf(next, "plan")?.state === "done"
+        ? next
+        : settleStage(next, "plan", "running", PLAN_PARKED_DETAIL, at);
+  } else {
+    const asked = PLAN_NOTHING.exec(text);
+    if (asked === null) return state;
+    next = settleStage(next, "plan", "skipped", asked[1] ?? text, at);
+  }
+  return next === state ? state : ensureStage(next, "orchestrator");
 }
 
 /**
@@ -348,6 +861,55 @@ export function foldGraph(
       });
     }
 
+    case "graph_narration": {
+      const index = indexOfNode(state.nodes, event.node);
+      const node = state.nodes[index];
+      if (node === undefined) return state;
+      /*
+       * A TURN OF WHITESPACE IS NOT NARRATION. `assistantText` joins the `text`
+       * blocks of a turn, and a turn whose only block is a tool call joins to the
+       * empty string — folding that in would put a blank row on the timeline for
+       * every tool call, next to the row the tool call already has.
+       */
+      const text = scrubHostPaths(event.text).trim();
+      if (text === "") return state;
+      const clipped = clip(text, NARRATION_CHARS);
+      return withNode(state, index, {
+        ...node,
+        ...record(node, {
+          at: instantOf(event),
+          kind: "narration",
+          // Deliberately nameless — see `GraphActivityEntry.name`.
+          name: "",
+          detail: clipped.detail,
+          // EITHER CUT COUNTS. The emitter may already have trimmed the turn, and
+          // a reader must not have to know which end did it.
+          truncated: event.truncated === true || clipped.truncated,
+        }),
+      });
+    }
+
+    case "graph_diff": {
+      const index = indexOfNode(state.nodes, event.node);
+      const node = state.nodes[index];
+      if (node === undefined) return state;
+      const diff = capDiff(event, diffBodies(node));
+      // The one-line form, so a renderer that only reads `detail` still says what
+      // changed and by how much. The lines are on `diff`.
+      const clipped = clip(`+${String(diff.additions)} -${String(diff.deletions)} ${diff.path}`);
+      return withNode(state, index, {
+        ...node,
+        ...record(node, {
+          at: instantOf(event),
+          kind: "diff",
+          name: event.tool,
+          detail: clipped.detail,
+          truncated: clipped.truncated,
+          diff,
+        }),
+      });
+    }
+
     case "graph_inventory":
       return {
         ...state,
@@ -364,6 +926,20 @@ export function foldGraph(
         },
       };
 
+    /*
+     * THE TWO NON-GRAPH ROWS THE PRE-BUILD LANE IS BUILT FROM.
+     *
+     * They need no new emission, which is the whole reason the lane works on runs
+     * that finished weeks ago: `log` and `phase` rows are already in `events` for
+     * every run this program has ever recorded. A new `graph_stage` event would
+     * have projected nothing until the first run after it shipped.
+     */
+    case "phase":
+      return foldPhaseStages(state, event.phase, instantOf(event));
+
+    case "log":
+      return foldLogStages(state, event.text, instantOf(event));
+
     case "status": {
       // THE REASON THIS FOLD SEES NON-GRAPH EVENTS AT ALL. A run that was
       // cancelled or that failed leaves agents mid-flight, and their last
@@ -379,7 +955,11 @@ export function foldGraph(
         touched = true;
         return { ...node, state: "unresolved" as const };
       });
-      return touched ? { ...state, nodes } : state;
+      // THE SAME RULE FOR THE LANE. A stage still reading `running` on a run that
+      // has stopped did not continue; leaving a pulsing card on a dead run is the
+      // lie this display exists to remove, and `failed` is a claim nothing made.
+      const settled = unresolveStages(touched ? { ...state, nodes } : state, STAGE_ORDER);
+      return touched || settled !== state ? settled : state;
     }
 
     default:

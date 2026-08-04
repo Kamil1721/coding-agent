@@ -1334,6 +1334,96 @@ export interface GraphMcpServer {
   readonly status: string;
 }
 
+/**
+ * One hunk of a unified diff, in the SDK's own shape.
+ *
+ * THIS IS `FileEditOutput.structuredPatch[n]` FROM `sdk-tools.d.ts:3025-3072`,
+ * copied field for field on purpose. The Agent SDK already computes the diff for
+ * every applied `Edit`/`Write` and delivers it as `tool_use_result` on the USER
+ * message; the whole of ask C is reading a thing we already receive. Renaming its
+ * fields here would put a translation layer between the producer and the renderer
+ * for no gain, and the first bug in a translation layer is off-by-one line
+ * numbers.
+ *
+ * `lines` CARRIES THE LITERAL `" "` / `"+"` / `"-"` PREFIXES. That is the SDK's
+ * encoding, not a convention invented here, and it is what makes a coloured
+ * render a `startsWith` rather than a second parallel array of flags that can
+ * disagree with the text.
+ *
+ * A LINE MAY COME BACK FROM THE EVENTS TABLE PARTIALLY REWRITTEN, AND THAT IS
+ * NOT CORRUPTION. `db.ts`'s `appendEvent` runs every persisted event through
+ * `redactForPersistence`, whose `HIGH_ENTROPY_TOKEN` rule replaces any 40+
+ * character mixed-case-and-digit run and whose base64 pass replaces any 24+
+ * character span that decodes to something a credential rule matches. A
+ * lockfile's `sha512-…` integrity line, a minified bundle and an inlined data URL
+ * all cross those thresholds, so a diff of one of those files legitimately reads
+ * `[REDACTED:HIGH_ENTROPY_TOKEN]` in the middle of a line. Rendering it verbatim
+ * is correct; "fixing" it is a credential leak.
+ */
+export interface GraphDiffHunk {
+  readonly oldStart: number;
+  readonly oldLines: number;
+  readonly newStart: number;
+  readonly newLines: number;
+  /** Body lines, each prefixed `" "`, `"+"` or `"-"`. */
+  readonly lines: readonly string[];
+}
+
+/**
+ * ONE APPLIED FILE EDIT, as the canvas keeps it.
+ *
+ * ONLY EDITS THAT ACTUALLY APPLIED CAN REACH THIS, and that falls out of where
+ * the data comes from rather than from a check: `FileEditOutput` is the tool
+ * RESULT, and a refused or failed edit produces none. Reading the `tool_use`
+ * block instead — which is what `summariseToolInput` does today — would draw
+ * green and red lines for edits that never happened.
+ *
+ * THE COUNTS ARE ALWAYS EXACT; THE BODY IS NOT ALWAYS WHOLE. `additions` and
+ * `deletions` are counted over the FULL patch before any cap is applied, so a
+ * capped diff still reports the true size of the change. `hunks` is what fitted.
+ * The moment those two disagree, {@link GraphDiff.capped} is true — a partial
+ * diff rendered as if it were whole is this repository's signature defect with
+ * syntax highlighting on it.
+ *
+ * THE PATH IS WORKSPACE-RELATIVE AND MUST STAY THAT WAY — see
+ * `scrubHostPaths` in `graph.ts`, which is the enforcement rather than this
+ * sentence. `redactForPersistence` covers CREDENTIALS and nothing else: no rule
+ * in `bakeoff/src/redact.ts` matches `/Users/<name>/…`, so nothing on the
+ * persistence path would stop an absolute host path reaching the browser.
+ *
+ * WHAT CAN NEVER APPEAR HERE, and it must be said in the UI rather than buried:
+ * a `Bash`-driven edit (`sed -i`, a heredoc, `npm init`) produces no structured
+ * output at all. There is no diff to render for it, ever, and a file that
+ * changed with no diff card is not a bug.
+ */
+export interface GraphDiff {
+  /** Workspace-relative. Never an absolute host path — see `scrubHostPaths`. */
+  readonly path: string;
+  /**
+   * `added` for a file this edit created, `modified` for one it changed.
+   *
+   * TWO MEMBERS, NOT THREE: a deletion produces no `FileEditOutput`, so
+   * "deleted" would be a state this data can never carry and a renderer would
+   * have a branch nothing reaches. `gitDiff.status` in the SDK is typed exactly
+   * this way for the same reason.
+   */
+  readonly change: "added" | "modified";
+  /** Lines added across the WHOLE patch, even the part `hunks` omits. */
+  readonly additions: number;
+  /** Lines removed across the WHOLE patch, even the part `hunks` omits. */
+  readonly deletions: number;
+  readonly hunks: readonly GraphDiffHunk[];
+  /**
+   * True when ANY content was withheld — a dropped hunk, a dropped line, or a
+   * line shortened to fit. It can be true while both counters below are 0: one
+   * 40,000-character minified line is a whole diff that has been cut without a
+   * single line going missing.
+   */
+  readonly capped: boolean;
+  readonly droppedHunks: number;
+  readonly droppedLines: number;
+}
+
 /* -------------------------------------------------------------------------
  * SSE
  * ---------------------------------------------------------------------- */
@@ -1510,6 +1600,75 @@ export type SseEvent =
       readonly model: string;
       readonly claudeCodeVersion: string;
       readonly environmentHash: string;
+    }
+  /**
+   * WHAT THE MODEL SAID, IN ITS OWN WORDS, FOR ONE TURN.
+   *
+   * ITS OWN TYPE BECAUSE THE CHANNEL IT SHARED WAS THE BUG. This prose is
+   * already captured: `builders/claude-builder.ts:1455` does
+   * `sink.log("info", truncate(text, 500))`, which lands it in a generic
+   * `{type:"log", level:"info", text}` — the same channel, the same level and the
+   * same shape as `spec seat — anthropic: 14 input, 40187 cache read…`. Nothing
+   * downstream can tell an agent explaining what it is about to do from a token
+   * count, so the UI can only render both as grey lines or neither. A discriminator
+   * is the whole fix; the text was never the missing part.
+   *
+   * THIS IS NOT THINKING, AND IT MUST NOT BE LABELLED AS THINKING. Measured on
+   * the local transcript corpus: 7,037 `thinking` blocks across four models, of
+   * which ZERO carry any text — the key is present, the value is `""`, and the
+   * `signature` beside it is an encrypted blob no SDK option decrypts. The
+   * reasoning genuinely is not on this machine. What IS here is the assistant's
+   * visible prose, which is most of what the Claude Code terminal shows anyway.
+   *
+   * `text` IS CAPPED AT {@link NARRATION_CHARS} BY THE FOLD, not by the emitter's
+   * good intentions, and `truncated` says when it was cut. See `graph.ts` for the
+   * measurement behind the number.
+   *
+   * NO `kind` DISCRIMINATOR AND NO LEVEL. Narration has no severity: a model
+   * saying "this looks wrong, let me check" is not a warning, and giving it a
+   * level would recreate the exact confusion this type exists to end.
+   */
+  | {
+      readonly type: "graph_narration";
+      readonly node: string;
+      readonly text: string;
+      /** True when the emitter had already cut `text`. The fold may set it too. */
+      readonly truncated: boolean;
+      readonly attribution: GraphAttribution;
+    }
+  /**
+   * ONE APPLIED FILE EDIT — the green and red lines, ask C.
+   *
+   * EVERY FIELD HERE IS ALREADY COMPUTED BY THE SDK AND CURRENTLY DISCARDED.
+   * `FileEditOutput` (`sdk-tools.d.ts:3025-3072`) arrives as `tool_use_result` on
+   * the user message carrying `structuredPatch` and a `gitDiff` with
+   * `additions`/`deletions`; `summariseToolInput` keeps `file_path` and throws the
+   * rest away. This event is the shape that survives to the canvas.
+   *
+   * IT DUPLICATES {@link GraphDiff}'S FIELDS RATHER THAN EMBEDDING IT, following
+   * `graph_result` / {@link GraphResult} — the wire event and the folded record are
+   * allowed to drift apart later (the fold already re-caps what it stores), and a
+   * shared shape would make that drift a compile error instead of a decision.
+   *
+   * READ {@link GraphDiff} BEFORE RENDERING: the counts are whole, the body may
+   * not be, `capped` is the only thing that says which, and a `Bash`-driven edit
+   * can never produce one of these at all.
+   */
+  | {
+      readonly type: "graph_diff";
+      readonly node: string;
+      /** Workspace-relative. `scrubHostPaths` in `graph.ts` enforces it. */
+      readonly path: string;
+      /** The CLI's own tool name — `Edit`, `Write`, `NotebookEdit`. */
+      readonly tool: string;
+      readonly change: "added" | "modified";
+      readonly additions: number;
+      readonly deletions: number;
+      readonly hunks: readonly GraphDiffHunk[];
+      readonly capped: boolean;
+      readonly droppedHunks: number;
+      readonly droppedLines: number;
+      readonly attribution: GraphAttribution;
     };
 
 export type SseEventType = SseEvent["type"];
@@ -1595,6 +1754,8 @@ export const SSE_EVENT_TYPES = [
   "graph_hook",
   "graph_result",
   "graph_inventory",
+  "graph_narration",
+  "graph_diff",
 ] as const satisfies readonly SseEventType[];
 
 type UnlistedSseEvent = Exclude<SseEventType, (typeof SSE_EVENT_TYPES)[number]>;
@@ -1727,17 +1888,125 @@ export interface GraphResult {
  * carried `events.at` (see {@link SseWireEvent}) fold to `null` here, and a null
  * renders as "time not recorded" — never as a guess and never as the fold's own
  * clock, which would date a two-year-old run to the moment somebody opened it.
+ *
+ * FOUR KINDS SHARE ONE LIST ON PURPOSE, AND THAT IS THE FEATURE. What the Claude
+ * Code terminal actually shows is prose, a tool call, a diff and more prose,
+ * interleaved in the order they happened. Splitting narration and diffs into
+ * their own parallel lists would hand the renderer three timelines it has to
+ * merge back together by timestamp — and `at` is nullable, so that merge cannot
+ * always be done. One list, in arrival order, is the only shape that keeps the
+ * order it was given.
+ *
+ * `kind` IS ENFORCED BY NOTHING BUT `contract-parity.test.ts`. It is mirrored by
+ * hand in `dashboard/src/lib/api-types.ts`, and a client that widened it to
+ * `string` would mirror the field and lose the branch the renderer switches on.
+ * That check pins the literal union on both sides.
  */
 export interface GraphActivityEntry {
   /** ISO instant the SERVER recorded the event. Null when the row predates it. */
   readonly at: string | null;
-  readonly kind: "tool" | "skill";
-  /** Tool or skill name, e.g. `Bash`, `Read`, `imagegen-frontend-web`. */
+  readonly kind: "tool" | "skill" | "narration" | "diff";
+  /**
+   * Tool or skill name, e.g. `Bash`, `Read`, `imagegen-frontend-web`.
+   *
+   * `"diff"` carries the TOOL that produced the edit (`Edit`, `Write`).
+   * `"narration"` carries the EMPTY STRING and nothing else: a turn of prose has
+   * no name, and inventing one — the agent's own name, say — would put a label on
+   * every line that reads like an attribution the model never made.
+   */
   readonly name: string;
-  /** The event's own summary, truncated to {@link ACTIVITY_DETAIL_CHARS}. */
+  /**
+   * The event's own summary, truncated to {@link ACTIVITY_DETAIL_CHARS} —
+   * EXCEPT on a `narration` entry, which is budgeted separately at
+   * `NARRATION_CHARS` because 220 characters of prose is a sentence fragment.
+   * On a `diff` entry this is the one-line summary; the lines are in `diff`.
+   */
   readonly detail: string;
   /** True when `detail` was cut. Stops a clipped path reading as a whole one. */
   readonly truncated: boolean;
+  /**
+   * The edit's body. PRESENT IF AND ONLY IF `kind` IS `"diff"`.
+   *
+   * A diff entry ALWAYS has one, even when every hunk was capped away, because
+   * the counts are the point and they are always exact. On any other kind the key
+   * is absent — not `null` — and `graph.test.ts` checks that both halves of the
+   * "if and only if" hold on a real fold rather than trusting this sentence.
+   *
+   * OPTIONAL RATHER THAN `GraphDiff | null` FOR THE REASON {@link GraphState}'s
+   * `stages` IS, and the same flip applies: four activity literals in
+   * `dashboard/server/src/graph-fixture.ts` are `tool` and `skill` entries that
+   * this lane may not edit, and a required key fails `tsc` until each carries
+   * `diff: null`. Absence also keeps the fold's output byte-identical to those
+   * literals, which is what lets the mirror contract go on comparing whole
+   * objects instead of being weakened to a subset.
+   */
+  readonly diff?: GraphDiff;
+}
+
+/* -------------------------------------------------------------------------
+ * The pre-build lane — ask D
+ *
+ * WHY IT IS IN `GraphState` AND NOT IN THE CLIENT, WHICH IS WHERE IT WAS.
+ * `dashboard/src/lib/spec-pipeline.ts` derives these stages from the live `trace`
+ * sink. `use-run-stream.ts:820-822` derives `streamClosed` from the run's status
+ * and early-returns from the EventSource effect, so A FINISHED RUN NEVER OPENS
+ * THE SOCKET — the trace is empty and every stage is blank on every run that has
+ * ended. Anything the owner opens after the fact is exactly the case that
+ * displayed nothing. `spec-pipeline.ts:246` then deletes the lane a second time
+ * at the build boundary (`if (phase !== "spec") return []`).
+ *
+ * `foldGraph` is the one reducer behind BOTH the live tail and the durable
+ * snapshot (`dashboard/src/lib/graph.ts:64-69` re-exports the server's), so a
+ * projection computed there is identical on replay and live by construction,
+ * with no second implementation to keep in step.
+ *
+ * IT NEEDS NO NEW EMISSION, WHICH IS WHY IT WORKS ON RUNS THAT ARE ALREADY OVER.
+ * The fold reads the `log` and `phase` rows the server has always written; every
+ * run already in `runs.db` projects its stages the moment this ships.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The pre-build lane, left to right, ending at the hand-off to the agent graph.
+ *
+ * `orchestrator` IS THE OWNER'S ASK, LITERALLY: "Planning (node) ----- Orchestrator
+ * (node) ------ (then whatever the orchestrator spawns)". It is a member of this
+ * list rather than a separate field so the renderer draws one chain and the edge
+ * between the last stage and the first agent is the only special case.
+ */
+export type GraphStageId =
+  | "plan"
+  | "capture"
+  | "author"
+  | "audit"
+  | "freeze"
+  | "orchestrator";
+
+/**
+ * FIVE STATES, AND `unresolved` IS THE ONE THAT KEEPS THE OTHERS HONEST.
+ *
+ * It means THE RUN MOVED ON — or ended — WHILE THIS STAGE STILL READ RUNNING, and
+ * nothing ever said how it finished. It is not `failed`, for the reason
+ * {@link GraphNodeState} gives at length, and it is not `pending`, which on a
+ * finished run would read as "still to come". The client's older `SpecStageState`
+ * had four members and demoted a running stage to `pending` on a terminal run;
+ * that was the closest thing available in a vocabulary with no word for it.
+ *
+ * NOTHING HERE IS EVER SET BY A TIMER. `running` comes from the run being in the
+ * phase or from a line it wrote; `done` and `skipped` come from a sentence the
+ * server wrote. When the server says nothing the stage says nothing, and the gap
+ * is visible rather than papered over — the rule `spec-pipeline.ts` was built on
+ * and the only reason this display is worth drawing.
+ */
+export type GraphStageState = "pending" | "running" | "done" | "skipped" | "unresolved";
+
+export interface GraphStage {
+  readonly id: GraphStageId;
+  readonly label: string;
+  /** One line the reader can act on. Never empty. */
+  readonly detail: string;
+  readonly state: GraphStageState;
+  /** ISO instant of the row that set this state, or null when it carried none. */
+  readonly at: string | null;
 }
 
 export interface GraphNode {
@@ -1807,6 +2076,36 @@ export interface GraphState {
   readonly nodes: readonly GraphNode[];
   readonly edges: readonly GraphEdge[];
   readonly inventory: GraphInventory | null;
+  /**
+   * The pre-build lane — see {@link GraphStage}.
+   *
+   * ABSENT MEANS THE STREAM NEVER MENTIONED ONE, AND IT IS NEVER THE EMPTY ARRAY.
+   * The fold either has stages or has no key, so `stages === undefined` and
+   * `stages.length === 0` are not two spellings of one fact that a reader has to
+   * learn are the same. A run whose first `phase` row is `build` — which is every
+   * run recorded before the phases existed — folds to a state with no `stages`
+   * key at all, exactly as it already folds to an empty canvas: no feature flag,
+   * because there is nothing to flag. `graph.test.ts` checks that invariant.
+   *
+   * OPTIONAL FOR ONE REASON, AND IT IS NOT A GOOD ONE. Four object literals
+   * outside this lane build a `GraphState` field by field —
+   * `dashboard/src/lib/use-run-graph.ts:204`, `dashboard/server/src/api.test.ts`,
+   * `dashboard/server/src/graph-fixture.ts` and
+   * `dashboard/tests/canvas-roles.unit.spec.ts` — and a required field fails
+   * `tsc` in both packages until all four carry it. The dangerous one is
+   * `use-run-graph.ts:204`: it rebuilds the snapshot as
+   * `{nodes, edges, inventory}`, so with the field optional it SILENTLY DROPS the
+   * stages on the browser's snapshot path, which is the only path a finished run
+   * has. That drop is what `contract-parity.test.ts`'s "the client's snapshot
+   * carries the pre-build lane" check watches, and it is marked `todo` there
+   * rather than invented as passing.
+   *
+   * THE FLIP, FOR WHOEVER RENDERS THIS: add `stages: data.stages ?? []` at
+   * `use-run-graph.ts:204`, add `stages: []` to the three literals above, drop
+   * the `?` here and in the client mirror, and delete the `todo` marker. It is
+   * five lines and it makes the compiler the enforcement instead of a test.
+   */
+  readonly stages?: readonly GraphStage[];
 }
 
 /**
