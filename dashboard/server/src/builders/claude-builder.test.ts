@@ -29,7 +29,7 @@ import type { GraphSseEvent } from "../api-types.js";
 // THE BUDGET CONSTANTS THE EMITTER SHARES WITH THE FOLD. Asserting against the
 // exported numbers rather than against literals means a test cannot claim the cap
 // was applied while measuring a different cap.
-import { DIFF_LINE_CHARS, DIFF_MAX_LINES, NARRATION_CHARS } from "../graph.js";
+import { DIFF_LINE_CHARS, DIFF_MAX_LINES, NARRATION_CHARS, foldGraphAll } from "../graph.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
@@ -3272,4 +3272,125 @@ test("THE LOOP: the same result arriving twice draws ONE card", async () => {
   );
 
   assert.equal(graphOf(record, "graph_diff").length, 1, "one edit was drawn twice");
+});
+
+test("THE LOOP: the counts come from the PATCH, never from `gitDiff`", async () => {
+  /*
+   * THE FIXTURE IS THE ARGUMENT. `gitDiff` says +47 −12 and `status: "added"`
+   * over a `structuredPatch` of one added line and one removed one. Nothing in
+   * the suite could tell the two readings apart until this test, because the
+   * shipped fixture's `gitDiff` agreed with its own patch.
+   *
+   * WHY THE PATCH IS RIGHT AND `gitDiff` IS NOT, read out of the CLI: it runs
+   * `git diff <mergeBase> -- <path>`, so it reports the file's whole divergence
+   * from a base ref rather than this operation. The build workspace has exactly
+   * one commit, so on the second edit to a file those numbers cover every change
+   * since the build started, and `status: "added"` stays true of every file the
+   * build created for the rest of the run. It is also gated behind
+   * `CLAUDE_CODE_REMOTE` and therefore absent in every local run — a mistake here
+   * would have shown up only on a remote one.
+   */
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      editCall("tu_ok"),
+      resultEnvelope(
+        "tu_ok",
+        editOutput({
+          structuredPatch: [
+            { oldStart: 4, oldLines: 1, newStart: 4, newLines: 1, lines: ["-was", "+is"] },
+          ],
+          gitDiff: {
+            filename: "src/app/page.tsx",
+            status: "added",
+            additions: 47,
+            deletions: 12,
+            changes: 59,
+            patch: "@@ …",
+          },
+        }),
+      ),
+    ],
+    record,
+  );
+
+  const diff = graphOf(record, "graph_diff")[0];
+  assert.ok(diff?.type === "graph_diff");
+  assert.equal(diff.additions, 1, "the card claimed more than the lines it drew");
+  assert.equal(diff.deletions, 1, "the card claimed more than the lines it drew");
+  // `originalFile` is a string on this fixture, so THIS edit modified the file —
+  // whatever git thinks of the file's relationship to the base ref.
+  assert.equal(diff.change, "modified");
+});
+
+test("THE LOOP: what the loop emits SURVIVES foldGraph — the seam, not the shapes", async () => {
+  /*
+   * THE ASYMMETRY THIS CLOSES. Wave 2 tested `foldGraph` with hand-written
+   * events; everything above tests the emitter by reading the sink. Nobody had
+   * run one into the other, and `graph.ts:385`'s `default: return state` plus the
+   * `if (node === undefined) return state` guard on every node-bearing arm mean a
+   * well-formed event naming a node that was never announced vanishes in silence.
+   * That is this repository's signature defect with the pieces in place.
+   *
+   * `foldGraphAll` is the same function the browser calls on a REST snapshot and
+   * on the live tail — `src/lib/graph.ts` re-exports it — so this also stands in
+   * for "does a finished run show any of this".
+   */
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            { type: "text", text: "Rewriting the hero copy." },
+            {
+              type: "tool_use",
+              id: "tu_ok",
+              name: "Edit",
+              input: { file_path: `${WORKSPACE}/src/app/page.tsx` },
+            },
+          ],
+        },
+      }),
+      resultEnvelope("tu_ok", editOutput()),
+    ],
+    record,
+  );
+
+  const state = foldGraphAll(record.graph);
+  const root = state.nodes.find((node) => node.id === "n1");
+  assert.ok(root, "the run's own node did not survive the fold");
+
+  const said = root.activity.find((entry) => entry.kind === "narration");
+  assert.ok(said, "the narration was well-formed and landed on no node");
+  assert.equal(said.detail, "Rewriting the hero copy.");
+  // NAMELESS BY CONTRACT. A turn of prose has no name and inventing one would be
+  // an attribution the model never made — branch on `kind`, never on the name.
+  assert.equal(said.name, "");
+
+  const drawn = root.activity.find((entry) => entry.kind === "diff");
+  assert.ok(drawn, "the diff was well-formed and landed on no node");
+  assert.equal(drawn.name, "Edit");
+  assert.equal(drawn.diff?.path, "src/app/page.tsx");
+  assert.equal(drawn.diff?.additions, 2);
+  assert.equal(drawn.diff?.deletions, 1);
+  assert.equal(drawn.diff?.capped, false, "the fold added a cap the emitter had already applied");
+  assert.equal(drawn.diff?.droppedLines, 0);
+  assert.deepEqual(drawn.diff?.hunks[0]?.lines, [
+    " const a = 1;",
+    "-const b = 2;",
+    "+const b = 3;",
+    "+const c = 4;",
+  ]);
+
+  // THE ORDER IS THE TIMELINE. `foldGraph` appends in arrival order and cannot
+  // re-sort, so prose-before-action has to be true at the emitter.
+  assert.deepEqual(
+    root.activity.map((entry) => entry.kind),
+    ["narration", "tool", "diff"],
+  );
 });

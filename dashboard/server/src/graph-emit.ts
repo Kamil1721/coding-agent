@@ -237,6 +237,10 @@ function countLines(hunks: readonly unknown[]): { additions: number; deletions: 
  * in `sdk-tools.d.ts` carries — checked, not assumed: `structuredPatch` appears at
  * exactly two declarations in that file, `FileEditOutput` and `FileWriteOutput`.
  *
+ * `gitDiff` IS NOT READ. See the block below: it is a `git diff` against a base
+ * ref rather than a description of this operation, and it is gated behind
+ * `CLAUDE_CODE_REMOTE`, which nothing here sets.
+ *
  * `NotebookEdit` IS NOT ONE OF THEM, contrary to `api-types.ts`'s note on the
  * event's `tool` field. `NotebookEditOutput` carries `new_source`/`old_source` and
  * NO `structuredPatch`, so a notebook edit produces no diff card. Rendering one
@@ -259,26 +263,49 @@ export function fileEditFrom(result: unknown, workspace: string): GraphFileEdit 
   if (typeof filePath !== "string" || filePath.length === 0) return null;
   if (!Array.isArray(patch)) return null;
 
-  const gitDiff = record(output["gitDiff"]);
+  /*
+   * COUNTED FROM `structuredPatch`, AND `gitDiff` IS DELIBERATELY NOT READ AT ALL
+   * — which reverses this function's first draft, on evidence from the CLI.
+   *
+   * `gitDiff` LOOKS like the field to use: it carries `additions`, `deletions` and
+   * a ready `patch`, and the plan for this work named it. Reading what produces it
+   * settles what it means:
+   *
+   *     const base = await mergeBase(root);
+   *     const { stdout, code } = await git(["--no-optional-locks", "diff", base, "--", relative]);
+   *
+   * It is the file's WHOLE divergence from a base ref, not this operation. The
+   * findings doc measured the build workspace as a git repo with exactly one
+   * commit (`workspace created`), so on the second edit to a file those counts
+   * describe every change since the build began: a card saying `+47 −12` above two
+   * drawn lines. Its `status: "added"` means "not in the base ref", which is true
+   * of every file the build created for the rest of the run — so an edit to a file
+   * created an hour ago would keep reporting itself as a creation.
+   *
+   * AND IT IS ABSENT HERE ANYWAY. Both producers are gated:
+   * `if (isTruthy(process.env.CLAUDE_CODE_REMOTE)) { const d = await gitDiffFor(path); ... }`
+   * — nothing in this repo sets that variable, so the field never arrives. Which
+   * means a mistake here would have been invisible in every local run and would
+   * have appeared only on a remote one.
+   *
+   * The patch is the right source on its own merits regardless: it is per-edit by
+   * construction, and the counts then come from the same array the hunks are drawn
+   * from, so what the card claims and what it shows cannot disagree.
+   */
   const whole = countLines(patch);
-  const additions = (gitDiff === null ? null : count(gitDiff["additions"])) ?? whole.additions;
-  const deletions = (gitDiff === null ? null : count(gitDiff["deletions"])) ?? whole.deletions;
+  const additions = whole.additions;
+  const deletions = whole.deletions;
 
   /*
-   * WHICH SIGNAL WINS, IN ORDER OF HOW DIRECTLY IT WAS STATED.
-   *   1. `gitDiff.status` — the CLI's own word, typed exactly `"modified"|"added"`.
-   *   2. `FileWriteOutput.type` — `"create"` vs `"update"`, on writes only.
-   *   3. `originalFile === null` — documented as "null for new files".
-   * Anything else is `modified`, which is the member that claims less: saying a
-   * file was CREATED when it was edited invents a fact, the reverse loses one.
+   * WHICH SIGNAL SAYS THIS EDIT CREATED THE FILE.
+   *   1. `FileWriteOutput.type` — `"create"` vs `"update"`, on writes only.
+   *   2. `originalFile === null` — the SDK documents it as "null for new files".
+   * Both answer the question being asked, about THIS operation. Anything else is
+   * `modified`, the member that claims less: saying a file was CREATED when it was
+   * edited invents a fact, and the reverse only loses one.
    */
-  const status = gitDiff === null ? undefined : gitDiff["status"];
   const change: "added" | "modified" =
-    status === "added" || status === "modified"
-      ? status
-      : output["type"] === "create" || output["originalFile"] === null
-        ? "added"
-        : "modified";
+    output["type"] === "create" || output["originalFile"] === null ? "added" : "modified";
 
   const hunks: GraphDiffHunk[] = [];
   let droppedHunks = 0;
