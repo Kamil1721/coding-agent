@@ -40,6 +40,25 @@ export const REPLAY_RUN_ID = "harness-replay-run";
 export const PLAN_RUN_ID = "harness-plan-run";
 
 /**
+ * THE PAIR THAT DIFFERS ONLY IN STATUS — a live build and the same build after
+ * it ended. Both are served from ONE event list in `build-run-fixture.ts`.
+ *
+ * WHY A FOURTH AND FIFTH RUN AND NOT A FLAG ON AN EXISTING ONE. Every run above
+ * is NON-TERMINAL (`running`, `running`, `awaiting_input`), and that is not an
+ * oversight in any of them — the flowing edge needs a live child, and a park
+ * needs a run that is waiting. But it left the harness unable to reach the one
+ * branch that matters most for replay: `use-run-stream.ts:819` closes the stream
+ * on `isTerminalStatus`, so a terminal run renders from the REST snapshot ALONE.
+ * Until these two ids existed, no browser spec in this repository could tell a
+ * feature that survives a reload from one that only ever existed on the socket.
+ *
+ * `RUN_ID` could not be reused for it: four specs measure that run for pixels
+ * and a terminal status would change its edges, its rims and its trace pane.
+ */
+export const BUILD_RUN_ID = "harness-build-run";
+export const FINISHED_RUN_ID = "harness-finished-run";
+
+/**
  * The build directory the harness's `next dev` uses.
  *
  * Next 16 locks its build directory and refuses to start a second dev server

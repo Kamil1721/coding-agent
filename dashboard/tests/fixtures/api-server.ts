@@ -10,8 +10,11 @@
  * then says NOTHING — the run stays live, the flowing edge stays flowing, and no
  * event ever arrives to move the canvas under a measurement.
  *
- * IT SERVES ONE RUN. Anything else is a 404, which is the honest answer and also
- * keeps a spec that fetches the wrong id from silently getting plausible data.
+ * IT SERVES A FIXED SET OF RUN IDS. Anything else is a 404, which is the honest
+ * answer and also keeps a spec that fetches the wrong id from silently getting
+ * plausible data. (This paragraph used to read "IT SERVES ONE RUN" and had not
+ * been true for three ids; it is now five, and the count is deliberately not
+ * restated here so that it cannot go stale again — `config.ts` holds the list.)
  *
  * Every response carries `Access-Control-Allow-Origin: *` because the app runs
  * on a different loopback port than this does — the harness sets
@@ -25,7 +28,19 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 
 import type { ChatMessage } from "../../src/lib/api";
 import type { RunEvent } from "../../src/lib/api-types";
-import { PLAN_RUN_ID, REPLAY_RUN_ID, RUN_ID } from "./config";
+import { BUILD_RUN_ID, FINISHED_RUN_ID, PLAN_RUN_ID, REPLAY_RUN_ID, RUN_ID } from "./config";
+import {
+  BUILD_DETAIL,
+  BUILD_ECHO_SEQ,
+  BUILD_EVENTS,
+  BUILD_GRAPH,
+  BUILD_RUN_LIST,
+  FINISHED_DETAIL,
+  FINISHED_ECHO_SEQ,
+  FINISHED_EVENTS,
+  FINISHED_GRAPH,
+  SOCKET_ECHO,
+} from "./build-run-fixture";
 import {
   CODE_FILES,
   CODE_TREE,
@@ -127,7 +142,10 @@ export function startFixtureApi(port: number): Promise<FixtureApi> {
       return;
     }
     if (path === "/api/runs") {
-      sendJson(response, 200, RUN_LIST);
+      // Concatenated at the ROUTE rather than folded into `RUN_LIST`, so that
+      // `run-fixture.ts` does not have to import the build fixture to name it —
+      // the two files stay independent and neither can cycle through the other.
+      sendJson(response, 200, [...RUN_LIST, ...BUILD_RUN_LIST]);
       return;
     }
     if (path === run) {
@@ -194,6 +212,58 @@ export function startFixtureApi(port: number): Promise<FixtureApi> {
         writeFrame(response, index + 1, event);
       });
       writeFrame(response, TAIL_SEQ, TAIL_MARKER);
+      request.on("close", () => streams.delete(response));
+      return;
+    }
+
+    /* -----------------------------------------------------------------
+     * THE PAIR. One event list, two statuses, and the SAME `/events` bytes
+     * on both — see `build-run-fixture.ts`.
+     *
+     * Both stream handlers replay every durable row from seq 1 and then the
+     * socket-echo row, which is what the real endpoint does (`attachSse`
+     * replays from durable rows regardless of what the snapshot covered).
+     * The finished run's handler is written out in full even though a correct
+     * client never reaches it — a route that 404'd instead would let "the
+     * socket did not open" pass for the wrong reason.
+     * ----------------------------------------------------------------- */
+
+    const build = `/api/runs/${encodeURIComponent(BUILD_RUN_ID)}`;
+
+    if (path === build) {
+      sendJson(response, 200, BUILD_DETAIL);
+      return;
+    }
+    if (path === `${build}/graph`) {
+      sendJson(response, 200, BUILD_GRAPH);
+      return;
+    }
+    if (path === `${build}/events`) {
+      openStream(response);
+      BUILD_EVENTS.forEach((event, index) => {
+        writeFrame(response, index + 1, event);
+      });
+      writeFrame(response, BUILD_ECHO_SEQ, SOCKET_ECHO);
+      request.on("close", () => streams.delete(response));
+      return;
+    }
+
+    const finished = `/api/runs/${encodeURIComponent(FINISHED_RUN_ID)}`;
+
+    if (path === finished) {
+      sendJson(response, 200, FINISHED_DETAIL);
+      return;
+    }
+    if (path === `${finished}/graph`) {
+      sendJson(response, 200, FINISHED_GRAPH);
+      return;
+    }
+    if (path === `${finished}/events`) {
+      openStream(response);
+      FINISHED_EVENTS.forEach((event, index) => {
+        writeFrame(response, index + 1, event);
+      });
+      writeFrame(response, FINISHED_ECHO_SEQ, SOCKET_ECHO);
       request.on("close", () => streams.delete(response));
       return;
     }
