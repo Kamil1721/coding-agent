@@ -173,6 +173,7 @@ export default function NewTicketPage(): ReactNode {
   const { data: models, isLoading, error } = useModels();
 
   const [ticketText, setTicketText] = useState("");
+  const [motionUrl, setMotionUrl] = useState("");
   const [chosenModelId, setChosenModelId] = useState<string | null>(null);
   const [deploy, setDeploy] = useState(false);
   const [designLock, setDesignLock] = useState<"ask" | "auto">("ask");
@@ -329,6 +330,19 @@ export default function NewTicketPage(): ReactNode {
       // http(s) URL", which is exactly the behaviour this form discloses; `null`
       // would be the opt-out and there is no control for it (see the report).
       //
+      // `motionUrl` FOLLOWS THE SAME SPREAD FOR THE SAME TWO REASONS, and it is a
+      // SEPARATE field from `captureUrl` on purpose: the brief's own first URL
+      // still means "copy this site" and still feeds the outline capture, while
+      // this one means only "move like this". Merging them would make liking a
+      // page's movement inherit its headings and its palette.
+      //
+      // IT CANNOT REFUSE A SUBMISSION EITHER WAY. `POST /api/runs` reads the body
+      // by named key and rejects nothing unrecognised (`http.ts` validates
+      // `ticketText`, `modelId`, `deploy`, `designLock`, `captureUrl`,
+      // `references` and `documents`, and looks at nothing else), so this key is
+      // carried whether or not the reader for it is in the tree. What the run
+      // actually did with it is on the run's own event stream, not here.
+      //
       // THE ORDER OF `attachments` IS THE ORDER ON DISK. `http.ts:1105` names
       // the files `reference-1`, `reference-2`… by index, so the chip order the
       // owner sees is the sequence the builder reads them in.
@@ -341,6 +355,7 @@ export default function NewTicketPage(): ReactNode {
         designLock,
         ...(references.length === 0 ? {} : { references }),
         ...(documents.length === 0 ? {} : { documents }),
+        ...(motionUrl.trim() === "" ? {} : { motionUrl: motionUrl.trim() }),
       });
       router.push(`/runs/${encodeURIComponent(runId)}`);
     } catch (cause) {
@@ -550,19 +565,37 @@ export default function NewTicketPage(): ReactNode {
               * about being unreachable is what keeps the sentence true on those
               * paths.
               *
-              * "NEVER A COMPARISON" IS THE LOAD-BEARING HALF. The capture produces
-              * an outline that enters the ticket text and screenshots the builder
-              * can read; there is no visual diff anywhere in this system, and the
-              * sealed scorer runs with no network, so it never sees the live page
-              * at all. A form that offered "capture the site" without that clause
-              * would be read as promising fidelity grading.
+              * IT USED TO PROMISE "NEVER A COMPARISON AGAINST THE LIVE PAGE", AND
+              * THAT PROMISE IS THE ONE THING IT COULD NOT KEEP. The clause was
+              * written to stop "capture the site" being read as fidelity grading,
+              * and its reasoning — no visual diff, a sealed scorer with no network
+              * — is still true and is still the substance. What broke it is the
+              * motion reference above: a page is now read for numbers precisely so
+              * a build can be held to them, and a blanket "never compared" would be
+              * the form telling the owner the opposite of what he just asked for.
+              *
+              * SO THE SENTENCE STATES THE LIMIT INSTEAD OF THE PROMISE. "The live
+              * page is never opened again" is a fact about the seal that holds
+              * whatever gets compared later; it does not claim a comparison exists,
+              * which is the other lie available here — nothing in this tree grades
+              * a build against a captured reading, and a form that said so would be
+              * describing work that has not shipped.
+              *
+              * THE UNREACHABLE CLAUSE STAYS, and it is not decoration:
+              * `linksToAPage` is a presence test that cannot know whether the
+              * server will refuse the host or the page will time out, and both of
+              * those end with a `warn` on the run's stream rather than a refused
+              * submission. Without the clause the sentence is false on exactly
+              * those paths.
               */}
             {linksToAPage(ticketText) && (
               <p className="text-[11px] leading-snug text-ink-faint">
                 The first link in this brief is captured before the suite is written —
-                an outline into the ticket text, screenshots for the builder, and never
-                a comparison against the live page; if the page cannot be reached the
-                run says so and the ticket is your words alone.
+                an outline into the ticket text and screenshots for the builder. The
+                live page is never opened again: grading runs with no network, so
+                anything your build is measured against can only be what was taken now.
+                If the page cannot be reached the run says so and the ticket is your
+                words alone.
               </p>
             )}
           </div>
@@ -606,6 +639,68 @@ export default function NewTicketPage(): ReactNode {
             </div>
             <span className="numeric shrink-0">{trimmed.length} chars</span>
           </div>
+        </Panel>
+
+        {/*
+         * A LINK WHOSE MOTION IS WANTED AND WHOSE CONTENT IS NOT. The brief's own
+         * first URL still means "copy this site" and still feeds the outline
+         * capture disclosed above; this one means only "move like this". Keeping
+         * them apart is what lets the owner say he likes how something moves
+         * without inheriting its headings and its palette.
+         *
+         * IT SITS BELOW THE BRIEF AND THAT IS LOAD-BEARING, for the same reason
+         * the file input above carries its own ordering note:
+         * `ticket-references.browser.spec.ts` drives the brief as
+         * `getByRole("textbox").first()` and its two accelerator tests submit
+         * through it, so a URL field placed ABOVE the Ticket panel would silently
+         * retarget four existing specs at a control they were not written for.
+         * `ticket-motion.browser.spec.ts` asserts the ordering rather than leaving
+         * it to whoever next moves a panel.
+         *
+         * NO VALIDATION HERE, DELIBERATELY. The server owns the refusal list —
+         * `site-capture.ts` refuses localhost, private and link-local ranges — and
+         * a second copy on the client would drift from it. This field's job is to
+         * carry the string; what the run did with it is on the run's own event
+         * stream, which is the same rule every other disclosure on this form
+         * follows.
+         *
+         * THE COPY DESCRIBES A READING, NEVER A GRADE. Nothing in this system
+         * compares a build to the live page — the sealed scorer runs with no
+         * network — so the sentence says what is taken and how coarsely, and stops
+         * there.
+         */}
+        <Panel title="Motion reference">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[13px] font-medium text-ink">
+              A page whose animation you want matched
+            </span>
+            {/*
+              * `type="url"` FOR THE KEYBOARD, NOT FOR VALIDATION. It is not inside
+              * a field set this form validates and the submit path never reads
+              * `checkValidity`, so a malformed string still posts and the server
+              * still answers; what the type buys is the URL keyboard on a phone
+              * and the browser's own autofill behaviour.
+              */}
+            <input
+              type="url"
+              inputMode="url"
+              placeholder="https://…"
+              value={motionUrl}
+              onChange={(event) => setMotionUrl(event.target.value)}
+              // The bordered-field idiom this app already has, copied from the
+              // plan dialogue's answer box rather than invented: `bg-canvas`
+              // against the panel's `bg-surface` is what makes a field read as a
+              // field, and `focus:border-line-strong` is the focus affordance
+              // every other input on this side of the app uses.
+              className="w-full rounded-sm border border-line bg-canvas px-2 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-line-strong focus:outline-none"
+            />
+          </label>
+          <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
+            Read once when the ticket is submitted, by opening the page and watching it
+            move. Only the motion is taken — not the words, the layout or the colours.
+            Durations are rounded, because two readings of the same page never agree
+            exactly.
+          </p>
         </Panel>
 
         {/*
