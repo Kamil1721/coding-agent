@@ -708,7 +708,7 @@ function foldLogStages(state: GraphState, text: string, at: string | null): Grap
     // grey. Pending rows for work nobody is doing are the same lie as a running
     // one, drawn in a quieter colour.
     next = dropStages(next, ["capture", "author", "audit"]);
-    next = settleStage(next, "freeze", "done", text, at, "Acceptance suite");
+    next = settleStage(next, "freeze", "done", text, at, "Tests reused");
   } else if (CAPTURED.test(text)) {
     next = settleStage(next, "capture", "done", text, at);
   } else if (NO_CAPTURE.test(text)) {
@@ -729,7 +729,7 @@ function foldLogStages(state: GraphState, text: string, at: string | null): Grap
             next,
             "author",
             "running",
-            "Writing the held-out acceptance suite from the ticket and the capture.",
+            "Writing the tests from your ticket, before any code exists.",
             at,
           );
   } else if (PLAN_OVER.test(text)) {

@@ -1039,6 +1039,29 @@ test("COPY: no seat jargon reaches a string the owner reads", () => {
       seen.push(stage.label, stage.detail);
     }
   }
+
+  /*
+   * THE RUNNING SENTENCES TOO, NOT ONLY THE PENDING ONES. The first version of
+   * this test folded phase events alone and passed while the card on screen read
+   * "Writing the held-out acceptance suite from the ticket and the capture" —
+   * a literal this file writes on a log match, which the owner could see and the
+   * test could not. Driving the log line is what closes that.
+   *
+   * SCOPED TO STRINGS THIS MODULE AUTHORS. Several branches in `foldLogStages`
+   * pass the server's own log text straight through as the detail (`CAPTURED`,
+   * `SPEC_TOKENS`, `SEALED`), and those sentences still say "sealed suite … frozen
+   * with N criteria" because they are written in `orchestrator.ts` and matched
+   * here by regex — renaming them means moving the regexes at the same time.
+   * That is a real remaining source of jargon on screen and it is NOT covered
+   * below; asserting on it now would fail on copy this change does not touch.
+   */
+  for (const stage of foldGraphAll([
+    { type: "phase", phase: "spec" },
+    { type: "log", level: "info", text: "authoring the held-out acceptance suite from the ticket" },
+  ]).stages ?? []) {
+    seen.push(stage.label, stage.detail);
+  }
+
   assert.ok(seen.length > 0, "folded no stages at all, so this test would pass vacuously");
   for (const text of seen) {
     for (const pattern of banned) {
