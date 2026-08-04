@@ -153,51 +153,71 @@ const MIN_ZOOM = 0.12;
 const MAX_ZOOM = 1.5;
 
 /**
- * THE FIT'S PADDING IS ASYMMETRIC, AND THAT IS THE WHOLE TRICK.
+ * THE FIT'S PADDING IS ASYMMETRIC WHEN SOMETHING FLOATS, AND THAT IS THE TRICK.
  *
- * A symmetric 8% fit frames the graph inside the PANE, and the pane is not what
- * the reader can see: the run chip and any notice float over its top-left corner,
- * and the legend over its bottom edge. Measured with a symmetric fit, the session
- * column — the root of the flow, the card everything else hangs off — landed
- * squarely underneath the design-lock panel and was invisible on the one run this
- * redesign was built against. "Fit to view" has to mean fit to what is VISIBLE.
+ * A symmetric 8% fit frames the graph inside the PANE, and the pane is not always
+ * what the reader can see: a notice floats over its top-left corner and the legend
+ * over its bottom edge. Measured with a symmetric fit, the session column — the
+ * root of the flow, the card everything else hangs off — landed squarely
+ * underneath the design-lock panel and was invisible on the one run this redesign
+ * was built against. "Fit to view" has to mean fit to what is VISIBLE.
  *
- * So the left reservation is the HUD's own width plus a gutter, the bottom clears
- * the legend and the zoom controls, and below 900px — where the HUD is as wide as
- * the pane and cannot be flanked — the reservation moves to the top instead.
+ * So the left reservation is the floating stack's own width plus a gutter, the
+ * bottom clears the legend and the zoom controls, and below 900px — where the
+ * stack is as wide as the pane and cannot be flanked — the reservation moves to
+ * the top instead. THE RAIL AND ITS PANEL NEED NO RESERVATION AT ALL: they are
+ * layout siblings of this component, so the pane it measures is already the space
+ * left over, and opening a panel resizes the pane rather than covering it.
  *
  * `maxZoom: 1` stops a two-node run being blown up to 150%: cards are designed at
  * 1 and a magnified 268px card looks like a mistake.
  */
 /*
- * 360 -> 400 ON 2026-08-04, and the dock's own `w-[min(…)]` moved with it in the
- * same commit. The left dock now carries the pre-build panel — a five-row list
- * with a sentence per row — and 40px is the difference between two-line and
- * three-line wraps on every one of them. It is the one structural number this
- * redesign moved; `HUD_RESERVE` below is built from it, so the fit follows.
+ * 360 -> 400 ON 2026-08-04, and the floating stack's own `w-[min(…)]` moves with
+ * it: the stack carries the pre-build panel — a five-row list with a sentence per
+ * row — and 40px is the difference between two-line and three-line wraps on every
+ * one of them. `NOTICE_RESERVE` below is built from it, so the fit follows.
+ *
+ * `HUD_WIDTH` WAS THE OLD NAME AND THERE IS NO HUD ANY MORE — 2026-08-04. The
+ * always-visible dock (run chip, chat button, notices, dialogue panels) is
+ * replaced by the left icon rail, which is a LAYOUT SIBLING of this canvas and is
+ * therefore already subtracted from the pane this component measures. What is
+ * still drawn OVER the graph is the notice stack of `runs/[runId]/page.tsx` — the
+ * "this run needs you now" surfaces, which may not go behind an icon — so the
+ * reservation is named for those. The number did not change; only what it is a
+ * reservation FOR.
  */
-const HUD_WIDTH = 400;
+const NOTICE_WIDTH = 400;
 const WIDE_ENOUGH_TO_FLANK = 900;
 
 /**
- * The HUD's reservation, as a `PaddingWithUnit`.
+ * The floating notice stack's reservation, as a `PaddingWithUnit`.
  *
  * The assertion is here rather than at the use site because React Flow types
  * padding as the template literal `` `${number}${PaddingUnit}` ``, and a template
- * string built from `String(360 + 28)` widens to `` `${string}px` `` — which is
+ * string built from `String(400 + 28)` widens to `` `${string}px` `` — which is
  * the same string and a different type. Written out so the arithmetic stays next
- * to `HUD_WIDTH` instead of becoming a second magic number.
+ * to `NOTICE_WIDTH` instead of becoming a second magic number.
  */
-const HUD_RESERVE = `${HUD_WIDTH + 28}px` as `${number}px`;
+const NOTICE_RESERVE = `${NOTICE_WIDTH + 28}px` as `${number}px`;
 
-function fitOptionsFor(paneWidth: number, hasHud: boolean) {
-  if (!hasHud) {
+/**
+ * `hasHud` BECAME `hasNotice`, and the `false` branch became THE COMMON CASE.
+ *
+ * The old dock rendered on every run, so the asymmetric reservation was what the
+ * fit almost always used. The rail is not drawn over the graph at all, so most
+ * runs now take the plain 8% fit with the graph centred in whatever the panel
+ * left of the pane — and only a run that is showing a notice, or the pre-build
+ * panel, reserves the left third.
+ */
+function fitOptionsFor(paneWidth: number, hasNotice: boolean) {
+  if (!hasNotice) {
     return { padding: 0.08, maxZoom: 1, minZoom: MIN_ZOOM } as const;
   }
   if (paneWidth >= WIDE_ENOUGH_TO_FLANK) {
     return {
       padding: {
-        left: HUD_RESERVE,
+        left: NOTICE_RESERVE,
         right: "28px",
         top: "28px",
         bottom: "76px",
@@ -206,6 +226,12 @@ function fitOptionsFor(paneWidth: number, hasHud: boolean) {
       minZoom: MIN_ZOOM,
     } as const;
   }
+  /*
+   * Narrow AND a notice is up: the stack spans most of the pane, so the room is
+   * reserved ABOVE rather than beside. `top: 150px` and the 16px sides are kept
+   * from the old dock branch unchanged — a notice is the same height class the
+   * dock's first card was.
+   */
   return {
     padding: { left: "16px", right: "16px", top: "150px", bottom: "76px" },
     maxZoom: 1,
@@ -592,8 +618,22 @@ export interface CanvasProps {
   readonly onSelect: (nodeId: string | null) => void;
   readonly showAmbient: boolean;
   readonly onShowAmbient: (next: boolean) => void;
-  /** The run-level affordance. Rendered top-left, over the canvas. */
-  readonly hud?: ReactNode;
+  /**
+   * The floating notice stack. Rendered top-left, OVER the canvas.
+   *
+   * `hud` WAS THE OLD NAME AND THE OLD CONTENTS — 2026-08-04. It carried the run
+   * chip, a chat button, the notices and whatever dialogue panel the run's state
+   * added: a permanent column down the left of the graph. All of that is now the
+   * left icon rail and its one panel, which are layout SIBLINGS of this component
+   * and never overlap it.
+   *
+   * What is left here is the category that cannot go behind an icon: a run that is
+   * STOPPED and waiting on the reader. A notice behind an icon is a notice that
+   * does not fire. `undefined` — never an empty fragment — when there is nothing
+   * to show, because `hasNotice` is derived from exactly that and a fragment that
+   * renders nothing would still reserve 428px of the fit on every run.
+   */
+  readonly notices?: ReactNode;
   /**
    * True while the run can still produce agents.
    *
@@ -710,7 +750,7 @@ function CanvasInner({
   onSelect,
   showAmbient,
   onShowAmbient,
-  hud,
+  notices,
   rightInset: requestedInset = 0,
   runIsActive = false,
   latestActivity = null,
@@ -1237,7 +1277,7 @@ function CanvasInner({
     viewAdjusted.current = false;
     setMoved(0);
     setLayoutEpoch((previous) => previous + 1);
-    void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, hudRef.current));
+    void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, noticeRef.current));
   }, [flow]);
 
   // The lane comes first when the run has one and no agents yet: on a run parked
@@ -1501,7 +1541,7 @@ function CanvasInner({
    * READ THROUGH REFS, AND THAT IS NOT A STYLE CHOICE.
    *
    * Both of these were dependencies of the fit effect below, and both change on
-   * renders that have nothing to do with fitting: `hud` is a fresh JSX element
+   * renders that have nothing to do with fitting: `notices` is a fresh JSX element
    * every time the page re-renders, and the page re-renders once a second because
    * the run clock ticks. The effect then re-ran once a second, returned early on
    * `hasFitted`, and its CLEANUP had already cancelled the sweep's timeout — so
@@ -1515,8 +1555,8 @@ function CanvasInner({
    * WHETHER to fit, and the sweep's timer is its own effect keyed on the flag it
    * clears.
    */
-  const hudRef = useRef(hud !== undefined);
-  hudRef.current = hud !== undefined;
+  const noticeRef = useRef(notices !== undefined);
+  noticeRef.current = notices !== undefined;
   const maxDepthRef = useRef(maxDepth);
   maxDepthRef.current = maxDepth;
 
@@ -1543,7 +1583,7 @@ function CanvasInner({
     if (drawnCount === 0) return;
     hasFitted.current = true;
 
-    void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, hudRef.current));
+    void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, noticeRef.current));
 
     /*
      * THE ARRIVAL SWEEP. One pulse down every connector, staggered by its depth
@@ -1614,7 +1654,7 @@ function CanvasInner({
         return;
       }
       last = next;
-      void flow.fitView(fitOptionsFor(next.width, hudRef.current));
+      void flow.fitView(fitOptionsFor(next.width, noticeRef.current));
     });
 
     observer.observe(element);
@@ -1882,10 +1922,21 @@ function CanvasInner({
         />
       </ReactFlow>
 
-      {/* The run-level affordance. Top-left, over the flow, never re-parenting it. */}
-      {hud !== undefined && (
-        <div className="pointer-events-none absolute left-3 top-3 z-10 flex max-w-[min(560px,calc(100%-140px))] flex-col gap-2">
-          {hud}
+      {/*
+        * THE FLOATING STACK. Top-left, over the flow, never re-parenting it.
+        *
+        * `left-3` AND NOT `left-[60px]`: this element is inside the canvas's own
+        * pane, and the pane already starts after the rail and after any open panel
+        * because both are flex siblings of it. Offsetting for the rail here would
+        * clear it twice.
+        *
+        * The width matches `NOTICE_WIDTH` above, which is what the fit reserves —
+        * a stack wider than the reservation covers cards the fit believed were
+        * visible.
+        */}
+      {notices !== undefined && (
+        <div className="pointer-events-none absolute left-3 top-3 z-10 flex w-[min(400px,calc(100%-24px))] flex-col gap-2">
+          {notices}
         </div>
       )}
 

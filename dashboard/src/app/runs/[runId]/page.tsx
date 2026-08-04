@@ -100,7 +100,13 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { DesignLockPanel } from "@/components/run/design-lock";
 import { PlanDialoguePanel } from "@/components/run/plan-dialogue";
@@ -113,13 +119,15 @@ import {
   RateLimitNotice,
 } from "@/components/run/notices";
 import { OrchestrationCanvas } from "@/components/canvas/orchestration-canvas";
-import { RunHud } from "@/components/canvas/run-hud";
+import { RAIL_LABEL, RunRail, type RailPanelId } from "@/components/canvas/rail";
 import {
+  ActivityPanel,
   DetailSheet,
-  RunSheet,
-  type RunSheetTab,
+  FilesPanel,
+  OverviewPanel,
+  ResultPanel,
 } from "@/components/canvas/sheet";
-import { Button, Notice, Panel, Skeleton, cx } from "@/components/ui";
+import { Notice, Panel, Skeleton, cx } from "@/components/ui";
 import {
   ApiError,
   cancelRun,
@@ -222,8 +230,36 @@ export default function RunPage(): ReactNode {
   const [actionError, setActionError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showAmbient, setShowAmbient] = useState(false);
-  const [runSheetOpen, setRunSheetOpen] = useState(false);
-  const [runSheetTab, setRunSheetTab] = useState<RunSheetTab>("ticket");
+  /**
+   * WHICH RAIL PANEL THE READER HAS CHOSEN — `undefined` until he chooses one.
+   *
+   * THREE VALUES, NOT TWO, and the third is what makes the auto-open below a
+   * derivation rather than an effect: `undefined` means "nobody has picked yet",
+   * `null` means "he closed it", and an id means he opened that one. Without the
+   * distinction, a run whose dialogue arrives over a fetch could not be told from
+   * a run whose panel the reader deliberately shut a moment earlier.
+   */
+  const [chosenPanel, setChosenPanel] = useState<RailPanelId | null | undefined>(
+    undefined,
+  );
+
+  /**
+   * HAS THE CHAT EVER BEEN OPENED — the flag that keeps it mounted afterwards.
+   *
+   * The chat has to stay mounted once it is open, because the composer's draft
+   * lives in `OrchestratorChat`'s own state and unmounting throws a half-typed
+   * instruction away. Mounting it from the START would do the same job and costs
+   * something real that was measured rather than guessed: the transcript's own
+   * rows are in the DOM, `display: none` or not, so a `getByText` for a question
+   * the plan panel is showing matched THREE elements — the panel's card and the
+   * two chat rows the seat posted it in. Locators match hidden nodes; only
+   * assertions filter them.
+   *
+   * Deferring the mount to the first open costs nothing a reader can notice — a
+   * draft cannot exist before the composer does — and a reader who never opens the
+   * chat gets no second copy of the transcript on the page at all.
+   */
+  const [chatMounted, setChatMounted] = useState(false);
 
   /**
    * The pre-build panel is open on the left dock.
@@ -432,6 +468,56 @@ export default function RunPage(): ReactNode {
     run.designLock !== null &&
     designLockPhase(run.status, run.designLock) === "pending";
 
+  /**
+   * IS THERE A QUESTION SURFACE AT ALL, and is the run STOPPED on one right now.
+   *
+   * Derived above the early returns because the auto-open effect below is a hook.
+   * `hasLockRecord` is deliberately "there is a design lock of any phase", not
+   * "there is a pending one": a settled lock is the RECORD of a choice the owner
+   * made, and this file's header has always said it stays on screen without a
+   * click in all four of the shapes `RunDetail.designLock` arrives in.
+   */
+  const hasLockRecord = run !== undefined && run.designLock !== null;
+  const hasQuestions = planDialogue !== null || hasLockRecord;
+
+  /**
+   * WHICH PANEL IS ACTUALLY OPEN — DERIVED, never set from an effect.
+   *
+   * QUESTIONS OPENS BY ITSELF WHEN THE RUN IS WAITING ON ONE, AND THAT IS A HARD
+   * REQUIREMENT. The reason is already written into this file, at the pre-build
+   * panel below: "A Plan panel that covered a plan park would mean clicking a card
+   * on the canvas costs the owner the only control that can un-stick his run."
+   * Behind an icon with no auto-open, that control is one click away from a reader
+   * who does not know the icon exists — the same failure by a quieter mechanism.
+   *
+   * IT IS A DERIVATION AND NOT AN EFFECT, which is worth the extra state value:
+   * the dialogue arrives over a FETCH, so an effect would have to fire on the
+   * second render and would then be a `setState` inside an effect — a cascading
+   * render the lint rule refuses, and a race with the reader's own first click.
+   * Reading it during render means the panel is correct on the first paint after
+   * the transcript lands, and the moment the reader picks anything his choice wins
+   * for the rest of the session.
+   *
+   * OVERVIEW IS THE FALLBACK, not `null`: a run view that opens as a bare canvas
+   * does not say which run it is, and the run chip's status was the one thing that
+   * used to be visible without asking. Closing it is one click, and the status
+   * survives on the Overview icon as a dot either way.
+   *
+   * IT ALSO OPENS FOR A SETTLED DESIGN LOCK, and that is a DEVIATION from the rail
+   * spec, made because the code says otherwise and the code is tested. The spec
+   * auto-opens only for a PENDING lock; this file's header records that the lock
+   * "stays docked in its settled phases too … `design-lock.browser.spec.ts`
+   * asserts the panel is visible without a click in all four of the shapes
+   * `RunDetail.designLock` arrives in". A pending-only rule would silently delete
+   * that property for three of the four.
+   */
+  const openPanel: RailPanelId | null =
+    chosenPanel !== undefined
+      ? chosenPanel
+      : hasQuestions && (planAnswerable || hasLockRecord)
+        ? "questions"
+        : "overview";
+
   /*
    * ONE POLL WHILE THE DESIGN PARK IS OPEN, and it is the design dialogue that
    * needs it rather than the cards.
@@ -534,45 +620,30 @@ export default function RunPage(): ReactNode {
   );
 
   /*
-   * FETCH WHEN THE CHAT TAB IS BROUGHT TO THE FRONT, rather than on mount or on
-   * selection. REWRITTEN 2026-07-30 WITH THE MOVE, because the reason it used to
-   * give stopped being true.
+   * FETCH WHEN THE CHAT PANEL IS BROUGHT TO THE FRONT, rather than on mount or on
+   * selection. REWRITTEN 2026-07-30 with the chat's move off the node, and again
+   * 2026-08-04 with the rail; both times because the reason it used to give
+   * stopped being true.
    *
-   * It said "fetch on select … the chat only exists inside the detail sheet", and
-   * hung `loadMessages()` off node selection. The chat is now a run-sheet tab that
-   * a node has nothing to do with, so selecting a card pulls no transcript.
-   *
-   * EXACTLY THREE PATHS FETCH, and `openRunSheet` — directly below, and the most
-   * frequent of these four callbacks — is deliberately NOT one of them: it opens
-   * the sheet on Ticket, where a transcript is not on screen. Reaching the chat
-   * from there goes through `changeRunSheetTab`, which does fetch. The three are
-   * `openChat`, `changeRunSheetTab("chat")` and `onSendMessage` above, which
-   * together are every moment the transcript is both visible and possibly stale.
-   * Re-fetching on them is what keeps `deliveredAt` current without a timer, and a
-   * run whose chat is never opened still pulls nothing.
+   * The first version said "fetch on select … the chat only exists inside the
+   * detail sheet" and hung `loadMessages()` off node selection. The second listed
+   * three tab callbacks. There is now ONE entry point — this one — and it fetches
+   * only for the chat: opening Files or Result puts no transcript on screen, so
+   * pulling one there would be a request for nobody. Together with `onSendMessage`
+   * above and the mount fetch below, that is every moment the transcript is both
+   * visible and possibly stale, which is what keeps `deliveredAt` current without
+   * a timer.
    */
-  const openRunSheet = useCallback((): void => {
-    setRunSheetTab("ticket");
-    setRunSheetOpen(true);
-  }, []);
-
-  const openChat = useCallback((): void => {
-    setRunSheetTab("chat");
-    setRunSheetOpen(true);
-    loadMessages();
-  }, [loadMessages]);
-
-  const changeRunSheetTab = useCallback(
-    (next: RunSheetTab): void => {
-      setRunSheetTab(next);
-      if (next === "chat") loadMessages();
+  const openRailPanel = useCallback(
+    (next: RailPanelId | null): void => {
+      setChosenPanel(next);
+      if (next === "chat") {
+        setChatMounted(true);
+        loadMessages();
+      }
     },
     [loadMessages],
   );
-
-  const closeRunSheet = useCallback((): void => {
-    setRunSheetOpen(false);
-  }, []);
 
   if (runId === null) {
     return (
@@ -623,420 +694,369 @@ export default function RunPage(): ReactNode {
     run.designLock === null ? null : designLockPhase(run.status, run.designLock);
   const lockIsBlocking = lockPhase === "pending" || lockPhase === "closing";
 
+  /*
+   * THE FLOATING STACK — the surfaces that may NOT go behind an icon.
+   *
+   * WHAT THIS WAS. Until 2026-08-04 the run view carried a permanent dock down the
+   * left: the run chip, a `chat` button, any error, the rate-limit and
+   * awaiting-input notices, the plan dialogue and the design lock, stacked and
+   * always on screen. The owner's verdict was "but this looks terrible … I suggest
+   * designing some icons … that then will sit on the left side of the canva and
+   * when I click them they expand into different things." So the chip, the chat
+   * button, the dialogue and the lock all moved behind the rail's icons.
+   *
+   * THESE THREE DID NOT, AND THE LINE IS NOT ARBITRARY: a notice is the run saying
+   * it is STOPPED and needs the reader NOW. A notice behind an icon is a notice
+   * that does not fire. They float over the canvas instead, which is why the fit
+   * still reserves room for them (`orchestration-canvas.tsx`, `NOTICE_RESERVE`).
+   *
+   * `PreBuildPanel` FLOATS TOO, and that is where the owner put it: "when you
+   * click on the plan node a menu on the left side of the screen comes up". It is
+   * not a rail entry because it is not a run-level surface — it is the thing you
+   * clicked, and it appears and disappears with the click. What it USED to do was
+   * swap itself in where `RunHud` was; that swap is gone with `RunHud`, so it is
+   * now simply a panel that opens rather than one surface standing in for another.
+   *
+   * `max-h-[88vh]` — MEASURED 2026-08-04, AND IT MOVED HERE WITH THE STACK RATHER
+   * THAN BEING DELETED WITH THE DOCK. On the plan fixture with the pre-build panel
+   * open the old dock came back 1198px tall with `scrollHeight === clientHeight`,
+   * and the plan park's own send button sat 300px below the fold of a page that is
+   * `overflow-hidden`: nothing scrolled, because the percentage caps that were
+   * there before it resolved to `none` against an indefinite height. The control
+   * was not hidden, it was gone. A `vh` cap is the one that binds, and it still
+   * has to bind here for the same reason — this stack is still absolutely
+   * positioned inside a pane whose height is indefinite to a percentage. The
+   * dialogue panels it used to cap are no longer in it; the pre-build panel and a
+   * stack of notices still are.
+   */
+  /**
+   * The pre-build panel is genuinely on screen — the flag AND something to show.
+   *
+   * Read twice: once to render it, and once by the page heading below, which has
+   * to stand down while this panel is up. `PreBuildPanel` renders an `h1` of its
+   * own carrying the same ticket label, and two `h1`s on one document is a defect
+   * `prebuild-lane.browser.spec.ts` measures directly.
+   */
+  const preBuildOpen = planPanelOpen && preBuildMembers.length > 0;
+
+  const floating: ReactNode[] = [];
+  if (preBuildOpen) {
+    /*
+     * `preBuildMembers` IS EMPTY FOR EVERY RUN WITH NO LANE — most of them, since
+     * `foldGraph` only projects stages from `phase` and `log` rows. The Plan card
+     * is not drawn for those runs either (`layout.ts`), so the panel is
+     * unreachable and nothing renders.
+     */
+    floating.push(
+      <PreBuildPanel
+        key="prebuild"
+        members={preBuildMembers}
+        runIsActive={!isTerminalStatus(run.status)}
+        ticketLabel={ticketLabel(run.ticketTitle)}
+        ticketTooltip={ticketTooltip(run.ticketTitle, run.ticketText)}
+        onClose={closePlanPanel}
+      />,
+    );
+  }
+  if (actionError !== null) {
+    floating.push(
+      <Notice key="action-error" tone="fail" title="That action did not go through">
+        <p>{actionError}</p>
+      </Notice>,
+    );
+  }
+  if (run.status === "rate_limited") {
+    floating.push(
+      <RateLimitNotice key="rate-limit" run={run} onResume={onResume} busy={busy} />,
+    );
+  }
+  /*
+   * THE THIRD KIND OF `awaiting_input`, AND IT IS SUPPRESSED FOR THE SAME REASON
+   * THE DESIGN PARK IS.
+   *
+   * `AwaitingInputNotice` says the two moves are resume and cancel, which is true
+   * of a run whose builder died with the server and false of a plan park: there
+   * the moves are ANSWER, say "you decide", or ask what it means — and a bodyless
+   * resume would close the dialogue with every open question recorded as an
+   * assumption. Leaving a generic "answer it first, then resume" notice directly
+   * above the surface that IS the answer is how an owner ends up resuming past his
+   * own questions.
+   *
+   * IT IS GATED ON THE DIALOGUE ACTUALLY EXISTING, NOT ON THE RUN BEING
+   * PLAN-PARKED, and those are different conditions on two real paths. The
+   * transcript arrives over a fetch, so on first paint there is no dialogue yet;
+   * and the orchestrator documents a window of its own — "Parking first leaves it
+   * parked with the questions missing from the chat, which the timer resolves on
+   * its own by expiring" — where `planDialogue` is null for the whole park. Gated
+   * on `planParked` alone, both of those show a run stopped on `awaiting input`
+   * with nothing on screen saying what it wants. Here the generic notice stands
+   * in, and its Resume really is the right move.
+   *
+   * IT IS STILL A FLOATING NOTICE AND NOT A PANEL, and the rail made that more
+   * important rather than less: this is precisely the state where the answer
+   * surface has NOT rendered, so an icon the reader has to know about would be the
+   * only thing between a stopped run and a reader who cannot tell why.
+   */
+  if (
+    run.status === "awaiting_input" &&
+    lockPhase !== "pending" &&
+    !planAnswerable
+  ) {
+    floating.push(
+      <AwaitingInputNotice
+        key="awaiting-input"
+        onResume={onResume}
+        onCancel={onCancel}
+        busy={busy}
+      />,
+    );
+  }
+
+  /*
+   * `undefined`, NEVER AN EMPTY FRAGMENT. The canvas derives "is anything floating
+   * over the graph" from `notices !== undefined` and reserves 428px of its fit for
+   * it; a fragment that renders nothing would take that reservation on every run
+   * and push the graph permanently right of centre.
+   */
+  const notices =
+    floating.length === 0 ? undefined : (
+      <div className="pointer-events-auto flex max-h-[88vh] w-full flex-col gap-2 overflow-y-auto">
+        {floating}
+      </div>
+    );
+
+  /*
+   * THE QUESTIONS PANEL — the plan dialogue and the design lock, together, because
+   * they are the same kind of thing: something the run stopped to ask.
+   *
+   * THE MEASURED HEIGHT CAPS ARE GONE FROM BOTH, and their removal is the point of
+   * the move rather than a regression. `max-h-[62vh]`/`max-h-[200px]` existed
+   * because these panels were docked OVER the graph: "docked unconstrained it came
+   * out 880px wide and taller than the pane, covering the entire graph on the one
+   * run this redesign was built against". Inside the rail's panel there is nothing
+   * to cover — the panel is a layout sibling of the canvas with its own
+   * `flex-1 min-h-0 overflow-y-auto` scroll — so a tall dialogue scrolls in its
+   * own column and the graph is never touched. The RINGS survive, because they
+   * were never about size: a decision the run is STOPPED on gets one and the
+   * settled record of one does not.
+   */
+  const questionsBody = (
+    <div className="space-y-3 p-3">
+      {planDialogue !== null && (
+        <div className={cx("rounded", planParked && "ring-2 ring-warn/40")}>
+          <PlanDialoguePanel
+            dialogue={planDialogue}
+            nowMs={nowMs}
+            onSend={onSendPlanReply}
+          />
+        </div>
+      )}
+
+      {lockPhase !== null && (
+        <div className={cx("rounded", lockIsBlocking && "ring-2 ring-accent/50")}>
+          <DesignLockPanel
+            run={run}
+            busy={busy}
+            nowMs={nowMs}
+            trace={trace}
+            onChoose={onChooseMockup}
+            onChooseDirection={onChooseDirection}
+            onSendRequest={onSendDesignRequest}
+            onRefresh={refresh}
+          />
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       className={cx(
         // `AppShell` gives this route a full-bleed `main` with no cap and no
         // padding (see `isFullBleed`), so there is nothing left to cancel and
         // nothing to subtract: fill the parent.
-        "relative h-full overflow-hidden border-y border-line bg-canvas",
+        //
+        // A FLEX ROW NOW: rail, then panel, then canvas. The panel is a SIBLING of
+        // the canvas rather than something over it, which is what makes opening it
+        // shrink the pane instead of hiding nodes — the canvas's own
+        // `ResizeObserver` then re-fits the graph to the space that is left.
+        "relative flex h-full overflow-hidden border-y border-line bg-canvas",
       )}
     >
-      <OrchestrationCanvas
-        graph={graph}
-        ready={graphReady}
-        selectedId={selectedId}
-        onSelect={setSelectedId}
-        showAmbient={showAmbient}
-        onShowAmbient={setShowAmbient}
+      {/*
+       * THE PAGE'S ONE HEADING, AND IT DOES NOT COME AND GO WITH A PANEL.
+       *
+       * `RunHud`'s `h1` used to be the run view's only top-level heading, and it
+       * lived inside a dock that a click could replace. A document whose title
+       * disappears when you open the file browser is a document with no title
+       * some of the time. It is visually hidden because the name is already on
+       * screen twice — in the Overview panel and on the browser tab — and a third
+       * copy in display type is what the owner asked to be cut.
+       *
+       * IT STANDS DOWN FOR THE PRE-BUILD PANEL, which renders an `h1` of its own
+       * with the same label — `RunHud`'s, inherited when that panel took over the
+       * chip's place in the dock. Two `h1`s is worse than one that moves, and the
+       * label is identical either way, so the document's title does not change.
+       */}
+      {!preBuildOpen && <h1 className="sr-only">{ticketLabel(run.ticketTitle)}</h1>}
+
+      <RunRail
+        open={openPanel}
+        onOpen={openRailPanel}
         /*
-         * `DetailSheet`'s own width — `w-[min(420px,100%)]` — and only while it is
-         * open. The canvas clamps this against its measured pane, because on a
-         * viewport narrower than 420px the sheet IS the pane and there is nowhere
-         * to pan a card to.
+         * THE BUTTON RENDERS WHEN THERE IS SOMETHING TO SHOW; the 44px slot is
+         * reserved either way so nothing below it moves as a run progresses.
          */
-        // An empty graph on a live run and on a dead one are the same value and
-        // different facts; only this page knows which.
-        runIsActive={!isTerminalStatus(run.status)}
-        planPanelOpen={planPanelOpen}
-        onPlanPanel={setPlanPanelOpen}
+        showQuestions={hasQuestions}
         /*
-         * THE ~80 MINUTES BEFORE ANY NODE EXISTS. Measured on the run that
-         * passed: the spec phase took 79.5 minutes of a 105-minute run, and for
-         * all of it the canvas was a static box that looked the same whether the
-         * run was working or dead. The trace is already streaming by then, so
-         * the newest line is a liveness signal that costs no new plumbing.
-         *
-         * `trace` is capped and append-only, so the last entry is the newest.
-         * `null` when nothing has arrived — the canvas renders nothing rather
-         * than an empty row implying a message that did not come.
+         * THE RUN'S STATUS, AS A DOT ON THE OVERVIEW ICON. This is the one piece of
+         * the old always-visible run chip that survives as chrome, so a rail with
+         * every panel closed still says how the run went.
          */
-        /*
-         * `specStages` IS NO LONGER PASSED — 2026-08-04, and the reason is a
-         * defect rather than a tidy-up.
-         *
-         * It was `specPipelineFrom(trace, run.phase, run.ticketText, …)`, and
-         * `trace` is the LIVE SSE sink: `use-run-stream.ts` never opens a socket
-         * for a terminal run, so the pre-build lane was empty on every run opened
-         * after it finished — which is most of the runs anyone looks at. The
-         * derivation also returned `[]` for every phase past `spec`, so the lane
-         * deleted itself at the build boundary.
-         *
-         * The canvas now reads `GraphState.stages`, folded by `foldGraph` from the
-         * same `phase` and `log` rows this page's `trace` is built from — but on
-         * the REST snapshot as well as the socket, which is what makes it survive a
-         * reload. Nothing has to be threaded through this component any more.
-         */
-        latestActivity={
-          trace.length === 0
-            ? null
-            : {
-                text: trace[trace.length - 1]?.text ?? "",
-                atMs: trace[trace.length - 1]?.atMs ?? Date.now(),
-              }
+        statusDot={
+          isTerminalStatus(run.status)
+            ? run.status === "passed"
+              ? "pass"
+              : "fail"
+            : run.status === "awaiting_input" || run.status === "rate_limited"
+              ? "warn"
+              : "live"
         }
-        rightInset={selected === null ? 0 : 420}
-        hud={
-          /*
-           * THE DOCK IS CAPPED IN BOTH AXES, and both caps were added after
-           * looking at it.
-           *
-           * Width is the same number the canvas's fit reserves on the left (now
-           * 400, see below), so the two cannot disagree about how much room this
-           * takes. Height was written as 62% of the canvas with its own scroll: a
-           * run parked on a design choice has a panel taller than the pane, and
-           * unconstrained it covered the graph completely — which is the complaint
-           * this redesign exists to answer, reintroduced by the fix for it. THE
-           * PERCENTAGE NEVER APPLIED; it is `88vh` now, and the next two blocks are
-           * the measurement and the deletion.
-           *
-           * Below 900px there is no room to flank anything, so the fit reserves
-           * the TOP instead and this dock overlaps the graph. That is the honest
-           * outcome of a 375px canvas rather than a defect: the reader pans, and
-           * every card is still reachable from the keyboard without touching the
-           * pane at all.
-           *
-           * A `{/* … *\/}` COMMENT CANNOT GO HERE. `hud={…}` is an expression
-           * position, not a JSX children position, so a JSX comment there parses
-           * as an object literal followed by an element with no operator between
-           * them: "Expected '</', got 'ident'". It cost a whole screenshot pass.
-           */
-          /*
-           * `max-h-[40%]`/`62%` ARE INERT HERE AND HAVE ALWAYS BEEN — MEASURED
-           * 2026-08-02, and the comment above is corrected rather than deleted
-           * because the number in it was load-bearing in an argument.
-           *
-           * `OrchestrationCanvas` mounts this in `absolute left-3 top-3` with no
-           * height and no `bottom`, so the containing block's height is
-           * INDEFINITE and a percentage `max-height` resolves to `none`. Measured
-           * in the browser on the plan fixture at 900px: this element's height
-           * came back 1198.8px inside a 900px viewport, with `scrollHeight ===
-           * clientHeight` — so it neither capped nor scrolled, and the document
-           * did not scroll either. Anything past the fold was unreachable.
-           *
-           * WHAT ACTUALLY KEPT THE DESIGN LOCK OFF THE GRAPH is the PIXEL cap on
-           * its own wrapper below (`max-h-[200px]`/`380px`), which resolves
-           * against nothing. Every panel docked here needs one of its own; the
-           * plan panel uses a `vh` cap for the same reason.
-           *
-           * BOTH PERCENTAGE CLASSES ARE NOW DELETED — 2026-08-04 — and the
-           * sentence that used to sit here ("the classes are left as they are:
-           * they cost nothing, and removing them changes the box for every other
-           * run in a way this pass did not measure") is what changed. The
-           * measurement above is what licenses the deletion: a declaration that
-           * resolves to `none` describes no box, so removing it changes none. The
-           * `min-[900px]` variant went with it, and the cap below is one number at
-           * every width.
-           */
-          /*
-           * `max-h-[88vh]` — 2026-08-04, THE FIRST CAP ON THIS DOCK THAT BINDS.
-           *
-           * MEASURED, on the plan fixture with the pre-build panel open: the dock
-           * came back 1198px tall with `scrollHeight === clientHeight`, and the
-           * plan park's own send button sat 300px below the fold of a page that is
-           * `overflow-hidden`. Nothing scrolled, because the percentages resolved
-           * to `none`. So the ONE argument this whole redesign rests on — "the
-           * panel does not replace the surface a stopped run is answered from" —
-           * was true about covering and false about reach. The control was not
-           * hidden. It was gone.
-           *
-           * WHAT IT DOES AND DOES NOT BUY, both looked at rather than assumed. The
-           * dock scrolls instead of running off the page, and every panel in it is
-           * reachable; `prebuild-lane.browser.spec.ts` asserts exactly that, with
-           * the mutation being this line reverted. It does NOT clear the canvas's
-           * zoom controls at the bottom-left: at an 800px viewport height the
-           * dock's lower content still sits over them. That is the same overlap the
-           * dock has always had at short heights, unchanged by this and not fixed
-           * by it.
-           *
-           * It is a cap on the DOCK, not on any panel in it: each panel keeps its
-           * own measured cap, so a run whose dock already fitted is untouched.
-           */
-          /*
-           * 360 -> 400 ON 2026-08-04, WITH `HUD_WIDTH` IN THE CANVAS, and the two
-           * numbers have to move together: the canvas reserves this much of its
-           * pane on the left when it fits the graph, so a dock wider than the
-           * reservation covers cards the fit believed were visible.
-           */
-          <div className="pointer-events-auto flex max-h-[88vh] w-[min(400px,calc(100vw-32px))] flex-col gap-2 overflow-y-auto">
-            {/*
-             * THE SWAP THE OWNER ASKED FOR, AND EXACTLY HOW FAR IT GOES.
-             *
-             * "When you click on the plan node a menu on the left side of the
-             * screen comes up … replacing this." What it replaces is the run chip
-             * and the chat button. It does NOT replace the notices,
-             * `PlanDialoguePanel` or `DesignLockPanel` below, and that limit is
-             * load-bearing rather than cautious: those two are the ANSWER surfaces
-             * for a run that is stopped waiting on him. A Plan panel that covered a
-             * plan park would mean clicking a card on the canvas costs the owner
-             * the only control that can un-stick his run. The note further down
-             * this file records what it cost the last time a generic notice sat
-             * where an answer surface belonged.
-             *
-             * `preBuildMembers` IS EMPTY FOR EVERY RUN WITH NO LANE — most of them,
-             * since `foldGraph` only projects stages from `phase` and `log` rows.
-             * The Plan card is not drawn for those runs either (`layout.ts`), so
-             * the panel is unreachable and the fallback is the chip.
-             */}
-            {planPanelOpen && preBuildMembers.length > 0 ? (
-              <PreBuildPanel
-                members={preBuildMembers}
-                runIsActive={!isTerminalStatus(run.status)}
-                ticketLabel={ticketLabel(run.ticketTitle)}
-                ticketTooltip={ticketTooltip(run.ticketTitle, run.ticketText)}
-                onClose={closePlanPanel}
-              />
-            ) : (
-              <>
-                <RunHud
-                  run={run}
-                  model={model}
-                  nowMs={nowMs}
-                  busy={busy}
-                  onCancel={onCancel}
-                  onResume={onResume}
-                  onOpenDetail={openRunSheet}
-                />
+        // Only while the run is actually stopped on the question. A settled
+        // dialogue is a record, and a record does not need attention.
+        questionsDot={planAnswerable || lockIsBlocking ? "warn" : null}
+        panelTitle={RAIL_LABEL[openPanel ?? "overview"]}
+        panelEyebrow="run"
+      >
+        {/*
+         * THE CHAT IS MOUNTED WHENEVER THE RUN VIEW IS, AND MERELY HIDDEN — the one
+         * place a panel body renders while it is not the open one, and it is bought
+         * with a specific defect it is worth paying for.
+         *
+         * The composer's draft text lives in `OrchestratorChat`'s own state, and
+         * that component has no `value`/`onChange` pair to lift it out through. The
+         * old sheet already kept the chat mounted across TAB changes for this
+         * reason and recorded what it did not survive: closing the sheet. A rail is
+         * worse — closing a panel unmounts it — so the chat is mounted at the run
+         * view's level instead and survives both. `hidden` is the HTML attribute,
+         * so this is `display: none`: out of the layout, out of the tab order, out
+         * of the accessibility tree, still mounted, draft intact.
+         *
+         * NOTHING ELSE IS WORTH IT. `CodeBrowser` in particular fetches on mount
+         * and must not, so Files renders only while Files is open.
+         *
+         * THE STATE-SPECIFIC SENTENCE ABOVE THE COMPOSER is the one thing the
+         * component cannot write for itself: `chatDeliveryNote` (top of this file)
+         * returns null for every state `OrchestratorChat`'s own copy already
+         * describes accurately, so this is usually just the composer.
+         */}
+        {chatMounted && (
+        <div hidden={openPanel !== "chat"}>
+          {deliveryNote !== null && (
+            <p className="border-b border-line bg-canvas/40 px-3 py-2 text-[11.5px] leading-relaxed text-ink-dim">
+              {deliveryNote}
+            </p>
+          )}
+          <OrchestratorChat
+            messages={messages}
+            runIsOver={isTerminalStatus(run.status)}
+            onSend={onSendMessage}
+          />
+        </div>
+        )}
 
-                {/*
-             * THE CHAT ENTRY POINT. Two things about it are load-bearing.
-             *
-             * IT IS DIRECTLY UNDER THE CHIP, ABOVE EVERY NOTICE. This dock is
-             * capped at `88vh` with its own scroll, and a parked run stacks a
-             * notice AND `DesignLockPanel` — five mockup cards — underneath. Any
-             * control placed after those is off the bottom of the dock in exactly
-             * the state where typing at the run matters most, which is how "i dont
-             * see any chat anywhere" happens a second time.
-             *
-             * IT IS NOT CONDITIONAL ON STATUS, unlike `RunHud`'s Cancel and Resume
-             * two lines above. Those are refused by the server in the states they
-             * are hidden in; this one is not. On a terminal run the composer
-             * renders itself disabled with the reason on it (`runIsOver`), which is
-             * a reader who learns what the chat is over a reader who never finds
-             * it.
-             *
-             * IT STILL CARRIES NO UNREAD COUNT, and the reason has changed rather
-             * than gone. The transcript IS fetched now — on mount, and on a timer
-             * while a plan park is open — so "we do not have the rows" is no
-             * longer the argument. What is missing is the other half: nothing
-             * records which rows this reader has seen, so any number here would
-             * be a count of messages, not of unread ones, and it would sit at a
-             * permanent non-zero on every run that ever spoke.
-             */}
-                <Button
-                  onClick={openChat}
-                  className="w-full justify-between"
-                  title="Send this run an instruction or a reference image. Whether it is delivered live or queued for the next prompt depends on the run's state; the panel says which, and every message carries its own delivery state."
-                >
-                  chat
-                  <span className="font-normal text-ink-faint">instruct · attach</span>
-                </Button>
-              </>
-            )}
-
-            {actionError !== null && (
-              <Notice tone="fail" title="That action did not go through">
-                <p>{actionError}</p>
-              </Notice>
-            )}
-
-            {run.status === "rate_limited" && (
-              <RateLimitNotice run={run} onResume={onResume} busy={busy} />
-            )}
-            {/*
-             * THE THIRD KIND OF `awaiting_input`, AND IT IS SUPPRESSED FOR THE
-             * SAME REASON THE DESIGN PARK IS.
-             *
-             * `AwaitingInputNotice` says the two moves are resume and cancel,
-             * which is true of a run whose builder died with the server and false
-             * of a plan park: there the moves are ANSWER, say "you decide", or
-             * ask what it means — and a bodyless resume would close the dialogue
-             * with every open question recorded as an assumption. Leaving a
-             * generic "answer it first, then resume" notice directly above the
-             * panel that IS the answer surface is how an owner ends up resuming
-             * past his own questions.
-             *
-             * IT IS GATED ON THE PANEL ACTUALLY RENDERING, NOT ON THE RUN BEING
-             * PLAN-PARKED, and those are different conditions on two real paths.
-             * The transcript arrives over a fetch, so on first paint there is no
-             * dialogue yet; and the orchestrator documents a window of its own —
-             * "Parking first leaves it parked with the questions missing from the
-             * chat, which the timer resolves on its own by expiring" — where
-             * `planDialogue` is null for the whole park. Gated on `planParked`
-             * alone, both of those show a run stopped on `awaiting input` with
-             * nothing on screen saying what it wants. Here the generic notice
-             * stands in, and its Resume really is the right move: on a plan park
-             * that closes the dialogue and records the assumptions (see the
-             * tooltip in `run-hud.tsx`).
-             */}
-            {run.status === "awaiting_input" &&
-              lockPhase !== "pending" &&
-              !planAnswerable && (
-              <AwaitingInputNotice onResume={onResume} onCancel={onCancel} busy={busy} />
-            )}
-
-            {planDialogue !== null && (
-              <div
-                className={cx(
-                  "overflow-y-auto rounded",
-                  /*
-                   * THE SAME TWO WEIGHTS `DesignLockPanel` GETS, and the same
-                   * measured cap: a decision the run is STOPPED on gets room and a
-                   * ring, the settled record of one gets less and dims. The dock
-                   * is capped at `88vh` with its own scroll, so an open
-                   * dialogue that grows past the cap scrolls inside this box and
-                   * the graph stays visible behind it.
-                   */
-                  /*
-                   * A `vh` CAP, NOT A PERCENTAGE — see the block on the dock
-                   * above, where the percentage was measured inert. 62vh leaves
-                   * the run chip, the chat button and the canvas controls at the
-                   * bottom-left clear at 900px, and it is the panel that
-                   * scrolls rather than the dock.
-                   *
-                   * An open park gets more room than a settled record for the
-                   * same reason `DesignLockPanel` does: a decision the run is
-                   * stopped on is the only thing on the screen that matters.
-                   */
-                  planParked
-                    ? "max-h-[62vh] ring-2 ring-warn/40"
-                    : "max-h-[200px] opacity-90 min-[900px]:max-h-[300px]",
-                )}
-              >
-                <PlanDialoguePanel
-                  dialogue={planDialogue}
-                  nowMs={nowMs}
-                  onSend={onSendPlanReply}
-                />
-              </div>
-            )}
-
-            {lockPhase !== null && (
-              <div
-                className={cx(
-                  "overflow-y-auto rounded",
-                  /*
-                   * CONSTRAINED, AND MEASURED BEFORE IT WAS.
-                   *
-                   * `DesignLockPanel` renders five mockup cards at full size. Docked
-                   * unconstrained it came out 880px wide and taller than the pane,
-                   * covering the entire graph on the one run this redesign was built
-                   * against — the exact complaint the redesign exists to answer,
-                   * reintroduced by the fix for it. It keeps its own internal scroll
-                   * instead: every element the four `design-lock.browser.spec.ts`
-                   * shapes assert on is still rendered and still visible (Playwright's
-                   * visibility is a non-empty box, not in-viewport), and the reader
-                   * gets a panel rather than a takeover.
-                   *
-                   * A decision the run is STOPPED on gets more room and a ring; the
-                   * same panel as a record gets less. Same panel, two weights.
-                   */
-                  lockIsBlocking
-                    ? /*
-                       * A `vh` CAP ON THE BLOCKING WEIGHT TOO, ADDED 2026-08-03 —
-                       * and for the same measured reason the plan panel has one.
-                       * A canvassed park stacks three directions of full-aspect
-                       * stills in this 360px column; uncapped, that panel is
-                       * thousands of pixels tall and simply runs off the bottom of
-                       * the viewport, because the percentage caps on the dock
-                       * itself resolve to `none` against an indefinite height (see
-                       * the block above). The comparison layer is where the deck is
-                       * meant to be read; this keeps the dock's copy of it a panel
-                       * rather than a takeover.
-                       */
-                      "max-h-[62vh] ring-2 ring-accent/50"
-                    /*
-                     * RAISED 132/200 → 200/380 ON 2026-07-30, because the cap was
-                     * doing two jobs and only one of them was wanted.
-                     *
-                     * It exists so a SETTLED record cannot cover the graph, which is
-                     * right. But 200px also clipped `ui-designer`'s 480-character
-                     * reason mid-word, and clipping is what made it read as a wall of
-                     * text rather than a paragraph. The reason is now clamped to three
-                     * lines with its own unfold (`ReasonBlock`), so the panel is short
-                     * BY DEFAULT and this cap only has to be big enough for the
-                     * unfolded state to be readable instead of a 200px peephole.
-                     *
-                     * Still capped, still `overflow-y-auto`: the graph stays visible.
-                     */
-                    : "max-h-[200px] opacity-90 min-[900px]:max-h-[380px]",
-                )}
-              >
-                <DesignLockPanel
-                  run={run}
-                  busy={busy}
-                  nowMs={nowMs}
-                  trace={trace}
-                  onChoose={onChooseMockup}
-                  onChooseDirection={onChooseDirection}
-                  onSendRequest={onSendDesignRequest}
-                  onRefresh={refresh}
-                />
-              </div>
-            )}
-          </div>
-        }
-      />
+        {openPanel === "overview" && (
+          <OverviewPanel
+            run={run}
+            model={model}
+            nowMs={nowMs}
+            busy={busy}
+            onCancel={onCancel}
+            onResume={onResume}
+            graph={graph}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            showAmbient={showAmbient}
+          />
+        )}
+        {openPanel === "questions" && questionsBody}
+        {openPanel === "files" && <FilesPanel run={run} />}
+        {openPanel === "result" && <ResultPanel run={run} />}
+        {openPanel === "activity" && (
+          <ActivityPanel trace={trace} stream={stream} onReconnect={reconnect} />
+        )}
+      </RunRail>
 
       {/*
-       * NO `chat` PROP ANY MORE — see this file's header and `DetailSheet`'s. The
-       * composer was gated here on `selected.parent === null`; it is now a tab on
-       * the run sheet, which is the only reason a run's first 80 minutes have a
-       * chat at all. Nothing about a NODE decides anything about the chat now.
+       * THE CANVAS IS THE MAIN OBJECT ON THIS SCREEN and it gets everything the
+       * rail and the panel leave. `min-w-0` is load-bearing in a flex row: without
+       * it a flex item refuses to shrink below its content's intrinsic width, and
+       * React Flow's pane would push the panel off the screen instead of yielding.
        */}
-      {selected !== null && <DetailSheet node={selected} onClose={clearSelection} />}
-
-      {runSheetOpen && (
-        <RunSheet
-          run={run}
-          model={model}
+      <div className="relative min-w-0 flex-1">
+        <OrchestrationCanvas
           graph={graph}
-          trace={trace}
-          stream={stream}
-          onReconnect={reconnect}
+          ready={graphReady}
           selectedId={selectedId}
           onSelect={setSelectedId}
           showAmbient={showAmbient}
-          onClose={closeRunSheet}
-          tab={runSheetTab}
-          onTab={changeRunSheetTab}
+          onShowAmbient={setShowAmbient}
           /*
-           * THE CHAT, BUILT HERE AND HANDED OVER, with the one state-specific
-           * sentence the component cannot write for itself above it.
-           *
-           * `chatDeliveryNote` (top of this file) returns null for every state
-           * `OrchestratorChat`'s own copy already describes accurately, so this is
-           * usually just the composer. When it does return a sentence it is because
-           * the component would otherwise leave the reader to assume the message is
-           * going somewhere — the spec phase being the whole reason this item was
-           * raised.
+           * `DetailSheet`'s own width — `w-[min(420px,100%)]` — and only while it
+           * is open. The canvas clamps this against its measured pane, because on a
+           * viewport narrower than 420px the sheet IS the pane and there is nowhere
+           * to pan a card to.
            */
-          chat={
-            <>
-              {deliveryNote !== null && (
-                <p className="border-b border-line bg-canvas/40 px-3 py-2 text-[11.5px] leading-relaxed text-ink-dim">
-                  {deliveryNote}
-                </p>
-              )}
-              <OrchestratorChat
-                messages={messages}
-                runIsOver={isTerminalStatus(run.status)}
-                onSend={onSendMessage}
-              />
-            </>
+          rightInset={selected === null ? 0 : 420}
+          // An empty graph on a live run and on a dead one are the same value and
+          // different facts; only this page knows which.
+          runIsActive={!isTerminalStatus(run.status)}
+          planPanelOpen={planPanelOpen}
+          onPlanPanel={setPlanPanelOpen}
+          /*
+           * THE ~80 MINUTES BEFORE ANY NODE EXISTS. Measured on the run that
+           * passed: the spec phase took 79.5 minutes of a 105-minute run, and for
+           * all of it the canvas was a static box that looked the same whether the
+           * run was working or dead. The trace is already streaming by then, so the
+           * newest line is a liveness signal that costs no new plumbing.
+           *
+           * `trace` is capped and append-only, so the last entry is the newest.
+           * `null` when nothing has arrived — the canvas renders nothing rather
+           * than an empty row implying a message that did not come.
+           */
+          latestActivity={
+            trace.length === 0
+              ? null
+              : {
+                  text: trace[trace.length - 1]?.text ?? "",
+                  atMs: trace[trace.length - 1]?.atMs ?? Date.now(),
+                }
           }
+          /*
+           * `specStages` IS NO LONGER PASSED — 2026-08-04, and the reason is a
+           * defect rather than a tidy-up. It was `specPipelineFrom(trace, …)`, and
+           * `trace` is the LIVE SSE sink: `use-run-stream.ts` never opens a socket
+           * for a terminal run, so the pre-build lane was empty on every run opened
+           * after it finished. The canvas now reads `GraphState.stages`, folded by
+           * the same reducer on the REST snapshot as on the socket.
+           */
+          notices={notices}
         />
-      )}
+
+        {/*
+         * NO `chat` PROP ANY MORE — see this file's header and `DetailSheet`'s. The
+         * composer was gated here on `selected.parent === null`; it is a rail panel
+         * now, which is the only reason a run's first 80 minutes have a chat at
+         * all. Nothing about a NODE decides anything about the chat.
+         *
+         * IT IS INSIDE THE CANVAS PANE rather than beside it, and that is the whole
+         * left/right split: the rail carries run-level surfaces and docks on the
+         * left; this sheet describes the card you clicked and docks on the right of
+         * the graph it is annotating. Nested here so `absolute inset-y-0 right-0`
+         * resolves against the pane and not against the panel's edge.
+         */}
+        {selected !== null && <DetailSheet node={selected} onClose={clearSelection} />}
+      </div>
     </div>
   );
 }

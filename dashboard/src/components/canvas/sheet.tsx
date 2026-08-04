@@ -11,43 +11,53 @@
  * instruction was exact: "there is too much info that i dont need around the
  * sides… the info i require only comes up when i press on the node."
  *
- * SO THERE ARE EXACTLY TWO SHEETS, AND NEITHER IS OPEN BY DEFAULT.
+ * `RunSheet` IS GONE — 2026-08-04 — AND ITS SEVEN TAB BODIES ARE STILL HERE.
+ *
+ * It was a 560px right-hand sheet with a tab strip reading Ticket / Chat / Verdict
+ * / Code / Agents / Run / Trace, opened by a button labelled "run detail". The
+ * owner's next instruction was about the OTHER side of the screen — "icons … on
+ * the left side of the canva and when I click them they expand into different
+ * things" — and a rail on the left plus a tab strip on the right is two navigations
+ * for one set of facts. So `TABS`, `RunSheetTab` and the sheet itself retired
+ * together; `canvas/rail.tsx` owns panel identity now, and the bodies below are
+ * exported for it. They are RE-PARENTED, not rewritten: every component they mount
+ * (`TicketAttachmentsPanel`, `MotionReadoutPanel`, `CriteriaPanel`,
+ * `PublishedProjectPanel`, `ScreenshotsPanel`, `CodeBrowser`, `AgentRoster`,
+ * `EnvironmentPanel`, `UsagePanel`, `TracePane`, `OutcomeNotice`) is untouched, and
+ * so is the reasoning written above each of them.
+ *
+ * WHAT THE SHEET SHELL IS STILL FOR.
  *
  *   `DetailSheet` — one agent, opened by clicking or Entering its card. Right
  *     docked, 420px, and it deliberately does NOT cover the graph: the card it
  *     describes stays visible with its ring on and its connectors energised, so
  *     the sheet reads as an annotation of the canvas rather than as a page you
- *     navigated to.
+ *     navigated to. Left rail = run-level surfaces; right sheet = the thing you
+ *     clicked. That split is the whole of the new shape.
  *
- *   `RunSheet` — every run-level fact, behind TWO affordances now: the run chip
- *     in the canvas's top-left corner, which opens it on `ticket`, and the chat
- *     control under that chip, which opens it on `chat`. Seven tabs, because
- *     seven things are genuinely different questions and stacking them all in a
- *     column is the rail this screen just deleted.
+ * THE CHAT IS NOT ON A NODE — 2026-07-30, and this is a MOVE, not an addition. It
+ * used to mount inside `DetailSheet`, gated on `node.parent === null`, which meant
+ * there was no way to type anything at a run until the build segment emitted its
+ * first `graph_agent` — 79.5 minutes into the owner's recorded run, and long past
+ * the moment a message is most useful (the server queues one from the instant the
+ * run is accepted, and the FIRST build prompt is where a queued one is folded in).
+ * Messages are addressed to the run (`GET/POST /api/runs/:id/messages`), never to a
+ * node. It was a tab here; it is a rail entry now, which is one permanent icon
+ * rather than a button inside a scrolling dock.
  *
- * THE CHAT IS A TAB HERE RATHER THAN A PANEL ON A NODE — 2026-07-30, and this is
- * a MOVE, not an addition. It used to mount inside `DetailSheet`, gated on
- * `node.parent === null`, which meant there was no way to type anything at a run
- * until the build segment emitted its first `graph_agent` — 79.5 minutes into the
- * owner's recorded run, and long past the moment a message is most useful (the
- * server queues one from the instant the run is accepted, and the FIRST build
- * prompt is where a queued one is folded in). Messages are addressed to the run
- * (`GET/POST /api/runs/:id/messages`), never to a node, so a tab on the run sheet
- * is where they belonged; see `DetailSheet` below for the whole trade.
- *
- * NEITHER IS A MODAL AND NEITHER TRAPS FOCUS. There is no scrim, no
+ * NEITHER SURFACE IS A MODAL AND NEITHER TRAPS FOCUS. There is no scrim, no
  * `aria-modal`, and nothing that swallows Tab: the canvas behind stays live and
- * keyboard-reachable, which matters because the sheet's own agent index selects
- * cards on it. Escape closes, from anywhere inside.
+ * keyboard-reachable, which matters because the agent index selects cards on it.
+ * Escape closes, from anywhere inside.
  *
  * WHY THE AGENT INDEX SURVIVED. Spec §9.3 requires an accessible equivalent of
  * the canvas and the old left rail was it — its caption said the graph "offers
  * partial affordances only". The canvas is now properly navigable itself (roving
  * tabindex, arrow keys, Enter, Escape — see `orchestration-canvas.tsx`), so the
- * list is no longer the ONLY way in. It is still here, one tab deep, for two
- * reasons that are not accessibility theatre: it is the faster read when you
- * already know which agent you want, and it is the ungrouped truth — a folded
- * group hides nothing from it, so no agent can be reachable only by expanding
+ * list is no longer the ONLY way in. It is still here — inside Overview now rather
+ * than behind a tab of its own — for two reasons that are not accessibility
+ * theatre: it is the faster read when you already know which agent you want, and
+ * it is the ungrouped truth, so no agent can be reachable only by expanding
  * something.
  */
 
@@ -62,8 +72,13 @@ import type {
   RunDetail,
 } from "@/lib/api-types";
 import type { StreamState, TraceEntry } from "@/lib/use-run-stream";
-import { TONE_TEXT, type Tone } from "@/lib/presentation";
-import { Button, MonoPath, Panel, cx } from "@/components/ui";
+import { isTerminalStatus } from "@/lib/api-types";
+import { elapsedBetween, formatDuration } from "@/lib/format";
+import { designLockPhase } from "@/lib/mockups";
+import { TONE_TEXT, phaseMeta, statusMeta, type Tone } from "@/lib/presentation";
+import { ticketLabel, ticketTooltip } from "@/lib/ticket-title";
+import { FalseFinishBadge, HeldOutBadge } from "@/components/outcome";
+import { Badge, Button, Dot, MonoPath, Panel, cx } from "@/components/ui";
 import { TicketAttachmentsPanel } from "@/components/run/attachments";
 import { CodeBrowser } from "@/components/run/code-browser";
 import { CriteriaPanel } from "@/components/run/criteria";
@@ -216,28 +231,57 @@ export function DetailSheet({
 /* ------------------------------------------------------------------ */
 
 /*
- * `chat` SITS SECOND, next to the ticket, and that position is the argument.
+ * `TABS` AND `RunSheetTab` ARE DELETED — 2026-08-04, with the sheet that carried
+ * them. The list was `ticket · chat · verdict · code · agents · env(label "Run") ·
+ * trace`, and the note that sat here argued for the ORDER: "the ticket is what you
+ * asked for and the chat is how you amend it; they are the same question a day
+ * apart, and the amendment is the only tab here that is an ACTION rather than a
+ * record."
  *
- * The ticket is what you asked for and the chat is how you amend it; they are the
- * same question a day apart, and the amendment is the only tab here that is an
- * ACTION rather than a record. Everything after it — verdict, code, agents, run,
- * trace — is evidence about work already done.
+ * THE ARGUMENT SURVIVES THE DELETION AND IS HONOURED BY THE RAIL'S OWN ORDER —
+ * Overview, then Chat, then the records (Files, Result) with Activity pinned to the
+ * bottom. What changed is that four of the seven were never peers of the other
+ * three: `env` and `agents` are facts ABOUT the run and are now sections of
+ * Overview, and `ticket` is the first section of it. See `canvas/rail.tsx` for the
+ * whole mapping and for which word replaced which.
  */
-const TABS = [
-  { id: "ticket", label: "Ticket" },
-  { id: "chat", label: "Chat" },
-  { id: "verdict", label: "Verdict" },
-  { id: "code", label: "Code" },
-  { id: "agents", label: "Agents" },
-  { id: "env", label: "Run" },
-  { id: "trace", label: "Trace" },
-] as const;
-
-/** Exported because the page now owns which tab is showing; see `RunSheetProps`. */
-export type RunSheetTab = (typeof TABS)[number]["id"];
 
 function TabBody({ children }: { children: ReactNode }): ReactNode {
   return <div className="space-y-3 p-3">{children}</div>;
+}
+
+/**
+ * One card inside a rail panel.
+ *
+ * A HEADING STRIP AND A BORDER, reusing the eyebrow treatment the sheet header
+ * already uses (`font-mono 9.5px uppercase tracking-[0.18em] text-ink-faint`) and
+ * the app's existing `rounded` — no third radius, no new type size. Overview is
+ * five of these stacked; every other panel is one body with no card at all,
+ * because a single card wrapping a whole panel is a border for its own sake.
+ */
+function PanelSection({
+  title,
+  children,
+  testId,
+  bodyClassName = "p-[10px]",
+}: {
+  title: string;
+  children: ReactNode;
+  testId?: string;
+  /** `p-0` for a body that needs edge-to-edge rows — the agent roster does. */
+  bodyClassName?: string;
+}): ReactNode {
+  return (
+    <section
+      data-testid={testId}
+      className="overflow-hidden rounded border border-line bg-canvas/40"
+    >
+      <h3 className="border-b border-line px-[10px] py-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
+        {title}
+      </h3>
+      <div className={bodyClassName}>{children}</div>
+    </section>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -568,358 +612,438 @@ function AdversaryPanel({ pass }: { pass: AdversaryPass | null }): ReactNode {
   );
 }
 
-export interface RunSheetProps {
+/* ------------------------------------------------------------------ */
+/* The rail panels                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * OVERVIEW — the default panel, and the one the owner asked for by name: "maybe
+ * like a overview of the project and what has been entered".
+ *
+ * IT IS WHERE THE RUN CHIP WENT. `RunHud` floated in the canvas's top-left corner
+ * carrying the status, the ticket's name, the phase, the model, the clock, Cancel,
+ * Resume and a "run detail" button. Four of those are its "This run" section here;
+ * the STATUS also survives as a 6px dot on this panel's own rail icon
+ * (`canvas/rail.tsx`), so a rail with everything closed still says how the run
+ * went. The "run detail" button is deleted outright — it opened the right-hand
+ * sheet the rail replaces, so it now names nothing.
+ *
+ * `run-hud.tsx` IS LEFT STANDING WITH NO IMPORTER, deliberately and not silently:
+ * it is another lane's file this pass, so it is not deleted here, and the two
+ * pieces of reasoning inside it that this section depends on are reproduced below
+ * with attribution rather than re-derived.
+ *
+ * THE FIVE SECTIONS, AND WHY THIS ORDER. Status first because it is the question
+ * the screen is opened with; then what was asked for; then who did it; then what
+ * it ran on and cost. Actions live with the status they act on rather than in a
+ * toolbar somewhere else.
+ */
+export interface OverviewPanelProps {
   readonly run: RunDetail;
   readonly model: ModelOption | null;
+  readonly nowMs: number;
+  readonly busy: boolean;
+  readonly onCancel: () => void;
+  readonly onResume: () => void;
   readonly graph: GraphState;
-  readonly trace: readonly TraceEntry[];
-  readonly stream: StreamState;
-  readonly onReconnect: () => void;
   readonly selectedId: string | null;
   readonly onSelect: (nodeId: string | null) => void;
   readonly showAmbient: boolean;
-  readonly onClose: () => void;
-  /**
-   * The chat panel. REQUIRED, and a `ReactNode` rather than the message list.
-   *
-   * Built by the caller for the same reason `DetailSheet`'s used to be: what the
-   * composer may honestly promise depends on the run's status and phase, and on a
-   * transcript this sheet is not given. Required rather than optional because a
-   * tab called Chat with nothing under it is the kind of empty affordance this
-   * screen exists to delete — and because `exactOptionalPropertyTypes` makes an
-   * optional `ReactNode` a spread at every call site for no gain.
-   */
-  readonly chat: ReactNode;
-  /**
-   * WHICH TAB IS SHOWING — CONTROLLED, changed from an `initialTab` default on
-   * 2026-07-30 when the chat arrived.
-   *
-   * `useState(initialTab)` reads its prop once, so a second entry point could not
-   * re-aim a sheet that was ALREADY OPEN: pressing `chat` in the dock while the
-   * sheet sat on Ticket would have done nothing at all, which is the worst
-   * possible answer for a control whose whole job is being reachable. Lifting the
-   * value is the plain fix; the old prop had no caller passing it, so nothing was
-   * broken by taking it away.
-   */
-  readonly tab: RunSheetTab;
-  readonly onTab: (tab: RunSheetTab) => void;
 }
 
-export function RunSheet({
+export function OverviewPanel({
   run,
   model,
+  nowMs,
+  busy,
+  onCancel,
+  onResume,
   graph,
-  trace,
-  stream,
-  onReconnect,
   selectedId,
   onSelect,
   showAmbient,
-  onClose,
-  chat,
-  tab,
-  onTab,
-}: RunSheetProps): ReactNode {
+}: OverviewPanelProps): ReactNode {
+  const meta = statusMeta(run.status);
+  const phase = phaseMeta(run.phase);
+  const elapsed = elapsedBetween(run.startedAt, run.endedAt, nowMs);
+  const terminal = isTerminalStatus(run.status);
+
+  /*
+   * WHICH KIND OF `awaiting_input` THIS IS, which is the only reason `Resume`
+   * below is conditional on more than the status. Carried over from
+   * `run-hud.tsx`, whose docblock has the whole argument; the short version is
+   * that a BODYLESS resume during a design park locks `manifest.refs[0]` "with no
+   * judgement applied", so the owner's click would record a pick the owner did not
+   * make. The answer to a design park is a card in `DesignLockPanel`, which is the
+   * Questions panel now.
+   *
+   * `designLockPhase` is one comparison chain in `lib/mockups.ts` and is derived
+   * here rather than threaded in as a prop for the reason that file's callers all
+   * give: a prop would be a second value that can disagree with the `run` this
+   * panel is already rendering.
+   */
+  const lockPhase =
+    run.designLock === null ? null : designLockPhase(run.status, run.designLock);
+
   return (
-    <Sheet
-      eyebrow="run"
-      title={run.ticketTitle}
-      width="w-[min(560px,100%)]"
-      onClose={onClose}
-    >
-      <div
-        role="tablist"
-        aria-label="Run detail"
-        className="sticky top-0 z-10 flex shrink-0 gap-1 overflow-x-auto border-b border-line bg-surface/97 px-2 py-1.5 backdrop-blur"
-      >
-        {TABS.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            role="tab"
-            id={`run-tab-${entry.id}`}
-            aria-selected={tab === entry.id}
-            aria-controls={`run-panel-${entry.id}`}
-            onClick={() => onTab(entry.id)}
-            className={cx(
-              "shrink-0 rounded-sm px-2 py-1 text-[12px] transition-colors",
-              tab === entry.id
-                ? "bg-surface-raised text-ink"
-                : "text-ink-dim hover:bg-surface-raised hover:text-ink",
+    <TabBody>
+      <PanelSection title="this run" testId="overview-this-run">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={meta.tone} title={meta.meaning}>
+            <Dot tone={meta.tone} pulse={meta.live} />
+            {meta.label}
+          </Badge>
+          <HeldOutBadge heldOutPass={run.heldOutPass} />
+          <FalseFinishBadge falseFinish={run.falseFinish} />
+        </div>
+
+        {/*
+         * THE RUN'S NAME, DERIVED AND NEVER THE RAW TICKET. `ticketLabel` drops a
+         * recognised opener, keeps the first clause, reduces a URL to its host and
+         * cuts on WORD boundaries — it deletes, it never writes, so nothing here
+         * can be wrong ABOUT the run. The whole brief is on the tooltip, and
+         * verbatim in "what you asked for" two sections down, which is the copy
+         * that reaches touch and a screen reader.
+         *
+         * IT IS NOT AN `h1` ANY MORE. `RunHud`'s was the run page's only top-level
+         * heading; the page now renders one of its own that does not come and go
+         * with a panel. Two `h1`s on one document is worse than a `p` here.
+         */}
+        <p
+          className="mt-2 truncate text-lede font-semibold text-ink"
+          title={ticketTooltip(run.ticketTitle, run.ticketText)}
+        >
+          {ticketLabel(run.ticketTitle)}
+        </p>
+
+        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-ink-faint">
+          <span title={phase.blurb}>{phase.label}</span>
+          <span aria-hidden="true">·</span>
+          <span title={run.modelId}>{model?.label ?? run.modelId}</span>
+          <span aria-hidden="true">·</span>
+          <span className="numeric" title={run.endedAt === null ? "Elapsed" : "Took"}>
+            {elapsed === null ? "n/a" : formatDuration(elapsed)}
+          </span>
+        </p>
+        <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint">{run.runId}</p>
+
+        {/*
+         * THE ACTIONS SIT WITH THE STATUS THEY ACT ON. Cancel is offered on every
+         * non-terminal run; Resume only in the two states the server will honour a
+         * bodyless one in — `rate_limited`, and an `awaiting_input` that is NOT a
+         * design park. `failed` was dropped from this pair on 2026-07-30 because
+         * `Orchestrator.resume` returns false on `isTerminal` before it does
+         * anything else and the route answers 409, so the button could only ever
+         * produce an error notice.
+         *
+         * NEITHER IS THE ONLY WAY TO REACH THEM. `RateLimitNotice` and
+         * `AwaitingInputNotice` carry their own Resume and they FLOAT over the
+         * canvas rather than living in a panel — a run that is stopped waiting on
+         * the owner must not need an icon click to say so.
+         */}
+        {(!terminal ||
+          run.status === "rate_limited" ||
+          run.status === "awaiting_input") && (
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            {!terminal && (
+              <Button variant="danger" onClick={onCancel} disabled={busy}>
+                Cancel
+              </Button>
             )}
-          >
-            {entry.label}
-          </button>
-        ))}
-      </div>
-
-      <div
-        role="tabpanel"
-        id={`run-panel-${tab}`}
-        aria-labelledby={`run-tab-${tab}`}
-        tabIndex={0}
-      >
-        {/*
-         * THE CHAT IS MOUNTED WHENEVER THIS SHEET IS OPEN, AND MERELY HIDDEN ON
-         * THE OTHER SIX TABS — the one place this file renders a panel that is
-         * not the selected one, and it is bought with a specific defect.
-         *
-         * The composer's draft text lives in `OrchestratorChat`'s own state. Under
-         * the `tab === "chat" && …` pattern every other tab here uses, clicking
-         * Verdict to re-read a criterion and coming back would unmount it and
-         * throw away a half-typed instruction — silently, which is the worst kind.
-         * `hidden` is the HTML attribute, so the panel is `display: none`: out of
-         * the tab order, out of the accessibility tree, still mounted, draft
-         * intact. Nothing else on this sheet is worth the cost of staying mounted;
-         * `CodeBrowser` in particular fetches on mount and must not.
-         *
-         * WHAT IT DOES NOT SURVIVE, stated rather than implied: closing the sheet.
-         * `runs/[runId]/page.tsx` mounts `RunSheet` conditionally, so `close`
-         * discards the draft. Keeping it would mean holding the text in the page,
-         * which is a prop `orchestrator-chat.tsx` does not have (`value`/`onChange`
-         * are not on it) — a change to that file, not to this one.
-         */}
-        <div hidden={tab !== "chat"}>{chat}</div>
-
-        {/*
-         * THE TICKET TAB IS THE TICKET — THE WORDS, AND NOW THE FILES.
-         *
-         * `OutcomeNotice` and `DeliveryNotice` used to render here, above the
-         * brief — so the pass/fail of the run was announced on the tab about what
-         * was asked for, and the tab called Verdict carried criteria and captures
-         * but no verdict. Both moved down to `verdict`; see the comment there for
-         * what happened to the delivery half.
-         *
-         * `TicketAttachmentsPanel` IS HERE AND NOT ON VERDICT, and the placement
-         * is the whole anti-confusion mechanism rather than a layout preference.
-         * Verdict already renders a disclosure called "Design references" inside
-         * `ScreenshotsPanel` — `ui-designer`'s GENERATED mockups. These are the
-         * owner's UPLOADS. Two tabs means no screen can ever show them under one
-         * heading; read `attachments.tsx`'s header before moving either.
-         */}
-        {tab === "ticket" && (
-          <TabBody>
-            {/*
-             * ABOVE THE BRIEF, AND THAT ORDER WAS CHANGED AFTER LOOKING AT IT.
-             *
-             * It was mounted under the ticket text first. On the owner's own run
-             * the brief is 1,100 words — three sentences the owner typed, then
-             * the intake's whole "WHAT THE DASHBOARD READ FROM THE PAGE THIS
-             * TICKET NAMES" dump — so the panel rendered roughly 900px below the
-             * fold of a 560px sheet. Playwright still called it visible (a
-             * non-empty box is visible), which is exactly how a feature ships
-             * and is then reported missing; this screen has paid that bill once
-             * already, in the 80 minutes when the chat was mounted somewhere
-             * nobody could reach (see `runs/[runId]/page.tsx`).
-             *
-             * IT COSTS NOTHING WHEN THERE IS NOTHING, which is what makes the
-             * order free: the panel returns `null` for two empty lists, so a
-             * ticket with no attachments opens on the brief exactly as before.
-             * The brief is unbounded and the file list is short — the short,
-             * scannable half goes first.
-             *
-             * `?? []` FLATTENS AN ABSENT KEY, and it is load-bearing rather than
-             * belt-and-braces. `lib/api.ts` does `parsed as T` with no runtime
-             * validation, and EVERY run recorded before these routes existed
-             * answers with a body carrying neither field — measured 2026-08-02
-             * against the running backend, which does not even serve the routes
-             * yet. Without it the panel reads `.length` off `undefined` and takes
-             * the whole Ticket tab down. Same shape as `adversary ?? null` on the
-             * Verdict tab, for the same reason.
-             */}
-            <TicketAttachmentsPanel
-              references={run.references ?? []}
-              documents={run.documents ?? []}
-            />
-
-            {/*
-             * WHAT THE REFERENCE PAGE WAS OBSERVED TO DO — a sibling of the
-             * attachments panel because it answers the same question about the
-             * same tab: what did this ticket arrive carrying. Attachments are the
-             * files the owner handed over; this is the page he pointed at.
-             *
-             * `?? null` FOR THE SAME REASON THE LINE ABOVE SPREADS `?? []`, and
-             * it is the same measured hazard rather than a copied habit.
-             * `RunDetail.motion` is DECLARED required, so `run.motion` is
-             * `ApiMotionSpec | null` to the compiler and this flattening looks
-             * redundant to it — but `lib/api.ts` casts with `parsed as T` and
-             * validates nothing, and every run recorded before 2026-08-04
-             * answers with no `motion` key at all. Without the `??`, `undefined`
-             * walks past the panel's `=== null` guard and `.entries.length`
-             * throws, which blanks the whole Ticket tab rather than one box.
-             * `motion-readout.browser.spec.ts`'s `MISSING_KEY` case is the only
-             * check in the tree that goes red when this operator is deleted —
-             * verified by deleting it, not by reasoning about it.
-             *
-             * IT COSTS NOTHING WHEN THERE IS NOTHING. The panel returns `null`
-             * for a run that named no motion reference, which is almost every
-             * run on this machine, so the tab opens exactly as it did before.
-             */}
-            <MotionReadoutPanel motion={run.motion ?? null} />
-
-            <div className="rounded border border-line bg-canvas/40">
-              <p className="border-b border-line px-3 py-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
-                the ticket, verbatim
-              </p>
-              <pre className="whitespace-pre-wrap break-words px-3 py-2.5 font-sans text-[12.5px] leading-relaxed text-ink-dim">
-                {run.ticketText}
-              </pre>
-            </div>
-          </TabBody>
-        )}
-
-        {tab === "verdict" && (
-          <TabBody>
-            {/* The verdict, on the tab named after it, above the evidence for it. */}
-            <OutcomeNotice run={run} />
-
-            {/*
-             * WHERE THE WORK LANDED — THE ARTEFACT PATH ONLY, AND THAT IS A
-             * DELIBERATE HALF OF `DeliveryNotice`.
-             *
-             * That component renders two things: this path, and `run.previewUrl`
-             * as a link. The preview link is dead by construction — the server
-             * that answered that address was the run's, and it went down with the
-             * run — so it is a historical record rather than somewhere to click,
-             * and it is not carried here. It is a known-open item with its own
-             * owner; deciding what a dead address should say instead is that
-             * item's call, not this move's.
-             *
-             * THE CONSEQUENCE, SAID OUT LOUD: with this tab rendering the path
-             * itself, `DeliveryNotice` has no importer left and `previewUrl` now
-             * renders nowhere in the app. `notices.tsx` is another agent's file in
-             * this pass, so the component is left standing rather than deleted.
-             *
-             * The path is an absolute HOST path — copyable text, never a link.
-             */}
-            {run.artifactPath !== null && (
-              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded border border-line bg-surface px-3 py-2">
-                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
-                  Artifact
-                </span>
-                <MonoPath path={run.artifactPath} max={80} />
-              </div>
+            {(run.status === "rate_limited" ||
+              (run.status === "awaiting_input" && lockPhase !== "pending")) && (
+              <Button
+                variant="primary"
+                onClick={onResume}
+                disabled={busy}
+                title={
+                  run.phase === "plan" && run.status === "awaiting_input"
+                    ? "Stop asking and carry on. Every question still open is recorded as an assumption — the same place the run lands if the window simply closes."
+                    : "Put this run back in the queue."
+                }
+              >
+                Resume
+              </Button>
             )}
-
-            {/*
-             * DIRECTLY UNDER THE ARTIFACT PATH, AND THAT PAIRING IS THE POINT.
-             *
-             * Both answer "where did the work land". The artifact is the run's
-             * own workspace — evidence, kept for re-scoring, named by a
-             * 44-character run id — and this is the COPY made for the owner,
-             * under the ticket's name, which is the one he is meant to open. Put
-             * anywhere else on this tab they read as two unrelated paths.
-             *
-             * IT IS UNCONDITIONAL, unlike the row above it, because all four
-             * states of `RunDetail.publishedProject` are worth a sentence: a run
-             * that has not finished, a run with no record, a publish that was
-             * refused and a copy that exists. The panel decides which; see its
-             * docblock for why "no record" and "refused" may never be drawn the
-             * same way.
-             *
-             * IT IS THE ONLY THING ON THIS TAB THAT ACTS ON THE WORLD — it can
-             * spawn and kill a process — so it sits under the verdict and the
-             * evidence rather than above them.
-             */}
-            <PublishedProjectPanel run={run} />
-
-            <CriteriaPanel criteria={run.criteria} />
-
-            {/*
-             * `designLock` IS NULL FOR A RUN WITH NO DESIGN LANE, which is not the
-             * same as a lane that published nothing — but the panel only needs the
-             * published set to tell a mockup from a capture of the built site, and
-             * both cases yield an empty one. `?? []` rather than an optional prop:
-             * `exactOptionalPropertyTypes` is on, so the prop is required and the
-             * caller does the flattening.
-             */}
-            {/*
-             * THE WHOLE LOCK, NOT JUST ITS MOCKUPS, SINCE 2026-08-03. A canvassed
-             * run publishes stills from directions it OFFERED AND DISCARDED and
-             * stills the owner ASKED FOR at the park, and the panel's disclosure
-             * calls all of them "the mockups the run was built to" — a false claim
-             * about two thirds of them, and the discarded ones are precisely what
-             * the run was NOT graded against. Which is which is only decidable
-             * from `directions[]` and `requests[]`.
-             */}
-            <ScreenshotsPanel
-              runId={run.runId}
-              screenshots={run.screenshots}
-              designLock={run.designLock ?? null}
-            />
-
-            {/*
-             * LAST, UNDER THE CAPTURES OF THE THING IT IS JUDGING, and separated
-             * from `CriteriaPanel` by the whole screenshots panel on purpose —
-             * `AdversaryPass`'s own instruction is "never beside a criterion
-             * result". `?? null` because `lib/api.ts` casts the response without
-             * validating it and the browser fixtures still serve a body with no
-             * `adversary` key; see the block docblock above. It renders nothing
-             * at all for a run with no record, which is every run today.
-             */}
-            <AdversaryPanel pass={run.adversary ?? null} />
-          </TabBody>
+          </div>
         )}
+      </PanelSection>
+
+      {/*
+       * WHAT YOU ASKED FOR — THE WORDS, AND THE FILES.
+       *
+       * This was the `ticket` tab, moved whole. `OutcomeNotice` and
+       * `DeliveryNotice` used to render above the brief — so the pass/fail of the
+       * run was announced on the surface about what was ASKED FOR, and the one
+       * called Verdict carried criteria and captures but no verdict. Both moved to
+       * Result; see the comment there for what happened to the delivery half.
+       *
+       * `TicketAttachmentsPanel` IS HERE AND NOT ON RESULT, and the placement is
+       * the whole anti-confusion mechanism rather than a layout preference. Result
+       * already renders a disclosure called "Design references" inside
+       * `ScreenshotsPanel` — `ui-designer`'s GENERATED mockups. These are the
+       * owner's UPLOADS. Two panels means no screen can ever show them under one
+       * heading; read `attachments.tsx`'s header before moving either.
+       */}
+      <PanelSection title="what you asked for" testId="overview-ticket">
+        {/*
+         * ABOVE THE BRIEF, AND THAT ORDER WAS CHANGED AFTER LOOKING AT IT.
+         *
+         * It was mounted under the ticket text first. On the owner's own run the
+         * brief is 1,100 words — three sentences the owner typed, then the
+         * intake's whole "WHAT THE DASHBOARD READ FROM THE PAGE THIS TICKET NAMES"
+         * dump — so the panel rendered roughly 900px below the fold. Playwright
+         * still called it visible (a non-empty box is visible), which is exactly
+         * how a feature ships and is then reported missing; this screen has paid
+         * that bill once already, in the 80 minutes when the chat was mounted
+         * somewhere nobody could reach.
+         *
+         * IT COSTS NOTHING WHEN THERE IS NOTHING, which is what makes the order
+         * free: the panel returns `null` for two empty lists, so a ticket with no
+         * attachments opens on the brief exactly as before. The brief is unbounded
+         * and the file list is short — the short, scannable half goes first.
+         *
+         * `?? []` FLATTENS AN ABSENT KEY, and it is load-bearing rather than
+         * belt-and-braces. `lib/api.ts` does `parsed as T` with no runtime
+         * validation, and EVERY run recorded before these routes existed answers
+         * with a body carrying neither field — measured 2026-08-02 against the
+         * running backend. Without it the panel reads `.length` off `undefined`
+         * and takes the whole panel down.
+         */}
+        <TicketAttachmentsPanel
+          references={run.references ?? []}
+          documents={run.documents ?? []}
+        />
 
         {/*
-         * THE CODE SLOT.
+         * WHAT THE REFERENCE PAGE WAS OBSERVED TO DO — a sibling of the
+         * attachments panel because it answers the same question about the same
+         * surface: what did this ticket arrive carrying. Attachments are the files
+         * the owner handed over; this is the page he pointed at.
          *
-         * CONTRACT, so the component arriving here needs no coordination beyond
-         * it: this tab renders exactly one child, it is handed the run id and
-         * nothing else, and it owns its own fetching, loading, empty and error
-         * states. It gets a full-height scroll container with no padding — the
-         * tree and the file pane manage their own — and it must not assume a
-         * width above 320px, because at a 375px viewport this sheet is the
-         * viewport. Nothing in the canvas reads anything back out of it, and it
-         * is not told which agent is selected: the workspace is a fact about the
-         * RUN, and a file tree that changed under you as you clicked cards on the
-         * graph would be a worse tool, not a better one. If a per-agent view is
-         * ever wanted it should arrive as its own prop rather than by reusing the
-         * selection.
+         * `?? null` FOR THE SAME REASON THE LINE ABOVE SPREADS `?? []`, and it is
+         * the same measured hazard rather than a copied habit. `RunDetail.motion`
+         * is DECLARED required, so `run.motion` is `ApiMotionSpec | null` to the
+         * compiler and this flattening looks redundant to it — but `lib/api.ts`
+         * casts with `parsed as T` and validates nothing, and every run recorded
+         * before 2026-08-04 answers with no `motion` key at all. Without the `??`,
+         * `undefined` walks past the panel's `=== null` guard and
+         * `.entries.length` throws, which blanks the whole panel rather than one
+         * box. `motion-readout.browser.spec.ts`'s `MISSING_KEY` case is the only
+         * check in the tree that goes red when this operator is deleted — verified
+         * by deleting it, not by reasoning about it.
          */}
-        {tab === "code" && (
-          <div className="h-full min-h-[420px]">
-            <CodeBrowser runId={run.runId} />
-          </div>
-        )}
+        <div className="mt-2.5">
+          <MotionReadoutPanel motion={run.motion ?? null} />
+        </div>
 
-        {tab === "agents" && (
-          <div>
-            <p className="border-b border-line px-3 py-2 text-[11.5px] leading-relaxed text-ink-faint">
-              Every agent this run started, in arrival order and never folded —
-              picking one here selects its card on the canvas. The canvas itself is
-              navigable with the arrow keys; this is the faster read when you
-              already know the name.
-            </p>
-            <AgentRoster
-              graph={graph}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              showAmbient={showAmbient}
-            />
-          </div>
-        )}
+        <div className="mt-2.5 rounded border border-line bg-surface">
+          <p className="border-b border-line px-3 py-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
+            the ticket, verbatim
+          </p>
+          <pre className="whitespace-pre-wrap break-words px-3 py-2.5 font-sans text-[12.5px] leading-relaxed text-ink-dim">
+            {run.ticketText}
+          </pre>
+        </div>
+      </PanelSection>
 
-        {tab === "env" && (
-          <TabBody>
-            <div className="rounded border border-line bg-canvas/40">
-              <p className="border-b border-line px-3 py-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
-                environment · reported once, by the CLI, at the start of the run
-              </p>
-              <div className="px-3 py-2.5">
-                <EnvironmentPanel inventory={graph.inventory} />
-              </div>
-            </div>
-            <UsagePanel run={run} model={model} />
-          </TabBody>
-        )}
+      {/*
+       * WHO WORKED ON IT — the `agents` tab, buried on purpose and with its job
+       * intact.
+       *
+       * It is not a rail entry because THE CANVAS IS THE AGENT LIST: an icon that
+       * opens a list of the things already drawn on screen is the definition of a
+       * redundant entry. What the list is genuinely for is unchanged and is
+       * written on it — the faster read when you already know the name, and the
+       * ungrouped truth, so a folded deck cannot hide an agent from it. The
+       * component is not modified, only re-parented; clicking a row still selects
+       * the card on the canvas.
+       */}
+      <PanelSection title="who worked on it" testId="overview-agents" bodyClassName="p-0">
+        <p className="border-b border-line px-[10px] py-2 text-[11.5px] leading-relaxed text-ink-faint">
+          Every agent this run started, in arrival order and never folded — picking
+          one here selects its card on the canvas. The canvas itself is navigable
+          with the arrow keys; this is the faster read when you already know the
+          name.
+        </p>
+        <AgentRoster
+          graph={graph}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          showAmbient={showAmbient}
+        />
+      </PanelSection>
 
-        {tab === "trace" && (
-          <div className="p-3">
-            <TracePane trace={trace} stream={stream} onReconnect={onReconnect} />
-          </div>
-        )}
-      </div>
-    </Sheet>
+      {/*
+       * MACHINE AND COST — the `env` tab, whose own tab label was already "Run".
+       *
+       * The word "Env" is gone from this app entirely, and burying the surface is
+       * the other half of that: what a run was executed on and what it cost is a
+       * property OF the run, and this panel is the run. It was never a peer of
+       * Chat.
+       */}
+      <PanelSection title="machine and cost" testId="overview-env">
+        <p className="mb-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
+          reported once, by the CLI, at the start of the run
+        </p>
+        <EnvironmentPanel inventory={graph.inventory} />
+        <div className="mt-2.5">
+          <UsagePanel run={run} model={model} />
+        </div>
+      </PanelSection>
+    </TabBody>
+  );
+}
+
+/**
+ * RESULT — was "Verdict", and the rename is a correction rather than a softening.
+ *
+ * "Checks" was the obvious plain word and it is WRONG about this panel: it carries
+ * the artifact path and the published copy as well as the graded criteria, and a
+ * friendly label that misleads is worse than the jargon it replaced. "Result"
+ * covers all of it — whether it passed, what it was checked against, and where the
+ * work landed.
+ */
+export function ResultPanel({ run }: { run: RunDetail }): ReactNode {
+  return (
+    <TabBody>
+      {/* The verdict, on the panel named after it, above the evidence for it. */}
+      <OutcomeNotice run={run} />
+
+      {/*
+       * WHERE THE WORK LANDED — THE ARTEFACT PATH ONLY, AND THAT IS A DELIBERATE
+       * HALF OF `DeliveryNotice`.
+       *
+       * That component renders two things: this path, and `run.previewUrl` as a
+       * link. The preview link is dead by construction — the server that answered
+       * that address was the run's, and it went down with the run — so it is a
+       * historical record rather than somewhere to click, and it is not carried
+       * here. It is a known-open item with its own owner; deciding what a dead
+       * address should say instead is that item's call, not this move's.
+       *
+       * THE CONSEQUENCE, SAID OUT LOUD: with this panel rendering the path itself,
+       * `DeliveryNotice` has no importer left and `previewUrl` now renders nowhere
+       * in the app. `notices.tsx` is another agent's file in this pass, so the
+       * component is left standing rather than deleted.
+       *
+       * The path is an absolute HOST path — copyable text, never a link.
+       */}
+      {run.artifactPath !== null && (
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded border border-line bg-surface px-3 py-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+            Artifact
+          </span>
+          <MonoPath path={run.artifactPath} max={80} />
+        </div>
+      )}
+
+      {/*
+       * DIRECTLY UNDER THE ARTIFACT PATH, AND THAT PAIRING IS THE POINT.
+       *
+       * Both answer "where did the work land". The artifact is the run's own
+       * workspace — evidence, kept for re-scoring, named by a 44-character run id
+       * — and this is the COPY made for the owner, under the ticket's name, which
+       * is the one he is meant to open. Put anywhere else they read as two
+       * unrelated paths.
+       *
+       * IT IS UNCONDITIONAL, unlike the row above it, because all four states of
+       * `RunDetail.publishedProject` are worth a sentence: a run that has not
+       * finished, a run with no record, a publish that was refused and a copy that
+       * exists. The panel decides which; see its docblock for why "no record" and
+       * "refused" may never be drawn the same way.
+       *
+       * IT IS THE ONLY THING HERE THAT ACTS ON THE WORLD — it can spawn and kill a
+       * process — so it sits under the verdict and the evidence rather than above
+       * them.
+       */}
+      <PublishedProjectPanel run={run} />
+
+      <CriteriaPanel criteria={run.criteria} />
+
+      {/*
+       * `designLock` IS NULL FOR A RUN WITH NO DESIGN LANE, which is not the same
+       * as a lane that published nothing — but the panel only needs the published
+       * set to tell a mockup from a capture of the built site, and both cases
+       * yield an empty one. `?? []` rather than an optional prop:
+       * `exactOptionalPropertyTypes` is on, so the prop is required and the caller
+       * does the flattening.
+       */}
+      {/*
+       * THE WHOLE LOCK, NOT JUST ITS MOCKUPS, SINCE 2026-08-03. A canvassed run
+       * publishes stills from directions it OFFERED AND DISCARDED and stills the
+       * owner ASKED FOR at the park, and the panel's disclosure calls all of them
+       * "the mockups the run was built to" — a false claim about two thirds of
+       * them, and the discarded ones are precisely what the run was NOT graded
+       * against. Which is which is only decidable from `directions[]` and
+       * `requests[]`.
+       */}
+      <ScreenshotsPanel
+        runId={run.runId}
+        screenshots={run.screenshots}
+        designLock={run.designLock ?? null}
+      />
+
+      {/*
+       * LAST, UNDER THE CAPTURES OF THE THING IT IS JUDGING, and separated from
+       * `CriteriaPanel` by the whole screenshots panel on purpose —
+       * `AdversaryPass`'s own instruction is "never beside a criterion result".
+       * `?? null` because `lib/api.ts` casts the response without validating it
+       * and the browser fixtures still serve a body with no `adversary` key; see
+       * the block docblock above. It renders nothing at all for a run with no
+       * record, which is every run today.
+       */}
+      <AdversaryPanel pass={run.adversary ?? null} />
+    </TabBody>
+  );
+}
+
+/**
+ * FILES — was "Code", and it is the surface the owner pointed at a screenshot of
+ * VS Code's explorer to describe: "the index where the code structure is".
+ *
+ * THE CONTRACT IS UNCHANGED FROM THE TAB, so the component arriving here needs no
+ * coordination beyond it: this panel renders exactly one child, it is handed the
+ * run id and nothing else, and it owns its own fetching, loading, empty and error
+ * states. It gets a full-height scroll container with no padding — the tree and
+ * the file pane manage their own — and it must not assume a width above 320px,
+ * because at a 375px viewport this panel is very nearly the viewport. Nothing in
+ * the canvas reads anything back out of it, and it is not told which agent is
+ * selected: the workspace is a fact about the RUN, and a file tree that changed
+ * under you as you clicked cards on the graph would be a worse tool, not a better
+ * one. If a per-agent view is ever wanted it should arrive as its own prop rather
+ * than by reusing the selection.
+ *
+ * IT IS MOUNTED ONLY WHILE IT IS OPEN, and that is deliberate: `CodeBrowser`
+ * fetches the workspace tree on mount, so an always-mounted one would pull a tree
+ * for every run view whether or not anyone asked for the files.
+ */
+export function FilesPanel({ run }: { run: RunDetail }): ReactNode {
+  return (
+    <div className="h-full min-h-[420px]">
+      <CodeBrowser runId={run.runId} />
+    </div>
+  );
+}
+
+/**
+ * ACTIVITY — was "Trace", and neither "Log" nor "History" would have been true.
+ *
+ * It is the whole event record, oldest first, AND a live tail with its own
+ * reconnect control. "Log" describes only the record and "History" only the past;
+ * "Activity" is the one plain word that covers a stream that is still arriving.
+ */
+export function ActivityPanel({
+  trace,
+  stream,
+  onReconnect,
+}: {
+  readonly trace: readonly TraceEntry[];
+  readonly stream: StreamState;
+  readonly onReconnect: () => void;
+}): ReactNode {
+  return (
+    <div className="p-3">
+      <TracePane trace={trace} stream={stream} onReconnect={onReconnect} />
+    </div>
   );
 }
