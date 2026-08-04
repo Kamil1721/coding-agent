@@ -26,6 +26,10 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { shortlistFor } from "../agent-shortlist.js";
 import type { GraphSseEvent } from "../api-types.js";
+// THE BUDGET CONSTANTS THE EMITTER SHARES WITH THE FOLD. Asserting against the
+// exported numbers rather than against literals means a test cannot claim the cap
+// was applied while measuring a different cap.
+import { DIFF_LINE_CHARS, DIFF_MAX_LINES, NARRATION_CHARS } from "../graph.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { CompactionRecord, ContextSample, ContextUsageEnvelope } from "../build-context.js";
@@ -2094,6 +2098,16 @@ interface LoopRecord {
   readonly rateLimits: RateLimitState[];
   readonly raw: string[];
   readonly warnings: string[];
+  /**
+   * EVERY log line at EVERY level, which `warnings` deliberately is not.
+   *
+   * ADDED FOR THE NARRATION MOVE. `warnings` keeps only `warn`, so the whole
+   * `info` channel — the one the model's prose used to be dumped into by
+   * `sink.log("info", truncate(text, 500))` — was invisible to this file. A test
+   * that the prose has LEFT that channel cannot be written against a recorder
+   * that never saw the channel.
+   */
+  readonly logs: { level: string; text: string }[];
   /** Canvas events, in emission order. Spec §9.1. */
   readonly graph: GraphSseEvent[];
 }
@@ -2110,12 +2124,14 @@ function loopSink(): LoopRecord {
     rateLimits: [] as RateLimitState[],
     raw: [] as string[],
     warnings: [] as string[],
+    logs: [] as { level: string; text: string }[],
     graph: [] as GraphSseEvent[],
   };
   return {
     ...record,
     sink: {
       log: (level: "info" | "warn" | "error", text: string) => {
+        record.logs.push({ level, text });
         if (level === "warn") record.warnings.push(text);
       },
       tool: (name: string) => record.tools.push(name),
@@ -2837,4 +2853,423 @@ test("THE LOOP: a result with a message STILL QUEUED does not cut the turn off",
   // `finally` closes it in the end either way; what matters is that the RESULT
   // branch did not, while something was still waiting to be delivered.
   assert.equal(live.pending, 1, "the queued message must not have been consumed or dropped");
+});
+
+/* -------------------------------------------------------------------------
+ * THE LOOP: narration and diffs (asks B and C)
+ *
+ * WHY THESE ARE HERE RATHER THAN ONLY IN A PURE UNIT TEST, for the third time
+ * in this file: `recordResultTokens` was a well-tested pure function whose CALL
+ * SITE an auditor reverted with the suite green at 229/227/0/2. Both features
+ * below are pure transforms with a single call site each, which is the exact
+ * shape that failed. So the assertions read the SINK after driving synthetic
+ * envelopes through `build()`.
+ *
+ * WHAT EACH NEGATIVE CONTROL WAS, and every one of them was applied to
+ * production code, run, watched go red, and reverted:
+ *
+ *   prose reaches the canvas    restore `if (uses.length === 0) return out;` at
+ *                               the top of `GraphProjection.assistant`
+ *   attribution is honest       hardcode `attribution: "exact"` in `#ownerOf`
+ *   the RESULT is what draws    delete the `message.type === "user"` branch from
+ *                               the loop and emit a `graph_diff` per `tool_use`
+ *                               block carrying a `file_path` instead
+ *   the body is capped here     remove the `lines.slice(0, budget)` cap in
+ *                               `fileEditFrom`
+ *   the log channel is free     restore `sink.log("info", truncate(text, 500))`
+ * ---------------------------------------------------------------------- */
+
+/** A `FileEditOutput` as the CLI delivers it on the user message. */
+function editOutput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    filePath: `${WORKSPACE}/src/app/page.tsx`,
+    oldString: "const b = 2;",
+    newString: "const b = 3;\nconst c = 4;",
+    originalFile: "const a = 1;\nconst b = 2;\n",
+    userModified: false,
+    replaceAll: false,
+    structuredPatch: [
+      {
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 3,
+        lines: [" const a = 1;", "-const b = 2;", "+const b = 3;", "+const c = 4;"],
+      },
+    ],
+    gitDiff: {
+      filename: "src/app/page.tsx",
+      status: "modified",
+      additions: 2,
+      deletions: 1,
+      changes: 3,
+      patch: "@@ -1,2 +1,3 @@",
+    },
+    ...overrides,
+  };
+}
+
+/** The user message the CLI sends back for one tool call. */
+function resultEnvelope(
+  toolUseId: string,
+  toolUseResult: unknown,
+  parentToolUseId: string | null = null,
+): SDKMessage {
+  return envelope({
+    type: "user",
+    parent_tool_use_id: parentToolUseId,
+    message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "ok" }] },
+    ...(toolUseResult === undefined ? {} : { tool_use_result: toolUseResult }),
+  });
+}
+
+/** An `Edit` call, with the input a block-reading implementation would use. */
+function editCall(id: string, parentToolUseId: string | null = null): SDKMessage {
+  return envelope({
+    type: "assistant",
+    parent_tool_use_id: parentToolUseId,
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          id,
+          name: "Edit",
+          input: {
+            file_path: `${WORKSPACE}/src/app/page.tsx`,
+            old_string: "const b = 2;",
+            new_string: "const b = 3;\nconst c = 4;",
+          },
+        },
+      ],
+    },
+  });
+}
+
+test("THE LOOP: a turn of PURE PROSE reaches the canvas — it used to emit nothing at all", async () => {
+  // THE EARLY RETURN THIS REPLACES. `graph-emit.ts` opened `assistant()` with
+  // `if (uses.length === 0) return out;`, so a turn that was only the model
+  // explaining itself — the turns the owner asked to see — produced no canvas
+  // event whatsoever. Restoring that line is this test's negative control.
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            { type: "text", text: "Reading the CV before I touch the hero — the dates matter." },
+          ],
+        },
+      }),
+    ],
+    record,
+  );
+
+  const narration = graphOf(record, "graph_narration");
+  assert.equal(narration.length, 1, "a prose-only turn produced no canvas event");
+  const said = narration[0];
+  assert.ok(said?.type === "graph_narration");
+  assert.equal(said.node, "n1");
+  assert.equal(said.text, "Reading the CV before I touch the hero — the dates matter.");
+  assert.equal(said.truncated, false);
+  // `parent_tool_use_id: null` IS the orchestrator's own turn, by the SDK's own
+  // definition of the field. That is exact, not a fallback.
+  assert.equal(said.attribution, "exact");
+
+  // AND IT IS NOT IN THE GENERIC LOG CHANNEL ANY MORE. `sink.log("info", …)` put
+  // the model's words in the same shape and level as
+  // `spec seat — anthropic: 14 input, 40187 cache read…`; a UI reading that
+  // channel can render narration and token telemetry identically or not at all.
+  assert.equal(
+    record.logs.filter((line) => line.text.includes("Reading the CV")).length,
+    0,
+    "the prose is still being dumped into the generic log channel as well",
+  );
+  // The full turn IS still in the raw transcript, uncut. That file is the archive.
+  assert.equal(record.raw.filter((chunk) => chunk.includes("Reading the CV")).length, 1);
+});
+
+test("THE LOOP: a turn that neither said nor did anything still emits nothing", async () => {
+  // THE OTHER HALF OF DELETING THE EARLY RETURN, and the reason it is guarded on
+  // BOTH conditions rather than removed. `assistantText` joins the text blocks of
+  // a turn, so a turn whose only block is a tool call joins to "" — and a turn
+  // that is genuinely empty must not announce the root node just to report that
+  // the model was silent.
+  const record = loopSink();
+  await runLoop(
+    [envelope({ type: "assistant", parent_tool_use_id: null, message: { content: [] } })],
+    record,
+  );
+
+  assert.equal(record.graph.length, 0, "an empty turn minted a node and announced it");
+});
+
+test("THE LOOP: narration for a parent we never saw is INFERRED, not silently the root's word", async () => {
+  // THE FIELD EXISTS FOR EXACTLY THIS. A resumed session replays no
+  // `task_started`, so a forwarded subagent turn can name a `parent_tool_use_id`
+  // this projection never recorded. Attributing it to the root is the only
+  // defensible node — putting the root's NAME on another agent's words without
+  // saying so is the guess the canvas must be able to draw differently.
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: "toolu_from_a_previous_session",
+        message: { content: [{ type: "text", text: "Auditing the suite now." }] },
+      }),
+    ],
+    record,
+  );
+
+  const said = graphOf(record, "graph_narration")[0];
+  assert.ok(said?.type === "graph_narration");
+  assert.equal(said.node, "n1", "there is no other node it could belong to");
+  assert.equal(
+    said.attribution,
+    "inferred",
+    "an id we never saw was reported as an identity the message carried",
+  );
+});
+
+test("THE LOOP: narration is capped at the EMITTER, and says it was cut", async () => {
+  // CAPPED ON THE WAY OUT, NOT ONLY ON THE WAY IN. The fold caps too, but by the
+  // time it runs the turn has already been serialised onto the SSE stream and
+  // written into the events table, where it stays for every future replay.
+  const record = loopSink();
+  const long = "x".repeat(NARRATION_CHARS * 3);
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { content: [{ type: "text", text: long }] },
+      }),
+    ],
+    record,
+  );
+
+  const said = graphOf(record, "graph_narration")[0];
+  assert.ok(said?.type === "graph_narration");
+  assert.equal(said.text.length, NARRATION_CHARS, "the whole turn went onto the wire");
+  assert.equal(said.truncated, true, "a cut turn was reported as whole");
+});
+
+test("THE LOOP: narration comes BEFORE the tool calls of the same turn", async () => {
+  // ONE ORDERED TIMELINE PER NODE, and `foldGraph` appends in arrival order and
+  // cannot re-sort — `at` is nullable, so a merge by timestamp is not always
+  // undoable. "Here is what I am about to do" has to be emitted before the doing.
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            { type: "text", text: "Now I'll open the file." },
+            { type: "tool_use", id: "tu_read", name: "Read", input: { file_path: "/w/a.ts" } },
+          ],
+        },
+      }),
+    ],
+    record,
+  );
+
+  assert.deepEqual(
+    record.graph.map((event) => event.type).filter((type) => type !== "graph_agent"),
+    ["graph_inventory", "graph_narration", "graph_tool"],
+  );
+});
+
+test("THE LOOP: only the edit that APPLIED draws a diff — the failed one draws nothing", async () => {
+  /*
+   * THE TEST THAT DECIDES WHETHER THIS FEATURE TELLS THE TRUTH.
+   *
+   * Both edits below are identical `tool_use` blocks: same tool, same
+   * `file_path`, same `old_string`/`new_string`. Everything a block-reading
+   * implementation could see is the same for both, which is what makes the
+   * negative control real rather than decorative — emitting from the block
+   * genuinely produces two cards here, one of them for a change that is not in
+   * the file.
+   *
+   * What differs is what came BACK. The first returns a `FileEditOutput`. The
+   * second returns the CLI's error string, which is what a failed `Edit` actually
+   * produces, and there is no patch in it to draw.
+   *
+   * THE THIRD CALL IS THE PERMANENT CARVE-OUT. A `Bash` edit changes the file and
+   * returns no structured output at all, so it can never draw a card. It is
+   * asserted here rather than in its own test because the same control covers it:
+   * a block-reading implementation would draw one for it too.
+   */
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      editCall("tu_ok"),
+      resultEnvelope("tu_ok", editOutput()),
+      editCall("tu_fail"),
+      resultEnvelope("tu_fail", "Error: String to replace not found in file."),
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_bash",
+              name: "Bash",
+              input: { command: `sed -i '' s/a/b/ ${WORKSPACE}/src/app/page.tsx` },
+            },
+          ],
+        },
+      }),
+      resultEnvelope("tu_bash", { stdout: "", stderr: "", interrupted: false, isImage: false }),
+    ],
+    record,
+  );
+
+  const diffs = graphOf(record, "graph_diff");
+  assert.equal(diffs.length, 1, "an edit that never applied drew green and red lines");
+  const diff = diffs[0];
+  assert.ok(diff?.type === "graph_diff");
+  assert.equal(diff.tool, "Edit");
+  assert.equal(diff.node, "n1");
+  assert.equal(diff.attribution, "exact");
+  // WORKSPACE-RELATIVE. The absolute path is both unreadable on a card and a
+  // leak: no rule in `redactForPersistence` matches `/Users/<name>/…`.
+  assert.equal(diff.path, "src/app/page.tsx");
+  assert.equal(diff.change, "modified");
+  assert.equal(diff.additions, 2);
+  assert.equal(diff.deletions, 1);
+  assert.equal(diff.capped, false);
+  assert.deepEqual(diff.hunks, [
+    {
+      oldStart: 1,
+      oldLines: 2,
+      newStart: 1,
+      newLines: 3,
+      lines: [" const a = 1;", "-const b = 2;", "+const b = 3;", "+const c = 4;"],
+    },
+  ]);
+});
+
+test("THE LOOP: a subagent's edit lands on the SUBAGENT's node, not the root's", async () => {
+  /*
+   * MEASURED AGAINST THE SHIPPED CLI, NOT ASSUMED. A delegated agent's messages
+   * are filtered by
+   *   `if (!forwardSubagentText && block.type !== "tool_use" && block.type !== "tool_result") continue;`
+   * and `forwardSubagentText` is unset, so its tool RESULTS are forwarded and its
+   * PROSE is not. The forwarded result carries `parent_tool_use_id` set to the
+   * Agent block that spawned the task, which is the key `#byToolUse` holds — so
+   * a subagent's edits are attributable exactly, and its narration does not exist
+   * to attribute.
+   */
+  const record = loopSink();
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-builder",
+        subagent_type: "frontend-developer",
+        tool_use_id: "toolu_agent",
+      }),
+      editCall("tu_sub", "toolu_agent"),
+      resultEnvelope("tu_sub", editOutput(), "toolu_agent"),
+    ],
+    record,
+  );
+
+  const diff = graphOf(record, "graph_diff")[0];
+  assert.ok(diff?.type === "graph_diff");
+  assert.equal(diff.node, "n2", "the subagent's edit was drawn on the orchestrator");
+  assert.equal(diff.attribution, "exact");
+});
+
+test("THE LOOP: a 3,000-line Write is capped ON THE WIRE, and its counts stay whole", async () => {
+  /*
+   * THE CASE THAT FORCES A CAP AT THE EMITTER. Creating a page is ONE hunk whose
+   * `lines` is the entire file — nothing pathological about it. Uncapped it goes
+   * onto the SSE stream, into the events table, and into every future replay of
+   * the run; `foldGraph`'s cap runs afterwards and protects only the canvas.
+   *
+   * THE COUNTS ARE MEASURED OVER THE WHOLE PATCH, before the cap, and here they
+   * come from the patch itself rather than from `gitDiff` — the fixture omits it,
+   * which is the shape a CLI outside a git repo produces.
+   */
+  const record = loopSink();
+  const lines = Array.from({ length: 300 }, (_, i) => `+line ${String(i)}`);
+  lines[0] = `+${"z".repeat(DIFF_LINE_CHARS * 4)}`;
+  await runLoop(
+    [
+      INIT_ENVELOPE,
+      envelope({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_write",
+              name: "Write",
+              input: { file_path: `${WORKSPACE}/src/app/new.tsx`, content: "…" },
+            },
+          ],
+        },
+      }),
+      resultEnvelope("tu_write", {
+        type: "create",
+        filePath: `${WORKSPACE}/src/app/new.tsx`,
+        content: "…",
+        originalFile: null,
+        structuredPatch: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 300, lines }],
+      }),
+    ],
+    record,
+  );
+
+  const diff = graphOf(record, "graph_diff")[0];
+  assert.ok(diff?.type === "graph_diff");
+  assert.equal(diff.tool, "Write");
+  // `gitDiff` absent, `type: "create"` present — a file this edit created.
+  assert.equal(diff.change, "added");
+  assert.equal(diff.additions, 300, "the counts must describe the WHOLE patch");
+  assert.equal(diff.deletions, 0);
+  assert.equal(diff.hunks[0]?.lines.length, DIFF_MAX_LINES, "the whole file went onto the wire");
+  assert.equal(diff.droppedLines, 300 - DIFF_MAX_LINES);
+  assert.equal(diff.droppedHunks, 0);
+  assert.equal(diff.capped, true, "a partial diff was reported as whole");
+  assert.equal(diff.hunks[0]?.lines[0]?.length, DIFF_LINE_CHARS, "one line carried the whole bundle");
+});
+
+test("THE LOOP: a result for a tool call we never saw is DROPPED, not drawn under a guessed name", async () => {
+  // THE SAME POLICY `taskFinished` APPLIES to a notification for a task nobody
+  // started, and it lands the same way: on a resumed session the first message
+  // can be a result whose `tool_use` block was never replayed. The honest options
+  // are "name a tool we never saw" and "say nothing".
+  const record = loopSink();
+  await runLoop([INIT_ENVELOPE, resultEnvelope("tu_from_a_previous_session", editOutput())], record);
+
+  assert.equal(graphOf(record, "graph_diff").length, 0);
+});
+
+test("THE LOOP: the same result arriving twice draws ONE card", async () => {
+  // The CLI's own normaliser copies `toolUseResult` onto every split of a
+  // multi-block user message, so a duplicate is not hypothetical. The remembered
+  // tool name is deleted once read, which makes the second arrival a result for a
+  // call we no longer know — the case above.
+  const record = loopSink();
+  await runLoop(
+    [INIT_ENVELOPE, editCall("tu_ok"), resultEnvelope("tu_ok", editOutput()), resultEnvelope("tu_ok", editOutput())],
+    record,
+  );
+
+  assert.equal(graphOf(record, "graph_diff").length, 1, "one edit was drawn twice");
 });

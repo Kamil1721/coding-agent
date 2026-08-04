@@ -151,6 +151,7 @@ import {
   resultErrorText,
   resultTokens,
   summariseToolInput,
+  toolResultOf,
   toolUses,
   truncate,
   usageDisagreement,
@@ -1326,7 +1327,10 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
     // rendering. Every branch below gets ONE call; the transforms live in
     // graph-emit.ts so they are executed by tests rather than reviewed inside a
     // loop that needs a real CLI.
-    const graph = new GraphProjection();
+    // THE WORKSPACE IS PASSED SO A DIFF CAN NAME A FILE THE WAY A HUMAN WOULD —
+    // `src/app/page.tsx`, not `/Users/<name>/…/runs/<id>/workspace/src/app/page.tsx`.
+    // The host-path scrub does not depend on it; see `relativePath` in graph-emit.ts.
+    const graph = new GraphProjection(workspace);
     const emitGraph = (events: readonly GraphSseEvent[]): void => {
       for (const event of events) sink.graph(event);
     };
@@ -1450,10 +1454,9 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
 
         if (message.type === "assistant") {
           const text = assistantText(message);
-          if (text.trim().length > 0) {
-            sink.raw(`\n[assistant]\n${text}\n`);
-            sink.log("info", truncate(text, 500));
-          }
+          // THE FULL TURN STILL GOES TO THE RAW TRANSCRIPT, UNCUT. That file is
+          // the archive; the canvas gets the capped copy.
+          if (text.trim().length > 0) sink.raw(`\n[assistant]\n${text}\n`);
           const uses = toolUses(message);
           for (const use of uses) {
             sink.tool(use.name, summariseToolInput(use.input));
@@ -1462,7 +1465,46 @@ export class ClaudeSubscriptionBuilder implements SubscriptionBuilder {
           // AN ASSISTANT TURN CARRIES — there is no `task_id` on it. Null means
           // the orchestrator's own turn and is EXACT; an id we never saw is a
           // guess and says so.
-          emitGraph(graph.assistant(message, uses));
+          //
+          // THE PROSE GOES IN HERE NOW, AND THE `sink.log("info", truncate(text,
+          // 500))` THAT USED TO CARRY IT IS GONE RATHER THAN KEPT ALONGSIDE. It
+          // was not a second useful view of the same thing: it put the model's
+          // words into `{type:"log", level:"info"}`, the same channel and the same
+          // level as `spec seat — anthropic: 14 input, 40187 cache read…`, so
+          // nothing downstream could tell narration from telemetry and the UI had
+          // to render both as grey lines or neither. Keeping it would also double
+          // the durable row count for one turn to say the same sentence twice, at
+          // 500 characters instead of 1,200. Everything the log line was actually
+          // used for — a human reading the run log — is served better by
+          // `graph_narration`, and the uncut text is in the raw transcript above.
+          emitGraph(graph.assistant(message, uses, text));
+          continue;
+        }
+
+        /*
+         * THE TOOL RESULT — where the diff comes from, and the whole reason this
+         * branch exists at all. It did not, for this loop's entire life: the SDK
+         * hands over a computed patch on the USER message and nothing read it.
+         *
+         * `FileEditOutput.structuredPatch` carries the `" "`/`"+"`/`"-"` prefixed
+         * lines and `gitDiff` carries the counts — already computed, already
+         * across the process boundary, discarded one field at a time by
+         * `summariseToolInput`, which keeps `file_path`.
+         *
+         * READING THE RESULT AND NOT THE `tool_use` BLOCK IS DELIBERATE AND IS
+         * TESTED: a failed edit produces no output, so only edits that actually
+         * applied can draw a card. See `GraphProjection.toolResult`.
+         *
+         * THIS IS ALSO THE PATH A SUBAGENT'S EDITS TAKE. Verified in the shipped
+         * CLI rather than assumed — a delegated agent's `tool_result` blocks are
+         * forwarded by default (only its TEXT is gated behind
+         * `forwardSubagentText`), arriving with `parent_tool_use_id` set to the
+         * Agent block that spawned it, which is the key the projection attributes
+         * on. So diffs are whole-canvas; narration is orchestrator-only.
+         */
+        if (message.type === "user") {
+          const result = toolResultOf(message);
+          if (result !== null) emitGraph(graph.toolResult(message, result));
           continue;
         }
 

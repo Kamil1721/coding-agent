@@ -30,7 +30,8 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { extractTokens, resultTokens, usageDisagreement } from "./claude-common.js";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { extractTokens, resultTokens, toolResultOf, usageDisagreement } from "./claude-common.js";
 import type { ResultUsageEnvelope } from "./claude-common.js";
 import { modelRows } from "./tokens.js";
 
@@ -269,4 +270,58 @@ test("REGRESSION GUARD: extractTokens still reads one usage payload the old way"
       byModel: [],
     },
   );
+});
+
+/* -------------------------------------------------------------------------
+ * THE TOOL RESULT — where the diff data has been arriving unread.
+ *
+ * `SDKUserMessage.tool_use_result` is "the tool's full Output object, not the
+ * string content sent to the model" (the SDK's own note). Nothing in this repo
+ * read it until 2026-08-04, which is why the green and red lines the SDK already
+ * computes were never on screen.
+ * ---------------------------------------------------------------------- */
+
+function userMessage(fields: Record<string, unknown>): SDKMessage {
+  return { type: "user", parent_tool_use_id: null, ...fields } as unknown as SDKMessage;
+}
+
+test("a tool result is paired with the block id it answers", () => {
+  const paired = toolResultOf(
+    userMessage({
+      message: { content: [{ type: "tool_result", tool_use_id: "tu_7", content: "ok" }] },
+      tool_use_result: { filePath: "/w/a.ts" },
+    }),
+  );
+
+  assert.deepEqual(paired, { toolUseId: "tu_7", result: { filePath: "/w/a.ts" } });
+});
+
+test("a user message carrying NO structured output yields nothing", () => {
+  // THE CASE THAT COVERS MOST OF THE STREAM. An ordinary prompt, a `Bash` result
+  // from a CLI too old to send the field, an interrupted turn — none of them says
+  // anything about a file, and reconstructing a result from the text the model
+  // was shown would be a guess printed as a diff.
+  assert.equal(
+    toolResultOf(
+      userMessage({
+        message: { content: [{ type: "tool_result", tool_use_id: "tu_7", content: "ok" }] },
+      }),
+    ),
+    null,
+  );
+  assert.equal(toolResultOf(userMessage({ message: { content: "just text" } })), null);
+});
+
+test("a result whose block carried no id is reported as having none, not skipped", () => {
+  // NULL RATHER THAN ABSENT, matching `toolUses`: the structured output is real
+  // and the caller decides what an unattributable one is worth. `toolResult`
+  // drops it, because a diff with no call behind it cannot be named.
+  const paired = toolResultOf(
+    userMessage({
+      message: { content: [{ type: "text", text: "no tool_result block here" }] },
+      tool_use_result: { filePath: "/w/a.ts" },
+    }),
+  );
+
+  assert.deepEqual(paired, { toolUseId: null, result: { filePath: "/w/a.ts" } });
 });

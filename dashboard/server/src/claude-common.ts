@@ -282,6 +282,65 @@ export function toolUses(
 }
 
 /**
+ * One tool RESULT off a user message: the block id it answers, and the tool's
+ * own structured output.
+ *
+ * `tool_use_result` IS THE FIELD, AND IT IS THE TOOL'S FULL Output OBJECT — not
+ * the string the model sees. The SDK's own note on `SDKUserMessage`: "Structured
+ * tool output — the tool's full Output object, not the string content sent to the
+ * model. The shape is per-tool, keyed by the matching tool_use block's name". So
+ * it stays `unknown` here and is duck-typed by whoever wants a particular shape;
+ * `graph-emit.ts` reads `FileEditOutput`/`FileWriteOutput` off it.
+ */
+export interface SdkToolResult {
+  /** The `tool_use` block this answers, or null when the block carried no id. */
+  readonly toolUseId: string | null;
+  readonly result: unknown;
+}
+
+/**
+ * The tool result carried by one user message, or null when it carries none.
+ *
+ * ONE RESULT PER MESSAGE, AND THAT IS THE CLI'S OWN SHAPE RATHER THAN AN
+ * ASSUMPTION. Verified by reading the shipped CLI: every message it converts
+ * passes through a normaliser that maps `message.content` ONE ENTRY PER BLOCK —
+ * `e.message.content.map((o, i) => ({...{content:[o], toolUseResult:e.toolUseResult}}))`
+ * — so a turn that answered three tools arrives as three user messages, each with
+ * a single `tool_result` block. Crucially that normaliser copies the SAME
+ * `toolUseResult` onto every split, so pairing one structured output with more
+ * than one block id would report a single edit under two different tool calls.
+ * Taking the first `tool_result` block is therefore not a shortcut, it is the
+ * only pairing that cannot double-count.
+ *
+ * NOTHING IS RETURNED FOR A MESSAGE WITH NO STRUCTURED OUTPUT. A `Bash` result,
+ * a plain prompt, and a `tool_result` from a CLI too old to send the field all
+ * land here; none of them says anything about a file, and inventing a result from
+ * the text the model was shown is exactly the class of guess this file avoids.
+ */
+export function toolResultOf(message: SDKMessage): SdkToolResult | null {
+  if (message.type !== "user") return null;
+  const result = (message as { tool_use_result?: unknown }).tool_use_result;
+  if (result === undefined || result === null) return null;
+  const content = message.message.content;
+  let toolUseId: string | null = null;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (
+        typeof block === "object" &&
+        block !== null &&
+        "type" in block &&
+        block.type === "tool_result"
+      ) {
+        const id = (block as { tool_use_id?: unknown }).tool_use_id;
+        toolUseId = typeof id === "string" ? id : null;
+        break;
+      }
+    }
+  }
+  return { toolUseId, result };
+}
+
+/**
  * A one-line summary of a tool call for the live trace.
  *
  * Bounded hard: a tool input can contain a whole file. The summary is for a

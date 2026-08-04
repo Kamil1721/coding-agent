@@ -44,11 +44,40 @@
  * never started. `attribution: "inferred"` marks a GUESSED edge; it cannot
  * launder a WRONG node, and pinning another agent's result onto the root would
  * be exactly that.
+ *
+ * WHAT REACHES THIS FILE FROM A SUBAGENT, AND WHAT DOES NOT — read out of the
+ * shipped CLI binary rather than assumed, because it decides how much of the two
+ * features below actually work.
+ *
+ * The CLI splits every message one-per-content-block and then filters what it
+ * forwards from a delegated agent with exactly this line:
+ *
+ *     if (!forwardSubagentText && block.type !== "tool_use" && block.type !== "tool_result") continue;
+ *
+ * `Options.forwardSubagentText` defaults to false and `claude-builder.ts` does not
+ * set it. So:
+ *
+ *   DIFFS FROM SUBAGENTS DO ARRIVE. A subagent's tool RESULT is a `tool_result`
+ *   block, it passes that filter, and the converter yields it as
+ *   `{type:"user", parent_tool_use_id: <the Agent block's id>, tool_use_result: …}`
+ *   — which is the exact key {@link GraphProjection.toolResult} attributes on, so
+ *   a subagent's edits land on the SUBAGENT's node, not the root's.
+ *
+ *   NARRATION FROM SUBAGENTS DOES NOT. A prose block is `type: "text"`, it is
+ *   dropped by that same line, and no later message repeats it. Every
+ *   `graph_narration` this file emits is therefore the ORCHESTRATOR's own prose.
+ *   That is a real hole in what the canvas can show — most of the work in this
+ *   architecture happens inside delegated agents — and it is a ONE-LINE change to
+ *   close (`forwardSubagentText: true` in `buildOptions`), deliberately not made
+ *   here: it multiplies event volume on every run by an unmeasured factor, and
+ *   `attachSse` now DISCONNECTS a client past 4 MiB of queued bytes rather than
+ *   buffering it. It is a measurement and an owner decision, not a tidy-up.
  */
 
 import type {
   GraphAgentState,
   GraphAttribution,
+  GraphDiffHunk,
   GraphSseEvent,
   ApiLane,
 } from "./api-types.js";
@@ -56,6 +85,17 @@ import { laneOf } from "./agent-shortlist.js";
 import { environmentHash } from "./build-environment.js";
 import type { RunEnvironment } from "./build-environment.js";
 import { summariseToolInput, truncate } from "./claude-common.js";
+import type { SdkToolResult } from "./claude-common.js";
+// THE SAME FOUR NUMBERS THE FOLD ENFORCES, AND THE SAME SCRUB. Imported rather
+// than restated: `graph.ts` imports nothing but types from `api-types.ts`, so
+// there is no cycle, and a second copy of the budget is a second thing to drift.
+import {
+  DIFF_LINE_CHARS,
+  DIFF_MAX_HUNKS,
+  DIFF_MAX_LINES,
+  NARRATION_CHARS,
+  scrubHostPaths,
+} from "./graph.js";
 
 /**
  * The shape of `SDKTaskStartedMessage`, as far as this file cares.
@@ -96,6 +136,192 @@ export interface GraphTaskFinished {
  */
 export interface GraphAssistantEnvelope {
   readonly parent_tool_use_id: string | null;
+}
+
+/**
+ * The shape of `SDKUserMessage`, as far as this file cares.
+ *
+ * IDENTICAL TO {@link GraphAssistantEnvelope} AND DECLARED SEPARATELY ANYWAY.
+ * The two are the same field for the same reason — a tool result is attributed by
+ * the turn that produced it — but a user message is not an assistant message, and
+ * a reader who finds `graph.toolResult(assistantEnvelope)` type-checking has been
+ * told the wrong thing about what the CLI sends.
+ */
+export interface GraphUserEnvelope {
+  readonly parent_tool_use_id: string | null;
+}
+
+/**
+ * ONE APPLIED FILE EDIT, read off the tool RESULT.
+ *
+ * READING THE RESULT RATHER THAN THE `tool_use` BLOCK IS THE WHOLE CORRECTNESS
+ * ARGUMENT, and it is a property of WHERE the data comes from rather than of a
+ * check anyone has to remember to write: `FileEditOutput` is what the tool
+ * PRODUCED, so a refused, failed or string-not-found edit produces none and there
+ * is nothing here to emit. `summariseToolInput` reads the block instead and would
+ * draw green and red lines for edits that never happened.
+ */
+export interface GraphFileEdit {
+  readonly path: string;
+  readonly change: "added" | "modified";
+  readonly additions: number;
+  readonly deletions: number;
+  readonly hunks: readonly GraphDiffHunk[];
+  readonly capped: boolean;
+  readonly droppedHunks: number;
+  readonly droppedLines: number;
+}
+
+/** A finite, non-negative, whole count off an unvalidated payload. */
+function count(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value < 0 ? 0 : Math.floor(value);
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/**
+ * A path the canvas can show: workspace-relative where possible, `~`-prefixed
+ * where not.
+ *
+ * TWO INDEPENDENT REASONS, AND ONLY ONE OF THEM IS COSMETIC. `src/app/page.tsx`
+ * is what a diff card wants to say. But `filePath` is ABSOLUTE, and
+ * `redactForPersistence` has no path rule at all — every rule in
+ * `bakeoff/src/redact.ts` is a credential rule and `/Users/<name>/…` matches none
+ * of them — so an unscrubbed path is persisted, served and rendered verbatim.
+ * `scrubHostPaths` is applied even after the workspace prefix is stripped,
+ * because an edit OUTSIDE the workspace still produces a `FileEditOutput`.
+ */
+function relativePath(filePath: string, workspace: string): string {
+  const prefix = workspace.endsWith("/") ? workspace : `${workspace}/`;
+  const relative =
+    workspace.length > 0 && filePath.startsWith(prefix) ? filePath.slice(prefix.length) : filePath;
+  return scrubHostPaths(relative);
+}
+
+/**
+ * What `structuredPatch` says the change was, when the CLI did not say itself.
+ *
+ * COUNTED OVER THE WHOLE PATCH, BEFORE ANY CAP — see {@link GraphFileEdit}. The
+ * prefixes are the unified-diff ones the SDK documents on `lines`; a `\` line
+ * ("\ No newline at end of file") is neither and is counted as neither.
+ */
+function countLines(hunks: readonly unknown[]): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const hunk of hunks) {
+    const shape = record(hunk);
+    const lines = shape === null ? [] : shape["lines"];
+    if (!Array.isArray(lines)) continue;
+    for (const line of lines) {
+      if (typeof line !== "string") continue;
+      if (line.startsWith("+")) additions += 1;
+      else if (line.startsWith("-")) deletions += 1;
+    }
+  }
+  return { additions, deletions };
+}
+
+/**
+ * One `FileEditOutput` / `FileWriteOutput`, capped and scrubbed — or null when
+ * the payload is not one.
+ *
+ * DUCK-TYPED ON THE PAYLOAD, NOT SWITCHED ON THE TOOL NAME. `tool_use_result` is
+ * "the tool's full Output object … keyed by the matching tool_use block's name"
+ * (the SDK's own words), and a name list is a list to keep complete: a CLI that
+ * ships a fourth file-editing tool would silently stop producing diffs. `filePath`
+ * plus `structuredPatch` is the shape both editing outputs share and nothing else
+ * in `sdk-tools.d.ts` carries — checked, not assumed: `structuredPatch` appears at
+ * exactly two declarations in that file, `FileEditOutput` and `FileWriteOutput`.
+ *
+ * `NotebookEdit` IS NOT ONE OF THEM, contrary to `api-types.ts`'s note on the
+ * event's `tool` field. `NotebookEditOutput` carries `new_source`/`old_source` and
+ * NO `structuredPatch`, so a notebook edit produces no diff card. Rendering one
+ * would mean diffing two cell sources here, which is computing a patch rather than
+ * reporting one.
+ *
+ * CAPPED HERE AS WELL AS IN THE FOLD, AND THE DUPLICATION IS THE POINT. The fold's
+ * cap protects the CANVAS; it runs after the event has already been serialised
+ * onto the SSE stream and written into the events table. A `Write` of a
+ * 3,000-line file is one hunk whose `lines` is the whole file — ~150 KB on the
+ * wire, in the row, and in every future replay of that run. The fold ADDS its own
+ * drops to the ones reported here, so capping to the same constants means it adds
+ * zero and one number still reaches the UI.
+ */
+export function fileEditFrom(result: unknown, workspace: string): GraphFileEdit | null {
+  const output = record(result);
+  if (output === null) return null;
+  const filePath = output["filePath"];
+  const patch = output["structuredPatch"];
+  if (typeof filePath !== "string" || filePath.length === 0) return null;
+  if (!Array.isArray(patch)) return null;
+
+  const gitDiff = record(output["gitDiff"]);
+  const whole = countLines(patch);
+  const additions = (gitDiff === null ? null : count(gitDiff["additions"])) ?? whole.additions;
+  const deletions = (gitDiff === null ? null : count(gitDiff["deletions"])) ?? whole.deletions;
+
+  /*
+   * WHICH SIGNAL WINS, IN ORDER OF HOW DIRECTLY IT WAS STATED.
+   *   1. `gitDiff.status` — the CLI's own word, typed exactly `"modified"|"added"`.
+   *   2. `FileWriteOutput.type` — `"create"` vs `"update"`, on writes only.
+   *   3. `originalFile === null` — documented as "null for new files".
+   * Anything else is `modified`, which is the member that claims less: saying a
+   * file was CREATED when it was edited invents a fact, the reverse loses one.
+   */
+  const status = gitDiff === null ? undefined : gitDiff["status"];
+  const change: "added" | "modified" =
+    status === "added" || status === "modified"
+      ? status
+      : output["type"] === "create" || output["originalFile"] === null
+        ? "added"
+        : "modified";
+
+  const hunks: GraphDiffHunk[] = [];
+  let droppedHunks = 0;
+  let droppedLines = 0;
+  let shortened = false;
+  let budget = DIFF_MAX_LINES;
+  for (const entry of patch) {
+    const hunk = record(entry);
+    const lines = hunk === null || !Array.isArray(hunk["lines"]) ? [] : (hunk["lines"] as unknown[]);
+    if (hunk === null || hunks.length >= DIFF_MAX_HUNKS || budget <= 0) {
+      droppedHunks += 1;
+      droppedLines += lines.length;
+      continue;
+    }
+    const kept = lines.slice(0, budget);
+    droppedLines += lines.length - kept.length;
+    budget -= kept.length;
+    hunks.push({
+      oldStart: count(hunk["oldStart"]) ?? 0,
+      oldLines: count(hunk["oldLines"]) ?? 0,
+      newStart: count(hunk["newStart"]) ?? 0,
+      newLines: count(hunk["newLines"]) ?? 0,
+      lines: kept.map((line) => {
+        const safe = scrubHostPaths(typeof line === "string" ? line : "");
+        if (safe.length <= DIFF_LINE_CHARS) return safe;
+        shortened = true;
+        return safe.slice(0, DIFF_LINE_CHARS);
+      }),
+    });
+  }
+
+  return {
+    path: relativePath(filePath, workspace),
+    change,
+    additions,
+    deletions,
+    hunks,
+    // NOT `droppedLines > 0`: one 40,000-character minified line is a whole diff
+    // cut in half with nothing missing from the line COUNT. Same rule as the fold.
+    capped: shortened || droppedHunks > 0 || droppedLines > 0,
+    droppedHunks,
+    droppedLines,
+  };
 }
 
 /** One `tool_use` content block. `id` is what a later `task_started` names. */
@@ -177,6 +403,21 @@ function canSpawn(use: GraphToolUse): boolean {
 const SPAWN_MEMORY = 512;
 
 /**
+ * Bound on remembered tool NAMES — `tool_use` block id -> the tool it called.
+ *
+ * WHY IT IS BOUNDED DIFFERENTLY FROM {@link SPAWN_MEMORY}, which simply refuses
+ * past the cap. Every tool call goes in here, not just delegations, so on a
+ * four-hour run this is the map that could grow without limit. In steady state it
+ * holds almost nothing: a result arrives immediately after its call and the entry
+ * is deleted when it is read. What fills it is calls whose results never come
+ * back — an aborted turn, a subagent that was interrupted — and for those the
+ * OLDEST entry is the one that will never be claimed. So the cap EVICTS the
+ * oldest (a `Map` iterates in insertion order) instead of refusing the newest,
+ * which keeps the entry a diff is about to ask for.
+ */
+const TOOL_NAME_MEMORY = 512;
+
+/**
  * The projection: SDK envelopes in, `graph_*` events out, node ids minted here.
  *
  * ONE INSTANCE PER BUILD. A resumed build gets a fresh one and mints from `n1`
@@ -193,6 +434,20 @@ export class GraphProjection {
   readonly #byToolUse = new Map<string, string>();
   /** a delegation-shaped tool_use block id -> the node that made the call. */
   readonly #spawnOrigin = new Map<string, string>();
+  /** any tool_use block id -> the tool's name, for naming its RESULT. */
+  readonly #toolNames = new Map<string, string>();
+  /** The build's directory, so a diff can name a file the way a human would. */
+  readonly #workspace: string;
+
+  /**
+   * DEFAULTED SO THAT A CALLER WITH NO WORKSPACE GETS ABSOLUTE-BUT-SCRUBBED PATHS
+   * rather than a compile error — `relativePath` treats "" as "nothing to strip"
+   * and `scrubHostPaths` still runs, so the redaction property never depends on
+   * this argument being passed.
+   */
+  constructor(workspace = "") {
+    this.#workspace = workspace;
+  }
 
   #mint(): string {
     const id = `n${String(this.#next)}`;
@@ -330,7 +585,56 @@ export class GraphProjection {
   }
 
   /**
-   * The tool calls in one assistant turn.
+   * Which node a turn belongs to, and how sure we are.
+   *
+   * THE ONE ATTRIBUTION RULE, IN ONE PLACE, because assistant turns and tool
+   * results now both need it and the tempting second implementation for results
+   * is the WRONG one: a result could be attributed through the `tool_use` block id
+   * it answers, which we also remember — but that map holds a tool NAME, and the
+   * node that ran a tool is not derivable from the tool. `parent_tool_use_id` is
+   * the only identity either message carries.
+   *
+   * `null` IS EXACT: a turn with no parent tool use is the orchestrator's own, by
+   * the SDK's own definition of the field. Only an id we never saw is a guess, and
+   * it is attributed to the root and SAYS SO — the alternative is dropping real
+   * work off the canvas because a resumed session never replayed its `task_started`.
+   */
+  #ownerOf(
+    parentToolUseId: string | null,
+    out: GraphSseEvent[],
+  ): { node: string; attribution: GraphAttribution } {
+    const root = this.rootNode(out);
+    const owner = parentToolUseId === null ? root : this.#byToolUse.get(parentToolUseId);
+    return { node: owner ?? root, attribution: owner === undefined ? "inferred" : "exact" };
+  }
+
+  /**
+   * One assistant turn: what it SAID, then what it DID.
+   *
+   * `narration` IS A REQUIRED ARGUMENT AND THAT IS DELIBERATE. It used to be
+   * captured by the loop and thrown away — `sink.log("info", truncate(text, 500))`
+   * put the model's prose in the same generic `{type:"log", level:"info"}` channel
+   * as `spec seat — anthropic: 14 input, 40187 cache read…`, where nothing
+   * downstream could tell an agent explaining itself from a token count. A
+   * defaulted parameter would let a future caller lose it again silently; a
+   * required one makes forgetting a compile error.
+   *
+   * A PROSE-ONLY TURN NOW PRODUCES AN EVENT. This method opened with
+   * `if (uses.length === 0) return out;` for its whole life, so a turn that was
+   * pure reasoning — the turns the owner asked to see — emitted NOTHING to the
+   * canvas at all. The early return is now over BOTH: a turn that neither said
+   * nor did anything still emits nothing, and in particular does not announce the
+   * root node just to say the model was silent.
+   *
+   * IT IS PROSE, NOT THINKING, AND MUST NEVER BE LABELLED AS THINKING. Measured
+   * on the local transcript corpus: 7,037 `thinking` blocks across four models,
+   * zero of them carrying any text — the value is `""` and the `signature` beside
+   * it is encrypted. `assistantText` keeps `type: "text"` blocks only, and that
+   * filter is left exactly as it is: there is nothing in the other blocks to show.
+   *
+   * NARRATION IS EMITTED BEFORE THE TOOL CALLS, so the node's single ordered
+   * `activity` list reads "here is what I am about to do" and then the doing. The
+   * fold appends in arrival order and cannot re-sort — `at` is nullable.
    *
    * A `Skill` CALL PRODUCES BOTH EVENTS, and that is not double-counting: it IS
    * a tool call (so the node's `toolCalls` counts it) and it IS a skill
@@ -343,22 +647,34 @@ export class GraphProjection {
   assistant(
     message: GraphAssistantEnvelope,
     uses: readonly GraphToolUse[],
+    narration: string,
   ): readonly GraphSseEvent[] {
     const out: GraphSseEvent[] = [];
-    if (uses.length === 0) return out;
-    const parentToolUseId = message.parent_tool_use_id;
-    const root = this.rootNode(out);
-    const owner = parentToolUseId === null ? root : this.#byToolUse.get(parentToolUseId);
-    const node = owner ?? root;
-    // `null` IS EXACT: an assistant turn with no parent tool use is the
-    // orchestrator's own turn, by the SDK's own definition of the field. Only an
-    // id we never saw is a guess.
-    const attribution: GraphAttribution = owner === undefined ? "inferred" : "exact";
+    // SCRUBBED BEFORE IT IS MEASURED, not after: a turn whose only content is an
+    // absolute host path becomes "~" and is still worth a row, but the emptiness
+    // test has to see the text the canvas will see.
+    const prose = scrubHostPaths(narration).trim();
+    if (uses.length === 0 && prose === "") return out;
+    const { node, attribution } = this.#ownerOf(message.parent_tool_use_id, out);
+
+    if (prose !== "") {
+      // CAPPED HERE AS WELL AS IN THE FOLD, for the reason `fileEditFrom` gives:
+      // the fold protects the canvas, and by the time it runs the whole turn has
+      // already been serialised onto the socket and written to the events table.
+      out.push({
+        type: "graph_narration",
+        node,
+        text: prose.length > NARRATION_CHARS ? prose.slice(0, NARRATION_CHARS) : prose,
+        truncated: prose.length > NARRATION_CHARS,
+        attribution,
+      });
+    }
 
     for (const use of uses) {
       if (use.id !== null && canSpawn(use) && this.#spawnOrigin.size < SPAWN_MEMORY) {
         this.#spawnOrigin.set(use.id, node);
       }
+      if (use.id !== null) this.#rememberToolName(use.id, use.name);
       out.push({
         type: "graph_tool",
         node,
@@ -372,6 +688,75 @@ export class GraphProjection {
         out.push({ type: "graph_skill", node, skill, source: "invoked", attribution });
       }
     }
+    return out;
+  }
+
+  /**
+   * Remember which tool a block id called, evicting the oldest at the cap.
+   *
+   * See {@link TOOL_NAME_MEMORY} for why this evicts rather than refuses.
+   */
+  #rememberToolName(id: string, name: string): void {
+    if (this.#toolNames.size >= TOOL_NAME_MEMORY) {
+      const oldest = this.#toolNames.keys().next();
+      if (oldest.done !== true) this.#toolNames.delete(oldest.value);
+    }
+    this.#toolNames.set(id, name);
+  }
+
+  /**
+   * ONE TOOL RESULT — the green and red lines, when the tool was a file edit.
+   *
+   * READ FROM THE RESULT, WHICH IS THE ENTIRE CORRECTNESS ARGUMENT. `FileEditOutput`
+   * is what the tool PRODUCED, so an edit that was refused by a permission hook, or
+   * whose `old_string` matched nothing, or that failed on a read-only file, produces
+   * no output and therefore no card. The `tool_use` block — which is what
+   * `summariseToolInput` reads today — describes what was ATTEMPTED and is present
+   * whether or not anything happened, so a diff drawn from it shows the user changes
+   * that are not in their files. That difference is not a detail; it is the feature.
+   *
+   * ANYTHING THAT IS NOT A FILE EDIT PRODUCES NOTHING, silently and correctly. A
+   * `Read`, a `Grep`, an MCP call and — permanently — a `Bash`-driven edit all
+   * arrive here. `sed -i`, a heredoc and `npm init` change files and emit no
+   * structured output at all, so there will never be a diff card for them. That
+   * carve-out has to be said in the UI: a file that changed with no card is not a
+   * bug.
+   *
+   * THE TOOL NAME COMES FROM THE BLOCK WE SAW, AND ITS ABSENCE IS A DROP. A result
+   * for a `tool_use` id this projection never recorded is a resumed session
+   * replaying, which is the same situation `taskFinished` drops a `task_notification`
+   * for and for the same reason: the honest options are "name a tool we never saw"
+   * or "say nothing", and the entry is DELETED once read so a duplicated result
+   * cannot draw the same edit twice.
+   */
+  toolResult(message: GraphUserEnvelope, result: SdkToolResult): readonly GraphSseEvent[] {
+    const toolUseId = result.toolUseId;
+    if (toolUseId === null) return [];
+    const tool = this.#toolNames.get(toolUseId);
+    if (tool === undefined) return [];
+    const edit = fileEditFrom(result.result, this.#workspace);
+    // DELETED ONLY ONCE THE PAYLOAD HAS BEEN READ, so a non-edit result does not
+    // consume the name — nothing else reads the map today, but a second consumer
+    // arriving later must not find the entry gone because a `Read` answered first.
+    if (edit === null) return [];
+    this.#toolNames.delete(toolUseId);
+
+    const out: GraphSseEvent[] = [];
+    const { node, attribution } = this.#ownerOf(message.parent_tool_use_id, out);
+    out.push({
+      type: "graph_diff",
+      node,
+      path: edit.path,
+      tool,
+      change: edit.change,
+      additions: edit.additions,
+      deletions: edit.deletions,
+      hunks: edit.hunks,
+      capped: edit.capped,
+      droppedHunks: edit.droppedHunks,
+      droppedLines: edit.droppedLines,
+      attribution,
+    });
     return out;
   }
 
