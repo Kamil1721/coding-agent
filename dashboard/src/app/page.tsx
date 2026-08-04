@@ -917,12 +917,25 @@ export default function NewTicketPage(): ReactNode {
               * where the build ends up when the box is off.
               */}
             <div className="px-3 py-3">
-              <p className="text-[13px] font-medium text-ink">When it passes</p>
+              {/*
+                * THE ROW LABEL IS `aria-describedby`, NOT DECORATION ABOVE A BOX.
+                * Splitting "Deploy a preview when it passes" into a row label and
+                * a shorter control label is what removes the duplication with the
+                * old "Delivery" header, but it also moves the CONDITION out of the
+                * checkbox's accessible name. Sighted readers get the grouping from
+                * proximity; someone tabbing through would otherwise hear only
+                * "Deploy a preview" and never learn it is conditional on passing.
+                * The id ties the two back together without printing a third string.
+                */}
+              <p id="deploy-when" className="text-[13px] font-medium text-ink">
+                When it passes
+              </p>
               <label className="mt-1.5 flex cursor-pointer items-center gap-2.5">
                 <input
                   type="checkbox"
                   checked={deploy}
                   onChange={(event) => setDeploy(event.target.checked)}
+                  aria-describedby="deploy-when"
                   className="size-3.5 shrink-0 accent-[var(--color-accent)]"
                 />
                 <span className="text-[13px] text-ink">Deploy a preview</span>
