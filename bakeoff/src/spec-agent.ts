@@ -1025,6 +1025,24 @@ export async function auditSuite(
     // An audit that did not produce a readable verdict is NOT a pass. doc 03
     // section 7.4: do not start builds against a suite that failed the audit —
     // and a suite whose audit could not be read has not passed one.
+    //
+    // A TRUNCATED AUDIT NOW LANDS HERE INSTEAD OF KILLING THE RUN, AND THE
+    // CONSEQUENCE IS NAMED RATHER THAN LEFT TO BE DISCOVERED (2026-08-04). On
+    // the subscription path an over-length JUDGE turn used to throw out of
+    // `caller.call` and end the run; `subscription-caller.ts` now returns it as
+    // `stopReason: "max_tokens"`, so `stopProblem` fires and this branch runs.
+    // That is a real improvement — a run surviving its auditor's ceiling beats a
+    // run dying at it — but it is NOT free, and the cost is asymmetric with the
+    // authoring side: the ladder in `generateAuditedSuite` only ever inspects
+    // `generated.call`, so an AUDIT truncation escalates nothing. It spends an
+    // authoring attempt regenerating a suite that may have been perfectly good,
+    // because the thing that ran out of room was the reader, not the writer.
+    // The detail text below says "did not return a readable verdict: the
+    // response was truncated at max_tokens", which is the only signal that
+    // distinguishes the two, so the regeneration is at least traceable.
+    // Escalating for the auditor as well is a deliberate non-goal here: it would
+    // put a second, differently-shaped ladder in a function whose contract is
+    // one audit call, and it has never been observed to be needed.
     const findings: readonly AuditFinding[] = [
       ...deterministicFindings,
       {
