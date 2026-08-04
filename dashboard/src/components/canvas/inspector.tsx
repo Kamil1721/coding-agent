@@ -46,9 +46,10 @@ import {
   readableSummary,
   type ActivityRun,
 } from "@/lib/activity";
-import type { GraphNode } from "@/lib/api-types";
+import type { GraphActivityEntry, GraphDiff, GraphNode } from "@/lib/api-types";
 import { formatDuration, formatTimeOnly, formatTokens } from "@/lib/format";
 import { Button, EmptyState, cx } from "@/components/ui";
+import { FileDiff, ShellEditNote } from "@/components/run/diff";
 import { Pill, shortToolName, stateLook } from "./agent-node";
 
 function Section({
@@ -144,21 +145,34 @@ function MetaLine({
   );
 }
 
+/**
+ * The time column, shared by both kinds of row so the times form ONE ruler.
+ *
+ * A step with no recorded time prints an em dash — never a guess, and never the
+ * reader's own clock. On a replayed run the browser's clock would date every
+ * step of a two-hour run to the moment the page opened.
+ */
+function StepTime({ at }: { at: string | null }): ReactNode {
+  return (
+    <span
+      className="numeric w-[52px] shrink-0 text-[10.5px] tabular-nums text-ink-faint"
+      title={at ?? "no time was recorded for this step"}
+    >
+      {at === null ? "—" : formatTimeOnly(at)}
+    </span>
+  );
+}
+
 function TimelineRow({ run }: { run: ActivityRun }): ReactNode {
   const look = KIND_LOOK[run.kind];
   return (
     <li className="flex items-baseline gap-2 py-[3px]">
       {/*
         * The time column is fixed-width and monospace so the times form a readable
-        * ruler down the left rather than a ragged edge. A step with no recorded time
-        * prints an em dash — never a guess, and never the reader's own clock.
+        * ruler down the left rather than a ragged edge. See {@link StepTime} — the
+        * diff rows below use the same component so the two kinds of row line up.
         */}
-      <span
-        className="numeric w-[52px] shrink-0 text-[10.5px] tabular-nums text-ink-faint"
-        title={run.at ?? "no time was recorded for this step"}
-      >
-        {run.at === null ? "—" : formatTimeOnly(run.at)}
-      </span>
+      <StepTime at={run.at} />
       <span
         className={cx("mt-[6px] h-1 w-1 shrink-0 rounded-full", look.dot)}
         aria-hidden="true"
@@ -238,12 +252,98 @@ function ReportedSummary({ summary }: { summary: string }): ReactNode {
 
 const TIMELINE_FOLD_AT = 12;
 
-function Timeline({ node }: { node: GraphNode }): ReactNode {
-  const runs = useMemo(
-    () => collapseAdjacent(node.activity.map(describeActivity)),
-    [node.activity],
+/**
+ * One step of the timeline: a described line, or an applied edit drawn in full.
+ *
+ * TWO SHAPES RATHER THAN ONE, because `ActivityLine` cannot carry a patch and
+ * widening it would mean `activity.ts` — a pure, separately tested module whose
+ * whole contract is "one recorded call → one readable line" — growing a second
+ * return kind. The merge happens here, at the only place that renders both.
+ */
+type TimelineItem =
+  | { readonly type: "line"; readonly run: ActivityRun }
+  | {
+      readonly type: "diff";
+      readonly at: string | null;
+      readonly tool: string;
+      readonly diff: GraphDiff;
+    };
+
+/**
+ * `GraphNode.activity` → the merged list, IN RECORDED ORDER.
+ *
+ * THE COLLAPSE IS SEGMENTED BY DIFFS, AND THAT IS A DELIBERATE NARROWING OF
+ * `collapseAdjacent`'s REACH. Two identical `Read`s with an applied edit between
+ * them are no longer adjacent — the agent did something else in between, and the
+ * record says so — so they now print as two lines rather than `×2`. Collapsing
+ * across an edit would state that the two reads were consecutive, which is the
+ * one property this panel exists to preserve.
+ *
+ * AN ENTRY WITH `kind: "diff"` AND NO `diff` PAYLOAD FALLS THROUGH TO THE LINE
+ * RENDERER rather than being dropped. The field is optional on the wire (the fold
+ * omits it when there is nothing to say), and a row from a writer that set the
+ * kind without the body still describes a real edit: `describeActivity` prints
+ * `editing page.tsx` from its `detail`. Silence would be the worse answer.
+ */
+function timelineItems(activity: readonly GraphActivityEntry[]): readonly TimelineItem[] {
+  const items: TimelineItem[] = [];
+  let pending: GraphActivityEntry[] = [];
+
+  function flush(): void {
+    if (pending.length === 0) return;
+    for (const run of collapseAdjacent(pending.map(describeActivity))) {
+      items.push({ type: "line", run });
+    }
+    pending = [];
+  }
+
+  for (const entry of activity) {
+    if (entry.kind === "diff" && entry.diff !== undefined) {
+      flush();
+      items.push({ type: "diff", at: entry.at, tool: entry.name, diff: entry.diff });
+      continue;
+    }
+    pending.push(entry);
+  }
+  flush();
+  return items;
+}
+
+/**
+ * An applied edit, in the timeline where it happened.
+ *
+ * IT IS A ROW OF THE SAME LIST, not a separate "Files changed" section. The owner
+ * asked to see the edits as the agent makes them, and a section would re-sort the
+ * one thing this panel is built to keep — the order. It also cannot be merged back
+ * by time: `at` is nullable.
+ *
+ * `min-w-0` ON THE FLEX CHILD IS LOAD-BEARING. A flex item's default `min-width`
+ * is `auto`, i.e. its content, so without this a 160-character patch line widens
+ * the row, then the sheet, then the page — and the diff's own scroller never
+ * receives an overflow to scroll.
+ */
+function DiffRow({ item }: { item: Extract<TimelineItem, { type: "diff" }> }): ReactNode {
+  return (
+    <li className="flex items-baseline gap-2 py-[3px]">
+      <StepTime at={item.at} />
+      <div className="min-w-0 flex-1">
+        <FileDiff diff={item.diff} tool={item.tool} />
+      </div>
+    </li>
   );
+}
+
+function Timeline({ node }: { node: GraphNode }): ReactNode {
+  const items = useMemo(() => timelineItems(node.activity), [node.activity]);
   const [open, setOpen] = useState(false);
+
+  /*
+   * COUNTED OVER THE WHOLE LIST, NOT OVER THE TWELVE ON SCREEN. The carve-out
+   * note below is a statement about the RECORD — some edits can never be drawn —
+   * and folding the timeline does not make that less true.
+   */
+  const hasDiff = items.some((item) => item.type === "diff");
+  const bashCalls = node.tools.find((tool) => tool.name === "Bash")?.count ?? null;
 
   /*
    * NEWEST STEPS WIN WHEN FOLDED, and that is the whole reason the fold shows the
@@ -254,11 +354,11 @@ function Timeline({ node }: { node: GraphNode }): ReactNode {
    * only row that answers the question it was asked for. Opening restores full
    * chronological order from the beginning.
    */
-  const folded = runs.length > TIMELINE_FOLD_AT && !open;
-  const shown = folded ? runs.slice(runs.length - TIMELINE_FOLD_AT) : runs;
-  const hidden = runs.length - shown.length;
+  const folded = items.length > TIMELINE_FOLD_AT && !open;
+  const shown = folded ? items.slice(items.length - TIMELINE_FOLD_AT) : items;
+  const hidden = items.length - shown.length;
 
-  if (runs.length === 0) {
+  if (items.length === 0) {
     return (
       <p className="text-[11.5px] leading-relaxed text-ink-faint">
         {node.state === "running"
@@ -284,11 +384,24 @@ function Timeline({ node }: { node: GraphNode }): ReactNode {
         </button>
       )}
       <ol className="-mt-0.5">
-        {shown.map((run, index) => (
-          <TimelineRow key={`${String(index)}:${run.verb}:${run.object}`} run={run} />
-        ))}
+        {shown.map((item, index) =>
+          /*
+           * THE INDEX IS PART OF EVERY KEY, and it has to be: two edits to the
+           * same file, and two identical described lines, are both legitimate and
+           * both common. The rest of the key is there so a re-render that inserts
+           * a step does not re-key every row below it.
+           */
+          item.type === "diff" ? (
+            <DiffRow key={`${String(index)}:diff:${item.diff.path}`} item={item} />
+          ) : (
+            <TimelineRow
+              key={`${String(index)}:${item.run.verb}:${item.run.object}`}
+              run={item.run}
+            />
+          ),
+        )}
       </ol>
-      {open && runs.length > TIMELINE_FOLD_AT && (
+      {open && items.length > TIMELINE_FOLD_AT && (
         <button
           type="button"
           onClick={() => setOpen(false)}
@@ -307,6 +420,20 @@ function Timeline({ node }: { node: GraphNode }): ReactNode {
           {node.activityDropped} further {node.activityDropped === 1 ? "step" : "steps"}{" "}
           happened and were not recorded — this agent passed the per-node limit.
         </p>
+      )}
+      {/*
+        * THE EDITS THAT CANNOT BE DRAWN, said next to the ones that can.
+        *
+        * Shown when this agent HAS a patch (so the list of them is not read as the
+        * list of its edits) or when it ran `Bash` at all (so an agent that edited
+        * only through a shell does not read as an agent that edited nothing).
+        * Neither is true of a node that only read files, and a standing sentence on
+        * every one of those is noise on the majority.
+        */}
+      {(hasDiff || bashCalls !== null) && (
+        <div className="mt-1.5 border-t border-line pt-1.5">
+          <ShellEditNote bashCalls={bashCalls} />
+        </div>
       )}
     </>
   );
