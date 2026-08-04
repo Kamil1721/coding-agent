@@ -287,6 +287,204 @@ export function isOutputOverflowFrame(message: SDKMessage): boolean {
   return (message as { error?: unknown }).error === SDK_OVERFLOW_ERROR;
 }
 
+/* -------------------------------------------------------------------------
+ * Progress: the only liveness signal a seat with no tools has
+ *
+ * THE RUN THIS SECTION IS ABOUT IS THE SAME ONE THE SECTION ABOVE IS ABOUT.
+ * `run-2026-08-04T11-08-10-487Z-162b186d` spent 51 minutes in the spec phase and
+ * recorded 61 events in total across the whole run — 36 `log`, 11 `status`, 9
+ * `rate_limit`, 4 `phase`, 1 `verdict`. Zero `tool`. Zero `graph_*`. A run that
+ * reached the build recorded 388. The spec phase is not under-instrumented; this
+ * caller emits NOTHING, and the seat it drives has `tools: []`, so there is not
+ * even a tool call for something else to notice.
+ *
+ * WHICH LEAVES EXACTLY ONE SIGNAL: the text the model is streaming. The SDK will
+ * forward it as `SDKPartialAssistantMessage` (`type: "stream_event"`,
+ * `sdk.d.ts:4150`) when `includePartialMessages` is set, which this file has
+ * hardcoded to `false` since it was written.
+ *
+ * IT IS NOT THINKING AND MUST NOT BE PRESENTED AS THINKING. Measured across the
+ * local transcript corpus: 7,037 `thinking` blocks over four models, of which
+ * ZERO carry any text — `thinking` is `""` and the `signature` beside it is an
+ * encrypted blob no SDK option decrypts. `thinking_delta` frames are therefore
+ * ignored below rather than rendered empty.
+ *
+ * NOTHING HERE GIVES THE SEAT A CAPABILITY. The only option that changes is
+ * `includePartialMessages`, which is a REPORTING switch on the host side of the
+ * pipe: `tools` and `settingSources` stay `[]`, the prompt is unchanged, and the
+ * seat cannot observe that anyone is listening. That boundary is the reason this
+ * seat exists (doc 03 §7.4) and the progress path must not become a hole in it.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * How often a call may report, at most.
+ *
+ * THE NUMBER IS CHOSEN AGAINST THE RUN THAT FAILED, NOT AGAINST A BUILD. 30
+ * seconds means a 50-minute call reports at most `1 + floor(3000/30) = 101`
+ * times — the leading report plus one per interval. The dead run's ENTIRE event
+ * stream was 61 rows, so this is the same order of magnitude as the run it is
+ * making visible rather than a new dominant source of rows. Against the raw
+ * signal it is a reduction of roughly 200-300x: a 64,000-token response arrives
+ * as one `content_block_delta` per streamed chunk, which at 2-3 tokens a chunk
+ * is 21,000-32,000 frames.
+ *
+ * FASTER WAS CONSIDERED AND REFUSED. A 15-second interval (the SSE heartbeat's
+ * period, `bus.ts`) would put 201 rows on a single call — 3.3x the whole failed
+ * run — into the generic `log` channel, for a signal whose entire job is "it is
+ * still alive and roughly here". Liveness does not need 200 samples.
+ */
+export const SEAT_PROGRESS_INTERVAL_MS = 30_000;
+
+/**
+ * How much of the stream one report carries, and the size of the first one.
+ *
+ * TWO JOBS, ONE NUMBER, AND THAT IS DELIBERATE. It caps the excerpt, and it is
+ * also the threshold for the LEADING report: the first report fires as soon as
+ * this many characters have arrived instead of waiting out the first interval,
+ * so the black box breaks in about a second rather than in thirty. Reporting on
+ * the very first delta instead would print `latest: "I"`, which is liveness with
+ * nothing attached to it.
+ */
+export const SEAT_PROGRESS_CHARS = 240;
+
+/** One coalesced progress report from a seat call in flight. */
+export interface SeatProgress {
+  /** The `SeatCallRequest.purpose` of the call this is about. */
+  readonly purpose: string;
+  /**
+   * The NEWEST text, redacted, whitespace-collapsed and clipped to
+   * {@link SEAT_PROGRESS_CHARS}. The TAIL and not the head: the question this
+   * answers is "what is it doing now", and on a seat streaming a JSON suite the
+   * tail names the criterion currently being written. Empty when the call has
+   * produced nothing since the last report.
+   */
+  readonly text: string;
+  /** Characters streamed by this call so far, in total. Never reset. */
+  readonly chars: number;
+  /** Wall clock since the call was dispatched. */
+  readonly elapsedMs: number;
+}
+
+export type SeatProgressSink = (progress: SeatProgress) => void;
+
+/**
+ * The text of one partial-assistant frame — and nothing else.
+ *
+ * READ DEFENSIVELY, BY SHAPE. `SDKPartialAssistantMessage.event` is typed as
+ * `BetaRawMessageStreamEvent`, a union owned by a different package that gains
+ * members between releases; narrowing by field is what keeps an unknown future
+ * delta type folding to `""` instead of throwing inside the stream loop.
+ *
+ * ONLY `text_delta`. `thinking_delta` is skipped for the measured reason in this
+ * section's header — 0 of 7,037 thinking blocks carried any text — and skipping
+ * it here rather than filtering later means the character count never claims
+ * progress that has no text behind it.
+ */
+export function partialAssistantText(message: SDKMessage): string {
+  if (message.type !== "stream_event") return "";
+  const event = (message as { event?: unknown }).event;
+  if (typeof event !== "object" || event === null) return "";
+  if ((event as { type?: unknown }).type !== "content_block_delta") return "";
+  const delta = (event as { delta?: unknown }).delta;
+  if (typeof delta !== "object" || delta === null) return "";
+  if ((delta as { type?: unknown }).type !== "text_delta") return "";
+  const text = (delta as { text?: unknown }).text;
+  return typeof text === "string" ? text : "";
+}
+
+/** Every run of whitespace becomes one space: a log row is one line. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
+/** The last `max` characters, marked when something was dropped. */
+function tail(text: string, max: number): string {
+  return text.length <= max ? text : `…${text.slice(text.length - max)}`;
+}
+
+/**
+ * Token-granularity deltas in, a bounded number of reports out.
+ *
+ * ITS OWN CLASS BECAUSE THE BOUND IS THE FEATURE. A throttle written inline in
+ * the stream loop is a throttle whose only test is a 30-second one, and a
+ * progress path that emitted per delta would put tens of thousands of rows into
+ * a run's durable event table — the failure mode is not "noisy UI", it is a
+ * SQLite table and an SSE queue (`bus.ts`'s 4 MiB per-client budget) sized for a
+ * few hundred rows receiving thirty thousand.
+ *
+ * THE CLOCK IS INJECTABLE AND THE INTERVAL IS NOT A CONSTANT HERE, so the bound
+ * can be measured rather than waited out. `subscription-caller.progress.test.ts`
+ * feeds 2,000 deltas and asserts 1 report.
+ *
+ * REDACTION RUNS BEFORE THE CLIP, NOT AFTER. `redactText` is the same function
+ * this file already applies to a failure message, and applying it to the whole
+ * pending buffer means a credential that straddles the clip boundary is still
+ * matched — clipping first would hand the redactor a fragment it cannot see.
+ */
+export class SeatProgressCoalescer {
+  readonly #purpose: string;
+  readonly #sink: SeatProgressSink;
+  readonly #intervalMs: number;
+  readonly #chars: number;
+  readonly #now: () => number;
+  readonly #startedAt: number;
+  #pending = "";
+  #total = 0;
+  #reports = 0;
+  #lastAt: number;
+
+  constructor(
+    purpose: string,
+    sink: SeatProgressSink,
+    options: {
+      readonly intervalMs?: number;
+      readonly chars?: number;
+      /** Test seam. Production passes nothing and gets `Date.now`. */
+      readonly now?: () => number;
+    } = {},
+  ) {
+    this.#purpose = purpose;
+    this.#sink = sink;
+    this.#intervalMs = options.intervalMs ?? SEAT_PROGRESS_INTERVAL_MS;
+    this.#chars = options.chars ?? SEAT_PROGRESS_CHARS;
+    this.#now = options.now ?? Date.now;
+    this.#startedAt = this.#now();
+    this.#lastAt = this.#startedAt;
+  }
+
+  /** How many reports this call has produced. The bound, observable. */
+  get reports(): number {
+    return this.#reports;
+  }
+
+  /**
+   * Take one delta. Reports at most once, and only when there is something to
+   * say — a report with an empty excerpt would be a row asserting activity that
+   * produced no text.
+   */
+  push(delta: string): void {
+    if (delta.length === 0) return;
+    this.#pending += delta;
+    this.#total += delta.length;
+    const now = this.#now();
+    const due =
+      this.#reports === 0
+        ? this.#pending.length >= this.#chars || now - this.#lastAt >= this.#intervalMs
+        : now - this.#lastAt >= this.#intervalMs;
+    if (!due) return;
+    this.#lastAt = now;
+    this.#reports += 1;
+    const text = tail(oneLine(redactText(this.#pending).text), this.#chars);
+    this.#pending = "";
+    this.#sink({
+      purpose: this.#purpose,
+      text,
+      chars: this.#total,
+      elapsedMs: now - this.#startedAt,
+    });
+  }
+}
+
 function subscriptionFieldStatus(): Readonly<Record<PriceField, PriceStatus>> {
   const status: Partial<Record<PriceField, PriceStatus>> = {};
   for (const field of PRICE_FIELDS) status[field] = "unverified";
@@ -1421,6 +1619,24 @@ export interface SubscriptionCallerOptions {
   readonly imageBudgetBase64Chars?: number;
   /** The SDK's `query`, unless a test supplies a stream. */
   readonly startQuery?: SeatSessionFactory;
+  /**
+   * Where this seat reports that it is still alive, and roughly where it is.
+   *
+   * OPTIONAL, AND ABSENCE IS THE PRE-PROGRESS PATH BYTE FOR BYTE. Without it
+   * `includePartialMessages` stays `false`, so the CLI never serialises a delta
+   * frame and nothing crosses the pipe that did not cross it before — which is
+   * what keeps the seats that have no consumer (every existing test, and
+   * `judge.ts`, which builds its own caller) at their old cost. A stream of
+   * `stream_event` frames for a 64,000-token response is 20,000-30,000 IPC
+   * messages; paying for them where nobody reads them would be a regression
+   * dressed as a feature.
+   */
+  readonly onProgress?: SeatProgressSink;
+  /**
+   * Override {@link SEAT_PROGRESS_INTERVAL_MS}. A TEST SEAM, and the only way to
+   * measure the bound without a 30-second test.
+   */
+  readonly progressIntervalMs?: number;
 }
 
 /** Environment for the base constructor: process env plus the one sentinel. */
@@ -1436,6 +1652,8 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
   readonly #plan: SeatDocumentPlan;
   readonly #imagePlan: SeatImagePlan;
   readonly #startQuery: SeatSessionFactory;
+  readonly #onProgress: SeatProgressSink | null;
+  readonly #progressIntervalMs: number;
   #tokens: TokenTotals = zeroTokens("anthropic");
   #rateLimit: RateLimitState = NOT_RATE_LIMITED;
   #calls = 0;
@@ -1470,6 +1688,19 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
       options.imageBudgetBase64Chars ?? DEFAULT_SEAT_IMAGE_BASE64_CHARS,
     );
     this.#startQuery = options.startQuery ?? query;
+    this.#onProgress = options.onProgress ?? null;
+    this.#progressIntervalMs = options.progressIntervalMs ?? SEAT_PROGRESS_INTERVAL_MS;
+  }
+
+  /**
+   * Whether anything is listening for progress. EXPOSED so the wiring can be
+   * asserted from outside: the orchestrator's seat construction is the branch
+   * that spawns the real CLI, so a dropped `onProgress:` option is otherwise
+   * only observable on the path no test can drive — the same hole
+   * `#reportSeatImages` in `orchestrator.ts` documents for attached images.
+   */
+  get reportsProgress(): boolean {
+    return this.#onProgress !== null;
   }
 
   /** Token counts for every call this seat has made. Never a cost. */
@@ -1603,7 +1834,13 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
       tools: [],
       settingSources: [],
       maxTurns: seatMaxTurns(this.#env),
-      includePartialMessages: false,
+      // ON ONLY WHEN SOMEONE IS LISTENING. This was hardcoded `false`, which is
+      // why the spec phase was a 51-minute black box: a seat with `tools: []`
+      // emits no tool call, and without partial messages the SDK yields exactly
+      // two frames for a fifty-minute turn — the finished assistant message and
+      // the result. See the progress section above for what the flag costs when
+      // nobody reads it, which is why this is a condition and not a `true`.
+      includePartialMessages: this.#onProgress !== null,
       env: seatCallEnv(this.#env, request.maxOutputTokens),
       ...(request.jsonSchema === null
         ? {}
@@ -1630,10 +1867,28 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
     if (this.#plan.notes.length > 0) this.#documentCalls += 1;
     if (this.#imagePlan.notes.length > 0) this.#imageCalls += 1;
 
+    // PER CALL, LIKE THE PROMPT, AND FOR THE SAME REASON. The elapsed clock and
+    // the character total describe THIS dispatch; a coalescer held on the caller
+    // would report authoring attempt 3 as though it had been running since
+    // attempt 1 started.
+    const progress =
+      this.#onProgress === null
+        ? null
+        : new SeatProgressCoalescer(request.purpose, this.#onProgress, {
+            intervalMs: this.#progressIntervalMs,
+          });
+
     try {
       const session = this.#startQuery({ prompt, options });
       for await (const message of session) {
-        if (message.type === "assistant") {
+        if (message.type === "stream_event") {
+          // THE DELTAS ARE NOT ACCUMULATED INTO `text`, DELIBERATELY. The SDK
+          // yields the completed `assistant` frame as well as the partials, and
+          // `text` is built from that frame alone — so turning progress on
+          // cannot change one byte of what the parser downstream receives. The
+          // coalescer holds its own copy and throws it away.
+          if (progress !== null) progress.push(partialAssistantText(message));
+        } else if (message.type === "assistant") {
           text += assistantText(message);
           // (1) THE STRUCTURED SIGNAL. The CLI sets `error: "max_output_tokens"`
           // on the synthetic assistant frame it emits when the API stream stops

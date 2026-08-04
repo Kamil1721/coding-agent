@@ -95,6 +95,7 @@ import { DELIVERY_LANES, shortlistFor } from "./agent-shortlist.js";
 import { writeBacklog } from "./backlog.js";
 import type { BacklogInput } from "./backlog.js";
 import { graphResumeState, makeSegmentRemap, nextBuildSegment } from "./build-segment.js";
+import { emptyGraph, foldGraph, scrubHostPaths } from "./graph.js";
 import { LiveInput } from "./live-input.js";
 import { AgentReplyWatch, ownerMessageBlock } from "./owner-message.js";
 import {
@@ -213,7 +214,7 @@ import {
   seatDocumentsFor,
   seatImagesFor,
 } from "./subscription-caller.js";
-import type { SeatDocument, SeatImage, SeatImagePlan } from "./subscription-caller.js";
+import type { SeatDocument, SeatImage, SeatImagePlan, SeatProgress } from "./subscription-caller.js";
 import { extractorIsUsable, probeDocumentCapability } from "./document-capability.js";
 import { routeFor } from "./document-intake.js";
 import { ticketFromStoredReferences } from "./ticket.js";
@@ -2341,6 +2342,11 @@ export class Orchestrator {
       env: this.#deps.env,
       abortController: childAbort(signal),
       onRateLimit: (state) => this.#noteRateLimit(runId, state),
+      // THE PLAN SEAT REPORTS TOO, THOUGH IT IS NOT THE SILENT ONE. Its turns are
+      // short (measured: 273-3,763 output tokens over seven turns in `runs.db`),
+      // so at a 30-second interval most of them will report once or not at all —
+      // which is the coalescer behaving, not the wiring missing.
+      onProgress: this.#seatProgress(runId, "the plan seat"),
       // THE SAME ATTACHMENTS THE SPEC SEAT WILL SEE. A planning seat that could
       // not read the owner's scope document would ask him what is in it.
       documents,
@@ -2478,6 +2484,11 @@ export class Orchestrator {
       env: this.#deps.env,
       abortController,
       onRateLimit: (state) => this.#noteRateLimit(runId, state),
+      // THE ONE THE OWNER COMPLAINED ABOUT. `run-2026-08-04T11-08-10-487Z-162b186d`
+      // spent 51 minutes here and the whole run recorded 61 events, none of them
+      // from this seat. It has `tools: []`, so there is no tool call for anything
+      // else to notice; the text it is streaming is the only signal that exists.
+      onProgress: this.#seatProgress(runId, "the spec seat"),
       // EVERY CALL THIS SEAT MAKES CARRIES THEM — the first authoring attempt
       // and every regeneration after it. An empty list is the pre-document
       // path, byte for byte; see `seatPrompt`.
@@ -2493,6 +2504,10 @@ export class Orchestrator {
       env: this.#deps.env,
       abortController,
       onRateLimit: (state) => this.#noteRateLimit(runId, state),
+      // THE AUDIT SEAT IS THE SECOND SILENT ONE AND IT IS NOT CHEAP. It reads the
+      // whole draft suite adversarially, and until this line the run said nothing
+      // between "authoring the held-out acceptance suite" and "audit seat — …".
+      onProgress: this.#seatProgress(runId, "the audit seat"),
       // NO DOCUMENTS, DELIBERATELY, AND IT HAS A COST. The audit seat runs the
       // deterministic bad-test checks and the adversarial judge pass over the
       // DRAFT SUITE; giving it the PDF too would re-send those bytes on a call
@@ -5876,6 +5891,37 @@ export class Orchestrator {
     this.#emit(runId, { type: "phase", phase });
   }
 
+  /**
+   * Where a seat call reports that it is still alive.
+   *
+   * ON `log`, WHICH IS THE HONEST LIMIT OF THIS LANE AND IS WRITTEN DOWN RATHER
+   * THAN GLOSSED. The durable, replayable channel for anything on a canvas is
+   * `GraphState`, and wave 2 defined `graph_narration` for exactly this text —
+   * but `graph.ts`'s arm looks the node up first and DROPS the event when it does
+   * not exist (`indexOfNode` -> `if (node === undefined) return state`), and
+   * during the spec phase no node exists: the build's `graph_agent` events are
+   * minted by `GraphProjection` inside the builder, which has not run. Minting one
+   * here is not available either. `build-segment.ts:188-198` states that
+   * `parent === null` names exactly ONE node per segment and names itself as the
+   * line that must change if a second appears, and `makeSegmentRemap`'s
+   * `resolve(event.node, event.parent === null)` would then merge the build's own
+   * root into the spec seat's node — the canvas would render perfectly and
+   * attribute the whole build to the spec seat. Both files are outside this lane.
+   *
+   * SO THE ROW IS LIVE-ONLY FOR THE TRACE PANE AND DURABLE EVERYWHERE ELSE. It is
+   * persisted (`db.ts` writes every event), replayed by `attachSse`, and served by
+   * the REST event route; what it does not do is reach a FINISHED run's canvas,
+   * because `use-run-stream.ts:820-822` never opens a socket for a terminal run
+   * and the trace is socket-only. The 51-minute black box this exists for is a
+   * LIVE problem — the owner watching a run that says nothing — and this closes
+   * that. The replay half needs one arm in `graph.ts`; see the handoff.
+   */
+  #seatProgress(runId: string, label: string): (progress: SeatProgress) => void {
+    return (progress) => {
+      this.#emitLog(runId, "info", seatProgressLine(label, progress));
+    };
+  }
+
   #emitLog(runId: string, level: "info" | "warn" | "error", text: string): void {
     this.#emit(runId, { type: "log", level, text });
   }
@@ -5888,6 +5934,79 @@ export class Orchestrator {
 /* -------------------------------------------------------------------------
  * Free functions
  * ---------------------------------------------------------------------- */
+
+/* ---- seat progress -------------------------------------------------- */
+
+/**
+ * A canvas to fold a candidate log row against. Built ONCE and never mutated:
+ * `foldGraph` is pure and returns its input object when nothing changed, which
+ * is the whole mechanism {@link laneNeutralLogText} rests on.
+ */
+const LANE_PROBE = emptyGraph();
+
+/**
+ * True when `foldGraph` does NOTHING AT ALL with this log row.
+ *
+ * WHY A PROGRESS ROW NEEDS PERMISSION TO EXIST. `graph.ts` folds `log` rows into
+ * the pre-build lane by matching PROSE — `^spec seat —` closes the author stage,
+ * `^sealed suite ` closes freeze, and three of the ten patterns
+ * (`authoring the held-out acceptance suite`, `no reference capture`,
+ * `waiting for an answer in the chat`) are UNANCHORED and so can be matched by
+ * text appearing anywhere in the row. A progress row carries an excerpt of what
+ * the MODEL is writing, and the spec seat's own prompt is about authoring a
+ * held-out acceptance suite: the model quoting its own brief would flip a stage
+ * to `skipped` or `done` fifty minutes before it happened. That is this
+ * repository's signature defect — a display reporting work it never observed —
+ * arriving through a channel built to prevent it.
+ *
+ * THE CHECK IS THE REAL FOLD, NOT A COPY OF ITS REGEXES. A second copy of those
+ * ten patterns here would be a second thing to keep in step, and it would be
+ * wrong the first time `graph.ts` gains an eleventh. Instead the candidate row is
+ * folded against an empty canvas and the result compared BY REFERENCE: every
+ * recognised sentence creates or moves a stage on an empty canvas (verified
+ * branch by branch — `settleStage` and `ensureStage` both go through `putStage`,
+ * which only returns the same object when a stage it already holds is unchanged,
+ * and an empty canvas holds none), and every unrecognised one returns the input
+ * object. So "this row is inert" and "the fold gave me my own object back" are
+ * the same statement.
+ */
+export function laneNeutralLogText(text: string): boolean {
+  return foldGraph(LANE_PROBE, { type: "log", level: "info", text }) === LANE_PROBE;
+}
+
+/** `38s`, `4m12s`. Rounded to the second: this is a liveness figure. */
+function describeElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${String(seconds)}s`;
+  return `${String(Math.floor(seconds / 60))}m${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+/**
+ * One progress row: how long, how much, and what it is saying right now.
+ *
+ * THE MEASUREMENTS COME FIRST AND THE EXCERPT LAST, because the measurements are
+ * the part that cannot be dropped. If the excerpt would move the pre-build lane
+ * (see {@link laneNeutralLogText}) it is discarded and the row still reports that
+ * the seat is alive and how far it has got — degraded, and degraded in the
+ * direction that claims less.
+ *
+ * `scrubHostPaths` IS APPLIED HERE AND NOT ONLY IN THE FOLD. `graph.ts` scrubs on
+ * the way to a renderer, which covers the screen but not the `events` table:
+ * `db.ts`'s `redactForPersistence` recurses everything but has only CREDENTIAL
+ * rules, and `/Users/<name>/…` matches none of them. This is the emit site wave 2
+ * exported that function for. The seat has `tools: []` and never sees the
+ * filesystem, so a host path in its output would have to have come from the
+ * prompt — which is exactly the case worth scrubbing rather than assuming away.
+ */
+export function seatProgressLine(label: string, progress: SeatProgress): string {
+  const head =
+    `${label} is still working — ${describeElapsed(progress.elapsedMs)} in, ` +
+    `${progress.chars.toLocaleString("en-US")} characters streamed`;
+  const excerpt = scrubHostPaths(progress.text);
+  if (excerpt.length === 0) return head;
+  const full = `${head}: “${excerpt}”`;
+  return laneNeutralLogText(full) ? full : head;
+}
 
 /**
  * The build transcript file.
