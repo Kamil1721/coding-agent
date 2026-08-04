@@ -200,7 +200,7 @@ import { ensureRunDirs, gateEnv, runPathsFor, safeSegment } from "./paths.js";
 import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { publishProject } from "./project-publish.js";
-import { writeAssumptions, writeRunVerdict } from "./run-report.js";
+import { tracedProse, writeAssumptions, writeRunVerdict } from "./run-report.js";
 import type { AnsweredQuestion, ReferenceReading } from "./spec-assumptions.js";
 import { motionReferenceReading } from "./motion-brief.js";
 import { describeTokens, mergeTokenTotals, toApiTokens, zeroTokens } from "./tokens.js";
@@ -2644,9 +2644,11 @@ export class Orchestrator {
    * correction is required rather than tidy: this docblock previously ended
    * "non-comparable across THREE cases — prose-only, prose+capture, and
    * prose+attached documents", and a fourth now exists. `stripPlanBlock` runs
-   * BEFORE `ticketProse` below so the planning exchange is excluded from the
-   * prose the tracer measures against, and both halves of that decision have a
-   * cost worth stating:
+   * BEFORE `ticketProse` — both inside `run-report.ts:tracedProse` as of
+   * 2026-08-04, unchanged in composition and exported so the verdict page traces
+   * against the same text this record does — so the planning exchange is
+   * excluded from the prose the tracer measures against, and both halves of that
+   * decision have a cost worth stating:
    *
    *   WHY IT IS EXCLUDED. `extractAssumptions` traces by content-token overlap.
    *   A DECLINED question's wording sitting in the prose region would manufacture
@@ -2678,7 +2680,14 @@ export class Orchestrator {
     try {
       const record = writeAssumptions(
         runPaths.results,
-        ticketProse(stripPlanBlock(ticket.brief)),
+        // `tracedProse`, WHICH IS THIS EXPRESSION MOVED RATHER THAN A NEW ONE
+        // (2026-08-04). `run-report.ts:verdictInputFor` traced the verdict page's
+        // criteria against the stored brief with the blocks STILL IN IT, so the
+        // same run's verdict said "you wrote: <the dashboard's own capture
+        // block>" while this file's record said INFERRED. One exported
+        // expression, two callers, is what stops the two pages disagreeing about
+        // which sentences are his.
+        tracedProse(ticket.brief),
         this.#deps.store.listCriteria(runId),
         this.#answeredQuestions(runPaths),
         this.#referenceReading(runId),

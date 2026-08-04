@@ -83,6 +83,7 @@ import {
   writeRunSpend,
 } from "./run-report.js";
 import { ticketFromText } from "./ticket.js";
+import { composeBrief } from "./ticket-refs.js";
 import { runSpend, toSeatSpend, zeroTokens } from "./tokens.js";
 import { renderVerdict } from "./verdict.js";
 
@@ -129,6 +130,89 @@ test("a run the gate scored gets the verdict, and the headline is verdict.ts's",
   assert.ok(md.startsWith("# DID NOT PASS"), `verdict began ${JSON.stringify(md.slice(0, 40))}`);
   assert.match(md, /three project entries/, "the unmet requirement is named in the owner's words");
   assert.doesNotMatch(md, new RegExp(NO_VERDICT_HEADING));
+});
+
+/* -------------------------------------------------------------------------
+ * THE PAGE MAY NOT CREDIT HIM WITH THE DASHBOARD'S OWN WORDS
+ *
+ * MEASURED 2026-08-04, with a brief composed by `composeBrief(prose, null,
+ * motion)` and the criterion "The hero heading shall fade in opacity over
+ * 800ms":
+ *
+ *   REQ-001 -> ticket | you wrote: "The motion observed:
+ *     h1 — on load, entering animating opacity over 800ms (ease-out) …
+ *
+ * He wrote none of that. `http.ts:2061` stores `ticket.brief` — the COMPOSED
+ * brief, machine-written blocks and all — as `ticketText`, and `verdictInputFor`
+ * traced against it directly while `#recordAssumptions` traces against
+ * `ticketProse(stripPlanBlock(...))`. So the same run's `assumptions.md` said
+ * INFERRED and its `verdict.md` said "you wrote", quoting a sentence this
+ * repository authored.
+ *
+ * WHICH DIRECTION THAT ERROR RUNS IN IS THE POINT. `spec-assumptions.ts`'s
+ * header sets the asymmetry: calling an inference `ticket` HIDES it — the owner
+ * never reviews it and the badge keeps its claim — while calling a ticket line
+ * `inferred` is noise he can recognise. This was the expensive direction, and it
+ * was reachable the moment a ticket could carry a captured block.
+ * ---------------------------------------------------------------------- */
+
+/** A composed brief, exactly as `http.ts` stores one: prose, then the block. */
+const MOTION_BRIEF = composeBrief("portfolio website for the studio", null, {
+  url: "https://example.com/moves",
+  capturedAt: "2026-08-04T00:00:00.000Z",
+  entries: [
+    {
+      family: "load-entrance",
+      role: "h1",
+      props: ["opacity"],
+      durationMs: 800,
+      staggerMs: null,
+      easing: "ease-out",
+      iterations: 1,
+      scrollRatio: null,
+      parity: true,
+    },
+  ],
+  libraries: ["gsap"],
+  respectsReducedMotion: true,
+});
+
+const MOTION_SCORED: readonly ApiCriterion[] = [
+  criterion("REQ-001", "The hero heading shall fade in opacity over 800ms.", "FUNCTIONAL", "fail"),
+  criterion("REQ-002", "The studio portfolio shall list its projects.", "FUNCTIONAL", "fail"),
+];
+
+test("the verdict may not tell him he WROTE the dashboard's own reading of a page", () => {
+  const md = renderRunVerdict({
+    ticketText: MOTION_BRIEF,
+    criteria: MOTION_SCORED,
+    status: "failed",
+    failureReason: "the frozen held-out suite did not go green",
+  });
+  assert.doesNotMatch(
+    md,
+    /you wrote: "[^"]*The motion observed/,
+    "the page quotes a block this repository composed back at him as his own sentence",
+  );
+  assert.doesNotMatch(md, /you wrote: "[^"]*h1 —/);
+});
+
+test("NEGATIVE CONTROL: a criterion in his OWN words on the same page is still his", () => {
+  // Without this the fix could be "credit nothing to the ticket, ever", which
+  // reads identically on the assertion above and would move every criterion the
+  // owner really did state into the list he is told to review. The prose half of
+  // the SAME brief must still be traced.
+  const md = renderRunVerdict({
+    ticketText: MOTION_BRIEF,
+    criteria: MOTION_SCORED,
+    status: "failed",
+    failureReason: "the frozen held-out suite did not go green",
+  });
+  assert.match(
+    md,
+    /portfolio shall list its projects[\s\S]*FROM YOUR TICKET/,
+    "the criterion carrying his own two words no longer traces to the prose he typed",
+  );
 });
 
 test("a scored run that met everything renders as a pass — the arm that must not be stuck", () => {

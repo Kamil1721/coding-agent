@@ -859,6 +859,14 @@ interface ReferenceSupport {
  * alternate spellings would put the bare token `500` in the measured set, where
  * any criterion mentioning any 500 of anything would match it — a manufactured
  * overlap, which this file's header calls the first error and not the second.
+ *
+ * AND THE TOKEN PRINTS AS `500m`, NOT `500ms`. {@link singularise} takes the
+ * trailing `s` off any five-character-or-longer word, so the duration reads like
+ * a length in metres in the record's "measured wording" list. It is the same
+ * cost {@link answeredReason} already accepts — every printed token is still a
+ * prefix of what the quoted line contains, so the check by eye survives — and
+ * fixing it properly means carrying each token's original offset through
+ * `contentTokens`, which `plan-question.ts` also depends on.
  */
 function referenceSupportFor(
   statement: string,

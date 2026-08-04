@@ -82,6 +82,8 @@ import {
   renderAssumptions,
 } from "./spec-assumptions.js";
 import type { AnsweredQuestion, Assumption, ReferenceReading } from "./spec-assumptions.js";
+import { stripPlanBlock } from "./plan-brief.js";
+import { ticketProse } from "./ticket-refs.js";
 import { renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
 
@@ -267,6 +269,33 @@ export function gateProducedResults(criteria: readonly ApiCriterion[]): boolean 
  * authored statement, never a test title — so counting those failures again
  * here would double every number in the summary line.
  */
+/**
+ * The part of a stored ticket that the OWNER wrote.
+ *
+ * ONE EXPRESSION, TWO CALLERS, AND UNTIL THIS EXISTED THE TWO DISAGREED. What
+ * `http.ts:2061` stores as `ticketText` is `ticket.brief` — the COMPOSED brief,
+ * carrying the site-capture block, the motion block and, once the plan phase has
+ * folded, the planning exchange. `orchestrator.ts#recordAssumptions` has always
+ * cut those off before tracing; `verdictInputFor` did not, and traced the
+ * criteria against the machine's own sentences.
+ *
+ * MEASURED 2026-08-04 on a brief composed with a motion reading: the criterion
+ * "The hero heading shall fade in opacity over 800ms" came back `ticket`, and
+ * the verdict page said `you wrote: "The motion observed: h1 — on load,
+ * entering animating opacity over 800ms (ease-out)"`. He wrote none of that.
+ * That is the expensive direction of this module's asymmetry — an inference
+ * stamped as his is one he never reviews — and it was reachable from the day a
+ * ticket could carry a captured block.
+ *
+ * IT DOES NOT TOUCH THE QUOTE. `RunVerdictSource.ticketText` is still what the
+ * page quotes back at him under "You asked for this", because that is a record
+ * of what was submitted rather than a claim about who wrote which sentence.
+ * This expression governs only what the TRACER measures against.
+ */
+export function tracedProse(ticketText: string): string {
+  return ticketProse(stripPlanBlock(ticketText));
+}
+
 function verdictInputFor(source: RunVerdictSource): VerdictInput {
   const criteriaResults: readonly CriterionResult[] = source.criteria.map((criterion) => ({
     criterionId: criterion.id,
@@ -280,7 +309,10 @@ function verdictInputFor(source: RunVerdictSource): VerdictInput {
     ticket: source.ticketText,
     criteriaResults,
     qualityFindings: [],
-    assumptions: assumptionsFor(source.ticketText, source.criteria),
+    // `tracedProse`, NOT `source.ticketText` — see that function. The page keeps
+    // quoting the stored brief above; only what the tracer MEASURES against is
+    // narrowed to the owner's own prose.
+    assumptions: assumptionsFor(tracedProse(source.ticketText), source.criteria),
     heldOutUnmet: { BLOCKING: 0, FUNCTIONAL: 0, QUALITY: 0 },
   };
 }
