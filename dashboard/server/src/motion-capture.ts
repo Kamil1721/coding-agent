@@ -720,7 +720,17 @@ export async function captureMotion(options: MotionCaptureOptions): Promise<Moti
      * because `reducedMotion` cannot be changed on an open one. Asked only when
      * the main pass was not already suppressed. */
     const respectsReducedMotion = suppressed
-      ? observations.every((o) => o.family === "scroll-linked")
+      ? // THIS BRANCH DESCRIBES THE SUPPRESSED CONTEXT, NOT THE PAGE. Under
+        // `forceReducedMotion` this driver injected a stylesheet that stops CSS
+        // motion, so "nothing time-driven moved" is a fact about what this
+        // program did, not about what the reference honours. The branch exists
+        // only because the negative-control path has no unsuppressed pass to
+        // compare against; nothing in `POST /api/runs` reaches it. Measured on
+        // the fixture — which carries no `prefers-reduced-motion` block at all
+        // and therefore honours nothing — this returns `false`, because the raw
+        // list still holds the zero-duration class flips. It happens to be the
+        // truthful answer there, and it is not truthful BY CONSTRUCTION.
+        observations.every((o) => o.family === "scroll-linked")
       : await probeReducedMotion(browser, options.url, navigationTimeout);
 
     return {
@@ -845,6 +855,17 @@ function toObservation(record: ProbeRecord, family: MotionFamily): RawObservatio
  *
  * THE MEDIAN IS REPORTED, not the mean: one step where the read landed a frame
  * early would otherwise pull the number the brief prints.
+ *
+ * A DELIBERATE DIVERGENCE FROM THE PLAN, STATED RATHER THAN QUIETLY MADE. Plan A
+ * asks for "a scroll ramp at six offsets WITH TIME HELD" — freeze the clock, so
+ * anything that still moves must be moving because of the scroll. This does not
+ * hold the clock. It scrolls, settles for a frame, samples, and requires the
+ * ratio to AGREE at every offset instead, which rejects a time-driven animation
+ * that happened to be running during the ramp just as effectively and does not
+ * need a debugger protocol to do it. The erratic-element case in
+ * `motion-capture.test.ts` is the negative control that keeps the substitution
+ * honest: without the agreement test every reveal would be reported as a
+ * parallax carrying a fabricated px-per-px ratio.
  */
 const MIN_SCROLL_RATIO = 0.02;
 const SCROLL_RATIO_TOLERANCE = 0.05;

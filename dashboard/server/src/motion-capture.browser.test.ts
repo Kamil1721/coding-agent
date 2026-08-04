@@ -76,9 +76,29 @@ test("REAL CHROMIUM: a page with animations disabled reports NO motion", async (
   const result = await captureMotion({ url: FIXTURE_URL, forceReducedMotion: true });
   ok(result.ok, result.ok ? "" : result.reason);
   const spec = normaliseMotion(result.reading);
+  // EVERY TIME-DRIVEN FAMILY THIS DRIVER CAN PRODUCE, named one by one rather
+  // than asserted as a total, so a family that starts surviving suppression is
+  // pointed at instead of hidden inside a count.
   strictEqual(spec.entries.filter((e) => e.family === "load-entrance").length, 0);
   strictEqual(spec.entries.filter((e) => e.family === "ambient-loop").length, 0);
+  strictEqual(spec.entries.filter((e) => e.family === "scroll-reveal").length, 0);
   strictEqual(spec.entries.filter((e) => e.family === "hover-focus").length, 0);
+
+  /*
+   * WHAT IS ACTUALLY DOING THE WORK HERE, because it is not only the stylesheet.
+   * Measured on the suppressed page, the RAW observation list is not empty — it
+   * holds a load-entrance, three scroll-reveals and a hover-focus, every one of
+   * them with `durationMs: 0`. Suppression does not stop the class flips; it
+   * removes their duration, and `normaliseMotion`'s MIN_DURATION_MS rule ("a 0ms
+   * change is a state flip, not motion") is what drops them. So this control
+   * spans two modules, and a change to that rule in `motion-spec.ts` would
+   * redden this test in `motion-capture.ts`. That coupling is real and is better
+   * written down than discovered.
+   */
+  ok(
+    result.reading.observations.some((o) => o.durationMs === 0),
+    "the flips still happened and were still recorded; it is their duration that went",
+  );
 
   // AND THE PROBE WAS STILL LOOKING. The parallax is written to an inline style
   // from requestAnimationFrame, so no stylesheet can stop it and a working
