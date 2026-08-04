@@ -118,6 +118,16 @@
  * NOT ON THIS LIST AND DELIBERATELY SO: every HTML element name. `<p>`, `<div>`,
  * `<section>`, `<code>` are things a ticket talks about, not things a model wraps
  * its answer in.
+ *
+ * `source` WAS ON THIS LIST AND WAS REMOVED, which is the rule above doing its
+ * job rather than an oversight. It is a plausible annotation wrapper AND a real
+ * HTML element — the child of `<picture>`, `<video>` and `<audio>` — and this
+ * product's runs write exactly that markup, since `design-prompt.ts` asks for a
+ * scrubbable `.mp4` with a `.webp` poster. A run reporting "added a `<source>`
+ * for the webp" would have lost the brackets SILENTLY, which is the failure the
+ * closed list exists to avoid, in exchange for a tag never once observed here.
+ * `<source>` is in the survival test's fixture so the boundary is defended and
+ * not merely asserted in this comment.
  */
 export const ANNOTATION_TAGS: readonly string[] = [
   "antthinking",
@@ -133,7 +143,6 @@ export const ANNOTATION_TAGS: readonly string[] = [
   "parameter",
   "search_quality_reflection",
   "search_quality_score",
-  "source",
   "thinking",
 ];
 

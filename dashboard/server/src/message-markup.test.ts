@@ -160,12 +160,31 @@ test("A RUN MESSAGE'S LEGITIMATE ANGLE BRACKETS SURVIVE — this is not a tag st
    */
   const said =
     "Changed the hero <div> to a <section> and pulled the copy into <MyComponent />. " +
-    "The helper is now generic<T extends string> and the guard reads `if (a < b && c > d)`. " +
+    'Added <source src="hero.webp" type="image/webp"> inside the <picture>, and the ' +
+    "helper is now generic<T extends string> with a guard that reads `if (a < b && c > d)`. " +
     "Also touched <p>, <span> and the <cite>-adjacent styling in globals.css.";
 
   const cleaned = stripAnnotationMarkup(said);
 
-  for (const kept of ["<div>", "<section>", "<MyComponent />", "generic<T extends string>", "a < b && c > d", "<p>", "<span>"]) {
+  for (const kept of [
+    "<div>",
+    "<section>",
+    "<MyComponent />",
+    /*
+     * `<source>` IS THE ONE THAT COST A LIST ENTRY. It was in ANNOTATION_TAGS
+     * until it was noticed that it is a real element — the child of `<picture>`,
+     * `<video>` and `<audio>` — and that `design-prompt.ts` has runs producing a
+     * `.webp` poster beside an `.mp4`, so a run narrating that markup is exactly
+     * the message the over-broad list would have quietly eaten. It stays here so
+     * putting it back turns this test red instead of shipping.
+     */
+    '<source src="hero.webp" type="image/webp">',
+    "<picture>",
+    "generic<T extends string>",
+    "a < b && c > d",
+    "<p>",
+    "<span>",
+  ]) {
     assert.ok(cleaned.includes(kept), `stripped legitimate content "${kept}": ${cleaned}`);
   }
 });
