@@ -18,11 +18,11 @@
  * determinism case is what calibrates them, and each is a named constant so a
  * measured change is a one-line change.
  *
- * WHAT THIS FILE DOES NOT DO. It does not drop `capturedAt`, which is a
- * timestamp and therefore differs between two readings of the same page. A
- * caller that folds a whole `MotionSpec` into ticket identity re-mints the id on
- * every resubmission; only the rendered brief lines (`motion-brief.ts`, which
- * never prints `capturedAt`) are safe to hash.
+ * WHAT THIS FILE DOES NOT DO. It passes `capturedAt` through unchanged. That is
+ * a timestamp, so it differs between two readings of the same page, and a caller
+ * that hashes a whole `MotionSpec` re-mints the ticket id on every resubmission
+ * — the exact failure the rest of this file exists to prevent. Nothing here can
+ * stop that; only the caller's choice of what to hash can.
  */
 import type { MotionEntry, MotionReading, MotionSpec, RawObservation } from "./motion-types.js";
 import { PARITY_FAMILIES } from "./motion-types.js";
@@ -36,9 +36,11 @@ const MIN_DURATION_MS = 1;
 const bucket = (value: number, size: number): number => Math.round(value / size) * size;
 
 /**
- * Six named curves, because a raw `cubic-bezier(0.16, 1, 0.3, 1)` differs from
- * `cubic-bezier(0.17, 1, 0.29, 1)` by nothing a visitor could see and by enough
- * bytes to mint a new ticket.
+ * Four named curves — `linear`, `ease-in`, `ease-out`, `ease-in-out` — plus
+ * `null` for anything unrecognised. Every `cubic-bezier(...)` collapses into one
+ * of the four by its two x controls, because a raw
+ * `cubic-bezier(0.16, 1, 0.3, 1)` differs from `cubic-bezier(0.17, 1, 0.29, 1)`
+ * by nothing a visitor could see and by enough bytes to mint a new ticket.
  */
 export function easingFamily(raw: string | null): string | null {
   if (raw === null) return null;
