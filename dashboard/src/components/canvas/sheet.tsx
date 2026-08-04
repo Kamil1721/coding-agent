@@ -67,6 +67,7 @@ import { Button, MonoPath, Panel, cx } from "@/components/ui";
 import { TicketAttachmentsPanel } from "@/components/run/attachments";
 import { CodeBrowser } from "@/components/run/code-browser";
 import { CriteriaPanel } from "@/components/run/criteria";
+import { MotionReadoutPanel } from "@/components/run/motion";
 import { OutcomeNotice } from "@/components/run/notices";
 import { PublishedProjectPanel } from "@/components/run/published-project";
 import { ScreenshotsPanel } from "@/components/run/screenshots";
@@ -730,6 +731,31 @@ export function RunSheet({
               references={run.references ?? []}
               documents={run.documents ?? []}
             />
+
+            {/*
+             * WHAT THE REFERENCE PAGE WAS OBSERVED TO DO — a sibling of the
+             * attachments panel because it answers the same question about the
+             * same tab: what did this ticket arrive carrying. Attachments are the
+             * files the owner handed over; this is the page he pointed at.
+             *
+             * `?? null` FOR THE SAME REASON THE LINE ABOVE SPREADS `?? []`, and
+             * it is the same measured hazard rather than a copied habit.
+             * `RunDetail.motion` is DECLARED required, so `run.motion` is
+             * `ApiMotionSpec | null` to the compiler and this flattening looks
+             * redundant to it — but `lib/api.ts` casts with `parsed as T` and
+             * validates nothing, and every run recorded before 2026-08-04
+             * answers with no `motion` key at all. Without the `??`, `undefined`
+             * walks past the panel's `=== null` guard and `.entries.length`
+             * throws, which blanks the whole Ticket tab rather than one box.
+             * `motion-readout.browser.spec.ts`'s `MISSING_KEY` case is the only
+             * check in the tree that goes red when this operator is deleted —
+             * verified by deleting it, not by reasoning about it.
+             *
+             * IT COSTS NOTHING WHEN THERE IS NOTHING. The panel returns `null`
+             * for a run that named no motion reference, which is almost every
+             * run on this machine, so the tab opens exactly as it did before.
+             */}
+            <MotionReadoutPanel motion={run.motion ?? null} />
 
             <div className="rounded border border-line bg-canvas/40">
               <p className="border-b border-line px-3 py-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
