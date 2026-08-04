@@ -299,22 +299,26 @@ export function ticketFromStoredReferences(brief: string, manifest: ReferenceMan
 
 /**
  * The READ-BACK path, IMAGES ONLY — superseded by
- * {@link ticketFromStoredReferences} and kept because its callers are outside
- * this file.
+ * {@link ticketFromStoredReferences}, and NO PRODUCTION CALLER REMAINS.
+ *
+ * THE PARAGRAPH THAT USED TO BE HERE IS NOW FALSE, so it is gone rather than
+ * softened: it said `orchestrator.ts` still derived its ticket through this
+ * function and named the outstanding change. That change landed —
+ * `orchestrator.ts:1745` reads `ticketFromStoredReferences(row0.ticketText,
+ * manifest)` — and grepping `ticketFromStoredBrief` across
+ * `dashboard/server/src` on 2026-08-04 returned this declaration, one comment,
+ * and three lines of `ticket-refs.test.ts`. It is kept because that test is the
+ * one that pins the lossy `ticketProse` round trip through it, and because a
+ * caller outside this package could still exist.
  *
  * WHAT IT DOES NOT DO, SAID PLAINLY: it does not fold DOCUMENT digests, and
  * since 2026-08-04 it does not fold a MOTION reference's address either — its
- * signature holds neither, and both are passed as empty here. A run whose ticket
- * carried an attached document OR a motion reference derives a DIFFERENT id
- * through this function than the intake wrote to `runs.ticket_id`, so the run
- * will not find that ticket's frozen suite and will author a second one. That is not a
- * hypothetical — `orchestrator.ts` still derives its ticket with
- * `ticketFromStoredBrief(row0.ticketText, manifest?.images ?? [])`, and the
- * outstanding change is to make that expression
- * `ticketFromStoredReferences(row0.ticketText, manifest)`. Until it lands, a
- * documents-bearing run is visible rather than silent — the orchestrator's own
- * id comparison emits a `warn` naming both ids — but it does cost a re-authored
- * suite.
+ * signature holds neither, and both are passed as empty below. Any caller that
+ * appears for a ticket carrying one of those derives a DIFFERENT id from the one
+ * the intake wrote to `runs.ticket_id`, does not find that ticket's frozen
+ * suite, and authors a second one on the owner's quota — with no throw and no
+ * compile error. That is why the replacement takes the whole manifest and why
+ * its `motion` parameter is required rather than defaulted.
  *
  * WHY THIS SIGNATURE WAS NOT SIMPLY WIDENED. A defaulted third parameter would
  * let that call site keep compiling while computing the wrong id with no warning
