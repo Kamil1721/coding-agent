@@ -198,7 +198,18 @@ async function serveLane(page: Page, runId: string): Promise<void> {
   });
 }
 
-/** Answer with a lane and NO agent graph — the run before the build starts. */
+/**
+ * Answer with a lane and NO agent graph — the run before the build starts.
+ *
+ * THE WATERMARK IS DELIBERATELY PAST EVERYTHING THE HARNESS WILL REPLAY, which is
+ * the opposite of `serveLane`'s reason for reporting the fixture's own `atSeq`.
+ * These fixtures ARE the whole graph under assertion, and on a non-terminal run
+ * `use-run-stream` opens a socket that replays the harness's rows from seq 1 —
+ * which folded the plan run's own phase rows in on top and turned an all-pending
+ * lane into a half-started one. `use-run-graph.ts` folds a tail event only when
+ * its seq is past the snapshot's, so a high watermark pins the graph to what this
+ * function served. Found by a test that could not otherwise be written.
+ */
 async function serveLaneOnly(
   page: Page,
   runId: string,
@@ -208,7 +219,7 @@ async function serveLaneOnly(
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ ...foldGraphAll(events), atSeq: 0 }),
+      body: JSON.stringify({ ...foldGraphAll(events), atSeq: 10_000 }),
     });
   });
 }
@@ -508,6 +519,103 @@ test.describe("the panel the click opens", () => {
      * `PlanDialoguePanel` inside the `!planPanelOpen` branch.
      */
     await expect(page.getByTestId("plan-question-PQ-1")).toBeVisible();
+
+    /*
+     * VISIBLE IS NOT THE SAME AS REACHABLE, and this file's neighbours already
+     * record the difference: Playwright's visibility is a non-empty box, not
+     * in-viewport, and `runs/[runId]/page.tsx` records that the dock's percentage
+     * height caps resolve to `none` against an indefinite height — so a stack that
+     * grows past the fold does not scroll, it simply runs off the bottom.
+     *
+     * MEASURED, AND THE FIRST MEASUREMENT FAILED. On this fixture at the harness's
+     * 1280x720 the park's send button landed at y = 1026, three hundred pixels
+     * below the fold, in a page that is `overflow-hidden` and a dock whose
+     * percentage caps resolve to `none`. Nothing scrolled and nothing could be
+     * scrolled to: the control was not covered, it was simply gone. The fix is the
+     * `88vh` cap now on the dock in `runs/[runId]/page.tsx`, which is the first cap
+     * on it that binds.
+     *
+     * SO THE PROPERTY IS "REACHABLE", NOT "IN THE VIEWPORT", and the two are
+     * different on purpose: this dock is a scroller, and a control the owner can
+     * scroll to is a control he has. What is being refused is the third case —
+     * off the bottom of a box that does not scroll.
+     *
+     * MUTATION: remove the `vh` cap from the dock, leaving only the percentages
+     * that were measured inert. `scrollHeight === clientHeight` while the button
+     * sits past `innerHeight`, and this goes red. It is the assertion the whole
+     * "the panel does not replace the park" argument rests on: a panel that pushes
+     * the answer surface somewhere unreachable has taken the control away by a
+     * different mechanism than covering it.
+     */
+    const reach = await page.evaluate(() => {
+      const question = document.querySelector('[data-testid^="plan-question-"]');
+      const send = question?.querySelector("button") ?? null;
+      const dock = document.querySelector("div.pointer-events-auto.flex");
+      return {
+        bottom: send === null ? null : Math.round(send.getBoundingClientRect().bottom),
+        viewport: window.innerHeight,
+        scrollable: dock === null ? false : dock.scrollHeight > dock.clientHeight,
+      };
+    });
+    expect(reach.bottom, "the plan park has no control to answer with").not.toBeNull();
+    expect(
+      (reach.bottom ?? Number.POSITIVE_INFINITY) < reach.viewport || reach.scrollable,
+      "the park's answer control is below the fold in a dock that does not scroll",
+    ).toBe(true);
+  });
+
+  test("the empty state does not promise a future to a run that is over", async ({ page }) => {
+    /*
+     * THE BRANCH THAT HAD NO TEST, AND IT WAS WRONG.
+     *
+     * `foldPhaseStages` seeds the spec four and the orchestrator when a stream's
+     * first phase row is `spec`, and never seeds `plan` — so this is four pending
+     * sections and a folded card whose head is `capture`, which is why the card is
+     * matched by prefix here rather than by `stage-card-plan`.
+     *
+     * The panel then shows the empty asset instead of a list of rows nobody has
+     * anything to say about. Its caption used to read "The run has not said
+     * anything about this yet." unconditionally, under a chip reading `never ran`
+     * and beside a card reading "The run ended before any of this was mentioned."
+     *
+     * MUTATION: drop the `runIsActive` branch from the caption. The first
+     * assertion goes red, and it is the third place in this redesign where the
+     * same "yet" had to be taken out.
+     */
+    await serveLaneOnly(page, FINISHED_RUN_ID, [
+      { type: "phase", phase: "spec", at: "2026-08-04T11:12:11.000Z" },
+    ]);
+    await page.goto(`/runs/${FINISHED_RUN_ID}`);
+    const card = page.locator('[data-testid^="stage-card-"]').first();
+    await expect(card).toBeVisible();
+    await card.click();
+
+    const empty = page.getByTestId("prebuild-empty");
+    await expect(empty).toBeVisible();
+    await expect(empty).toContainText("The run ended before any of this was mentioned.");
+    await expect(empty).not.toContainText("yet");
+    // And there is no list of rows behind it claiming otherwise.
+    await expect(page.locator('[data-testid^="plan-section-"]')).toHaveCount(0);
+  });
+
+  test("the empty state on a LIVE run still says more is coming", async ({ page }) => {
+    /*
+     * THE CONTROL FOR THE TEST ABOVE. This run is `awaiting_input`, which is not
+     * terminal, so "yet" is TRUE here and must survive. A blanket removal of the
+     * word would pass the dead-run test and lie to a live one in the other
+     * direction.
+     */
+    await serveLaneOnly(page, PLAN_RUN_ID, [
+      { type: "phase", phase: "spec", at: "2026-08-04T11:12:11.000Z" },
+    ]);
+    await page.goto(`/runs/${PLAN_RUN_ID}`);
+    const card = page.locator('[data-testid^="stage-card-"]').first();
+    await expect(card).toBeVisible();
+    await card.click();
+
+    const empty = page.getByTestId("prebuild-empty");
+    await expect(empty).toContainText("The run has not said anything about this yet.");
+    await expect(empty).not.toContainText("The run ended before");
   });
 
   test("a live run's pending sections still say what is coming", async ({ page }) => {

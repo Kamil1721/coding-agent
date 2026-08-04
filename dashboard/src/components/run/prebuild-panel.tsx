@@ -59,6 +59,7 @@ import {
   useStageAt,
 } from "@/components/canvas/stage-node";
 import {
+  NOTHING_WAS_MENTIONED,
   SECTION_NEVER_MENTIONED,
   rollupAtOf,
   rollupDoneCount,
@@ -347,7 +348,7 @@ export function PreBuildPanel({
          * makes it honest: five unlit segments cannot claim a state on a run that
          * has reported none.
          */
-        <div className="shrink-0 border-t border-line">
+        <div data-testid="prebuild-empty" className="shrink-0 border-t border-line">
           <div className="bg-canvas">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -358,8 +359,19 @@ export function PreBuildPanel({
               className="h-[104px] w-full object-cover object-center"
             />
           </div>
+          {/*
+            * THE CAPTION IS TWO SENTENCES BECAUSE "NOTHING YET" IS TWO FACTS.
+            *
+            * "Yet" is a promise, and on a run that is over it is a false one — the
+            * same defect as the rollup saying `waiting` and as a pending row
+            * printing the server's forward-looking line, arrived at for a third
+            * time in the one branch that had no test. It was caught by looking at
+            * the rendering: the chip above this said `never ran` and the card
+            * outside said "The run ended before any of this was mentioned." while
+            * this line said more was coming.
+            */}
           <p className="px-4 py-3 text-center text-[11.5px] text-ink-dim">
-            The run has not said anything about this yet.
+            {runIsActive ? "The run has not said anything about this yet." : NOTHING_WAS_MENTIONED}
           </p>
         </div>
       ) : (

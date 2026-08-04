@@ -732,12 +732,30 @@ export default function RunPage(): ReactNode {
            * measure.
            */
           /*
+           * A `vh` CAP ADDED BESIDE THEM — 2026-08-04, and it is the first cap on
+           * this dock that actually binds.
+           *
+           * MEASURED, on the plan fixture at 1000x900 with the pre-build panel
+           * open: the dock came back 1198px tall with `scrollHeight ===
+           * clientHeight`, and the plan park's own send button sat at y = 1096 —
+           * off the bottom of the viewport, inside a page that is
+           * `overflow-hidden`. Nothing scrolled, because the percentages above
+           * resolve to `none`. So the ONE argument this whole redesign rests on —
+           * "the panel does not replace the surface a stopped run is answered
+           * from" — was true about covering and false about reach.
+           *
+           * `88vh` leaves the canvas controls at the bottom-left clear, and the
+           * dock now scrolls instead of running off the page. It is a cap on the
+           * DOCK, not on any panel in it: each panel keeps its own measured cap, so
+           * this changes nothing for a run whose dock already fitted.
+           */
+          /*
            * 360 -> 400 ON 2026-08-04, WITH `HUD_WIDTH` IN THE CANVAS, and the two
            * numbers have to move together: the canvas reserves this much of its
            * pane on the left when it fits the graph, so a dock wider than the
            * reservation covers cards the fit believed were visible.
            */
-          <div className="pointer-events-auto flex max-h-[40%] w-[min(400px,calc(100vw-32px))] flex-col gap-2 overflow-y-auto min-[900px]:max-h-[62%]">
+          <div className="pointer-events-auto flex max-h-[88vh] w-[min(400px,calc(100vw-32px))] flex-col gap-2 overflow-y-auto">
             {/*
              * THE SWAP THE OWNER ASKED FOR, AND EXACTLY HOW FAR IT GOES.
              *
