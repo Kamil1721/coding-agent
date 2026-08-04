@@ -253,8 +253,76 @@ export function planBlockIndex(brief: string): number {
  */
 export function redactHostPaths(text: string): string {
   return text
-    .replace(/(?:^|(?<=[\s"'(]))[~.]?\/[^\s"')]+/g, "[a file path was removed here]")
+    .replace(PATH_LIKE, (match) => {
+      const punctuation = /[.,;:!?]+$/.exec(match)?.[0] ?? "";
+      const core = punctuation.length > 0 ? match.slice(0, -punctuation.length) : match;
+      return isWebRoute(core) ? match : `[a file path was removed here]${punctuation}`;
+    })
     .replace(/\b[\w.-]+\.(?:png|jpe?g|webp|gif|avif|pdf|docx?|rtf)\b/gi, "[a filename was removed here]");
+}
+
+/**
+ * Anything that could be a path: `/x`, `~/x`, `./x`, `../x`.
+ *
+ * `(?:~|\.{1,2})?` RATHER THAN `[~.]?`, WHICH IS A FIX AND NOT A TIDY-UP. The
+ * single-character class matched only ONE dot, so `../refs/hero.png` matched from
+ * the second dot and the redaction left a stray `.` in front of the marker. The
+ * path still went — this never leaked — but the sentence the owner read was
+ * wrong, and a redaction that visibly mis-cuts invites someone to widen it.
+ */
+const PATH_LIKE = /(?:^|(?<=[\s"'(]))(?:~|\.{1,2})?\/[^\s"')]+/g;
+
+/**
+ * First segments that are filesystem roots whatever else they look like.
+ *
+ * `/tmp/reference-1` is lowercase, two segments and extension-free — the shape
+ * {@link isWebRoute} otherwise keeps — and it is a host path. So the roots are
+ * named rather than inferred.
+ */
+const FILESYSTEM_ROOTS = new Set([
+  "users", "home", "var", "tmp", "etc", "opt", "private", "mnt", "root", "usr",
+  "srv", "applications", "volumes", "dev", "proc", "sys", "library", "bin",
+  "sbin", "media", "run", "node_modules",
+]);
+
+/** A route has at most this many segments. Chosen, not measured; see below. */
+const MAX_ROUTE_SEGMENTS = 3;
+
+/**
+ * Is this the name of a PAGE on the site being built, rather than a file on this
+ * machine?
+ *
+ * WHY THIS PREDICATE EXISTS, MEASURED. On run `…162b186d` the owner answered a
+ * question about his own `/work` page and the brief the spec seat read said
+ * "every project card on [a file path was removed here]". Route names are the
+ * vocabulary of every web ticket this dashboard runs, and the plan phase exists
+ * to turn the grader's guesses into the owner's own words — so deleting the nouns
+ * from his answers defeats the phase precisely on the tickets it was built for.
+ *
+ * THE TWO MISTAKES DO NOT COST THE SAME, AND THE RULE LEANS ACCORDINGLY. An
+ * over-redacted route costs one mangled sentence in a brief. An under-redacted
+ * path hands the criteria author a route to an image it must never see, which is
+ * the whole reason {@link redactHostPaths} exists. So every test below is a
+ * conjunction and anything failing one of them is treated as a path:
+ *
+ *   · it must start with `/` — `~/x`, `./x` and `../x` are never pages;
+ *   · at most {@link MAX_ROUTE_SEGMENTS} segments, because a brief naming a
+ *     four-deep URL is rarer than a run whose workspace path is four deep;
+ *   · every segment lowercase alphanumeric-or-dash, so a capitalised `/Users`
+ *     and any segment carrying a file extension both fail;
+ *   · the first segment is not a {@link FILESYSTEM_ROOTS} member.
+ *
+ * WHAT IT STILL LETS THROUGH, said plainly rather than discovered later: a host
+ * path that is lowercase, at most three segments, extension-free and rooted
+ * somewhere not on the list — `/srv2/app/x` — is kept. Widening the list is a
+ * one-line change; widening the SHAPE would take the routes back out.
+ */
+function isWebRoute(token: string): boolean {
+  if (!token.startsWith("/")) return false;
+  const segments = token.slice(1).split("/");
+  if (segments.length === 0 || segments.length > MAX_ROUTE_SEGMENTS) return false;
+  if (FILESYSTEM_ROOTS.has((segments[0] ?? "").toLowerCase())) return false;
+  return segments.every((segment) => /^[a-z0-9][a-z0-9-]*$/.test(segment));
 }
 
 /** One line, quoted, with the newlines flattened so a block cannot be reshaped. */

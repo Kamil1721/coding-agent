@@ -218,3 +218,74 @@ test("redaction removes the route and keeps the sentence", () => {
   // mangles every answer the owner gives.
   assert.equal(redactHostPaths("Six project cards, calm and readable."), "Six project cards, calm and readable.");
 });
+
+/**
+ * MEASURED ON A REAL RUN, 2026-08-04, run `…162b186d`. The owner answered a
+ * question about his own site's `/work` page and the brief the spec seat read
+ * said:
+ *
+ *   "Does every project card on [a file path was removed here] get its own
+ *    hand-drawn illustration"
+ *
+ * A WEB ROUTE IS NOT A HOST PATH. The redaction exists because the plan seat is
+ * handed absolute paths to the owner's reference images and could quote one into
+ * a question; it was never meant to reach route names. Route names are the
+ * vocabulary of every web ticket this dashboard runs, and the plan phase exists
+ * to turn the grader's guesses into the owner's own words — deleting the nouns
+ * from his answers defeats the phase on the tickets it matters most for.
+ */
+test("a WEB ROUTE survives, because deleting it defeats the phase it belongs to", () => {
+  assert.equal(
+    redactHostPaths("Does every project card on /work get an illustration?"),
+    "Does every project card on /work get an illustration?",
+  );
+  assert.equal(
+    redactHostPaths("POST /api/contact returns 400, and /about lists the roles."),
+    "POST /api/contact returns 400, and /about lists the roles.",
+  );
+});
+
+/**
+ * THE NEGATIVE CONTROL, and it is the one that matters. Every assertion above is
+ * satisfied by a function that returns its argument unchanged — which is exactly
+ * the leak this module exists to prevent. These cases are the ones that must
+ * still be destroyed, and each is a shape a real leak takes.
+ */
+test("NEGATIVE CONTROL: every shape of host path is still destroyed", () => {
+  const REDACTED = "[a file path was removed here]";
+  for (const leak of [
+    "/Users/kamil/refs/hero",          // capitalised root, the macOS shape
+    "/home/kamil/refs/hero",           // the linux shape
+    "/tmp/reference-1",                // a filesystem root with no extension
+    "/private/var/folders/x/y",        // what a macOS temp dir looks like
+    "~/refs/hero",                     // home-relative
+    "./refs/hero",                     // cwd-relative
+    "../refs/hero",                    // parent-relative
+    "/Users/kamil/a/b/c/d/e",          // deep, no extension
+    "/opt/app/config",                 // another root on the denylist
+  ]) {
+    assert.equal(
+      redactHostPaths(`Follow ${leak} closely.`),
+      `Follow ${REDACTED} closely.`,
+      `${leak} leaked through the redaction`,
+    );
+  }
+});
+
+/**
+ * A ROUTE THAT IS ACTUALLY A PATH still goes. The rule is not "starts with a
+ * slash is safe" — anything carrying a file extension, an uppercase segment, or
+ * more depth than a route plausibly has is treated as a path, because the cost of
+ * the two mistakes is not symmetrical: an over-redacted route costs one mangled
+ * sentence, and an under-redacted path hands the criteria author a route to an
+ * image it must never see.
+ */
+test("route-shaped but path-like text is still redacted, because the costs are asymmetric", () => {
+  const REDACTED = "[a file path was removed here]";
+  assert.equal(redactHostPaths(`See /work/hero closely.`), `See /work/hero closely.`);
+  // …but with an extension it is a file, not a page:
+  assert.ok(redactHostPaths("See /work/hero.png closely.").includes(REDACTED)
+    || redactHostPaths("See /work/hero.png closely.").includes("[a filename was removed here]"));
+  // …and beyond three segments it is not a route anyone types in a brief:
+  assert.equal(redactHostPaths("See /a/b/c/d/e now."), `See ${REDACTED} now.`);
+});
