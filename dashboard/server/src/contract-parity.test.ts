@@ -705,6 +705,7 @@ const DETAIL_SHAPES: readonly {
       "failureReason",
       "designLock",
       "adversary",
+      "motion",
     ],
   },
   {
@@ -788,6 +789,38 @@ const DETAIL_SHAPES: readonly {
     server: "ApiProjectExclusion",
     client: "ProjectExclusion",
     fields: ["path", "reason"],
+  },
+  {
+    // THE SHAPE ADDED BEFORE ANYTHING SENDS IT, which is the opposite order from
+    // `references`/`documents` and is the whole point: that pair reached the wire
+    // first and the mirror months later, and nothing here noticed. `motion` is
+    // declared on both sides in one commit, so the day a producer starts filling
+    // it there is a client that already knows the name of every field.
+    //
+    // THE NAME IS `ApiMotionSpec` ON BOTH SIDES, unlike every other row above.
+    // The client drops the `Api` prefix by convention; here it does not, because
+    // the wire shape has a same-named domain twin (`MotionSpec` in
+    // motion-types.ts, which carries the un-quantised reading) and a client type
+    // called `MotionSpec` would invite a reader to assume they are the same
+    // declaration. They are not: this one is what a JSON response can carry.
+    server: "ApiMotionSpec",
+    client: "ApiMotionSpec",
+    fields: ["url", "capturedAt", "entries", "libraries", "respectsReducedMotion"],
+  },
+  {
+    server: "ApiMotionEntry",
+    client: "ApiMotionEntry",
+    fields: [
+      "family",
+      "role",
+      "props",
+      "durationMs",
+      "staggerMs",
+      "easing",
+      "iterations",
+      "scrollRatio",
+      "parity",
+    ],
   },
 ];
 
@@ -874,5 +907,86 @@ test("CONTRACT: the client's RunDetail declares the ticket's attachments, as lis
     /readonly documents: readonly Attachment\[\];/,
     "the client's RunDetail mirror has no `documents: readonly Attachment[]`: the owner's attached " +
       "scope or CV is serialised by the server and no panel can see it",
+  );
+});
+
+test("CONTRACT: the client's motion shape parses as nine fields and carries the server's types", () => {
+  /*
+   * THE COUNT IS FIRST, AND IT IS THE REASON THIS TEST EXISTS AT ALL.
+   *
+   * `fieldNames` — the parser the whole-shape check above runs — closes on the
+   * FIRST `}` after its anchor. A member that ever spans braces (an inlined
+   * object literal for `props`, a nested `{ from, to }`) truncates it, and both
+   * legs of that check would then compare a FRAGMENT against a fragment: leg two
+   * compares two truncations that agree, and leg one's message would name the
+   * wrong cause ("the client does not declare durationMs …") for two files that
+   * agree exactly. That is not theoretical — `fieldNames`' own docblock records
+   * it happening to `ApiSeatSpend`, where a `{@link ModelTokens}` inside a
+   * docblock made a five-field interface parse as two.
+   *
+   * SO THE SHAPE IS COUNTED BEFORE ITS FIELDS ARE READ, the same order and the
+   * same argument as the `DesignLockState` check near the top of this file. Nine
+   * is the number of things a motion entry says; a parse that yields any other
+   * number is a broken parser rather than a drifted mirror, and this assertion
+   * makes the truncation say so itself instead of letting the checks above pass
+   * while covering nothing.
+   *
+   * NOTE THE PARSER DIFFERENCE, because it widens what this catches. `region`
+   * slices RAW text and strips comments afterwards, so it closes on a brace
+   * inside a docblock too — stricter than `fieldNames`, which strips first. Both
+   * are hazards for this file; only one of them can reach `fieldNames`.
+   *
+   * AND THEN THE TYPES, which no field-name comparison can see. A client
+   * `staggerMs: number` would mirror the NAME and lose the distinction the field
+   * exists for — `null` is "this role had no siblings", `0` would be "the
+   * siblings moved together" — and a `props: string` would mirror the name and
+   * render a list as a character sequence.
+   */
+  const client = readClient(CLIENT_TYPES);
+
+  const entry = region(client, CLIENT_TYPES, "export interface ApiMotionEntry {", "}");
+  assert.equal(
+    entry.split(";").length - 1,
+    9,
+    "the ApiMotionEntry region did not parse as nine fields — re-point this parser, do not delete it",
+  );
+  for (const field of [
+    // `string`, NOT the twelve-member union, and pinned as `string` on purpose:
+    // a client that spelled the union out would silently drop a thirteenth
+    // family a newer server sends, which is `gateStopReason`'s argument.
+    /readonly family: string;/,
+    /readonly role: string;/,
+    /readonly props: readonly string\[\];/,
+    /readonly durationMs: number;/,
+    /readonly staggerMs: number \| null;/,
+    /readonly easing: string \| null;/,
+    /readonly iterations: number \| null;/,
+    /readonly scrollRatio: number \| null;/,
+    /readonly parity: boolean;/,
+  ]) {
+    assert.match(entry, field, `the client's ApiMotionEntry is missing ${String(field)}`);
+  }
+
+  const spec = region(client, CLIENT_TYPES, "export interface ApiMotionSpec {", "}");
+  assert.equal(
+    spec.split(";").length - 1,
+    5,
+    "the ApiMotionSpec region did not parse as five fields — re-point this parser, do not delete it",
+  );
+  assert.match(
+    spec,
+    /readonly entries: readonly ApiMotionEntry\[\];/,
+    "the client's ApiMotionSpec does not carry its entries as a list of ApiMotionEntry, so the one " +
+      "field with any content in it is unreadable",
+  );
+
+  // AND THE FIELD ON `RunDetail` ITSELF, BY TYPE. The whole-shape check above
+  // proves the NAME is on both sides; a client that typed it `unknown` or
+  // widened it to `object` would pass that and still render nothing.
+  const detail = region(client, CLIENT_TYPES, "export interface RunDetail extends RunSummary {", "\nexport ");
+  assert.match(
+    detail,
+    /readonly motion: ApiMotionSpec \| null;/,
+    "the client's RunDetail mirror has no `motion: ApiMotionSpec | null`",
   );
 });

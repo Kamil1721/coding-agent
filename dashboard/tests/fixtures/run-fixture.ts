@@ -246,6 +246,12 @@ export const RUN_DETAIL: RunDetail = {
   // No human-factors pass on this fixture. `null` = the pass left no report;
   // `[]` would claim it ran and found nothing. The UI renders those differently.
   adversary: null,
+  // No motion reference — and `null` is ALSO what the server sends for a ticket
+  // that named one, because `toDetail` hardcodes it until the intake wiring
+  // lands. This fixture therefore asserts nothing about a captured reading; a
+  // spec that wants one sets it explicitly rather than inheriting an absence
+  // that currently means two different things.
+  motion: null,
 };
 
 /** The same run under a second id, served with a replaying stream. */
@@ -314,6 +320,9 @@ export const PLAN_DETAIL: RunDetail = {
   gateStopReason: null,
   designLock: null,
   adversary: null,
+  // As on `RUN_DETAIL`: `null` is what the server sends for every run today,
+  // whether or not the ticket named a motion reference.
+  motion: null,
 };
 
 /**

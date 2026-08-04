@@ -635,6 +635,23 @@ function toDetail(
      */
     references: listAttachments(paths.runs, row.runId, "references"),
     documents: listAttachments(paths.runs, row.runId, "documents"),
+    /*
+     * HARDCODED `null`, AND THIS LINE IS A STATEMENT ABOUT THIS SERVER RATHER
+     * THAN ABOUT THE TICKET.
+     *
+     * The field is on the wire contract and mirrored in the client so the two
+     * cannot lag apart — the `references`/`documents` failure this repo already
+     * shipped once — but the reading that would fill it is captured at intake
+     * and stored on the reference manifest, and that wiring is not written yet.
+     * Until it is, EVERY run reports `null` here, including one whose ticket
+     * named a motion reference and whose capture succeeded.
+     *
+     * SO A RENDERER MUST NOT SAY "no motion reference" FOR THIS NULL. It says
+     * "this server has no producer". `api-types.ts` carries the same admission
+     * on the field, in the same words `gateStopReason` uses about its own
+     * column.
+     */
+    motion: null,
     artifactPath: row.artifactPath,
     previewUrl: row.previewUrl,
     /*

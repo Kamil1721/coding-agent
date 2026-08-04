@@ -550,6 +550,77 @@ export type PublishedProject =
       readonly attemptedAt: string;
     };
 
+/**
+ * ONE QUANTIZED THING THE REFERENCE PAGE WAS OBSERVED TO DO — the server's
+ * `ApiMotionEntry`, mirrored by hand.
+ *
+ * EVERY NUMBER IS A BUCKET, NOT A MEASUREMENT, and a renderer may not undo the
+ * rounding. `durationMs` is to the nearest 50 ms and `staggerMs` to the nearest
+ * 20 ms; `scrollRatio` is two decimals. Two readings of the same page do not
+ * agree more precisely than that, which is why the buckets exist — so print
+ * "about 500ms", never "exactly 500ms".
+ *
+ * `parity: false` MEANS THE CONTENT WAS NEVER COMPARED. Two families are
+ * presence-only (route transitions, canvas/WebGL repaints): they were observed
+ * to run, and their `durationMs` describes the sampling window rather than a
+ * declared animation. Rendering their numbers like a scroll reveal's is
+ * inventing a measurement; the server's own brief prose says "presence only" for
+ * exactly these rows.
+ *
+ * `family` IS `string` ON BOTH SIDES, deliberately — the vocabulary is twelve
+ * names today and a renderer needs a default branch for a thirteenth a newer
+ * server sends.
+ */
+export interface ApiMotionEntry {
+  readonly family: string;
+  /** A ROLE, never a selector and never a path — `h1`, `div.card`. */
+  readonly role: string;
+  /** The properties observed changing, sorted: `opacity`, `transform`. */
+  readonly props: readonly string[];
+  /** Bucketed to 50 ms. Never an exact measurement. */
+  readonly durationMs: number;
+  /**
+   * Bucketed to 20 ms, or `null` when the role had NO SIBLINGS to be staggered
+   * against. `null` is not `0`: zero would say the siblings moved together.
+   */
+  readonly staggerMs: number | null;
+  /** A named curve — `ease-out`, `linear` — never a raw cubic-bezier. */
+  readonly easing: string | null;
+  /** `null` means it repeats without end, which is why it is not `0`. */
+  readonly iterations: number | null;
+  /** Px moved per px scrolled, two decimals. Only scroll-linked motion has one. */
+  readonly scrollRatio: number | null;
+  /** False for the presence-only families. See this interface's docblock. */
+  readonly parity: boolean;
+}
+
+/**
+ * A reading of how a REFERENCE PAGE MOVES, taken once when the ticket was
+ * submitted — the server's `ApiMotionSpec`, mirrored by hand.
+ *
+ * THE NAME KEEPS ITS `Api` PREFIX, unlike every other mirror in this file, and
+ * that is on purpose: the server also has a `MotionSpec` carrying the raw
+ * reading (absolute start times, unrounded floats) which never reaches the wire.
+ * A client type called `MotionSpec` would read as that one.
+ *
+ * IT IS A SAMPLE, NOT AN INVENTORY. An empty `entries` means "nothing was
+ * observed to move inside the sampling window", never "this page is static" —
+ * so do not render it as "no animation found".
+ *
+ * NOTHING SENDS IT YET. `RunDetail.motion` is `null` on every run today; see the
+ * field for who is not writing it.
+ */
+export interface ApiMotionSpec {
+  readonly url: string;
+  /** When the reading was taken, ISO-8601. Not when the page last changed. */
+  readonly capturedAt: string;
+  readonly entries: readonly ApiMotionEntry[];
+  /** Motion libraries detected on the reference, sorted. Names what it used. */
+  readonly libraries: readonly string[];
+  /** Whether the REFERENCE honours prefers-reduced-motion. Not whether we do. */
+  readonly respectsReducedMotion: boolean;
+}
+
 export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: RunPhase;
@@ -715,6 +786,25 @@ export interface RunDetail extends RunSummary {
    * become browsable, because it holds held-out test titles.
    */
   readonly adversary: AdversaryPass | null;
+  /**
+   * How the page the owner named as a MOTION REFERENCE was observed to move, or
+   * `null` when this ticket named none.
+   *
+   * `null` ON EVERY RUN TODAY, AND FOR A REASON THAT IS NOT ABOUT THE OWNER. The
+   * server's `toDetail` hardcodes it: the intake that would fill it from the
+   * run's reference manifest is not written yet. So this is "no producer", not
+   * "you attached nothing", and a panel must not print the second sentence.
+   *
+   * ABSENT ENTIRELY ON EVERY RUN RECORDED BEFORE THIS FIELD EXISTED — the same
+   * trap `references` and `documents` carry, and for the same reason:
+   * `lib/api.ts` does `parsed as T` with NO runtime validation, so this type
+   * lies about an old payload. Read it `run.motion ?? null` at the call site.
+   *
+   * READ `ApiMotionSpec` BEFORE RENDERING ANY OF IT. Every number is a bucket,
+   * an empty `entries` is not "the page is static", and the presence-only rows
+   * carry numbers about the sampler rather than about the page.
+   */
+  readonly motion: ApiMotionSpec | null;
 }
 
 /**
@@ -850,6 +940,30 @@ export interface CreateRunRequest {
    * of the capture is the outline, which is part of `RunDetail.ticketText`.
    */
   readonly captureUrl?: string | null;
+  /**
+   * A page whose MOTION the owner wants matched — and whose content he does not.
+   *
+   * NOT `captureUrl`, AND NEVER THE SAME CONTROL. `captureUrl` means "copy this
+   * site": its outline is composed into the ticket text and its screenshots go
+   * to the builder. This one means only "move like this", and a form that fed
+   * one string to both would make "I like how this moves" also say "build me its
+   * pages".
+   *
+   * ABSENT AND `null` MEAN THE SAME THING HERE — no motion reference. There is
+   * no ticket-text scan for this field, unlike `captureUrl`, so an empty input
+   * must send NO KEY rather than an empty string: five browser specs assert the
+   * whole POST body with `toEqual`, and an unconditional key reddens all of
+   * them. `page.tsx` spreads it conditionally for exactly that reason.
+   *
+   * IT MAKES THE POST SLOWER. The server opens the page and watches it move
+   * inside this request, on top of whatever `captureUrl` already costs, and the
+   * response does not come back until it is done.
+   *
+   * A FAILED READING STILL CREATES THE RUN; the reason arrives as a `warn` on
+   * the run's event stream. What was read comes back on `RunDetail.motion` —
+   * which no producer fills yet, so do not build a form that promises a readout.
+   */
+  readonly motionUrl?: string | null;
 }
 
 export interface CreateRunResponse {
