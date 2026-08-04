@@ -27,6 +27,16 @@
  * An absence asserted alone would pass against a page that failed to load. The
  * live twin drawing the same frame is what converts it into a fact.
  *
+ * WITH ONE HONEST QUALIFICATION, because measuring it turned up an asymmetry.
+ * The echo's PRESENCE on the live twin is decisive. Its ABSENCE on the finished
+ * run is only corroborating: the finished run's stream writes the echo after the
+ * terminal `status` row, so a socket that opened, ingested that status and tore
+ * itself down would miss the echo and satisfy the absence anyway — which is
+ * exactly what happened under mutation 2 below. What actually caught a socket
+ * being opened on a finished run was the EDGE COUNT in the first test (4 -> 5).
+ * Both assertions are kept; only one of them is load-bearing, and it is said so
+ * at the assertion rather than left for the next reader to discover.
+ *
  * WHAT THESE TESTS ARE GREEN AGAINST TODAY, and why that is the deliverable
  * rather than a weakness. `useRunGraph` fetches `GET /api/runs/:id/graph` on
  * every run, terminal or not, so a canvas folded by `foldGraphAll` already
@@ -164,31 +174,52 @@ test.describe("a finished run, opened cold", () => {
   }) => {
     await openCanvas(page, FINISHED_RUN_ID);
 
-    /*
-     * THE DETERMINISTIC ANCHOR, and the reason this test is not a sleep.
-     *
-     * `stream` is DERIVED — `streamClosed ? "closed" : socket` — so the badge
-     * reading `closed` is the terminal branch being taken, read straight off
-     * the value the EventSource effect early-returns on. A wait on this is a
-     * wait on the exact decision under test, not on a duration.
-     */
     await page.getByRole("button", { name: "run detail" }).click();
     await page.getByRole("tab", { name: "Trace" }).click();
     const trace = page.locator("#run-panel-trace");
+
+    /*
+     * A PRECONDITION, NOT THE MEASUREMENT — and this comment used to claim the
+     * opposite, which is worth writing down rather than quietly correcting.
+     *
+     * It called this badge "the deterministic anchor … the terminal branch being
+     * taken". It is not. `stream` is `streamClosed ? "closed" : socket` and
+     * `streamClosed` is derived from `status` ALONE, so the badge reports what
+     * the detail route said and knows nothing about whether the effect ran.
+     * MEASURED: it kept reading `closed` under all three mutations recorded in
+     * this file's header — including the one that deleted the effect's guard and
+     * demonstrably opened a socket, whose replayed rows were visible in the same
+     * pane beside the word `closed`.
+     *
+     * So it earns exactly one sentence: the detail route answered and reported a
+     * terminal status, which is what the rest of this test needs to be true
+     * before it can mean anything. It says nothing about the socket.
+     */
     await expect(trace.getByText("closed", { exact: true })).toBeVisible();
 
-    // The sentence the empty trace pane prints for exactly this case. It is the
-    // UI admitting the replay hole in its own words, and it is only reachable
-    // when `stream === "closed"` AND nothing was ever ingested.
+    /*
+     * THIS IS THE MEASUREMENT. The empty-trace sentence needs BOTH
+     * `stream === "closed"` AND a trace that never received a single row — the
+     * second half is the part no status field can fake, because one delivered
+     * frame of any kind replaces this sentence with a list. It went red under
+     * mutation 2 and mutation 3.
+     */
     await expect(trace).toContainText(
       "This run finished before the page was opened, so there is no live trace to replay.",
     );
 
     /*
-     * NOW THE ECHO. The fixture serves this row on `/events` for this run id,
-     * one seq past the snapshot's watermark, so a client that opened the socket
-     * would fold it and draw a sixth card. The badge above already proves the
-     * socket decision was made, so this is not a race — it is the consequence.
+     * AND THE ECHO, WHICH IS CORROBORATION RATHER THAN PROOF — stated plainly,
+     * because the header calls the echo's presence on the live twin decisive and
+     * the same claim does NOT transfer to its absence here.
+     *
+     * The finished run's stream writes the echo AFTER the terminal `status` row.
+     * Under mutation 2 the socket opened, ingested that status, and tore itself
+     * down before the echo landed — so this assertion PASSED while the run was
+     * streaming. It is kept because it is free and because the failure it does
+     * catch is real, but the thing that caught the guard deletion was the edge
+     * count in the first test of this file (4 -> 5, the echo's own connector),
+     * and that is where the load is.
      */
     await page.keyboard.press("Escape");
     await expect(
@@ -225,19 +256,26 @@ test.describe("the live twin — the same events under a running status", () => 
  * NOT YET TRUE, AND DELIBERATELY NOT WEAKENED INTO SOMETHING THAT PASSES.
  *
  * Ask D in the findings: the pre-build stages should stay on the canvas next to
- * the agent graph instead of disappearing at the build boundary. Two verified
- * reasons this cannot pass today, both in the findings' §5:
+ * the agent graph instead of disappearing at the build boundary. THREE verified
+ * reasons this cannot pass today, and all three have to go — a wave that fixes
+ * two of them will watch this stay red and conclude the fixme was wrong:
  *
  *   1. `src/lib/spec-pipeline.ts:246` — `if (phase !== "spec") return [];`. The
  *      lane deletes itself the moment the run leaves the spec phase, so a run
  *      in `build` or `gate` has no stages at all.
  *   2. `specPipelineFrom` reads `trace`, and `trace` is the LIVE sink. On this
  *      run id the socket is never opened, so even inside the spec phase the
- *      array would be empty on a reload.
+ *      array would be empty on a reload. This is the one THIS FILE exists for.
+ *   3. `canvas/orchestration-canvas.tsx:1846` — "Before the build" is inside the
+ *      `showEmptyOverlay || !ready` branch, i.e. it is an OVERLAY drawn only
+ *      while the canvas has zero nodes. This run has six. So even with (1) and
+ *      (2) repaired, the stages have nowhere to appear until the overlay stops
+ *      being an overlay; the findings call that out as ask D's actual layout
+ *      work rather than as a side effect of the data fix.
  *
- * (2) is the one this file exists for, and it is why fixing (1) alone would not
- * turn this green. Enabled by the wave that moves the pre-build lane onto
- * `GraphState` via `foldGraph` — sequencing steps 2 and 6 of the findings doc.
+ * Enabled by the wave that moves the pre-build lane onto `GraphState` via
+ * `foldGraph` and re-lays the canvas — sequencing steps 2 and 6 of the findings
+ * doc, together.
  */
 test.fixme(
   "a finished run still shows the stages that ran before the build",

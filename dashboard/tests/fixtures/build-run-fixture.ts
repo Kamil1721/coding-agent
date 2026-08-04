@@ -450,6 +450,18 @@ export const FINISHED_GRAPH: RunGraphResponse = {
  * into a matched pair: the same bytes on the same route draw a card on the
  * running run and must draw nothing on the finished one. The positive half is
  * what makes the negative half mean something.
+ *
+ * THE IMPLICATION RUNS ONE WAY ONLY, and that limit is MEASURED rather than
+ * assumed. This row is written last, after the finished run's terminal `status`
+ * row. A client that opened the socket, folded that status and closed itself in
+ * response would never receive this frame — so a missing echo card does NOT by
+ * itself prove that no socket was opened. Observed exactly that while flipping
+ * `FINISHED_SUMMARY.status` to `running` as a negative control: the stream was
+ * live, the trace pane filled, and the echo card still never appeared.
+ * Reordering the wire to close the gap would mean writing frames out of seq
+ * order, which the real endpoint never does, so the limit is written down
+ * instead — and `finished-run.browser.spec.ts` puts the load on the trace pane's
+ * empty-state sentence and on the drawn edge count, both of which did go red.
  */
 export const SOCKET_ECHO: RunEvent = {
   type: "graph_agent",
