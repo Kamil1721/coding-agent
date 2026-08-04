@@ -326,7 +326,15 @@ function capDiff(
   let budget = bodies >= DIFF_BODIES_CAP ? 0 : DIFF_MAX_LINES;
 
   for (const hunk of source) {
-    const lines = Array.isArray(hunk?.lines) ? hunk.lines : [];
+    // A NULL ENTRY IS SKIPPED BEFORE ANYTHING IS READ OFF IT. `hunksOf` proves
+    // the LIST is a list and stops there; `hunk?.lines` alone was optional
+    // chaining on the read and a bare `hunk.oldStart` two lines later, so a row
+    // carrying `hunks: [null]` threw a TypeError inside a function whose file
+    // header promises total and never-throwing. The snapshot route reads rows as
+    // an unchecked `JSON.parse(...) as SseEvent`, so the only thing between a
+    // malformed row and a 500 on `GET /api/runs/:id/graph` is this line.
+    if (hunk === null || typeof hunk !== "object") continue;
+    const lines = Array.isArray(hunk.lines) ? hunk.lines : [];
     if (hunks.length >= DIFF_MAX_HUNKS || budget <= 0) {
       droppedHunks += 1;
       droppedLines += lines.length;
@@ -711,7 +719,23 @@ function foldLogStages(state: GraphState, text: string, at: string | null): Grap
   } else {
     const asked = PLAN_NOTHING.exec(text);
     if (asked === null) return state;
-    next = settleStage(next, "plan", "skipped", asked[1] ?? text, at);
+    /*
+     * `PLAN_OVER` WINS OVER `PLAN_NOTHING`, WHICH IS WHAT `specPipelineFrom` DID
+     * BY CHECKING `over` FIRST REGARDLESS OF ARRIVAL ORDER. A fold is last-writer-
+     * wins by default, so without this a run emitting both would render `skipped`
+     * where the old panel rendered `done`.
+     *
+     * READING THE MECHANISM: it cannot happen today. Both `plan phase skipped:`
+     * sites (`orchestrator.ts:2037`, `:2059`) and `plan phase asked nothing —`
+     * (`:2079`) `return { kind: "proceed" }` immediately and never reach
+     * `#foldPlan`, which is the only writer of the three `the plan dialogue …`
+     * sentences. The guard is here anyway because the exclusivity lives in a
+     * control-flow argument in another file, and this one would go on rendering.
+     */
+    next =
+      stageOf(next, "plan")?.state === "done"
+        ? next
+        : settleStage(next, "plan", "skipped", asked[1] ?? text, at);
   }
   return next === state ? state : ensureStage(next, "orchestrator");
 }

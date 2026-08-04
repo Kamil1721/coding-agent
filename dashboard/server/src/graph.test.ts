@@ -11,6 +11,9 @@
  */
 
 import { strict as assert } from "node:assert";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import type { GraphDiffHunk, GraphState, SseEvent, SseWireEvent } from "./api-types.js";
 import {
@@ -548,6 +551,30 @@ test("DIFF CAP: a minified line is shortened, and that alone sets `capped`", () 
   assert.equal(diff.capped, true, "a shortened line is withheld content and must say so");
 });
 
+test("DIFF: a malformed hunk is skipped and the rest of the edit survives", () => {
+  /*
+   * THE FOLD IS TOTAL OR IT IS NOTHING. `http.ts` reads durable rows as an
+   * unchecked `JSON.parse(payload) as SseEvent`, so the snapshot route's only
+   * protection from a row written by an older build, a newer one, or a bug is
+   * this function not throwing. A TypeError here is a 500 on
+   * `GET /api/runs/:id/graph` for that run forever, which is worse than the
+   * missing feature.
+   *
+   * A BAD HUNK LOSES ITS OWN LINES AND NOTHING ELSE — the counts come from their
+   * own fields and the good hunk beside it still renders. Dropping the whole diff
+   * would throw away a real edit over one malformed member.
+   */
+  const hostile = [null, hunk(["+kept"]), "not an object", { lines: "not an array" }] as unknown;
+  const state = foldGraphAll([
+    agent("n1"),
+    diffEvent("n1", { hunks: hostile as readonly GraphDiffHunk[] }),
+  ]);
+  const diff = state.nodes[0]?.activity[0]?.diff;
+  assert.ok(diff !== undefined, "a malformed hunk took the whole event with it");
+  assert.deepEqual(diff.hunks[0]?.lines, ["+kept"], "the good hunk did not survive its neighbours");
+  assert.equal(diff.additions, 2, "the counts are read off their own fields, not off the hunks");
+});
+
 test("DIFF CAP: past the hunk budget the extra hunks are counted, not kept", () => {
   const many = Array.from({ length: DIFF_MAX_HUNKS + 3 }, (_, i) => hunk([`+${String(i)}`], i + 1, i + 1));
   const state = foldGraphAll([agent("n1"), diffEvent("n1", { hunks: many })]);
@@ -853,4 +880,134 @@ test("LANE: the lane survives a snapshot round-trip, which is the whole point", 
   const live = foldGraph(reloaded, { type: "phase", phase: "build" });
   assert.equal(stageState(live, "orchestrator"), "running");
   assert.equal(stageState(live, "capture"), "done", "the replayed half of the lane was lost");
+});
+
+test("LANE: `the plan dialogue is over` wins over `plan phase asked nothing`", () => {
+  // `specPipelineFrom` checked `over` FIRST, regardless of arrival order, and a
+  // fold is last-writer-wins by default. Orchestrator control flow says the two
+  // sentences cannot both be emitted (see the note at `foldLogStages`), so this
+  // pins the ordering rule rather than a reachable run.
+  const state = foldGraphAll([
+    { type: "phase", phase: "plan" },
+    log("the plan dialogue is folded into the brief"),
+    log("plan phase asked nothing — the ticket already said what it wanted"),
+  ]);
+  assert.equal(stageState(state, "plan"), "done");
+});
+
+/* ==================================================================
+ * THE OWNER'S OWN RUNS
+ *
+ * WHAT EVERY TEST ABOVE CANNOT SEE. They fold literals whose wording was copied
+ * out of `spec-pipeline.ts`, so they prove the regexes match the fixtures they
+ * were written from. The claim being made is bigger — that the lane projects
+ * from rows ALREADY IN `runs.db`, with no new emission — and only the real rows
+ * can carry it.
+ *
+ * MEASURED 2026-08-04, folding every event of all four runs on this machine:
+ *
+ *   3d4d1ccb (388 rows, passed)  capture:pending author:done audit:done
+ *                                freeze:done orchestrator:done
+ *   c228e63b (10 rows)           author:unresolved, everything else pending
+ *   052c6e02 (1301 rows, reused) freeze:done orchestrator:done
+ *   162b186d (61 rows, DIED IN SPEC) plan:done capture:pending
+ *                                author:UNRESOLVED audit:pending freeze:pending
+ *
+ * THE LAST ONE IS THE DISCRIMINATOR. That is the run this whole investigation
+ * started from — 61 events over 51 minutes, zero `tool`, zero `graph_*` — and the
+ * lane says, from rows recorded weeks before this code existed, that it got
+ * through the plan phase and stopped while the spec seat was authoring. That is
+ * the sentence the owner could not get out of the dashboard.
+ *
+ * `capture:pending` ON THE PASSING RUN IS CORRECT AND IS THE DOCUMENTED LOSS: that
+ * run emitted no `captured …` line and no `no reference capture` line, so nothing
+ * ever said whether a page was fetched. `specPipelineFrom` would have guessed from
+ * the ticket text, which the fold does not have.
+ *
+ * THE ASSERTION IS AN INVARIANT, NOT THAT SNAPSHOT. Pinning the four lists would
+ * make this test a hostage to the owner's next run — the failure mode
+ * `plan-phase.test.ts` is sitting in right now, red against data that moved on.
+ * ================================================================== */
+
+test("LANE: every historical run in the owner's database folds, and the spec ones draw a lane", (t) => {
+  const database = join(import.meta.dirname, "..", "..", "data", "runs.db");
+  if (!existsSync(database)) {
+    // NOT A SILENT PASS. A test that can skip its own body has to say so on the
+    // way past, or "green" means two different things and nobody can tell which.
+    t.diagnostic(`no historical database at ${database}; this machine has no old runs to fold`);
+    return;
+  }
+  // READ-ONLY, AND NEVER `RunStore.open`, WHICH MIGRATES. The owner's runs are
+  // not a fixture for a test to write to.
+  const db = new DatabaseSync(database, { readOnly: true });
+  try {
+    const runs = db.prepare("SELECT DISTINCT run_id AS runId FROM events").all() as {
+      runId: string;
+    }[];
+    assert.ok(runs.length > 0, "the database exists and has no events at all");
+    let withLane = 0;
+    /*
+     * WHICH STAGES A LOG LINE ACTUALLY MOVED, ACROSS THE WHOLE CORPUS.
+     *
+     * THE STRUCTURAL CHECK BELOW IS NOT ENOUGH ON ITS OWN, and saying why is the
+     * point of this comment: `phase: spec` builds the four-stage skeleton by
+     * itself, so `stages.length > 0` stays true with every phrase in `graph.ts`
+     * broken. It would be a check that cannot fail for the reason it exists.
+     *
+     * THE ORCHESTRATOR IS EXCLUDED because `phase` rows drive it — counting it
+     * would let the phase events alone satisfy this. Every other non-`pending`
+     * state requires a sentence to have matched.
+     */
+    const moved = new Set<string>();
+    for (const { runId } of runs) {
+      const rows = db
+        .prepare("SELECT payload, at FROM events WHERE run_id = ? ORDER BY seq")
+        .all(runId) as { payload: string; at: string }[];
+      const events = rows.map(
+        (row) => ({ ...(JSON.parse(row.payload) as SseEvent), at: row.at }) as SseWireEvent,
+      );
+      const state = foldGraphAll(events);
+      for (const stage of state.stages ?? []) {
+        if (stage.id !== "orchestrator" && stage.state !== "pending") moved.add(stage.id);
+      }
+      const spec = events.some((event) => event.type === "phase" && event.phase === "spec");
+      if (!spec) continue;
+      withLane += 1;
+      assert.ok(
+        (state.stages ?? []).length > 0,
+        `${runId} reached the spec phase and folded to no pre-build lane at all`,
+      );
+    }
+    t.diagnostic(
+      `${String(withLane)} of ${String(runs.length)} historical run(s) reached spec; log lines moved ` +
+        `${[...moved].sort().join(", ")}`,
+    );
+    /*
+     * `author` AND `freeze` ARE THE TWO EVERY REAL PIPELINE REPORTS — the seat's
+     * token line or its opening announcement, and either the seal or the reuse.
+     *
+     * WHAT THIS CATCHES, MEASURED RATHER THAN CLAIMED. Breaking `AUTHORING` alone
+     * leaves this GREEN: the passing run also carries `spec seat —`, so `author`
+     * still moves. Breaking BOTH turns it red with `log lines moved audit, freeze,
+     * plan` in the diagnostic. So it sees a stage's whole FAMILY of phrases
+     * drifting, not one phrase of a pair — the fixture tests above are what pin
+     * the individual sentences, and they are red under either mutation alone.
+     *
+     * IF THIS EVER GOES RED BECAUSE THE CORPUS CHANGED — a machine whose only runs
+     * stopped before the spec seat spoke — SCOPE IT to the runs this machine has.
+     * Deleting it puts the feature back to being provable only against its own
+     * fixtures, which is what it was before this test existed.
+     */
+    for (const id of ["author", "freeze"]) {
+      assert.ok(
+        moved.has(id),
+        `no run in ${database} has a \`${id}\` stage that a log line ever moved. Either this ` +
+          "machine's corpus no longer contains a run that got that far, or the phrases in " +
+          "graph.ts have drifted from the sentences orchestrator.ts writes and the pre-build " +
+          "lane is inert on real data while every fixture test in this file stays green.",
+      );
+    }
+  } finally {
+    db.close();
+  }
 });
