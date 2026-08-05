@@ -110,6 +110,25 @@ export type LockResult =
  * §17.3 rule 4: the choice is recorded either way, with who made it and why. A
  * blank reason is refused rather than defaulted, because the whole value of the
  * record is that it explains an unattended run after the fact.
+ *
+ * THE OWNER'S OWN ATTACHED IMAGE IS NOT LOCKABLE HERE, AND THAT IS THE ANSWER
+ * RATHER THAN THE PROBLEM (2026-08-05 design-fidelity spec §4.2). His image
+ * lives in `runs/<id>/references/`, so the `manifest.refs` test below refuses it
+ * exactly as it refuses any other path — and the refusal must stay. The refs
+ * test is not a membership formality; it is what keeps the header's file-read
+ * primitive shut, and it cannot distinguish "a path the host wrote" from "a path
+ * an agent wrote into the manifest" because by the time a path reaches this
+ * function both are just strings. Widening it for the owner's image would widen
+ * it for every agent-authored path in the same edit.
+ *
+ * SO THE OWNER'S IMAGE TRAVELS BY A DIFFERENT ROAD, and it is worth naming here
+ * because "why can't the thing he actually sent be the reference" is the first
+ * question anyone reading this file asks. `owner-reference.ts` validates it out
+ * of `references/references.json` — host-written, outside the build sandbox's
+ * `allowWrite` — and `visual-criteria.ts` points a QUALITY criterion at it. It
+ * is a second REFERENT for grading, never a lock candidate: `lockedMockup` keeps
+ * meaning "the generated design that was CHOSEN", which is what the gate prompt,
+ * the mockup cards and every record on disk already take it to mean.
  */
 export function lockManifest(manifest: DesignManifest, attempt: LockAttempt): LockResult {
   if (manifest.lockedMockup !== null) {

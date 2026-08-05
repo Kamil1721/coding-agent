@@ -188,6 +188,37 @@ test("RULE 3: a choice file naming a path outside the manifest yields NO attempt
   assert.equal(readChoiceFile(refsDir, MANIFEST, AT), null);
 });
 
+test("the OWNER'S OWN attached image cannot become the lock, by any of the three doors", () => {
+  /*
+   * ADDED 2026-08-05 WITH `owner-reference.ts`, AND IT ASSERTS THE REFUSAL RATHER
+   * THAN THE PERMISSION. His image is now a second referent for grading — a
+   * QUALITY criterion in `visual-criteria.ts` points at it — and the obvious next
+   * step, "so let him lock it", is the one that must not be taken. The refs test
+   * cannot tell a path the HOST wrote from a path an AGENT wrote into the
+   * manifest; by the time either reaches `lockManifest` both are strings.
+   * Widening it for his image widens it for every agent-authored path in the same
+   * edit, and `lockedMockup` is `Read` by the visual gate and injected into every
+   * build prompt.
+   *
+   * ALL THREE ENTRY POINTS, because each is a separate way in: the HTTP click
+   * (`chosenMockupRef` then `lockManifest`), the agent-written `choice.json`
+   * (`readChoiceFile`), and a direct host call.
+   */
+  const owned = "/runs/r1/references/reference-1.png";
+
+  assert.equal(lockManifest(MANIFEST, { path: owned, by: "owner", reason: "this is my design", at: AT }).ok, false);
+  assert.equal(chosenMockupRef(MANIFEST, SHOTS, owned), owned, "no translation invents a ref out of it");
+  assert.equal(lockManifest(MANIFEST, { path: chosenMockupRef(MANIFEST, SHOTS, owned), by: "owner", reason: "x", at: AT }).ok, false);
+
+  const refsDir = mkdtempSync(join(tmpdir(), "design-choice-owner-"));
+  writeFileSync(join(refsDir, "choice.json"), JSON.stringify({ chosen: owned, reason: "the owner sent it" }), "utf8");
+  assert.equal(readChoiceFile(refsDir, MANIFEST, AT), null, "an agent may not nominate it either");
+
+  // AND THE REFUSAL IS NOT AN ACCIDENT OF THE STRING: the same path published as
+  // a mockup card, which is the shape the wire actually carries, is refused too.
+  assert.equal(lockManifest(MANIFEST, { path: publishedMockupPath(SHOTS, owned), by: "owner", reason: "x", at: AT }).ok, false);
+});
+
 test("RULE 5: the lock record round-trips, and a park's clock is on DISK", () => {
   // The timeout has to survive a dashboard restart, and a timer does not. The
   // park time is written down so `reconcileOnBoot` can ask how long it has been.

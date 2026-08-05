@@ -53,9 +53,31 @@
  * authored before any code exists, and passing build output back into criterion
  * authoring is the one thing the phase forbids outright. It emits statements; a
  * grader elsewhere decides whether they hold.
+ *
+ * THE OWNER'S OWN IMAGE, ADDED 2026-08-05 (design-fidelity spec §4.3). Every
+ * comparison above this line compares the build against something a MODEL
+ * generated. The owner's ask is "it builds the design I PROVIDED", and until
+ * `owner-reference.ts` existed his attachment reached no criterion at all: the
+ * lock is fenced to `<workspace>/design-refs/`, so `lockedMockup` is always a
+ * mockup we invented. {@link AGAINST_OWNER} points a criterion at his file
+ * instead — same QUALITY tier, same never-blocks rule, one more referent.
+ *
+ * AND IT ASKS ABOUT THE MOCKUP, NOT THE BUILD, WHENEVER A MOCKUP WAS LOCKED.
+ * That is the whole design decision here and it is worth the paragraph. The
+ * build was held to the locked mockup — that is what the lock MEANS — so a
+ * criterion asking the build to answer for a divergence introduced upstream of
+ * it is asking the wrong seat, and its fix ("rebuild") is the expensive wrong
+ * fix. If the mockups do not resemble what the owner supplied, the chain was
+ * already wrong before a line was written, the correction is one regeneration,
+ * and no build-versus-mockup check can ever see it. So: the build answers to the
+ * locked mockup (`AGAINST_LOCK`), the locked mockup answers to the owner's image
+ * (`AGAINST_OWNER`), and the chain of custody is complete without any criterion
+ * adjudicating between two references at once. With NO lock there is no middle
+ * link, and the statements say so by naming the built page directly.
  */
 
 import type { DesignLock } from "./design-manifest.js";
+import type { OwnerReference } from "./owner-reference.js";
 
 /**
  * MOVED TO `design-manifest.ts` ON 2026-07-29 (Phase 2b), which is what the
@@ -66,11 +88,28 @@ import type { DesignLock } from "./design-manifest.js";
  */
 export type { DesignLock, DesignManifest } from "./design-manifest.js";
 
+/**
+ * WHICH ARTEFACT A CRITERION'S `reference` NAMES.
+ *
+ * A SECOND REFERENT MADE THE PATH ALONE AMBIGUOUS, WHICH IS WHY THIS IS A FIELD
+ * AND NOT A COMMENT. Until 2026-08-05 `reference` was either null or the locked
+ * mockup, so a consumer could compare it against `manifest.lockedMockup` and be
+ * right by construction. Now it can also be the owner's attached image, and the
+ * two are indistinguishable as strings — both absolute paths to a PNG. A
+ * consumer that assumed "non-null means the lock" would silently re-label the
+ * owner's image as the design that was CHOSEN, which is the precise confusion
+ * the lock exists to end. Naming the artefact costs one enum and makes the
+ * mis-attribution a type error instead of a wrong report.
+ */
+export type VisualReferent = "none" | "locked-mockup" | "owner-image";
+
 export interface VisualCriterion {
   readonly id: string;
   readonly tier: "QUALITY"; // owner decision: report, never block
   readonly statement: string;
-  readonly reference: string | null; // absolute path to the LOCKED mockup
+  /** Absolute path to the artefact {@link VisualCriterion.referent} names, or null. */
+  readonly reference: string | null;
+  readonly referent: VisualReferent;
   readonly check: "layout" | "palette" | "typography" | "motion" | "media";
 }
 
@@ -186,12 +225,70 @@ const AGAINST_LOCK: readonly CriterionSeed[] = [
   },
 ];
 
-function at(seed: CriterionSeed, reference: string | null): VisualCriterion {
+/**
+ * THE OWNER'S OWN IMAGE. See the header for why these ask about the MOCKUP when
+ * one is locked and about the BUILT PAGE when none is.
+ *
+ * THE IDS DO NOT CHANGE WITH THE SUBJECT, AND THAT IS DELIBERATE. The question
+ * is the same one in both states — "was the thing he supplied followed" — and an
+ * id that forked would make two runs asking the same question look like two
+ * different checks in any record that groups by id. What the subject changes is
+ * the STATEMENT, which names the artefact on the hook in its first clause, so a
+ * grader is never left guessing which one it is being asked about.
+ *
+ * TYPOGRAPHY IS DELIBERATELY ABSENT, for {@link AGAINST_LOCK}'s reason applied
+ * one step further out. A still cannot specify motion, so there is no motion
+ * entry there; an owner's reference need not be a page at all — it can be a
+ * photograph, a moodboard, a screenshot of an app that shares no type system
+ * with the thing being built — so a criterion demanding the same family pairing
+ * would be unanswerable on most real attachments, and an unanswerable criterion
+ * is a finding generator. Composition and figure-to-ground survive that
+ * generality; a type scale does not.
+ *
+ * NO PIXEL-MATCH CLAUSE, AND THE SPEC MEASURED WHY. "No pixels lifted from the
+ * reference" was the most seductive fidelity rule in the set and it fails the
+ * only build that ever passed — both its shipped photographs are crops of the
+ * mockups (2026-08-05 design-fidelity spec §2.2). These statements ask about
+ * intent carried forward, never about bytes carried forward.
+ */
+function againstOwner(locked: boolean): readonly CriterionSeed[] {
+  const subject = locked
+    ? "The LOCKED mockup that this build was held to follows the image the owner attached: "
+    : "No mockup was locked for this run, so the built page answers to the owner's attached image directly: ";
+  const caveat = locked
+    ? " Where the two diverge, the defect is in the DESIGN lane and the fix is one regeneration — the " +
+      "build faithfully reproduced the mockup it was given, and rebuilding it cannot close this gap."
+    : " Allow for responsive reflow: his image was rendered at one width and the page is graded at three.";
+  return [
+    {
+      id: "VIS-OWNER-REF-FOLLOWED",
+      check: "layout",
+      statement:
+        subject +
+        "the same composition, the same sections carrying the same relative weight, and the same " +
+        "structural intent. This is not a pixel match and must not be graded as one — what was asked " +
+        "for is the design he provided, rendered afresh, not a copy of his file." +
+        caveat,
+    },
+    {
+      id: "VIS-OWNER-REF-PALETTE",
+      check: "palette",
+      statement:
+        subject +
+        "the same figure-to-ground relationship — a light reference gives a light design, a dark one a " +
+        "dark design — and the same hues in the same roles, rather than a palette re-picked by category." +
+        caveat,
+    },
+  ];
+}
+
+function at(seed: CriterionSeed, reference: string | null, referent: VisualReferent): VisualCriterion {
   return {
     id: seed.id,
     tier: "QUALITY",
     statement: seed.statement,
     reference,
+    referent,
     check: seed.check,
   };
 }
@@ -203,10 +300,33 @@ function at(seed: CriterionSeed, reference: string | null): VisualCriterion {
  * mockup. Without: the floor alone, every reference null — the DESIGN lane
  * degrades rather than blocks when no key resolves, and a degraded lane must
  * still be graded. Never empty in either state; see the header.
+ *
+ * `ownerReference` IS OPTIONAL AND DEFAULTS TO ABSENT, so every existing call
+ * site keeps compiling and keeps getting exactly the criteria it got before —
+ * `calibration/grade-fixture.ts` has no owner to reference and must not acquire
+ * one. It is a VALIDATED value from `owner-reference.ts` rather than a string,
+ * and the type is the point: the only way to obtain one is to have gone through
+ * the checks that prove the file sits in this run's own `references/`, is an
+ * image, and still hashes to the digest the ticket id was minted from. A `string`
+ * parameter here would accept any path a future caller happened to hold, and the
+ * value ends up in a prompt as a file for an agent to open.
+ *
+ * THE OWNER'S CRITERIA ARE EMITTED ONLY WHEN THERE IS AN OWNER IMAGE — never
+ * defaulted to the locked mockup, never to `refs[0]`. An unanswerable criterion
+ * reports on every run that supplied no design, and a fidelity check that
+ * reports GREEN for every ticket without a reference is a check that can only
+ * observe success. Absent is absent. (Same rule the design-fidelity spec §1.2.5
+ * states for its measured observation, applied to an authored one.)
  */
-export function visualCriteriaFor(manifest: DesignLock): readonly VisualCriterion[] {
+export function visualCriteriaFor(
+  manifest: DesignLock,
+  ownerReference: OwnerReference | null = null,
+): readonly VisualCriterion[] {
   const locked = manifest.lockedMockup;
-  const floor = FLOOR.map((seed) => at(seed, null));
-  if (locked === null) return floor;
-  return [...floor, ...AGAINST_LOCK.map((seed) => at(seed, locked))];
+  const criteria: VisualCriterion[] = FLOOR.map((seed) => at(seed, null, "none"));
+  if (locked !== null) criteria.push(...AGAINST_LOCK.map((seed) => at(seed, locked, "locked-mockup")));
+  if (ownerReference !== null) {
+    criteria.push(...againstOwner(locked !== null).map((seed) => at(seed, ownerReference.path, "owner-image")));
+  }
+  return criteria;
 }
