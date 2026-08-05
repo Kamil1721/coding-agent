@@ -16,6 +16,22 @@
  * kept — a visual failure on a surface with no design lane is a contradiction
  * worth surfacing — and {@link partitionByPermission} is what stops the denial
  * from being silent.
+ *
+ * THE ROUTE IS LIVE, AS OF 2026-08-05, AND THAT IS MEASURED RATHER THAN ASSUMED.
+ * It was not always: `shortlistFor`'s second argument defaults to `"off"`, so
+ * while the fix loop's `allowedAgents` came from a bare one-argument call, a
+ * `visual` failure was partitioned out as unpermitted on EVERY surface — a route
+ * that looked like policy and could never fire. `orchestrator.ts:4684` now
+ * passes the same `laneMode` the build ran behind, and `fix-triage.test.ts`
+ * asserts the property directly instead of leaving it as a comment: on a
+ * fullstack ticket with the design lane running, `agentFor("visual")` is
+ * permitted, and on a `cli` ticket it is denied and lands in the backlog.
+ *
+ * A DENIED VISUAL ROUTE IS NOW REPORTED AS A PERMISSIONS FAULT. When nothing in
+ * the plan is permitted, `gate-fix-loop.ts` stops with the cause
+ * `no-permitted-fixer` rather than `not-converging`, because "the fixer changed
+ * nothing" and "nothing was allowed to run" are different facts about the run
+ * and only one of them is about the fixer.
  */
 
 import { ALL_FAILURE_CLASSES, gatingUnmet } from "./gate-report.js";

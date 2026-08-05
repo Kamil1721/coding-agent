@@ -43,6 +43,11 @@ import {
   DEFAULT_VISUAL_SUBSTANCE_MODE,
   evaluateVisualSubstance,
   gatingFindingCount,
+  groundPolarityAnswer,
+  GROUND_MIN_SHARE,
+  POLARITY_MARGIN,
+  POLARITY_MIDPOINT,
+  REF_GROUND_INVERTED_ID,
   isGatingObservation,
   renderVisualSubstanceReport,
   TASTE_TIER,
@@ -95,13 +100,13 @@ function allSatisfied(frame: VisualFrame = FRAME): VisualObservationAnswer[] {
 
 /* ---- 1. The set itself, against M4 ------------------------------------ */
 
-test("THE SET IS EXACTLY THE THREE ENUMERATED IDS — an emptied or widened set fails here", () => {
-  // ASSERTED BY LITERAL, NOT BY LENGTH. `length === 3` stays green if an entry
+test("THE SET IS EXACTLY THE FOUR ENUMERATED IDS — an emptied or widened set fails here", () => {
+  // ASSERTED BY LITERAL, NOT BY LENGTH. `length === 4` stays green if an entry
   // is swapped for an invented one, and design note §4 fixes membership: a model
   // never decides what counts as gating, and neither does a later refactor.
   assert.deepEqual(
     VISUAL_OBSERVATIONS.map((o) => o.id),
-    ["VIS-F-EMPTY-FRAME", "VIS-F-EMPTY-REGION", "VIS-F-PLACEHOLDER-MEDIA"],
+    ["VIS-F-EMPTY-FRAME", "VIS-F-EMPTY-REGION", "VIS-F-PLACEHOLDER-MEDIA", "VIS-F-REF-GROUND-INVERTED"],
   );
 });
 
@@ -132,9 +137,12 @@ test("at least one entry is UNLOCKED — otherwise the mode flag is decoration",
   assert.deepEqual(unlocked.map((o) => o.id), ["VIS-F-EMPTY-FRAME"]);
 });
 
-test("the two entries the design note locks are locked, and the flag cannot lift them", () => {
+test("the three locked entries are locked, and the flag cannot lift them", () => {
   // Design note §7.2: these "stay shadowed regardless of how the seven sort".
-  for (const id of ["VIS-F-EMPTY-REGION", "VIS-F-PLACEHOLDER-MEDIA"]) {
+  // REF-GROUND-INVERTED joins them on a MEASURED disqualifier rather than on a
+  // missing fixture — see its lockReason, and the calibration section below that
+  // renders the collision rather than describing it.
+  for (const id of ["VIS-F-EMPTY-REGION", "VIS-F-PLACEHOLDER-MEDIA", "VIS-F-REF-GROUND-INVERTED"]) {
     const observation = VISUAL_OBSERVATIONS.find((o) => o.id === id);
     assert.ok(observation !== undefined, `${id} is missing from the set`);
     assert.equal(observation.shadowLocked, true, `${id} must be shadow-locked`);
@@ -215,7 +223,10 @@ test("an UNANSWERED observation is unknown/not_answered — never satisfied", ()
   });
   assert.equal(record.outcomes.length, VISUAL_OBSERVATIONS.length);
   const missing = record.outcomes.filter((o) => o.observationId !== "VIS-F-EMPTY-FRAME");
-  assert.equal(missing.length, 2);
+  // THE LITERAL MOVES WITH THE SET AND IS STILL A LITERAL. `VISUAL_OBSERVATIONS
+  // .length - 1` would stay green if the set were emptied to one entry, which is
+  // the M4 shape this file exists to catch.
+  assert.equal(missing.length, 3);
   for (const row of missing) {
     assert.equal(row.verdict, "unknown");
     assert.equal(row.unknownReason, "not_answered");
@@ -395,17 +406,61 @@ test("no rendered report contains a path or an image filename", () => {
 
 const GATE_INPUT = { manifest: null, workspace: "/runs/r1/workspace", previewUrl: "http://127.0.0.1:4180" };
 
-test("the prompt carries EVERY enumerated observation, with its question and its non-trigger", () => {
+test("the prompt carries EVERY GRADER-ANSWERED observation, with its question and its non-trigger", () => {
   // SINGLE-SOURCED: a prompt that restates the set in prose is a second
   // declaration site, and the two drift until the model is answering a question
   // the code does not score.
   const p = visualGatePrompt(GATE_INPUT);
-  assert.ok(VISUAL_OBSERVATIONS.length > 0);
-  for (const observation of VISUAL_OBSERVATIONS) {
+  const asked = VISUAL_OBSERVATIONS.filter((o) => o.answeredBy === "grader");
+  assert.ok(asked.length > 0, "a for-of over an empty array asserts nothing");
+  for (const observation of asked) {
     assert.ok(p.includes(observation.id), `${observation.id} absent from the prompt`);
     assert.ok(p.includes(observation.question), `${observation.id}: question not carried verbatim`);
     assert.ok(p.includes(observation.nonTrigger), `${observation.id}: non-trigger not carried`);
   }
+});
+
+test("a MEASUREMENT-answered observation is not in the prompt at all — and there is one", () => {
+  // THE MIRROR, and without it the filter above is untested: if every entry were
+  // grader-answered the loop would still pass and `answeredBy` would be
+  // decoration. Asking a model whether the build inverted the LOCKED MOCKUP's
+  // polarity is asking it about a file it was never shown.
+  const measured = VISUAL_OBSERVATIONS.filter((o) => o.answeredBy === "measurement");
+  assert.deepEqual(measured.map((o) => o.id), ["VIS-F-REF-GROUND-INVERTED"]);
+  const p = visualGatePrompt(GATE_INPUT);
+  for (const observation of measured) {
+    assert.ok(!p.includes(observation.id), `${observation.id} was handed to the grader`);
+    assert.ok(!p.includes(observation.question), `${observation.id}: its question reached the grader`);
+  }
+});
+
+test("a GRADER MAY NOT ANSWER a measured question — the parser refuses the line, not just the prompt", () => {
+  // THE FLAW THIS CLOSES, stated exactly: `answerFor` matches on observationId
+  // plus frame with no `answeredBy` awareness, so a grader line and the
+  // producer's measurement would land in ONE array and the first match would
+  // win. Filtering the prompt is not a defence — a prompt is advice. A model
+  // that volunteers the id anyway must be refused at the boundary.
+  const parsed = parseVisualObservationAnswers({
+    text: `${VISUAL_ANSWER_MARKER} | VIS-F-REF-GROUND-INVERTED | home | 375x812 | satisfied | looked on-brand to me`,
+    frames: [FRAME],
+  });
+  assert.deepEqual(parsed.answers, [], "a grader answer to a measured question was accepted");
+  assert.equal(parsed.rejected.length, 1);
+  assert.match(parsed.rejected[0]?.reason ?? "", /answered by measurement, not by a grader/);
+
+  // AND THE REFUSAL IS NOT A PASS. The question comes back unknown, exactly as
+  // if the grader had said nothing — which is what it did say, correctly.
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [FRAME],
+    answers: parsed.answers,
+  });
+  const row = record.outcomes.find((o) => o.observationId === "VIS-F-REF-GROUND-INVERTED");
+  assert.equal(row?.verdict, "unknown");
+  assert.equal(row?.unknownReason, "not_answered");
+  // The owner-facing note must not blame a grader nobody asked.
+  assert.doesNotMatch(row?.note ?? "", /the grader returned no answer/);
+  assert.match(row?.note ?? "", /no host-side measurement was supplied/);
 });
 
 test("the prompt makes the TIER SPLIT explicit — taste never blocks, the objective set can", () => {
@@ -564,7 +619,7 @@ test("SHADOW contributes nothing to a FUNCTIONAL count even when everything fire
       ),
       pageEvidence: BLANK_PAGE_EVIDENCE,
     });
-    assert.equal(record.violations.length, 3, `${mode}: all three must be recorded`);
+    assert.equal(record.violations.length, 4, `${mode}: all four must be recorded`);
     assert.equal(
       gatingFindingCount(record),
       mode === "shadow" ? 0 : 1,
@@ -770,7 +825,9 @@ test("NOTHING UNPARSEABLE BECOMES SATISFIED — defect #35's shape at the parse 
   // And the two questions nobody answered come back unknown, not clean.
   const record = evaluateVisualSubstance({ mode: "gating", frames, answers: parsed.answers });
   assert.equal(record.outcomes.filter((o) => o.verdict === "satisfied").length, 0);
-  assert.equal(record.unknowns.length, 3);
+  // FOUR, not three: the measured entry is unknown here too, because no producer
+  // ran. A grader's formatting slip must not leave it looking answered.
+  assert.equal(record.unknowns.length, 4);
 });
 
 test("a GRADER may not claim a corroboration reason — that conclusion comes from measurement", () => {
@@ -879,4 +936,209 @@ test("the 8th artefact is NOT in FIXTURES, and the reason is on the export", () 
   assert.equal(HOLLOW_SECTION_FIXTURE.expectedWithVisualGate, "fail");
   assert.deepEqual(HOLLOW_SECTION_FIXTURE.firesOn, ["VIS-F-EMPTY-REGION"]);
   assert.equal(HOLLOW_SECTION_FIXTURE.assertedGeometry.length, 3, "geometry must be asserted at all three");
+});
+
+/* ---- 12. VIS-F-REF-GROUND-INVERTED — measured on the real artefacts ---- */
+
+/**
+ * WHERE EVERY NUMBER IN THIS SECTION CAME FROM. Measured 2026-08-05 with `sharp`
+ * 0.34.5 from `dashboard/node_modules`, over READ-ONLY run directories, by the
+ * mechanism the entry declares: decode, longest edge 160px, quantise 16 levels
+ * per channel, take the centroid and area share of the largest bucket, convert to
+ * CIELAB and read `L*`.
+ *
+ * THE HARNESS WAS VALIDATED AGAINST THE RUN'S OWN CAPTURE BEFORE ANY OF IT WAS
+ * TRUSTED. The known-good workspace was re-rendered here under the container's
+ * own context (`viewport 1280x800`, `locale en-US`, `timezoneId UTC`,
+ * `colorScheme light`, `reducedMotion reduce`; `page.screenshot` with
+ * `animations disabled`, `caret hide`, `scale css` and NO `fullPage`, per
+ * `scorer-container.ts:625-633` and `:673-680`) and reproduced the run's own
+ * committed capture EXACTLY: ground `#1c1a17`, share 59.0 percent, `L*` 9.4.
+ * A calibration whose harness disagrees with the artefact it is calibrating
+ * against is measuring itself.
+ *
+ * THE FIRE DIRECTION IS A REAL RENDER, NOT A DECLARED CSS VALUE. The bad
+ * artefact is a ONE-DECLARATION mutation of the known-good build — `--bg`
+ * `#1c1a17` to `#f8fafc` at `styles.css:8`, nothing else, `diff` is two lines —
+ * rendered through the same harness. That is `hollow-section`'s rule applied
+ * here: "a second directory drifts from the first and a mutation cannot".
+ *
+ * AND THE MEASUREMENT THAT LOCKED THE ENTRY. A THIRD variant implements the SAME
+ * locked dark ground legitimately, behind `@media (prefers-color-scheme: dark)`
+ * with a light default. Under the container's pinned `colorScheme: "light"` it
+ * renders `#f8fafc`, share 56.7 percent, `L*` 98.2 — identical to the deliberate
+ * inversion in all three numbers. The mechanism cannot separate a correct build
+ * from a broken one there, which is a FUNCTIONAL false fail on a CORRECT
+ * artefact, which is the one thing this file may not ship. It is rendered as a
+ * test below rather than left in a comment.
+ */
+const REF_2026_07_29 = { lightness: 5.9, share: 0.335 } as const; // locked 01-hero
+const BUILD_2026_07_29_1280 = { lightness: 9.4, share: 0.59 } as const; // the run's own capture
+const BUILD_2026_07_29_768 = { lightness: 9.3, share: 0.503 } as const;
+const BUILD_2026_07_29_375 = { lightness: 9.4, share: 0.614 } as const;
+const BUILD_INVERTED_1280 = { lightness: 98.2, share: 0.567 } as const; // one-declaration mutation, rendered
+const BUILD_MEDIA_DARK_1280 = { lightness: 98.2, share: 0.567 } as const; // CORRECT, and indistinguishable
+const REF_2026_07_30 = { lightness: 95.6, share: 0.387 } as const; // the other real lock, light
+const BUILD_CORRECT_PORTFOLIO = { lightness: 95.2, share: 0.848 } as const; // a real light capture
+
+test("MEASURED: it does NOT fire on the one build that ever passed, at any breakpoint", () => {
+  // THE HALF THAT MATTERS MOST. A fidelity check that fails the only artefact
+  // this project has ever shipped green is worse than no check, and the rejected
+  // character-floor family failed exactly here (2026-07-29 design note §6).
+  for (const build of [BUILD_2026_07_29_1280, BUILD_2026_07_29_768, BUILD_2026_07_29_375]) {
+    const answer = groundPolarityAnswer({ frame: WIDE, reference: REF_2026_07_29, build });
+    assert.equal(answer.verdict, "satisfied", `L* ${build.lightness} against locked L* 5.9`);
+    assert.equal(answer.observationId, REF_GROUND_INVERTED_ID);
+  }
+  // And it reaches a clean record: no violation, nothing withheld, nothing unknown.
+  const record = evaluateVisualSubstance({
+    mode: "gating",
+    frames: [WIDE],
+    answers: [groundPolarityAnswer({ frame: WIDE, reference: REF_2026_07_29, build: BUILD_2026_07_29_1280 })],
+  });
+  const row = record.outcomes.find((o) => o.observationId === REF_GROUND_INVERTED_ID);
+  assert.equal(row?.verdict, "satisfied");
+  assert.equal(gatingFindingCount(record), 0);
+});
+
+test("MEASURED: the second real lock is LIGHT and the check is not hard-wired to dark", () => {
+  // Without this the whole mechanism could be `L* < 50` and every assertion above
+  // would still pass. The 2026-07-30 lock measures L* 95.6; a light build against
+  // it is satisfied and the SAME dark build that passes above is violated.
+  assert.equal(
+    groundPolarityAnswer({ frame: WIDE, reference: REF_2026_07_30, build: BUILD_CORRECT_PORTFOLIO }).verdict,
+    "satisfied",
+  );
+  assert.equal(
+    groundPolarityAnswer({ frame: WIDE, reference: REF_2026_07_30, build: BUILD_2026_07_29_1280 }).verdict,
+    "violated",
+    "a dark build against a light lock must fire — the check is directionless, not dark-seeking",
+  );
+});
+
+test("MEASURED: the one-declaration inverted render FIRES, and the restore silences it", () => {
+  // BREAK IT, WATCH IT GO RED, RESTORE IT, WATCH IT GO GREEN — over the module,
+  // on two real renders of the same markup differing by one CSS declaration.
+  const fired = groundPolarityAnswer({ frame: WIDE, reference: REF_2026_07_29, build: BUILD_INVERTED_1280 });
+  assert.equal(fired.verdict, "violated");
+  assert.match(fired.note, /inverted the polarity of the design that was chosen/);
+
+  const restored = groundPolarityAnswer({ frame: WIDE, reference: REF_2026_07_29, build: BUILD_2026_07_29_1280 });
+  assert.equal(restored.verdict, "satisfied", "the restore must go green");
+});
+
+test("MEASURED, AND THIS IS WHY IT IS LOCKED: a CORRECT dark-mode build is indistinguishable", () => {
+  // `scorer-container.ts:632` pins every capture to `colorScheme: "light"`. A
+  // build implementing the locked dark ground behind
+  // `@media (prefers-color-scheme: dark)` renders LIGHT in the only capture this
+  // check can read. Rendered through the container's own settings, it produced
+  // the same three numbers as the deliberate inversion, to the digit.
+  assert.deepEqual(
+    { ...BUILD_MEDIA_DARK_1280 },
+    { ...BUILD_INVERTED_1280 },
+    "if these ever diverge the disqualifier is gone and the lock can be revisited",
+  );
+  const correctBuild = groundPolarityAnswer({
+    frame: WIDE,
+    reference: REF_2026_07_29,
+    build: BUILD_MEDIA_DARK_1280,
+  });
+  assert.equal(correctBuild.verdict, "violated", "the false fail is real and this test records it");
+
+  // SO THE ENTRY MUST NOT BE ABLE TO ACT ON IT. This is the assertion that makes
+  // the measurement above safe to have in the tree at all: even with the mode
+  // flag ON, the false fail is recorded and cannot fail the run.
+  const record = evaluateVisualSubstance({ mode: "gating", frames: [WIDE], answers: [correctBuild] });
+  assert.equal(record.violations.length, 1, "it must still be RECORDED");
+  assert.equal(gatingFindingCount(record), 0, "a measured false fail reached the verdict");
+  assert.equal(record.violations[0]?.withheldBecause, "entry_shadow_locked");
+});
+
+test("NO LOCKED REFERENCE IS UNKNOWN, NEVER SATISFIED — a check that only observes success", () => {
+  // `scorer.ts:1253` maps `not_applicable` to `passed: true`. A fidelity check
+  // reporting GREEN on every ticket that supplied no design is this project's
+  // signature defect with a fidelity label on it.
+  const answer = groundPolarityAnswer({ frame: WIDE, reference: null, build: BUILD_INVERTED_1280 });
+  assert.equal(answer.verdict, "unknown");
+  assert.equal(answer.unknownReason, "no_locked_reference");
+  assert.notEqual(answer.verdict, "satisfied");
+
+  const record = evaluateVisualSubstance({ mode: "gating", frames: [WIDE], answers: [answer] });
+  assert.equal(record.outcomes.filter((o) => o.verdict === "satisfied").length, 0);
+  assert.equal(gatingFindingCount(record), 0);
+});
+
+test("a missing capture is unknown/no_screenshot, and a groundless reference is unknown too", () => {
+  const noCapture = groundPolarityAnswer({ frame: WIDE, reference: REF_2026_07_29, build: null });
+  assert.equal(noCapture.verdict, "unknown");
+  assert.equal(noCapture.unknownReason, "no_screenshot");
+
+  // A reference whose dominant colour holds less than the floor: "the
+  // reference's ground" names nothing, so there is nothing to compare a sign to.
+  const groundless = groundPolarityAnswer({
+    frame: WIDE,
+    reference: { lightness: 5.9, share: GROUND_MIN_SHARE - 0.01 },
+    build: BUILD_INVERTED_1280,
+  });
+  assert.equal(groundless.verdict, "unknown");
+  assert.equal(groundless.unknownReason, "ref_has_no_ground");
+});
+
+test("THE TWO CHOSEN CONSTANTS CAN ONLY WIDEN UNKNOWN — neither can manufacture a red", () => {
+  // THE STRUCTURAL DIFFERENCE FROM THE REJECTED CHARACTER-FLOOR FAMILY. Those
+  // numbers decided PASS or FAIL and fired on the correct artefact at every
+  // value. These decide FIRE or UNKNOWN, and `unknown` is non-passing and
+  // non-gating. Every ambiguity degrades away from red, in both directions.
+  const midpointish = { lightness: POLARITY_MIDPOINT + POLARITY_MARGIN - 1, share: 0.9 };
+  for (const [reference, build] of [
+    [midpointish, BUILD_2026_07_29_1280],
+    [REF_2026_07_29, midpointish],
+  ] as const) {
+    const answer = groundPolarityAnswer({ frame: WIDE, reference, build });
+    assert.equal(answer.verdict, "unknown", "an ambiguous ground must not decide anything");
+    assert.equal(answer.unknownReason, "ground_polarity_ambiguous");
+  }
+  // The mirror: just OUTSIDE the margin on both sides, the sign comparison runs.
+  const justOutside = { lightness: POLARITY_MIDPOINT + POLARITY_MARGIN + 0.1, share: 0.9 };
+  assert.equal(
+    groundPolarityAnswer({ frame: WIDE, reference: REF_2026_07_29, build: justOutside }).verdict,
+    "violated",
+    "widening unknown must not be the only thing the margin can do",
+  );
+});
+
+test("SAME POLARITY IS SATISFIED HOWEVER FAR APART — the answer is a sign, not a distance", () => {
+  // The entry's own non-trigger, asserted: "charcoal against near-black is not an
+  // inversion". Near-black L* 5.9 against a mid-dark L* 34.9 is 29 points of
+  // distance and the same sign. A distance check would have a threshold here; a
+  // sign check does not, which is the §1.1 line that admitted this entry.
+  const answer = groundPolarityAnswer({
+    frame: WIDE,
+    reference: REF_2026_07_29,
+    build: { lightness: 34.9, share: 0.6 },
+  });
+  assert.equal(answer.verdict, "satisfied");
+  assert.match(answer.note, /not an inversion/);
+});
+
+test("the producer's notes clear the screenshot boundary on every branch", () => {
+  // Every note this producer can emit crosses `assertNoScreenshotReference` when
+  // the record is built. A note carrying a path would throw INSIDE a gate run.
+  const grounds = [
+    REF_2026_07_29,
+    BUILD_INVERTED_1280,
+    { lightness: 50, share: 0.9 },
+    { lightness: 5.9, share: 0.01 },
+  ];
+  const answers = [
+    groundPolarityAnswer({ frame: WIDE, reference: null, build: null }),
+    ...grounds.flatMap((reference) =>
+      [null, ...grounds].map((build) => groundPolarityAnswer({ frame: WIDE, reference, build })),
+    ),
+  ];
+  assert.ok(answers.length > 10, "an empty list asserts nothing");
+  for (const answer of answers) {
+    assert.doesNotThrow(() => assertNoScreenshotReference(answer.note, "producer"), answer.note);
+    assert.ok(answer.note.length > 30, "a note nobody can read is a finding the owner never sees");
+  }
 });

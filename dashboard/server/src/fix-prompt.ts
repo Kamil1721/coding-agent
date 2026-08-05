@@ -24,7 +24,8 @@
  */
 
 import { WORKSPACE } from "bakeoff/dist/runner.js";
-import type { AgentVisibleReport } from "./gate-report.js";
+import { assertNoScreenshotReference } from "./visual-substance.js";
+import type { AgentVisibleReport, FixableFailure } from "./gate-report.js";
 import type { FixTask } from "./fix-triage.js";
 
 /**
@@ -54,13 +55,100 @@ export interface FixPromptRequest {
   readonly maxAttempts: number;
 }
 
-function renderFailure(index: number, failure: FixPromptRequest["report"]["failures"][number]): readonly string[] {
+/**
+ * What a withheld VISUAL detail says. It says something, for `WITHHELD_DETAIL`'s
+ * reason: a blank line where evidence should be reads as "there was nothing".
+ */
+export const WITHHELD_VISUAL_DETAIL =
+  "detail withheld: the text this gate wrote about the finding carries what looks like a file path or " +
+  "an image filename, and a capture is the one thing a fix prompt may not locate. Masking is applied at " +
+  "capture time and is the only masking there is, so a path here is an invitation to open an image " +
+  "nobody vetted. The flow and the breakpoint above are the whole of what can be said about where — " +
+  "render that flow at that breakpoint yourself and look at it.";
+
+/**
+ * A visual failure's detail, FAIL-CLOSED at the last boundary before an agent.
+ *
+ * WHY IT LIVES HERE AND NOT WHERE THE FAILURE IS BUILT. `gate-report.ts` copies
+ * `domFindings[].detail` and `exploitFindings[].detail` into a `FixableFailure`
+ * verbatim, with a length cap and no allowlist — the tier-0 path has
+ * `DETAIL_ALLOWLIST` and those two do not. This function does not repair that;
+ * it stops the one class whose free text is written ABOUT A RENDERED CAPTURE
+ * from carrying a way to find it. `gate-report.ts` belongs to no lane in this
+ * wave, and a guard at the terminal boundary covers every producer that will
+ * ever feed it, including ones not written yet.
+ *
+ * WITHHELD, NOT THROWN, AND THE DIFFERENCE IS THE OWNER'S OVERNIGHT RUN.
+ * `assertNoScreenshotReference` throws, which is correct where it is called
+ * today — inside record construction, where a throw is a programming error
+ * caught in a test. Here the same throw would reject `runGateFixLoop`'s promise,
+ * fail the gate phase, and turn a FIXABLE visual failure into a crashed run at
+ * three in the morning. A withheld detail costs the fixer one piece of evidence;
+ * a throw costs the owner the night. The boundary is equally closed either way.
+ *
+ * NOT APPLIED TO THE OTHER CLASSES, DELIBERATELY. The guard's pattern matches
+ * any `/` after whitespace or a quote, so `TS2345 at src/app.ts:12` — the exact
+ * string the leak test asserts DOES cross — would be withheld, and a debugger
+ * told only "the build failed" is a fix round spent rediscovering the error.
+ */
+function visualDetail(detail: string): string {
+  try {
+    assertNoScreenshotReference(detail, "a visual failure's detail on its way to a fixing agent");
+    return detail;
+  } catch {
+    return WITHHELD_VISUAL_DETAIL;
+  }
+}
+
+function renderFailure(index: number, failure: FixableFailure): readonly string[] {
   const lines = [`${String(index + 1)}. [${failure.klass}] ${failure.summary}`];
   if (failure.command !== null) lines.push(`   command: ${failure.command}`);
   if (failure.exitCode !== null) lines.push(`   exit code: ${String(failure.exitCode)}`);
-  if (failure.detail.length > 0) lines.push(`   ${failure.detail.split("\n").join("\n   ")}`);
+  const detail = failure.klass === "visual" ? visualDetail(failure.detail) : failure.detail;
+  if (detail.length > 0) lines.push(`   ${detail.split("\n").join("\n   ")}`);
   return lines;
 }
+
+/**
+ * What a visual fixer is told to DO, and why the generic instruction is not it.
+ *
+ * A VISUAL FAILURE HAS NO COMMAND. `gate-report.ts` sets `command: null` on every
+ * DOM finding and on the screenshot gates, so the generic "re-run the failing
+ * command yourself to check it" names a thing that does not exist. An agent
+ * handed a routed task it cannot act on is worse than an unrouted one: the run
+ * spends a round, re-gates, sees the same finding, and stops — having looked
+ * from the outside exactly like a fixer that tried.
+ *
+ * THE ASSET CLAUSE IS THE OWNER'S STANDING RULE, and this is the single most
+ * likely place in the whole program to break it: a design specialist told to fix
+ * a missing or broken image will reach for an icon package or a stock-photo URL,
+ * because that is what its own skills recommend. Stating the rule at the point
+ * of temptation is cheaper than detecting the violation afterwards — and it is
+ * currently the ONLY place it is stated to a fixing agent.
+ *
+ * MECHANICAL, NOT SCOLDING, for the reason in this file's header: Anthropic
+ * measured "only a misaligned AI would do X" framing producing HIGHER
+ * misalignment than neutral framing. "The suite still asks for the section" is a
+ * fact about the measurement. "Do not cheat by deleting it" is the framing that
+ * measured worse.
+ */
+const VISUAL_INSTRUCTIONS: readonly string[] = Object.freeze([
+  "HOW TO WORK A VISUAL FAILURE:",
+  "- There is no command to re-run for these. Each one was observed on a page that had already been " +
+    "rendered, so the way to check a fix is to serve the build, open the flow named above at the " +
+    "breakpoint named above, and look at it.",
+  "- What this build is judged against is the design reference this run LOCKED, which is in the " +
+    "workspace with the rest of the run's design material. Read it before you change anything, and " +
+    "match it rather than improve on it — a change that is better than the locked design is still a " +
+    "divergence from the locked design, and divergence is what is being measured.",
+  "- ANY IMAGE, ICON OR FONT YOU ADD MUST BE GENERATED FOR THIS BUILD AND SHIPPED FROM THIS WORKSPACE. " +
+    "No CDN link, no icon font, no icon package, no stock-photo URL, no remote webfont — including the " +
+    "ones your own skills recommend by name. This is a standing rule of the product and not a " +
+    "preference of this round. If a fix needs an asset that does not exist yet, say which asset and " +
+    "stop; an asset you fetched is a defect whatever it looks like.",
+  "- Fix the style or the markup that produced the observation. Removing the element removes the " +
+    "element: the acceptance suite was written from the ticket and still asks for whatever was there.",
+]);
 
 /**
  * The instruction for one batched fix task.
@@ -85,6 +173,16 @@ export function buildFixPrompt(request: FixPromptRequest): string {
     lines.push(...renderFailure(index, failure));
   });
 
+  // ANY VISUAL FAILURE IN THE BATCH, not "every". A task is batched by AGENT,
+  // and `taste-frontend-expert` is reached only by `visual`, so in practice the
+  // batch is homogeneous — but `ROUTES` is data, and a table that later routed
+  // two classes to one agent would silently drop this block if it asked for
+  // `every`. The failure mode of asking for `some` is four extra lines of true
+  // instruction; the failure mode of asking for `every` is a visual failure with
+  // no instruction, which is the state this block exists to end.
+  const hasVisual = task.failures.some((failure) => failure.klass === "visual");
+  if (hasVisual) lines.push("", ...VISUAL_INSTRUCTIONS);
+
   const unmet = report.heldOutUnmet;
   const unmetTotal = unmet.BLOCKING + unmet.FUNCTIONAL + unmet.QUALITY;
   lines.push(
@@ -104,7 +202,9 @@ export function buildFixPrompt(request: FixPromptRequest): string {
     "WHAT TO DO:",
     `- ${task.agent} is the specialist this work was routed to, and the only agent you may delegate to ` +
       "this round. Use it, or do the work yourself; anything else is denied.",
-    "- Fix the cause in the application code, then re-run the failing command yourself to check it.",
+    hasVisual
+      ? "- Fix the cause in the application code, then check it the way the section above describes."
+      : "- Fix the cause in the application code, then re-run the failing command yourself to check it.",
     "- If a failure is not real — the gate is wrong about the artefact — say so and say why, and change " +
       "nothing. A wrong fix costs a whole round.",
     "- Report back what you changed and what you could not close. Anything you leave open is written to " +

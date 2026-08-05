@@ -44,7 +44,16 @@
  * is on the record so a shadow run cannot be read as a gating run that found
  * nothing.
  *
- * THE FLIP CONDITION IS NOT MET TODAY AND THE CODE SAYS SO. Two entries are
+ * NOT EVERY ENTRY IS ANSWERED BY A MODEL, AND ONE IS ANSWERED BY NEITHER A MODEL
+ * NOR THE CAPTURE ALONE. `VIS-F-REF-GROUND-INVERTED` compares the delivered
+ * capture's ground against the LOCKED MOCKUP's — an image on disk that a named
+ * agent chose with a recorded reason before the build began — and it is answered
+ * by {@link groundPolarityAnswer}, a pure function of four numbers, with no
+ * grader in the path at all. {@link VisualAnsweredBy} explains why that is
+ * enforced at the PARSER and not only in the prompt. Membership is still never
+ * decided by a model: the set below is the whole of it either way.
+ *
+ * THE FLIP CONDITION IS NOT MET TODAY AND THE CODE SAYS SO. Three entries are
  * `shadowLocked`, which the mode flag CANNOT override
  * ({@link isGatingObservation}). The design note §7.2 requires an eighth
  * fixture — `hollow-section`, a complete shell carrying a section whose heading
@@ -149,10 +158,38 @@ import type { VisualCriterion } from "./visual-criteria.js";
  */
 export type VisualCorroborationRule = "page_text_empty";
 
+/**
+ * WHO ANSWERS THE QUESTION — and it is a property of the ENTRY, never of the run.
+ *
+ * `"grader"` is the original path: the question is rendered into the prompt by
+ * {@link visualObservationBlock}, a model answers it, and
+ * {@link parseVisualObservationAnswers} reads the answer back.
+ *
+ * `"measurement"` means a deterministic host-side producer constructs the
+ * {@link VisualObservationAnswer} from numbers, and NO MODEL IS ASKED. Asking a
+ * model what two recorded numbers already answer is the mistake this file exists
+ * to avoid, and it is worse than merely redundant: a model answering
+ * `VIS-F-REF-GROUND-INVERTED` from pixels alone would be answering a question
+ * about a REFERENCE IMAGE IT WAS NEVER SHOWN.
+ *
+ * THE FLAG IS LOAD-BEARING IN TWO PLACES AND BOTH ARE ENFORCED HERE.
+ * {@link visualObservationBlock} filters the prompt to `"grader"` entries —
+ * handing a grader a question whose evidence it does not have is how a tree
+ * acquires a finding generator. And {@link parseVisualObservationAnswers}
+ * REFUSES a parsed line naming a `"measurement"` entry, because otherwise the
+ * two answer sources share one array, {@link answerFor} takes the first match
+ * with no `answeredBy` awareness, and a model that volunteers a line could
+ * overwrite the measurement. Filtering the prompt alone is not a defence: the
+ * prompt is advice, and the parser is the boundary.
+ */
+export type VisualAnsweredBy = "grader" | "measurement";
+
 export interface VisualObservation {
   readonly id: string;
   /** Asked of the grader verbatim. If it is not a question, it is a mood. */
   readonly question: string;
+  /** Who produces the answer. See {@link VisualAnsweredBy}; both ends enforce it. */
+  readonly answeredBy: VisualAnsweredBy;
   /** What it would carry if it gated. Literal by design; see above. */
   readonly tier: "FUNCTIONAL";
   /** The false-fail case, stated before the check ships. Also asked verbatim. */
@@ -180,8 +217,21 @@ export interface VisualObservation {
 }
 
 /**
- * THE SET. Three entries, taken from
- * `docs/superpowers/specs/2026-07-29-visual-substance-design.md` §4.
+ * THE SET. Four entries: three from
+ * `docs/superpowers/specs/2026-07-29-visual-substance-design.md` §4, and
+ * `VIS-F-REF-GROUND-INVERTED` from `2026-08-05-design-fidelity-gate.md` §1.2.
+ *
+ * THE FOURTH IS THE FIRST ENTRY WITH AN EXTERNAL REFERENT, and the line that let
+ * it in is §1.1: an observation may gate iff its answer is a two-valued fact or a
+ * count of zero, AND the standard it is measured against is either the artefact
+ * itself or a value the run RECORDED BEFORE THE BUILD BEGAN. A locked reference
+ * does not make a question objective — it makes it COMPARABLE, and a comparison
+ * returns a distance, which needs a threshold nobody set. "Uses the reference's
+ * palette" returns a distance and stays at QUALITY. "Inverted the reference's
+ * polarity" returns a bit. A gate may read bits; a report may read distances.
+ * Every other fidelity candidate measured against the artefacts on disk fires on
+ * the build that passed, and they are enumerated as rejected in
+ * `2026-08-05-design-fidelity-gate.md` §2.2 so they are not re-proposed as new.
  *
  * Everything else considered is at QUALITY or rejected, each with the
  * measurement that decided it (§5, §6). The two that matter most, because they
@@ -200,6 +250,7 @@ export interface VisualObservation {
 export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
   {
     id: "VIS-F-EMPTY-FRAME",
+    answeredBy: "grader",
     question:
       "Does this screenshot show a page with nothing in it — no text, no image, no interactive " +
       "control — only a field of background colour?",
@@ -234,6 +285,7 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
   },
   {
     id: "VIS-F-EMPTY-REGION",
+    answeredBy: "grader",
     question:
       "In this screenshot, is there a region the layout has visibly set aside for content — a " +
       "heading with the space beneath it, or a bordered or filled container — that contains " +
@@ -280,6 +332,7 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
   },
   {
     id: "VIS-F-PLACEHOLDER-MEDIA",
+    answeredBy: "grader",
     question:
       "Does this screenshot show an image slot that is a stand-in rather than an image — a " +
       "broken-image glyph, a grey or diagonal-cross placeholder tile, or a visible watermark from " +
@@ -311,7 +364,227 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
       "carry. This entry needs a ticket, not a better prompt.",
     corroboration: null,
   },
+  {
+    id: "VIS-F-REF-GROUND-INVERTED",
+    // NO MODEL ANSWERS THIS ONE, and that is the entry's whole shape. The
+    // referent is an image on disk the grader is never shown; a grader asked
+    // "does this match the locked design" from the build capture alone would be
+    // answering from memory of a file it does not have. See VisualAnsweredBy.
+    answeredBy: "measurement",
+    question:
+      "The design locked for this run has a ground on one side of the lightness axis. Does the " +
+      "delivered capture render its ground on the OTHER side — dark where the locked design is " +
+      "light, or light where the locked design is dark?",
+    tier: "FUNCTIONAL",
+    nonTrigger:
+      "Must NOT fire on: a different shade of the SAME polarity, however far apart — charcoal " +
+      "against near-black is not an inversion, and the separation is deliberately not a distance; " +
+      "either ground sitting within `POLARITY_MARGIN` of the axis midpoint, which is `unknown` " +
+      "rather than either answer; a locked reference with no dominant ground at all, below " +
+      "`GROUND_MIN_SHARE`, which is `unknown`; a run carrying no locked mockup, where there is no " +
+      "referent and the answer is `unknown`/`no_locked_reference` rather than a pass. The trigger " +
+      "is A SIGN CHANGE, never A LARGE DIFFERENCE.",
+    why:
+      "Both sides are artefacts on disk that this run did not author for grading: the locked " +
+      "mockup was chosen by a named agent with a recorded reason before the build began " +
+      "(`results/design-lock.json`), and the capture is the container's own. The answer is a SIGN " +
+      "COMPARISON — a bit — not a distance, so there is no threshold to invent and no character " +
+      "floor wearing new clothes: the two chosen constants can only widen `unknown`, and `unknown` " +
+      "is non-passing and non-gating, so neither of them can manufacture a red. Whether a page is " +
+      "dark-on-light or light-on-dark is the single largest, least arguable statement a design " +
+      "makes; a reader who disagrees about whether a palette is muddy will not disagree about it.",
+    shadowLocked: true,
+    lockReason:
+      "MEASURED DISQUALIFIER, 2026-08-05, and it is why this ships locked rather than merely " +
+      "uncalibrated. `scorer-container.ts:632` pins every capture context to `colorScheme: " +
+      '"light"`. A build that implements the SAME locked dark ground behind `@media ' +
+      "(prefers-color-scheme: dark)` — legitimate, arguably better craft — was rendered here under " +
+      "the container's own settings and measured ground `#f8fafc`, share 56.7%, L* 98.2: BYTE-FOR-" +
+      "BYTE THE SAME GROUND as the deliberately inverted mutation of the same build (`--bg` " +
+      "`#1c1a17` to `#f8fafc`, also L* 98.2, share 56.7%). The mechanism cannot tell a correct " +
+      "dark-mode implementation from an inversion, so under `\"gating\"` this is a live FUNCTIONAL " +
+      "false fail on a CORRECT artefact — the class the whole file exists to keep out. Unlocking " +
+      "needs the ground read from a source the capture context cannot invert, or a second capture " +
+      "under the reference's own scheme. TWO FURTHER BLOCKERS, both measured rather than argued. " +
+      "(1) THE SUBJECT IS A BAND, NOT THE PAGE. The capture is one viewport (`page.screenshot()` " +
+      "with no `fullPage`, `scorer-container.ts:673-680`); on the known-good build the hero is " +
+      "`min-height: 100vh` (`styles.css:171`) and its rect at 1280x800 is exactly [0,800] against " +
+      "a 1966px document, so the capture IS the hero band and not the page's ground. It happens to " +
+      "be honest there because the locked mockup is also a hero — that is a coincidence of one " +
+      "run, not a property. (2) FLOW IDENTITY IS UNDECIDED. One locked mockup against N flow " +
+      "captures: both suites on disk declare exactly one flow, so a login page and an app shell " +
+      "with opposite grounds has never been exercised, and nothing here says which pair is the " +
+      "pair. THE FIRE DIRECTION IS ALSO UNEXERCISED BY ANY REAL RUN: all five mockups of the " +
+      "2026-07-29 lock measure L* 5.4-6.1 and its build measures 9.3-9.4 at every breakpoint, so " +
+      "both artefacts that carry a reference agree with it and the only red is a synthetic " +
+      "mutation. Enumerated rather than dropped, on this file's own convention, so the reason is " +
+      "on record and the entry is not re-proposed as new.",
+    // NULL, AND NOT FOR WANT OF A RULE. The corroboration rules exist to stop a
+    // model's unsupported red; here there is no model, and the answer already
+    // degrades to `unknown` on every ambiguity by construction. Naming
+    // `page_text_empty` would be actively wrong — the known-good build renders
+    // 326 characters and is the artefact that must PASS.
+    corroboration: null,
+  },
 ];
+
+/* -------------------------------------------------------------------------
+ * VIS-F-REF-GROUND-INVERTED — the measurement that answers it
+ * ---------------------------------------------------------------------- */
+
+/** The id, single-sourced: the producer, the parser guard and the set agree. */
+export const REF_GROUND_INVERTED_ID = "VIS-F-REF-GROUND-INVERTED";
+
+/**
+ * The midpoint of the CIELAB lightness axis, BY THE COLOUR SPACE'S DEFINITION.
+ *
+ * This one is NOT in the chosen-constant family below. `L*` runs 0 to 100 and 50
+ * is its midpoint the way 0 is the midpoint of a signed integer — it is not a
+ * number about this ticket, this project or anybody's taste, and moving it would
+ * not be a recalibration but a different question.
+ */
+export const POLARITY_MIDPOINT = 50;
+
+/**
+ * CHOSEN, NOT MEASURED — and named so a measured change is a one-line change.
+ *
+ * Nothing on disk exercises the ambiguous band: every real ground measured for
+ * this entry sits at an extreme (`L*` 5.4, 5.9, 6.1, 9.3, 9.4, 95.2, 95.6, 98.2,
+ * 100.0), the nearest approach to 50 being 40.6 away. So this number has never
+ * decided anything, and the convention `2026-08-04-motion-capture-design.md` §2.3
+ * set for its own uncalibrated thresholds applies: name it, say it was chosen,
+ * do not pretend a measurement produced it.
+ *
+ * IT CAN ONLY WIDEN `unknown`. Raising it turns findings into `unknown`; it can
+ * never turn an `unknown` into a finding. That direction is what keeps this from
+ * being the rejected character-floor family in new clothes — §6 of the
+ * 2026-07-29 design note. A floor that fires on the correct artefact is the trap;
+ * this constant cannot manufacture a red at any value.
+ */
+export const POLARITY_MARGIN = 15;
+
+/**
+ * CHOSEN, NOT MEASURED. The minimum area share the locked reference's dominant
+ * bucket must hold before "the reference's ground" means anything.
+ *
+ * Measured for orientation only, never to fit this number: the five mockups of
+ * the 2026-07-29 lock hold 33.5%, 45.2%, 32.4%, 52.8% and 52.8%; the 2026-07-30
+ * lock holds 38.7%. All clear it, and none is near it. Same direction as
+ * `POLARITY_MARGIN`: below the floor the answer is `unknown`, never a finding.
+ */
+export const GROUND_MIN_SHARE = 0.2;
+
+/**
+ * One quantised ground, as the host measures it.
+ *
+ * DELIBERATELY NOT AN IMAGE, A PATH OR A BUFFER. This module may not learn how to
+ * locate a capture — see the header on `bakeoff/.gitignore` — so the decoding
+ * (`sharp`, longest edge 160px, 16 levels per channel, centroid of the largest
+ * bucket, converted to CIELAB) lives in the host-side producer and only these two
+ * numbers cross the boundary. It also makes the decision below a pure function of
+ * four numbers, which is why it can be calibrated in a unit test against values
+ * measured from the real artefacts rather than only inside a live run.
+ */
+export interface VisualGroundMeasurement {
+  /** CIELAB `L*`, 0 (black) to 100 (white). */
+  readonly lightness: number;
+  /** Area share of the dominant quantised bucket, 0 to 1. */
+  readonly share: number;
+}
+
+/**
+ * Answer `VIS-F-REF-GROUND-INVERTED` from two measured grounds. No model runs.
+ *
+ * EVERY BRANCH THAT IS NOT A CLEAN SIGN COMPARISON RETURNS `unknown`, and that is
+ * the design rather than caution. `unknown` is non-passing (`verdict.ts` counts
+ * only `violated` rows) and non-gating, so a missing lock, a reference with no
+ * ground, and a ground sitting near the axis midpoint all degrade to "does not
+ * fire" and NEVER to "fires". Read the whole function for the property: there is
+ * exactly one `return "violated"` and it is guarded by a sign change on two
+ * values that have each already cleared the margin.
+ *
+ * IT IS ALSO NEVER A PASS BY DEFAULT. `no_locked_reference` is what a run with no
+ * design supplies, and it is `unknown` rather than `satisfied` — `scorer.ts:1253`
+ * maps `not_applicable` to `passed: true`, and a fidelity check that reported
+ * GREEN on every ticket that supplied no design would be a gate that can only
+ * observe success, which is this project's signature defect.
+ */
+export function groundPolarityAnswer(input: {
+  readonly frame: VisualFrame;
+  /** The locked mockup's ground, or null when the run locked nothing. */
+  readonly reference: VisualGroundMeasurement | null;
+  /** The delivered capture's ground, or null when nothing was captured. */
+  readonly build: VisualGroundMeasurement | null;
+}): VisualObservationAnswer {
+  const unknown = (unknownReason: VisualUnknownReason, note: string): VisualObservationAnswer => ({
+    observationId: REF_GROUND_INVERTED_ID,
+    frame: input.frame,
+    verdict: "unknown",
+    note,
+    unknownReason,
+  });
+
+  if (input.reference === null) {
+    return unknown(
+      "no_locked_reference",
+      "this run locked no design reference, so there is nothing to compare the delivered ground " +
+        "against; this is unanswered rather than answered clean",
+    );
+  }
+  if (input.build === null) {
+    return unknown(
+      "no_screenshot",
+      "no capture exists for this flow at this breakpoint, so the delivered ground was never measured",
+    );
+  }
+  if (input.reference.share < GROUND_MIN_SHARE) {
+    return unknown(
+      "ref_has_no_ground",
+      `the locked reference has no dominant ground — its largest colour holds ${sharePct(input.reference.share)} ` +
+        `of the image, under the ${sharePct(GROUND_MIN_SHARE)} floor — so "the reference's polarity" names nothing`,
+    );
+  }
+
+  const refOffset = input.reference.lightness - POLARITY_MIDPOINT;
+  const buildOffset = input.build.lightness - POLARITY_MIDPOINT;
+  if (Math.abs(refOffset) < POLARITY_MARGIN || Math.abs(buildOffset) < POLARITY_MARGIN) {
+    return unknown(
+      "ground_polarity_ambiguous",
+      `one of the two grounds sits near the middle of the lightness axis (reference L* ` +
+        `${fixed(input.reference.lightness)}, delivered L* ${fixed(input.build.lightness)}, margin ` +
+        `${String(POLARITY_MARGIN)}), so neither is decidably dark or light and there is no sign to compare`,
+    );
+  }
+
+  const polarity = (offset: number): string => (offset > 0 ? "light" : "dark");
+  if (Math.sign(refOffset) !== Math.sign(buildOffset)) {
+    return {
+      observationId: REF_GROUND_INVERTED_ID,
+      frame: input.frame,
+      verdict: "violated",
+      note:
+        `the locked design's ground is ${polarity(refOffset)} (L* ${fixed(input.reference.lightness)}) and the ` +
+        `delivered page's ground is ${polarity(buildOffset)} (L* ${fixed(input.build.lightness)}) — the build ` +
+        "inverted the polarity of the design that was chosen",
+    };
+  }
+  return {
+    observationId: REF_GROUND_INVERTED_ID,
+    frame: input.frame,
+    verdict: "satisfied",
+    note:
+      `both grounds are ${polarity(refOffset)} (locked L* ${fixed(input.reference.lightness)}, delivered L* ` +
+      `${fixed(input.build.lightness)}); a difference of shade within one polarity is not an inversion`,
+  };
+}
+
+function fixed(value: number): string {
+  return value.toFixed(1);
+}
+
+function sharePct(share: number): string {
+  return `${(share * 100).toFixed(1)} percent`;
+}
 
 /**
  * The OWNER-FACING sentence for an observation, in the observed voice.
@@ -340,6 +613,9 @@ const OBSERVATION_LABELS: Readonly<Record<string, string>> = {
   "VIS-F-PLACEHOLDER-MEDIA":
     "an image slot shows a stand-in rather than an image — a broken-image glyph, a placeholder " +
     "tile, or a placeholder service's watermark",
+  "VIS-F-REF-GROUND-INVERTED":
+    "the delivered page inverted the locked design's polarity — the design that was chosen has a " +
+    "dark ground and the page renders a light one, or the reverse",
 };
 
 export function visualObservationLabel(id: string): string {
@@ -433,7 +709,27 @@ export type VisualUnknownReason =
    * a finding with no supporting measurement is exactly the thing that produced
    * four false fails.
    */
-  | "corroboration_missing";
+  | "corroboration_missing"
+  /**
+   * `VIS-F-REF-GROUND-INVERTED` on a run that locked no design. There is no
+   * referent, so the question has no answer — and it is deliberately NOT
+   * `satisfied`: a fidelity check reporting green on every ticket that supplied
+   * no design is a gate that can only observe success.
+   */
+  | "no_locked_reference"
+  /**
+   * The locked reference's dominant colour holds less than
+   * {@link GROUND_MIN_SHARE} of the image, so "the reference's ground" names
+   * nothing to compare against.
+   */
+  | "ref_has_no_ground"
+  /**
+   * One of the two grounds sits within {@link POLARITY_MARGIN} of the lightness
+   * axis midpoint, so it is not decidably dark or light and there is no sign to
+   * compare. The whole point of the margin: it widens this, and can never widen
+   * `violated`.
+   */
+  | "ground_polarity_ambiguous";
 
 export interface VisualObservationAnswer {
   readonly observationId: string;
@@ -628,7 +924,15 @@ function outcomeFor(
       frame,
       verdict: "unknown",
       rawVerdict: "unknown",
-      note: "the grader returned no answer for this observation on this frame",
+      // THE NOTE MUST NAME THE RIGHT ABSENTEE. This is the text the owner reads,
+      // and "the grader returned no answer" is simply false for an entry no
+      // grader is ever asked — it would send a reader looking for a model's
+      // silence when what is missing is a host-side measurement.
+      note:
+        observation.answeredBy === "grader"
+          ? "the grader returned no answer for this observation on this frame"
+          : "no host-side measurement was supplied for this observation on this frame; it is " +
+            "answered by measurement and no grader is asked for it",
       unknownReason: "not_answered",
       corroborationRule: observation.corroboration,
       declaredTier: observation.tier,
@@ -825,8 +1129,24 @@ export function parseVisualObservationAnswers(input: {
       continue;
     }
     const [id, flowId, breakpoint, verdictField, ...rest] = fields as [string, string, string, string, ...string[]];
-    if (!VISUAL_OBSERVATIONS.some((o) => o.id === id)) {
+    const entry = VISUAL_OBSERVATIONS.find((o) => o.id === id);
+    if (entry === undefined) {
       rejected.push({ line, reason: `${id} is not an enumerated observation — a model may not add one` });
+      continue;
+    }
+    // A MODEL MAY NOT ANSWER A MEASURED QUESTION, and this is the boundary rather
+    // than the prompt. `visualObservationBlock` already withholds these ids, but
+    // a prompt is advice: a grader that volunteers the line anyway would put a
+    // model's answer into the SAME array the producer's measurement is in, and
+    // `answerFor` takes the first match with no `answeredBy` awareness. Whichever
+    // came first would win, which is a coin toss deciding a FUNCTIONAL row.
+    if (entry.answeredBy !== "grader") {
+      rejected.push({
+        line,
+        reason:
+          `${id} is answered by measurement, not by a grader — a model may not answer it, and it ` +
+          "may not override the measurement by volunteering a line",
+      });
       continue;
     }
     const frame = input.frames.find((f) => f.flowId === flowId && f.breakpoint === breakpoint);
@@ -1010,6 +1330,12 @@ function withheldLabel(observation: VisualObservation, mode: VisualSubstanceMode
  * a false fail, and a question sent without it is a finding generator.
  */
 export function visualObservationBlock(mode: VisualSubstanceMode): string {
+  // ONLY THE GRADER-ANSWERED ENTRIES ARE RENDERED. A `"measurement"` entry's
+  // referent is a file the grader was never shown, so putting its question here
+  // would be asking a model to answer from evidence it does not have — a finding
+  // generator. The parser refuses those ids too; this filter is the courtesy and
+  // that refusal is the boundary.
+  const asked = VISUAL_OBSERVATIONS.filter((o) => o.answeredBy === "grader");
   const lines: string[] = [
     "THE OBJECTIVE OBSERVATIONS — FUNCTIONAL tier. This list is fixed in code and you may not add",
     "to it, drop from it, or promote a taste judgement into it. Answer each question for each",
@@ -1023,7 +1349,7 @@ export function visualObservationBlock(mode: VisualSubstanceMode): string {
         "what you can see; an answer you are unsure of belongs in UNKNOWN.",
     "",
   ];
-  for (const observation of VISUAL_OBSERVATIONS) {
+  for (const observation of asked) {
     lines.push(
       `${observation.id} [${observation.tier}${observation.shadowLocked ? ", shadow-locked: cannot fail a run" : ""}]`,
       `  ASK: ${observation.question}`,
@@ -1031,7 +1357,7 @@ export function visualObservationBlock(mode: VisualSubstanceMode): string {
       "",
     );
   }
-  const example = VISUAL_OBSERVATIONS[0]?.id ?? "VIS-F-EMPTY-FRAME";
+  const example = asked[0]?.id ?? "VIS-F-EMPTY-FRAME";
   lines.push(
     // THE FORMAT AND THE PARSER ARE THE SAME CONSTANT. A prompt that describes a
     // shape the parser does not read is how the loop stayed open: the set was
