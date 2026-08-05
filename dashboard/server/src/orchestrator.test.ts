@@ -127,7 +127,7 @@ function seed(store: RunStore, runId: string, queuePosition: number): void {
   });
 }
 
-test("a run left running by a dead server becomes awaiting_input, not failed", async () => {
+test("a run left running by a dead server is picked back up, not failed", async () => {
   const h = harness();
   try {
     seed(h.store, "run-a", 1);
@@ -138,7 +138,15 @@ test("a run left running by a dead server becomes awaiting_input, not failed", a
 
     const row = h.store.getRun("run-a");
     assert.ok(row !== null);
-    assert.equal(row.status, "awaiting_input", "its subprocess is gone; that is not the model failing");
+    // `queued`, NOT `awaiting_input`, SINCE 2026-08-05. The assertion this test
+    // was written to make is "not failed", and it still makes it; what changed
+    // is which non-failed state a boot leaves behind. `DASHBOARD_AUTO_RECOVER`
+    // is now ON by default (recovery.ts:autoRecoverEnabled), so an `interrupted`
+    // run — a row that says `running` with no process under it — is continued by
+    // the sweep instead of waiting for a human. The flag was opt-in and nothing
+    // on the owner's machine set it, which meant this branch never ran outside a
+    // test. Set `DASHBOARD_AUTO_RECOVER=0` and the old `awaiting_input` returns.
+    assert.equal(row.status, "queued", "its subprocess is gone; that is not the model failing");
     assert.equal(row.heldOutPass, null, "no verdict was reached, and none may be invented");
     assert.equal(row.builderSessionId, "session-xyz", "the session id is what makes resume possible");
 
@@ -146,7 +154,12 @@ test("a run left running by a dead server becomes awaiting_input, not failed", a
     const logs = events.filter((entry) => entry.event.type === "log");
     assert.ok(logs.length > 0, "the run must say what happened to it");
     const text = logs.map((entry) => (entry.event.type === "log" ? entry.event.text : "")).join(" ");
-    assert.match(text, /resume/, "and how to continue it");
+    // AND WHO CONTINUES IT. It used to have to say "resume", because a human
+    // was the only exit. Since 2026-08-05 the sweep continues it and the line
+    // says so instead — the requirement was never the word, it was that a run
+    // whose process died never goes quiet about what happens to it next.
+    assert.match(text, /nobody has to press anything/i, "and who continues it");
+    assert.match(text, /continuation 1 of 3/i, "and that the continuation is counted against a cap");
   } finally {
     h.cleanup();
   }
@@ -258,7 +271,13 @@ test("a shutdown during the spec phase leaves the run resumable, not failed", as
     // button appears, not that it works.
     h.orchestrator.reconcileOnBoot();
     const recovered = h.store.getRun("run-spec-abort");
-    assert.equal(recovered?.status, "awaiting_input", "the next boot must offer it back");
+    // `queued` SINCE 2026-08-05: `DASHBOARD_AUTO_RECOVER` is ON by default, so
+    // the boot sweep continues an interrupted run itself rather than offering it
+    // to a human. The promise being exercised — "in-flight builds are aborted
+    // and stay resumable" — is kept more strongly, not less: the run is already
+    // back in the queue. `DASHBOARD_AUTO_RECOVER=0` restores `awaiting_input`.
+    assert.equal(recovered?.status, "queued", "the next boot must pick it back up");
+    assert.equal(isTerminal(recovered?.status ?? "failed"), false, "and terminal is what it must never be");
     assert.equal(
       h.orchestrator.resume("run-spec-abort"),
       true,
@@ -2673,11 +2692,11 @@ test("a shutdown during the GATE leaves the run resumable, not failed on a suite
 
     const row = h.store.getRun("run-gate-abort");
     assert.ok(row !== null);
-    assert.equal(
-      row.status,
-      "awaiting_input",
-      "a server stop during the gate must be recoverable, not a verdict",
-    );
+    // `queued` SINCE 2026-08-05 — `DASHBOARD_AUTO_RECOVER` defaults ON, so an
+    // interrupted run is continued rather than handed to a human. The claim this
+    // test makes is "recoverable, not a verdict", and it is stronger now, not
+    // weaker. `DASHBOARD_AUTO_RECOVER=0` restores `awaiting_input`.
+    assert.equal(row.status, "queued", "a server stop during the gate must be recoverable, not a verdict");
     assert.equal(
       row.heldOutPass,
       null,
@@ -4433,7 +4452,14 @@ test("AN INTERRUPTED RUN CONTINUES AT BOOT — three times, and the fourth boot 
 });
 
 test("WITH THE FLAG OFF, an interrupted run waits for a human exactly as it always did", async () => {
-  const h = await designRun({ autoStart: false });
+  // THE FLAG IS NAMED NOW, NOT ASSUMED — 2026-08-05. This test used to get "off"
+  // from an empty environment because `DASHBOARD_AUTO_RECOVER` was opt-in; it is
+  // ON by default since nothing on the owner's machine ever set it, which meant
+  // the whole module was unreachable in production. Spelling the off switch out
+  // is what keeps this test measuring the arm its title names, and it is also
+  // the executable proof that the OFF SWITCH ITSELF WORKS end to end — the
+  // owner's way of killing unattended spending without a rebuild.
+  const h = await designRun({ autoStart: false, env: { DASHBOARD_AUTO_RECOVER: "0" } });
   try {
     await h.orchestrator.shutdown();
     h.store.updateRun(h.runId, { status: "running" });
@@ -4444,10 +4470,10 @@ test("WITH THE FLAG OFF, an interrupted run waits for a human exactly as it alwa
     // THE DISCRIMINATING ASSERTION IS THE COUNTER, not the status. With the flag
     // on, this same row is requeued and charged; "awaiting_input with a budget
     // still at zero" is a state the enabled sweep could not have produced.
-    assert.equal(row?.status, "awaiting_input", "the default install spends nothing unattended");
+    assert.equal(row?.status, "awaiting_input", "a switched-off install spends nothing unattended");
     assert.equal(row?.autoContinueCount, 0);
     assert.ok(
-      runLog(h).some((text) => /automatic recovery is opt-in and is off/i.test(text)),
+      runLog(h).some((text) => /automatic recovery is SWITCHED OFF/i.test(text)),
       `and it names the switch: ${JSON.stringify(runLog(h))}`,
     );
   } finally {

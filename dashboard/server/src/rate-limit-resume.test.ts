@@ -482,7 +482,13 @@ test("BOOT, AUTO-RESUME ON, ROW PREDATES THE COLUMN: no instant, no arm", async 
 });
 
 test("BOOT, AUTO-RESUME OFF: an elapsed window resumes NOTHING and the boot sweep is silent", async () => {
-  const h = harness({});
+  // THE FLAG IS NOW NAMED RATHER THAN ASSUMED — 2026-08-05. This test says "OFF"
+  // in its own title and used to get it from an empty environment, because
+  // `DASHBOARD_AUTO_RECOVER` was opt-in. It is now ON by default (nothing on the
+  // owner's machine ever set it, so opt-in meant the feature never ran), which
+  // makes `{}` the ENABLED case. Writing the off switch out is what keeps this
+  // test measuring the arm it was written for.
+  const h = harness({ [RECOVERY_ENABLED_ENV]: "0" });
   try {
     seedRateLimited(h.store, "run-off", { minutesAgo: 600, retryAfterSec: HALF_HOUR_SEC });
     const before = h.store.getRun("run-off")?.rateLimitedAt ?? null;

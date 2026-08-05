@@ -234,6 +234,85 @@ test("transient: the arm exists, is reachable by injection, and waits a bounded 
   assert.equal(boundFor("transient"), TRANSIENT_MAX);
 });
 
+/* ---------------------------------------------------------------------------
+ * 2b. THE WIRE ITSELF: the seat's kind is DERIVED, because no producer sets one
+ *
+ * Until 2026-08-05 `signalsFor` read `error.kind`. `SeatCallError`
+ * (anthropic-seat.ts:83-98) has four members — status, remediation, retryable,
+ * name — and `kind` is not among them, so EVERY arm keyed on `seatKind` was
+ * reachable only from a test that wrote the field by hand. The tests above still
+ * inject it, deliberately: a producer that types itself must keep winning. These
+ * ones drive the SHAPES THE TWO REAL PRODUCERS ACTUALLY THROW, so that "does the
+ * wire carry current" has an answer that is not "a test assigned the answer".
+ * ------------------------------------------------------------------------ */
+
+/** A `SeatCallError` as `anthropic-seat.ts:710`/`:729` really constructs it. */
+function seatError(over: { readonly retryable: boolean; readonly status: number | null }): Error {
+  return Object.assign(new Error("the seat call failed"), {
+    name: "SeatCallError",
+    status: over.status,
+    remediation: "x",
+    retryable: over.retryable,
+  });
+}
+
+test("THE WIRE: a retryable 5xx SeatCallError — no `kind` field anywhere — classifies TRANSIENT", () => {
+  // anthropic-seat.ts:709 `retryable = status !== null && (status === 429 || status >= 500)`.
+  // Nothing in that constructor writes a `kind`, so before this wiring existed
+  // this error produced seatKind null and stopped as `unclassified`.
+  for (const status of [500, 502, 503, 529]) {
+    const signals = signalsFor(seatError({ retryable: true, status }), null, null);
+    assert.equal(signals.seatKind, "transport", `HTTP ${String(status)}`);
+    assert.equal(classifyPhaseFailure(signals), "transient", `HTTP ${String(status)}`);
+    const d = decide({ signals });
+    assert.equal(d.kind, "wait", `HTTP ${String(status)}`);
+    assert.equal(d.kind === "wait" ? d.delayMs : -1, TRANSIENT_BACKOFF_MS);
+  }
+});
+
+test("THE WIRE: a NON-retryable SeatCallError is NOT transient — it is unclassified and stops", () => {
+  // THE OTHER HALF, AND IT IS NOT OPTIONAL. Without it a classifier that
+  // returned `transient` for every seat error would pass the test above. This is
+  // the residual `subscription-caller.ts:2124` throws, and its own remediation
+  // names the case: "a session that expired mid-run presents exactly like this".
+  for (const status of [null, 400, 401, 403]) {
+    const signals = signalsFor(seatError({ retryable: false, status }), null, null);
+    assert.equal(signals.seatKind, "unknown", String(status));
+    assert.notEqual(classifyPhaseFailure(signals), "transient", String(status));
+    assert.equal(classifyPhaseFailure(signals), "unclassified", String(status));
+    const d = decide({ signals });
+    assert.equal(d.kind, "stop", String(status));
+    assert.equal(d.kind === "stop" ? d.code : "", "class_terminal", String(status));
+  }
+});
+
+test("THE WIRE: retryable with NO status is the SUBSCRIPTION's rate limit — throttled, never transient", () => {
+  // THE AMBIGUITY, PINNED. `subscription-caller.ts:2075` passes
+  // `this.#rateLimit.limited` as `retryable` and `null` as `status`, and :2131
+  // does the same off a prose match — so on the only deployment that runs,
+  // `retryable: true, status: null` means "the provider refused", NOT "a socket
+  // died". Calling it transient would retry a shut window in 30 seconds.
+  const signals = signalsFor(seatError({ retryable: true, status: null }), null, null);
+  assert.equal(signals.seatKind, "throttled");
+  assert.equal(classifyPhaseFailure(signals), "throttled");
+  assert.notEqual(classifyPhaseFailure(signals), "transient");
+
+  // With no reading of the refusal it must still arm NOTHING — a derived class
+  // is not permission to invent a window.
+  const bare = decide({ signals });
+  assert.equal(bare.kind, "stop");
+  assert.equal(bare.kind === "stop" ? bare.code : "", "no_refusal");
+
+  // And a 429 is a throttle too, not a transient: only a 5xx is unambiguous.
+  assert.equal(signalsFor(seatError({ retryable: true, status: 429 }), null, null).seatKind, "throttled");
+
+  // With the refusal that accompanied it, the SAME error now waits out the real
+  // window. This is the end-to-end path a rate-limited seat throw takes.
+  const armed = decide({ signals: { ...signals, refusal: refusal() } });
+  assert.equal(armed.kind, "wait");
+  assert.equal(armed.kind === "wait" ? armed.delayMs : -1, 600_000);
+});
+
 /* =========================================================================
  * 3. THE RUNAWAY GUARD — an unrecognised failure STOPS
  * ====================================================================== */
@@ -375,7 +454,7 @@ test("a counter that is not a usable number refuses rather than continuing witho
   }
 });
 
-test("OFF IS THE DEFAULT, and the refusal names the switch and the human", () => {
+test("when it IS switched off, the refusal names the switch and the human", () => {
   const d = decide({ enabled: false });
   assert.equal(d.kind, "stop");
   assert.equal(d.kind === "stop" ? d.code : "", "disabled");
@@ -383,14 +462,58 @@ test("OFF IS THE DEFAULT, and the refusal names the switch and the human", () =>
   assert.match(reasonOf(d), /human has to resume/i);
 });
 
-test("only an explicit opt-in value turns it on; anything else — including a typo — is off", () => {
-  for (const value of ["1", "true", "TRUE", " yes ", "on"]) {
-    assert.equal(autoRecoverEnabled({ [RECOVERY_ENABLED_ENV]: value }), true, value);
-  }
-  for (const value of ["", "0", "no", "off", "ture", "2", "enabled"]) {
+test("ON IS THE DEFAULT: an EMPTY environment recovers, because nothing on this machine sets the flag", () => {
+  // THE WHOLE FEATURE, IN ONE ASSERTION. Nothing in this repository sets
+  // DASHBOARD_AUTO_RECOVER — not a plist, not a .env, not a script — so while
+  // the flag was opt-in, zero failure classes recovered on the only machine this
+  // runs on and the module was elaborate dead code. `{}` is exactly what
+  // `this.#deps.env` looks like at orchestrator.ts:5634 today.
+  assert.equal(autoRecoverEnabled({}), true, "an absent variable must RECOVER, not refuse");
+  assert.equal(autoRecoverEnabled({ PATH: "/usr/bin", HOME: "/Users/x" }), true);
+
+  // And the default reaches the decision, not just the reader: an interrupted
+  // run under an empty env continues.
+  assert.equal(
+    planRecovery({
+      signals: interruptedSignals(),
+      autoContinueCount: 0,
+      enabled: autoRecoverEnabled({}),
+      now: NOW,
+      maxWaitMs: RECOVERY_MAX_AUTO_WAIT_MS,
+    }).kind,
+    "continue",
+  );
+});
+
+test("THE OFF SWITCH IS REAL: 0/false/no/off disable it, and each spelling is checked", () => {
+  // The owner has to be able to kill unattended spending without a rebuild, so
+  // every word he might reach for has to work. A switch that only understood
+  // "0" would leave "off" running and look like it had failed to take.
+  for (const value of ["0", "false", "no", "off", "OFF", " false ", "No"]) {
     assert.equal(autoRecoverEnabled({ [RECOVERY_ENABLED_ENV]: value }), false, value);
   }
-  assert.equal(autoRecoverEnabled({}), false);
+  // And the off switch reaches the decision.
+  assert.equal(
+    planRecovery({
+      signals: interruptedSignals(),
+      autoContinueCount: 0,
+      enabled: autoRecoverEnabled({ [RECOVERY_ENABLED_ENV]: "0" }),
+      now: NOW,
+      maxWaitMs: RECOVERY_MAX_AUTO_WAIT_MS,
+    }).kind,
+    "stop",
+  );
+});
+
+test("a typo in the OFF switch leaves recovery RUNNING, which is the deliberate half of the reversal", () => {
+  // Stated as a test rather than left to the docblock, because it is the cost of
+  // default-on and somebody will one day read it as a bug. It is not: a typo
+  // here spends at most AUTO_CONTINUE_MAX bounded continuations, whereas a typo
+  // that silently disabled the feature would reproduce the exact failure this
+  // change exists to end and would look identical to it from outside.
+  for (const value of ["", " ", "1", "true", "yes", "on", "ture", "2", "enabled", "disabled"]) {
+    assert.equal(autoRecoverEnabled({ [RECOVERY_ENABLED_ENV]: value }), true, value);
+  }
 });
 
 /* =========================================================================
@@ -459,7 +582,52 @@ test("THE UNATTENDED CEILING: the seven-day window this machine really reports i
   assert.equal(d.kind === "stop" ? d.code : "", "wait_too_long");
   assert.match(reasonOf(d), /seven_day/);
   assert.match(reasonOf(d), /120\.0 h/, "the refusal has to quote the wait it refused");
+  assert.match(reasonOf(d), /5\.0 days/, "and quote it in the unit a person parks a run in");
   assert.match(reasonOf(d), new RegExp(RECOVERY_MAX_WAIT_ENV), "and name the way to allow it");
+  // WHEN IT WOULD HAVE RESUMED, on the same line. Refused at NOW into a
+  // 431 997 s window, so the instant is arithmetic, not a fixture: the owner can
+  // decide between Resume, a raised ceiling and coming back later without doing
+  // the sum himself.
+  assert.match(
+    reasonOf(d),
+    /2026-08-09T01:19:57\.000Z/,
+    "a parked run has to say WHEN it would have carried on, not only for how long it would have waited",
+  );
+});
+
+test("THE OVERNIGHT CEILING: twelve hours, so a wait armed in the evening is served before morning", () => {
+  // THE NUMBER, AND THE SENTENCE IT COMES FROM: "I leave it overnight." Under
+  // the old six-hour ceiling a refusal at 20:00 with an eight-hour window parked
+  // in the middle of the night and the owner found the run stopped — which is
+  // the state this whole module exists to remove. Both halves are asserted,
+  // because a ceiling proved only from below is a ceiling proved against
+  // nothing.
+  assert.equal(RECOVERY_MAX_AUTO_WAIT_MS, 12 * 60 * 60 * 1_000);
+
+  const evening = "2026-08-04T20:00:00.000Z";
+  const eightHours = 8 * 60 * 60;
+  const served = decide({
+    now: evening,
+    signals: { ...NO_SIGNALS, refusal: refusal({ retryAfterSec: eightHours, kind: "five_hour", observedAt: evening }) },
+  });
+  assert.equal(served.kind, "wait", "an eight-hour overnight wait is the feature, not an exception");
+  assert.equal(served.kind === "wait" ? served.delayMs : -1, eightHours * 1_000);
+  assert.equal(served.kind === "wait" ? served.firesAt : "", "2026-08-05T04:00:00.000Z");
+  assert.match(reasonOf(served), /2026-08-05T04:00:00\.000Z/, "an armed wait names the instant it fires");
+
+  // Thirteen hours is past the ceiling and parks: the point of a ceiling is that
+  // something is on the far side of it.
+  const parked = decide({
+    now: evening,
+    signals: {
+      ...NO_SIGNALS,
+      refusal: refusal({ retryAfterSec: 13 * 60 * 60, kind: "five_hour", observedAt: evening }),
+    },
+  });
+  assert.equal(parked.kind, "stop");
+  assert.equal(parked.kind === "stop" ? parked.code : "", "wait_too_long");
+  assert.match(reasonOf(parked), /13\.0 h/);
+  assert.match(reasonOf(parked), /12\.0 h this server will wait unattended/);
 });
 
 test("THE UNATTENDED CEILING: raising it lets the same window through, so the escape hatch is real", () => {
@@ -484,8 +652,8 @@ test("THE 32-BIT CEILING refuses before the unattended one, because firing immed
   assert.match(reasonOf(d), /fires\s+IMMEDIATELY/i);
 });
 
-test("the ceiling default is six hours, and an unreadable override is the default rather than no ceiling", () => {
-  assert.equal(RECOVERY_MAX_AUTO_WAIT_MS, 6 * 60 * 60 * 1_000);
+test("the ceiling default is twelve hours, and an unreadable override is the default rather than no ceiling", () => {
+  assert.equal(RECOVERY_MAX_AUTO_WAIT_MS, 12 * 60 * 60 * 1_000);
   assert.equal(recoveryMaxWaitMs({}), RECOVERY_MAX_AUTO_WAIT_MS);
   for (const value of ["", " ", "soon", "0", "-5", "NaN"]) {
     assert.equal(recoveryMaxWaitMs({ [RECOVERY_MAX_WAIT_ENV]: value }), RECOVERY_MAX_AUTO_WAIT_MS, value);

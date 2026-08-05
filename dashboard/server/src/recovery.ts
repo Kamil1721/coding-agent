@@ -71,9 +71,11 @@
  *    shared counter and no "retries 9 times, reports 3".
  *  - `throttled` — the provider refused; time is the only fix. Bound
  *    {@link AUTO_CONTINUE_MAX}, plus a wait ceiling (§{@link RECOVERY_MAX_AUTO_WAIT_MS}).
- *  - `transient` — a fault a byte-identical retry could survive. **NO REAL
- *    ERROR MAPS TO THIS TODAY**; see {@link SeatFailureKind} and
- *    {@link TRANSIENT_MAX}. The arm exists and is tested by injection.
+ *  - `transient` — a fault a byte-identical retry could survive. Reached from a
+ *    real error since 2026-08-05: a `SeatCallError` carrying `retryable: true`
+ *    AND a 5xx `status` (anthropic-seat.ts:707-726). NOT reachable on the
+ *    dashboard's own path, where the seat is a CLI subprocess and every status
+ *    is null — see {@link SeatFailureKind} and {@link TRANSIENT_MAX}.
  *  - `unclassified` — everything else. Bound 0, always recorded. This is the
  *    evidence channel: the next real fault this program has never seen arrives
  *    here with its full description instead of being guessed at.
@@ -187,17 +189,42 @@ export const RECOVERY_TIMER_MAX_DELAY_MS = 2_147_483_647;
  * a second ceiling the first real refusal arms a five-day unattended timer and
  * nothing on the wire says so.
  *
- * SIX HOURS, AND THE HONEST CONSEQUENCE OF SIX HOURS. It covers a five-hour
- * rolling window plus slack, which is the wait the owner called cheap. It also
- * REFUSES EVERY WINDOW THIS MACHINE HAS EVER RECORDED, because all of them are
- * `seven_day`. So on today's evidence a throttled run parks and says how long it
- * would have had to wait, rather than waiting: that is a deliberate default, not
- * an accident, and it is why {@link RECOVERY_MAX_WAIT_ENV} exists and why the
- * refusal names it. An owner who wants the seven-day wait held automatically
- * sets `DASHBOARD_RECOVERY_MAX_WAIT_MIN=10080` and gets it. Nobody gets it by
- * default without deciding.
+ * TWELVE HOURS. RAISED FROM SIX ON 2026-08-05, deliberately, and the six-hour
+ * reasoning is kept because it was correct about the window and wrong about the
+ * night. It read: "SIX HOURS. It covers a five-hour rolling window plus slack,
+ * which is the wait the owner called cheap."
+ *
+ * IT DOES COVER THE WINDOW. What it does not cover is the sentence the owner
+ * actually said the feature was for: "I leave it overnight." A refusal at 20:00
+ * under a six-hour ceiling parks anything that reopens after 02:00 — so the run
+ * stops in the middle of the night, six hours of perfectly good waiting go
+ * unused, and the owner finds in the morning exactly what he found before this
+ * module existed. The ceiling has to be measured against the ABSENCE, not
+ * against the window.
+ *
+ * WHY TWELVE AND NOT MORE. Twelve hours is two consecutive five-hour windows
+ * plus slack, and it is the longest wait that still resolves inside one night:
+ * armed at any hour of an evening it fires before the next morning. Past that
+ * the arithmetic inverts. The owner's complaint about a parked run was never
+ * "it waited" — it was that nothing told him anything — and a wait longer than
+ * the gap between two of his own check-ins is indistinguishable from a hang to
+ * the person doing the waiting. A run silently holding a timer for three and a
+ * half days LOOKS like the twelve-hour death of 2026-07-30 from outside, which
+ * is the thing this module exists to stop looking like.
+ *
+ * THE HONEST CONSEQUENCE, UNCHANGED IN KIND AND SMALLER IN SIZE. Every
+ * `rate_limit` frame in `runs.db` as of 2026-08-05 is `seven_day`, 2.2-5.0 days
+ * out, so the windows this machine has actually recorded STILL park — and they
+ * should. What changes is that they park with the real length and the instant
+ * they would have resumed on the log (see `wait_too_long` in
+ * {@link planThrottledWait}), instead of a bare figure in hours. A five-hour
+ * window, which the subscription's own remediation names as the other half of
+ * its refusals (subscription-caller.ts:2063), is now served with slack rather
+ * than served with barely an hour to spare. An owner who wants the seven-day
+ * wait held automatically still sets `DASHBOARD_RECOVERY_MAX_WAIT_MIN=10080`
+ * and gets it. Nobody gets it by default without deciding.
  */
-export const RECOVERY_MAX_AUTO_WAIT_MS = 6 * 60 * 60 * 1_000;
+export const RECOVERY_MAX_AUTO_WAIT_MS = 12 * 60 * 60 * 1_000;
 
 /** Minutes. Overrides {@link RECOVERY_MAX_AUTO_WAIT_MS}. */
 export const RECOVERY_MAX_WAIT_ENV = "DASHBOARD_RECOVERY_MAX_WAIT_MIN";
@@ -241,17 +268,33 @@ export const TRANSIENT_BACKOFF_MS = 30_000;
  * What kind of failure the seat layer decided it was, at the layer that still
  * had the evidence.
  *
- * `transport` HAS NO PRODUCER IN THIS PROGRAM AND THAT IS THE DECISION, not an
- * oversight. On the subscription path there is no structured way to tell a 503
- * from an expired auth session: the seat drives the Claude CLI as a subprocess
- * through the agent SDK, so a thrown failure carries no status code, no
- * `Retry-After` and no typed error — only a message. The residual is therefore
- * assigned `unknown`, and `unknown` never continues. Mapping the residual into
- * `transport` would retry auth expiry, retry harness bugs, and retry things
- * nobody has ever seen, unattended, on the owner's quota. The `transient` arm
- * ships with an EMPTY ALLOW-LIST: it exists, it is bounded, it is unit-tested by
- * injecting the kind, and no real error reaches it until something earns the
- * signal.
+ * NOTHING IN THIS PROGRAM EVER SET A `kind` FIELD, AND UNTIL 2026-08-05 THIS
+ * TYPE WAS READ OFF ONE. `signalsFor` looked for `error.kind`; `SeatCallError`
+ * (anthropic-seat.ts:83-98) has exactly four members — `status`, `remediation`,
+ * `retryable`, `name` — and `kind` is not among them. So EVERY arm keyed on this
+ * type was dead: `protocol`→`structural`, `throttled`, and `transport`→
+ * `transient` alike were reachable only by a test writing the field by hand.
+ * The kind is now DERIVED from the two fields that do exist; see
+ * {@link seatKindOf}. The union is kept rather than replaced because it is the
+ * vocabulary the classifier reads and the shape a seat that learns to type its
+ * own failures should produce — a producer that sets `kind` still wins.
+ *
+ * THE PART OF THE OLD DECISION THAT SURVIVES, restated because it is still true
+ * and still load-bearing: on the SUBSCRIPTION path there is no structured way to
+ * tell a 503 from an expired auth session. The seat drives the Claude CLI as a
+ * subprocess through the agent SDK, so a thrown failure carries no status code,
+ * no `Retry-After` and no typed error. `subscription-caller.ts` therefore
+ * reports `status: null` on both of its throws (:2058, :2124) and the residual
+ * is assigned `unknown`, which never continues. Retrying auth expiry unattended
+ * on the owner's quota remains the failure this must not have.
+ *
+ * WHAT REVERSED, DELIBERATELY, 2026-08-05: `transport` is no longer declared
+ * producerless. `anthropic-seat.ts:709` types a 429-or-5xx as `retryable` and
+ * :729-736 types a pre-response transport failure the same way, so a 5xx now
+ * derives `transport` from a real error rather than from an injection. It still
+ * cannot arise on the dashboard's own path — no status, so no 5xx — and saying
+ * "the arm is live" about the dashboard would be a lie. It is live in the
+ * repository and inert in this deployment, which is a different sentence.
  */
 export type SeatFailureKind = "throttled" | "protocol" | "transport" | "unknown";
 
@@ -316,7 +359,11 @@ export interface PhaseFailureSignals {
    * unrecoverable.
    */
   readonly bakeoffCode: string | null;
-  /** {@link SeatFailureKind} when the throw was a `SeatCallError`, else null. */
+  /**
+   * {@link SeatFailureKind} when the throw was a `SeatCallError`, else null.
+   * DERIVED from `retryable` and `status` since 2026-08-05 — it used to be read
+   * off a `kind` field no producer has ever set. See {@link seatKindOf}.
+   */
   readonly seatKind: SeatFailureKind | null;
   /** {@link RefusalEvidence} carried from the throw site, or null. */
   readonly refusal: RefusalEvidence | null;
@@ -412,20 +459,88 @@ export function signalsFor(
       ? "shutdown"
       : "cancelled";
 
-  const shape = error as { name?: unknown; code?: unknown; kind?: unknown; remediation?: unknown } | null;
+  const shape = error as SeatErrorShape | null;
   const named = typeof shape?.name === "string" ? shape.name : "";
   const bakeoffCode =
     named === "BakeoffError" && typeof shape?.code === "string" && typeof shape.remediation === "string"
       ? shape.code
       : null;
-  // A `SeatCallError` WITHOUT A `kind` READS AS NO SIGNAL, WHICH MEANS STOP.
-  // That is today's error, before the seat layer is taught to type its failures:
-  // until it is, every seat failure — throttle included — lands in
-  // `unclassified` and refuses. Under-recovering while the signal is missing is
-  // the direction this module is allowed to be wrong in.
-  const seatKind = named === "SeatCallError" && isSeatFailureKind(shape?.kind) ? shape.kind : null;
+  const seatKind = named === "SeatCallError" ? seatKindOf(shape) : null;
 
   return { aborted, abortReason, interrupted: false, bakeoffCode, seatKind, refusal };
+}
+
+/** The members of a thrown error this module is willing to look at. */
+interface SeatErrorShape {
+  readonly name?: unknown;
+  readonly code?: unknown;
+  readonly kind?: unknown;
+  readonly remediation?: unknown;
+  readonly retryable?: unknown;
+  readonly status?: unknown;
+}
+
+/**
+ * A `SeatCallError`'s kind, DERIVED FROM THE FIELDS IT ACTUALLY HAS.
+ *
+ * THIS REPLACED A READ OF `error.kind` ON 2026-08-05, and the read had never
+ * once returned a value. `SeatCallError` declares four members
+ * (anthropic-seat.ts:83-98) and `kind` is not one of them, so every consumer of
+ * {@link SeatFailureKind} was unreachable outside a test that assigned the field
+ * by hand. That is the whole reason this function exists, and it is why the
+ * ordering below is worth reading rather than skimming.
+ *
+ *  1. A REAL `kind` STILL WINS. A seat that learns to type its own failures
+ *     should not have to fight a heuristic, and the tests that inject the field
+ *     go on driving the arms they were written for.
+ *
+ *  2. NO `retryable` BOOLEAN IS NO SIGNAL — null, not `unknown`. Both stop, so
+ *     the behaviour is identical; null is the honest one, because "this did not
+ *     have the shape I know" is a different statement from "the seat looked at
+ *     it and could not name it".
+ *
+ *  3. `retryable: false` IS `unknown`, WHICH NEVER CONTINUES. Both producers use
+ *     it for the residual, and `subscription-caller.ts:2129` names the case that
+ *     matters in its own remediation: "a session that expired mid-run presents
+ *     exactly like this". An expired session retried unattended is the quota
+ *     burn this module exists to prevent.
+ *
+ *  4. `retryable: true` SPLITS ON `status`, AND THE SPLIT IS NOT COSMETIC —
+ *     the two producers in this repository mean DIFFERENT THINGS by the same
+ *     `true`:
+ *
+ *       · `anthropic-seat.ts:709` sets it for `status === 429 || status >= 500`
+ *         and :735 for a pre-response transport failure. There it means what the
+ *         field's own docstring says: "retrying the same request may succeed".
+ *       · `subscription-caller.ts:2075` sets it to `this.#rateLimit.limited`,
+ *         and :2131 to a prose match for a rate limit. There it means EXACTLY
+ *         "we believe the provider refused this", with `status: null` always,
+ *         because a CLI subprocess has no HTTP status to report.
+ *
+ *     A 5xx is the only unambiguous member: nothing calls a 500 a rate limit. So
+ *     a 5xx derives `transport` (→ `transient`, a 30-second backoff) and
+ *     EVERYTHING ELSE derives `throttled`.
+ *
+ *     THE AMBIGUOUS CASE IS `retryable: true, status: null`, AND IT IS RESOLVED
+ *     TOWARDS `throttled` ON PURPOSE. On the dashboard — the only deployment
+ *     that runs — that shape is a rate limit and nothing else, because
+ *     `SubscriptionSeatCaller` is the only caller the orchestrator builds
+ *     (orchestrator.ts:2448, :2597, :2613; judge.ts:282) and
+ *     `assertUnused()` (subscription-caller.ts:2101) exists to prove the base
+ *     class's network path is never reached. Resolving it the other way would
+ *     take a rate limit whose window reading did not survive and RETRY IT IN 30
+ *     SECONDS, twice, into a window that is certainly still shut. Resolved this
+ *     way the worst case is a bakeoff DNS failure labelled `throttled`, which
+ *     arrives at `planThrottledWait` with no refusal evidence and stops with
+ *     `no_refusal` — a wrong label that spends nothing, rather than a right one
+ *     that spends.
+ */
+function seatKindOf(shape: SeatErrorShape | null): SeatFailureKind | null {
+  if (isSeatFailureKind(shape?.kind)) return shape.kind;
+  if (typeof shape?.retryable !== "boolean") return null;
+  if (!shape.retryable) return "unknown";
+  const status = typeof shape.status === "number" ? shape.status : null;
+  return status !== null && status >= 500 ? "transport" : "throttled";
 }
 
 function isSeatFailureKind(value: unknown): value is SeatFailureKind {
@@ -475,7 +590,13 @@ export function classifyPhaseFailure(s: PhaseFailureSignals): FailureClass {
   if (s.seatKind === "throttled") return "throttled";
   if (s.refusal !== null && s.refusal.limited) return "throttled";
 
-  // 5. TRANSIENT. Empty allow-list by design — see {@link SeatFailureKind}.
+  // 5. TRANSIENT. NO LONGER AN EMPTY ALLOW-LIST as of 2026-08-05: a
+  //    `SeatCallError` with `retryable: true` and a 5xx `status` derives
+  //    `transport` (see {@link seatKindOf}), which is the one shape in this
+  //    repository that unambiguously means "the server faulted, not the quota".
+  //    It still cannot arise on the dashboard's own subscription path, where
+  //    every status is null — that is a property of driving a CLI subprocess,
+  //    not of this switch.
   if (s.seatKind === "transport") return "transient";
 
   // 6. EVERYTHING ELSE, INCLUDING `unknown`. Bound 0. This is the runaway guard:
@@ -526,9 +647,9 @@ export function mayAutoContinue(i: RecoveryBoundInput): BoundVerdict {
       ok: false,
       code: "disabled",
       reason:
-        `automatic recovery is opt-in and is off. Set ${RECOVERY_ENABLED_ENV}=1 to let a run continue ` +
-        `itself after a ${i.klass} failure; until then a human has to resume this run — nothing will do ` +
-        `it for them.`,
+        `automatic recovery is SWITCHED OFF. It is on by default, so ${RECOVERY_ENABLED_ENV} has been set ` +
+        `to one of ${RECOVERY_ENABLED_OFF.join("/")} on purpose. Until that is removed, a ${i.klass} ` +
+        `failure parks the run and a human has to resume this run — nothing will do it for them.`,
     };
   }
   if (!Number.isFinite(i.autoContinueCount) || i.autoContinueCount < 0) {
@@ -587,18 +708,64 @@ function terminalClassReason(klass: FailureClass): string {
  * ====================================================================== */
 
 /**
- * The flag. DEFAULT OFF, and unrecognised values are OFF, which inverts
+ * The flag. DEFAULT **ON** SINCE 2026-08-05; the variable is now an OFF SWITCH.
+ *
+ * THIS IS A DELIBERATE REVERSAL AND THE REVERSED REASONING IS KEPT BELOW,
+ * because it was not wrong — it was answering a different question. It read:
+ * "DEFAULT OFF, and unrecognised values are OFF, which inverts
  * `designLockPolicy`'s rule for the same reason `RATE_LIMIT_AUTO_RESUME_ENV`
  * does (orchestrator.ts:619-622): there the safe direction is the one that ENDS
  * a park; here the safe direction is the one that does not SPEND, so a typo in a
- * launchd plist cannot enrol a machine into unattended quota burn.
+ * launchd plist cannot enrol a machine into unattended quota burn."
+ *
+ * WHAT THAT ARGUMENT MISSED. Nothing in this repository sets
+ * `DASHBOARD_AUTO_RECOVER` — not a plist, not a `.env`, not a script, not the
+ * server that is running right now. So "opt-in" did not mean "the owner chooses";
+ * it meant ZERO FAILURE CLASSES RECOVER, EVER, on the only machine this runs on.
+ * A feature that is off by default and that nothing turns on is indistinguishable
+ * from one that was never written, and this one was written because two runs —
+ * twelve hours and fifty-two minutes of real work — were thrown away for want of
+ * it. The safe direction was chosen so carefully that it deleted the feature.
+ *
+ * WHY DEFAULT-ON IS THE CORRECT ANSWER HERE AND NOT A LOOSENING. The owner asked
+ * for it in as many words: "I leave it overnight and it does whatever i
+ * insturcted it in the first place until the product is finished". And the
+ * spending it authorises is ALREADY BOUNDED, by bounds that predate this change
+ * and are tested:
+ *
+ *   · {@link AUTO_CONTINUE_MAX} = 3 continuations per run, ONE counter shared by
+ *     every class, so a run cannot bounce between classes for ever.
+ *   · {@link TRANSIENT_MAX} = 2, lower still.
+ *   · Bound 0 for `intentional`, `structural` and `unclassified` — a failure
+ *     nobody recognises never continues, whatever this flag says.
+ *   · {@link RECOVERY_MAX_AUTO_WAIT_MS}, so an unattended wait has a length the
+ *     owner would recognise as waiting rather than as hanging.
+ *
+ * The worst case of being wrong in this direction is therefore three re-entries
+ * of a phase, announced on the run's own log at the moment each is armed. The
+ * worst case of being wrong in the other direction is what already happened.
+ *
+ * AN UNRECOGNISED VALUE IS NOW **ON**, which is the other half of the reversal
+ * and the half worth being uncomfortable about. `DASHBOARD_AUTO_RECOVER=ture`
+ * leaves recovery running. That is the deliberate choice: a typo in an OFF
+ * switch costs at most the bounded spend above, while a typo that silently
+ * disabled the feature would reproduce the exact failure this change exists to
+ * end — and would look identical to it from outside. The OFF words are spelled
+ * out in {@link RECOVERY_ENABLED_OFF} and the refusal message quotes them.
  */
 export const RECOVERY_ENABLED_ENV = "DASHBOARD_AUTO_RECOVER";
 
-const RECOVERY_ENABLED_ON: readonly string[] = ["1", "true", "yes", "on"];
+/**
+ * The values that turn it OFF. Everything else, including absence, is ON.
+ *
+ * The `1/true/yes/on` spellings that used to be the ON list are deliberately NOT
+ * treated as a second, redundant ON — they are simply not OFF, and land on the
+ * default like any other word.
+ */
+export const RECOVERY_ENABLED_OFF: readonly string[] = ["0", "false", "no", "off"];
 
 export function autoRecoverEnabled(env: NodeJS.ProcessEnv): boolean {
-  return RECOVERY_ENABLED_ON.includes((env[RECOVERY_ENABLED_ENV] ?? "").trim().toLowerCase());
+  return !RECOVERY_ENABLED_OFF.includes((env[RECOVERY_ENABLED_ENV] ?? "").trim().toLowerCase());
 }
 
 /**
@@ -815,15 +982,23 @@ function planThrottledWait(klass: FailureClass, input: RecoveryInput): RecoveryD
     };
   }
   if (delayMs > input.maxWaitMs) {
+    // THE REFUSAL QUOTES THE REAL LENGTH AND THE REAL INSTANT, and that is the
+    // product rather than a nicety. "120.0 h" is true and unreadable; a parked
+    // run whose log says only that is a run the owner cannot decide about
+    // without doing arithmetic at the moment he is least inclined to. The
+    // instant below is when this run WOULD have carried on, so the choice —
+    // press Resume now, raise the ceiling, or come back then — is answerable
+    // from one line.
+    const wouldResumeAt = plusMs(input.now, delayMs);
     return {
       kind: "stop",
       klass,
       code: "wait_too_long",
       reason:
         `the provider reported a ${refusal.kind ?? "rate limit"} window that reopens in ` +
-        `${hours(delayMs)} h, longer than the ${hours(input.maxWaitMs)} h this server will wait ` +
-        `unattended. The run is kept and resumes the moment you press Resume; raise ` +
-        `${RECOVERY_MAX_WAIT_ENV} to let it wait by itself.`,
+        `${humanWait(delayMs)}${wouldResumeAt === null ? "" : ` — at ${wouldResumeAt}`}, longer than the ` +
+        `${humanWait(input.maxWaitMs)} this server will wait unattended. The run is kept and resumes the ` +
+        `moment you press Resume; raise ${RECOVERY_MAX_WAIT_ENV} (minutes) to let it wait by itself.`,
     };
   }
 
@@ -835,8 +1010,9 @@ function planThrottledWait(klass: FailureClass, input: RecoveryInput): RecoveryD
     delayMs,
     firesAt,
     reason:
-      `the provider refused with a ${refusal.kind ?? "rate limit"} window reopening in ${hours(delayMs)} h; ` +
-      `the run is parked and continues itself then. Nothing is lost in the meantime and Resume still works.`,
+      `the provider refused with a ${refusal.kind ?? "rate limit"} window reopening in ` +
+      `${humanWait(delayMs)}, at ${firesAt}; the run is parked and continues itself then. Nothing is lost ` +
+      `in the meantime and Resume still works.`,
   };
 }
 
@@ -850,4 +1026,20 @@ function plusMs(now: string, ms: number): string | null {
 /** One decimal place, because "0 h" for a 20-minute wait reads as a bug. */
 function hours(ms: number): string {
   return (Math.round(ms / 360_000) / 10).toFixed(1);
+}
+
+/**
+ * A wait in the unit a person would use for it, and in HOURS as well once it
+ * stops being an hours-sized number.
+ *
+ * "120.0 h" is the true length of the window this machine actually reports and
+ * nobody reads it as five days. Past two days the days lead and the hours stay
+ * in brackets — dropping them would break the one thing the hours figure is good
+ * for, which is comparing the wait against the ceiling that refused it, and both
+ * numbers appear in the same sentence.
+ */
+function humanWait(ms: number): string {
+  const h = hours(ms);
+  if (ms < 48 * 60 * 60 * 1_000) return `${h} h`;
+  return `${(Math.round(ms / 8_640_000) / 10).toFixed(1)} days (${h} h)`;
 }
