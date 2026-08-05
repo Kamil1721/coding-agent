@@ -42,8 +42,11 @@
  *   · SINCE 2026-08-05, THE PANEL'S OWN PROSE IS THREE SHORT LINES. The closing
  *     paragraph is gone (its one fact — that this is the run's chat and the Chat
  *     tab feeds it — is behind the subtitle's `Explain`), the clock is one
- *     sentence with its turn bound behind an `Explain`, and both button titles
- *     lost the clauses that repeated each other. What is INLINE is what a reader
+ *     sentence with its turn bound behind an `Explain`, and the two button
+ *     titles are shorter for different reasons — `you decide` lost a clause that
+ *     said its own first clause twice, `why does this matter?` lost the turn cost
+ *     because that now lives on the clock, stated once for the whole panel
+ *     instead of once per question card. What is INLINE is what a reader
  *     must have before he acts: the clock's consequence, the question-mark
  *     warning, and the "Sent" line. Rule for any future edit, from
  *     `explain.tsx`: a fact that changes what the user does may be hidden and may
