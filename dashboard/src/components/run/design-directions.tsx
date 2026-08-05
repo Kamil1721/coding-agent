@@ -271,20 +271,25 @@ function DirectionStill({
       <figcaption className="flex items-center justify-between gap-2 px-2 py-1 text-[11px] text-ink-faint">
         <span className="min-w-0 truncate">{section}</span>
         {locked && (
-          <Badge tone="accent" className="shrink-0">
-            locked
-            {/*
-             * THE FACT THAT USED TO BE A `title` ON THIS BADGE, and a paragraph
-             * in `design-lock.tsx` besides ("The hero of that direction is the
-             * one still the visual gate graded the finished site against"). Both
-             * are this one sentence, attached to the image it is about, reachable
-             * by keyboard and on touch — which `title` never was.
-             */}
-            {/* No `ml-1`: `Badge` is an inline-flex with its own `gap-1.5`. */}
+          /*
+           * THE FACT THAT USED TO BE A `title` ON THIS BADGE, and a paragraph in
+           * `design-lock.tsx` besides ("The hero of that direction is the one
+           * still the visual gate graded the finished site against"). Both are
+           * this one sentence now, attached to the image it is about and
+           * reachable by keyboard and on touch — which `title` never was.
+           *
+           * BESIDE THE BADGE RATHER THAN INSIDE IT, which is not cosmetic. A shut
+           * `Explain` keeps its sentence in the DOM as an `sr-only` span, so
+           * nesting it made the badge's text content "locked The finished site
+           * was compared against this one image" — and `getByText("locked", {
+           * exact: true })` is how three existing specs find this badge.
+           */
+          <span className="flex shrink-0 items-center gap-1">
+            <Badge tone="accent">locked</Badge>
             <Explain about="the locked image" testId="explain-locked-image">
               The finished site was compared against this one image.
             </Explain>
-          </Badge>
+          </span>
         )}
       </figcaption>
     </figure>
