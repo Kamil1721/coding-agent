@@ -52,7 +52,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { readReferenceManifest, referenceDirFor } from "./ticket-refs.js";
 
@@ -122,7 +122,20 @@ function validate(raw: unknown, referenceDir: string): OwnerReference | null {
   if (!existsSync(path)) return null;
   let bytes: Buffer;
   try {
-    if (!statSync(path).isFile()) return null;
+    // `lstatSync`, NOT `statSync`, AND THE DIFFERENCE IS THE WHOLE FENCE. `stat`
+    // follows a symlink, so it reports on the TARGET while
+    // {@link insideReferenceDir} judged the LINK — a link inside `references/`
+    // named `.png` and pointing anywhere at all would satisfy both checks and
+    // hand an agent a file from outside the run. `lstat().isFile()` is false for
+    // a symlink, so the two checks judge the same object.
+    //
+    // IT CLOSES A HOLE NOTHING CAN REACH TODAY, and that is worth one line
+    // rather than a paragraph explaining why it was left open: placing such a
+    // link requires write access to `references/`, which is outside the build
+    // sandbox's `allowWrite` — and anything with that access could rewrite the
+    // manifest instead. The line costs nothing and does not depend on the
+    // sandbox staying the shape it is.
+    if (!lstatSync(path).isFile()) return null;
     bytes = readFileSync(path);
   } catch {
     return null;

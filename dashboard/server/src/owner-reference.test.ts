@@ -21,14 +21,22 @@
 
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { ownerReferenceFor, ownerReferencesFor } from "./owner-reference.js";
 
-/** The repo's own `dashboard/runs`, from this test file's compiled location. */
-const REAL_RUNS = join(dirname(new URL(import.meta.url).pathname), "..", "..", "runs");
+/**
+ * The repo's own `dashboard/runs`, from this test file's compiled location.
+ *
+ * `fileURLToPath` RATHER THAN `new URL(...).pathname`: the latter hands back a
+ * percent-encoded path, so a checkout under a directory with a space in it
+ * resolves to nothing, every real-artefact test below skips, and the file
+ * reports green having read no artefact at all.
+ */
+const REAL_RUNS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "runs");
 
 /** The one run in this project's history that carries an owner-attached image. */
 const RUN_WITH_IMAGE = "run-2026-08-04T11-08-10-487Z-162b186d";
@@ -142,6 +150,18 @@ test("a path OUTSIDE this run's references directory is refused, in every shape"
   const escaped = h.place(`${h.runId}/workspace/hero.png`, "escaped");
   h.manifest([{ ...escaped, path: join(h.references, "..", "workspace", "hero.png") }]);
   assert.equal(ownerReferenceFor(h.runs, h.runId), null, "a path that SPELLS the fence but names outside it");
+});
+
+test("a SYMLINK inside the fence is refused — the fence and the read must judge one object", () => {
+  const h = harness();
+  // The link satisfies `insideReferenceDir` (it IS in the directory) and
+  // satisfies the extension check (it IS named .png). Only `lstat` can tell that
+  // what would actually be opened is a file from outside the run.
+  const outside = h.place("outside/private.png", "bytes an agent must never be handed");
+  const link = join(h.references, "reference-1.png");
+  symlinkSync(outside.path, link);
+  h.manifest([{ path: link, sha256: outside.sha256, bytes: outside.bytes }]);
+  assert.equal(ownerReferenceFor(h.runs, h.runId), null);
 });
 
 test("a file that is not an image is refused, even inside the fence", () => {
