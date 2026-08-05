@@ -164,6 +164,32 @@ async function suppliedText(api: APIRequestContext, runId: string): Promise<stri
 }
 
 /**
+ * QUOTE MARKS FLATTENED TO ASCII — the one difference this file does not read.
+ *
+ * `code-browser.tsx:343` writes its subtitle with `&rsquo;`, so the Files panel
+ * renders "The run’s workspace, read-only." while this file's canary was typed
+ * with an ASCII apostrophe. That difference reddened the anti-vacuity check on a
+ * sentence that WAS on screen, word for word — the check reported "the panel's
+ * own copy is not in the scanned text" about copy that was in it.
+ *
+ * ONLY THE QUOTE CLASS IS TOUCHED, AND THE LIMIT IS THE POINT. Case is left
+ * alone because case is exactly what the Overview canary caught on 2026-08-05 —
+ * a closed `Explain` body inheriting `uppercase` from its heading and handing a
+ * screen reader a sentence in capitals — and a case-insensitive compare here
+ * would have hidden it. Dashes are left alone because they are load-bearing in
+ * this copy ("queued — not read yet"). Whitespace is left alone because the
+ * subtraction below depends on it.
+ *
+ * APPLIED TO BOTH SIDES, never to the rendered text alone: the served ticket
+ * text is the owner's own typing and may carry a curly apostrophe of its own, so
+ * normalising only one side would stop that string subtracting and leave the
+ * owner's words in the scan.
+ */
+function plainQuotes(text: string): string {
+  return text.replace(/[‘’‛′]/g, "'").replace(/[“”″]/g, '"');
+}
+
+/**
  * The panel's text with everything the run supplied taken out of it.
  *
  * Replaced with a SPACE and not with nothing: deleting a run of characters can
@@ -171,12 +197,12 @@ async function suppliedText(api: APIRequestContext, runId: string): Promise<stri
  * which would be a failure this file invented rather than found.
  */
 function chromeOf(rendered: string, supplied: readonly string[]): string {
-  let chrome = rendered;
-  for (const text of [...supplied].sort((a, b) => b.length - a.length)) {
+  let chrome = plainQuotes(rendered);
+  for (const text of supplied.map(plainQuotes).sort((a, b) => b.length - a.length)) {
     chrome = chrome.split(text).join(" ");
   }
   for (const pending of PENDING_OTHER_LANES) {
-    chrome = chrome.split(pending.text).join(" ");
+    chrome = chrome.split(plainQuotes(pending.text)).join(" ");
   }
   return chrome;
 }
@@ -234,12 +260,41 @@ const SWEEP: readonly {
   },
   {
     run: RUN_ID,
+    /*
+     * THE CHAT CANARY WAS REPLACED, NOT WEAKENED — 2026-08-05.
+     *
+     * The old one, "While a segment is running this goes into the open session",
+     * was DELETED from production by the copy pass: `orchestrator-chat.tsx:896`
+     * records it going, along with "there is no session to push into" and "it is
+     * queued and folded into the next prompt", because the OUTCOME each of them
+     * described is already printed under every message as `queued — not read
+     * yet` or `read at 14:02`.
+     *
+     * ITS REPLACEMENT IS THE HALF OF THAT PARAGRAPH THAT SURVIVED, moved onto the
+     * send button as `explain-timing` (`orchestrator-chat.tsx:826`). It qualifies
+     * on all three counts this list requires: it is a sentence THIS PRODUCT
+     * writes, it appears in no fixture body (so the subtraction cannot supply
+     * it), and it is rendered only by the composer — a Chat panel that drew
+     * nothing, or drew a message list with no composer under it, would not carry
+     * it, which is the vacuity this canary exists to catch.
+     *
+     * WHY NOT THE OTHER CANDIDATE. `explain-scope`, on the Chat heading, is the
+     * longer sentence and was the obvious pick — but it sits inside the
+     * `uppercase` `<h4>` at :373, which is the same construction that put the
+     * Overview canary in capitals. Hanging this repair off that one would make
+     * two independent panels fail together.
+     */
     entry: "chat",
-    canary: "While a segment is running this goes into the open session",
+    canary: "While the run is working it reads this at its next step.",
   },
   {
     run: RUN_ID,
     entry: "files",
+    /*
+     * TYPED WITH AN ASCII APOSTROPHE AND MATCHED AGAINST ONE — see
+     * `plainQuotes`. The panel renders `&rsquo;` here; the sentence is otherwise
+     * unchanged and is still asserted whole.
+     */
     canary: "The run's workspace, read-only.",
   },
   {
@@ -433,7 +488,18 @@ test("the attachments panel still says these are YOURS and the mockups are not",
    * carrying the second sentence from `attachments.tsx`. Three of the four
    * expectations below went red. Reverted.
    */
-  await expect(ticket).toContainText("attached to this ticket before the run started");
+  /*
+   * THE COUNT IS ASSERTED WITH THE SENTENCE, WHICH IS MORE THAN THE LINE IT
+   * REPLACES CHECKED. The subtitle read "…attached to this ticket before the run
+   * started" until 2026-08-05 and now reads `${total} file(s) attached to this
+   * ticket.` (`attachments.tsx:284`, where `total` is `references.length +
+   * documents.length`). Taking only the surviving fragment would have dropped a
+   * clause without putting anything in its place, so the whole shipped sentence
+   * is asserted INCLUDING the number — `withAttachments` injects exactly one
+   * reference and one document, so "2 files" binds this expectation to the data
+   * the test itself set up and reddens on a miscount as well as on a rewrite.
+   */
+  await expect(ticket).toContainText("2 files attached to this ticket.");
   await expect(ticket).toContainText("Not the design references under Result");
   await expect(ticket).toContainText("those are mockups ui-designer generated for this run");
 
