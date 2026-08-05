@@ -46,9 +46,16 @@
  *     of `!planAnswerable`. "a park with no questions in the chat still says the
  *     run is stopped" goes red: a stopped run with nothing on screen saying so.
  * M15 `canvas/rail.tsx` — `overflow-y-auto` dropped from the panel body. "every
- *     row of the dialogue is reachable" goes red: the last question's control is
- *     below the fold of a box that cannot be scrolled, which is the SAME defect
- *     the deleted `max-h-[62vh]` was measured against by a different mechanism.
+ *     row of the dialogue is reachable" goes red, which is the SAME defect the
+ *     deleted `max-h-[62vh]` was measured against by a different mechanism.
+ *     RE-PROVED 2026-08-05 against the hardened form, and the numbers are the
+ *     point: at 1440x900 the panel body ends at 899 with content down to 1054
+ *     (953px of dialogue in a 798px box) and no ancestor scrolling, and BOTH
+ *     mechanisms go red there — "155px painted below a box that does not scroll"
+ *     and "953 > 798 with overflow-y: visible", each confirmed with the other
+ *     disabled. 900 IS THE HEIGHT THAT MATTERS: the form this replaced sampled
+ *     the last button, which sits at 663, and was GREEN at 900, 800 and 700
+ *     under this same mutation. Red at 600 as well, but 600 was never the test.
  * M16 `runs/[runId]/page.tsx` — `onSendPlanReply` stops calling `sendRunMessage`
  *     (it still refreshes, so the panel behaves as though something happened).
  *     "`you decide` posts a decline the server can read as one" goes red: nothing
@@ -258,71 +265,64 @@ test("every control is reachable and shows focus", async ({ page }) => {
   expect(Number.parseFloat(outline)).toBeGreaterThan(0);
 });
 
-test("every row of the dialogue is reachable, rather than running off the screen", async ({
-  page,
-}) => {
-  /*
-   * A SHORT WINDOW, AND THE HEIGHT IS THE WHOLE TEST — measured, not chosen.
-   *
-   * At 1440x900 this fixture's three cards, the plan summary and the clock all
-   * FIT inside the panel, so nothing overflows and the check passes whether or not
-   * the panel can scroll: run against M15 (`overflow-y-auto` deleted from
-   * `rail.tsx:541`) it stayed green. That is the vacuity this repository is full
-   * of, and it is the reason the number below is 600 rather than 900 — at 600 the
-   * dialogue is taller than the panel, so "reachable" and "on screen" stop being
-   * the same sentence and the scroll is load-bearing.
-   */
-  await page.setViewportSize({ width: 1440, height: 600 });
-  await openParked(page);
+/**
+ * The questions panel's scroll box, everything painted inside it, and whether
+ * anything scrolls to the parts that fall outside.
+ *
+ * NO SENTINEL ELEMENT. The form this replaced sampled ONE node — the last
+ * `<button>` in the last card — and asked whether IT was above the fold. That is
+ * not the bottom-most content: `plan-dialogue.tsx` draws the answered card's
+ * recorded answer, the decline hint and the panel's own trailing padding BELOW
+ * the last control, so a panel could clip ~155px and still report its sentinel
+ * comfortably on screen. `contentBottom` is the maximum over every painted
+ * descendant instead, so there is no node the measurement can miss.
+ */
+interface PanelGeometry {
+  cards: number;
+  /** The bottom edge of the scroll box itself. */
+  boxBottom: number;
+  /** The bottom edge of the LOWEST painted thing inside it, whatever that is. */
+  contentBottom: number;
+  scrollHeight: number;
+  clientHeight: number;
+  overflowY: string;
+  /** The box, or an ancestor of it, actually scrolls. */
+  scrollable: boolean;
+  panelBottom: number;
+  viewport: number;
+  /** The node the replaced form sampled. Recorded, and asserted on once, below. */
+  sentinelBottom: number;
+}
 
-  /*
-   * WHAT THIS USED TO MEASURE, AND WHY THE PROPERTY OUTLIVED IT.
-   *
-   * The dialogue was docked over the canvas in a `div.pointer-events-auto`
-   * mounted `absolute left-3 top-3` with no height, so its containing block was
-   * indefinite and `max-h-[62%]` resolved to `none` — the cap LOOKED right in the
-   * source and did nothing. Measured before that fix: 1198.8px of dock inside a
-   * 900px viewport, not scrolling, with the document not scrolling either; every
-   * row past the fold unreachable by any means.
-   *
-   * The dock is gone (`runs/[runId]/page.tsx` — the dialogue is the rail's
-   * Questions panel now), so the parent walk for `pointer-events-auto` found
-   * nothing and this test failed on `Infinity < 900`. The class survives on ONE
-   * element, the floating notice stack, which does not render on this run at all.
-   *
-   * THE CAP IS STRUCTURAL NOW rather than a measured length: the panel is a flex
-   * column in a `h-dvh overflow-hidden` shell with `min-h-0 flex-1
-   * overflow-y-auto` on its body (`rail.tsx:541`). So asserting a NUMBER against
-   * it would assert the viewport. What is asserted instead is the property the
-   * number was standing in for, in the form `prebuild-lane.browser.spec.ts:550`
-   * already uses: the last control of the dialogue is in the viewport, or it is
-   * inside something that scrolls to it. The third case — off the bottom of a box
-   * that does not scroll — is what is refused.
-   */
-  const panel = page.getByTestId("rail-panel");
-  const bottom = await panel.evaluate(
-    (element) => Math.round(element.getBoundingClientRect().bottom),
-  );
-  expect(bottom, "the questions panel runs past the bottom of the window").toBeLessThanOrEqual(
-    600,
-  );
+async function measurePanel(page: Page): Promise<PanelGeometry | null> {
+  return page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('[data-testid="rail-panel"]');
+    if (panel === null) return null;
+    const cards = [...panel.querySelectorAll<HTMLElement>('[data-testid^="plan-question-"]')];
+    const first = cards[0];
+    if (first === undefined) return null;
+    // THE SCROLL BOX BY STRUCTURE, NOT BY CLASS: the panel's direct child that
+    // contains the dialogue (`rail.tsx:541`). Naming its Tailwind classes here
+    // would make the spec pass the day the class is renamed and the scrolling
+    // with it.
+    const body = [...panel.children].find((child) => child.contains(first));
+    if (!(body instanceof HTMLElement)) return null;
 
-  const reach = await page.evaluate(() => {
-    const cards = [...document.querySelectorAll('[data-testid^="plan-question-"]')];
-    /*
-     * THE LAST CONTROL, NOT THE LAST CARD. An ANSWERED question renders no
-     * textbox and no buttons at all (`plan-dialogue.tsx` — "PQ-2, which he did
-     * answer, must say so and must have neither"), and PQ-2 is the last card in
-     * this fixture. Reading `cards[last].querySelector("button")` found nothing
-     * and this measured zero on its first run: the check would have been reporting
-     * "no cards" on a screen with three of them.
-     */
-    const buttons = cards.flatMap((card) => [...card.querySelectorAll("button")]);
-    const send = buttons[buttons.length - 1] ?? null;
-    if (send === null) return null;
-    // The nearest ancestor that actually scrolls, whichever element it turns out
-    // to be — the property is "something scrolls to it", not "this div does".
-    let node: HTMLElement | null = send.parentElement;
+    const boxBottom = body.getBoundingClientRect().bottom;
+    let contentBottom = Number.NEGATIVE_INFINITY;
+    for (const node of body.querySelectorAll<HTMLElement>("*")) {
+      const rect = node.getBoundingClientRect();
+      // `display:none` and collapsed wrappers paint nothing, and a closed
+      // `<Explain>` body is `sr-only` at 1x1 — neither is content running off
+      // the bottom of the box.
+      if (rect.width === 0 || rect.height === 0) continue;
+      if (rect.bottom > contentBottom) contentBottom = rect.bottom;
+    }
+
+    // Something that actually scrolls to what falls outside — the box itself or
+    // any ancestor of it. The property is "it can be reached", not "this div
+    // owns the scrollbar".
+    let node: HTMLElement | null = body;
     let scrollable = false;
     while (node !== null) {
       if (node.scrollHeight > node.clientHeight + 1) {
@@ -334,32 +334,162 @@ test("every row of the dialogue is reachable, rather than running off the screen
       }
       node = node.parentElement;
     }
+
+    // THE NODE THE REPLACED FORM SAMPLED, kept so this file can assert that the
+    // heights it runs at are still heights where that node was on screen.
+    const buttons = cards.flatMap((card) => [...card.querySelectorAll("button")]);
+    const send = buttons[buttons.length - 1] ?? null;
+
     return {
       cards: cards.length,
-      controls: buttons.length,
-      bottom: Math.round(send.getBoundingClientRect().bottom),
-      viewport: window.innerHeight,
+      boxBottom: Math.round(boxBottom),
+      contentBottom: Math.round(contentBottom),
+      scrollHeight: body.scrollHeight,
+      clientHeight: body.clientHeight,
+      overflowY: getComputedStyle(body).overflowY,
       scrollable,
+      panelBottom: Math.round(panel.getBoundingClientRect().bottom),
+      viewport: window.innerHeight,
+      sentinelBottom:
+        send === null ? Number.POSITIVE_INFINITY : Math.round(send.getBoundingClientRect().bottom),
     };
   });
+}
 
-  expect(reach, "the dialogue drew no control at all, so nothing was measured").not.toBeNull();
-  // THREE CARDS, TWO OF THEM ANSWERABLE. The count is asserted so a dialogue that
-  // silently stopped rendering the open questions cannot pass by having one short
-  // card that happens to fit.
-  expect(reach?.cards ?? 0, "the dialogue drew fewer cards than the fixture asks").toBe(3);
+test("every row of the dialogue is reachable, rather than running off the screen", async ({
+  page,
+}) => {
+  /*
+   * WHAT THIS USED TO MEASURE, AND WHY THE PROPERTY OUTLIVED IT.
+   *
+   * The dialogue was docked over the canvas in a `div.pointer-events-auto`
+   * mounted `absolute left-3 top-3` with no height, so its containing block was
+   * indefinite and `max-h-[62%]` resolved to `none` — the cap LOOKED right in the
+   * source and did nothing. Measured before that fix: 1198.8px of dock inside a
+   * 900px viewport, not scrolling, with the document not scrolling either; every
+   * row past the fold unreachable by any means.
+   *
+   * The dock is gone (`runs/[runId]/page.tsx` — the dialogue is the rail's
+   * Questions panel now) and THE CAP IS STRUCTURAL: the panel is a flex column in
+   * an `h-dvh overflow-hidden` shell with `min-h-0 flex-1 overflow-y-auto` on its
+   * body (`rail.tsx:541`). Asserting a NUMBER against that would assert the
+   * viewport, so what is asserted is the property the number stood in for.
+   *
+   * ─── WHY THE SENTINEL FORM WAS REPLACED, 2026-08-05 ───
+   *
+   * The version between those two asked whether the LAST BUTTON was above the
+   * fold, at one viewport, 600px. Both halves of that were weak. MEASURED under
+   * M15 (`overflow-y-auto` deleted from `rail.tsx:541`) at 1440x900: the box ends
+   * at 899, the lowest painted row of the dialogue ends at 1054, computed
+   * `overflow-y` is `visible` and NOTHING SCROLLS — 155px of the dialogue
+   * unreachable by any means. The old form's sentinel sat at 663, so
+   * `bottom < viewport` was TRUE and the assertion was GREEN on that screen. It is
+   * green at 800 and 700 for the same reason; 663 only falls off at 600, which is
+   * the single height the old form was ever run at. The check agreed with the bug
+   * everywhere except the one place it looked.
+   *
+   * SO THE FORM HERE IS SENTINEL-INDEPENDENT AND RUN AT FOUR HEIGHTS. The
+   * invariant is that a box which cannot scroll must not have content below its
+   * own bottom edge, stated twice over: once geometrically (`contentBottom` is the
+   * max over every painted descendant, not one chosen node) and once against the
+   * box's own scroll metrics (`scrollHeight > clientHeight` while computed
+   * `overflow-y` is `visible`). Two mechanisms because one of them is a browser
+   * semantics question — whether Chromium reports a flex-constrained box with
+   * visible overflow as having `scrollHeight > clientHeight` — and a lane whose
+   * whole job is un-blinding an assertion should not rest on the answer.
+   */
+  await openParked(page);
+
+  /*
+   * EVERY HEIGHT IS MEASURED BEFORE ANY OF THEM IS ASSERTED, so a failure at the
+   * shortest window still leaves the taller ones in the run's output. The first
+   * red produced by this test was at 600 only, and reading it that way is what
+   * would hide a second, worse reading at 900.
+   *
+   * WIDTH IS FIXED AT 1440: below 1120px `rail.tsx` switches the panel from a
+   * static flex sibling to an absolute overlay, and moving the layout branch and
+   * the height at once would measure two things.
+   */
+  const heights = [600, 700, 800, 900];
+  const seen: { height: number; panel: PanelGeometry; documentScrolls: boolean }[] = [];
+  for (const height of heights) {
+    await page.setViewportSize({ width: 1440, height });
+    await expect(card(page, "PQ-1")).toBeVisible();
+    await expect(card(page, "PQ-3")).toBeVisible();
+    const panel = await measurePanel(page);
+    expect(panel, `at ${String(height)}px the dialogue drew no card, so nothing was measured`)
+      .not.toBeNull();
+    if (panel === null) continue;
+    seen.push({
+      height,
+      panel,
+      documentScrolls: await page.evaluate(
+        () => document.documentElement.scrollHeight > window.innerHeight,
+      ),
+    });
+  }
+  expect(seen.length, "not every viewport was measured").toBe(heights.length);
+
+  for (const { height, panel, documentScrolls } of seen) {
+    // THREE CARDS. A dialogue that silently stopped rendering the open questions
+    // would fit any box, and must not be able to pass this by being short.
+    expect(panel.cards, `at ${String(height)}px the dialogue drew fewer cards than the fixture asks`)
+      .toBe(3);
+    expect(
+      panel.panelBottom,
+      `at ${String(height)}px the questions panel runs past the bottom of the window`,
+    ).toBeLessThanOrEqual(height);
+
+    // THE INVARIANT, GEOMETRIC FORM: content painted below the box's own bottom
+    // edge is only acceptable if something scrolls to it.
+    expect(
+      panel.contentBottom > panel.boxBottom + 1 && !panel.scrollable,
+      `at ${String(height)}px the dialogue paints ${String(
+        panel.contentBottom - panel.boxBottom,
+      )}px below the bottom of a box that does not scroll`,
+    ).toBe(false);
+
+    // THE SAME INVARIANT OFF THE BOX'S OWN SCROLL METRICS.
+    expect(
+      panel.scrollHeight > panel.clientHeight + 1 && panel.overflowY === "visible",
+      `at ${String(height)}px the panel body overflows (${String(panel.scrollHeight)} > ${String(
+        panel.clientHeight,
+      )}) with overflow-y: ${panel.overflowY}, so the overflow is unreachable`,
+    ).toBe(false);
+
+    // AND THE PAGE ITSELF STILL DOES NOT SCROLL — `run-layout.browser.spec.ts`
+    // owns that property for the canvas and this panel must not break it.
+    expect(documentScrolls, `at ${String(height)}px the document itself scrolls`).toBe(false);
+  }
+
+  /*
+   * TWO POSITIVE CONTROLS AT THE TALLEST HEIGHT, and they are the reason 900 is in
+   * the list at all.
+   *
+   * FIRST: the invariant above is satisfied for free by a dialogue that FITS its
+   * box, so on its own it cannot tell "the panel scrolls" from "there was never
+   * anything to scroll". At 900 this fixture paints 953px of dialogue into an
+   * 798px box — 155px past the bottom edge — so the scroll is load-bearing at
+   * every height in the list. If this reads false the fixture shrank and the loop
+   * went vacuous with it.
+   *
+   * SECOND: 900 is a height where the REPLACED form was blind. Its sentinel, the
+   * last `<button>` in the last card, sits at 663 — comfortably on screen — so
+   * "the last control is above the fold" was true at 900, 800 and 700 whether or
+   * not the panel could scroll. This asserts that 900 is still such a height, so
+   * that a fixture change which moves the sentinel below the fold cannot quietly
+   * turn this file back into a test that only discriminates at 600.
+   */
+  const tallest = seen[seen.length - 1];
+  expect(tallest?.height).toBe(900);
   expect(
-    (reach?.bottom ?? Number.POSITIVE_INFINITY) < (reach?.viewport ?? 0) ||
-      (reach?.scrollable ?? false),
-    "the last question's control is below the fold in a panel that does not scroll",
+    (tallest?.panel.contentBottom ?? 0) - (tallest?.panel.boxBottom ?? 0),
+    "the dialogue now FITS the panel at 900px, so the assertions above measure nothing there",
+  ).toBeGreaterThan(100);
+  expect(
+    (tallest?.panel.sentinelBottom ?? Number.POSITIVE_INFINITY) < 900,
+    "the last control now falls off the 900px viewport, so this height no longer proves the sentinel form was blind",
   ).toBe(true);
-
-  // AND THE PAGE ITSELF STILL DOES NOT SCROLL — `run-layout.browser.spec.ts`
-  // owns that property for the canvas and this panel must not break it.
-  const overflows = await page.evaluate(
-    () => document.documentElement.scrollHeight > window.innerHeight,
-  );
-  expect(overflows).toBe(false);
 });
 
 test("a refused send keeps the words he typed", async ({ page }) => {
