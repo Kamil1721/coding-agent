@@ -62,11 +62,30 @@
  * fixture, and that test is the one that says whether the injection happened.
  *
  * THE SECTION LABELS ARE NOT ASSERTED HERE, AND THAT IS A LANE BOUNDARY RATHER
- * THAN AN OVERSIGHT. "Reference capture", "Spec seat", "Audit seat" and "Freeze"
- * are `STAGE_LABEL` in `server/src/graph.ts`, which this change does not own. What
- * is asserted instead is the content only this change can produce: the server's
- * own log lines reaching the panel unclamped, the state words, and the two fixed
- * sentences that refuse to promise a future on a dead run.
+ * THAN AN OVERSIGHT. They are `STAGE_LABEL` in `server/src/graph.ts`, which this
+ * change does not own. What is asserted instead is the content only this change
+ * can produce: the server's own log lines reaching the panel unclamped, the state
+ * words, and the two fixed sentences that refuse to promise a future on a dead
+ * run.
+ *
+ * THIS PARAGRAPH USED TO QUOTE THOSE LABELS AS "Reference capture", "Spec seat",
+ * "Audit seat" and "Freeze", and every one of them is gone — 2026-08-05.
+ * `graph.ts:492-499` now reads "Reading the reference page", "Writing the tests",
+ * "Attacking the tests" and "Sealing the tests", because `seat` and `freeze` were
+ * on the owner's banned list of words on screen. Nothing here failed on the
+ * rename, precisely because this file asserts none of them — but a comment naming
+ * four strings that no longer exist is how the next reader learns the wrong
+ * vocabulary, so it is corrected rather than left.
+ *
+ * `seat`, `suite`, `held-out` AND `frozen` STILL APPEAR IN THIS FILE, ON PURPOSE
+ * AND IN EXACTLY ONE ROLE: inside `LANE_ROWS`, `STOPPED_LANE` and `NARRATION`,
+ * which are the BYTES THE SERVER SENDS, quoted from the producing sites. The
+ * assertions on them (`plan-section-author`, `-audit`, `-freeze`, the narration
+ * card) say those bytes reach the panel unclamped, which is the panel's whole
+ * job. Rewriting them would make the fixture lie about what the server emits and
+ * would assert a translation the client does not perform. The one place a
+ * CLIENT-facing sentence was asserted — the rollup on the folded card — was stale
+ * and is fixed; see the note at that test.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -330,9 +349,23 @@ test.describe("before the build: two cards, not six", () => {
      */
     await expect(page.getByTestId("stage-card-plan")).toHaveAttribute("data-state", "stopped");
     await expect(page.getByTestId("stage-card-plan")).toContainText("stopped");
-    // The card says where the run got to, which is the authoring seat.
+    /*
+     * The card says where the run got to, which is the authoring stage.
+     *
+     * THE EXPECTED STRING IS THE CLIENT-FACING ONE, AND IT CHANGED. This asserted
+     * "Writing the held-out acceptance suite", which was the SERVER'S LOG LINE
+     * echoed back. It is not what the card renders: `foldLogStages` matches that
+     * line and settles the stage with a sentence of its own — "Writing the tests
+     * from your ticket, before any code exists." (`server/src/graph.ts:732`),
+     * rewritten out of `held-out` and `suite` in the vocabulary pass. The fixture
+     * row below still carries the server's own words, because that is what the
+     * server emits; this is what the reader is shown.
+     *
+     * The full stop is left off the expectation so the two ends of the sentence
+     * are asserted without pinning its punctuation.
+     */
     await expect(page.getByTestId("stage-card-plan")).toContainText(
-      "Writing the held-out acceptance suite",
+      "Writing the tests from your ticket, before any code exists",
     );
   });
 
@@ -440,38 +473,152 @@ test.describe("the panel the click opens", () => {
     await expect(page.getByTestId("plan-section-author")).toContainText("stopped");
   });
 
-  test("opening it hides the run chip, and three ways back all restore it", async ({ page }) => {
+  test("three ways back all close it", async ({ page }) => {
+    /*
+     * WIDER THAN THE HARNESS'S DEFAULT, AND FOR A MEASURED REASON — see the
+     * `overlap` assertion below. At 1280 the panel this test opens lands on top of
+     * the card it was opened from.
+     */
+    await page.setViewportSize({ width: 1600, height: 900 });
     await serveLaneOnly(page, FINISHED_RUN_ID);
     await openLane(page, FINISHED_RUN_ID);
 
-    const chip = page.getByRole("button", { name: "run detail" });
-    await expect(chip).toBeVisible();
-
     /*
-     * THE SWAP THE OWNER ASKED FOR ("a menu … replacing this"). Deleting the
-     * branch that swaps them leaves both rendered and the second assertion goes
-     * red, which is the mutation for this test.
+     * WHAT THIS TEST WAS, AND WHICH HALF OF IT SURVIVED — 2026-08-05.
+     *
+     * It was "opening it hides the run chip, and three ways back all restore it",
+     * and it anchored every step on `getByRole("button", { name: "run detail" })`.
+     * That chip is `RunHud`, which has NO IMPORTER any more: the icon rail
+     * replaced it, and `canvas/sheet.tsx:717-723` records the disposal —
+     * "the `run detail` button is deleted outright — it opened the right-hand
+     * sheet the rail replaces, so it now names nothing". So the test failed on its
+     * first assertion and everything after it was unmeasured.
+     *
+     * THE SWAP IS RETIRED, NOT REPOINTED. "A menu … replacing this" was a claim
+     * about two surfaces trading places; there is no longer a second surface to
+     * trade with, and dressing the rail up as the chip's replacement would assert
+     * a property nobody implemented. It is named in this lane's report rather than
+     * given a substitute assertion.
+     *
+     * THE THREE WAYS BACK ARE STILL REAL and are the reason this test is kept:
+     * the return button (`run/prebuild-panel.tsx:302`), a second click on the
+     * card, and Escape. Each is now asserted on the panel's own disappearance,
+     * which is what the chip's return was standing in for.
      */
+    await expect(page.getByTestId("prebuild-panel")).toHaveCount(0);
+
     await page.getByTestId("stage-card-plan").click();
     await expect(page.getByRole("button", { name: "Back to run" })).toBeVisible();
-    await expect(chip).toHaveCount(0);
+    await expect(page.getByTestId("prebuild-panel")).toBeVisible();
 
-    // 1. The button.
+    // 1. The button. MUTATION: drop its `onClose`; the panel stays up.
     await page.getByRole("button", { name: "Back to run" }).click();
-    await expect(chip).toBeVisible();
+    await expect(page.getByTestId("prebuild-panel")).toHaveCount(0);
 
     // 2. Clicking the card again, which toggles.
     await page.getByTestId("stage-card-plan").click();
     await expect(page.getByTestId("prebuild-panel")).toBeVisible();
-    await page.getByTestId("stage-card-plan").click();
-    await expect(chip).toBeVisible();
+
+    /*
+     * THE PRECONDITION FOR THAT SECOND CLICK, ASSERTED RATHER THAN ASSUMED, AND IT
+     * IS A REAL DEFECT AT THE HARNESS'S OWN DEFAULT WIDTH.
+     *
+     * The panel is drawn in the canvas's notice slot — `pointer-events-none
+     * absolute left-3 top-3 … w-[min(400px,…)]` — and the canvas only reserves
+     * room for that slot when something is floating in it AT FIT TIME
+     * (`orchestration-canvas.tsx`, `NOTICE_RESERVE`). Until 2026-08-04 the run
+     * chip was always floating there, so the reserve was always taken. The chip is
+     * gone, this run floats nothing, and the graph is now fitted into the space
+     * the panel is about to occupy. Measured at 1280x720: 30 retries of
+     * "<p>spec seat — anthropic…</p> … subtree intercepts pointer events", then a
+     * 60s timeout. The card that opens the panel is underneath it, so the toggle
+     * cannot be operated by pointer at all.
+     *
+     * WHAT IS ASSERTED IS THE STRIP OF CARD THE PANEL LEAVES, and the click is
+     * aimed at it rather than at the card's centre. At 1600x900 the numbers are
+     * card [664, 932] against panel [450, 850]: 186px of the card is buried and
+     * 82px of it is not, so the toggle is operable but only at its right edge —
+     * Playwright's default click point, the centre, lands on the panel. At
+     * 1280x720 there is no strip at all and the toggle cannot be operated by
+     * pointer.
+     *
+     * THE OVERLAP IS NOT ASSERTED AS THE EXPECTED SHAPE, which would PIN THE
+     * DEFECT — what this file's own header refuses ("the old open/close test
+     * asserted the exact behaviour the owner reported as a bug, so it was deleted
+     * rather than adapted — a test that pins a defect keeps it"). The exposed
+     * width is asserted to be non-zero, so this reddens the day the overlap grows
+     * to swallow the card, and it is reported as a blocker either way:
+     * `orchestration-canvas.tsx` is not this lane's file.
+     */
+    const strip = await page.evaluate(() => {
+      const card = document.querySelector('[data-testid="stage-card-plan"]');
+      const panel = document.querySelector('[data-testid="prebuild-panel"]');
+      if (card === null || panel === null) return null;
+      const a = card.getBoundingClientRect();
+      const b = panel.getBoundingClientRect();
+      const vertical = a.top < b.bottom && a.bottom > b.top;
+      // How much of the card is to the RIGHT of the panel, in the card's own
+      // coordinates — which is what `click({ position })` takes.
+      const exposed = vertical ? Math.round(a.right - Math.max(a.left, b.right)) : Math.round(a.width);
+      return {
+        card: [Math.round(a.left), Math.round(a.right)],
+        panel: [Math.round(b.left), Math.round(b.right)],
+        exposed,
+        offsetX: Math.round(a.width - exposed / 2),
+        offsetY: Math.round(a.height / 2),
+      };
+    });
+    expect(
+      strip?.exposed ?? 0,
+      `the panel covers the whole card that opens it, so the toggle cannot be clicked at all: ${JSON.stringify(strip)}`,
+    ).toBeGreaterThan(8);
+
+    await page
+      .getByTestId("stage-card-plan")
+      .click({ position: { x: strip?.offsetX ?? 0, y: strip?.offsetY ?? 0 } });
+    await expect(page.getByTestId("prebuild-panel")).toHaveCount(0);
 
     // 3. Escape. MUTATION: remove the window key handler in the panel.
     await page.getByTestId("stage-card-plan").click();
     await expect(page.getByTestId("prebuild-panel")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("prebuild-panel")).toHaveCount(0);
-    await expect(chip).toBeVisible();
+  });
+
+  test("everything the deleted run chip carried is still on the run's Overview", async ({
+    page,
+  }) => {
+    await serveLaneOnly(page, FINISHED_RUN_ID);
+    await openLane(page, FINISHED_RUN_ID);
+
+    /*
+     * THE OTHER HALF OF THE CHIP'S DELETION, AND NOTHING WAS ASSERTING IT.
+     *
+     * `RunHud` carried the status, the ticket's name, the phase, the model and the
+     * clock. `sheet.tsx:717-723` says all of them moved into the Overview panel's
+     * "this run" section and that the status ALSO survives as a dot on the rail.
+     * That claim was a comment. This is the check: each of the four facts read
+     * back by CONTENT out of the section they were moved to, on a run whose values
+     * are known (`build-run-fixture.ts:545-562` — `failed`, this ticket, Sonnet
+     * 4.6, 09:58:00 to 10:41:02).
+     *
+     * A STATUS DOT IS NOT ONE OF THEM. `rail.tsx:256-266` draws a 6px
+     * `aria-hidden` span; it is a colour, not the run saying what happened, and
+     * asserting it would let the word "failed" leave the app unnoticed.
+     */
+    const overview = page.getByTestId("overview-this-run");
+    await expect(overview, "the Overview panel is not open by default").toBeVisible();
+
+    await expect(overview, "the run's status is nowhere on the run view").toContainText(
+      "failed",
+    );
+    await expect(overview, "the ticket's name is gone with the chip").toContainText(
+      "Rebuild the run canvas",
+    );
+    await expect(overview, "the model is gone with the chip").toContainText("Sonnet 4.6");
+    await expect(overview, "how long the run took is gone with the chip").toContainText(
+      "43m 02s",
+    );
   });
 
   test("the page keeps exactly one h1, and the panel's Plan is not a second heading", async ({

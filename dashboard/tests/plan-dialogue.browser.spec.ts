@@ -37,12 +37,38 @@
  * M11 `runs/[runId]/page.tsx` — the panel's `max-h-[62vh]` put back to the
  *     `max-h-[420px]`-free percentage form the dock uses. "the panel is capped
  *     and scrolls" goes red at 1198.8px of dock in a 900px viewport.
+ *     SUPERSEDED 2026-08-05: there is no `max-h` on the dialogue any more and no
+ *     dock to put one on. The replacement is M15 below.
  * M13 `components/run/plan-dialogue.tsx` — `submit` clears the textarea without
  *     waiting for the post to resolve, which is what it did first. "a refused
  *     send keeps the words he typed" goes red with an empty box.
  * M14 `runs/[runId]/page.tsx` — the notice gated on `!planParked` again instead
  *     of `!planAnswerable`. "a park with no questions in the chat still says the
  *     run is stopped" goes red: a stopped run with nothing on screen saying so.
+ * M15 `canvas/rail.tsx` — `overflow-y-auto` dropped from the panel body. "every
+ *     row of the dialogue is reachable" goes red: the last question's control is
+ *     below the fold of a box that cannot be scrolled, which is the SAME defect
+ *     the deleted `max-h-[62vh]` was measured against by a different mechanism.
+ * M16 `runs/[runId]/page.tsx` — `onSendPlanReply` stops calling `sendRunMessage`
+ *     (it still refreshes, so the panel behaves as though something happened).
+ *     "`you decide` posts a decline the server can read as one" goes red: nothing
+ *     reaches the wire and the fixture's transcript never grows.
+ *
+ * ─── WHAT MOVED UNDER THIS FILE — 2026-08-05 ───
+ *
+ * THE DIALOGUE IS NOT DOCKED OVER THE CANVAS ANY MORE. It is the rail's Questions
+ * panel (`canvas/rail.tsx`, `runs/[runId]/page.tsx:896-923`), which the run page
+ * OPENS WITHOUT A CLICK while there is a dialogue to show — so this file's first
+ * and load-bearing property, "the questions are on screen without a click", still
+ * holds and still passes. Answering is intact: the send path, the decline wire
+ * string, the refusal handling and the focus ring were all green throughout.
+ *
+ * THREE THINGS HAD TO BE REPOINTED, and each is documented at its own test: the
+ * park's positive control (`awaiting input` is only rendered by `OverviewPanel`,
+ * which is not mounted while Questions is the open panel), the turn bound (moved
+ * behind `explain-turns` in the copy pass), and the dock geometry (the panel is
+ * capped by construction now, so what is asserted is reachability rather than a
+ * length). The confirmation string lost its full stop and took `/Sent\./` with it.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -110,9 +136,33 @@ test("the generic park notice is out of the way", async ({ page }) => {
   // park the moves are answer, decline and ask — and a bodyless resume would
   // close the dialogue on assumptions. Its heading must not be on this screen.
   await expect(page.getByText("Waiting on input")).toHaveCount(0);
-  // POSITIVE CONTROL: the run really is parked, so the suppression is a decision
-  // rather than the state never arriving.
-  await expect(page.getByText("awaiting input")).toBeVisible();
+
+  /*
+   * POSITIVE CONTROL: the run really is parked, so the suppression above is a
+   * decision rather than the state never arriving.
+   *
+   * IT COSTS A CLICK NOW, AND THE CLICK IS THE HONEST VERSION. `awaiting input`
+   * is `statusMeta`'s label (`lib/presentation.ts:84`) and the only surface on
+   * this route that renders it is `OverviewPanel` (`canvas/sheet.tsx:760`) —
+   * which is NOT mounted here, because the rail auto-opens Questions on a run
+   * with a dialogue (`runs/[runId]/page.tsx:567-572`). So this read zero, and
+   * the suppression above was being asserted with no proof the run was parked at
+   * all: exactly the failure mode this control exists to rule out.
+   *
+   * WHAT WAS REFUSED AS THE REPLACEMENT: the rail's own Overview icon carries a
+   * `warn` status dot on a parked run (`rail.tsx:256-266`), which needs no click.
+   * It is a 6px `<span aria-hidden>` with no text — a colour is not the run
+   * saying what state it is in, and asserting one would have swapped a broken
+   * content check for a check on paint.
+   */
+  await page.getByTestId("rail-overview").click();
+  await expect(
+    page.getByTestId("overview-this-run").getByText("awaiting input"),
+    "the run is not actually parked, so the notice above was suppressed for nothing",
+  ).toBeVisible();
+  // And the notice does not come back merely because Overview is the open panel:
+  // it floats over the canvas and is gated on the dialogue, not on the panel.
+  await expect(page.getByText("Waiting on input")).toHaveCount(0);
 });
 
 test("the clock says how long, and that running out is not a failure", async ({ page }) => {
@@ -121,19 +171,43 @@ test("the clock says how long, and that running out is not a failure", async ({ 
   // read off the park line's own timestamp rather than from a constant.
   await expect(page.getByText(/1[56] minutes left/)).toBeVisible();
   await expect(page.getByText(/carries on and records what it assumed/)).toBeVisible();
-  // THE SECOND CLOCK, WHICH HIS OWN CLICKS MOVE. `turnsUsed` increments on every
-  // owner message the dialogue consumes, `MAX_OWNER_TURNS` is 6, and reaching it
-  // closes the dialogue on assumptions exactly as the window closing does. The
-  // CAP IS NOT ON THE WIRE, so this says the cost rather than showing a number
-  // that would be wrong the day the server changes it.
-  await expect(page.getByText(/Asking\s+back costs a reply/)).toBeVisible();
+
+  /*
+   * THE SECOND CLOCK, WHICH HIS OWN CLICKS MOVE. `turnsUsed` increments on every
+   * owner message the dialogue consumes, `MAX_OWNER_TURNS` is 6
+   * (`plan-question.ts:187`), and reaching it closes the dialogue on assumptions
+   * exactly as the window closing does. The CAP IS NOT ON THE WIRE, so the copy
+   * says the cost rather than showing a number that would be wrong the day the
+   * server changes it.
+   *
+   * IT MOVED BEHIND AN "i" — 2026-08-05, and this assertion followed it rather
+   * than being deleted with the sentence. It used to read "Asking back costs a
+   * reply, and replies are bounded too" inline; it is now `explain-turns` on the
+   * clock. THE FACT IS WHAT WAS BEING GUARDED, so the repair opens the bubble and
+   * reads its words. A check that the glyph merely EXISTS would pass over an
+   * empty one.
+   */
+  const turns = page.getByTestId("explain-turns");
+  await expect(turns, "the clock has no `i` at all — the turn bound is on no surface").toHaveCount(
+    1,
+  );
+  await turns.click();
+  await expect(page.getByTestId("explain-turns-body")).toContainText(
+    "use up a small, fixed number of turns",
+  );
 });
 
 test("`you decide` posts a decline the server can read as one", async ({ page, request }) => {
   await openParked(page);
 
   await card(page, "PQ-1").getByRole("button", { name: "you decide", exact: true }).click();
-  await expect(card(page, "PQ-1").getByText(/Sent\./)).toBeVisible();
+  // The confirmation was "Sent. It is still shown as open until the run says what
+  // it recorded." and lost its full stop in the 2026-08-05 copy pass
+  // (`plan-dialogue.tsx:531`). `/Sent\./` matched nothing, which is why this test
+  // failed at the click rather than at the wire assertion below.
+  await expect(
+    card(page, "PQ-1").getByText(/Sent — it stays open until the run says what it recorded/),
+  ).toBeVisible();
 
   /*
    * READ BACK OFF THE WIRE, NOT OFF THE SCREEN. The whole risk lives in the
@@ -184,28 +258,101 @@ test("every control is reachable and shows focus", async ({ page }) => {
   expect(Number.parseFloat(outline)).toBeGreaterThan(0);
 });
 
-test("the panel is capped and scrolls, rather than running off the screen", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
+test("every row of the dialogue is reachable, rather than running off the screen", async ({
+  page,
+}) => {
+  /*
+   * A SHORT WINDOW, AND THE HEIGHT IS THE WHOLE TEST — measured, not chosen.
+   *
+   * At 1440x900 this fixture's three cards, the plan summary and the clock all
+   * FIT inside the panel, so nothing overflows and the check passes whether or not
+   * the panel can scroll: run against M15 (`overflow-y-auto` deleted from
+   * `rail.tsx:541`) it stayed green. That is the vacuity this repository is full
+   * of, and it is the reason the number below is 600 rather than 900 — at 600 the
+   * dialogue is taller than the panel, so "reachable" and "on screen" stop being
+   * the same sentence and the scroll is load-bearing.
+   */
+  await page.setViewportSize({ width: 1440, height: 600 });
   await openParked(page);
 
   /*
-   * THE CAP HAS TO BE A LENGTH, NOT A PERCENTAGE, and this test exists because
-   * the percentage version LOOKED right in the source and did nothing. The dock
-   * is mounted `absolute left-3 top-3` with no height, so its containing block
-   * is indefinite and `max-h-[62%]` resolves to `none`. Measured before the fix:
-   * 1198.8px of dock inside a 900px viewport, not scrolling, with the document
-   * not scrolling either — every row past the fold unreachable by any means.
+   * WHAT THIS USED TO MEASURE, AND WHY THE PROPERTY OUTLIVED IT.
+   *
+   * The dialogue was docked over the canvas in a `div.pointer-events-auto`
+   * mounted `absolute left-3 top-3` with no height, so its containing block was
+   * indefinite and `max-h-[62%]` resolved to `none` — the cap LOOKED right in the
+   * source and did nothing. Measured before that fix: 1198.8px of dock inside a
+   * 900px viewport, not scrolling, with the document not scrolling either; every
+   * row past the fold unreachable by any means.
+   *
+   * The dock is gone (`runs/[runId]/page.tsx` — the dialogue is the rail's
+   * Questions panel now), so the parent walk for `pointer-events-auto` found
+   * nothing and this test failed on `Infinity < 900`. The class survives on ONE
+   * element, the floating notice stack, which does not render on this run at all.
+   *
+   * THE CAP IS STRUCTURAL NOW rather than a measured length: the panel is a flex
+   * column in a `h-dvh overflow-hidden` shell with `min-h-0 flex-1
+   * overflow-y-auto` on its body (`rail.tsx:541`). So asserting a NUMBER against
+   * it would assert the viewport. What is asserted instead is the property the
+   * number was standing in for, in the form `prebuild-lane.browser.spec.ts:550`
+   * already uses: the last control of the dialogue is in the viewport, or it is
+   * inside something that scrolls to it. The third case — off the bottom of a box
+   * that does not scroll — is what is refused.
    */
-  const dock = await page
-    .getByRole("heading", { name: "Plan", exact: true })
-    .evaluate((element) => {
-      let node = element.parentElement;
-      while (node !== null && !node.className.toString().includes("pointer-events-auto")) {
-        node = node.parentElement;
+  const panel = page.getByTestId("rail-panel");
+  const bottom = await panel.evaluate(
+    (element) => Math.round(element.getBoundingClientRect().bottom),
+  );
+  expect(bottom, "the questions panel runs past the bottom of the window").toBeLessThanOrEqual(
+    600,
+  );
+
+  const reach = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('[data-testid^="plan-question-"]')];
+    /*
+     * THE LAST CONTROL, NOT THE LAST CARD. An ANSWERED question renders no
+     * textbox and no buttons at all (`plan-dialogue.tsx` — "PQ-2, which he did
+     * answer, must say so and must have neither"), and PQ-2 is the last card in
+     * this fixture. Reading `cards[last].querySelector("button")` found nothing
+     * and this measured zero on its first run: the check would have been reporting
+     * "no cards" on a screen with three of them.
+     */
+    const buttons = cards.flatMap((card) => [...card.querySelectorAll("button")]);
+    const send = buttons[buttons.length - 1] ?? null;
+    if (send === null) return null;
+    // The nearest ancestor that actually scrolls, whichever element it turns out
+    // to be — the property is "something scrolls to it", not "this div does".
+    let node: HTMLElement | null = send.parentElement;
+    let scrollable = false;
+    while (node !== null) {
+      if (node.scrollHeight > node.clientHeight + 1) {
+        const overflow = getComputedStyle(node).overflowY;
+        if (overflow === "auto" || overflow === "scroll") {
+          scrollable = true;
+          break;
+        }
       }
-      return node?.getBoundingClientRect().bottom ?? Number.POSITIVE_INFINITY;
-    });
-  expect(dock).toBeLessThan(900);
+      node = node.parentElement;
+    }
+    return {
+      cards: cards.length,
+      controls: buttons.length,
+      bottom: Math.round(send.getBoundingClientRect().bottom),
+      viewport: window.innerHeight,
+      scrollable,
+    };
+  });
+
+  expect(reach, "the dialogue drew no control at all, so nothing was measured").not.toBeNull();
+  // THREE CARDS, TWO OF THEM ANSWERABLE. The count is asserted so a dialogue that
+  // silently stopped rendering the open questions cannot pass by having one short
+  // card that happens to fit.
+  expect(reach?.cards ?? 0, "the dialogue drew fewer cards than the fixture asks").toBe(3);
+  expect(
+    (reach?.bottom ?? Number.POSITIVE_INFINITY) < (reach?.viewport ?? 0) ||
+      (reach?.scrollable ?? false),
+    "the last question's control is below the fold in a panel that does not scroll",
+  ).toBe(true);
 
   // AND THE PAGE ITSELF STILL DOES NOT SCROLL — `run-layout.browser.spec.ts`
   // owns that property for the canvas and this panel must not break it.
@@ -279,11 +426,17 @@ test("screenshot: the parked run as the owner sees it", async ({ page }) => {
   await page.screenshot({ path: `${SHOT_DIR}/plan-parked-run.png`, fullPage: false });
 
   /*
-   * AND THE DOCK ON ITS OWN, WHICH IS WHAT HE ACTUALLY SEES — not the `<section>`.
-   * The panel element is TALLER than the box it is read in (the wrapper scrolls),
-   * so screenshotting the section captures rows that are off-screen and makes the
-   * result look like more panel than there is. The dock is the visible box.
+   * AND THE PANEL ON ITS OWN, WHICH IS WHAT HE ACTUALLY SEES — not the
+   * `<section>`. The dialogue element is TALLER than the box it is read in (its
+   * wrapper scrolls), so screenshotting the section captures rows that are
+   * off-screen and makes the result look like more panel than there is. The
+   * rail's panel is the visible box.
+   *
+   * IT WAS `div.pointer-events-auto` and timed out: that class is on the floating
+   * notice stack, which is not an ancestor of the dialogue any more and does not
+   * render at all on this run. NOTHING HERE IS ASSERTED — this test writes two
+   * pngs and nothing else, and it should not be counted as covering a surface.
    */
-  const dock = page.locator("div.pointer-events-auto").first();
+  const dock = page.getByTestId("rail-panel");
   await dock.screenshot({ path: `${SHOT_DIR}/plan-panel.png` });
 });
