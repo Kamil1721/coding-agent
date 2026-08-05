@@ -103,6 +103,17 @@ interface RailEntry {
  * Checked against the copy test at `server/src/graph.test.ts` — its banned list is
  * `seat`, `digest`, `suite`, `freeze`, and none of them appears in any label,
  * eyebrow or hint here. That test is not touched or weakened by this file.
+ *
+ * AND THE LABELS WERE ONLY EVER HALF OF IT — 2026-08-05. Renaming these six
+ * entries left the panel BODIES untouched, so "Not the design references on the
+ * Verdict tab", "Whether a seat was given the text is the run's trace to answer"
+ * and a card headed TRACE inside Activity all survived a rename that had deleted
+ * the surfaces they named, with every check green. `tests/panel-copy.browser.spec.ts`
+ * is the guard for the other half: it opens every entry below, subtracts the text
+ * the RUN supplied (the ticket, the chat, the criteria statements, the server's
+ * failure cause — a check that reddens on the owner's own prose is a check that
+ * gets deleted) and applies the banned list to what is left, which is the copy
+ * this product writes about itself.
  */
 const ENTRIES: readonly RailEntry[] = [
   {

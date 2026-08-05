@@ -175,10 +175,20 @@ export function AwaitingInputNotice({
 export function FalseFinishNotice(): ReactNode {
   return (
     <Notice tone="fail" title="FALSE FINISH — the agent said it was done. The gate says otherwise.">
+      {/*
+        * "THE TESTS IT NEVER SAW", NOT "the held-out suite" — 2026-08-05. The
+        * word `suite` is on the owner's banned list and means nothing to him;
+        * what it was carrying is the ONE fact that makes this notice worth
+        * reading — the tests were written before the build and kept away from
+        * the builder, so failing them cannot be explained away as a test the
+        * agent wrote to suit itself. That clause is spelled out rather than
+        * compressed into a term of art.
+        */}
       <p>
-        The build reported completion and the held-out suite failed in the sealed
-        container. Treat the agent&rsquo;s own account of this run as unreliable: the
-        per-criterion results below are the evidence, its summary is not.
+        The build reported completion and the tests it was never shown failed in the
+        sealed container. Treat the agent&rsquo;s own account of this run as
+        unreliable: the per-criterion results below are the evidence, its summary is
+        not.
       </p>
       <p className="mt-1.5 text-ink-faint">
         The failing criteria are the specification of what is actually missing.
@@ -192,10 +202,12 @@ export function OutcomeNotice({ run }: { run: RunDetail }): ReactNode {
 
   if (run.status === "passed" && run.heldOutPass === true) {
     return (
-      <Notice tone="pass" title="Passed the held-out gate">
+      <Notice tone="pass" title="Passed the tests it was never shown">
         <p>
-          The frozen acceptance suite went green in a sealed container with no network
-          and no access to the build workspace history.
+          Every acceptance test passed in a sealed container with no network and no
+          access to the build workspace history. The tests were written from your
+          ticket and locked before the build started, so the builder could not read
+          them or edit them.
         </p>
       </Notice>
     );
@@ -219,10 +231,18 @@ export function OutcomeNotice({ run }: { run: RunDetail }): ReactNode {
          * multi-line, bracketed error string, not a sentence written for a reader.
          * Prose styling would dress it up as one.
          */}
+        {/*
+          * BOTH SENTENCES REWORDED 2026-08-05, AND THE DISTINCTION BETWEEN THEM
+          * IS THE WHOLE REASON THIS IS A TERNARY. `null` means the tests never
+          * returned an answer at all — nothing was graded, so nothing here is a
+          * statement about the work. `false` means they ran and the work did not
+          * pass them. "Was never graded" and "did not pass" must not be
+          * substitutable for one another in plainer words either.
+          */}
         <p>
           {run.heldOutPass === null
-            ? "The run ended without the held-out suite returning a verdict — this is a harness or infrastructure failure, not a judgement about the artefact."
-            : "The run finished and the held-out suite did not go green."}
+            ? "The run ended before the acceptance tests could return an answer, so the work was never graded — this is a harness or infrastructure failure, not a judgement about what was built."
+            : "The run finished and the work did not pass the acceptance tests."}
         </p>
         {/*
          * CONDITIONED ON THE FIELD, NOT ON THE BRANCH — and the cost of that is

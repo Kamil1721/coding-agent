@@ -14,7 +14,20 @@ const KIND_LABEL: Readonly<Record<TraceKind, string>> = {
   criterion: "crit",
   screenshot: "shot",
   rate_limit: "limit",
-  verdict: "verdict",
+  /*
+   * "grade", NOT "verdict" — 2026-08-05, and the column width is the second
+   * reason rather than the first. The panel this pane is mounted in is called
+   * ACTIVITY, and the owner's rule is one vocabulary: a row labelled `VERDICT`
+   * inside it is the product contradicting its own rail. `grade` is what the
+   * event records — the gate wrote its per-criterion result file — and at five
+   * characters it also fits the 38px column that `verdict` overflowed.
+   *
+   * THE SENTENCE BESIDE IT STILL SAYS "verdict written", and that string is NOT
+   * this file's: it is written in `lib/use-run-stream.ts:783-784`, another
+   * lane's file this pass. Named here so the mismatch is a recorded hand-off
+   * rather than something the next reader has to rediscover.
+   */
+  verdict: "grade",
   status: "state",
   client: "ui",
 };
@@ -98,7 +111,20 @@ export function TracePane({
 
   return (
     <Panel
-      title="Trace"
+      /*
+       * "Activity", NOT "Trace" — 2026-08-05. This pane is mounted by
+       * `ActivityPanel` (canvas/sheet.tsx) inside the rail entry the owner reads
+       * as ACTIVITY, and a card headed TRACE inside a panel headed Activity is a
+       * contradiction he can see on one screen. `trace` stays the name of the
+       * prop, the type and the stream state, where it is precise; it is not a
+       * word for a heading.
+       *
+       * THE HEADING IS NOT DEAD WEIGHT NEXT TO THE PANEL'S OWN. It carries the
+       * stream badge, `reconnect` and `follow` — the controls that say whether
+       * what is below is still arriving — so the strip has to exist whatever it
+       * is called.
+       */
+      title="Activity"
       actions={
         <>
           <Badge tone={badge.tone} title={badge.hint}>
@@ -138,9 +164,17 @@ export function TracePane({
         )}
       >
         {trace.length === 0 ? (
+          /*
+           * "ON RESULT", NOT "BELOW" — corrected 2026-08-05 with the word
+           * TRACE. This pane used to sit at the bottom of a scrolling sheet with
+           * the criteria and the captures under it, and that sentence was true
+           * of that layout. `ActivityPanel` mounts this pane and NOTHING ELSE,
+           * so "below" now points at the end of the panel. The facts did not
+           * move — they are on the Result panel — so the sentence names it.
+           */
           <EmptyState>
             {stream === "closed"
-              ? "This run finished before the page was opened, so there is no live trace to replay. The criteria and artefacts below are the record."
+              ? "This run finished before the page was opened, so there is nothing left to watch arrive. The criteria and the captures on Result are the record."
               : "Waiting for the first event."}
           </EmptyState>
         ) : (

@@ -174,8 +174,16 @@ function Sheet({
 
 /**
  * WHERE THE CHAT WENT, because it was mounted here until 2026-07-30 and its call
- * site has moved rather than vanished: it is now `RunSheet`'s "Chat" tab, reached
- * in one click from the control under the run chip.
+ * site has moved rather than vanished: it is now the RAIL's "Chat" entry —
+ * `canvas/rail.tsx`, mounted by `runs/[runId]/page.tsx` — one click from a
+ * permanent icon on the left edge, on every run view.
+ *
+ * THAT SENTENCE NAMED TWO DELETED THINGS UNTIL 2026-08-05. It said "`RunSheet`'s
+ * 'Chat' tab, reached in one click from the control under the run chip", and by
+ * then the seven-tab sheet and the run chip had both gone (see this file's own
+ * header). The destination is corrected; the reasoning below is not touched,
+ * because every word of it is still true of the rail — including the cost in the
+ * last paragraph, which the rail pays in exactly the same coin.
  *
  * WHY IT LEFT A NODE. The `chat?: ReactNode` prop this component used to take was
  * passed by `runs/[runId]/page.tsx` only for a node with `parent === null`, which
@@ -340,7 +348,8 @@ function PanelSection({
  * `GateHealth` docblock names for `health.gate`. So the field is read through
  * `?? null` at the one call site and `findings` through `?? null` again: an
  * absent key becomes "no record" and renders nothing, rather than a TypeError on
- * the Verdict tab. `stop`/`stopDetail` are NOT re-guarded, because
+ * the Result panel (which is where this renders now; it was the Verdict tab when
+ * this was written). `stop`/`stopDetail` are NOT re-guarded, because
  * `adversaryPassFromRecord` refuses a record missing either one and always writes
  * a string for the detail — a record that arrives at all carries both.
  *
@@ -536,7 +545,16 @@ function AdversaryPanel({ pass }: { pass: AdversaryPass | null }): ReactNode {
   return (
     <Panel
       title="Human-factors pass"
-      subtitle="A separate reader is pointed at the finished site and asked what got in the way of using it. Reported only — nothing on this panel changed the verdict above."
+      /*
+       * "THE PASS OR FAIL ABOVE", NOT "the verdict above" — 2026-08-05. The
+       * sentence's job is unchanged and is the reason it exists at all: nothing
+       * in this list moved `heldOutPass`, `status` or `failureReason`, so a
+       * reader must not take a HIGH finding here as the reason the run failed.
+       * The thing it points at is the outcome notice at the top of this same
+       * panel, which says "Passed"/"Failed" — so it is now named by the words
+       * that are actually printed up there.
+       */
+      subtitle="A separate reader is pointed at the finished site and asked what got in the way of using it. Reported only — nothing on this panel changed the pass or fail above."
       /*
        * THE COUNT EXISTS ONLY WHEN THERE IS A LIST TO COUNT, and this is the
        * other half of the no-report/found-nothing rule rather than a cosmetic
@@ -907,7 +925,9 @@ export function OverviewPanel({
 export function ResultPanel({ run }: { run: RunDetail }): ReactNode {
   return (
     <TabBody>
-      {/* The verdict, on the panel named after it, above the evidence for it. */}
+      {/* Whether it passed — first, above the evidence for it. `OutcomeNotice`
+          prints "Passed"/"Failed"/"FALSE FINISH"; the panel is called Result
+          because it carries the artefact path and the published copy as well. */}
       <OutcomeNotice run={run} />
 
       {/*

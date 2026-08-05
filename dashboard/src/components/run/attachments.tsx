@@ -20,12 +20,14 @@
  * IT. A reader who merges the two mis-reads every verdict on the page.
  *
  * THE SEPARATION IS STRUCTURAL BEFORE IT IS TEXTUAL, and that is deliberate: a
- * label can be skimmed, a tab cannot be. Mockups live in `ScreenshotsPanel` on
- * the RunSheet's VERDICT tab; this panel is mounted on the TICKET tab, under the
- * brief it arrived with. No screen in the app can show the two under one
- * heading, because no screen shows both tabs. The wording — "uploaded with this
- * ticket", plus one sentence naming the Verdict tab — is the second line of
- * defence, not the first.
+ * label can be skimmed, a surface cannot be. RE-STATED FOR THE RAIL, 2026-08-05,
+ * because the tabs this paragraph used to name are gone: mockups live in
+ * `ScreenshotsPanel` inside the RESULT panel, and this component is mounted
+ * inside OVERVIEW's "what you asked for" section, under the brief it arrived
+ * with. `canvas/rail.tsx` opens exactly one panel at a time, so no screen in the
+ * app can show the two under one heading — the same guarantee the two tabs gave,
+ * by a different mechanism. The wording — "uploaded with this ticket", plus one
+ * sentence pointing at Result — is the second line of defence, not the first.
  *
  * NOTHING AT ALL FOR A RUN WITH NO ATTACHMENTS, and that is the COMMON case,
  * not the edge: every run recorded before these two fields existed answers
@@ -263,10 +265,17 @@ export function TicketAttachmentsPanel({
            */}
           {`${String(total)} file${total === 1 ? "" : "s"} attached to this ticket before the run started, served back from this run's own directory. `}
           {/* THE ONE SENTENCE THAT KEEPS THE TWO KINDS APART IN WORDS. The
-              structural separation is the tab; this is what a reader who
-              remembers seeing images elsewhere needs in order to place them. */}
+              structural separation is the panel; this is what a reader who
+              remembers seeing images elsewhere needs in order to place them.
+
+              IT NAMES WHERE THEY ACTUALLY ARE, CHECKED RATHER THAN ASSUMED:
+              `ScreenshotsPanel` is mounted by `ResultPanel` (canvas/sheet.tsx),
+              and its disclosures are headed "Design references (n)". Pointing at
+              a surface that no longer exists — this sentence said "the Verdict
+              tab" until 2026-08-05 — is worse than saying nothing, because the
+              reader goes looking for it. */}
           <span className="text-ink-dim">
-            Not the design references on the Verdict tab — those are mockups
+            Not the design references under Result — those are mockups
             ui-designer generated for this run.
           </span>
         </>
@@ -292,8 +301,8 @@ export function TicketAttachmentsPanel({
              */}
             <p className="text-[11.5px] leading-snug text-ink-dim">
               Their absolute paths are written into the design and build prompts.
-              Whether an agent opened one is the trace&rsquo;s answer, not this
-              panel&rsquo;s.
+              Whether an agent actually opened one is answered by this run&rsquo;s
+              Activity, not by this panel.
             </p>
             {/* Two-up at the sheet's 560px, matching `ScreenshotsPanel`'s
                 references grid rather than inventing a second card size on the
@@ -343,9 +352,10 @@ export function TicketAttachmentsPanel({
              * subtitle and says where the answer lives instead.
              */}
             <p className="text-[11.5px] leading-snug text-ink-dim">
-              Each digest is part of this ticket&rsquo;s identity, so changing one
-              is a different ticket with its own acceptance suite. Whether a seat
-              was given the text is the run&rsquo;s trace to answer.
+              Each file&rsquo;s fingerprint is part of this ticket&rsquo;s
+              identity, so changing one makes it a different ticket, with
+              acceptance tests of its own. Whether an agent was handed the text
+              inside is answered by this run&rsquo;s Activity, not by this panel.
             </p>
             <ul className="space-y-1.5">
               {documents.map((attachment) => (
@@ -365,7 +375,8 @@ export function TicketAttachmentsPanel({
          */}
         <details className="rounded border border-line bg-canvas/40">
           <summary className="cursor-pointer px-3 py-2 text-[11.5px] text-ink-dim marker:text-ink-faint">
-            Technical details — where these files are on disk, and their digests
+            Technical details — where these files are on disk, and their
+            fingerprints
           </summary>
           <ul className="space-y-2 px-3 pb-3">
             {[...references, ...documents].map((attachment) => (

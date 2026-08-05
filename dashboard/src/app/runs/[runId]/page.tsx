@@ -189,8 +189,19 @@ function chatDeliveryNote(run: RunDetail): string | null {
   switch (run.phase) {
     case "spec":
       return (
-        "The acceptance suite is being written and there is no build session to push " +
-        "into yet, so a message now is stored rather than delivered. Stored messages " +
+        /*
+         * "THE TESTS FOR THIS TICKET ARE BEING WRITTEN" — 2026-08-05, replacing
+         * "The acceptance suite is being written". `suite` is on the owner's
+         * banned list; the fact the sentence exists to carry is that the run is
+         * in the phase BEFORE any build session exists, which is why a message
+         * cannot be delivered live. The stage card for this phase already reads
+         * "Writing the tests from your ticket, before any code exists"
+         * (`server/src/graph.ts`), so this is the same phase named the same way
+         * in both places.
+         */
+        "The tests for this ticket are still being written and there is no build " +
+        "session to push into yet, so a message now is stored rather than delivered. " +
+        "Stored messages " +
         "are folded into the next design or build segment's prompt — for a run at this " +
         "phase that is the first one it composes, which is the earliest point anything " +
         "you say can shape what gets built."

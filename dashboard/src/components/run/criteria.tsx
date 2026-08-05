@@ -33,11 +33,19 @@ import { Badge, Dot, EmptyState, Panel, cx } from "@/components/ui";
 
 const RESULT_LABEL = { pass: "pass", fail: "fail", pending: "…" } as const;
 
-/** Plain-language group copy, keyed on `TierMeta.label`. */
+/**
+ * Plain-language group copy, keyed on `TierMeta.label`.
+ *
+ * "DOES NOT CHANGE PASS OR FAIL", NOT "does not change the verdict" —
+ * 2026-08-05. The badge has to say that a failure in this group cannot fail the
+ * run, and it has to say it in three or four words on one line; `verdict` is a
+ * word the owner does not use and the rail no longer prints anywhere. Pass and
+ * fail are the two words this panel already labels every row with.
+ */
 const GROUP_COPY: Readonly<Record<string, { heading: string; badge: string }>> = {
   Blocking: { heading: "Must build and run", badge: "must pass" },
   Functional: { heading: "Does what the ticket asked", badge: "must pass" },
-  Quality: { heading: "Craft and polish", badge: "does not change the verdict" },
+  Quality: { heading: "Craft and polish", badge: "does not change pass or fail" },
 };
 
 interface Tally {
@@ -119,7 +127,7 @@ function groupCount(counts: Tally, gating: boolean): { node: ReactNode; title: s
           <span className="numeric">{counts.total}</span> to check
         </>
       ),
-      title: "Not graded yet — the gate has not returned a verdict for these.",
+      title: "Not graded yet — these have not been checked against the build.",
     };
   }
   return {
@@ -170,7 +178,16 @@ export function CriteriaPanel({
   return (
     <Panel
       title="Acceptance criteria"
-      subtitle="Authored from the ticket before any code was written, then frozen."
+      /*
+       * "LOCKED", NOT "frozen", AND THE PROMISE IS SPELLED OUT — 2026-08-05.
+       * `freeze` is on the owner's banned list, and the sealing stage's own
+       * label already reads "Sealing the tests" with the detail "Locks the tests
+       * so the builder can never read them" (`server/src/graph.test.ts` asserts
+       * both halves of that sentence). Dropping the word is free; dropping what
+       * it promised — that nothing edited these after the build began — would be
+       * a different product, so the subtitle now says it in full.
+       */
+      subtitle="Written from your ticket before any code existed, then locked so the build could not edit them."
       actions={
         gatingTotals.total === 0 ? null : gatingTotals.pending === gatingTotals.total ? (
           /*
@@ -200,7 +217,7 @@ export function CriteriaPanel({
     >
       {criteria.length === 0 ? (
         <EmptyState>
-          No criteria yet. They are authored during the spec phase, before the build
+          No criteria yet. They are written from your ticket first, before any build
           starts.
         </EmptyState>
       ) : (
@@ -225,7 +242,8 @@ export function CriteriaPanel({
                     {copy?.heading ?? group.meta.label}
                   </span>
                   <Badge tone={group.meta.gating ? "neutral" : "info"} title={group.meta.note}>
-                    {copy?.badge ?? (group.meta.gating ? "must pass" : "does not change the verdict")}
+                    {copy?.badge ??
+                      (group.meta.gating ? "must pass" : "does not change pass or fail")}
                   </Badge>
                   <span title={count.title} className="ml-auto text-[11px] text-ink-faint">
                     {count.node}
