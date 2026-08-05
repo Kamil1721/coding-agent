@@ -524,15 +524,24 @@ test.describe("the panel the click opens", () => {
      * IS A REAL DEFECT AT THE HARNESS'S OWN DEFAULT WIDTH.
      *
      * The panel is drawn in the canvas's notice slot — `pointer-events-none
-     * absolute left-3 top-3 … w-[min(400px,…)]` — and the canvas only reserves
-     * room for that slot when something is floating in it AT FIT TIME
-     * (`orchestration-canvas.tsx`, `NOTICE_RESERVE`). Until 2026-08-04 the run
-     * chip was always floating there, so the reserve was always taken. The chip is
-     * gone, this run floats nothing, and the graph is now fitted into the space
-     * the panel is about to occupy. Measured at 1280x720: 30 retries of
-     * "<p>spec seat — anthropic…</p> … subtree intercepts pointer events", then a
-     * 60s timeout. The card that opens the panel is underneath it, so the toggle
-     * cannot be operated by pointer at all.
+     * absolute left-3 top-3 … w-[min(400px,…)]` — and the canvas reserves room for
+     * that slot only when something is floating in it AT FIT TIME.
+     * `orchestration-canvas.tsx:213` `fitOptionsFor(paneWidth, hasNotice)` returns
+     * a plain centred 8% fit when `hasNotice` is false and a 428px left reserve
+     * when it is true; `:1580-1586` runs it ONCE behind a `hasFitted` latch whose
+     * deps are `nodesInitialized` and `drawnCount`, so a notice that appears
+     * afterwards never re-fits. That file's own docblock at `:205-212` states the
+     * before: "The old dock rendered on every run, so the asymmetric reservation
+     * was what the fit almost always used … only a run that is showing a notice,
+     * or the pre-build panel, reserves the left third."
+     *
+     * WHETHER THIS EVER WORKED IS NOT ESTABLISHED, and the claim is deliberately
+     * not made: this test died on the deleted run chip two assertions earlier and
+     * never reached the second click, so there is no run of it that proves the
+     * toggle was ever operable. What IS measured, here and now, at 1280x720: 30
+     * retries of "<p>spec seat — anthropic…</p> … subtree intercepts pointer
+     * events" and then a 60s timeout — the card that opens the panel is underneath
+     * it, and the toggle cannot be operated by pointer at that width.
      *
      * WHAT IS ASSERTED IS THE STRIP OF CARD THE PANEL LEAVES, and the click is
      * aimed at it rather than at the card's centre. At 1600x900 the numbers are
@@ -541,6 +550,12 @@ test.describe("the panel the click opens", () => {
      * Playwright's default click point, the centre, lands on the panel. At
      * 1280x720 there is no strip at all and the toggle cannot be operated by
      * pointer.
+     *
+     * SO THIS PROVES A WEAKER PROPERTY THAN ITS NAME SUGGESTS, stated plainly
+     * because the gap is the interesting part: it proves the card's handler fires
+     * and closes the panel when the card is STRUCK ON THE STRIP THE PANEL LEAVES.
+     * It does not prove a reader can close it by clicking the card, which is what
+     * a reader would do, and which still fails at this suite's own default width.
      *
      * THE OVERLAP IS NOT ASSERTED AS THE EXPECTED SHAPE, which would PIN THE
      * DEFECT — what this file's own header refuses ("the old open/close test
