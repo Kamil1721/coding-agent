@@ -25,6 +25,15 @@
  *                     `placehold.co`, `unsplash.com/random`, lorem ipsum), the
  *                     purple→pink gradient and the Inter-and-slate default.
  *   spec §8 Layer 2   owns the three motion satisfiers and the failing case.
+ *   owner standing    THE OWNER, 2026-08-05, verbatim: "designs are always made
+ *   rule 2026-08-05   using gemini connection rather than pulled from some
+ *                     library". It owns `AS-STOCK-ASSET` and `AS-ICON-LIBRARY`.
+ *                     It is cited SEPARATELY from the spec on purpose: the spec
+ *                     bans placeholder GENERATORS, the owner bans TAKEN imagery
+ *                     of every kind, and merging the two would lose the fact
+ *                     that the second is newer and overrode a decision this file
+ *                     had already made the other way (see `AS-PLACEHOLDER-IMAGE`
+ *                     below).
  *
  * `visual-criteria.ts` encodes overlapping material as GRADING criteria. It is
  * read and NOT imported: grading reports after the fact and may be vague, a hook
@@ -39,7 +48,11 @@
  */
 
 /** Which document owns a rule. Kept as literal strings so a denial can cite it. */
-export type AntiSlopSource = "craft-floor.md" | "spec §8 Layer 1" | "spec §8 Layer 2";
+export type AntiSlopSource =
+  | "craft-floor.md"
+  | "spec §8 Layer 1"
+  | "spec §8 Layer 2"
+  | "owner standing rule 2026-08-05";
 
 export interface AntiSlopRule {
   readonly id: string;
@@ -250,11 +263,24 @@ function gradientCalls(text: string): readonly string[] {
  * Placeholder media, anchored to the URL AUTHORITY rather than to the host as a
  * substring.
  *
- * THE NEAR-MISS THIS PROTECTS IS REAL AND COMMON:
- * `https://images.unsplash.com/photo-1518791841217` is a CHOSEN photograph and
- * must be allowed; `https://source.unsplash.com/random/800x600` is the
- * placeholder generator and must not. Matching "unsplash" would have failed both
- * the same way.
+ * THE NEAR-MISS THIS ONCE PROTECTED, AND THE REVERSAL — KEPT, NOT DELETED.
+ * Until 2026-08-05 this rule's reason told the builder, verbatim: "(A specific
+ * chosen photograph, e.g. an `images.unsplash.com/photo-...` URL, is fine — it
+ * is the random/dimension generators that are not.)" and the comment here argued
+ * for it: `https://images.unsplash.com/photo-1518791841217` is a CHOSEN
+ * photograph, `https://source.unsplash.com/random/800x600` is a generator, and
+ * matching "unsplash" would have failed both the same way. THAT ARGUMENT IS
+ * STILL CORRECT ABOUT THE ANCHOR and it is why the anchor below is unchanged.
+ *
+ * IT WAS WRONG ABOUT THE POLICY, and the policy was decided by someone this file
+ * does not get to overrule. THE OWNER, 2026-08-05: "designs are always made
+ * using gemini connection rather than pulled from some library". A chosen
+ * photograph from a stock library is pulled, not made. So the blessing is gone
+ * from the reason and the chosen photograph is now REFUSED — by
+ * {@link STOCK_ASSET}, under the owner's citation, not under the spec's. This
+ * rule keeps exactly the scope the spec gave it (generators are not shippable
+ * content, ticket or no ticket) and the two stay separable, because they can be
+ * overridden on different terms: see {@link ticketAllowances}.
  */
 const PLACEHOLDER_IMAGE: AntiSlopRule = {
   id: "AS-PLACEHOLDER-IMAGE",
@@ -262,15 +288,377 @@ const PLACEHOLDER_IMAGE: AntiSlopRule = {
   reason:
     "Placeholder image services are not shippable content. Use a real asset committed to the " +
     "workspace, or a design still from `design-refs/`. If no image exists yet, write the section " +
-    "without one rather than reserving space with a generated rectangle. (A specific chosen " +
-    "photograph, e.g. an `images.unsplash.com/photo-...` URL, is fine — it is the random/dimension " +
-    "generators that are not.)",
+    "without one rather than reserving space with a generated rectangle. No ticket asks for a " +
+    "grey rectangle with its own dimensions printed on it, so this one has no override.",
   find: (text) => {
     const hits: string[] = [];
-    const hosts = /(?:^|[\s"'`(=,:])(?:https?:)?\/\/(?:[a-z0-9-]+\.)*(?:picsum\.photos|placehold\.co)(?=[/"'`)\s,;]|$)/gi;
+    const generators = [
+      "picsum\\.photos",
+      "placehold\\.co",
+      "placeholder\\.com",
+      "dummyimage\\.com",
+      "placekitten\\.com",
+      "placeimg\\.com",
+      "loremflickr\\.com",
+      "baconmockup\\.com",
+      "ui-avatars\\.com",
+      "robohash\\.org",
+      "placedog\\.net",
+    ].join("|");
+    const hosts = new RegExp(
+      `(?:^|[\\s"'\`(=,:])(?:https?:)?//(?:[a-z0-9-]+\\.)*(?:${generators})(?=[/"'\`)\\s,;]|$)`,
+      "gi",
+    );
     for (const m of text.matchAll(hosts)) hits.push(clip(m[0]));
     const random = /(?:^|[\s"'`(=,:])(?:https?:)?\/\/(?:[a-z0-9-]+\.)*unsplash\.com\/random\b/gi;
     for (const m of text.matchAll(random)) hits.push(clip(m[0]));
+    return hits;
+  },
+};
+
+/* ───────────────── the owner's rule: made here, not taken ───────────────── */
+
+/**
+ * A remote reference that is being USED AS AN ASSET, with the position it sits
+ * in. `where` is kept so a denial can quote the attribute rather than a bare URL.
+ */
+interface RemoteRef {
+  readonly url: string;
+  /** The authority, lower-cased and without port or credentials. */
+  readonly host: string;
+  readonly where: string;
+}
+
+/**
+ * ASSET POSITION IS THE ANCHOR, and it is the difference between this rule and a
+ * rule that forbids the internet.
+ *
+ * A URL in prose, in a comment, in a `fetch()`, or in an `<a href>` is a
+ * REFERENCE. A URL in `src`, `srcset`, `poster`, a CSS `url()`, an `@import` or a
+ * `<link>` is the page RENDERING that thing as part of itself. Only the second
+ * is an asset, and only the second is judged here. The consequence is deliberate
+ * and it is tested: `<a href="https://unsplash.com/photos/abc123">credit</a>`
+ * stays legal, `<img src="https://images.unsplash.com/photo-...">` does not.
+ *
+ * WHAT THIS CANNOT SEE, STATED RATHER THAN PAPERED OVER: a URL assigned to a
+ * variable in one file and interpolated into `src={hero}` in another. The
+ * property-assignment form below catches the single-file case (`const hero =
+ * "//..."`, `image: "//..."`); the cross-file case is Layer 2 / grading's, on the
+ * same terms as `AS-EYEBROW-EVERYWHERE`'s cross-file limit.
+ */
+function remoteAssetRefs(text: string): readonly RemoteRef[] {
+  const out: RemoteRef[] = [];
+  // ONE REFERENCE, ONE FINDING. `<img src="//x">` is caught by the attribute
+  // pattern AND by the property pattern (`src` followed by `=`), and a denial
+  // that quotes the same URL twice reads as two problems to fix.
+  const seen = new Set<string>();
+  const push = (raw: string, where: string): void => {
+    const url = raw.trim().replace(/^["'`]/, "");
+    const authority = /^(?:https?:)?\/\/(?:[^/@\s]*@)?([a-z0-9.-]+)/i.exec(url);
+    if (authority === null) return;
+    if (seen.has(url)) return;
+    seen.add(url);
+    out.push({ url: clip(url), host: (authority[1] ?? "").toLowerCase(), where });
+  };
+  const positions: readonly (readonly [RegExp, string])[] = [
+    // HTML/JSX attributes that fetch. `href` is included ONLY inside `<link>`,
+    // below — a bare `href` is a link, not an asset.
+    [/\b(?:src|srcset|srcSet|poster|data-src|data-srcset)\s*=\s*["'`]?\s*((?:https?:)?\/\/[^"'`\s>]+)/gi, "src"],
+    // Every candidate inside one `srcset`, which is a comma-separated list.
+    [/\bsrc[sS]et\s*=\s*["'`]([^"'`]*)["'`]/gi, "srcset"],
+    [/<link\b[^>]*?\bhref\s*=\s*["'`]?\s*((?:https?:)?\/\/[^"'`\s>]+)/gi, "<link href>"],
+    [/\burl\(\s*["']?\s*((?:https?:)?\/\/[^)"'\s]+)/gi, "css url()"],
+    [/@import\s+(?:url\(\s*)?["']\s*((?:https?:)?\/\/[^"')]+)/gi, "@import"],
+    [
+      /\b(?:src|srcSet|poster|image|imageUrl|imageSrc|backgroundImage|thumbnail|avatar|photo)\s*[:=]\s*["'`]\s*((?:https?:)?\/\/[^"'`\s]+)/gi,
+      "asset property",
+    ],
+  ];
+  for (const [re, where] of positions) {
+    for (const m of text.matchAll(re)) {
+      const value = m[1] ?? "";
+      if (where === "srcset") {
+        for (const candidate of value.matchAll(/(?:https?:)?\/\/[^\s,]+/gi)) push(candidate[0], where);
+      } else {
+        push(value, where);
+      }
+    }
+  }
+  return out;
+}
+
+/** Suffix-aware host match: `unsplash.com` covers `images.unsplash.com`. */
+function hostMatches(host: string, authority: string): boolean {
+  return host === authority || host.endsWith(`.${authority}`);
+}
+
+/**
+ * Stock libraries. THE LIST IS NOT THE RULE — the extension test below is, and it
+ * is what keeps this from being the READ_TOOLS mistake in hosts (open to every
+ * library nobody enumerated). The list exists because the biggest offenders serve
+ * images from EXTENSIONLESS paths: `images.unsplash.com/photo-1518791841217`
+ * ends in no `.jpg` and would otherwise walk straight through.
+ */
+const STOCK_MEDIA_HOSTS: readonly string[] = [
+  "unsplash.com",
+  "pexels.com",
+  "pixabay.com",
+  "istockphoto.com",
+  "shutterstock.com",
+  "gettyimages.com",
+  "stock.adobe.com",
+  "freepik.com",
+  "stocksnap.io",
+  "burst.shopify.com",
+  "flickr.com",
+  "giphy.com",
+  "tenor.com",
+  "lorempixel.com",
+];
+
+/**
+ * Type foundries and font CDNs. THE OWNER NAMED THE LIBRARY, NOT THE MEDIUM:
+ * "pulled from some library" reads on a typeface as squarely as on a photograph,
+ * and the one build in this repo that ever passed
+ * (`runs/run-2026-07-29T23-28-46-665Z-3d4d1ccb/workspace/styles.css:22`) sets
+ * `--font-sans` to a system stack and links nothing. There IS a route to yes that
+ * is not the ticket override: self-host the `.woff2` in the workspace, which is a
+ * relative URL and has no authority to match.
+ */
+const REMOTE_FONT_HOSTS: readonly string[] = [
+  "fonts.googleapis.com",
+  "fonts.gstatic.com",
+  "use.typekit.net",
+  "p.typekit.net",
+  "fonts.bunny.net",
+  "api.fontshare.com",
+  "fonts.cdnfonts.com",
+  "fast.fonts.net",
+];
+
+/** A path that names its medium. Catches a chosen photograph on ANY host. */
+const MEDIA_EXTENSION = /\.(?:jpe?g|png|webp|avif|gif|bmp|tiff?|svg|mp4|webm|mov|m4v|woff2?|ttf|otf|eot)(?:[?#]|$)/i;
+
+/* ─────────────────────── the ticket's right to override ─────────────────────── */
+
+/**
+ * A ticket may legitimately need a remote resource — an embedded map, a font the
+ * owner asked for by name, a photograph he supplied by URL. THE HAZARD THIS
+ * EXISTS TO AVOID IS NOT A BAD PAGE, IT IS A DELETED RULE: a gate that fires on a
+ * ticket it cannot be right about gets switched off, and then it protects
+ * nothing. So there is an override, and its shape is chosen so that using it
+ * costs something and leaves a trace.
+ *
+ * THE GRAMMAR, EXACTLY, written next to the reference it excuses:
+ *
+ *     antislop-allow: <authority-or-package> — TICKET: <the ticket's own words>
+ *
+ * THE FOUR BOUNDARIES, each of which is the reason for a line of code below:
+ *
+ *   NAMED, NEVER BLANKET.  The subject is one authority or one package
+ *       specifier. `antislop-allow: maps.googleapis.com` excuses that host and
+ *       nothing else; there is no spelling of this that turns the rule off.
+ *   SCOPED TO ONE FILE.  A hook sees one write. The marker lives in the artefact
+ *       that carries the reference, so it ships with it and greps out of the tree
+ *       afterwards. It cannot be parked in a config nobody reads.
+ *   IT MUST CITE.  A subject with no `TICKET:` clause of at least twelve
+ *       characters is not an allowance. The builder has to write down which
+ *       instruction it is standing on, which is the artefact a reviewer or the
+ *       grading pass checks against the real ticket.
+ *   IT CANNOT REACH THE GENERATORS.  `AS-PLACEHOLDER-IMAGE` ignores allowances
+ *       entirely. The owner's rule is a TASTE decision a ticket may outrank; a
+ *       placeholder generator is an UNFINISHED page, and no ticket asks for one.
+ *
+ * WHAT IT IS NOT: unforgeable. Nothing here reads the ticket — a `PreToolUse`
+ * hook is handed one file's text and no more — so a builder that writes a
+ * citation nobody asked for gets through. That is the honest position and it is
+ * the same one the whole layer takes: this is a CRAFT GATE that already
+ * escalates-and-ALLOWS after three fires of the same rule (`antislop-hook.ts`
+ * :190-204), so the override is strictly NARROWER than the exit that already
+ * existed, and unlike that exit it leaves a signed reason in the shipped file.
+ * Making it unforgeable means passing the ticket text into `scanForSlop`, which
+ * is a signature change in `antislop-hook.ts` and belongs to whoever owns that
+ * file.
+ */
+export interface TicketAllowance {
+  /** One authority or one package specifier, lower-cased. */
+  readonly subject: string;
+  /** The ticket wording the builder says it is standing on. */
+  readonly citation: string;
+}
+
+/**
+ * The subject class deliberately starts `[a-z0-9]`, so the TEMPLATE quoted in a
+ * denial reason (`antislop-allow: <host> — TICKET: ...`) does not parse as an
+ * allowance. Without that, this file and every denial the model writes down would
+ * grant themselves an exemption for a host named `<host>`.
+ */
+const TICKET_ALLOW_RE =
+  /antislop-allow\s*:\s*([a-z0-9][a-z0-9.@/_+-]*)\s*[—–\-:,;]*\s*TICKET\s*:\s*([^\n*]{1,240})/gi;
+
+/**
+ * How much the builder has to write down. Twelve characters is roughly four
+ * words — enough that "the ticket says so" cannot be typed by reflex, short
+ * enough that it never becomes the reason a legitimate override is abandoned.
+ * IT IS ENFORCED HERE AND NOT IN THE PATTERN: a length bound inside the regex
+ * looks identical from the outside and is untestable, because a citation that is
+ * too short simply fails to parse and the check can never be observed failing.
+ */
+const MIN_TICKET_CITATION = 12;
+
+export function ticketAllowances(text: string): readonly TicketAllowance[] {
+  const out: TicketAllowance[] = [];
+  for (const m of text.matchAll(TICKET_ALLOW_RE)) {
+    const subject = (m[1] ?? "").toLowerCase().replace(/[.,;]+$/, "");
+    // The comment TERMINATOR is not part of the citation. `TICKET: yes -->`
+    // would otherwise measure seventeen characters and pass a length test that
+    // exists to make the builder actually write down what it is standing on.
+    const citation = (m[2] ?? "")
+      .replace(/(?:-->|\*\/|\/\/|\/\*|[-*/\s])+$/, "")
+      .trim();
+    if (subject.length === 0 || citation.length < MIN_TICKET_CITATION) continue;
+    out.push({ subject, citation });
+  }
+  return out;
+}
+
+function isAllowed(allowances: readonly TicketAllowance[], subject: string): boolean {
+  const lower = subject.toLowerCase();
+  return allowances.some(
+    (a) => hostMatches(lower, a.subject) || lower === a.subject || lower.startsWith(`${a.subject}/`),
+  );
+}
+
+/**
+ * The owner's rule, 2026-08-05: "designs are always made using gemini connection
+ * rather than pulled from some library."
+ *
+ * THIS IS THE REVERSAL. `AS-PLACEHOLDER-IMAGE` above used to bless a chosen
+ * photograph in so many words; it is refused here instead, and the two rules are
+ * kept apart rather than merged so that the citation stays honest — the spec bans
+ * generators, the OWNER bans taken imagery, and only the second can be outranked
+ * by a ticket.
+ *
+ * IT FIRES ON TWO SIGNALS, NOT ONE. A stock/foundry AUTHORITY (because the worst
+ * offenders serve extensionless paths), OR a path that ends in an image, video or
+ * font extension on ANY host (because a list of libraries is open to every
+ * library nobody enumerated). The second is what makes a photograph the builder
+ * found on some blog fail too.
+ */
+const STOCK_ASSET: AntiSlopRule = {
+  id: "AS-STOCK-ASSET",
+  source: "owner standing rule 2026-08-05",
+  reason:
+    "Every visual asset in this product is MADE, not taken — the owner's standing rule is that " +
+    "designs come from the Gemini image connection rather than pulled from a library. This " +
+    "references a picture, video or typeface hosted somewhere else, so it is taken. Generate the " +
+    "image through the design step and commit it into the workspace, use a still from " +
+    "`design-refs/`, or drop the element; for type, self-host the font file next to the stylesheet " +
+    "or use a system stack (the one build in this repo that ever shipped does exactly that). " +
+    "IF THE TICKET ITSELF ASKS FOR THIS RESOURCE, keep it and write the override on the line " +
+    "beside it as a comment, naming the host and quoting the instruction: " +
+    "`antislop-allow: <host> — TICKET: <the words in the ticket that ask for it>`. That excuses " +
+    "that one host in that one file and nothing else.",
+  find: (text) => {
+    const allowances = ticketAllowances(text);
+    const hits: string[] = [];
+    for (const ref of remoteAssetRefs(text)) {
+      const stock = STOCK_MEDIA_HOSTS.some((h) => hostMatches(ref.host, h));
+      const foundry = REMOTE_FONT_HOSTS.some((h) => hostMatches(ref.host, h));
+      if (!stock && !foundry && !MEDIA_EXTENSION.test(ref.url)) continue;
+      if (isAllowed(allowances, ref.host)) continue;
+      hits.push(clip(`${ref.where}: ${ref.url}`));
+    }
+    return hits;
+  },
+};
+
+/**
+ * Iconography, same owner rule, separate id so it gets its own denial text and
+ * its own escalation budget (`antislop-hook.ts` counts per rule per agent).
+ *
+ * TWO SHAPES, BOTH EXACT. A bare-specifier import of a known icon PACKAGE, and an
+ * icon CDN in asset position. Neither is a substring guess.
+ *
+ * DELIBERATELY LEFT: icon-font CLASS NAMES (`<i class="fa fa-user">`,
+ * `material-icons`). A class name is a bare word in a stream of text, which the
+ * header of this file forbids anchoring to, and it cannot work without the CDN
+ * link or the package that IS caught here — so the coverage is already there one
+ * step upstream. Also left: inline `<svg>` the builder drew, which is the answer
+ * the reason points at.
+ */
+const ICON_LIBRARY_PACKAGES: readonly string[] = [
+  "lucide",
+  "lucide-react",
+  "lucide-vue-next",
+  "lucide-svelte",
+  "react-icons",
+  "@heroicons/react",
+  "@heroicons/vue",
+  "heroicons",
+  "@fortawesome/fontawesome-free",
+  "@fortawesome/react-fontawesome",
+  "@fortawesome/free-solid-svg-icons",
+  "@tabler/icons",
+  "@tabler/icons-react",
+  "@mui/icons-material",
+  "@radix-ui/react-icons",
+  "@phosphor-icons/react",
+  "phosphor-react",
+  "react-feather",
+  "feather-icons",
+  "bootstrap-icons",
+  "ionicons",
+  "@iconify/react",
+  "@iconify-icon/react",
+  "iconify-icon",
+  "simple-icons",
+  "@ant-design/icons",
+  "remixicon",
+];
+
+const ICON_CDN_HOSTS: readonly string[] = [
+  "use.fontawesome.com",
+  "kit.fontawesome.com",
+  "code.iconify.design",
+  "api.iconify.design",
+  "unicons.iconscout.com",
+  "cdn.lineicons.com",
+];
+
+/** A CDN that serves everything: judged by what the PATH asks for, not the host. */
+const GENERAL_CDN_HOSTS: readonly string[] = ["cdnjs.cloudflare.com", "unpkg.com", "cdn.jsdelivr.net", "esm.sh"];
+const ICON_PATH = /(?:font-?awesome|iconify|ionicons|bootstrap-icons|remixicon|material-(?:icons|symbols)|feather|heroicons|lucide|phosphor|tabler[/-]icons|lineicons|boxicons)/i;
+
+const ICON_LIBRARY: AntiSlopRule = {
+  id: "AS-ICON-LIBRARY",
+  source: "owner standing rule 2026-08-05",
+  reason:
+    "Icons come from the design too — the owner's standing rule is that designs are made through " +
+    "the Gemini connection rather than pulled from a library, and a shipped icon set is the most " +
+    "recognisable way a product wears somebody else's drawing. Draw the few marks this page needs " +
+    "as inline `<svg>` from the design stills, at the stroke weight the rest of the page uses. " +
+    "IF THE TICKET NAMES THIS SET, keep it and record the override beside the import, naming the " +
+    "package or host and quoting the instruction: " +
+    "`antislop-allow: <package> — TICKET: <the words in the ticket that ask for it>`.",
+  find: (text) => {
+    const allowances = ticketAllowances(text);
+    const hits: string[] = [];
+    const specifiers = /(?:from\s*|require\(\s*|import\(\s*)["']([^"'\n]+)["']/gi;
+    for (const m of text.matchAll(specifiers)) {
+      const spec = (m[1] ?? "").toLowerCase();
+      const pkg = ICON_LIBRARY_PACKAGES.find((p) => spec === p || spec.startsWith(`${p}/`));
+      if (pkg === undefined) continue;
+      if (isAllowed(allowances, spec) || isAllowed(allowances, pkg)) continue;
+      hits.push(clip(spec));
+    }
+    for (const ref of remoteAssetRefs(text)) {
+      const dedicated = ICON_CDN_HOSTS.some((h) => hostMatches(ref.host, h));
+      const general = GENERAL_CDN_HOSTS.some((h) => hostMatches(ref.host, h)) && ICON_PATH.test(ref.url);
+      if (!dedicated && !general) continue;
+      if (isAllowed(allowances, ref.host)) continue;
+      hits.push(clip(`${ref.where}: ${ref.url}`));
+    }
     return hits;
   },
 };
@@ -584,9 +972,25 @@ const INTER_SLATE_DEFAULT: AntiSlopRule = {
  *       sees text. `VIS-LAYOUT-SCAFFOLD` grades it.
  *   motion poverty [listed under §8 Layer 1]   A single write cannot see the
  *       page's total motion. It is Layer 2's job and it is done there.
+ *   a remote SCRIPT or STYLESHEET that is not an asset [owner rule]
+ *       `<script src="//cdn.tailwindcss.com">` and an unpkg React build are
+ *       DEPENDENCIES, not design. The owner's rule is about what the product
+ *       LOOKS like being made rather than taken; stretching it to every network
+ *       reference is how a rule fires on a ticket it cannot be right about and
+ *       gets switched off. The same CDNs ARE judged when the path asks for an
+ *       icon set — see `GENERAL_CDN_HOSTS` + `ICON_PATH`.
+ *   icon-font CLASS NAMES (`fa-user`, `material-icons`) [owner rule]
+ *       A bare word in a stream of text, which this file's header forbids
+ *       anchoring to. They cannot render without the CDN link or the package
+ *       that `AS-ICON-LIBRARY` already catches.
+ *   a stock URL reached through a VARIABLE across files [owner rule]
+ *       A `PreToolUse` hook sees one write. Same limit, and the same honesty,
+ *       as `AS-EYEBROW-EVERYWHERE`'s single-file count.
  */
 export const ANTISLOP_RULES: readonly AntiSlopRule[] = [
   PLACEHOLDER_IMAGE,
+  STOCK_ASSET,
+  ICON_LIBRARY,
   LOREM_IPSUM,
   PURPLE_PINK_GRADIENT,
   GRADIENT_TEXT,
