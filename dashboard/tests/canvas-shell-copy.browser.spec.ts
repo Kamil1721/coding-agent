@@ -49,7 +49,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { FINISHED_RUN_ID, PLAN_RUN_ID, RUN_ID } from "./fixtures/config";
+import { API_ORIGIN, FINISHED_RUN_ID, PLAN_RUN_ID, RUN_ID } from "./fixtures/config";
 
 /* ------------------------------------------------------------------ */
 /* Driving the rail                                                    */
@@ -73,9 +73,58 @@ async function openPanel(page: Page, entry: string): Promise<void> {
   await expect(page.getByTestId("rail-panel")).toBeVisible();
 }
 
+/**
+ * Land on a run page with its rail mounted, RETRYING THE NAVIGATION rather than
+ * the wait — and the difference is the whole reason this helper is four lines
+ * instead of two.
+ *
+ * WHAT WENT WRONG, AND WHY A LONGER WAIT IS NOT THE ANSWER. Under a full-suite
+ * run these three tests died here on `toolbar … element(s) not found`, and
+ * "give it longer" was already the state of the file: `playwright.config.ts`
+ * sets `expect.timeout` to 15_000, so the bare `toBeVisible()` this replaces
+ * had ALREADY waited fifteen seconds. A wait that long does not expire because
+ * the page is slow. It expires because the mount reached a state it never
+ * leaves — the empty, `run === null` page whose cause `patchDetail` records
+ * below. On a FINISHED run that state is FINAL: `pollIntervalFor`
+ * (`use-run-stream.ts:840`) returns 0 for a terminal status, so nothing is ever
+ * fetched again and the page will sit empty for as long as anyone waits. Only a
+ * fresh mount can undo it, which is why the `goto` is inside the retry.
+ *
+ * THE PAIR THAT PROVES IT, run against a mount deliberately made to lose the
+ * race — the detail response held back 1.5s for the first six seconds, which is
+ * enough for the stream to empty the cache. The pre-repair body (`goto` once,
+ * then wait) is RED twice out of two at the 15s mark with the reported error
+ * verbatim. This body is GREEN twice out of two, and the log says why: the
+ * first navigation is abandoned at 11s and the second one, past the injected
+ * window, mounts the rail at ~11.6s. The delay is removed again for the run
+ * that ships — see `patchDetail`, which is where the real repair is.
+ *
+ * THE SHAPE IS THE ONE THE SAME WAVE ADDED TO `diff-render.browser.spec.ts` and
+ * `motion-readout.browser.spec.ts` — do the action, assert the state, `toPass`.
+ * IT DEVIATES IN ONE PLACE, DELIBERATELY: those two guard the action with an
+ * `aria-expanded` check because a rail button is a TOGGLE and acting twice would
+ * undo it. `goto` is idempotent, so there is nothing to guard and a guard would
+ * only add a way to skip the navigation entirely. `page.route` handlers survive
+ * navigation, so a patched detail is still patched on the second attempt.
+ *
+ * 11s INSIDE 33s. Neither is the config default, and that is the point: with
+ * the config's 15s expect timeout inside a 15s `toPass` there is room for
+ * exactly one attempt and the retry is decoration. The inner window is longer
+ * than a healthy mount by an order of magnitude (these tests take ~250ms each
+ * once the page is up) and long enough to cover SWR's first error-retry rung at
+ * ~5s, so a page that is merely slow is never navigated away from; the outer
+ * one is three of those. 33s is also the ceiling — the test budget is 60s and
+ * `openPanel` and a bounding box still have to happen after this call.
+ *
+ * ONLY THE WAY IN IS WRAPPED. Every assertion in this file is outside it, since
+ * a retried assertion is one that reports a real regression as a timeout.
+ */
 async function openRun(page: Page, runId: string): Promise<void> {
-  await page.goto(`/runs/${runId}`);
-  await expect(page.getByRole("toolbar", { name: "Run panels" })).toBeVisible();
+  const toolbar = page.getByRole("toolbar", { name: "Run panels" });
+  await expect(async () => {
+    await page.goto(`/runs/${runId}`);
+    await expect(toolbar).toBeVisible({ timeout: 11_000 });
+  }).toPass({ timeout: 33_000 });
 }
 
 /**
@@ -87,23 +136,55 @@ async function openRun(page: Page, runId: string): Promise<void> {
  * fulfilled response may not restate, and the page then mounts with `run ===
  * null` and NO RAIL AT ALL — so the failure reads as "the toolbar never
  * rendered" rather than as anything about copy.
+ *
+ * THE BODY IS FETCHED ONCE, HERE, AND NOT INSIDE THE HANDLER — and that one
+ * move is the repair for the three flakes this file used to contribute to a
+ * full-suite run. THE OLD SHAPE `await route.fetch()` PER REQUEST PUT A SECOND
+ * ROUND TRIP IN FRONT OF EVERY DETAIL RESPONSE, and the run page cannot afford
+ * one. It races its own SSE stream, and it loses badly:
+ *
+ *   `use-run-stream.ts:942` writes every stream event into the SWR cache with
+ *   `mutate(previous => applyRunEvent(previous, event), { revalidate: false })`,
+ *   and `applyRunEvent` (`:596`) is `if (previous === undefined) return
+ *   undefined`. So an event that arrives BEFORE the REST detail does not queue
+ *   behind it — it writes `undefined` over the cache. On a FINISHED run the
+ *   stream replays every event it ever had and `pollIntervalFor` (`:840`)
+ *   returns 0 for a terminal status, so once the replay has out-run the detail
+ *   there is no further fetch and THE PAGE IS EMPTY FOR GOOD. That is the
+ *   `run === null`, no-rail mount the paragraph above describes, reached by a
+ *   second route.
+ *
+ * MEASURED, not deduced. With the per-request `route.fetch()` in place and this
+ * file's own three tests instrumented, the bad mounts are exactly the ones whose
+ * `/events` response is logged BEFORE the detail response, and they show a
+ * second detail fetch (the stream's terminal `status` triggering the `mutate()`
+ * at `:970`) that lands on an already-emptied cache and changes nothing. The
+ * six tests in this file that do NOT go through `patchDetail` have never
+ * flaked; the three that do are the three that failed. Serving a pre-fetched
+ * body takes the extra trip out and the detail lands first.
+ *
+ * The delay is the harness's own, so this is not a production bug being papered
+ * over here — but the production race is real, it is filed with this lane's
+ * report, and a slow enough machine can lose it with no harness at all.
  */
 async function patchDetail(
   page: Page,
   runId: string,
   patch: (body: Record<string, unknown>) => void,
 ): Promise<void> {
+  const seed = await page.request.get(`${API_ORIGIN}/api/runs/${runId}`);
+  const body = (await seed.json()) as Record<string, unknown>;
+  patch(body);
+  const payload = JSON.stringify(body);
+
   await page.route(
     (url) => url.pathname === `/api/runs/${runId}` && url.search === "",
     async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as Record<string, unknown>;
-      patch(body);
       await route.fulfill({
         status: 200,
         headers: { "access-control-allow-origin": "*", "cache-control": "no-store" },
         contentType: "application/json",
-        body: JSON.stringify(body),
+        body: payload,
       });
     },
   );
@@ -402,9 +483,15 @@ test.describe("Result names the folder in words a reader has", () => {
    * deleted its `<Explain>`. Red on both halves — the heading assertion and the
    * bubble's text. Reverted.
    *
-   * `artifactPath` is `null` on every harness fixture, so this row renders
-   * NOWHERE in the suite without the patch above; the first assertion is what
-   * stops this test passing vacuously against a row that was never drawn.
+   * THIS COMMENT USED TO SAY `artifactPath` IS `null` ON EVERY HARNESS FIXTURE
+   * AND THAT IS NO LONGER TRUE — `build-run-fixture.ts:613` gives the finished
+   * run a real path, so the row is drawn whether or not `withUsabilityFindings`
+   * patches one in. Measured, not read: with `patch()` dropped from
+   * `patchDetail`, the two usability tests below went red and THIS ONE STAYED
+   * GREEN. The first assertion is still worth its line — the row is conditional
+   * on `sheet.tsx:1093` and this glyph lives only inside it — but it is no
+   * longer the patch that keeps this test honest, and saying so would be
+   * claiming a control this file does not have.
    */
   test("the row is headed Workspace, and the i says which folder to open", async ({
     page,
@@ -416,10 +503,12 @@ test.describe("Result names the folder in words a reader has", () => {
     const panel = page.getByTestId("rail-panel");
 
     /*
-     * THE ANTI-VACUITY CONTROL, AND IT IS NOT DECORATION HERE. `artifactPath` is
-     * `null` on every harness fixture, so without the patch above this row is
-     * drawn NOWHERE in the suite and every assertion below would pass against a
-     * panel that never rendered it. This glyph exists only inside that row.
+     * THE ANTI-VACUITY CONTROL. The row is conditional — `sheet.tsx:1093` draws
+     * it only for a run with an `artifactPath` — and this glyph exists nowhere
+     * else, so a panel that rendered the row is the only panel the assertions
+     * below can be reading. What it does NOT prove is that the patch above did
+     * anything: the finished-run fixture now carries a path of its own. See the
+     * note on this test.
      */
     await expect(
       page.getByTestId("explain-workspace"),
