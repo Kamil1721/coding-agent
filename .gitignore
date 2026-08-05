@@ -65,3 +65,11 @@ dashboard/test-results/
 /*.jpeg
 /*.gif
 /*.webp
+
+# Agent scratch from the design lanes: Gemini iteration frames, mock harnesses and
+# throwaway screenshot scripts. The shipped marks live in dashboard/public/rail/ and
+# the reasoning lives in docs/superpowers/specs/; these are the frames that did not
+# make it, ~4MB of them, and carrying every rejected draft in history forever costs
+# more than the provenance is worth.
+/.tmp-design-lead/
+/design-refs/
