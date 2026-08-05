@@ -223,6 +223,9 @@ import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { publishProject } from "./project-publish.js";
 import { tracedProse, writeAssumptions, writeRunVerdict } from "./run-report.js";
+import type { RunVerdictSource } from "./run-report.js";
+import { visualGateRun } from "./visual-gate-run.js";
+import type { VisualGateRunInput, VisualGateRunResult } from "./visual-gate-run.js";
 import type { AnsweredQuestion, ReferenceReading } from "./spec-assumptions.js";
 import { motionReferenceReading } from "./motion-brief.js";
 import { describeTokens, mergeTokenTotals, toApiTokens, zeroTokens } from "./tokens.js";
@@ -1095,6 +1098,29 @@ export class Orchestrator {
    * on exactly the same lines as the channel, so the two cannot drift.
    */
   readonly #replyWatches = new Map<string, AgentReplyWatch>();
+
+  /**
+   * What the visual gate found on this run's LAST gate attempt.
+   *
+   * IN MEMORY AND NOT ON THE ROW, BECAUSE THE PRODUCER AND THE CONSUMER ARE ONE
+   * PROCESS APART AND NO FURTHER. `#gatePhase` measures it, `#writeVerdict` reads
+   * it, and both happen inside a single `#execute`. Persisting it would add a
+   * column that only ever holds a value for the seconds between those two calls,
+   * and a run recovered by a fresh process has no captures to have measured
+   * anyway — the container is gone. The report itself IS persisted, at
+   * `results/visual-gate.md`, which is the durable half.
+   *
+   * LAST ATTEMPT WINS, ON PURPOSE. A fix round re-runs the gate against the
+   * repaired workspace, and the verdict is about the artefact that was finally
+   * delivered. Keeping the first attempt's measurement would report the ground of
+   * a page that no longer exists.
+   *
+   * DELETED IN `#finish`, AFTER THE VERDICT IS WRITTEN. A stale entry surviving a
+   * run would put one run's measurements on the next run's page if the id were
+   * ever reused, and `#finish` is the one funnel every terminal status passes
+   * through — the same argument `#publishProject` hangs off it for.
+   */
+  readonly #visualGate = new Map<string, VisualGateRunResult>();
 
   /**
    * Deliver an owner message into a RUNNING session.
@@ -5067,6 +5093,7 @@ export class Orchestrator {
 
     const container = this.#readContainerResult(runId, slot);
     if (container !== null) this.#recordScreenshots(runId, container);
+    await this.#runVisualGate(runId, runPaths, container);
 
     for (const violation of record.protectedPathViolations) {
       this.#emitLog(runId, "error", `protected path modified: ${violation}`);
@@ -5193,6 +5220,64 @@ export class Orchestrator {
       const label = `${shot.flowId} @ ${shot.breakpoint}`;
       this.#deps.store.addScreenshot(runId, { path, label, capturedAt: container.endedAt });
       this.#emit(runId, { type: "screenshot", path, label });
+    }
+  }
+
+  /** Where `visual-gate-run.ts`'s report is written, relative to `results/`. */
+  static readonly VISUAL_GATE_FILE = "visual-gate.md";
+
+  /**
+   * MEASURE THE DELIVERED PAGE AGAINST THE DESIGN, AND SAY SO ON THE RECORD.
+   *
+   * THIS IS THE LINE THE DESIGN-FIDELITY SPEC SEQUENCED AND NOBODY WROTE. §7 Wave
+   * A: "the one line in `orchestrator.ts` that calls this module is OUT OF SCOPE
+   * for Wave A — `orchestrator.ts` belongs to the recovery workflow... the call
+   * line is sequenced afterwards with that workflow's owner." Wave A shipped
+   * nothing, so the call line had nothing to call and the whole family
+   * (`evaluateVisualSubstance`, `renderVisualSubstanceReport`,
+   * `groundPolarityAnswer`, `verdictFindings`, and `VerdictInput.visualFindings`
+   * itself) sat with zero non-test callers for a wave. This is that line.
+   *
+   * IT RUNS ON EVERY GATE ATTEMPT AND THE LAST ONE WINS. See `#visualGate`: the
+   * verdict is about the artefact finally delivered, and a fix round replaces the
+   * page the earlier measurement was taken from.
+   *
+   * A `null` CONTAINER STILL PRODUCES A RECORD, and that is the honest answer
+   * rather than a convenient one. `evaluateVisualSubstance` with no frames marks
+   * every observation `unknown`/`no_screenshot`, and its own header says why: "a
+   * run that captured nothing has not satisfied anything." Skipping the call
+   * there would leave the same run with no record at all, which reads as clean.
+   *
+   * IT CANNOT FAIL THE RUN AND IT CANNOT THROW ONE. Everything it produces is
+   * either a QUALITY note or a row `verdictFindings` has already withheld, and the
+   * whole call is wrapped: this is the RECORD of the run, not the run, and the
+   * same rule `#writeVerdict` and `#recordDesignMockups` state for themselves —
+   * an artefact that could not be measured must not be reported as a harness
+   * fault.
+   */
+  async #runVisualGate(runId: string, runPaths: RunPaths, container: ContainerResult | null): Promise<void> {
+    try {
+      const result = await visualGateRun(
+        visualGateInputFor(runId, this.#deps.paths, runPaths, container),
+      );
+      this.#visualGate.set(runId, result);
+      try {
+        mkdirSync(runPaths.results, { recursive: true });
+        writeFileSync(join(runPaths.results, Orchestrator.VISUAL_GATE_FILE), `${result.report}\n`, "utf8");
+      } catch (error) {
+        this.#emitLog(runId, "warn", `the visual gate report could not be written: ${describeError(error)}`);
+      }
+      const owned = result.taste.filter((criterion) => criterion.referent === "owner-image").length;
+      this.#emitLog(
+        runId,
+        "info",
+        `visual gate (${result.record.mode}): ${String(result.record.outcomes.length)} observation row(s), ` +
+          `${String(result.findings.length)} of them counting toward the verdict, ` +
+          `${String(result.taste.length)} quality criteria of which ${String(owned)} are about the image you ` +
+          `attached${result.qualityFindings.length === 0 ? "" : ", and the design you were given does not match its ground"}`,
+      );
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the visual gate could not be evaluated: ${describeError(error)}`);
     }
   }
 
@@ -6179,6 +6264,11 @@ export class Orchestrator {
       });
     }
     this.#publishProject(runId, row);
+    // AFTER THE VERDICT, NEVER BEFORE IT. `#writeVerdict` two lines up is the one
+    // reader of this entry; dropping it earlier would silently return the run to
+    // the pre-2026-08-05 behaviour where `visualFindings` had no producer at all,
+    // and nothing would look wrong.
+    this.#visualGate.delete(runId);
     this.#emit(runId, { type: "status", status });
   }
 
@@ -6267,15 +6357,21 @@ export class Orchestrator {
    *
    * Every input comes from the persisted row and the criteria table, both
    * redacted on the way in and neither carrying a held-out test title.
+   *
+   * THE VISUAL HALF COMES FROM `#visualGate` AND IS ABSENT WHEN NOTHING MEASURED
+   * IT. `undefined` and `[]` are different answers on the way into the verdict —
+   * "no observation was scored" versus "scored, nothing fired" — and
+   * `VerdictInput.visualFindings` is documented as carrying that distinction, so a
+   * run that never reached the gate must not hand over an empty array as though
+   * the screenshots had come back clean. That is why the spread is conditional
+   * rather than a `?? []`.
    */
   #writeVerdict(runId: string, row: RunRow): string | null {
     try {
-      return writeRunVerdict(runPathsFor(this.#deps.paths, runId).results, {
-        ticketText: row.ticketText,
-        criteria: this.#deps.store.listCriteria(runId),
-        status: row.status,
-        failureReason: row.failureReason,
-      });
+      return writeRunVerdict(
+        runPathsFor(this.#deps.paths, runId).results,
+        verdictSourceFor(row, this.#deps.store.listCriteria(runId), this.#visualGate.get(runId)),
+      );
     } catch (error) {
       // The record of the run, not the run. A run that finished must not be
       // reported as a harness fault because one file could not be written.
@@ -6612,6 +6708,83 @@ export function highestArchivedAttempt(paths: DashboardPaths, runId: string): nu
  *     gate nothing, so a FIXER should not spend a round on them — whereas a
  *     reviewer is exactly who they were reported for.
  */
+/**
+ * What `visual-gate-run.ts` is handed for one finished gate attempt.
+ *
+ * A SEPARATE, EXPORTED FUNCTION AND NOT AN OBJECT LITERAL INSIDE THE METHOD,
+ * because the two decisions it encodes are the ones a wiring bug lives in and
+ * neither is visible from the module's own tests:
+ *
+ *   WHICH ROOT THE OWNER-REFERENCE FENCE IS COMPUTED AGAINST. `paths.runs`, not
+ *   `paths.results` and not the workspace. `ownerReferenceFor` derives
+ *   `runs/<id>/references/` from it, and a caller passing the wrong root gets
+ *   `null` for every run — a silently empty fidelity check that looks exactly
+ *   like "the owner attached nothing".
+ *
+ *   WHERE THE CAPTURES ARE. `ScreenshotRecord.file` is a bare filename by
+ *   protocol ("never an absolute path", scorer-protocol.ts:1074), so the
+ *   directory has to come from here, and it is the SAME expression
+ *   `#recordScreenshots` uses. If those two ever disagree, the UI serves a
+ *   screenshot the measurement could not open.
+ *
+ * NON-BLANK ONLY, MATCHING `#recordScreenshots`. A capture the container itself
+ * marked blank is a capture of nothing, and measuring the ground of nothing would
+ * answer "what colour is this page" with the colour of a failure.
+ */
+export function visualGateInputFor(
+  runId: string,
+  paths: DashboardPaths,
+  runPaths: RunPaths,
+  container: ContainerResult | null,
+): VisualGateRunInput {
+  return {
+    runId,
+    runsRoot: paths.runs,
+    workspace: runPaths.workspace,
+    screenshotDir: join(paths.results, "screenshots", runId),
+    captures: (container?.screenshots ?? []).filter((shot) => shot.nonBlank),
+  };
+}
+
+/**
+ * Everything `verdict.md` is rendered from, assembled from the run's final state.
+ *
+ * EXPORTED SO THE VISUAL HOP IS TESTABLE WITHOUT SPENDING QUOTA. Until this
+ * function existed the assembly was an object literal inside `#writeVerdict`, and
+ * `#writeVerdict` is only reachable through `#finish`, which is only reachable
+ * through a real run. That is precisely how `VerdictInput.visualFindings` came to
+ * be declared, consumed at four sites, and assigned by nothing: the seam where a
+ * producer would attach was in a place no test could observe.
+ *
+ * `undefined` AND `[]` ARE DIFFERENT ANSWERS AND THIS FUNCTION KEEPS THEM APART.
+ * A run that never reached the gate has no visual record, and `visualFindings`
+ * must be ABSENT for it — `verdict.ts:139-151` documents `undefined` as "no
+ * observation was scored" and `[]` as "scored, nothing fired". Collapsing them
+ * here would report a run that was never looked at as a run whose screenshots
+ * came back clean, which is the false-pass direction this whole file family
+ * exists to refuse.
+ *
+ * `qualityFindings` DOES NOT CARRY THAT DISTINCTION and is not given one:
+ * `VerdictInput.qualityFindings` is a required array whose emptiness has always
+ * meant "no notes", and inventing a third state for it here would be a
+ * distinction no consumer reads.
+ */
+export function verdictSourceFor(
+  row: RunRow,
+  criteria: readonly ApiCriterion[],
+  visual: VisualGateRunResult | undefined,
+): RunVerdictSource {
+  return {
+    ticketText: row.ticketText,
+    criteria,
+    status: row.status,
+    failureReason: row.failureReason,
+    ...(visual === undefined
+      ? {}
+      : { visualFindings: visual.findings, qualityFindings: visual.qualityFindings }),
+  };
+}
+
 export function renderEvidence(container: ContainerResult | null): string {
   if (container === null) return "The sealed container produced no machine-readable result.";
   const report = toAgentVisible(container);

@@ -72,6 +72,8 @@ import {
   highestArchivedAttempt,
   recordedNetworkPolicy,
   renderEvidence,
+  verdictSourceFor,
+  visualGateInputFor,
 } from "./orchestrator.js";
 import type { DesignPostSegmentAction } from "./orchestrator.js";
 import { attemptPath, liveResultPath, readAttempt, scorerOutRoot, scoresRoot } from "./gate-attempts.js";
@@ -80,6 +82,7 @@ import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { AUTO_CONTINUE_MAX } from "./recovery.js";
 import { PreviewHost } from "./preview.js";
+import { renderRunVerdict } from "./run-report.js";
 import { ticketFromText } from "./ticket.js";
 import { zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
@@ -4527,5 +4530,123 @@ test("A PHASE THAT THROWS ON A REFUSAL PARKS, it does not fail — the seam #exe
     );
   } finally {
     await h.cleanup();
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * THE VISUAL GATE SEAM — the two assemblies a wiring bug lives in
+ *
+ * WHY THESE ARE TESTED AS EXPORTED FUNCTIONS AND NOT THROUGH A RUN. `#gatePhase`
+ * and `#finish` are private and reachable only from a real run, which spawns a
+ * builder subprocess and spends the owner's subscription; this file's header
+ * states that rule and every test above obeys it. That is EXACTLY how
+ * `VerdictInput.visualFindings` came to be declared, consumed at four sites in
+ * `verdict.ts`, and assigned by nothing for a whole wave: the seam where a
+ * producer would attach sat in a place no test could observe. Extracting the two
+ * assemblies makes the seam observable without spending anything; the two call
+ * LINES that use them are one expression each, immediately below the methods'
+ * own doc comments.
+ * ---------------------------------------------------------------------- */
+
+test("verdictSourceFor: a run with no visual record leaves the field ABSENT, not empty", () => {
+  const h = harness();
+  try {
+    seed(h.store, "run-v", 1);
+    const row = h.store.getRun("run-v");
+    assert.ok(row !== null);
+    const source = verdictSourceFor(row, [], undefined);
+    // `undefined` AND `[]` ARE DIFFERENT ANSWERS. `verdict.ts:139-151` documents
+    // `undefined` as "no observation was scored" and `[]` as "scored, nothing
+    // fired". A run that never reached the gate must not present as a run whose
+    // screenshots came back clean.
+    assert.equal("visualFindings" in source, false, "the key itself must not be present");
+    assert.equal("qualityFindings" in source, false);
+    assert.equal(source.ticketText, row.ticketText, "and the rest of the source is unchanged");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("verdictSourceFor: the visual record's findings and notes REACH the verdict source", () => {
+  const h = harness();
+  try {
+    seed(h.store, "run-v", 1);
+    const row = h.store.getRun("run-v");
+    assert.ok(row !== null);
+    const finding = {
+      observationId: "VIS-F-EMPTY-FRAME",
+      frame: { flowId: "home", breakpoint: "1280x800" },
+      verdict: "violated" as const,
+      rawVerdict: "violated" as const,
+      note: "nothing rendered",
+      unknownReason: null,
+      corroborationRule: null,
+      declaredTier: "FUNCTIONAL" as const,
+      gating: true,
+      withheldBecause: null,
+    };
+    // A SCORED CRITERION, BECAUSE `renderRunVerdict` BRANCHES ON ONE. With an
+    // all-pending criteria list `gateProducedResults` is false and the page
+    // rendered is "NO VERDICT WAS REACHED", which carries no findings of any
+    // kind — correct for a run that never reached the gate, and it would make
+    // the assertions below vacuous.
+    const scored = [
+      { id: "C-1", statement: "the booking form submits", tier: "FUNCTIONAL" as const, result: "pass" as const },
+    ];
+    const source = verdictSourceFor(row, scored, {
+      record: { mode: "gating", outcomes: [], violations: [], unknowns: [], corroborationWithheld: [], tasteFindings: [], tasteTier: "QUALITY" },
+      taste: [],
+      findings: [finding],
+      qualityFindings: ["the locked design does not match your reference"],
+      report: "",
+      ownerReference: null,
+    });
+    // NOT `!== undefined`, AND NOT A LENGTH CHECK ALONE. An assertion that
+    // tolerates `[]` would have passed before any of this wiring existed, which
+    // is the whole defect this workflow was opened against.
+    assert.deepEqual(source.visualFindings, [finding], "the exact row, not a truthy array");
+    assert.deepEqual(source.qualityFindings, ["the locked design does not match your reference"]);
+
+    // AND IT SURVIVES THE NEXT HOP, into the document the owner actually opens.
+    const markdown = renderRunVerdict(source);
+    assert.match(markdown, /DID NOT PASS/, "a gating visual finding fails the run at FUNCTIONAL");
+    assert.match(markdown, /fixed observation about the screenshots did not pass/);
+    assert.match(markdown, /the locked design does not match your reference/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("visualGateInputFor: the fence root, the capture directory, and blank captures", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-vgi-"));
+  try {
+    const paths = resolvePaths({ DASHBOARD_HOME: dir });
+    const runPaths = runPathsFor(paths, "run-x");
+    const container = {
+      ...containerFixture(),
+      screenshots: [
+        { flowId: "home", breakpoint: "1280x800", file: "home__1280.png", bytes: 1, width: 1280, height: 800, sha256: "a".repeat(64), maskedSelectors: [], maskColor: "#000", nonBlank: true },
+        { flowId: "home", breakpoint: "375x812", file: "home__375.png", bytes: 1, width: 375, height: 812, sha256: "b".repeat(64), maskedSelectors: [], maskColor: "#000", nonBlank: false },
+      ],
+    } as ContainerResult;
+    const input = visualGateInputFor("run-x", paths, runPaths, container);
+
+    // `paths.runs`, NOT `paths.results` AND NOT THE WORKSPACE. `ownerReferenceFor`
+    // derives `runs/<id>/references/` from this; the wrong root returns null for
+    // every run, which looks exactly like "the owner attached nothing".
+    assert.equal(input.runsRoot, paths.runs);
+    assert.equal(input.workspace, runPaths.workspace);
+    // THE SAME EXPRESSION `#recordScreenshots` USES. If these two ever disagree,
+    // the UI serves a screenshot the measurement could not open.
+    assert.equal(input.screenshotDir, join(paths.results, "screenshots", "run-x"));
+    assert.deepEqual(
+      input.captures.map((capture) => capture.file),
+      ["home__1280.png"],
+      "a capture the container itself marked blank is a capture of nothing",
+    );
+
+    assert.deepEqual(visualGateInputFor("run-x", paths, runPaths, null).captures, [], "and no container is no captures");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -86,6 +86,7 @@ import { stripPlanBlock } from "./plan-brief.js";
 import { ticketProse } from "./ticket-refs.js";
 import { renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
+import type { VisualObservationOutcome } from "./visual-substance.js";
 
 /** Filenames, exported so tests and the API agree on one spelling. */
 export const ASSUMPTIONS_FILE = "assumptions.md";
@@ -232,6 +233,35 @@ export interface RunVerdictSource {
   readonly status: ApiRunStatus;
   /** Redacted, with remediation where one exists. Null on a clean run. */
   readonly failureReason: string | null;
+  /**
+   * The visual observations this run allows to COUNT — `visual-gate-run.ts`'s
+   * `findings`, which is `verdictFindings(record)` and nothing else.
+   *
+   * OPTIONAL, AND ABSENT MEANS "NO OBSERVATION WAS SCORED" RATHER THAN "CLEAN".
+   * `verdict.ts:139-151` states the same distinction for the field this feeds.
+   * The optionality is not decoration: `renderRunVerdict` is called from
+   * `run-report.test.ts` and from the calibration harness with sources that
+   * predate the visual path, and a required field would have turned this wiring
+   * into a change to files it does not own.
+   *
+   * THE HOST FILTER IS NOT REPEATED HERE, DELIBERATELY. `verdictFindings`
+   * (visual-substance.ts:1247) is the only export allowed to reach the verdict,
+   * and `visualFindingsAt` (verdict.ts:260) re-checks `gating` a second time on
+   * arrival. Two modules asserting the same invariant is that file's stated
+   * design; a third copy in this one would be a place for the three to drift.
+   */
+  readonly visualFindings?: readonly VisualObservationOutcome[];
+  /**
+   * QUALITY notes measured during the run — today, exactly the owner-reference
+   * ground comparison (`visual-gate-run.ts`'s `ownerReferenceGroundNote`).
+   *
+   * THE OLD COMMENT ON `verdictInputFor` SAID THIS WAS EMPTY AND WHY, AND IT WAS
+   * RIGHT AT THE TIME: emitting `visual-criteria.ts`'s CRITERIA here as if they
+   * were FINDINGS would report every run as `pass_with_notes` by declaring
+   * failures nobody measured. That reasoning is preserved below and it still
+   * governs — what arrives here is a MEASUREMENT that fired, never a criterion.
+   */
+  readonly qualityFindings?: readonly string[];
 }
 
 /** The first line of the no-verdict page. Asserted verbatim in the tests. */
@@ -255,12 +285,29 @@ export function gateProducedResults(criteria: readonly ApiCriterion[]): boolean 
 /**
  * The verdict input, assembled from persisted state.
  *
- * `qualityFindings` IS EMPTY, AND NOT BECAUSE QUALITY IS UNIMPORTANT. Those are
- * authored notes about look and motion, and nothing in the dashboard pipeline
- * evaluates `visual-criteria.ts` yet: Phase 2b owns the `DesignManifest` and the
- * comparison against a locked mockup. Emitting the CRITERIA here as if they were
- * FINDINGS would report every run as `pass_with_notes` by declaring failures
- * nobody measured — the finding generator `grade-fixture.ts` explains at length.
+ * `qualityFindings` WAS HARD-CODED EMPTY UNTIL 2026-08-05, AND THE ARGUMENT FOR
+ * THAT IS KEPT BECAUSE IT IS STILL THE GOVERNING RULE — only its premise moved.
+ * It read: "authored notes about look and motion, and nothing in the dashboard
+ * pipeline evaluates `visual-criteria.ts` yet... emitting the CRITERIA here as if
+ * they were FINDINGS would report every run as `pass_with_notes` by declaring
+ * failures nobody measured — the finding generator `grade-fixture.ts` explains at
+ * length." Every word of that is still true of CRITERIA, and nothing below emits
+ * one.
+ *
+ * WHAT CHANGED IS THAT A MEASUREMENT NOW EXISTS. `visual-gate-run.ts` compares
+ * the ground of the LOCKED design against the ground of the image the OWNER
+ * attached, host-side, from pixels, and produces a note only when their
+ * polarities are opposite. That is a fired observation rather than an authored
+ * statement, so it is a finding in the sense this field means, and it arrives
+ * pre-filtered: absent means "no image, no lock, or no decidable answer", never
+ * "the comparison was fine". A run with no attached image contributes zero and
+ * grades exactly as it did before this line existed.
+ *
+ * `visualFindings` ARRIVES THE SAME WAY AND IS EMPTY FOR A DIFFERENT REASON: the
+ * one observation the host can answer today is `shadowLocked`, so
+ * `verdictFindings` withholds it by construction. The wire is live; what it
+ * carries is decided upstream, which is where it should be decided.
+ *
  * QUALITY signal that does exist arrives as QUALITY-tier criterion results from
  * the gate, and `verdict.ts` already counts those.
  *
@@ -308,12 +355,19 @@ function verdictInputFor(source: RunVerdictSource): VerdictInput {
   return {
     ticket: source.ticketText,
     criteriaResults,
-    qualityFindings: [],
+    qualityFindings: source.qualityFindings ?? [],
     // `tracedProse`, NOT `source.ticketText` — see that function. The page keeps
     // quoting the stored brief above; only what the tracer MEASURES against is
     // narrowed to the owner's own prose.
     assumptions: assumptionsFor(tracedProse(source.ticketText), source.criteria),
     heldOutUnmet: { BLOCKING: 0, FUNCTIONAL: 0, QUALITY: 0 },
+    // SPREAD RATHER THAN `?? []`, AND THE ASYMMETRY WITH THE LINE ABOVE IS
+    // DELIBERATE. `VerdictInput.visualFindings` distinguishes `undefined` ("no
+    // observation was scored") from `[]` ("scored, nothing fired"), and its own
+    // docblock says so; collapsing the first into the second here would erase the
+    // distinction at the last hop before it is read. `qualityFindings` is not
+    // optional on `VerdictInput` and carries no such distinction.
+    ...(source.visualFindings === undefined ? {} : { visualFindings: source.visualFindings }),
   };
 }
 
