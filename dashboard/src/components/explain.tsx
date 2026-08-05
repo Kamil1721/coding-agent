@@ -349,6 +349,22 @@ export function Explain({
    * paint, still in the accessibility tree for `aria-describedby` to name. Open,
    * the same element is portaled to `document.body` and painted. A `<span>`
    * rather than a `<div>` because its closed home is inside an inline wrapper.
+   *
+   * `normal-case` IS ON BOTH BRANCHES, AND THAT IS NOT SYMMETRY FOR ITS OWN SAKE.
+   * The closed body stays INLINE, so it inherits from wherever the glyph sits —
+   * and these glyphs sit in section headings, which this dashboard sets in
+   * `uppercase`. `text-transform` is inherited and applies to `sr-only` text: a
+   * screen reader was being handed "PICKING ONE HERE SELECTS ITS CARD ON THE
+   * CANVAS", which some screen readers spell out letter by letter. Measured on the
+   * roster heading in `sheet.tsx`, and it was a browser spec reading `innerText`
+   * that caught it rather than anything a sighted reviewer could see.
+   *
+   * FIXED HERE RATHER THAN AT THE CALL SITE. `criteria.tsx` already passes
+   * `normal-case` in its trigger `className` for exactly this reason; leaving the
+   * fix there makes it something all 32 call sites have to remember, and 31 of
+   * them did not. The open branch keeps its own copy because it is portaled to
+   * `document.body`, where it inherits nothing and the class is a no-op — harmless
+   * there, and load-bearing the moment someone reorders these branches.
    */
   const bubble = (
     <span
@@ -359,7 +375,7 @@ export function Explain({
       className={
         open
           ? "fixed left-0 top-0 z-50 block max-w-[288px] rounded border border-line-strong bg-surface-raised px-2.5 py-2 text-[12px] font-normal normal-case leading-relaxed tracking-normal text-ink shadow-[0_10px_28px_rgba(0,0,0,0.55)]"
-          : "sr-only"
+          : "sr-only normal-case"
       }
       style={
         open
