@@ -424,7 +424,13 @@ function ownerAuthoritySection(): readonly string[] {
   return [
     "",
     "WHAT THE WORK IS HELD TO",
-    "- The ticket below is the specification, in the owner's own words. Read it as a brief to",
+    // "THE TICKET BELOW" WOULD BE FALSE ON HALF THE RUNS, AND THIS SECTION IS ON
+    // BOTH PATHS. `resumeBuilderPrompt` deliberately does not repeat the ticket —
+    // a resumed session already holds it — so the word "below" would be a sentence
+    // that is false about its own prompt, on the branch every design-lane run
+    // takes. The reference block that IS appended on both branches keeps "later in
+    // this prompt" true either way.
+    "- The ticket is the specification, in the owner's own words. Read it as a brief to",
     "  satisfy, not as a theme to riff on.",
     `- Where he attached files, they are listed later in this prompt under`,
     `  "${OWNER_REFERENCE_HEADING}", with absolute paths. Open every one`,
