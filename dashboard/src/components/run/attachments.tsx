@@ -62,11 +62,23 @@
  * `ink-dim` FOR A SENTENCE, `ink-faint` FOR A NUMBER, AND THE SPLIT IS MEASURED.
  * Against `--color-surface` (#11141a) the tokens compute to 4.14:1 for
  * `ink-faint` and 7.97:1 for `ink-dim`, so faint is UNDER WCAG AA for body text
- * at any size. Every string here that carries a claim — the two group notes, the
- * "these bytes did not come back" line — is `ink-dim`; `ink-faint` is left to
+ * at any size. Every string here that carries a claim — the "these bytes did not
+ * come back" line, the failed-image notes — is `ink-dim`; `ink-faint` is left to
  * byte counts, media types and digests, which are scannable metadata beside a
  * name that is already `ink`. No new colour was introduced to do it: both tokens
  * are the ones the neighbouring panels already use.
+ *
+ * THE TWO GROUP PARAGRAPHS ARE NO LONGER ON SCREEN, 2026-08-05 — the sentence
+ * above named them and they were the biggest block of prose on this panel. Both
+ * are now behind the `Explain` glyph on their group's heading, MOVED and not
+ * cut: each one changes what a reader concludes (a path was handed over but not
+ * necessarily opened; an edited document is a different ticket). See the note at
+ * each call site. What was actually deleted is smaller and is listed here so the
+ * next reader does not go looking for it: the subtitle's "before the run
+ * started, served back from this run's own directory", which described where the
+ * bytes come from rather than anything a reader can act on, and the words
+ * "Technical details" and "and their fingerprints" from the disclosure at the
+ * foot, which still lists the digest inside it.
  */
 
 import { useState, type ReactNode } from "react";
@@ -74,6 +86,7 @@ import { useState, type ReactNode } from "react";
 import type { Attachment } from "@/lib/api-types";
 import { apiUrl } from "@/lib/api";
 import { formatBytes } from "@/lib/code-tree";
+import { Explain } from "@/components/explain";
 import { MonoPath, Panel } from "@/components/ui";
 
 /** The route will answer with an image, so an `<img>` is worth attempting. */
@@ -172,9 +185,14 @@ function AttachmentImage({ attachment }: { attachment: Attachment }): ReactNode 
       <AttachmentRow
         attachment={attachment}
         note={
+          // BOTH SENTENCES SHORTENED, 2026-08-05, and both still name the two
+          // facts a reader needs: why there is no picture, and that the path is
+          // below. The deleted words ("on this API", "in the technical
+          // details") described where the panel looks rather than what the
+          // reader does next.
           src === null
-            ? "This file has no address on this API, so it cannot be shown here. Its path on disk is in the technical details below."
-            : "The server did not return these bytes. The file is recorded at the path in the technical details below."
+            ? "No address for this file, so it cannot be shown. Its path is below."
+            : "These bytes did not come back. The file's path is below."
         }
       />
     );
@@ -263,7 +281,7 @@ export function TicketAttachmentsPanel({
            * it was invisible in the source. Anything with a count in it is built
            * here where a template literal can be read straight through.
            */}
-          {`${String(total)} file${total === 1 ? "" : "s"} attached to this ticket before the run started, served back from this run's own directory. `}
+          {`${String(total)} file${total === 1 ? "" : "s"} attached to this ticket. `}
           {/* THE ONE SENTENCE THAT KEEPS THE TWO KINDS APART IN WORDS. The
               structural separation is the panel; this is what a reader who
               remembers seeing images elsewhere needs in order to place them.
@@ -284,26 +302,32 @@ export function TicketAttachmentsPanel({
       <div className="space-y-3">
         {references.length > 0 && (
           <section className="space-y-1.5">
-            <GroupHeading>
-              reference images ({String(references.length)}), as stored
-            </GroupHeading>
             {/*
-             * THE ONE SENTENCE HERE THAT MAKES A CLAIM ABOUT THE SERVER, AND IT
-             * WAS TRACED TO THE LINE RATHER THAN ASSUMED. `designReferenceSection`
-             * (server ticket-refs.ts:588) and `builderReferenceSection` (:530)
-             * both do `...refs.images.map(image => image.path)` — a plain
-             * iteration of the manifest's image list with no filter — and
+             * THE TWO SENTENCES THAT WERE A PARAGRAPH HERE ARE NOW BEHIND THE
+             * "i", 2026-08-05 — MOVED, NOT DELETED. They change what a reader
+             * concludes from a run that ignored a reference (the paths WERE
+             * handed over; opening them is not guaranteed), so they may be
+             * hidden and may not be cut.
+             *
+             * THE CLAIM ABOUT THE SERVER IS UNCHANGED AND WAS TRACED TO THE LINE
+             * RATHER THAN ASSUMED. `designReferenceSection` (server
+             * ticket-refs.ts:588) and `builderReferenceSection` (:530) both do
+             * `...refs.images.map(image => image.path)` — a plain iteration of
+             * the manifest's image list with no filter — and
              * `RunDetail.references` is folded from that same list. So every row
              * in this group really does have its path in both prompts. The
              * second sentence is there because a path in a prompt is not a read:
              * ticket-refs.ts's own header says the block is "art direction that
              * is likely to be followed, not a constraint that is enforced".
              */}
-            <p className="text-[11.5px] leading-snug text-ink-dim">
-              Their absolute paths are written into the design and build prompts.
-              Whether an agent actually opened one is answered by this run&rsquo;s
-              Activity, not by this panel.
-            </p>
+            <GroupHeading>
+              reference images ({String(references.length)}), as stored
+              <Explain about="reference images" className="ml-1" testId="explain-references">
+                Their paths are written into the design and build prompts.
+                Whether an agent opened one is answered by this run&rsquo;s
+                Activity.
+              </Explain>
+            </GroupHeading>
             {/* Two-up at the sheet's 560px, matching `ScreenshotsPanel`'s
                 references grid rather than inventing a second card size on the
                 same screen. `items-start` because a failed image collapses to a
@@ -329,7 +353,7 @@ export function TicketAttachmentsPanel({
                   <AttachmentRow
                     key={attachment.sha256 + attachment.file}
                     attachment={attachment}
-                    note={`Filed as a reference image, but the route answers ${attachment.mediaType}, so nothing here can show it as one.`}
+                    note={`Filed as a reference image, but it is ${attachment.mediaType}, so it cannot be shown as one.`}
                   />
                 ),
               )}
@@ -339,24 +363,30 @@ export function TicketAttachmentsPanel({
 
         {documents.length > 0 && (
           <section className="space-y-1.5">
+            {/*
+             * SAME MOVE AS THE REFERENCES GROUP, 2026-08-05: this paragraph is
+             * now the "i" beside the heading. It is a MOVE and not a cut — the
+             * identity half changes what a reader DOES (re-uploading an edited
+             * file starts a different ticket with different tests), which is
+             * exactly the sentence the affordance exists for.
+             *
+             * WHAT IS CERTAIN, AND ONLY THAT — unchanged. The fingerprint half
+             * is checkable: `referenceIdentityMaterial` folds it into the ticket
+             * id. The consumption half is NOT settled in the server's own
+             * source: `http.ts`'s intake note says STORED, NOT READ, while
+             * `orchestrator.ts#seatDocuments` extracts text and hands it on.
+             * This panel refuses to decide that argument and says where the
+             * answer lives instead.
+             */}
             <GroupHeading>
               documents ({String(documents.length)}), as stored
+              <Explain about="documents" className="ml-1" testId="explain-documents">
+                Each file&rsquo;s fingerprint is part of this ticket&rsquo;s
+                identity, so changing one makes it a different ticket with tests
+                of its own. Whether an agent was handed the text inside is
+                answered by this run&rsquo;s Activity.
+              </Explain>
             </GroupHeading>
-            {/*
-             * WHAT IS CERTAIN, AND ONLY THAT. The digest half is checkable —
-             * `referenceIdentityMaterial` folds it into the ticket id. The
-             * consumption half is NOT settled in the server's own source:
-             * `http.ts`'s intake note says STORED, NOT READ, while
-             * `orchestrator.ts#seatDocuments` extracts text and hands it to the
-             * spec seat. This panel refuses to decide that argument in a
-             * subtitle and says where the answer lives instead.
-             */}
-            <p className="text-[11.5px] leading-snug text-ink-dim">
-              Each file&rsquo;s fingerprint is part of this ticket&rsquo;s
-              identity, so changing one makes it a different ticket, with
-              acceptance tests of its own. Whether an agent was handed the text
-              inside is answered by this run&rsquo;s Activity, not by this panel.
-            </p>
             <ul className="space-y-1.5">
               {documents.map((attachment) => (
                 <AttachmentRow key={attachment.sha256 + attachment.file} attachment={attachment} />
@@ -375,8 +405,7 @@ export function TicketAttachmentsPanel({
          */}
         <details className="rounded border border-line bg-canvas/40">
           <summary className="cursor-pointer px-3 py-2 text-[11.5px] text-ink-dim marker:text-ink-faint">
-            Technical details — where these files are on disk, and their
-            fingerprints
+            Where these files are on disk
           </summary>
           <ul className="space-y-2 px-3 pb-3">
             {[...references, ...documents].map((attachment) => (

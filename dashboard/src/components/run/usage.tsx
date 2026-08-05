@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import type { ModelOption, RunDetail } from "@/lib/api-types";
 import { cacheHitFraction, describeCost, totalTokens } from "@/lib/cost";
 import { formatPercent, formatTokens } from "@/lib/format";
+import { Explain } from "@/components/explain";
 import { Panel, cx } from "@/components/ui";
 
 function TokenCell({
@@ -154,11 +155,33 @@ export function UsagePanel({
               <dd className="numeric text-ink-dim">{formatTokens(totalTokens(tokens))}</dd>
             </div>
             {hitFraction !== null && (
-              <div
-                className="flex items-baseline justify-between gap-3"
-                title="Cache reads as a share of the whole input side. On a subscription plan this is the closest honest proxy for how expensive a long run is."
-              >
-                <dt className="text-ink-faint">Cache hit rate</dt>
+              /*
+               * THE 27-WORD `title` ON THIS ROW IS NOW AN `Explain`, 2026-08-05,
+               * AND THAT IS THE ONLY COPY CHANGE IN THIS FILE.
+               *
+               * It was the one real explanation on the panel and the only string
+               * here longer than a label. A `title` is a wall of prose that
+               * happens to be hidden from sight only: it never opens on a
+               * touchscreen, never opens on keyboard focus, and is not in the
+               * accessibility tree the way `aria-describedby` is. The fact is
+               * worth keeping — on a subscription run this row is the closest
+               * thing to a cost, which is why anyone opens this panel — so it
+               * moved to the affordance the rest of the app now uses.
+               *
+               * EVERYTHING ELSE HERE STAYED. The four `TokenCell` hints are
+               * three words each ("Uncached input tokens."), which is a label's
+               * gloss rather than a paragraph, and `cost.detail` under the
+               * headline belongs to `lib/cost.ts`, another lane's file.
+               */
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-ink-faint">
+                  Cache hit rate
+                  <Explain about="cache hit rate" className="ml-1" testId="explain-cache">
+                    Cache reads as a share of the whole input side. On a
+                    subscription plan it is the closest honest measure of how
+                    expensive a long run is.
+                  </Explain>
+                </dt>
                 <dd className="numeric text-ink-dim">{formatPercent(hitFraction, 1)}</dd>
               </div>
             )}

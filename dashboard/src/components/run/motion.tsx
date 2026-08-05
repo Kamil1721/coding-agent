@@ -59,7 +59,10 @@
  *
  *   - It is not an inventory. Motion outside the sampling window, below the
  *     sampled viewport, or behind an interaction the sampler never performed is
- *     absent from it and the subtitle says so.
+ *     absent from it, and that limit is still stated on screen — since
+ *     2026-08-05 behind the subtitle's `Explain` glyph rather than as a
+ *     paragraph under it. Hiding it was allowed because it changes what a reader
+ *     concludes; deleting it would not have been.
  *   - It says nothing about what was BUILT. This is the reference page as it was
  *     on the day the ticket was submitted; whether the artefact matches it is
  *     the gate's answer, not this panel's.
@@ -83,6 +86,7 @@ import type { ReactNode } from "react";
 
 import type { ApiMotionEntry, ApiMotionSpec } from "@/lib/api-types";
 import { formatClock } from "@/lib/format";
+import { Explain } from "@/components/explain";
 import { Panel } from "@/components/ui";
 
 /**
@@ -169,8 +173,7 @@ function MotionRow({ entry }: { entry: ApiMotionEntry }): ReactNode {
          * numbers would invent a measurement.
          */
         <p className="mt-1 text-[11.5px] leading-snug text-ink-dim">
-          Presence only: this was observed to run, and its content was NOT
-          compared. Nothing was measured about how it moves.
+          Seen to run. Nothing was measured about how it moves.
         </p>
       )}
     </li>
@@ -195,14 +198,23 @@ function ReadAddress({ spec }: { spec: ApiMotionSpec }): ReactNode {
   );
 }
 
-/** Detected libraries, and the sentence that stops the list reading as an order. */
+/**
+ * The libraries found on the reference page.
+ *
+ * THE TWO SENTENCES AFTER THE LIST ARE GONE, 2026-08-05 ("That names what the
+ * reference used. It is not an instruction to build with the same one."). The
+ * first restated the clause in front of it — "found on the reference page" —
+ * and the second answered a question this panel's reader is not asking: nobody
+ * reading a record of what a page did is choosing a dependency, and the builder
+ * who might be never sees this screen. The scope is carried by the words "on
+ * the reference page", which is why they stayed in the line.
+ */
 function LibrariesNote({ libraries }: { libraries: readonly string[] }): ReactNode {
   if (libraries.length === 0) return null;
   return (
     <p className="text-[11.5px] leading-snug text-ink-dim">
-      Motion libraries detected on the reference:{" "}
-      <span className="font-mono text-[11px] text-ink">{libraries.join(", ")}</span>. That names
-      what the reference used. It is not an instruction to build with the same one.
+      Motion libraries found on the reference page:{" "}
+      <span className="font-mono text-[11px] text-ink">{libraries.join(", ")}</span>.
     </p>
   );
 }
@@ -231,11 +243,34 @@ export function MotionReadoutPanel({
       subtitle={
         <>
           <ReadAddress spec={motion} />
+          {/*
+           * THE SUBTITLE'S SECOND HALF IS BEHIND THE "i", 2026-08-05, AND BOTH
+           * FACTS IN IT SURVIVE INTACT.
+           *
+           * "not an inventory of the page" changes what a reader concludes from
+           * a SHORT list — motion below the sampled viewport, outside the
+           * window, or behind a click is missing rather than absent — so it may
+           * be hidden and may not be cut. The rounding sentence that used to sit
+           * at the foot of the panel is in the same bubble for the same reason:
+           * it changes what a reader DOES, because copying "250ms" into a
+           * criterion as an exact value authors something no second reading can
+           * satisfy. Two facts, one glyph, because the panel takes ONE reading
+           * and both are properties of it.
+           *
+           * WHAT WAS DELETED RATHER THAN MOVED: "by sampling the rendered page
+           * frame by frame" (how the reading was taken, which changes nothing a
+           * reader does) and "Whether what was built matches any of it is the
+           * run's verdict to answer, not this panel's" — that one both used the
+           * banned word and described a consequence on a different panel.
+           */}
           <span className="text-ink-dim">
-            One automated reading, taken once when the ticket was submitted by
-            sampling the rendered page frame by frame. A sample of what moved
-            while the page was watched, not an inventory of the page.
+            What moved on the page, watched once as the ticket was submitted.
           </span>
+          <Explain about="this reading" className="ml-1" testId="explain-motion">
+            A sample of what moved while the page was watched, not an inventory
+            of the page. Times are rounded — to 50ms, and stagger to 20ms —
+            because two readings of the same page do not agree more closely.
+          </Explain>
         </>
       }
     >
@@ -251,11 +286,20 @@ export function MotionReadoutPanel({
          * nothing — printing it as "the reference honours the preference" would
          * be the panel claiming more than the data contains.
          */
+        /*
+         * SECOND SENTENCE MOVED BEHIND THE "i", 2026-08-05. On this branch it is
+         * the whole story rather than a caveat: a reader who takes an empty
+         * panel as "this page is still" has been misled by it, so the limit is
+         * kept — hidden, not cut. The first sentence lost "inside the sampling
+         * window", which the bubble now carries in words a reader has.
+         */
         <p className="text-[12px] leading-relaxed text-ink-dim">
-          This page was opened and watched, and nothing was observed to move
-          inside the sampling window. That is what this reading saw — it is not
-          proof that the page is still, and motion outside the window or behind
-          an interaction the sampler never performed would not appear here.
+          This page was opened and watched, and nothing moved.
+          <Explain about="what this reading saw" className="ml-1" testId="explain-still">
+            It is not proof that the page is still. Motion outside the moment it
+            was watched, or behind a click the reading never made, would not
+            appear here.
+          </Explain>
         </p>
       ) : (
         <div className="space-y-2.5">
@@ -284,21 +328,23 @@ export function MotionReadoutPanel({
            */}
           <p className="text-[11.5px] leading-snug text-ink-dim">
             {motion.respectsReducedMotion
-              ? "Read a second time with the reduced-motion preference set, this page was observed to move nothing."
-              : "Read a second time with the reduced-motion preference set, this page was not observed to stop: it kept moving, or that second reading could not be taken. Nothing on the wire tells those apart."}
+              ? "Read again with reduced motion switched on, this page moved nothing."
+              : "Read again with reduced motion switched on, this page did not stop — or that second reading could not be taken. The record cannot tell those apart."}
           </p>
 
           {/*
-           * THE ROUNDING, ON SCREEN RATHER THAN IN A DOCBLOCK. Every figure
-           * above is a bucket, and a reader who copies one into a criterion as
-           * an exact value is authoring something no second reading can satisfy.
+           * THE ROUNDING PARAGRAPH THAT WAS HERE IS IN THE SUBTITLE'S "i",
+           * 2026-08-05, and the reason it is kept at all is unchanged: every
+           * figure above is a bucket, and a reader who copies one into a
+           * criterion as an exact value authors something no second reading can
+           * satisfy. Its second sentence — "Whether what was built matches any
+           * of it is the run's verdict to answer, not this panel's" — is DELETED
+           * rather than moved: it named a different panel's job, and this
+           * panel's title already says the reading is of the reference.
+           *
+           * THIS BRANCH IS NOW SILENT, WHICH IS THE POINT. Both remaining lines
+           * under the list state an observation; neither explains the panel.
            */}
-          <p className="text-[11.5px] leading-snug text-ink-dim">
-            Durations are rounded to the nearest 50ms and stagger to the nearest
-            20ms, because two readings of the same page do not agree more closely
-            than that. Whether what was built matches any of it is the run&rsquo;s
-            verdict to answer, not this panel&rsquo;s.
-          </p>
         </div>
       )}
     </Panel>

@@ -53,6 +53,8 @@
  * produces no `FileEditOutput` and therefore no patch, ever. See
  * {@link ShellEditNote}. A file that changed with no card here is not a bug, and
  * a list that implies otherwise is the same defect as a capped diff drawn whole.
+ * THE THREE EXAMPLES ARE NOW ONLY HERE: the UI sentence was cut to its claim on
+ * 2026-08-05, and this line is where `sed -i` and friends still live.
  *
  * `[REDACTED:HIGH_ENTROPY_TOKEN]` INSIDE A LINE IS THE REDACTOR WORKING, on a
  * lockfile integrity hash or a minified bundle, and is rendered verbatim.
@@ -113,8 +115,12 @@ function CappedNotice({ diff }: { diff: GraphDiff }): ReactNode {
     clauses.push(`Showing ${String(shown)} of ${String(total)} lines.`);
   }
   if (diff.droppedHunks > 0) {
+    // "block of changes", NOT "hunk" — 2026-08-05. `hunk` is the right word in
+    // the type, in `hunkHeader` and in `git`'s own manual, and it stays in all
+    // three; it is not a word to hand a reader who has never run `git diff`.
+    // The `@@` header above says the same thing to anyone who has.
     clauses.push(
-      `${String(diff.droppedHunks)} further ${diff.droppedHunks === 1 ? "hunk is" : "hunks are"} not shown.`,
+      `${String(diff.droppedHunks)} further ${diff.droppedHunks === 1 ? "block of changes is" : "blocks of changes are"} not shown.`,
     );
   }
   if (diff.droppedLines === 0 && diff.droppedHunks === 0) {
@@ -129,8 +135,7 @@ function CappedNotice({ diff }: { diff: GraphDiff }): ReactNode {
       data-testid="diff-capped"
       className="border-t border-warn/40 bg-warn-dim/60 px-2 py-1 text-[11px] leading-snug text-ink-dim"
     >
-      Part of this patch is not shown. {clauses.join(" ")} The counts above are of the whole
-      edit.
+      Part of this edit is not shown. {clauses.join(" ")} The counts above cover all of it.
     </p>
   );
 }
@@ -181,9 +186,15 @@ export function FileDiff({ diff, tool }: { diff: GraphDiff; tool: string }): Rea
 
       {diff.hunks.length === 0 ? (
         <p className="px-2 py-1.5 text-[11px] leading-snug text-ink-faint">
+          {/* THE TWO BRANCHES STAY TWO SENTENCES. "No room was left to send
+              them" and "nothing was sent at all" are different facts about the
+              same empty box, and the counts line reads differently under each:
+              exact in the first case, all-there-is in the second. What went is
+              the phrase "per-node budget for patch bodies", which named an
+              internal limit the reader cannot see or change. */}
           {diff.capped
-            ? "No lines are shown for this edit — this agent's per-node budget for patch bodies was already spent. The counts above are still exact."
-            : "This edit arrived with no patch body. The counts above are all that was recorded."}
+            ? "No lines were sent for this edit — there was no room left for them. The counts above are exact."
+            : "This edit arrived with no lines. The counts above are all that was recorded."}
         </p>
       ) : (
         /*
@@ -254,8 +265,8 @@ export function FileDiff({ diff, tool }: { diff: GraphDiff; tool: string }): Rea
           data-testid="diff-inconsistent"
           className="border-t border-line px-2 py-1 text-[11px] leading-snug text-ink-faint"
         >
-          This edit reports more changed lines than it carries, and was not marked as capped.
-          The counts are what the patch stated.
+          This edit reports more changed lines than it shows, and nothing was marked as
+          missing. The counts are what the patch stated.
         </p>
       )}
     </div>
@@ -281,10 +292,17 @@ export function FileDiff({ diff, tool }: { diff: GraphDiff; tool: string }): Rea
 export function ShellEditNote({ bashCalls }: { bashCalls: number | null }): ReactNode {
   return (
     <p data-testid="diff-shell-note" className="text-[11px] leading-relaxed text-ink-faint">
-      Only edits made with the file tools leave a patch.{" "}
+      {/* KEPT INLINE, SHORTENED BY A THIRD. This is the one sentence on the
+          panel that stops the list above being read as the complete list of
+          edits, and a reader who misses it draws a wrong conclusion that nothing
+          later corrects — the one case the house rule keeps on screen. What went
+          is repetition: "has no patch anywhere in the record AND cannot appear
+          above" said one thing twice, and the three shell examples were an
+          illustration of a word the reader already has. */}
+      Only edits made with the file tools appear here.{" "}
       {bashCalls === null
-        ? "A file changed by a shell command — sed -i, a heredoc, npm init — has no patch anywhere in the record and cannot appear above."
-        : `This agent also ran Bash ${String(bashCalls)} ${bashCalls === 1 ? "time" : "times"}; anything it changed that way has no patch anywhere in the record and cannot appear above.`}
+        ? "A file changed by a shell command leaves no patch to show."
+        : `This agent also ran Bash ${String(bashCalls)} ${bashCalls === 1 ? "time" : "times"}; anything it changed that way leaves no patch to show.`}
     </p>
   );
 }

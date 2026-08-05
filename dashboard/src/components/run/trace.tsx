@@ -50,32 +50,41 @@ const LEVEL_CLASS = {
   error: "text-fail",
 } as const;
 
+/*
+ * THE SIX HINTS ARE THE BADGE'S `title`, AND THEY WERE REWRITTEN IN PLAIN WORDS
+ * ON 2026-08-05 RATHER THAN SHORTENED FOR THE SAKE OF IT. Each one still says
+ * the same thing about the same state; what went is the vocabulary only this
+ * repository uses — `/events` (a route the reader cannot visit), "polling",
+ * "the API", "a terminal state". "The run itself is unaffected" is the one
+ * clause here worth its length: a dropped connection looks like a broken run,
+ * and that sentence is the only thing that says it is not.
+ */
 function streamBadge(stream: StreamState): { tone: Tone; label: string; hint: string } {
   switch (stream) {
     case "open":
-      return { tone: "pass", label: "live", hint: "Streaming from /events." };
+      return { tone: "pass", label: "live", hint: "Events are arriving as they happen." };
     case "connecting":
-      return { tone: "info", label: "connecting", hint: "Opening the event stream." };
+      return { tone: "info", label: "connecting", hint: "Opening the live connection." };
     case "reconnecting":
       return {
         tone: "warn",
         label: "reconnecting",
-        hint: "The stream dropped. The run itself is unaffected; state is being re-read from the API.",
+        hint: "The live connection dropped. The run itself is unaffected, and this page keeps refreshing.",
       };
     case "offline":
       return {
         tone: "warn",
         label: "not streaming",
-        hint: "Gave up on the event stream and fell back to polling. Use reconnect to try again.",
+        hint: "No live connection. This page refreshes on a timer instead — use reconnect to try again.",
       };
     case "closed":
       return {
         tone: "neutral",
         label: "closed",
-        hint: "The run reached a terminal state, so the stream was closed deliberately.",
+        hint: "The run finished, so the live connection was closed.",
       };
     case "idle":
-      return { tone: "neutral", label: "idle", hint: "No stream open." };
+      return { tone: "neutral", label: "idle", hint: "No live connection." };
     default:
       return { tone: "neutral", label: String(stream), hint: "" };
   }
@@ -171,10 +180,16 @@ export function TracePane({
            * of that layout. `ActivityPanel` mounts this pane and NOTHING ELSE,
            * so "below" now points at the end of the panel. The facts did not
            * move — they are on the Result panel — so the sentence names it.
+           *
+           * CUT TO TWO CLAUSES LATER THE SAME DAY, and the clause that went was
+           * "so there is nothing left to watch arrive": an empty pane on a
+           * finished run does not need to be told it is empty. The pointer at
+           * Result is the only part of this string a reader can act on, so it is
+           * the part that stayed.
            */
           <EmptyState>
             {stream === "closed"
-              ? "This run finished before the page was opened, so there is nothing left to watch arrive. The criteria and the captures on Result are the record."
+              ? "This run finished before you opened this page. The criteria and captures are on Result."
               : "Waiting for the first event."}
           </EmptyState>
         ) : (

@@ -67,6 +67,7 @@ import {
   languageOf,
   type CodeNode,
 } from "@/lib/code-tree";
+import { Explain } from "@/components/explain";
 import { Button, EmptyState, MonoPath, Panel, Skeleton, cx } from "@/components/ui";
 
 /** `+` / `−` rather than a chevron glyph: no icon set is loaded on this page. */
@@ -207,8 +208,11 @@ function FileView({
           data-testid="code-truncated"
           className="border-b border-warn/40 bg-warn-dim/60 px-3 py-1.5 text-[11.5px] leading-snug text-ink-dim"
         >
-          Truncated. Showing the first {formatBytes(shownBytes)} of {formatBytes(file.bytes)} — the
-          rest is on disk only. Open the file in a terminal to read all of it.
+          {/* "Truncated." was the label and the sentence after it said the same
+              thing in numbers, so the label went and the numbers stayed. The
+              second half is what a reader can act on and is kept whole. */}
+          Showing the first {formatBytes(shownBytes)} of {formatBytes(file.bytes)}. The rest is on
+          disk only — open the file there to read all of it.
         </p>
       )}
 
@@ -217,8 +221,11 @@ function FileView({
           data-testid="code-redacted"
           className="border-b border-line bg-surface-raised px-3 py-1.5 text-[11.5px] leading-snug text-ink-dim"
         >
-          {file.redactions} span{file.redactions === 1 ? "" : "s"} redacted. Something in this file
-          matched a credential pattern and was replaced before it reached the browser.
+          {/* KEPT INLINE AND KEPT WHOLE. A reader looking at code with holes in
+              it needs to know the holes were put there on the way out, not that
+              the file is broken — and the file on disk is not what is shown. */}
+          {file.redactions} span{file.redactions === 1 ? "" : "s"} redacted — they matched a
+          credential pattern and were replaced before this file reached the browser.
         </p>
       )}
 
@@ -226,7 +233,9 @@ function FileView({
         <div className="px-3 py-6 text-center text-[12px] leading-relaxed text-ink-faint">
           {file.withheld !== null
             ? file.withheld
-            : `Binary — ${formatBytes(file.bytes)} that are not text. Nothing is rendered rather than a page of replacement characters.`}
+            : /* The second sentence explained why the box is empty, which the
+                 empty box already says. DELETED 2026-08-05. */
+              `Binary — ${formatBytes(file.bytes)} that are not text.`}
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-auto">
@@ -320,7 +329,24 @@ export function CodeBrowser({ runId }: { runId: string }): ReactNode {
   return (
     <Panel
       title={tree === undefined ? "Code" : `Code · ${String(fileCount)} files`}
-      subtitle="The run's workspace, read-only. Credential files and the git directory are refused by the server, and every file served is passed through the redactor first."
+      /*
+       * THE SUBTITLE'S SECOND SENTENCE IS BEHIND THE "i", 2026-08-05 — MOVED,
+       * NOT CUT. It is the answer to the only question this panel makes a reader
+       * ask that the panel cannot otherwise answer: why a file they know was
+       * written is not in the tree. A reader who does not know it concludes the
+       * agent never wrote `.env`, which is a wrong conclusion the UI would have
+       * caused. The first sentence stays inline because "read-only" has to be
+       * read BEFORE trying to change something here.
+       */
+      subtitle={
+        <>
+          The run&rsquo;s workspace, read-only.
+          <Explain about="what is served here" className="ml-1" testId="explain-code">
+            Credential files and the git directory are never served, and
+            everything else is passed through the redactor on the way out.
+          </Explain>
+        </>
+      }
       bodyClassName="p-0"
       actions={
         <Button
@@ -343,10 +369,12 @@ export function CodeBrowser({ runId }: { runId: string }): ReactNode {
       ) : tree === undefined ? (
         <div className="px-3 py-3">{isLoading ? <Skeleton rows={6} /> : null}</div>
       ) : tree.entries.length === 0 ? (
-        <EmptyState>
-          This run&rsquo;s workspace is empty. A run that was cancelled before its build segment
-          wrote no files.
-        </EmptyState>
+        /* SECOND SENTENCE DELETED 2026-08-05 ("A run that was cancelled before
+           its build segment wrote no files."). It offered ONE possible cause for
+           the emptiness, and this panel cannot tell whether that is the cause
+           here — the run's own status can, one panel away. A guess dressed as an
+           explanation is the failure mode this repository keeps shipping. */
+        <EmptyState>This run&rsquo;s workspace is empty.</EmptyState>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-[minmax(200px,264px)_minmax(0,1fr)]">
           {/*
@@ -373,7 +401,7 @@ export function CodeBrowser({ runId }: { runId: string }): ReactNode {
 
             {tree.truncated && (
               <p className="border-t border-line px-3 py-1.5 text-[11px] leading-snug text-warn">
-                The listing hit its entry cap. Some of this workspace is not shown.
+                Some of this workspace is not shown — the listing hit its limit.
               </p>
             )}
 
