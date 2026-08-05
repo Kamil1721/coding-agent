@@ -29,7 +29,8 @@
  * is what keeps delivery at-most-once.
  *
  * THIS COMPONENT CANNOT TELL THE TWO APART BEFORE THE FACT. It is handed `runIsOver`
- * and a message list, not the run's status, so the copy below describes both paths.
+ * and a message list, not the run's status, so the send button's "i" describes both
+ * paths (it was a permanent paragraph under the composer until 2026-08-05).
  * The per-message state line does NOT disambiguate them either: `deliveredAt` is a
  * single stamp written by whichever path took the message, so "read at 14:02" means
  * "it reached a prompt", not "it went down the live channel". An `isParked` prop from
@@ -59,8 +60,12 @@
  * TEXT-BEARING TURN OF THE SEGMENT, verbatim, capped at 2000 characters. It is not
  * a generated answer, not a transcript, and not a guarantee the question was even
  * addressed — on a segment cut short by a cancel or a rate limit it is simply the
- * last thing the agent happened to narrate. The copy under the composer says this
- * in one sentence rather than letting the panel imply the run wrote back to him.
+ * last thing the agent happened to narrate. SAYING SO IS STILL COMPULSORY, and
+ * since 2026-08-05 it is said on the `run` ROW ITSELF, behind that row's "i"
+ * ({@link Message}), instead of in a permanent paragraph under the composer. The
+ * paragraph was a caption for a row that is often not on screen; the glyph is on
+ * the row that can be misread as an answer. Deleting the fact outright is not
+ * open to a later edit — without it the panel implies the run wrote back to him.
  *
  * NO DELIVERY LINE UNDER A `run` ROW, AND THIS FILE IS WHERE THAT RULE LIVES.
  * `ChatMessage.deliveredAt` is a property of an OWNER row: on a `run` row it is
@@ -108,6 +113,10 @@
  *   third argument this component now passes is dropped by the language, silently
  *   and without a type error (a 2-ary function is assignable to a 3-ary type).
  *
+ * (Both bullets above describe the WIRING, not copy: the sentence the owner reads
+ * about a chat document now lives behind the "i" beside the attach button, and is
+ * rendered only when `canAttachDocuments` is true — i.e. nowhere, today.)
+ *
  * Shipping the control ACTIVE against that would be the exact defect
  * `ticket-references.browser.spec.ts` was written for — a chip that renders and
  * posts nothing — so it ships refused, with the reason on screen. Both files are
@@ -119,14 +128,32 @@
  * documents under `runs/<id>/chat/` and emits a `warn` saying they were STORED,
  * NOT DELIVERED: the channel to a running agent carries text and image paths
  * only. That is the server's design, not a gap in this component, and it is why
- * the copy under the composer says where a document that needs reading has to go
- * instead — the TICKET form, where it becomes part of the ticket's identity.
+ * the "i" beside the attach button says where a document that needs reading has to
+ * go instead — the TICKET form, where it becomes part of the ticket's identity.
+ *
+ * ============================================================================
+ * THE PROSE CUT, 2026-08-05 — WHAT LEFT THE SCREEN AND WHERE IT WENT
+ * ============================================================================
+ *
+ * The owner screenshotted this panel as the worst instance of "these long
+ * explanations for everything ... If something really must have a explanation it
+ * should have little i icon". Two paragraphs, ninety words, permanently under the
+ * send button. They are gone; the three facts inside them are not — each is behind
+ * an {@link Explain} on the control it is about, and the block comment where the
+ * paragraphs stood names every clause and its outcome. The banned words went with
+ * them: "segment", "session", "the acceptance suite is frozen", "terminal run".
+ *
+ * WHAT MAY NOT COME BACK: a caption. If a future edit wants to explain something
+ * here, the test is `explain.tsx`'s — a fact that changes what the reader DOES may
+ * be hidden and may never be deleted; anything that restates a label on screen, or
+ * describes a consequence of an action he has not taken, is deleted instead.
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { formatTimeOnly } from "@/lib/format";
 import { AttachmentChips } from "@/components/attachment-chips";
+import { Explain } from "@/components/explain";
 import { Button, cx } from "@/components/ui";
 import {
   acceptAttribute,
@@ -258,10 +285,15 @@ const MAX_TEXT_CHARS = 8_000;
  * IT IS THE OWNER'S SENTENCE, NOT A DEVELOPER'S: it says where the document has
  * to go instead, because the ticket form is the surface that does read one into
  * the run's identity. The wiring detail belongs in the header, above.
+ *
+ * SHORTENED 2026-08-05 AND IT STAYS INLINE. It is a REFUSAL — it appears only
+ * after he has already dropped a file, and a refusal that hides behind an "i"
+ * is a file that vanished for no stated reason. What went is "to the server
+ * yet, so it was not attached", which restated the failure the sentence is
+ * already reporting.
  */
 const DOCUMENTS_NOT_WIRED =
-  "this run page cannot carry a document to the server yet, so it was not attached. " +
-  "Attach it to the ticket when you start a run.";
+  "this page cannot send a document yet. Attach it to the ticket when you start a run.";
 
 /**
  * One message in either direction, with an OWNER message's delivery state spelled
@@ -329,6 +361,37 @@ function Message({
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
           {mine ? "you" : "the run"}
+          {/*
+            * WHAT A REPLY IS, ON THE ROW THAT COULD BE MISREAD AS AN ANSWER —
+            * MOVED HERE 2026-08-05 out of the permanent paragraph under the
+            * composer. The fact changes what the reader DOES with a reply: a
+            * `run` row is the agent's own last narration of that stretch of
+            * work, so taking it as a reply to the question above it is how he
+            * concludes something the run never said. It is on the `run` row and
+            * not on the panel heading because it is untrue of an owner row, and
+            * `plan-dialogue.tsx` draws the same label over rows where the seat
+            * really did answer him.
+            */}
+          {!mine && (
+            <Explain
+              about="what the run sends back"
+              /*
+               * ONE TESTID PER ROW, AND IT IS NOT A CONVENIENCE. A shut bubble
+               * is inline inside its own trigger's wrapper; an OPEN one is
+               * portaled to `document.body`, i.e. to the end of the document.
+               * With a shared testid, `getByTestId("explain-reply-body")
+               * .first()` therefore resolves to a DIFFERENT row's bubble the
+               * moment one opens — and since every one of these carries the same
+               * sentence, the text assertion still passes while the width
+               * assertion reads a shut bubble. Found by running it.
+               */
+              testId={`explain-reply-${String(message.seq)}`}
+              className="ml-1"
+            >
+              This is the last thing the agent wrote in that stretch of work, word for
+              word — not an answer written for you.
+            </Explain>
+          )}
         </span>
         <span className="numeric text-[10px] text-ink-faint">
           {formatTimeOnly(message.at)}
@@ -381,14 +444,32 @@ function ReplyGapRow({ gap }: { gap: ReplyGap }): ReactNode {
    * mixed — read and queued — so a singular possessive would name a specific row the
    * row above may be contradicting. Each message's own state stays under it.
    */
+  /*
+   * ALL FOUR TRIMMED 2026-08-05, AND ALL FOUR STAYED INLINE. This row is the
+   * one place an ABSENCE is stated; hiding it behind an "i" would put the
+   * silence back to being a gap the reader sits and waits through, which is the
+   * defect the row was built for. What went was the mechanism behind each
+   * sentence, not its claim:
+   *
+   *   · "Nothing more can arrive" — the badge above already reads THE RUN DID
+   *     NOT ANSWER on a run that has ended, in the past tense.
+   *   · "One is stored when a build segment ends, and only if the agent
+   *     produced text" — the first half survives in plain words ("when the run
+   *     next stops"), the second is what the `run` row's own "i" says.
+   *
+   * "REOPEN THIS TAB" SURVIVES IN BOTH LIVE SENTENCES and is the reason they
+   * are not shorter still: nothing refetches while this panel sits open
+   * (`page.tsx:314-340`), so a reader who is not told to reopen waits on an
+   * arrival this component cannot observe.
+   */
   const final = gap.kind === "unanswered";
   const sentence = final
     ? gap.read
-      ? "The run read what you sent and no reply was recorded before it ended. Nothing more can arrive."
-      : "The run ended without reading what you sent, so nothing was ever there to answer it."
+      ? "It was read, and no reply was recorded before the run ended."
+      : "The run ended before reading it, so there was nothing to answer."
     : gap.read
-      ? "It reached the run, and no reply has been recorded yet. One is stored when a build segment ends, and only if the agent produced text — reopen this tab to re-read."
-      : "Not read yet, so there is nothing to answer. Reopen this tab to re-read.";
+      ? "It reached the run. A reply is only stored when the run next stops — reopen this tab to check."
+      : "Not read yet, so there is nothing to answer — reopen this tab to check.";
 
   return (
     <li className="mr-5 rounded-sm border border-dashed border-line-strong px-2 py-1.5">
@@ -570,7 +651,30 @@ export function OrchestratorChat({
         * clever name. A section heading is a label, not a description of intent.
         */}
       <h4 className="flex items-baseline justify-between gap-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
-        <span>Chat</span>
+        <span>
+          Chat
+          {/*
+            * WHAT THIS CHAT CAN AND CANNOT CHANGE — MOVED HERE 2026-08-05 from
+            * the second permanent paragraph under the composer, and reworded
+            * out of "the acceptance suite is frozen", which used two words the
+            * owner does not use. The claim is `owner-message.ts:84-101`
+            * verbatim: the instruction is applied wherever the sealed tests are
+            * indifferent to it, and one that contradicts the ticket is done as
+            * far as it safely can be, the original requirement kept working,
+            * and the conflict named in the final summary. It changes what he
+            * TYPES — "drop the contact page" is a different request from "make
+            * the hero warmer" — so it is hidden, not deleted.
+            */}
+          <Explain
+            about="what this chat can change"
+            testId="explain-scope"
+            className="ml-1"
+          >
+            The tests this run is graded on were written before any code and cannot be
+            edited. Ask for changes they do not cover; one that contradicts the ticket is
+            reported back, not made quietly.
+          </Explain>
+        </span>
         {messages.length > 0 && (
           <span className="numeric text-ink-faint/70">{messages.length}</span>
         )}
@@ -605,10 +709,17 @@ export function OrchestratorChat({
         * the chat is, that it takes images, and why it is not accepting one right now.
         */}
       <div className="mt-1.5 space-y-1.5">
+        {/*
+          * ONE SENTENCE, AND THE MOVE IS THE HALF THAT SURVIVED. It said "the
+          * server refuses a message to a terminal run rather than queueing it
+          * into nothing" — the mechanism behind a box that is already visibly
+          * disabled, and "terminal run" is not a phrase the owner uses. What is
+          * left is the state and the way out of it, which is all a reader can
+          * act on here.
+          */}
         {runIsOver && (
           <p className="rounded-sm border border-dashed border-line-strong px-2 py-1.5 text-[11.5px] leading-relaxed text-ink-dim">
-            This run has finished — the server refuses a message to a terminal run
-            rather than queueing it into nothing. Start a new run to use this.
+            This run has finished. Start a new run to use this.
           </p>
         )}
         <fieldset disabled={runIsOver} className="space-y-1.5 disabled:opacity-50">
@@ -667,6 +778,56 @@ export function OrchestratorChat({
             <Button variant="primary" onClick={send} disabled={busy}>
               {busy ? "sending…" : "send"}
             </Button>
+            {/*
+              * THE TIMING FACT, ON THE CONTROL IT IS ABOUT — MOVED HERE
+              * 2026-08-05 out of the first permanent paragraph under this row.
+              * It is the one clause in either paragraph that changes the ORDER
+              * of two things the reader is about to do, so it is hidden and not
+              * deleted; `explain.tsx` names it as the type specimen.
+              *
+              * IT STILL DESCRIBES BOTH PATHS, WHICH IS THE PART THAT MAY NOT BE
+              * CUT. `pushLiveMessage` refuses when there is no open segment and
+              * the row sits pending until a resume composes the next prompt;
+              * this composer renders on parked runs too and is not told the
+              * status (see the file header), so a bubble describing only the
+              * live path would be a false claim on exactly the runs where he
+              * most needs to type.
+              *
+              * WHAT WAS DELETED AROUND IT: "goes into the open session", "there
+              * is no session to push into", "folded into the next prompt" —
+              * three ways of naming a mechanism whose OUTCOME is already
+              * reported per message, under the message, as `queued — not read
+              * yet` or `read at 14:02`.
+              */}
+            {/*
+              * `-ml-1` PULLS IT ONTO THE SEND BUTTON. The row is `gap-2` with
+              * "attach images" on the other side, and at an even gap the glyph
+              * reads as belonging to whichever control the eye reaches first.
+              * Half the gap on the left and the full gap on the right is what
+              * binds it to `send`, which is the control it is about.
+              *
+              * NOT RENDERED ON A FINISHED RUN, AND THAT WAS FOUND BY CLICKING
+              * IT RATHER THAN BY READING IT. Everything in this row lives inside
+              * `<fieldset disabled={runIsOver}>`, which disables a <button>
+              * DESCENDANT — so on a terminal run the trigger was on screen,
+              * greyed, and refused every pointer and keyboard event: a fact
+              * moved behind a control nobody can open is a fact deleted with
+              * extra steps. The fact is about WHEN A MESSAGE IS READ, and on a
+              * finished run no message can be sent at all — the dashed notice
+              * above says so — so the honest fix is no glyph rather than a dead
+              * one.
+              */}
+            {!runIsOver && (
+              <Explain
+                about="when the run reads this"
+                testId="explain-timing"
+                className="-ml-1"
+              >
+                While the run is working it reads this at its next step. While it is
+                stopped the message waits — send it before you resume, or that prompt is
+                composed without it.
+              </Explain>
+            )}
             <button
               type="button"
               onClick={() => fileInput.current?.click()}
@@ -674,6 +835,29 @@ export function OrchestratorChat({
             >
               {canAttachDocuments ? "attach images or documents" : "attach images"}
             </button>
+            {/*
+              * SHOWN ONLY WHERE IT IS TRUE, AND IT IS A WARNING RATHER THAN A
+              * FEATURE NOTE. When documents are refused the refusal itself says
+              * where to put one, so this sentence would be a second copy. When
+              * they are accepted the owner needs the fact the server states on
+              * the run's own stream: a chat document is STORED under
+              * `runs/<id>/chat/` and is NOT delivered into the session — the
+              * live channel carries text and image paths only — so a scope sent
+              * here is filed, not read.
+              *
+              * BEHIND THE "i" SINCE 2026-08-05, ON THE INTAKE IT DESCRIBES,
+              * where a permanent paragraph used to sit under the composer. It
+              * is a property of a control he has to reach for before it can
+              * bite, and `canAttachDocuments` is false at every call site today.
+              * The fact survives because it changes where he puts a document the
+              * run has to READ.
+              */}
+            {canAttachDocuments && (
+              <Explain about="documents sent here" testId="explain-documents">
+                A document sent here is stored with the run and is not handed to the agent.
+                One the run has to read belongs on the ticket.
+              </Explain>
+            )}
             <input
               ref={fileInput}
               type="file"
@@ -694,57 +878,37 @@ export function OrchestratorChat({
           </div>
 
           {/*
-            * THE PROMISE, STATED ONCE, WHERE THE EXPECTATION IS SET — AND IT STILL
-            * STATES BOTH PATHS, WHICH IS THE PART THAT MAY NOT BE CUT. `pushLiveMessage`
-            * refuses when there is no open segment and the message sits pending until a
-            * resume composes the next prompt; this composer renders on parked runs too,
-            * so a sentence describing only the live path would be a false claim on
-            * exactly the runs where the owner most needs to type. This component is not
-            * told the status (see the file header), so it describes both rather than
-            * picking one.
+            * ═══ THE TWO PARAGRAPHS THAT USED TO LIVE HERE ARE GONE ═══
             *
-            * TRIMMED 2026-07-31 WITH THE REPLY DIRECTION, AND THE CUTS ARE THE POINT —
-            * the panel grew a row and had to give back more than it took:
+            * 2026-08-05. Ninety words of permanent prose under the send button,
+            * screenshotted by the owner as the worst instance of "these long
+            * explanations for everything". Every clause is accounted for; none
+            * of the three facts among them was dropped:
             *
-            *   · "the same as typing into the CLI while it works" — an analogy about a
-            *     tool the reader may never have opened, next to the mechanism itself.
-            *   · "Each message you send carries its own state underneath it — queued,
-            *     read at a time, or never read." A caption for three labels that are on
-            *     screen, under the messages, in the words it was quoting.
+            *   MOVED, to the "i" on the SEND BUTTON — "send before you resume,
+            *     or that prompt is composed without it", plus the running/
+            *     stopped distinction it depends on. It changes the ORDER of two
+            *     things he is about to do.
+            *   MOVED, to the "i" on the CHAT HEADING — the sealed-tests scope
+            *     rule, reworded out of "the acceptance suite is frozen".
+            *   MOVED, to the "i" on each `run` ROW — "what comes back is the
+            *     agent's own last message … not an answer written for you". It
+            *     sits on the row that could be misread rather than in a caption
+            *     for a row that may not be on screen.
+            *   DELETED — "While a segment is running this goes into the open
+            *     session"; "there is no session to push into"; "it is queued and
+            *     folded into the next prompt". The OUTCOME of all three is
+            *     already printed under each message as `queued — not read yet`,
+            *     `read at 14:02` or `never read — the run ended first`.
+            *   DELETED — "Images are read before it acts on them." A promise
+            *     about a consequence of an action he has not taken yet, next to
+            *     a placeholder already inviting him to drop one.
             *
-            * WHAT REPLACED THEM IS ONE SENTENCE, and it is here rather than in the reply
-            * row because it is true of every `run` row and the row only appears when
-            * there is none: a reply is the agent's own last turn of the segment, and
-            * saying so is what stops the panel reading as a chatbot that answers.
+            * IF THIS EVER GROWS BACK: the test that stops it is
+            * `chat-plan-copy.browser.spec.ts`, which asserts the composer's own
+            * prose stays under a word count and that each moved fact is still
+            * reachable through its glyph.
             */}
-          <p className="text-[10.5px] leading-relaxed text-ink-faint">
-            While a segment is running this goes into the open session and is picked up
-            at the agent&rsquo;s next step. Parked or between segments there is no
-            session to push into, so it is queued and folded into the next prompt — send
-            before you resume, or that prompt is composed without it.
-          </p>
-          <p className="mt-1 text-[10.5px] leading-relaxed text-ink-faint">
-            Images are read before it acts on them. What comes back is the agent&rsquo;s
-            own last message of the segment, stored verbatim — not an answer written for
-            you. The acceptance suite is frozen, so ask for changes it is indifferent to;
-            a conflict is reported rather than silently traded away.
-          </p>
-          {/*
-            * SHOWN ONLY WHERE IT IS TRUE, AND IT IS A WARNING RATHER THAN A
-            * FEATURE NOTE. When documents are refused the refusal itself says
-            * where to put one, so this sentence would be a second copy. When they
-            * are accepted the owner needs the fact the server states on the run's
-            * own stream: a chat document is STORED under `runs/<id>/chat/` and is
-            * NOT delivered into the session — the live channel carries text and
-            * image paths only — so a scope sent here is filed, not read.
-            */}
-          {canAttachDocuments && (
-            <p className="mt-1 text-[10.5px] leading-relaxed text-ink-faint">
-              A document sent here is stored with the run and is not handed to the
-              agent — the live channel carries text and images only. A document the
-              run has to read belongs on the ticket.
-            </p>
-          )}
         </fieldset>
       </div>
     </section>

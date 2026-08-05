@@ -39,6 +39,15 @@
  *     state (`planDialogueFrom` drops the rest).
  *   · Nothing explains itself pre-emptively. "Why does this matter" is a control,
  *     not a paragraph.
+ *   · SINCE 2026-08-05, THE PANEL'S OWN PROSE IS THREE SHORT LINES. The closing
+ *     paragraph is gone (its one fact — that this is the run's chat and the Chat
+ *     tab feeds it — is behind the subtitle's `Explain`), the clock is one
+ *     sentence with its turn bound behind an `Explain`, and both button titles
+ *     lost the clauses that repeated each other. What is INLINE is what a reader
+ *     must have before he acts: the clock's consequence, the question-mark
+ *     warning, and the "Sent" line. Rule for any future edit, from
+ *     `explain.tsx`: a fact that changes what the user does may be hidden and may
+ *     never be deleted; a sentence restating a label on screen is deleted.
  *
  * ─── OPEN VERSUS ANSWERED, AT A GLANCE, PER QUESTION ───
  *
@@ -70,6 +79,7 @@ import {
   type PlanQuestionView,
 } from "@/lib/plan-dialogue";
 import type { Tone } from "@/lib/presentation";
+import { Explain } from "@/components/explain";
 import { Badge, Button, Panel, cx } from "@/components/ui";
 
 /* ------------------------------------------------------------------ */
@@ -240,9 +250,46 @@ function PlanClock({
             )}
           </p>
         )}
+        {/*
+          * THE FIRST SENTENCE IS KEPT INLINE, ON PURPOSE AND AGAINST THE
+          * DEFAULT. Everything else this lane touched was deleted or hidden;
+          * this one earns the screen by `explain.tsx`'s own test — he must know
+          * it BEFORE he acts and he cannot recover if he misses it. The window
+          * closing is not undoable: `closePlan` writes every open question's
+          * `ifUnanswered` into the brief and the criteria are authored from it.
+          * A reader who learns this afterwards learns it from a run that has
+          * already decided.
+          *
+          * "— NOT A FAILURE" WENT, and the sentence still must not read as one:
+          * the tone is `info`, never `warn` (see this component's docblock), and
+          * "carries on and records what it assumed" contains no failure word.
+          *
+          * THE TURN BOUND MOVED BEHIND THE "i" — it was "Asking back costs a
+          * reply, and replies are bounded too", which named neither the bound
+          * nor what it costs him. It is real: `plan-question.ts:187`
+          * `MAX_OWNER_TURNS = 6`, and `plan-state.ts:227` closes the dialogue on
+          * reaching it exactly as the clock does. It changes what he does — it
+          * is the reason not to spend a turn on "why does this matter?" — so it
+          * is hidden, not deleted. THE NUMBER IS DELIBERATELY NOT ON SCREEN: it
+          * is a server constant that never crosses the wire, so printing "6"
+          * here would be this panel asserting something it was not told.
+          */}
         <p className={cx("text-[11px] leading-relaxed text-ink-dim", countdown !== null && "mt-0.5")}>
-          When it closes, the run carries on and records what it assumed — not a failure. Asking
-          back costs a reply, and replies are bounded too.
+          {/*
+            * THE TESTID IS ON A SPAN AROUND THE SENTENCE, NOT ON THE `<p>`, and
+            * that is the whole point of it. `chat-plan-copy.browser.spec.ts`
+            * proves this sentence is PAINTED rather than merely present, by
+            * measuring the box; a `<p>` is a block and keeps its full width even
+            * if every word inside it moves behind an "i", so a testid there
+            * would give a check that cannot go red for the thing it watches.
+            */}
+          <span data-testid="plan-window-consequence">
+            When it closes, the run carries on and records what it assumed.
+          </span>
+          <Explain about="what else ends this" testId="explain-turns" className="ml-1">
+            Your answers and your questions both use up a small, fixed number of turns. When
+            they run out the run carries on the same way the clock closing does.
+          </Explain>
         </p>
       </div>
     </div>
@@ -415,7 +462,15 @@ function QuestionCard({
             <Button
               onClick={() => onDecline(question.id)}
               disabled={sending}
-              title="Record the run's own default for this one and move on. It lands exactly where it would have landed if you had never been asked."
+              /*
+               * TRIMMED, NOT PROMOTED TO AN "i". A `title` is already hidden, so
+               * it is not part of the wall the owner screenshotted, and giving
+               * every question card two more glyphs would be. What went is "and
+               * move on", which restates the button, and the "if you had never
+               * been asked" clause, which said the same thing as "its own
+               * default" a second time.
+               */
+              title="Records the run's own default for this one — the same place it lands if nobody answers."
             >
               you decide
             </Button>
@@ -434,23 +489,43 @@ function QuestionCard({
                 void onAsk(question.id, "why does that matter?");
               }}
               disabled={sending}
-              title="Sends the question to the run and leaves this one open. It costs a reply — the exchange is bounded by replies as well as by the clock."
+              /*
+               * THE COST CLAUSE LEFT THIS TITLE and did not go missing: it is
+               * behind the clock's "i" now, where it is stated once for every
+               * control on the panel instead of once per question card. Two
+               * copies of the same bound is the repetition the owner named on
+               * the Result panel.
+               */
+              title="Sends this to the run and leaves the question open."
               className="ml-auto text-[11px] text-ink-dim underline-offset-2 hover:text-ink hover:underline disabled:cursor-not-allowed disabled:opacity-40"
             >
               why does this matter?
             </button>
           </div>
 
+          {/*
+            * BOTH OF THESE STAY INLINE AND BOTH ARE SHORTER. Neither is a
+            * caption: each appears only in one transient state, and each is
+            * about the thing he is doing at that instant.
+            *
+            * THE `asks` LINE IS READ BEFORE HE PRESSES THE BUTTON — it is why
+            * the button under his cursor now says "ask" instead of "answer",
+            * and the server's question-mark rung sits above its answer rung, so
+            * he is spending a turn on a question either way. Behind an "i" it
+            * would be a hint nobody looks for at the moment the label changes
+            * under them. "so the run reads it as a question and answers it"
+            * became "so it goes as a question": the run answering is what the
+            * next rows show, not something this line has to promise.
+            */}
           {asks && (
             <p className="text-[10.5px] leading-relaxed text-ink-faint">
-              That ends in a question mark, so the run reads it as a question and answers it.{" "}
-              {question.id} stays open.
+              Ends in a question mark, so it goes as a question — {question.id} stays open.
             </p>
           )}
 
           {awaitingUptake && (
             <p className="text-[10.5px] leading-relaxed text-accent">
-              Sent. It is still shown as open until the run says what it recorded.
+              Sent — it stays open until the run says what it recorded.
             </p>
           )}
         </div>
@@ -584,13 +659,29 @@ export function PlanDialoguePanel({
     <Panel
       title="Plan"
       subtitle={
-        dialogue.parked
-          ? // FIFTEEN SECONDS IS THE BUDGET, AND EVERY LINE ABOVE THE FIRST
-            // QUESTION SPENDS IT. The first version of this ran to ten lines
-            // before PQ-1 — subtitle, plan, and four lines of clock — which is
-            // the wall of text this panel exists to refuse, written by the panel.
-            "Answers go into the brief before any criterion is written."
-          : "What it asked before the acceptance criteria were written."
+        <>
+          {dialogue.parked
+            ? // FIFTEEN SECONDS IS THE BUDGET, AND EVERY LINE ABOVE THE FIRST
+              // QUESTION SPENDS IT. The first version of this ran to ten lines
+              // before PQ-1 — subtitle, plan, and four lines of clock — which is
+              // the wall of text this panel exists to refuse, written by the panel.
+              "Answers go into the brief before any criterion is written."
+            : "What it asked before the acceptance criteria were written."}
+          {/*
+            * ONE CHANNEL, NOT TWO — MOVED HERE 2026-08-05 from the paragraph
+            * that used to close this panel. It changes what he does: a reader
+            * who thinks the Chat tab is a separate inbox answers a question
+            * there and then comes back here looking for it, or worse, does not
+            * answer at all because "the questions are over on the other panel".
+            * The rest of that paragraph said the exchange goes into the brief,
+            * which is what the subtitle immediately to the left of this glyph
+            * already says.
+            */}
+          <Explain about="where these answers go" testId="explain-channel" className="ml-1">
+            This is the run&rsquo;s chat. Anything you send from the Chat tab is read as
+            part of this exchange too.
+          </Explain>
+        </>
       }
       actions={
         dialogue.parked ? (
@@ -720,15 +811,24 @@ export function PlanDialoguePanel({
         )}
 
         {/*
-          * WHERE THIS SITS IN THE APP, SAID ONCE. The rows above are the run's
-          * chat, not a parallel inbox, and a reader who does not know that will
-          * look for the answers he gave in a second place and not find them.
+          * WHERE THIS SITS IN THE APP, SAID ONCE — AND IT IS NOW SAID AT THE TOP
+          * OF THE PANEL, BEHIND THE SUBTITLE'S "i". Both branches of the
+          * paragraph that stood here (53 words between them) are accounted for:
+          *
+          *   MOVED — "the rows above are the run's chat, not a parallel inbox".
+          *     A reader who does not know it goes looking for his answers in a
+          *     second place. It is the panel's own subtitle that it qualifies,
+          *     so it is on the subtitle.
+          *   DELETED — "the whole exchange goes into the brief the criteria are
+          *     written from" (parked) and "was written into the brief before the
+          *     acceptance criteria were authored" (closed). Both are the
+          *     subtitle rewritten in longer words, two lines under it. This is
+          *     the repetition the owner named on the Result panel, in a panel
+          *     whose docblock already forbids it.
+          *   DELETED — "It is also in the Chat tab, verbatim." True, and true of
+          *     every panel in the app that shows a message; it changes nothing
+          *     he does once the dialogue is closed.
           */}
-        <p className="text-[10.5px] leading-relaxed text-ink-faint">
-          {dialogue.parked
-            ? "This is the run's chat. Anything you send here — including from the Chat tab — is read as part of this exchange, and the whole exchange goes into the brief the criteria are written from."
-            : "The whole exchange was written into the brief before the acceptance criteria were authored. It is also in the Chat tab, verbatim."}
-        </p>
       </div>
     </Panel>
   );
