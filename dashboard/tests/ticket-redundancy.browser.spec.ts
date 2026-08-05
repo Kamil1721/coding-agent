@@ -13,13 +13,30 @@
  * "The prose is gone" passes just as well against a form that deleted everything,
  * and "the rule is visible" passes just as well against a form that never made it
  * conditional and shows it on an empty screen. Neither half is evidence on its
- * own. The pair is: a specific sentence absent AND a specific sentence present, or
- * a rule absent BEFORE its trigger and present AFTER it.
+ * own. The pair is: a specific sentence absent AND a specific sentence present,
+ * or a rule unpainted until it is asked for and painted the moment it is.
  *
- * `getByText` COUNT 0 IS DELIBERATELY NOT `not.toBeVisible()`. A conditional that
- * renders the paragraph with `hidden` would satisfy the second and not the first,
- * and a reader with a screen reader would still be read the sentence this pass
- * exists to remove.
+ * `getByText` COUNT 0 IS DELIBERATELY NOT `not.toBeVisible()`, FOR EVERY SENTENCE
+ * THIS PASS CUT. A conditional that renders the paragraph with `hidden` would
+ * satisfy the second and not the first, and a reader with a screen reader would
+ * still be read the sentence the cut exists to remove. A cut sentence is gone
+ * from the screen AND out of the tree, so count 0 is the honest assertion for it
+ * and stays.
+ *
+ * THE IDENTITY RULE IS NOW THE EXCEPTION, AND IT IS AN INVERSION RATHER THAN AN
+ * EXEMPTION (2026-08-05, the prose pass). That sentence was not cut: it moved
+ * behind the intake's "i" and is `sr-only` FROM FIRST PAINT, on purpose — a
+ * screen-reader user has to be able to reach it BEFORE deciding to attach, and a
+ * sighted reader must not be lectured about attachments on a form he has not
+ * touched. Against that form, count 0 asserts the sentence was DELETED, which is
+ * the one outcome this file exists to refuse. What the old assertion MEANT — not
+ * shown until it applies — is measured directly instead, as the sentence's
+ * rendered box.
+ *
+ * AND THE BOX IS MEASURED BECAUSE `toBeVisible()` CANNOT SAY THIS. A shut
+ * `Explain` body is a clipped 1x1 `sr-only` span and Playwright reports it
+ * VISIBLE; that was measured on this page, not assumed, and it is why two
+ * assertions below read a `getBoundingClientRect` instead.
  *
  * IT SERVES ITS OWN API through `page.route`, following `model-picker`,
  * `design-lock`, `ticket-references` and `ticket-motion`: the shared fixture
@@ -27,7 +44,7 @@
  * intakes.
  */
 
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 
 import type { ModelOption } from "../src/lib/api-types";
 import { RUN_DETAIL } from "./fixtures/run-fixture";
@@ -131,9 +148,53 @@ const identityRule = (page: Page) =>
 const captureRule = (page: Page) =>
   page.getByText(/the live page is never opened again/i);
 
-/** The sentence that says the grader has no network and no logins. */
+/**
+ * THE HALF OF THE OFFLINE-GRADING NOTE THAT STAYS ON THE SCREEN: the CONDITION.
+ * It is the one line on this form that can stop a payments story being written
+ * against a grader that cannot reach a payment provider, so it has to be
+ * readable while the brief is being typed. `page.tsx` commits to that in prose;
+ * this is the assertion that makes the commitment cost something.
+ */
 const gateRule = (page: Page) =>
-  page.getByText(/graded against a stub/i);
+  page.getByText(/grading runs offline, with no logins/i);
+
+/**
+ * The other half, which the prose pass moved behind the "i": the CONSEQUENCE.
+ * Hidden is allowed for this one — it is read once and changes no wording —
+ * and deleted is not, which is why it is asserted at all.
+ */
+const gateConsequence = (page: Page) =>
+  page.getByText(/graded against a stand-in the build wrote itself/i);
+
+/**
+ * The largest area, in CSS px², that anything matching `locator` renders.
+ *
+ * THE ONE MEASUREMENT `toBeVisible()` DOES NOT MAKE. Tailwind's `sr-only` is a
+ * 1x1 clipped box, which is visible to Playwright and unreadable to a person, so
+ * paint and presence have to be asked about separately on this form. `max`
+ * rather than `first()` so a second, painted copy of a sentence cannot hide
+ * behind an unpainted one; the callers assert the count as well.
+ */
+async function paintedArea(locator: Locator): Promise<number> {
+  return locator.evaluateAll((elements) =>
+    Math.max(
+      0,
+      ...elements.map((element) => {
+        const box = element.getBoundingClientRect();
+        return box.width * box.height;
+      }),
+    ),
+  );
+}
+
+/**
+ * Bigger than a clipped `sr-only` box (1x1) and far below one line of the 11px
+ * type this form sets its notes in (~40x14 for three words). A sentence that
+ * lands between the two is one a sighted reader can begin to make out, and it
+ * fails both bounds, which is the intent.
+ */
+const UNPAINTED_MAX_AREA = 4;
+const PAINTED_MIN_AREA = 200;
 
 async function attachPng(page: Page, name: string): Promise<void> {
   await fileInput(page).setInputFiles({
@@ -180,24 +241,66 @@ test("the form still submits a brief AND an attachment after the cut", async ({
   expect(body.deploy).toBe(false);
 });
 
-test("the identity rule is absent until there is a file, then present", async ({
+test("the identity rule is never painted on the form, and is one gesture from being read", async ({
   page,
 }) => {
-  // BOTH HALVES, AND THE FIRST HALF IS THE ONE WITH TEETH. An unconditional
-  // paragraph passes the second assertion and fails the first, which is exactly
-  // the state this pass moved the form OUT of: a permanent lecture about
-  // attachments on a form with no attachment.
+  // WHAT THIS TEST USED TO SAY, AND WHY IT NO LONGER SAYS IT. It read "absent
+  // until there is a file, then present", and it asserted count 0 → visible →
+  // count 0 across attaching and removing a chip. The form it was written
+  // against put the sentence in a paragraph below the chips; the prose pass
+  // moved it behind the intake's "i", where it is `sr-only` from first paint and
+  // has no conditional state left to observe. Count 0 against THAT form asserts
+  // the sentence was deleted — the opposite of what the old test was protecting.
+  //
+  // THE INTENT SURVIVES INTACT AND IS ASSERTED DIRECTLY: it is not shown to a
+  // sighted reader who did not ask for it, and it is not lost to anyone. Both
+  // halves are still here, and each still fails on its own kind of regression —
+  // a permanent lecture lights up the paint bounds, and a deletion or a
+  // `display:none` lights up the count and the on-demand bound at the bottom.
   await serve(page);
-  await expect(identityRule(page)).toHaveCount(0);
 
+  const glyph = page.getByRole("button", { name: "Explain: attaching files" });
+
+  // ONE HOME FOR THE SENTENCE. Two matches would mean the paragraph came back
+  // BESIDE the glyph rather than instead of it, which is the redundancy this
+  // whole file exists to keep out.
+  await expect(identityRule(page)).toHaveCount(1);
+  expect(
+    await paintedArea(identityRule(page)),
+    "a permanent lecture about attachments on a form with no attachment is the state this pass " +
+      "moved the form out of",
+  ).toBeLessThan(UNPAINTED_MAX_AREA);
+
+  // IT IS A SENTENCE THE PAGE HANDS TO A READER, not text orphaned in the DOM.
+  // Hiding it was only allowed because the glyph names this exact element as its
+  // description, so a browse-mode screen reader is read it without moving focus.
+  // Break that link and the rule is gone for every reader who cannot see the
+  // bubble, while every other assertion here stays green.
+  const bodyId = await identityRule(page).getAttribute("id");
+  expect(bodyId, "the Explain body is the element `aria-describedby` names").not.toBeNull();
+  await expect(glyph).toHaveAttribute("aria-describedby", bodyId ?? "");
+
+  // ATTACHING DOES NOT PAINT IT EITHER, and this is the half that inherits the
+  // old test's teeth. The paragraph that was cut appeared at the FIRST CHIP —
+  // i.e. after the decision it describes — so restoring it would leave the
+  // assertion above green and light this one up.
   await attachPng(page, "brand-sheet.png");
-  await expect(identityRule(page)).toBeVisible();
+  await expect(identityRule(page)).toHaveCount(1);
+  expect(
+    await paintedArea(identityRule(page)),
+    "the sentence is readable while DECIDING to attach; a copy that appears at the first chip is " +
+      "the prose this pass removed",
+  ).toBeLessThan(UNPAINTED_MAX_AREA);
 
-  // AND IT GOES AWAY AGAIN. Removing the last chip returns the form to the state
-  // the sentence does not describe. Without this, a guard written as
-  // "has ever had a file" would pass everything above.
-  await page.getByRole("button", { name: /remove brand-sheet\.png/i }).click();
-  await expect(identityRule(page)).toHaveCount(0);
+  // ASKED FOR, IT PAINTS. Without this the two measurements above are satisfied
+  // by a `display:none` span or by a sentence no reader can ever reach — that
+  // is, by the deletion this file refuses. Polled rather than sampled once
+  // because the bubble is placed after it is measured (`explain.tsx` holds it
+  // `visibility: hidden` for the frame where its coordinates are still null).
+  await glyph.click();
+  await expect
+    .poll(async () => paintedArea(identityRule(page)))
+    .toBeGreaterThan(PAINTED_MIN_AREA);
 });
 
 test("the capture rule is absent until the brief links somewhere, and keeps the unreachable clause", async ({
@@ -243,7 +346,24 @@ test("the redundant prose is gone and the load-bearing prose is not", async ({
 
   // Kept, permanently and unconditionally, because nothing on this client can
   // tell which briefs need it and a person reads it while deciding what to write.
+  //
+  // MEASURED AS A BOX RATHER THAN WITH `toBeVisible()` (2026-08-05). The note was
+  // SPLIT, not cut: the condition stays inline and the consequence went behind an
+  // "i". A shut `Explain` body is a clipped 1x1 span that Playwright still calls
+  // visible, so `toBeVisible()` alone would go green for a condition that had
+  // been hidden along with it — and `page.tsx` is on record refusing exactly that
+  // move, on the grounds that this is the only line able to stop a payments story
+  // being written against a grader with no network. A commitment no test can
+  // break is not a commitment.
+  await expect(gateRule(page)).toHaveCount(1);
   await expect(gateRule(page)).toBeVisible();
+  expect(
+    await paintedArea(gateRule(page)),
+    "the condition has to be readable while the brief is being typed; behind the glyph it is not",
+  ).toBeGreaterThan(PAINTED_MIN_AREA);
+  // And the consequence is HIDDEN, not gone — the wording changed with the move
+  // ("a stand-in the build wrote itself" for "a stub"), the fact did not.
+  await expect(gateConsequence(page)).toHaveCount(1);
   // Kept verbatim: `ticket-motion.browser.spec.ts:122` drives this field by label.
   await expect(page.getByLabel(/animation you want matched/i)).toBeVisible();
   // Kept: the panel subtitle is the one sentence that changes the output.

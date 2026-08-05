@@ -181,8 +181,36 @@ test("the panel defers what happened to the run's log rather than asserting a re
   // what any reading is limited to and hands the fact of one to the event
   // stream, following the attachment disclosure's rule that sending a file is
   // not the same as a seat reading it.
+  //
+  // REWORDED AND REHOUSED 2026-08-05, AND THE CLAIM IS UNTOUCHED. "What the run
+  // made of the link is on the run's own event stream" became "What was read
+  // from it is shown on the run's own page", behind the field's "i"
+  // (`page.tsx`, the `Explain about="what is taken from that page"`). The
+  // vocabulary went — no screen in this app is called an event stream — and the
+  // deferral did not: the form still declines to say a reading HAPPENED.
+  // The regex stops before "own page" because the source renders `&rsquo;`, so
+  // "run's" is a typographic apostrophe and an ASCII one would never match.
   await serve(page);
-  await expect(page.getByText(/what the run made of the link is on the run/i)).toBeVisible();
+  const deferral = page.getByText(/what was read from it is shown on the run/i);
+  await expect(deferral).toBeVisible();
+
+  // `toBeVisible()` IS NOT A CLAIM ABOUT PAINT HERE, AND THAT IS WORTH STATING
+  // RATHER THAN LEAVING FOR A READER TO ASSUME. A shut `Explain` body is a
+  // clipped 1x1 `sr-only` span, and Playwright reports that VISIBLE — measured
+  // on this very sentence, not inferred. So the line above says the sentence is
+  // in the tree, and it would say exactly the same for a sentence orphaned there
+  // with nothing pointing at it.
+  //
+  // THE BINDING IS THE ASSERTION WITH TEETH. Hiding this sentence was only ever
+  // allowed because the glyph beside the field names it as its description, so a
+  // browse-mode screen reader is read it without moving focus. Break that link
+  // and the note is deleted for every reader who cannot see the bubble, while
+  // the presence check above stays green.
+  const bodyId = await deferral.getAttribute("id");
+  expect(bodyId, "the Explain body is the element `aria-describedby` names").not.toBeNull();
+  await expect(
+    page.getByRole("button", { name: "Explain: what is taken from that page" }),
+  ).toHaveAttribute("aria-describedby", bodyId ?? "");
 });
 
 test("the form no longer promises there is never a comparison against the live page", async ({
