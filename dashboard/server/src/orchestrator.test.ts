@@ -78,6 +78,7 @@ import { attemptPath, liveResultPath, readAttempt, scorerOutRoot, scoresRoot } f
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
+import { AUTO_CONTINUE_MAX } from "./recovery.js";
 import { PreviewHost } from "./preview.js";
 import { ticketFromText } from "./ticket.js";
 import { zeroTokens } from "./tokens.js";
@@ -549,6 +550,24 @@ interface FakeBuilderOptions {
    * all three of `by`/`reason`/`at` and returns null for any of them.
    */
   readonly expandDrops?: "choice" | "directions";
+  /**
+   * THE PROVIDER REFUSES THIS CALL — the seam auto-recovery is measured through.
+   *
+   * `limitCalls: [0]` makes the FIRST `build()` come back with
+   * `rateLimit.limited: true` and the reported window below, which is exactly
+   * what the real driver returns when the subscription's window is shut. That is
+   * the only honest way to drive `#rateLimited` and everything downstream of it —
+   * `#armRecovery`, the timer, the automatic requeue — without a live refusal on
+   * the owner's own quota, which is a test nobody can schedule and nobody should
+   * pay for.
+   *
+   * THE INDEX IS THE CALL NUMBER, NOT A BOOLEAN, precisely so a test can say
+   * "refused once, then fine" and observe the CONTINUATION rather than a run
+   * that is refused for ever and can only be seen to stop.
+   */
+  readonly limitCalls?: readonly number[];
+  /** Seconds until the reported window reopens. Small, so a test can wait it out. */
+  readonly limitRetryAfterSec?: number;
 }
 
 class FakeBuilder implements SubscriptionBuilder {
@@ -630,11 +649,19 @@ class FakeBuilder implements SubscriptionBuilder {
       observedSessionId: sessionId,
       env: request.env,
     });
+    const refused = (this.#options.limitCalls ?? []).includes(index);
     return {
       sessionId: this.#session,
       tokens,
-      rateLimit: NOT_RATE_LIMITED,
-      completed: true,
+      rateLimit: refused
+        ? {
+            limited: true,
+            retryAfterSec: this.#options.limitRetryAfterSec ?? 1,
+            kind: "five_hour",
+            utilization: null,
+          }
+        : NOT_RATE_LIMITED,
+      completed: !refused,
       cancelled: false,
       failure: null,
     };
@@ -1060,6 +1087,11 @@ async function designRun(options: {
   canvassChoice?: string;
   /** An EXPANSION whose manifest write loses the choice — see FakeBuilderOptions. */
   expandDrops?: "choice" | "directions";
+  /** Which `build()` calls the provider refuses — see FakeBuilderOptions. */
+  limitCalls?: readonly number[];
+  limitRetryAfterSec?: number;
+  /** Hand the harness back BEFORE the run starts. See the call site below. */
+  autoStart?: boolean;
   /**
    * Runs INSIDE an ON-DEMAND generation, before its PNG exists.
    *
@@ -1107,6 +1139,8 @@ async function designRun(options: {
     ...(options.canvassChoice === undefined ? {} : { canvassChoice: options.canvassChoice }),
     ...(options.expandDrops === undefined ? {} : { expandDrops: options.expandDrops }),
     ...(options.onRequest === undefined ? {} : { onRequest: options.onRequest }),
+    ...(options.limitCalls === undefined ? {} : { limitCalls: options.limitCalls }),
+    ...(options.limitRetryAfterSec === undefined ? {} : { limitRetryAfterSec: options.limitRetryAfterSec }),
   });
 
   const env: NodeJS.ProcessEnv = {
@@ -1237,8 +1271,21 @@ async function designRun(options: {
     },
   };
 
-  orchestrator.pump();
-  await harness.settle();
+  /*
+   * `autoStart: false` HANDS THE RUN BACK BEFORE IT STARTS, and it exists for one
+   * state this harness otherwise cannot express: `rate_limited`.
+   *
+   * `settle()` waits for a TERMINAL status or `awaiting_input`, and a run parked
+   * on the provider's window is neither — so a refusal test driven through the
+   * default path either raced the continuation (the park is over before the
+   * caller gets its handle) or hung for the full timeout when the continuation
+   * was correctly refused. Both are the harness measuring itself. With this
+   * false, the caller pumps and watches.
+   */
+  if (options.autoStart !== false) {
+    orchestrator.pump();
+    await harness.settle();
+  }
   return harness;
 }
 
@@ -4167,6 +4214,241 @@ test("FINDING O, THE OTHER HALF: AN EXPANSION THAT LOSES THE DIRECTIONS TOO STIL
     assert.ok(
       prompts.some((p) => !p.startsWith("DESIGN LANE — art direction")),
       "and the BUILD segment ran",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/* =========================================================================
+ * AUTO-RECOVERY — a run that continues ITSELF
+ *
+ * WHAT THESE ARE WATCHING FOR, and it is not "did the retry work". This feature
+ * spends the owner's subscription while nobody is present, so the failure to
+ * fear is not a run that gives up too early — he can press Resume — but a run
+ * that re-enters a fifty-minute phase for ever with nothing counting. Every test
+ * below therefore asserts a NUMBER as well as a state: the automatic budget the
+ * run charged, and the attempts it recorded. A check that can only observe a
+ * successful continuation is exactly the defect this repository keeps finding.
+ *
+ * NOT ONE OF THEM MAKES A METERED CALL. The refusal comes from `FakeBuilder`'s
+ * `limitCalls`, the reported window is one second, and the suite is hand-frozen
+ * so `#specPhase` reuses it instead of authoring against the subscription.
+ * ====================================================================== */
+
+/** Every log line a run emitted, in order. */
+function runLog(h: DesignHarness): readonly string[] {
+  return h.store
+    .eventsSince(h.runId, 0)
+    .map((stored) => stored.event)
+    .filter((event) => event.type === "log")
+    .map((event) => (event.type === "log" ? event.text : ""));
+}
+
+test("A REFUSED RUN CONTINUES ITSELF, reaches a later phase, and CHARGES ITS BUDGET", async () => {
+  // The first build call comes back refused with a one-second window; nothing in
+  // this test calls `resume()`, presses anything, or answers anything.
+  const h = await designRun({
+    autoStart: false,
+    env: { DASHBOARD_AUTO_RECOVER: "1" },
+    limitCalls: [0],
+    limitRetryAfterSec: 1,
+  });
+  try {
+    h.orchestrator.pump();
+    await h.waitFor(() => h.status() === "rate_limited", 20_000, "the refusal never parked the run");
+    // NOT TERMINAL. This is the whole reason 52 minutes and 12 hours of real
+    // work were lost: `#finish("failed")` makes `isTerminal` true and `resume()`
+    // refuses outright, so a recoverable failure that passes through a terminal
+    // status can never come back.
+    assert.equal(isTerminal("rate_limited" as never), false, "the fixture's premise");
+
+    await h.settle(30_000);
+
+    const row = h.store.getRun(h.runId);
+    assert.ok(row !== null);
+    assert.ok(isTerminal(row.status), `the run continued to a verdict: ${row.status}`);
+    // THE BUDGET MOVED, AND THIS IS THE ASSERTION THE WHOLE CAP RESTS ON. A cap
+    // enforced against a counter nothing increments is dead code, and the run
+    // would continue itself without bound.
+    assert.equal(row.autoContinueCount, 1, "exactly one continuation was charged to the automatic budget");
+    assert.equal(row.resumeCount, 1, "and it is a re-entry, so the owner-facing total moved too");
+
+    const attempts = h.store.listAttempts(h.runId);
+    assert.equal(attempts.length, 2, `two entries into the pipeline, recorded: ${JSON.stringify(attempts)}`);
+    assert.equal(attempts[0]?.endClass, "throttled", "the first attempt says WHY it ended");
+    assert.equal(attempts[1]?.endClass, "completed");
+    // THE EXPENSIVE WORK RAN ONCE. `#specPhase`'s reuse branch is the difference
+    // between a continuation and a restart, and the column is written from the
+    // branch actually taken rather than folded out of a log line.
+    assert.equal(attempts[0]?.suiteSource, "reused");
+    assert.equal(attempts[1]?.suiteSource, "reused", "the continuation did NOT re-author the suite");
+    assert.ok(
+      runLog(h).some((text) => /this run took 2 attempt\(s\)/.test(text)),
+      `a recovered run must not present as a clean pass: ${JSON.stringify(runLog(h).slice(-4))}`,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("THE WAIT IS SERVED, not skipped — the run is still parked while the window runs", async () => {
+  const h = await designRun({
+    autoStart: false,
+    env: { DASHBOARD_AUTO_RECOVER: "1" },
+    limitCalls: [0],
+    limitRetryAfterSec: 3,
+  });
+  try {
+    h.orchestrator.pump();
+    await h.waitFor(() => h.status() === "rate_limited", 20_000, "the refusal never parked the run");
+    const armed = runLog(h).filter((text) => /automatic resume armed/i.test(text));
+    assert.equal(armed.length, 1, "exactly one arm, announced with the instant it fires");
+    assert.match(String(armed[0]), /2026|20\d\d-/, "the announcement carries an INSTANT, not a duration");
+
+    // HALF A SECOND INTO A THREE-SECOND WINDOW. An implementation that armed a
+    // zero-length wait — or clamped an unrepresentable one to "fire now" — would
+    // already have requeued this run.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(h.status(), "rate_limited", "the reported window has not elapsed, so nothing may continue yet");
+    assert.equal(h.store.getRun(h.runId)?.autoContinueCount, 1, "the charge happens when the arm is decided");
+
+    await h.settle(40_000);
+    assert.ok(isTerminal(h.store.getRun(h.runId)?.status ?? "queued"), "and then it continued by itself");
+    // AND THE LEDGER MEASURED THE SAME WAIT. `waitedSec` is computed from the
+    // previous attempt's own `ended_at`, so it counts wall-clock time whether it
+    // was served by a timer or by a server that was down for it — and a "wait 0"
+    // implementation records a 0 here while every status assertion above it can
+    // still be made to pass by a fast enough machine.
+    const attempts = h.store.listAttempts(h.runId);
+    assert.equal(attempts.length, 2);
+    assert.ok(
+      (attempts[1]?.waitedSec ?? -1) >= 2,
+      `the continuation waited out the reported window: ${JSON.stringify(attempts[1])}`,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A RUN AT ITS CAP PARKS AND ARMS NOTHING — driven through the refusal, not the policy's arguments", async () => {
+  const h = await designRun({
+    autoStart: false,
+    env: { DASHBOARD_AUTO_RECOVER: "1" },
+    limitCalls: [0],
+    limitRetryAfterSec: 1,
+  });
+  try {
+    // Already at the cap. This is the state three continuations leave behind,
+    // and the only thing that must happen next is a park with a sentence.
+    h.store.updateRun(h.runId, { autoContinueCount: AUTO_CONTINUE_MAX });
+    h.orchestrator.pump();
+    await h.waitFor(() => h.status() === "rate_limited", 20_000, "the refusal never parked the run");
+
+    // THE WINDOW IS ONE SECOND. A run that was going to continue would have done
+    // so well inside this.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    const row = h.store.getRun(h.runId);
+    assert.equal(row?.status, "rate_limited", "at the cap, nothing picks the run up again");
+    assert.equal(row?.autoContinueCount, AUTO_CONTINUE_MAX, "and nothing was charged for a continuation that did not happen");
+    const said = runLog(h);
+    assert.ok(
+      said.some((text) => /no automatic resume is armed.*continued itself/is.test(text)),
+      `the refusal has to say why, on the run's own log: ${JSON.stringify(said.slice(-3))}`,
+    );
+    assert.ok(
+      !said.some((text) => /automatic resume armed:/i.test(text)),
+      "nothing may be armed at the cap",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("A CANCEL DURING AN ARMED WAIT WINS IMMEDIATELY, and the timer says nothing afterwards", async () => {
+  const h = await designRun({
+    autoStart: false,
+    env: { DASHBOARD_AUTO_RECOVER: "1" },
+    limitCalls: [0],
+    limitRetryAfterSec: 1,
+  });
+  try {
+    h.orchestrator.pump();
+    await h.waitFor(() => h.status() === "rate_limited", 20_000, "the refusal never parked the run");
+    assert.ok(runLog(h).some((text) => /automatic resume armed/i.test(text)), "the fixture must have armed one");
+
+    assert.equal(h.orchestrator.cancel(h.runId), true);
+    assert.equal(h.status(), "cancelled", "a cancel is immediate; it does not wait out the window");
+
+    // PAST THE INSTANT THE TIMER WOULD HAVE FIRED. Before `cancel` disarmed it,
+    // that timer wrote "the reported rate-limit window has elapsed; resuming
+    // automatically" onto a CANCELLED run and then called `resume()`, which
+    // refuses a terminal row — so nothing resumed and the sentence was false.
+    await new Promise((resolve) => setTimeout(resolve, 1_400));
+
+    assert.equal(h.status(), "cancelled", "nothing picked the cancelled run up");
+    assert.ok(
+      !runLog(h).some((text) => /window has elapsed; resuming automatically/i.test(text)),
+      `a disarmed timer says nothing: ${JSON.stringify(runLog(h).slice(-3))}`,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("AN INTERRUPTED RUN CONTINUES AT BOOT — three times, and the fourth boot says why not", async () => {
+  const h = await designRun({ autoStart: false, env: { DASHBOARD_AUTO_RECOVER: "1" } });
+  try {
+    // `shutdown()` first, on this file's own convention: `#stopped` neuters
+    // `pump()` alone, so every transition under test still happens and asserts
+    // while no builder is ever spawned.
+    await h.orchestrator.shutdown();
+
+    for (let boot = 1; boot <= AUTO_CONTINUE_MAX; boot += 1) {
+      // The state a dead process leaves behind: a row that says `running` with
+      // nothing running. `#abandonedForShutdown` writes no terminal state for
+      // exactly this reason.
+      h.store.updateRun(h.runId, { status: "running" });
+      h.orchestrator.reconcileOnBoot();
+      const row = h.store.getRun(h.runId);
+      assert.equal(row?.status, "queued", `boot ${String(boot)}: nothing was wrong with the run`);
+      assert.equal(row?.autoContinueCount, boot, `boot ${String(boot)}: the crash-loop brake moved`);
+    }
+
+    // THE FOURTH. boot -> queue -> start -> crash -> the process dies -> the
+    // supervisor restarts -> boot is a loop with no other brake, and this is it.
+    h.store.updateRun(h.runId, { status: "running" });
+    h.orchestrator.reconcileOnBoot();
+    const row = h.store.getRun(h.runId);
+    assert.equal(row?.status, "awaiting_input", "at the cap a human takes over");
+    assert.equal(row?.autoContinueCount, AUTO_CONTINUE_MAX, "and the refusal charges nothing");
+    assert.ok(
+      runLog(h).some((text) => /Nothing will do it by itself.*continued itself/is.test(text)),
+      `the run has to say who resumes it now: ${JSON.stringify(runLog(h).slice(-2))}`,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("WITH THE FLAG OFF, an interrupted run waits for a human exactly as it always did", async () => {
+  const h = await designRun({ autoStart: false });
+  try {
+    await h.orchestrator.shutdown();
+    h.store.updateRun(h.runId, { status: "running" });
+
+    h.orchestrator.reconcileOnBoot();
+
+    const row = h.store.getRun(h.runId);
+    // THE DISCRIMINATING ASSERTION IS THE COUNTER, not the status. With the flag
+    // on, this same row is requeued and charged; "awaiting_input with a budget
+    // still at zero" is a state the enabled sweep could not have produced.
+    assert.equal(row?.status, "awaiting_input", "the default install spends nothing unattended");
+    assert.equal(row?.autoContinueCount, 0);
+    assert.ok(
+      runLog(h).some((text) => /automatic recovery is opt-in and is off/i.test(text)),
+      `and it names the switch: ${JSON.stringify(runLog(h))}`,
     );
   } finally {
     await h.cleanup();

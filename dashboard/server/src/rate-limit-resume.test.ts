@@ -55,42 +55,79 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import { ModelCatalog } from "./models.js";
+import { Orchestrator, RATE_LIMIT_AUTO_RESUME_ENV, rateLimitAutoResume } from "./orchestrator.js";
 import {
-  Orchestrator,
-  RATE_LIMIT_AUTO_RESUME_ENV,
-  RATE_LIMIT_AUTO_RESUME_MAX_RESUMES,
-  RATE_LIMIT_RESUME_MAX_DELAY_MS,
-  planRateLimitResume,
-  rateLimitAutoResume,
-} from "./orchestrator.js";
-import type { RateLimitResumeInput } from "./orchestrator.js";
+  AUTO_CONTINUE_MAX,
+  RECOVERY_ENABLED_ENV,
+  RECOVERY_MAX_AUTO_WAIT_MS,
+  RECOVERY_TIMER_MAX_DELAY_MS,
+  planRecovery,
+} from "./recovery.js";
 import { ensureDirs, resolvePaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 
 /* =========================================================================
  * 1. The pure decision
+ *
+ * IT MOVED. `planRateLimitResume` used to live in orchestrator.ts and is now
+ * `planRecovery` in recovery.ts, which generalises a rate limit into one CLASS
+ * of failure a run may continue itself through. The arms below are the SAME
+ * ARMS IN THE SAME ORDER — that was the condition on the move, so the
+ * substitution is mechanical — with two differences the review of the design
+ * required, both asserted here:
+ *
+ *  · A SECOND CEILING. The 32-bit guard refuses a delay the PROGRAM cannot
+ *    hold; every window this machine has ever recorded is a `seven_day` reset
+ *    2.2-5.0 days out, which sails straight through it. `RECOVERY_MAX_AUTO_WAIT_MS`
+ *    refuses a delay the OWNER did not agree to hold.
+ *  · THE CAP IS ON AUTOMATIC CONTINUATIONS, not on total resumes. The old one
+ *    counted the owner's own presses of Resume, so a run he had nursed by hand
+ *    three times could never continue itself.
  * ====================================================================== */
 
 const REFUSED_AT = "2026-07-30T01:00:00.000Z";
 const HALF_HOUR_SEC = 1_800;
 
+interface PlanOver {
+  readonly enabled?: boolean;
+  readonly rateLimitedAt?: string | null;
+  readonly retryAfterSec?: number | null;
+  readonly autoContinueCount?: number;
+  readonly now?: string;
+  readonly maxWaitMs?: number;
+}
+
 /** Enabled, refused half an hour ago, and the window is half an hour long. */
-function plan(over: Partial<RateLimitResumeInput> = {}): ReturnType<typeof planRateLimitResume> {
-  return planRateLimitResume({
-    enabled: true,
-    rateLimitedAt: REFUSED_AT,
-    retryAfterSec: HALF_HOUR_SEC,
-    resumeCount: 0,
-    now: "2026-07-30T01:20:00.000Z",
-    ...over,
+function plan(over: PlanOver = {}) {
+  return planRecovery({
+    signals: {
+      aborted: false,
+      abortReason: null,
+      interrupted: false,
+      bakeoffCode: null,
+      seatKind: null,
+      // THE REFUSAL IS CARRIED, not read off a row. That is the whole shape of
+      // `RefusalEvidence`: the row's `rate_limited` / `rate_limit_retry_after_sec`
+      // are routine telemetry, overwritten by every `limited: false` frame.
+      refusal: {
+        limited: true,
+        retryAfterSec: over.retryAfterSec === undefined ? HALF_HOUR_SEC : over.retryAfterSec,
+        kind: "five_hour",
+        observedAt: over.rateLimitedAt === undefined ? REFUSED_AT : over.rateLimitedAt,
+      },
+    },
+    autoContinueCount: over.autoContinueCount ?? 0,
+    enabled: over.enabled ?? true,
+    now: over.now ?? "2026-07-30T01:20:00.000Z",
+    maxWaitMs: over.maxWaitMs ?? RECOVERY_MAX_AUTO_WAIT_MS,
   });
 }
 
 test("OFF IS THE DEFAULT, and the refusal names the switch and the human", () => {
   const decision = plan({ enabled: false });
-  assert.equal(decision.kind, "disabled");
-  const reason = decision.kind === "disabled" ? decision.reason : "";
-  assert.match(reason, new RegExp(RATE_LIMIT_AUTO_RESUME_ENV));
+  assert.equal(decision.kind, "stop");
+  const reason = decision.kind === "stop" ? decision.reason : "";
+  assert.match(reason, new RegExp(RECOVERY_ENABLED_ENV));
   assert.match(reason, /human has to resume/i, "the whole point of the fix is saying who resumes it");
 });
 
@@ -114,10 +151,10 @@ test("A NULL retryAfterSec ARMS NOTHING — the whole error-text path", () => {
   // refuses, so this must be `disabled` — and it must be disabled FOR THAT
   // REASON, not because the flag happened to be off.
   const decision = plan({ retryAfterSec: null });
-  assert.equal(decision.kind, "disabled");
-  const reason = decision.kind === "disabled" ? decision.reason : "";
+  assert.equal(decision.kind, "stop");
+  const reason = decision.kind === "stop" ? decision.reason : "";
   assert.match(reason, /no reset instant/i);
-  assert.doesNotMatch(reason, new RegExp(RATE_LIMIT_AUTO_RESUME_ENV), "enabled was true; this is not the off path");
+  assert.doesNotMatch(reason, new RegExp(RECOVERY_ENABLED_ENV), "enabled was true; this is not the off path");
 });
 
 test("a reported reset that is not in the future arms nothing either", () => {
@@ -126,8 +163,8 @@ test("a reported reset that is not in the future arms nothing either", () => {
   // walks straight back into the same refusal.
   for (const retryAfterSec of [0, -5]) {
     const decision = plan({ retryAfterSec });
-    assert.equal(decision.kind, "disabled", String(retryAfterSec));
-    assert.notEqual(decision.kind, "due", "zero seconds is not a drained window");
+    assert.equal(decision.kind, "stop", String(retryAfterSec));
+    assert.notEqual(decision.kind, "continue", "zero seconds is not a drained window");
   }
 });
 
@@ -138,32 +175,35 @@ test("NO RECORDED REFUSAL INSTANT IS A REFUSAL, NOT A FRESH WINDOW", () => {
   // no idea what remains, and arming from `now` would renew the window.
   for (const rateLimitedAt of [null, "not-a-date", ""]) {
     const decision = plan({ rateLimitedAt });
-    assert.equal(decision.kind, "disabled", String(rateLimitedAt));
-    const reason = decision.kind === "disabled" ? decision.reason : "";
+    assert.equal(decision.kind, "stop", String(rateLimitedAt));
+    const reason = decision.kind === "stop" ? decision.reason : "";
     assert.match(reason, /remaining wait cannot be computed/i);
   }
 });
 
 test("THE REMAINDER, NOT A FRESH WINDOW: 20 minutes served of 30 leaves 10", () => {
   const decision = plan();
-  assert.equal(decision.kind, "armed");
-  assert.equal(decision.kind === "armed" ? decision.delayMs : -1, 600_000);
+  assert.equal(decision.kind, "wait");
+  assert.equal(decision.kind === "wait" ? decision.delayMs : -1, 600_000);
   assert.ok(
-    (decision.kind === "armed" ? decision.delayMs : Infinity) < HALF_HOUR_SEC * 1_000,
+    (decision.kind === "wait" ? decision.delayMs : Infinity) < HALF_HOUR_SEC * 1_000,
     "an implementation that timed from `now` would arm the full window here",
   );
+  // AN INSTANT, NEVER A DURATION. A duration is stale the moment it is computed
+  // and a countdown rendered from one gets worse with every second.
+  assert.equal(decision.kind === "wait" ? decision.firesAt : "", "2026-07-30T01:30:00.000Z");
 });
 
 test("a clock that moved backwards cannot lengthen the wait past what was reported", () => {
   // `now` BEFORE the refusal instant. Elapsed is floored at zero, exactly as
   // `#parkForDesignLock` floors it, so the worst case is the full window.
   const decision = plan({ now: "2026-07-30T00:30:00.000Z" });
-  assert.equal(decision.kind, "armed");
-  assert.equal(decision.kind === "armed" ? decision.delayMs : -1, HALF_HOUR_SEC * 1_000);
+  assert.equal(decision.kind, "wait");
+  assert.equal(decision.kind === "wait" ? decision.delayMs : -1, HALF_HOUR_SEC * 1_000);
 });
 
-test("a window that fully elapsed while the dashboard was down is DUE", () => {
-  assert.equal(plan({ now: "2026-07-30T09:00:00.000Z" }).kind, "due");
+test("a window that fully elapsed while the dashboard was down CONTINUES NOW", () => {
+  assert.equal(plan({ now: "2026-07-30T09:00:00.000Z" }).kind, "continue");
 });
 
 test("AN UNREPRESENTABLE WAIT IS REFUSED, NOT CLAMPED — the 32-bit inversion", () => {
@@ -171,19 +211,47 @@ test("AN UNREPRESENTABLE WAIT IS REFUSED, NOT CLAMPED — the 32-bit inversion",
   // 2_147_483_647 ms FIRES IMMEDIATELY. Clamping would turn "wait 115 days" into
   // "resume in one millisecond", unattended, into a window that is certainly
   // still shut — the worst possible inversion of this feature.
-  const decision = plan({ retryAfterSec: 10_000_000 });
-  assert.ok(10_000_000 * 1_000 > RATE_LIMIT_RESUME_MAX_DELAY_MS, "the fixture has to exceed the ceiling");
-  assert.equal(decision.kind, "disabled");
-  assert.notEqual(decision.kind, "armed", "an armed timer this long fires immediately");
-  assert.notEqual(decision.kind, "due");
+  //
+  // `maxWaitMs` IS RAISED ABOVE THE 32-BIT CEILING HERE ON PURPOSE, so this test
+  // still measures the arm it is named after. With the default six-hour ceiling
+  // the unattended arm would refuse first and this would pass without the 32-bit
+  // guard existing at all.
+  const decision = plan({ retryAfterSec: 10_000_000, maxWaitMs: RECOVERY_TIMER_MAX_DELAY_MS });
+  assert.ok(10_000_000 * 1_000 > RECOVERY_TIMER_MAX_DELAY_MS, "the fixture has to exceed the ceiling");
+  assert.equal(decision.kind, "stop");
+  assert.equal(decision.kind === "stop" ? decision.code : "", "wait_unrepresentable");
+  assert.notEqual(decision.kind, "wait", "an armed timer this long fires immediately");
+  assert.notEqual(decision.kind, "continue");
 });
 
-test("the total-resume cap stops the loop a weekly cap would otherwise create", () => {
-  const decision = plan({ resumeCount: RATE_LIMIT_AUTO_RESUME_MAX_RESUMES });
-  assert.equal(decision.kind, "disabled");
-  const reason = decision.kind === "disabled" ? decision.reason : "";
-  assert.match(reason, /owner's own resumes too/i, "the cap counts human resumes and must say so");
-  assert.equal(plan({ resumeCount: RATE_LIMIT_AUTO_RESUME_MAX_RESUMES - 1 }).kind, "armed");
+test("THE UNATTENDED CEILING, which the 32-bit guard does not substitute for", () => {
+  // MEASURED: every `rate_limit` frame in the owner's runs.db reports kind
+  // `seven_day` with a reset 2.2-5.0 DAYS out — about 4.3e8 ms, comfortably
+  // representable, so the guard above lets all of them through. This is the
+  // ceiling that refuses a wait the OWNER did not agree to hold, and the honest
+  // consequence is that on today's evidence a throttled run PARKS AND SAYS HOW
+  // LONG rather than waiting.
+  const fiveDays = 5 * 24 * 60 * 60;
+  assert.ok(fiveDays * 1_000 < RECOVERY_TIMER_MAX_DELAY_MS, "a five-day wait is representable; that is the point");
+  const decision = plan({ retryAfterSec: fiveDays });
+  assert.equal(decision.kind, "stop");
+  assert.equal(decision.kind === "stop" ? decision.code : "", "wait_too_long");
+  const reason = decision.kind === "stop" ? decision.reason : "";
+  assert.match(reason, /DASHBOARD_RECOVERY_MAX_WAIT_MIN/, "a refusal has to name the setting that lifts it");
+});
+
+test("the automatic-continuation cap stops the loop a weekly cap would otherwise create", () => {
+  const decision = plan({ autoContinueCount: AUTO_CONTINUE_MAX });
+  assert.equal(decision.kind, "stop");
+  assert.equal(decision.kind === "stop" ? decision.code : "", "cap_reached");
+  const reason = decision.kind === "stop" ? decision.reason : "";
+  assert.match(reason, /continued itself/i, "the cap counts automatic continuations and must say so");
+  // THE COUNTER CHANGED MEANING, AND THIS IS WHERE THAT IS PINNED. It used to be
+  // `resumeCount`, which `resume()` increments for the owner's own button too —
+  // so a run he had nursed by hand three times could never continue itself. The
+  // sentence must no longer claim to count human resumes.
+  assert.doesNotMatch(reason, /owner's own resumes/i);
+  assert.equal(plan({ autoContinueCount: AUTO_CONTINUE_MAX - 1 }).kind, "wait");
 });
 
 /* =========================================================================

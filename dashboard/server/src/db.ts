@@ -160,6 +160,42 @@ export interface RunRow {
    * way out. `null` is "it has not stopped", NEVER `"green"`.
    */
   readonly gateStopReason: string | null;
+  /**
+   * How many times THIS RUN has continued ITSELF — and it is NOT
+   * {@link RunRow.resumeCount}.
+   *
+   * `resumeCount` counts every re-entry including the owner's own presses of
+   * Resume (orchestrator.ts `resume()` increments it unconditionally, and the
+   * plan and design parks call the same method), so binding automatic
+   * continuation to it means a run the owner nursed by hand three times can
+   * never continue itself. This column counts only the continuations NOBODY
+   * ASKED FOR, and it is the cap `recovery.ts`'s `AUTO_CONTINUE_MAX` enforces.
+   *
+   * IT MOVES AT EXACTLY TWO SITES, both in orchestrator.ts and both at the
+   * moment a continuation is COMMITTED TO rather than when one is considered:
+   * `#armRecovery` (when the timer is armed, or immediately before a `continue`
+   * requeue) and `reconcileOnBoot`'s interrupted sweep. It is deliberately NOT
+   * incremented by `resume()` — the owner's button calls that too — and NOT once
+   * per server restart, which would let three restarts during development
+   * exhaust the budget of every live run. A cap read from a counter nothing
+   * moves is not a cap, which is why the two sites are named here as well as
+   * there.
+   *
+   * NOT NULL DEFAULT 0 on `gate_attempts`' reasoning: 0 is a real count that
+   * happens to mean "none", and it is TRUE of every historical row — no run has
+   * ever continued itself, because until this column existed nothing could.
+   */
+  readonly autoContinueCount: number;
+  /**
+   * The {@link import("./recovery.js").FailureClass} of the last failure this
+   * run was classified with, or null.
+   *
+   * NULLABLE WITHOUT A DEFAULT on `gate_stop_reason`'s and `rate_limited_at`'s
+   * reasoning: there is no word that means "we know why this historical run
+   * stopped", and any word chosen would be a claim about four runs nothing
+   * classified. Null is "nothing classified this", never "it was fine".
+   */
+  readonly recoveryClass: string | null;
   readonly updatedAt: string;
 }
 
@@ -201,6 +237,51 @@ export interface RunPatch {
    */
   readonly gateAttempts?: number;
   readonly gateStopReason?: StopReason | null;
+  /** See {@link RunRow.autoContinueCount}, which names its two increment sites. */
+  readonly autoContinueCount?: number;
+  readonly recoveryClass?: string | null;
+}
+
+/**
+ * One entry into `#execute`, closed with how it ended.
+ *
+ * WHY A TABLE AND NOT A COUNT COLUMN. A run that continued itself has to be
+ * able to STATE its history — how many attempts, how long it waited, whether
+ * the expensive work was redone — and a single integer cannot say any of that.
+ * The owner's rule is that a recovered run must not present as a clean pass;
+ * this is the record that stops it.
+ *
+ * ZERO ROWS MEANS "THIS RUN PREDATES THE FEATURE", NEVER "ONE CLEAN ATTEMPT".
+ * Every reader must render an empty history as NOTHING rather than as "1
+ * attempt", which is why there is no `attempt_count` column on `runs`: a
+ * `DEFAULT 1` would be a false claim about `run-…-052c6e02`, which entered
+ * `#execute` three times (`resume_count = 2`), and every default in
+ * `ADDED_RUN_COLUMNS` has to be true of every historical row.
+ */
+export interface RunAttempt {
+  readonly runId: string;
+  /** 1-based, in the order the entries happened. */
+  readonly attemptNo: number;
+  readonly startedAt: string;
+  /** Null while this attempt is still the live one. */
+  readonly endedAt: string | null;
+  /** The phase the row was in when the attempt ended. */
+  readonly phaseReached: string;
+  /**
+   * A `FailureClass` from `recovery.ts`, or `"completed"` for an attempt that
+   * reached a verdict. Null while the attempt is open.
+   */
+  readonly endClass: string | null;
+  /** `describeError()`, redacted, or the park's own sentence. */
+  readonly endDetail: string | null;
+  /** Wall clock waited BEFORE this attempt began, in seconds. */
+  readonly waitedSec: number | null;
+  /**
+   * `'reused' | 'authored' | 'none'` — which branch of `#specPhase` this attempt
+   * took. NOT inferred from the log: a machine-readable column and a prose fold
+   * that agree is fine, a prose fold alone is not a record.
+   */
+  readonly suiteSource: string | null;
 }
 
 export interface NewRun {
@@ -482,6 +563,8 @@ CREATE TABLE IF NOT EXISTS runs (
   interactive                INTEGER NOT NULL DEFAULT 0,
   gate_attempts              INTEGER NOT NULL DEFAULT 0,
   gate_stop_reason           TEXT,
+  auto_continue_count        INTEGER NOT NULL DEFAULT 0,
+  recovery_class             TEXT,
   updated_at                 TEXT NOT NULL
 );
 
@@ -494,6 +577,30 @@ CREATE TABLE IF NOT EXISTS events (
   at      TEXT NOT NULL,
   payload TEXT NOT NULL,
   PRIMARY KEY (run_id, seq)
+) WITHOUT ROWID;
+
+/*
+ * THE ATTEMPT LEDGER. See {@link RunAttempt} for why this is a table and why an
+ * empty history must never render as "1 attempt".
+ *
+ * A NEW TABLE IS FREE ON AN EXISTING DATABASE — CREATE TABLE IF NOT EXISTS
+ * creates it empty and the owner's four historical runs get zero rows — which is
+ * why this needs no entry in ADDED_RUN_COLUMNS. The columns of "runs" do; see
+ * the docblock there for the asymmetry that makes a missed entry visible only on
+ * the owner's own machine. (No backticks in this comment: the whole schema is a
+ * template literal, and one would end it.)
+ */
+CREATE TABLE IF NOT EXISTS run_attempts (
+  run_id        TEXT    NOT NULL,
+  attempt_no    INTEGER NOT NULL,
+  started_at    TEXT    NOT NULL,
+  ended_at      TEXT,
+  phase_reached TEXT    NOT NULL,
+  end_class     TEXT,
+  end_detail    TEXT,
+  waited_sec    INTEGER,
+  suite_source  TEXT,
+  PRIMARY KEY (run_id, attempt_no)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS criteria (
@@ -623,6 +730,8 @@ const RUN_COLUMNS = [
   "interactive",
   "gate_attempts",
   "gate_stop_reason",
+  "auto_continue_count",
+  "recovery_class",
   "updated_at",
 ].join(", ");
 
@@ -689,6 +798,26 @@ const ADDED_RUN_COLUMNS: readonly { readonly name: string; readonly ddl: string 
   {
     name: "rate_limited_at",
     ddl: "ALTER TABLE runs ADD COLUMN rate_limited_at TEXT",
+  },
+  // Auto-recovery. THE SAME ASYMMETRY AS `gate_attempts`/`gate_stop_reason`, and
+  // for the same reasons: 0 is a real count that happens to mean "none" and is
+  // true of every historical row (no run has ever continued itself, because
+  // nothing could), while there is no word that means "we know why this
+  // historical run stopped" — so the class column is nullable and takes no
+  // default rather than defaulting to a claim.
+  //
+  // OMITTING EITHER OF THESE BREAKS THE OWNER'S MACHINE ALONE. Every test starts
+  // from `mkdtemp`, where the `CREATE TABLE IF NOT EXISTS` above always carries
+  // the newest column and this list is never consulted; `dashboard/data/runs.db`
+  // is the only database in existence that takes the ALTER path. That is what
+  // `db.test.ts`'s DROP COLUMN fixture reproduces.
+  {
+    name: "auto_continue_count",
+    ddl: "ALTER TABLE runs ADD COLUMN auto_continue_count INTEGER NOT NULL DEFAULT 0",
+  },
+  {
+    name: "recovery_class",
+    ddl: "ALTER TABLE runs ADD COLUMN recovery_class TEXT",
   },
 ];
 
@@ -986,6 +1115,11 @@ export class RunStore {
     // on a word like "not-converging" is a no-op that would still cost a cast on
     // the way in and a widened type on the way out.
     if (patch.gateStopReason !== undefined) push("gate_stop_reason", patch.gateStopReason);
+    if (patch.autoContinueCount !== undefined) push("auto_continue_count", patch.autoContinueCount);
+    // NOT REDACTED, on `gate_stop_reason`'s reasoning: this is one of six short
+    // enum literals from `recovery.ts` or null, and running a word like
+    // "throttled" through the redactor is a no-op that costs a cast.
+    if (patch.recoveryClass !== undefined) push("recovery_class", patch.recoveryClass);
 
     push("updated_at", new Date().toISOString());
     values.push(runId);
@@ -996,6 +1130,121 @@ export class RunStore {
       throw new BakeoffError("invalid_usage_shape", `run ${runId} does not exist`, "Check the run id.");
     }
     return updated;
+  }
+
+  /* ---- the attempt ledger -------------------------------------------- */
+
+  /**
+   * Open an attempt row for an entry into `#execute`, and return it.
+   *
+   * THE NUMBER IS ALLOCATED INSIDE THE SAME SYNCHRONOUS BLOCK AS THE INSERT, on
+   * `appendEvent`'s precedent: two entries in the same tick cannot collide on
+   * the primary key.
+   *
+   * `waitedSec` IS COMPUTED FROM THE PREVIOUS ATTEMPT'S `ended_at` and not from
+   * a timer, because the wait a run actually served is wall-clock time that
+   * includes a server that was down for it. A timer that was never armed still
+   * produces a real wait here, which is the number the owner cares about.
+   */
+  openAttempt(runId: string, startedAt: string, phase: string): RunAttempt {
+    const previous = this.#db
+      .prepare("SELECT attempt_no, ended_at FROM run_attempts WHERE run_id = ? ORDER BY attempt_no DESC LIMIT 1")
+      .get(runId);
+    const attemptNo = previous === undefined ? 1 : num(previous, "attempt_no") + 1;
+    const previousEnd = previous === undefined ? null : strOrNull(previous, "ended_at");
+    const gap = previousEnd === null ? Number.NaN : Date.parse(startedAt) - Date.parse(previousEnd);
+    // FLOORED AT ZERO, exactly as the recovery module floors its own elapsed: a
+    // clock that moved backwards must not report a negative wait, and an
+    // unparseable pair reports NOTHING rather than a zero that reads as "no
+    // wait was served".
+    const waitedSec = Number.isFinite(gap) ? Math.max(0, Math.round(gap / 1000)) : null;
+    this.#db
+      .prepare(
+        "INSERT INTO run_attempts (run_id, attempt_no, started_at, ended_at, phase_reached, end_class, " +
+          "end_detail, waited_sec, suite_source) VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?, NULL)",
+      )
+      .run(runId, attemptNo, startedAt, phase, waitedSec);
+    return {
+      runId,
+      attemptNo,
+      startedAt,
+      endedAt: null,
+      phaseReached: phase,
+      endClass: null,
+      endDetail: null,
+      waitedSec,
+      suiteSource: null,
+    };
+  }
+
+  /**
+   * Close the newest OPEN attempt for a run. A no-op when there is none.
+   *
+   * IT TARGETS THE OPEN ONE RATHER THAN THE NEWEST, and the difference is the
+   * whole point: the orchestrator has several ends per entry (three `#finish`
+   * sites, the rate-limit park, the plan park, the design park, cancel), and a
+   * second close on an already-closed attempt would overwrite a real ending
+   * with a later, less specific one. Closing is therefore idempotent in the
+   * direction that keeps the FIRST answer.
+   */
+  closeAttempt(
+    runId: string,
+    end: {
+      readonly endedAt: string;
+      readonly endClass: string;
+      readonly endDetail: string | null;
+      readonly phaseReached?: string;
+      readonly suiteSource?: string | null;
+    },
+  ): void {
+    const open = this.#db
+      .prepare("SELECT attempt_no FROM run_attempts WHERE run_id = ? AND ended_at IS NULL ORDER BY attempt_no DESC LIMIT 1")
+      .get(runId);
+    if (open === undefined) return;
+    const sets = ["ended_at = ?", "end_class = ?", "end_detail = ?"];
+    const values: SQLInputValue[] = [
+      end.endedAt,
+      end.endClass,
+      end.endDetail === null ? null : redactForPersistence(end.endDetail),
+    ];
+    if (end.phaseReached !== undefined) {
+      sets.push("phase_reached = ?");
+      values.push(end.phaseReached);
+    }
+    if (end.suiteSource !== undefined) {
+      sets.push("suite_source = ?");
+      values.push(end.suiteSource);
+    }
+    values.push(runId, num(open, "attempt_no"));
+    this.#db
+      .prepare(`UPDATE run_attempts SET ${sets.join(", ")} WHERE run_id = ? AND attempt_no = ?`)
+      .run(...values);
+  }
+
+  /** Record which branch of `#specPhase` the OPEN attempt took. */
+  noteAttemptSuiteSource(runId: string, source: string): void {
+    this.#db
+      .prepare(
+        "UPDATE run_attempts SET suite_source = ? WHERE run_id = ? AND ended_at IS NULL AND suite_source IS NULL",
+      )
+      .run(source, runId);
+  }
+
+  listAttempts(runId: string): readonly RunAttempt[] {
+    return this.#db
+      .prepare("SELECT * FROM run_attempts WHERE run_id = ? ORDER BY attempt_no")
+      .all(runId)
+      .map((row) => ({
+        runId: str(row, "run_id"),
+        attemptNo: num(row, "attempt_no"),
+        startedAt: str(row, "started_at"),
+        endedAt: strOrNull(row, "ended_at"),
+        phaseReached: str(row, "phase_reached"),
+        endClass: strOrNull(row, "end_class"),
+        endDetail: strOrNull(row, "end_detail"),
+        waitedSec: numOrNull(row, "waited_sec"),
+        suiteSource: strOrNull(row, "suite_source"),
+      }));
   }
 
   /* ---- events ------------------------------------------------------- */
@@ -1534,6 +1783,11 @@ function toRunRow(row: Row): RunRow {
     // unrecognised word reads through and renders oddly; a guard here would
     // throw and take every run in the list with it.
     gateStopReason: strOrNull(row, "gate_stop_reason"),
+    autoContinueCount: num(row, "auto_continue_count"),
+    // `strOrNull`, not `oneOf`, on `gate_stop_reason`'s reasoning: a class word
+    // written by a future version reads through and renders oddly, where a guard
+    // would throw and take every run in the list with it.
+    recoveryClass: strOrNull(row, "recovery_class"),
     updatedAt: str(row, "updated_at"),
   };
 }

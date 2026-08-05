@@ -194,6 +194,27 @@ import type { RunRow, RunStore } from "./db.js";
  * checks the first warning still green.
  */
 import { SILENCE_NOTICE_PREFIX, isTerminal } from "./db.js";
+/*
+ * THE RECOVERY DECISION IS NOT TAKEN IN THIS FILE, AND THAT IS DELIBERATE.
+ *
+ * `recovery.ts` has no `Orchestrator`, no `RunStore`, no `Date.now()` and no
+ * `setTimeout`: `now` goes in as a string and the wait comes back as a number,
+ * so every arm — including a five-day wait and a run at its cap — is reachable
+ * from a unit test in under a millisecond. This file owns the TIMER, the ROW and
+ * the SENTENCE; it does not own the policy, for the same reason `cron-policy.ts`
+ * does not: a decision that can only be observed by spending the owner's quota
+ * is a decision nobody checks.
+ */
+import {
+  AUTO_CONTINUE_MAX,
+  autoRecoverEnabled,
+  classifyPhaseFailure,
+  interruptedSignals,
+  planRecovery,
+  recoveryMaxWaitMs,
+  signalsFor,
+} from "./recovery.js";
+import type { FailureClass, PhaseFailureSignals, RecoveryDecision, RefusalEvidence } from "./recovery.js";
 import { RunEventBus } from "./bus.js";
 import { judgeArtifact } from "./judge.js";
 import type { ModelCatalog } from "./models.js";
@@ -620,6 +641,21 @@ export const DASHBOARD_SANDBOX: SandboxSpec = Object.freeze({
  * the safe direction is the one that FINISHES a park; here the safe direction is
  * the one that does not spend, so a typo in a launchd plist cannot enrol a
  * machine into unattended quota burn.
+ *
+ * ─── IT IS NOW THE PREDECESSOR OF `DASHBOARD_AUTO_RECOVER`, AND IT STILL WORKS
+ *
+ * `recovery.ts` generalised this park: a rate limit became one CLASS of failure
+ * a run may continue itself through, alongside `interrupted` (the process died
+ * under a working run) and the classes that must never continue. Its flag,
+ * {@link import("./recovery.js").RECOVERY_ENABLED_ENV}, turns all of them on.
+ *
+ * THIS ONE IS KEPT AND SCOPED RATHER THAN DELETED. An owner who has already set
+ * it agreed to exactly one thing — "let a run the provider refused restart
+ * itself" — and silently widening that consent to "restart any run the server
+ * finds interrupted at boot" is the direction this whole feature is not allowed
+ * to be wrong in. So it enables the `throttled` class ALONE; every other class
+ * needs the new flag. `Orchestrator.#recoveryEnabled` is the four lines that say
+ * so, and it is the only reader of either flag.
  */
 export const RATE_LIMIT_AUTO_RESUME_ENV = "DASHBOARD_RATE_LIMIT_AUTO_RESUME";
 
@@ -630,154 +666,26 @@ export function rateLimitAutoResume(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
- * The longest wait this will arm, and the reason a longer one is REFUSED rather
- * than clamped.
+ * THE WAIT LADDER USED TO LIVE HERE, AS `planRateLimitResume`, AND IT IS NOW IN
+ * `recovery.ts`.
  *
- * `setTimeout` stores its delay in a signed 32-bit integer: a delay above
- * 2_147_483_647 ms does not wait longer, it FIRES IMMEDIATELY (Node prints
- * `TimeoutOverflowWarning` and substitutes 1 ms). For this feature that is the
- * worst possible inversion — a run that should wait 115 days would resume in a
- * millisecond, unattended, into a window that is certainly still shut. A wait
- * this program cannot represent is a wait it must not claim, so it is disabled
- * with a reason instead.
+ * It was deleted rather than kept beside its replacement. Two ladders drift —
+ * this repository's own summary of the hazard is "a run retries nine times and
+ * reports three" — and a second copy that no production path calls is worse than
+ * either, because its tests stay green while nothing they describe runs.
  *
- * Real windows sit far below the ceiling (a seven-day cap is 604_800_000 ms), so
- * only a nonsense `resetsAt` reaches it.
+ * `planRecovery` is a deliberate substitution and not a rewrite: its arms are the
+ * same arms in the same order (enabled, the refusal's own numbers, the instant,
+ * the cap, the 32-bit ceiling), with two additions the review of this design
+ * required — an UNATTENDED wait ceiling after the 32-bit one, because every
+ * window this machine has ever recorded is a `seven_day` reset 2.2-5.0 days out
+ * and sails straight through a guard that only refuses what a timer cannot hold;
+ * and a cap read from `auto_continue_count` rather than `resumeCount`, because
+ * the old one counted the owner's own presses of Resume and so refused to
+ * continue exactly the runs he had already nursed by hand.
+ *
+ * `#armRecovery` below is its only caller.
  */
-export const RATE_LIMIT_RESUME_MAX_DELAY_MS = 2_147_483_647;
-
-/**
- * How many times a run may have been resumed before auto-resume stops offering.
- *
- * IT COUNTS THE OWNER'S RESUMES TOO, and that is a limitation rather than a
- * design: `RunRow.resumeCount` is one integer and does not record who pressed
- * it. The bound is therefore on TOTAL re-entries into a run, not on automatic
- * ones, and a run an owner has already resumed three times will not arm.
- *
- * It exists because one `resetsAt` cannot tell a 5-hour rollover from the weekly
- * cap. Under a weekly cap the reported instant is minutes away while the real
- * refusal is days long, so an unbounded arm would resume, be refused, re-arm,
- * and grind through the quota in short steps for a week. Three re-entries, then
- * a human.
- */
-export const RATE_LIMIT_AUTO_RESUME_MAX_RESUMES = 3;
-
-export type RateLimitResumePlan =
-  | { readonly kind: "armed"; readonly delayMs: number }
-  | { readonly kind: "due" }
-  | { readonly kind: "disabled"; readonly reason: string };
-
-export interface RateLimitResumeInput {
-  readonly enabled: boolean;
-  /**
-   * When the provider REFUSED — `RunRow.rateLimitedAt`, written only by
-   * `#rateLimited`. NOT the last `rate_limit` telemetry event: that one fires
-   * routinely with `limited: false` to report a window filling, and arming off
-   * it would resume runs nothing ever refused.
-   */
-  readonly rateLimitedAt: string | null;
-  readonly retryAfterSec: number | null;
-  readonly resumeCount: number;
-  readonly now: string;
-}
-
-/**
- * Should this run resume itself, when, and if not — WHY NOT.
- *
- * PURE, for `cron-policy.ts`'s stated reason: a decision that can only be
- * observed by spending the owner's quota is a decision nobody checks. Every arm
- * below is reachable from a unit test with no timer and no clock.
- *
- * THE `disabled` REASON IS THE PRODUCT, not an afterthought. It is emitted onto
- * the run's own log at the moment of the refusal, so a run that is going to sit
- * there until morning SAYS so when it stops instead of going quiet.
- *
- * TWO DELIBERATE INVERSIONS OF `designLockExpired`, WHICH IS THE PRECEDENT THIS
- * OTHERWISE FOLLOWS:
- *
- *  - An ABSENT OR UNPARSEABLE instant is `disabled` here, where `designLockExpired`
- *    returns "expired" and ends the park. Ending a park costs nothing; resuming a
- *    build spends. If we do not know WHEN the refusal happened we do not know what
- *    remains of the wait, and arming from `now` would be a FRESH window wearing the
- *    old one's name — the exact thing re-arming from the original instant exists to
- *    prevent.
- *
- *  - `retryAfterSec === 0` is `disabled` rather than "already drained".
- *    `claude-common.ts` produces it via `Math.max(0, ...)` when the provider
- *    refused a call while naming a reset instant already in the past: a refusal
- *    with no wait attached, which answered immediately walks straight back into
- *    itself. NOTE that the CLIENT conflates 0 with "not reported"
- *    (`use-run-stream.ts:349` maps a null to 0); on this side, reading `RunRow`,
- *    the two are separate values and stay separate.
- *
- * WHAT IT DOES NOT DO: it does not establish that the window actually drained.
- * Nothing here can — the only evidence is the next call being accepted. It
- * computes the wait the provider itself reported, and stops there.
- */
-export function planRateLimitResume(input: RateLimitResumeInput): RateLimitResumePlan {
-  if (!input.enabled) {
-    return {
-      kind: "disabled",
-      reason:
-        `automatic resume is opt-in and is off. Set ${RATE_LIMIT_AUTO_RESUME_ENV}=1 to let a rate-limited ` +
-        `run restart itself; until then a human has to resume this run — nothing will do it for them.`,
-    };
-  }
-  if (input.retryAfterSec === null) {
-    return {
-      kind: "disabled",
-      reason:
-        "the provider reported no reset instant with this refusal, so nothing here knows when the window " +
-        "reopens. A countdown from a number nobody reported is an invention, so no timer is armed and a " +
-        "human has to resume this run.",
-    };
-  }
-  if (!Number.isFinite(input.retryAfterSec) || input.retryAfterSec <= 0) {
-    return {
-      kind: "disabled",
-      reason:
-        `the provider refused the call while reporting a reset instant that is not in the future ` +
-        `(retryAfterSec ${String(input.retryAfterSec)}). A resume with no wait attached re-enters the same ` +
-        `refusal, so no timer is armed and a human has to resume this run.`,
-    };
-  }
-  const refusedAt = input.rateLimitedAt === null ? Number.NaN : Date.parse(input.rateLimitedAt);
-  const at = Date.parse(input.now);
-  if (!Number.isFinite(refusedAt) || !Number.isFinite(at)) {
-    return {
-      kind: "disabled",
-      reason:
-        `there is no usable record of when the provider refused (${input.rateLimitedAt ?? "none recorded"}), ` +
-        `so the remaining wait cannot be computed. Arming from now would restart the whole window on every ` +
-        `boot, which is the one thing this must never do; a human has to resume this run.`,
-    };
-  }
-  if (input.resumeCount >= RATE_LIMIT_AUTO_RESUME_MAX_RESUMES) {
-    return {
-      kind: "disabled",
-      reason:
-        `this run has been resumed ${String(input.resumeCount)} time(s) and the cap is ` +
-        `${String(RATE_LIMIT_AUTO_RESUME_MAX_RESUMES)}. The cap counts the owner's own resumes too — the row ` +
-        `does not record who pressed it — so it bounds total re-entries rather than automatic ones.`,
-    };
-  }
-  // ELAPSED IS FLOORED AT ZERO, exactly as `#parkForDesignLock` floors it: a
-  // clock that moved backwards must not lengthen the wait beyond what was
-  // reported.
-  const elapsed = Math.max(0, at - refusedAt);
-  const delayMs = input.retryAfterSec * 1000 - elapsed;
-  if (delayMs <= 0) return { kind: "due" };
-  if (delayMs > RATE_LIMIT_RESUME_MAX_DELAY_MS) {
-    return {
-      kind: "disabled",
-      reason:
-        `the reported wait is ${String(Math.round(delayMs / 86_400_000))} day(s), longer than a timer on this ` +
-        `platform can hold — setTimeout keeps its delay in 32 bits and a longer one fires IMMEDIATELY. ` +
-        `Refused rather than clamped, because firing immediately is the opposite of waiting.`,
-    };
-  }
-  return { kind: "armed", delayMs };
-}
 
 /* -------------------------------------------------------------------------
  * THE SILENCE WATCH — report, never act
@@ -1093,6 +1001,33 @@ export class Orchestrator {
   readonly #rateLimitTimers = new Map<string, NodeJS.Timeout>();
 
   /**
+   * THE PROVIDER'S LAST REFUSAL, CARRIED — the one input the classifier is not
+   * allowed to look up.
+   *
+   * READ THE SECOND PARAGRAPH BEFORE REPLACING THIS WITH A COLUMN READ, because
+   * the obvious wiring is wrong and was rejected in review. The row carries
+   * `rate_limited` and `rate_limit_retry_after_sec`, and both are ROUTINE
+   * TELEMETRY: `#noteRateLimit` writes them on every `rate_limit` frame,
+   * including the `limited: false` ones that merely report a window filling, and
+   * `rate_limited` is never reset within a run. Classify a spec-phase harness
+   * fault off those and a rejected frame from the PLAN phase makes it look
+   * throttled, arms a timer off a stale instant, and spends quota reproducing a
+   * failure that had nothing to do with rate limits — while the log and the wire
+   * both say "rate limited".
+   *
+   * SO THIS MAP HOLDS ONLY REFUSALS, AND ONLY THIS PHASE'S. It is written by
+   * `#noteRateLimit` when and only when `state.limited` is true, with the
+   * instant of the frame itself; it is CLEARED at every `#setPhase` and at every
+   * entry into `#execute`, so a refusal cannot outlive the phase that saw it.
+   * That is as close to "carried from the throw site" as this program can get:
+   * the SDK reports a refusal through a sink rather than on the error it later
+   * throws, so there is no field on the error to read. When nothing refused,
+   * `planRecovery` is handed `null` and STOPS with `no_refusal` — which is the
+   * correct answer and not a gap to paper over.
+   */
+  readonly #lastRefusal = new Map<string, RefusalEvidence>();
+
+  /**
    * The SILENCE WATCH's live half — one interval per run that is actually
    * running in THIS process.
    *
@@ -1362,12 +1297,25 @@ export class Orchestrator {
    * else on the cancel path ever writes `awaiting: false` — so the park record
    * stayed open for ever on a run that had ended, which is the same wire lie
    * `#closeSettledPark` exists to prevent on the `resume` path.
+   *
+   * AND THE RATE-LIMIT TIMER, WHICH WAS THE THIRD ARMED PARK AND WAS MISSING
+   * UNTIL 2026-08-05 — the same defect as the design timer, one park further on,
+   * and the docblock above describes it exactly. `#clearRateLimitTimer` had
+   * three call sites (`resume`, `shutdown`, `#armRecovery`) and cancel was not
+   * among them, so up to the whole reported window after the owner cancelled a
+   * rate-limited run, that timer fired and wrote "the reported rate-limit window
+   * has elapsed; resuming automatically" onto the CANCELLED run — then called
+   * `resume()`, which refuses a terminal row. Nothing resumed and the sentence
+   * was false. Adding a second armed park (auto-recovery) on top of an
+   * un-disarmed one would have doubled the lie, which is why this line goes in
+   * before any of it.
    */
   cancel(runId: string): boolean {
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
     this.#plan.clearTimer(runId);
     this.#clearDesignLockTimer(runId);
+    this.#clearRateLimitTimer(runId);
     this.#closeDesignParkOnCancel(runId);
     if (this.#active !== null && this.#active.runId === runId) {
       this.#active.abort.abort(ABORT_CANCELLED);
@@ -1566,7 +1514,65 @@ export class Orchestrator {
    */
   reconcileOnBoot(): void {
     for (const row of this.#deps.store.listByStatus("running")) {
-      this.#deps.store.updateRun(row.runId, { status: "awaiting_input", queuePosition: null });
+      /*
+       * THE INTERRUPTED CLASS, AND THE LARGEST "NOT SELF-MAINTAINING" HOLE IN
+       * THIS SYSTEM UNTIL 2026-08-05.
+       *
+       * Nothing was wrong with these runs. The process died under them — a
+       * restart, a crash, a laptop lid — and the loop below moved every one to
+       * `awaiting_input` and told the owner to POST /resume. A mid-build
+       * interruption with no plan park and no design park then fell through the
+       * NEXT loop's two `continue`s and had no automatic exit at all. That is
+       * how 52 minutes and 12 hours of real work came to be waiting on a click.
+       *
+       * THE CLOSED ATTEMPT COMES FIRST, whichever way this goes. The row was
+       * `running`, so an attempt is open on it from the entry into `#execute`
+       * that the dead process never came back from; leaving it open would make
+       * the next attempt's `waitedSec` uncomputable and would let a run report
+       * a live attempt that has no process.
+       */
+      this.#deps.store.closeAttempt(row.runId, {
+        endedAt: new Date().toISOString(),
+        endClass: "interrupted",
+        endDetail: "the dashboard process stopped while this attempt was running",
+        phaseReached: row.phase,
+      });
+      const decision = this.#decide(interruptedSignals(), row, new Date().toISOString());
+      if (decision.kind === "continue") {
+        /*
+         * THE COUNTER IS THE CRASH-LOOP BRAKE AND IT IS INCREMENTED HERE,
+         * because here is where the continuation is COMMITTED TO. Without it:
+         * boot -> queue -> start -> crash -> the process dies -> the supervisor
+         * restarts -> boot, for ever, unattended. The existing rate-limit sweep
+         * is safe from that only because it arms a timer rather than starting a
+         * run; a requeue has no such luxury and must carry its own brake.
+         *
+         * IT IS NOT INCREMENTED ON THE `stop` BRANCH. A boot that refuses to
+         * continue has not continued, and charging the budget for it would let
+         * three restarts of a development server exhaust every live run.
+         */
+        this.#deps.store.updateRun(row.runId, {
+          status: "queued",
+          queuePosition: null,
+          autoContinueCount: row.autoContinueCount + 1,
+          recoveryClass: decision.klass,
+        });
+        this.#emit(row.runId, { type: "status", status: "queued" });
+        this.#emitLog(
+          row.runId,
+          "warn",
+          "the dashboard restarted while this run was building, so its builder subprocess is gone. " +
+            "The workspace and the frozen suite are intact, and nobody has to press anything: " +
+            `${decision.reason} This is continuation ${String(row.autoContinueCount + 1)} of ` +
+            `${String(AUTO_CONTINUE_MAX)}.`,
+        );
+        continue;
+      }
+      this.#deps.store.updateRun(row.runId, {
+        status: "awaiting_input",
+        queuePosition: null,
+        recoveryClass: decision.klass,
+      });
       this.#emit(row.runId, { type: "status", status: "awaiting_input" });
       this.#emitLog(
         row.runId,
@@ -1574,7 +1580,8 @@ export class Orchestrator {
         "the dashboard restarted while this run was building, so its builder subprocess is gone. " +
           "The workspace and the frozen suite are intact. POST /api/runs/" +
           row.runId +
-          "/resume continues it from where it stopped.",
+          "/resume continues it from where it stopped. Nothing will do it by itself: " +
+          (decision.kind === "stop" ? decision.reason : "no continuation was planned."),
       );
     }
     // §17.3 RULE 1, THE DURABLE HALF. Every design park is bounded by a timer,
@@ -1622,13 +1629,41 @@ export class Orchestrator {
     // when they stopped; repeating it on every boot would bury the one that
     // mattered. `#armRateLimitResume` re-checks the flag anyway — it is also the
     // refusal-time path, where the off-reason IS the thing worth saying.
-    if (rateLimitAutoResume(this.#deps.env)) {
+    if (this.#recoveryEnabled("throttled")) {
       for (const row of this.#deps.store.listByStatus("rate_limited")) {
-        // RE-ARMED FOR THE REMAINDER: the row's ORIGINAL `rateLimitedAt` goes in,
-        // so a dashboard that restarts every few minutes cannot push the deadline
-        // forward each time. A row that predates the column carries `null` and is
-        // refused rather than restarted — see `planRateLimitResume`.
-        this.#armRateLimitResume(row.runId, row);
+        /*
+         * RE-ARMED FOR THE REMAINDER: the row's ORIGINAL `rateLimitedAt` goes in,
+         * so a dashboard that restarts every few minutes cannot push the deadline
+         * forward each time. A row that predates the column carries `null` and is
+         * refused rather than restarted.
+         *
+         * `count: false` IS THE OTHER HALF OF THAT SENTENCE AND IS AT LEAST AS
+         * IMPORTANT. This continuation was already charged to
+         * `auto_continue_count` when it was first armed; charging it again on
+         * every boot would mean three restarts of a development server — a
+         * normal act, and there is one running right now — silently exhausting
+         * the automatic budget of every parked run. The re-arm re-creates a
+         * timer that already existed; it does not decide anything new.
+         *
+         * THE REFUSAL IS RECONSTRUCTED FROM THE ROW HERE, AND ONLY HERE. The
+         * in-memory record died with the process, so the columns are all that is
+         * left — and on a PARKED run they are the refusal's own numbers, because
+         * `#rateLimited` wrote them at the park and a parked run makes no calls
+         * to overwrite them with telemetry. That is not true of a RUNNING run,
+         * which is why `#lastRefusal` exists for the live path.
+         */
+        this.#armRecovery(
+          row.runId,
+          row,
+          {
+            limited: true,
+            retryAfterSec: row.rateLimitRetryAfterSec,
+            kind: row.rateLimitKind,
+            observedAt: row.rateLimitedAt,
+          },
+          new Date().toISOString(),
+          { count: false },
+        );
       }
     }
     this.pump();
@@ -1676,7 +1711,43 @@ export class Orchestrator {
       // A throw that escapes #execute is a harness fault, not a model result.
       const detail = describeError(error);
       this.#emitLog(runId, "error", detail);
+      /*
+       * ─── THE RECOVERY SEAM, AND WHY IT IS HERE RATHER THAN IN EACH PHASE ───
+       *
+       * Every phase's failure converges on this line, and the history of this
+       * file is the argument for that. The abort check was added to the spec
+       * phase (which throws), then to the build phase (which returns a
+       * `cancelled` discriminant), then to the gate (which returns a `cancelled`
+       * REASON) — three phases, three shapes, one omission each time, and the
+       * docblock at the gate's exit says in its own words that the lesson is to
+       * check the SIGNAL rather than the shape. A per-phase recovery arm is that
+       * mistake a fourth time, with quota attached.
+       *
+       * IT IS ABOVE `#recordUnmeasuredBacklog` AND ABOVE `#finish`, and both
+       * placements are load-bearing:
+       *
+       *  - `#finish` PUBLISHES (`#publishProject` hangs off it). A recovery
+       *    attached after it would inherit an already-published half-build and
+       *    then overwrite its own earlier copy. It also writes a TERMINAL status,
+       *    which `resume()` refuses outright (`isTerminal`) — the exact reason 52
+       *    minutes and 12 hours of real work were thrown away.
+       *  - THE BACKLOG ENTRY IS A STATEMENT ABOUT A RUN THAT ENDED. A run that is
+       *    about to continue itself has not ended, and filing "what this run did
+       *    not close" for a fault it is about to retry fills the backlog with
+       *    entries the next attempt erases.
+       *
+       * WHAT IT CANNOT SEE, SAID PLAINLY: a failure that does not throw. The
+       * build phase's rate limit returns `{kind: "outcome"}` and is handled at
+       * its own exit, and the gate's is handled at the gate's — both call
+       * `#rateLimited`, which is the same park this seam reaches. There is one
+       * park and one arming decision; there are two ways in because the phases
+       * have two shapes.
+       */
+      if (this.#recoverFrom(runId, error, abort.signal, detail)) return;
       this.#recordUnmeasuredBacklog(runId, "infra", detail);
+      this.#deps.store.updateRun(runId, {
+        recoveryClass: classifyPhaseFailure(this.#signalsFor(runId, error, abort.signal)),
+      });
       this.#finish(runId, "failed", {
         endedAt: new Date().toISOString(),
         failureReason: detail,
@@ -1766,6 +1837,22 @@ export class Orchestrator {
       artifactPath: runPaths.workspace,
     });
     this.#emit(runId, { type: "status", status: "running" });
+    /*
+     * ONE ATTEMPT ROW PER ENTRY INTO THIS METHOD, OPENED BEFORE ANY PHASE.
+     *
+     * `waitedSec` is computed here from the PREVIOUS attempt's `ended_at`, which
+     * is the only place both instants exist — and it is wall-clock time, so a
+     * wait served while the dashboard was down counts exactly as much as one
+     * served by a timer. See `RunStore.openAttempt`.
+     *
+     * AND THE CARRIED REFUSAL IS DROPPED, for the reason `#setPhase` drops it: a
+     * refusal that stopped the PREVIOUS attempt must not classify a failure in
+     * this one. The row's telemetry columns still hold that refusal's numbers —
+     * that is what `reconcileOnBoot` re-arms from — but nothing in a live run
+     * reads them, which is the whole point of the separation.
+     */
+    this.#lastRefusal.delete(runId);
+    store.openAttempt(runId, new Date().toISOString(), row0.phase);
     // ARMED THE MOMENT THE ROW SAYS `running`, because that is the moment the
     // dashboard starts claiming this run is working. Everything below — the spec
     // seat, both build segments, the gate/fix loop, the judge — is inside the
@@ -1789,6 +1876,21 @@ export class Orchestrator {
         // chat; `PlanDriver` re-enters `#execute` when the dialogue ends, and its
         // timer ends the park if nobody answers. No `#finish`, so nothing writes
         // a verdict for a run that has not run.
+        //
+        // THE ATTEMPT IS CLOSED `parked`, WHICH IS NOT A FAILURE CLASS AND MUST
+        // NOT BE COUNTED AS ONE. An ordinary interactive run parks twice — once
+        // for the plan questions, once for the mockup choice — so defining an
+        // attempt as an entry into `#execute` would give every healthy run three
+        // attempt rows and a verdict headed "this run took 3 attempts". The
+        // honesty mechanism would then fire loudest on the healthy case and be
+        // trained away. `recoveredAttempts` is what the verdict counts, and it
+        // excludes this word.
+        this.#deps.store.closeAttempt(runId, {
+          endedAt: new Date().toISOString(),
+          endClass: "parked",
+          endDetail: "parked for the owner's answers to the plan questions",
+          phaseReached: "plan",
+        });
         log.close();
         return;
       }
@@ -1839,6 +1941,13 @@ export class Orchestrator {
         // NOT TERMINAL, AND NOT A VERDICT. The run is `awaiting_input` with its
         // mockups registered; segment 2 starts when `resume` applies a lock. No
         // `#finish`, so nothing writes a verdict for a run that has not finished.
+        // `parked`, not a failure class — see the plan park above.
+        this.#deps.store.closeAttempt(runId, {
+          endedAt: new Date().toISOString(),
+          endClass: "parked",
+          endDetail: "parked for the owner's design choice",
+          phaseReached: "build",
+        });
         log.close();
         return;
       }
@@ -2446,9 +2555,16 @@ export class Orchestrator {
         `reusing the sealed acceptance suite for this ticket text (${existing.sha256.slice(0, 12)}…), ` +
           `authored ${String(existing.criteria.length)} criteria`,
       );
+      // RECORDED FROM THE BRANCH ACTUALLY TAKEN, not folded out of the sentence
+      // above. `graph.ts` already matches `/^reusing the sealed acceptance
+      // suite/i`, and a prose fold that agrees with a column is fine — a prose
+      // fold ALONE is not a record, and "did the continuation redo the expensive
+      // work?" is the question this feature has to be able to answer.
+      this.#deps.store.noteAttemptSuiteSource(runId, "reused");
       this.#recordCriteria(runId, existing);
       return existing;
     }
+    this.#deps.store.noteAttemptSuiteSource(runId, "authored");
 
     this.#emitLog(
       runId,
@@ -5484,6 +5600,17 @@ export class Orchestrator {
       retryAfterSec: state.retryAfterSec,
     });
     if (state.limited) {
+      // THE ONE WRITER OF `#lastRefusal`, GATED ON `limited` — read that map's
+      // docblock. A `limited: false` frame is a window filling, not a refusal,
+      // and recording it here is exactly how an unrelated harness fault later
+      // classifies as `throttled` and spends quota waiting out a window nothing
+      // was refused by.
+      this.#lastRefusal.set(runId, {
+        limited: true,
+        retryAfterSec: state.retryAfterSec,
+        kind: state.kind,
+        observedAt: new Date().toISOString(),
+      });
       this.#emitLog(
         runId,
         "warn",
@@ -5492,6 +5619,110 @@ export class Orchestrator {
           "This is an expected state on a subscription, not a fault. The run is kept and can be resumed.",
       );
     }
+  }
+
+  /**
+   * Which flag lets a failure of this class continue itself.
+   *
+   * TWO FLAGS AND ONE READER, so the widening of consent is visible in four
+   * lines rather than spread over every call site. See
+   * {@link RATE_LIMIT_AUTO_RESUME_ENV}: an owner who set the older variable
+   * agreed to "let a run the provider refused restart itself" and to nothing
+   * else, so it enables `throttled` alone.
+   */
+  #recoveryEnabled(klass: FailureClass): boolean {
+    if (autoRecoverEnabled(this.#deps.env)) return true;
+    return klass === "throttled" && rateLimitAutoResume(this.#deps.env);
+  }
+
+  /**
+   * The signals for a throw, with THIS RUN'S carried refusal attached.
+   *
+   * The one place `#lastRefusal` is read, so the rule that a refusal must be
+   * carried rather than looked up has one enforcement point rather than a
+   * convention.
+   */
+  #signalsFor(runId: string, error: unknown, signal: AbortSignal | null): PhaseFailureSignals {
+    return signalsFor(error, signal, this.#lastRefusal.get(runId) ?? null);
+  }
+
+  /**
+   * Can this run carry on by itself after `error`? If so, park it and say so.
+   * Returns TRUE when the run has been dealt with and must NOT be failed.
+   *
+   * IT NEVER WRITES A TERMINAL STATUS. `rate_limited` is not terminal, so
+   * `resume()` accepts it, the cron sweep can see it, and the owner's button
+   * still works — which is the whole difference between this and the 12-hour run
+   * of 2026-07-30 that `#finish("failed")` made unresumable.
+   *
+   * THE BOUND IS NOT CHECKED HERE, DELIBERATELY. A refused run must stop
+   * whatever the cap says; what the cap decides is whether anything picks it up
+   * again, and that decision lives in `#armRecovery` where the wait is computed.
+   * One decision point, not two — and a run at its cap therefore still parks
+   * cleanly, with the cap's own sentence on its log, instead of being failed for
+   * a fault that was never its own.
+   *
+   * `transient` IS CLASSIFIED AND THEN FALLS THROUGH, and that is stated rather
+   * than hidden: `recovery.ts` ships that class with an EMPTY ALLOW-LIST (no
+   * real error maps to it, because the subscription seat cannot tell a 503 from
+   * an expired auth session), and this version has no park state for a
+   * non-throttled wait — `rate_limited` would be a lie and `awaiting_input`
+   * would be an infinite park after a restart, because `reconcileOnBoot`'s
+   * second loop skips a row with no durable park record. When something earns
+   * the `transport` signal, the missing piece is a park state, not a policy.
+   */
+  #recoverFrom(runId: string, error: unknown, signal: AbortSignal, detail: string): boolean {
+    const row = this.#deps.store.getRun(runId);
+    if (row === null) return false;
+    const signals = this.#signalsFor(runId, error, signal);
+    const klass = classifyPhaseFailure(signals);
+    if (klass !== "throttled") return false;
+    this.#emitLog(
+      runId,
+      "warn",
+      `this phase stopped on the provider's refusal rather than on anything wrong with the run ` +
+        `(${truncate(detail, 200)}). It is being parked rather than failed, so nothing is lost.`,
+    );
+    /*
+     * NO SESSION ID, AND THAT IS CORRECT RATHER THAN AN OMISSION. `#rateLimited`
+     * takes one so the BUILD lane can resume the same SDK session; a spec-phase
+     * or plan-phase throw has no session worth keeping, and what a continuation
+     * of those inherits is the FROZEN SUITE (`assertSuiteIntact` at the top of
+     * `#specPhase`), which is on disk and needs nothing carried. Passing a stale
+     * builder session here would make the next build resume a conversation that
+     * belongs to a different phase.
+     */
+    this.#rateLimited(
+      runId,
+      {
+        limited: true,
+        retryAfterSec: signals.refusal?.retryAfterSec ?? null,
+        kind: signals.refusal?.kind ?? null,
+        utilization: null,
+      },
+      null,
+    );
+    return true;
+  }
+
+  /**
+   * Classify a failure and decide what happens to it. PURE APART FROM THE ENV.
+   *
+   * THE CLASS IS COMPUTED TWICE ON PURPOSE — once here to choose the flag, once
+   * inside `planRecovery` to take the decision. The alternative is a
+   * class-dependent flag threaded through the policy module, which would give
+   * that module a reason to know about this program's environment. It is a pure
+   * function of its input; calling it twice costs nothing and cannot disagree
+   * with itself.
+   */
+  #decide(signals: PhaseFailureSignals, row: RunRow, now: string): RecoveryDecision {
+    return planRecovery({
+      signals,
+      autoContinueCount: row.autoContinueCount,
+      enabled: this.#recoveryEnabled(classifyPhaseFailure(signals)),
+      now,
+      maxWaitMs: recoveryMaxWaitMs(this.#deps.env),
+    });
   }
 
   /**
@@ -5512,7 +5743,18 @@ export class Orchestrator {
       rateLimitedAt: at,
       rateLimitRetryAfterSec: state.retryAfterSec,
       rateLimitKind: state.kind,
+      recoveryClass: "throttled",
       ...(sessionId === null ? {} : { builderSessionId: sessionId }),
+    });
+    // THE ATTEMPT IS CLOSED HERE AND NOT IN `#finish`, because a rate-limited run
+    // does not reach `#finish` — it is stopped, not finished. Without this close
+    // the attempt stays open, the continuation's `waitedSec` cannot be computed
+    // from it, and the run's own record would show two live attempts.
+    this.#deps.store.closeAttempt(runId, {
+      endedAt: at,
+      endClass: "throttled",
+      endDetail: `the provider refused${state.kind === null ? "" : ` (${state.kind} window)`}`,
+      phaseReached: row.phase,
     });
     this.#emit(runId, { type: "status", status: "rate_limited" });
     this.#emitLog(
@@ -5524,7 +5766,18 @@ export class Orchestrator {
     // AFTER the sentence above, never instead of it: whether or not a timer is
     // armed, the owner is told what happened first and what will (or will not)
     // happen about it second.
-    this.#armRateLimitResume(runId, row, at);
+    //
+    // THE REFUSAL IS THE ONE THAT ARRIVED WITH THIS FAILURE — `state`, the
+    // argument the build and gate paths already carry from their throw sites
+    // (`outcome.rateLimit`, `loop.rateLimit`) — and NOT a re-read of the row.
+    // See `#lastRefusal` for what re-reading the row does.
+    this.#armRecovery(
+      runId,
+      row,
+      { limited: true, retryAfterSec: state.retryAfterSec, kind: state.kind, observedAt: at },
+      at,
+      { count: true },
+    );
   }
 
   /**
@@ -5541,61 +5794,129 @@ export class Orchestrator {
    * takes, with the same refusals (terminal runs, the active run) and the same
    * `resumeCount` increment. Nothing here shortcuts into `#start`.
    *
-   * THE `due` ARM IS UNREACHABLE FROM `#rateLimited` AND THAT IS LOAD-BEARING.
-   * At a refusal `rateLimitedAt` is `now`, so the remaining wait is the whole
-   * reported window and cannot be <= 0; only the boot sweep, where real time has
-   * passed, can reach it. If it were reachable at the refusal, `resume()` would
-   * be called while this run is still `#active` and would return FALSE — an
-   * announced resume that silently did nothing.
+   * THE `continue` ARM IS UNREACHABLE FROM `#rateLimited` AND THAT IS
+   * LOAD-BEARING. At a refusal the observed instant is `now`, so the remaining
+   * wait is the whole reported window and cannot be <= 0; only the boot sweep,
+   * where real time has passed, can reach it. If it were reachable at the
+   * refusal, `resume()` would be called while this run is still `#active` and
+   * would return FALSE — an announced resume that silently did nothing.
    *
    * `#stopped` IS NOT CHECKED, deliberately. `shutdown()` clears the map, and
    * `resume()`'s `pump()` is already a no-op once stopped — so a decision taken
    * during teardown moves a row and starts no subprocess. That is also what lets
    * a test call `shutdown()` first and then observe `reconcileOnBoot` without
    * spending the owner's subscription.
+   *
+   * `count` IS THE WHOLE CAP. See {@link RunRow.autoContinueCount}: it is `true`
+   * where a continuation is decided (a refusal parking a run) and `false` where
+   * one that was already decided is merely re-created after a restart. Getting
+   * that backwards is either an unbounded automatic spend or a budget three
+   * development restarts can exhaust, and the reviewer of this design named both.
    */
-  #armRateLimitResume(runId: string, row: RunRow, now = new Date().toISOString()): void {
+  #armRecovery(
+    runId: string,
+    row: RunRow,
+    refusal: RefusalEvidence | null,
+    now: string,
+    options: { readonly count: boolean },
+  ): void {
     this.#clearRateLimitTimer(runId);
-    const plan = planRateLimitResume({
-      enabled: rateLimitAutoResume(this.#deps.env),
-      rateLimitedAt: row.rateLimitedAt,
-      retryAfterSec: row.rateLimitRetryAfterSec,
-      resumeCount: row.resumeCount,
-      now,
-    });
-    if (plan.kind === "disabled") {
-      this.#emitLog(runId, "warn", `no automatic resume is armed: ${plan.reason}`);
+    const decision = this.#decide(signalsFor(null, null, refusal), row, now);
+    if (decision.kind === "stop") {
+      this.#emitLog(runId, "warn", `no automatic resume is armed: ${decision.reason}`);
       return;
     }
-    if (plan.kind === "due") {
+    if (decision.kind === "continue") {
       // The wait was served in wall-clock time while the dashboard was down.
+      if (options.count) this.#chargeContinuation(runId, row, decision.klass);
       this.#emitLog(
         runId,
         "info",
-        "the rate-limit window the provider reported has already elapsed, so this run is resuming " +
-          "automatically. Nothing checked that the window really reopened — that is the provider's own " +
-          "reported instant, and if it was wrong the run comes straight back here.",
+        `${decision.reason} This run is resuming automatically: nothing checked that the window really ` +
+          "reopened — that is the provider's own reported instant, and if it was wrong the run comes " +
+          "straight back here.",
       );
       this.resume(runId);
       return;
     }
-    const firesAt = new Date(Date.parse(now) + plan.delayMs).toISOString();
+    /*
+     * THE COUNTER MOVES BEFORE THE TIMER IS SET, not inside its callback.
+     *
+     * The callback runs minutes or hours later, in a process that may not be
+     * this one — and the whole point of `#rateLimitTimers` having a durable half
+     * is that a restart re-creates the timer without re-deciding. If the charge
+     * lived in the callback, a machine that restarted once per window would
+     * re-arm for ever and never charge anything. The moment the arm is announced
+     * is the moment this run has committed to continuing itself.
+     */
+    if (options.count) this.#chargeContinuation(runId, row, decision.klass);
     this.#emitLog(
       runId,
       "info",
-      `automatic resume armed: this run restarts itself in ${String(Math.round(plan.delayMs / 60_000))} min ` +
-        `(${firesAt}), because ${RATE_LIMIT_AUTO_RESUME_ENV} is set. That instant is the provider's own ` +
-        `reported reset, not a verified one; a refusal on the way back parks the run again.`,
+      `automatic resume armed: this run restarts itself in ` +
+        `${String(Math.round(decision.delayMs / 60_000))} min (${decision.firesAt}). ${decision.reason} ` +
+        `That instant is the provider's own reported reset, not a verified one; a refusal on the way back ` +
+        `parks the run again.`,
     );
     const timer = setTimeout(() => {
       this.#rateLimitTimers.delete(runId);
       this.#emitLog(runId, "info", "the reported rate-limit window has elapsed; resuming automatically");
       this.resume(runId);
-    }, plan.delayMs);
+    }, decision.delayMs);
     // `unref` so an armed wait never holds the process open — which is NOT the
     // same as cancelling it, hence `shutdown()` clearing the map as well.
     timer.unref();
     this.#rateLimitTimers.set(runId, timer);
+  }
+
+  /**
+   * Charge one continuation to this run's automatic budget, and SAY the balance.
+   *
+   * ONE METHOD RATHER THAN THREE `+ 1`s, because a cap enforced against a number
+   * some paths forget to move is not a cap — it is the reviewer's first finding
+   * on this design, and the only defence against it is that every increment is
+   * spelled here where it can be counted.
+   */
+  #chargeContinuation(runId: string, row: RunRow, klass: FailureClass): void {
+    this.#deps.store.updateRun(runId, {
+      autoContinueCount: row.autoContinueCount + 1,
+      recoveryClass: klass,
+    });
+  }
+
+  /**
+   * A RUN THAT CONTINUED ITSELF MUST NOT PRESENT AS A CLEAN PASS. This is the
+   * sentence that stops it.
+   *
+   * WHAT IT COUNTS AND WHAT IT REFUSES TO COUNT. Entries into `#execute` are not
+   * attempts in the sense the owner cares about: an ordinary interactive run
+   * parks for the plan questions and again for a mockup choice, so counting them
+   * would head every healthy run's record with "this run took 3 attempts" and
+   * train the reader to ignore the line that matters. Only attempts closed with
+   * a FAILURE CLASS are counted, which is why the parks close as `parked`.
+   *
+   * ZERO ROWS SAYS NOTHING AT ALL, and that is the rule for every reader of this
+   * ledger: the owner's four historical runs have no attempt rows, and rendering
+   * an empty history as "1 attempt" would be a claim about runs nothing
+   * recorded. Silence is the honest output for a run that predates the feature.
+   */
+  #announceAttemptHistory(runId: string): void {
+    const attempts = this.#deps.store.listAttempts(runId);
+    const recovered = attempts.filter(
+      (attempt) => attempt.endClass !== null && attempt.endClass !== "parked" && attempt.endClass !== "completed",
+    );
+    if (recovered.length === 0) return;
+    const waited = attempts.reduce((total, attempt) => total + (attempt.waitedSec ?? 0), 0);
+    const reused = attempts.filter((attempt) => attempt.suiteSource === "reused").length;
+    this.#emitLog(
+      runId,
+      "warn",
+      `this run took ${String(attempts.length)} attempt(s) to reach a verdict, not one. ` +
+        `${recovered.map((attempt) => `#${String(attempt.attemptNo)} stopped ${attempt.endClass ?? "?"} in the ${attempt.phaseReached} phase`).join("; ")}. ` +
+        `${waited > 0 ? `It waited ${String(Math.round(waited / 60))} min in total between attempts. ` : ""}` +
+        `${reused > 0 ? `The frozen acceptance suite was reused rather than re-authored on ${String(reused)} of them, so the yardstick did not move. ` : ""}` +
+        `Read the verdict knowing the artefact was produced across more than one run of the pipeline.`,
+    );
   }
 
   #clearRateLimitTimer(runId: string): void {
@@ -5771,6 +6092,23 @@ export class Orchestrator {
    */
   #finish(runId: string, status: ApiRunStatus, patch: Parameters<RunStore["updateRun"]>[1]): void {
     const row = this.#deps.store.updateRun(runId, { ...patch, status });
+    /*
+     * THE ATTEMPT IS CLOSED BEFORE THE VERDICT IS WRITTEN, because the verdict
+     * reads the attempt ledger to state how many attempts there were, and an
+     * attempt still open at that moment would be missing from its own summary.
+     *
+     * `cancelled` CLOSES AS `intentional` RATHER THAN `completed`. The classes
+     * are `recovery.ts`'s, and its first rule is that a run somebody stopped on
+     * purpose is not a run to reason about; recording it as a completion would
+     * make the ledger agree with the status and disagree with what happened.
+     */
+    this.#deps.store.closeAttempt(runId, {
+      endedAt: row.endedAt ?? new Date().toISOString(),
+      endClass: status === "cancelled" ? "intentional" : "completed",
+      endDetail: row.failureReason,
+      phaseReached: row.phase,
+    });
+    this.#announceAttemptHistory(runId);
     const verdictPath = this.#writeVerdict(runId, row);
     if (verdictPath !== null) {
       const updated = this.#deps.store.updateRun(runId, { verdictPath });
@@ -5887,6 +6225,12 @@ export class Orchestrator {
   }
 
   #setPhase(runId: string, phase: ApiPhase): void {
+    // THE CARRIED REFUSAL DIES AT THE PHASE BOUNDARY. Read `#lastRefusal`: a
+    // rejected frame the PLAN phase saw must not make a SPEC-phase harness fault
+    // classify as throttled, and a phase boundary is the narrowest scope this
+    // program can express — the SDK reports a refusal through a sink, so there
+    // is no call-scoped place to hang it.
+    this.#lastRefusal.delete(runId);
     this.#deps.store.updateRun(runId, { phase });
     this.#emit(runId, { type: "phase", phase });
   }

@@ -18,7 +18,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -46,7 +46,7 @@ const PHASE_2D_COLUMNS = ["gate_attempts", "gate_stop_reason"] as const;
  * remaining wait. It belongs in the migration sweep for the same reason as the
  * others — an older database must open, not throw.
  */
-const LATER_COLUMNS = ["rate_limited_at"] as const;
+const LATER_COLUMNS = ["rate_limited_at", "auto_continue_count", "recovery_class"] as const;
 
 /** Returns the created row so a caller can assert on the INSERT's own defaults. */
 function seed(
@@ -465,7 +465,7 @@ test("a database written before these columns existed gains them on open", () =>
       .prepare("PRAGMA table_info(runs)")
       .all()
       .map((row) => String(row["name"]));
-    for (const column of [...PHASE_2B_COLUMNS, ...PHASE_2D_COLUMNS]) {
+    for (const column of [...PHASE_2B_COLUMNS, ...PHASE_2D_COLUMNS, ...LATER_COLUMNS]) {
       assert.ok(!columns.includes(column), `the fixture did not reproduce the pre-2b schema: ${column} is still there`);
     }
     stripper.close();
@@ -479,13 +479,86 @@ test("a database written before these columns existed gains them on open", () =>
       assert.equal(row.interactive, false);
       assert.equal(row.gateAttempts, 0, "a run that predates the GATE/FIX loop gated zero times under it");
       assert.equal(row.gateStopReason, null, "and it stopped for no reason this column knows — NOT for `green`");
+      assert.equal(row.autoContinueCount, 0, "no run has ever continued itself, because until now nothing could");
+      assert.equal(row.recoveryClass, null, "and nothing classified why it stopped — NOT `completed`");
+      assert.deepEqual(migrated.listAttempts("run-old"), [], "zero attempt rows means 'predates the ledger', not 'one clean attempt'");
       // Present is not the same as writable.
       assert.equal(migrated.updateRun("run-old", { designSegmentDone: true }).designSegmentDone, true);
       const patched = migrated.updateRun("run-old", { gateAttempts: 2, gateStopReason: "retry-cap" });
       assert.equal(patched.gateAttempts, 2);
       assert.equal(patched.gateStopReason, "retry-cap");
+      const recovered = migrated.updateRun("run-old", { autoContinueCount: 1, recoveryClass: "throttled" });
+      assert.equal(recovered.autoContinueCount, 1);
+      assert.equal(recovered.recoveryClass, "throttled");
     } finally {
       migrated.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("THE OWNER'S OWN runs.db OPENS AND KEEPS ITS RUNS — the only database that takes the ALTER path", () => {
+  /*
+   * EVERY OTHER MIGRATION TEST IN THIS FILE STARTS FROM `mkdtemp`, where
+   * `CREATE TABLE IF NOT EXISTS` always carries the newest column and
+   * `ADDED_RUN_COLUMNS` is never consulted. The DROP COLUMN fixture above
+   * reproduces the old shape by hand, which is the right check for a shape we
+   * can predict — this one checks the shape we cannot: whatever is actually on
+   * the owner's disk, written by whichever versions of this server he has run.
+   * `design_lock` already shipped as a column that every test saw and his
+   * database did not, and `str()` threw "column design_lock is absent" on his
+   * machine and nowhere else.
+   *
+   * IT IS A COPY, AND THE REAL FILE IS NEVER OPENED. `RunStore.open` runs
+   * `PRAGMA journal_mode = WAL` and the migration's `ALTER TABLE`, both of which
+   * WRITE — against a file a live dashboard has open on this machine right now.
+   * The -wal and -shm siblings are copied too, or a checkpointed write sitting in
+   * the log would be invisible to the copy and this would test a database the
+   * owner does not have.
+   *
+   * IT SKIPS RATHER THAN FAILS WHEN THE FILE IS ABSENT, because CI and a fresh
+   * clone have no runs.db and a red test there would say nothing true.
+   */
+  const real = join(process.cwd(), "..", "data", "runs.db");
+  if (!existsSync(real)) return;
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-real-"));
+  try {
+    const copy = join(dir, "runs.db");
+    copyFileSync(real, copy);
+    for (const suffix of ["-wal", "-shm"]) {
+      if (existsSync(`${real}${suffix}`)) copyFileSync(`${real}${suffix}`, `${copy}${suffix}`);
+    }
+
+    const before = new DatabaseSync(copy, { readOnly: true });
+    const runIds = before
+      .prepare("SELECT run_id FROM runs ORDER BY started_at")
+      .all()
+      .map((row) => String(row["run_id"]));
+    before.close();
+    assert.ok(runIds.length > 0, "the owner's database has runs in it, or this test proves nothing");
+
+    const store = RunStore.open(copy);
+    try {
+      // NO ROW IS LOST AND NO ROW THROWS. `listRuns` reads every column through
+      // `str()`/`num()`, which throw on an absent one — so a migration entry
+      // this change forgot fails HERE, on the only database in existence that
+      // would have shown it.
+      const rows = store.listRuns();
+      assert.equal(rows.length, runIds.length, "the migration must not lose a run");
+      for (const row of rows) {
+        assert.equal(row.autoContinueCount, 0, `${row.runId} has never continued itself, and 0 says so`);
+        assert.equal(row.recoveryClass, null, `${row.runId} was never classified, and null says so`);
+        assert.deepEqual(store.listAttempts(row.runId), [], `${row.runId} predates the attempt ledger`);
+      }
+      // AND THE HISTORY THE OWNER CARES ABOUT SURVIVED, not merely the shape.
+      assert.deepEqual(
+        rows.map((row) => row.runId).sort(),
+        [...runIds].sort(),
+        "the same runs, by id",
+      );
+    } finally {
+      store.close();
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
