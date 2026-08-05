@@ -109,10 +109,22 @@
  * that it over-subtracts and then passes forever on an empty string.
  *
  *   · Every state names a FLOOR of chrome words it must still see. If the
- *     subtraction ever starts eating the product's own voice, or a panel renders
- *     empty, the floor fails and this file says so instead of passing. The
- *     numbers are measured, at roughly half of what is there today so a further
- *     trim does not nag.
+ *     subtraction ever starts eating the product's own voice, or one of the
+ *     state's panels renders empty, the floor fails and this file says so
+ *     instead of passing. The numbers are measured — 1231 for a running build,
+ *     329 for the smallest single-panel state — and set at roughly three
+ *     quarters of that, so removing another quarter of everything the app says
+ *     still passes while an over-subtraction, which zeroes most of it at once,
+ *     does not.
+ *
+ *     READ THE NUMBER FOR WHAT IT IS: it is the total over EVERY PANEL OPEN in
+ *     that state, and the header and the rail's six tooltips are counted once
+ *     per panel. 1231 is not 1231 words on one screen. It is a baseline to
+ *     compare against itself, not a word count of the app.
+ *
+ *     THE FLOOR IS ALSO WHY THE WAIT BEFORE EACH HARVEST CAN BE LENIENT. A
+ *     half-drawn panel is not a silent pass here; it is fewer chrome words, and
+ *     fewer chrome words is a failure.
  *   · One test asserts the boundary itself in both directions: the harness's
  *     ticket contains the banned word "suite", is genuinely on screen, and is
  *     genuinely absent from the chrome.
@@ -465,6 +477,21 @@ async function openPanel(page: Page, entry: string): Promise<void> {
   await expect(button).toHaveAttribute("aria-expanded", "true");
 }
 
+/**
+ * Wait for a panel's own fetches to land before reading it.
+ *
+ * BOUNDED AND SWALLOWED ON PURPOSE. A live run holds an SSE connection open for
+ * as long as the page is up, so "no network for 500ms" is not something this app
+ * can be relied on to reach; treating a timeout here as a failure would make
+ * this file flake on the one state it most needs to read. It is safe to give up
+ * waiting because a premature read is not a silent pass — the harvest would
+ * return a half-drawn panel and the state's chrome-word floor is what fails.
+ */
+async function settled(page: Page): Promise<void> {
+  await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
+  await page.waitForTimeout(250);
+}
+
 type Patch = Record<string, unknown>;
 
 /**
@@ -541,80 +568,80 @@ const SWEEP: readonly {
     name: "a running build",
     run: RUN_ID,
     entries: ["overview", "chat", "files", "result", "activity"],
-    floor: 200,
+    floor: 900,
   },
   {
     name: "a run that finished and failed",
     run: FINISHED_RUN_ID,
     entries: ["overview", "result", "activity", "files", "chat"],
-    floor: 250,
+    floor: 1050,
   },
   {
     name: "a live build with a workspace",
     run: BUILD_RUN_ID,
     entries: ["overview", "result", "activity"],
-    floor: 150,
+    floor: 620,
   },
   {
     name: "a run parked on its questions",
     run: PLAN_RUN_ID,
     entries: ["questions", "chat", "overview", "result"],
-    floor: 260,
+    floor: 900,
   },
   {
     name: "rate limited, with a window to wait out",
     run: RUN_ID,
     entries: ["result"],
-    floor: 60,
+    floor: 220,
     patch: { status: "rate_limited", rateLimit: { limited: true, retryAfterSec: 900 } },
   },
   {
     name: "rate limited, with no window reported",
     run: RUN_ID,
     entries: ["result"],
-    floor: 60,
+    floor: 220,
     patch: { status: "rate_limited", rateLimit: { limited: true, retryAfterSec: null } },
   },
   {
     name: "stopped, waiting on the owner",
     run: RUN_ID,
     entries: ["result"],
-    floor: 60,
+    floor: 220,
     patch: { status: "awaiting_input" },
   },
   {
     name: "a false finish",
     run: FINISHED_RUN_ID,
     entries: ["result"],
-    floor: 80,
+    floor: 270,
     patch: { falseFinish: true },
   },
   {
     name: "a run that passed",
     run: FINISHED_RUN_ID,
     entries: ["result"],
-    floor: 80,
+    floor: 270,
     patch: { status: "passed", heldOutPass: true, falseFinish: false },
   },
   {
     name: "a run that was never graded",
     run: FINISHED_RUN_ID,
     entries: ["result"],
-    floor: 80,
+    floor: 270,
     patch: { heldOutPass: null },
   },
   {
     name: "a run the owner cancelled",
     run: FINISHED_RUN_ID,
     entries: ["result"],
-    floor: 65,
+    floor: 250,
     patch: { status: "cancelled" },
   },
   {
     name: "a copy of the work that was refused",
     run: FINISHED_RUN_ID,
     entries: ["result"],
-    floor: 60,
+    floor: 240,
     patch: {
       publishedProject: {
         published: false,
@@ -628,7 +655,7 @@ const SWEEP: readonly {
     name: "a copy of the work that was made",
     run: FINISHED_RUN_ID,
     entries: ["result"],
-    floor: 60,
+    floor: 240,
     patch: {
       publishedProject: {
         published: true,
@@ -665,7 +692,7 @@ async function sweep(
     /* The panels fetch on mount — the tree, a file's contents, the transcript —
        so the harvest waits for the network to go quiet before it reads, and the
        recorder is settled AFTER the harvest so those bodies are in `supplied`. */
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     const blocks = await page.evaluate(harvest, ROOT);
     const supplied = [...(await settle()), ...introduced];
     for (const block of blocks) {
@@ -782,7 +809,7 @@ test("the owner's own ticket may say 'suite', and the guard does not fire on it"
   await page.goto(`/runs/${RUN_ID}`);
   await expect(page.getByRole("toolbar", { name: "Run panels" })).toBeVisible();
   await openPanel(page, "overview");
-  await page.waitForLoadState("networkidle");
+  await settled(page);
 
   const rendered = await page.getByTestId("overview-ticket").textContent();
   expect(rendered ?? "", "the harness ticket no longer contains a banned word").toMatch(
@@ -797,8 +824,9 @@ test("the owner's own ticket may say 'suite', and the guard does not fire on it"
 
   /* And the panel is not scanned down to nothing on the way: the ticket block
      also carries the product's own subtitle, which must survive. */
-  const { chromeWords } = await sweep(page, SWEEP[0] as (typeof SWEEP)[number]);
-  expect(chromeWords).toBeGreaterThanOrEqual(200);
+  const state = SWEEP[0] as (typeof SWEEP)[number];
+  const { chromeWords } = await sweep(page, state);
+  expect(chromeWords).toBeGreaterThanOrEqual(state.floor);
 });
 
 /**
@@ -851,7 +879,7 @@ test("a long ticket and a long chat message are data, and the budget leaves them
      the ticket and the transcript are never on screen together. */
   const blocks: Block[] = [];
   await openPanel(page, "overview");
-  await page.waitForLoadState("networkidle");
+  await settled(page);
   await expect(page.getByTestId("overview-ticket")).toContainText(
     "every section reads as one piece of work rather than six",
   );
@@ -859,7 +887,7 @@ test("a long ticket and a long chat message are data, and the budget leaves them
   const chatFrom = blocks.length;
 
   await openPanel(page, "chat");
-  await page.waitForLoadState("networkidle");
+  await settled(page);
   await expect(page.getByTestId("rail-panel")).toContainText(
     "keep the type at the size it is now",
   );
