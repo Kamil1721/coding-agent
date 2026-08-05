@@ -77,6 +77,7 @@ import { elapsedBetween, formatDuration } from "@/lib/format";
 import { designLockPhase } from "@/lib/mockups";
 import { TONE_TEXT, phaseMeta, statusMeta, type Tone } from "@/lib/presentation";
 import { ticketLabel, ticketTooltip } from "@/lib/ticket-title";
+import { Explain } from "@/components/explain";
 import { FalseFinishBadge, HeldOutBadge } from "@/components/outcome";
 import { Badge, Button, Dot, MonoPath, Panel, cx } from "@/components/ui";
 import { TicketAttachmentsPanel } from "@/components/run/attachments";
@@ -266,14 +267,25 @@ function TabBody({ children }: { children: ReactNode }): ReactNode {
  * the app's existing `rounded` — no third radius, no new type size. Overview is
  * five of these stacked; every other panel is one body with no card at all,
  * because a single card wrapping a whole panel is a border for its own sake.
+ *
+ * `explain` IS A SLOT IN THE HEADING STRIP — 2026-08-05, and it is where two of
+ * this panel's paragraphs went. It takes an `<Explain>` and nothing else. In the
+ * heading rather than in the body because the fact is ABOUT the section, and a
+ * glyph at the end of a body is a glyph nobody scanning headings will find. The
+ * uppercase/tracking on this `h3` is safe for it: `explain.tsx` draws a vector
+ * circle-i rather than a letterform precisely so a call site's casing cannot
+ * reach it, and the bubble resets `normal-case tracking-normal` itself.
  */
 function PanelSection({
   title,
+  explain,
   children,
   testId,
   bodyClassName = "p-[10px]",
 }: {
   title: string;
+  /** An `<Explain>` for a fact about this section. Not for a second heading. */
+  explain?: ReactNode;
   children: ReactNode;
   testId?: string;
   /** `p-0` for a body that needs edge-to-edge rows — the agent roster does. */
@@ -286,6 +298,7 @@ function PanelSection({
     >
       <h3 className="border-b border-line px-[10px] py-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
         {title}
+        {explain}
       </h3>
       <div className={bodyClassName}>{children}</div>
     </section>
@@ -398,19 +411,26 @@ const SEVERITY_TONE: Readonly<Record<string, Tone>> = {
  * line at all for it. The three sentences that are not refusals — timeout, failed,
  * cancelled — are written to be true whether or not a partial report survived,
  * because `adversaryLane` returns `ran: true` with findings on the timeout path.
+ *
+ * REWORDED 2026-08-05 AND NOT SHORTENED MUCH, because the length was never the
+ * problem here: exactly one of these renders at a time and it is the whole answer
+ * to "why is this panel empty". What went was the vocabulary — "denylist",
+ * "unbound", "wall-clock", "scratch directory", "artefact" — none of which the
+ * owner has any way to read. Every refusal still says WHAT was wrong and that the
+ * pass was refused RATHER THAN run anyway, which is the distinction that stops a
+ * refusal reading as a crash.
  */
 const STOP_SENTENCE: Readonly<Record<string, string>> = {
-  "not-applicable":
-    "There was no running preview of the site for the pass to read, so it was never attempted.",
+  "not-applicable": "There was no running preview of the site to review.",
   "agent-missing":
-    "The reviewer agent this pass delegates to could not be read on the machine that ran it, so the pass was refused rather than run with some other agent.",
+    "The reviewer agent could not be read on the machine that ran it, so the pass was refused rather than run with a different one.",
   "agent-denylist-drift":
-    "The reviewer agent's own permissions on disk no longer deny everything this pass requires, so it was refused rather than run unbound.",
+    "The reviewer agent's permissions no longer block what this pass needs blocked, so it was refused rather than run unrestricted.",
   "denylist-incomplete":
-    "This build's denylist for the pass no longer covers every write tool, so it was refused rather than let near the artefact it judges.",
+    "This build no longer blocks every tool that can write, so the pass was refused rather than let near the work it judges.",
   "workspace-not-isolated":
-    "The pass's scratch directory overlapped the artefact it was meant to judge, so it was refused before anything started.",
-  timeout: "The pass hit its wall-clock limit and was stopped before it finished.",
+    "The pass's own folder overlapped the work it was meant to judge, so it was refused before anything started.",
+  timeout: "The pass ran out of time and was stopped before it finished.",
   failed: "The pass errored out.",
   cancelled: "The run was cancelled, so the pass did not finish.",
 };
@@ -434,9 +454,14 @@ function StopBlock({ stop, stopDetail }: { stop: string; stopDetail: string }): 
   const sentence = STOP_SENTENCE[stop];
   return (
     <div className="mt-2 rounded border border-line bg-canvas/40 px-3 py-2">
+      {/* The unrecognised-stop fallback lost its second sentence on 2026-08-05:
+          "It is shown as the server sent it" was a claim about the token already
+          printed two words earlier, which is the definition of restating a
+          label. The token itself is what a reader would quote in a bug report,
+          and it is still here. */}
       <p className="text-[12px] leading-snug text-ink-dim">
         {sentence ??
-          `The pass stopped for a reason this build does not recognise (${stop}). It is shown as the server sent it.`}
+          `The pass stopped for a reason this build does not recognise: ${stop}`}
       </p>
       {stopDetail !== "" && (
         <>
@@ -445,9 +470,15 @@ function StopBlock({ stop, stopDetail }: { stop: string; stopDetail: string }): 
            * characters and nothing on the wire says whether the cut fired, so a
            * caption claiming this text WAS cut would be a claim about data this
            * component cannot see.
+           *
+           * "The lane's own words" became "In its own words" on 2026-08-05 — a
+           * "lane" is a thing in this program's source, not on this screen, and
+           * the only antecedent a reader has here is the pass. The cap stays: it
+           * is a fact about the text directly below it, while they are reading
+           * it, so it is not a candidate for an `<Explain>`.
            */}
           <div className="mt-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
-            The lane&rsquo;s own words, capped by the server at 2000 characters
+            In its own words, capped at 2000 characters
           </div>
           <pre className="mt-1 max-h-[140px] overflow-auto whitespace-pre-wrap break-words rounded-sm border border-line bg-surface-raised px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink-dim">
             {stopDetail}
@@ -471,7 +502,9 @@ function StopBlock({ stop, stopDetail }: { stop: string; stopDetail: string }): 
  *
  * `detail === ""` IS A STATEMENT, NOT A BLANK. The wire's own docblock: empty
  * means "it reported a finding and no evidence text", and it renders as that
- * absence rather than as an empty disclosure the reader opens for nothing.
+ * absence rather than as an empty disclosure the reader opens for nothing. Its
+ * sentence said "No repro text" until 2026-08-05; "repro" is a word from bug
+ * trackers, and the sentence is unchanged in meaning without it.
  */
 function FindingRow({ finding }: { finding: AdversaryFinding }): ReactNode {
   const tone = SEVERITY_TONE[finding.severity] ?? "neutral";
@@ -492,7 +525,7 @@ function FindingRow({ finding }: { finding: AdversaryFinding }): ReactNode {
         <p className="text-[12.5px] leading-snug text-ink-dim">{finding.summary}</p>
         {finding.detail === "" ? (
           <p className="mt-1 text-[11px] leading-snug text-ink-faint">
-            No repro text was filed with this one.
+            No detail was filed with this one.
           </p>
         ) : (
           <details className="mt-1">
@@ -544,7 +577,27 @@ function AdversaryPanel({ pass }: { pass: AdversaryPass | null }): ReactNode {
 
   return (
     <Panel
-      title="Human-factors pass"
+      /*
+       * "HUMAN-FACTORS PASS" WAS THE HEADING UNTIL 2026-08-05. It is a term of
+       * art for a discipline, not a description of what this panel holds; what
+       * the lane actually does is read the finished site and report what got in
+       * the way of using it, which is what "usability" means in plain English.
+       * Nothing about the mechanism changed, so nothing about the claim did.
+       *
+       * THE SENTENCE DESCRIBING THE MECHANISM IS BEHIND THE `i`. It answers
+       * "where did this come from", which a reader wants once and then never
+       * again, and it was the first half of a 30-word subtitle sitting above
+       * every finding forever.
+       */
+      title={
+        <span className="flex items-center">
+          Usability review
+          <Explain about="the usability review" className="ml-1" testId="explain-usability">
+            A separate reader is pointed at the finished site and asked what got in
+            the way of using it.
+          </Explain>
+        </span>
+      }
       /*
        * "THE PASS OR FAIL ABOVE", NOT "the verdict above" — 2026-08-05. The
        * sentence's job is unchanged and is the reason it exists at all: nothing
@@ -553,8 +606,16 @@ function AdversaryPanel({ pass }: { pass: AdversaryPass | null }): ReactNode {
        * The thing it points at is the outcome notice at the top of this same
        * panel, which says "Passed"/"Failed" — so it is now named by the words
        * that are actually printed up there.
+       *
+       * AND IT STAYS INLINE, WHICH IS THE ONE THING ON THIS PANEL THAT DOES.
+       * Everything else here was deleted or hidden. This is not decoration and
+       * it is not a consequence of a later action: a reader looking at a CRITICAL
+       * row has ALREADY misread it by the time an `i` would have told him
+       * otherwise, and what he does next — go hunting for the finding that failed
+       * his run — is wasted on a run this list never touched. It must be readable
+       * without interaction, above the list, every time.
        */
-      subtitle="A separate reader is pointed at the finished site and asked what got in the way of using it. Reported only — nothing on this panel changed the pass or fail above."
+      subtitle="Reported only. Nothing here changed the pass or fail above."
       /*
        * THE COUNT EXISTS ONLY WHEN THERE IS A LIST TO COUNT, and this is the
        * other half of the no-report/found-nothing rule rather than a cosmetic
@@ -578,34 +639,49 @@ function AdversaryPanel({ pass }: { pass: AdversaryPass | null }): ReactNode {
        */
       bodyClassName="p-0"
     >
+      {/*
+       * THE THREE SENTENCES STAY INLINE AND THEIR THREE PARAGRAPHS DO NOT —
+       * 2026-08-05, and the split is not the same in all three cases.
+       *
+       *   ran/no report   The paragraph's job was "this is not the same as
+       *                   finding nothing", which is exactly the misreading the
+       *                   whole block exists to prevent — a reader who takes it
+       *                   for a clean bill has drawn a conclusion. Kept, hidden.
+       *   did not run     DELETED OUTRIGHT. "Nothing was reviewed, so this says
+       *                   nothing about the site either way" is what "did not
+       *                   run" already means; and the stop line rendered
+       *                   immediately below says WHY it did not run, so the
+       *                   reader is not left with a bare denial.
+       *   listed nothing  "An empty report, not a missing one" restates the
+       *                   sentence above it and is deleted with it; the
+       *                   calibration that survives is "not a guarantee there is
+       *                   nothing to find", which is the difference between one
+       *                   reader's opinion and a clean bill.
+       */}
       {findings === null ? (
         pass.ran ? (
           <div className="px-3 py-2.5">
-            <p className="text-[12.5px] leading-snug text-ink">
+            <p className="flex items-start text-[12.5px] leading-snug text-ink">
               The pass ran and left no report.
-            </p>
-            <p className="mt-1 text-[11.5px] leading-relaxed text-ink-faint">
-              That is not the same as finding nothing. The findings are a file the
-              session writes and this run has none, so what it saw — if anything —
-              is not on this wire and nothing here can stand in for it.
+              <Explain about="the missing report" className="ml-1" testId="explain-no-report">
+                That is not the same as finding nothing. The report is a file the
+                session writes, and this run has none.
+              </Explain>
             </p>
           </div>
         ) : (
           <div className="px-3 py-2.5">
             <p className="text-[12.5px] leading-snug text-ink">The pass did not run.</p>
-            <p className="mt-1 text-[11.5px] leading-relaxed text-ink-faint">
-              Nothing was reviewed, so this says nothing about the site either way.
-            </p>
           </div>
         )
       ) : ordered.length === 0 ? (
         <div className="px-3 py-2.5">
-          <p className="text-[12.5px] leading-snug text-ink">
+          <p className="flex items-start text-[12.5px] leading-snug text-ink">
             The pass filed its report and listed nothing.
-          </p>
-          <p className="mt-1 text-[11.5px] leading-relaxed text-ink-faint">
-            An empty report, not a missing one. It is one reader&rsquo;s pass over
-            the finished site, not a guarantee there is nothing to find.
+            <Explain about="an empty report" className="ml-1" testId="explain-empty-report">
+              One reader&rsquo;s pass over the finished site — not a guarantee there
+              is nothing to find.
+            </Explain>
           </p>
         </div>
       ) : (
@@ -774,9 +850,20 @@ export function OverviewPanel({
                 variant="primary"
                 onClick={onResume}
                 disabled={busy}
+                /*
+                 * TRIMMED 2026-08-05, NOT DEMOTED. The plan-park sentence ended
+                 * "— the same place the run lands if the window simply closes",
+                 * which describes what happens if the reader does NOTHING; it
+                 * cannot change the decision this button is about. Deleted. What
+                 * is left is the consequence of the CLICK, and it stays on a
+                 * `title` rather than moving behind an `<Explain>` because an
+                 * `<Explain>` inside a `<button>` is a button inside a button.
+                 * `AwaitingInputNotice` (run/notices.tsx) carries the same
+                 * warning in full, inline, and floats over the canvas.
+                 */
                 title={
                   run.phase === "plan" && run.status === "awaiting_input"
-                    ? "Stop asking and carry on. Every question still open is recorded as an assumption — the same place the run lands if the window simply closes."
+                    ? "Carry on without answering. Every open question is recorded as an assumption."
                     : "Put this run back in the queue."
                 }
               >
@@ -876,14 +963,28 @@ export function OverviewPanel({
        * ungrouped truth, so a folded deck cannot hide an agent from it. The
        * component is not modified, only re-parented; clicking a row still selects
        * the card on the canvas.
+       *
+       * THE 41-WORD CAPTION THAT USED TO SIT ABOVE THE ROSTER IS BEHIND THE `i` —
+       * 2026-08-05. It said three things: that the list is in arrival order and
+       * never folded, that picking a row selects the card, and that the canvas is
+       * arrow-key navigable. The third is a property of the CANVAS and is
+       * discoverable by pressing an arrow key on it, so it is DELETED. The first
+       * two are the answer to "why is this list here when the graph is right
+       * there" — it is where you look when the canvas has folded the agent you
+       * want into a deck — and that changes where a reader goes, so they are KEPT
+       * and hidden rather than deleted.
        */}
-      <PanelSection title="who worked on it" testId="overview-agents" bodyClassName="p-0">
-        <p className="border-b border-line px-[10px] py-2 text-[11.5px] leading-relaxed text-ink-faint">
-          Every agent this run started, in arrival order and never folded — picking
-          one here selects its card on the canvas. The canvas itself is navigable
-          with the arrow keys; this is the faster read when you already know the
-          name.
-        </p>
+      <PanelSection
+        title="who worked on it"
+        explain={
+          <Explain about="the agent list" className="ml-1" testId="explain-roster">
+            In arrival order and never grouped — the canvas folds some of these
+            into decks, and picking one here selects its card on the canvas.
+          </Explain>
+        }
+        testId="overview-agents"
+        bodyClassName="p-0"
+      >
         <AgentRoster
           graph={graph}
           selectedId={selectedId}
@@ -899,11 +1000,23 @@ export function OverviewPanel({
        * the other half of that: what a run was executed on and what it cost is a
        * property OF the run, and this panel is the run. It was never a peer of
        * Chat.
+       *
+       * THE SECOND EYEBROW IS BEHIND THE `i` — 2026-08-05. "reported once, by the
+       * CLI, at the start of the run" was a second uppercase mono strip directly
+       * under the first one, which reads as a heading that failed to render. The
+       * FACT is kept because it is the difference between a stale reading and a
+       * live one: a reader who takes this for the machine's state now will act on
+       * it. Hidden, not deleted.
        */}
-      <PanelSection title="machine and cost" testId="overview-env">
-        <p className="mb-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-ink-faint">
-          reported once, by the CLI, at the start of the run
-        </p>
+      <PanelSection
+        title="machine and cost"
+        explain={
+          <Explain about="machine and cost" className="ml-1" testId="explain-env">
+            Reported once by the CLI when the run started, and not updated since.
+          </Explain>
+        }
+        testId="overview-env"
+      >
         <EnvironmentPanel inventory={graph.inventory} />
         <div className="mt-2.5">
           <UsagePanel run={run} model={model} />
@@ -947,11 +1060,29 @@ export function ResultPanel({ run }: { run: RunDetail }): ReactNode {
        * component is left standing rather than deleted.
        *
        * The path is an absolute HOST path — copyable text, never a link.
+       *
+       * THE LABEL WAS "ARTIFACT" UNTIL 2026-08-05, and the owner named it as a
+       * word that means nothing to him. It is `runPaths.workspace`
+       * (`server/src/orchestrator.ts:1766`) — the builder's own working
+       * directory — and "Workspace" is both plainer and the word the rest of the
+       * app already uses for the same directory: the Files panel is headed "The
+       * run's workspace, read-only" and `PublishedProjectPanel` says "the
+       * workspace at …". One directory, one word.
+       *
+       * THE `i` CARRIES THE DISTINCTION THIS PAIRING EXISTS TO MAKE, which the
+       * two labels alone do not: both rows are folders, and a reader who opens
+       * this one has opened the evidence rather than the copy that was made for
+       * him. That changes which folder he opens, so it is hidden rather than
+       * deleted.
        */}
       {run.artifactPath !== null && (
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded border border-line bg-surface px-3 py-2">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
-            Artifact
+          <span className="flex items-center text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+            Workspace
+            <Explain about="the workspace folder" className="ml-1" testId="explain-workspace">
+              The folder this run worked in, kept as evidence. The copy meant for
+              you is the project below.
+            </Explain>
           </span>
           <MonoPath path={run.artifactPath} max={80} />
         </div>

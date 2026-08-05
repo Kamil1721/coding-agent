@@ -115,30 +115,53 @@ interface RailEntry {
  * gets deleted) and applies the banned list to what is left, which is the copy
  * this product writes about itself.
  */
+/**
+ * THE HINTS WERE CUT TO ONE CLAUSE EACH — 2026-08-05.
+ *
+ * A tooltip is not a place to explain a panel; it is the NAME of an icon, and the
+ * panel behind it is one click away and says everything the second sentence said.
+ * Four of the six carried a trailing sentence describing what the reader would
+ * find AFTER opening it — "Opens by itself when it is waiting on one", "The panel
+ * says whether it is delivered live or queued", "The raw record" — which is the
+ * "consequence of an action not yet taken" case exactly. Deleted, all four.
+ *
+ * NONE OF THEM MOVES BEHIND AN `<Explain>`, and that is a rule rather than an
+ * omission: `explain.tsx` names this surface as the one place a `title` is
+ * CORRECT, because a one-word name for an icon-only button is what `title` is
+ * for. An `i` glyph on a 24px mask inside a 48px rail would be a second control
+ * six times over.
+ *
+ * WHAT SURVIVES IS THE MAPPING. Every hint still opens with the panel's own word
+ * and still says, in the reader's language, what is behind the icon — which is
+ * the whole load an icon-only rail puts on its tooltips. `Result` keeps all three
+ * of its clauses because each one names a section that is actually in that panel
+ * (the outcome notice, the criteria, the two paths) and dropping any of them
+ * would make the icon look narrower than it is.
+ */
 const ENTRIES: readonly RailEntry[] = [
   {
     id: "questions",
     label: "Questions",
     icon: "questions",
-    hint: "Questions — what this run asked you, and your answers. Opens by itself when it is waiting on one.",
+    hint: "Questions — what this run asked you, and your answers.",
   },
   {
     id: "overview",
     label: "Overview",
     icon: "overview",
-    hint: "Overview — what you asked for, what you gave it, and how this run went.",
+    hint: "Overview — how this run went, and what you asked for.",
   },
   {
     id: "chat",
     label: "Chat",
     icon: "chat",
-    hint: "Chat — send this run an instruction or a reference image. The panel says whether it is delivered live or queued.",
+    hint: "Chat — send this run an instruction or a reference image.",
   },
   {
     id: "files",
     label: "Files",
     icon: "files",
-    hint: "Files — the folders and files this run wrote, and what is in them.",
+    hint: "Files — the run's workspace, read-only.",
   },
   {
     id: "result",
@@ -150,7 +173,7 @@ const ENTRIES: readonly RailEntry[] = [
     id: "activity",
     label: "Activity",
     icon: "activity",
-    hint: "Activity — every event this run sent, oldest first. The raw record.",
+    hint: "Activity — every event this run sent, oldest first.",
   },
 ];
 
