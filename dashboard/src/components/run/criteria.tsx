@@ -29,7 +29,8 @@ import { useMemo, type ReactNode } from "react";
 
 import type { RunCriterion } from "@/lib/api-types";
 import { criterionTone, tierMeta, TIER_ORDER, TONE_TEXT } from "@/lib/presentation";
-import { Badge, Dot, EmptyState, Panel, cx } from "@/components/ui";
+import { Explain } from "@/components/explain";
+import { Badge, EmptyState, Panel, cx } from "@/components/ui";
 
 const RESULT_LABEL = { pass: "pass", fail: "fail", pending: "…" } as const;
 
@@ -177,7 +178,6 @@ export function CriteriaPanel({
 
   return (
     <Panel
-      title="Acceptance criteria"
       /*
        * "LOCKED", NOT "frozen", AND THE PROMISE IS SPELLED OUT — 2026-08-05.
        * `freeze` is on the owner's banned list, and the sealing stage's own
@@ -185,9 +185,53 @@ export function CriteriaPanel({
        * so the builder can never read them" (`server/src/graph.test.ts` asserts
        * both halves of that sentence). Dropping the word is free; dropping what
        * it promised — that nothing edited these after the build began — would be
-       * a different product, so the subtitle now says it in full.
+       * a different product, so the sentence still says it in full.
+       *
+       * IT MOVED FROM `subtitle` TO AN `Explain` — 2026-08-05, and it moved
+       * rather than being deleted. The fact is what makes a green count worth
+       * anything: criteria written after the build, by the builder, grade
+       * nothing. But it is not needed BEFORE reading a result, and it was on
+       * screen TWICE — this sentence and the empty state's "They are written
+       * from your ticket first, before any build starts" said the same thing two
+       * lines apart, which is the repetition the owner screenshotted. The empty
+       * state now says only that there are none yet.
        */
-      subtitle="Written from your ticket before any code existed, then locked so the build could not edit them."
+      /*
+       * THE GLYPH IS TIED TO THE LAST WORD, AND THAT IS A MEASURED FIX RATHER
+       * THAN A PRECAUTION. `Panel`'s header is `flex justify-between` with the
+       * title in a `min-w-0` div, so the heading shrinks against the count on
+       * its right — and an atomic inline box (this is an `inline-flex` span) is
+       * a legal break opportunity after text even with no whitespace between
+       * them, which is UAX#14's contingent break. Screenshotted on the passed
+       * run at 380px: "ACCEPTANCE CRITERIA" on one line and the glyph alone on
+       * the next. `whitespace-nowrap` on the last word plus the glyph keeps them
+       * together and still lets the heading wrap at the space before it.
+       *
+       * `normal-case` IS NOT DECORATION, AND IT IS A DEFECT IN `Explain` THAT
+       * THIS CALL SITE IS WORKING AROUND. Shut, the bubble is one `sr-only`
+       * child of the wrapper span — no layout, still in the accessibility tree —
+       * and `sr-only` sets no `text-transform`, so inside this `uppercase` `h2`
+       * the hidden sentence INHERITS the transform. Measured, not deduced:
+       * `panel-copy.browser.spec.ts`'s canary went red reading "WRITTEN FROM
+       * YOUR TICKET BEFORE ANY CODE EXISTED, THEN LOCKED SO THE BUILD COULD NOT
+       * EDIT THEM." out of `innerText`, and a screen reader is handed the same
+       * string — which some voices spell out letter by letter. The open bubble
+       * already carries `normal-case`; the shut one needs it from the wrapper.
+       * The real fix belongs in `explain.tsx`, which is another lane's file: see
+       * the hand-off.
+       */
+      title={
+        <>
+          Acceptance{" "}
+          <span className="whitespace-nowrap">
+            criteria
+            <Explain about="acceptance criteria" className="ml-1 normal-case" testId="explain-criteria">
+              Written from your ticket before any code existed, then locked so the
+              build could not edit them.
+            </Explain>
+          </span>
+        </>
+      }
       actions={
         gatingTotals.total === 0 ? null : gatingTotals.pending === gatingTotals.total ? (
           /*
@@ -216,10 +260,11 @@ export function CriteriaPanel({
       bodyClassName="p-0"
     >
       {criteria.length === 0 ? (
-        <EmptyState>
-          No criteria yet. They are written from your ticket first, before any build
-          starts.
-        </EmptyState>
+        // The second sentence — "They are written from your ticket first, before
+        // any build starts" — is DELETED, not moved: the heading's `Explain`
+        // directly above says it, and saying it twice on one panel is what this
+        // pass exists to remove.
+        <EmptyState>No criteria yet.</EmptyState>
       ) : (
         <div>
           {grouped.map((group) => {
@@ -258,16 +303,17 @@ export function CriteriaPanel({
                     />
                   ))}
                 </ul>
-                {!group.meta.gating && (
-                  <p className="flex items-start gap-2 border-b border-line px-3 py-1.5 text-[11px] leading-snug text-ink-faint last:border-b-0">
-                    <Dot tone="info" className="mt-[5px]" />
-                    <span>
-                      A failure in this group does not fail the run, and a clean sweep here
-                      does not raise the grade. It is reported so you can see it, nothing
-                      more.
-                    </span>
-                  </p>
-                )}
+                {/*
+                 * THE NON-GATING FOOTNOTE IS DELETED — 2026-08-05. It read "A
+                 * failure in this group does not fail the run, and a clean sweep
+                 * here does not raise the grade. It is reported so you can see
+                 * it, nothing more." Thirty words restating the badge four lines
+                 * above it, which says "does not change pass or fail" and covers
+                 * both directions of the same claim. Nothing was moved behind an
+                 * `Explain`: the badge is already the short form, and a glyph
+                 * beside it would be a second affordance for a sentence the
+                 * reader has already read.
+                 */}
               </section>
             );
           })}

@@ -49,6 +49,7 @@ import {
   hasRecordedOutput,
   useProjectControl,
 } from "@/components/project/controls";
+import { Explain } from "@/components/explain";
 import { MonoPath, cx } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { isTerminalStatus, type Project, type RunDetail } from "@/lib/api-types";
@@ -62,16 +63,21 @@ import { formatClock, formatInt } from "@/lib/format";
 import { useProjects } from "@/lib/hooks";
 
 /**
- * The same chrome as the Artifact row directly above it on this tab — one
- * label, one block, the same border and padding — so the two paths read as a
- * pair rather than as two designs.
+ * The same chrome as the row directly above it on this tab — the one carrying
+ * the run's own workspace path — so the two paths read as a pair rather than as
+ * two designs. That row is `canvas/sheet.tsx`'s, not this file's, and it has
+ * been relabelled at least once (Artifact → Workspace), which is why this
+ * comment names it by what it holds.
  */
 function Block({
   label,
+  explain,
   children,
   className,
 }: {
   label: string;
+  /** Optional sentence behind the label's glyph. Lowercase noun phrase in `about`. */
+  explain?: { readonly about: string; readonly body: ReactNode };
   children: ReactNode;
   className?: string;
 }): ReactNode {
@@ -79,11 +85,45 @@ function Block({
     <section className={cx("min-w-0 rounded border border-line bg-surface px-3 py-2", className)}>
       <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
         {label}
+        {explain !== undefined && (
+          <Explain about={explain.about} className="ml-1 normal-case" testId="explain-project">
+            {explain.body}
+          </Explain>
+        )}
       </p>
       <div className="mt-1.5 min-w-0">{children}</div>
     </section>
   );
 }
+
+/**
+ * THE REFUSAL, IN THE CLIENT'S OWN WORDS — one short line per name the server
+ * uses.
+ *
+ * WHY THIS EXISTS RATHER THAN JUST PRINTING `detail`. The server's `detail` is a
+ * SENTENCE ABOUT A PATH: for `workspace-empty` it reads "the workspace at
+ * /Users/…/runs/run-2026-…/workspace holds no publishable file — 0 entries were
+ * excluded and nothing else was there. A run cancelled before the builder wrote
+ * anything looks exactly like this." That is four rendered lines narrating an
+ * absolute host path which this same tab already prints as a copyable field, and
+ * it is the block the owner screenshotted.
+ *
+ * THE SENTENCES ARE THE SERVER'S OWN, COMPRESSED, NOT INVENTED — each is the
+ * `PublishDecline` docblock line for that name (`server/src/project-publish.ts`,
+ * the union at `PublishDecline`). Keeping them in step matters more than keeping
+ * them short: if the server ever means something else by one of these names, this
+ * map is wrong in a way no test here would catch.
+ *
+ * AN UNKNOWN NAME FALLS BACK TO `detail`, which is why the type is `string` on
+ * both sides. A newer server's fifth refusal must not render as a blank block.
+ */
+const DECLINE_LINE: Readonly<Record<string, string>> = {
+  "workspace-missing": "There was no workspace directory to copy.",
+  "workspace-empty": "The run left no file worth copying.",
+  "no-free-name": "Every candidate folder name was taken. Nothing was overwritten.",
+  "copy-failed": "The filesystem refused part-way through.",
+  "run-not-terminal": "The run is still going, so its files are still changing.",
+};
 
 /**
  * THE JOIN, `runId` FIRST.
@@ -118,42 +158,106 @@ export function PublishedProjectPanel({ run }: { run: RunDetail }): ReactNode {
 
   if (record === null) {
     if (!isTerminalStatus(run.status)) {
+      // "…copied to `projects/` and this becomes somewhere to start it from" is
+      // DELETED: it describes what the block will look like after an event the
+      // reader is waiting on, and when that event happens the block says it
+      // itself, with a path and a start button. "Terminal state" went with it —
+      // the plain words for it are "when the run ends".
       return (
         <Block label="Project">
           <p className="text-[12px] leading-relaxed text-ink-dim">
-            Not copied out yet. When this run reaches a terminal state its workspace is
-            copied to <code className="font-mono text-[11.5px]">projects/</code> and this
-            becomes somewhere to start it from.
+            Not copied out yet — the copy is made when the run ends.
           </p>
         </Block>
       );
     }
     return (
-      <Block label="Project">
+      /*
+       * "No copy was recorded" IS THE WHOLE LINE, AND THE DISTINCTION IS BEHIND
+       * THE GLYPH.
+       *
+       * MOVED: "that is not the same as a refusal". This file's own header
+       * insists no-record and refused may never be drawn the same way, and they
+       * are not — a refusal is a warn-toned block naming which refusal. But a
+       * reader trying to work out WHY there is nothing here needs the difference,
+       * and it changes what they do next: there is no publisher decision to
+       * argue with, so the move is to re-publish, not to fix a refusal.
+       *
+       * DELETED: "The workspace itself is still on disk at the artifact path
+       * above." That path is a labelled field with a copy button directly above
+       * this block (`canvas/sheet.tsx`, the Result panel); a sentence pointing
+       * at a field the reader can already see is the caption this pass removes.
+       */
+      <Block
+        label="Project"
+        explain={{
+          about: "no copy on record",
+          body: (
+            <>
+              This is not a refusal — there is no record either way. A run that finished
+              before copies were made, or one whose record could not be read, looks like
+              this.
+            </>
+          ),
+        }}
+      >
         <p className="text-[12px] leading-relaxed text-ink-dim">
-          No publish was recorded for this run. That is not the same as a publish that was
-          refused &mdash; there is no record either way, which happens when a run finished
-          before the publish lane existed or when its record file could not be read. The
-          workspace itself is still on disk at the artifact path above.
+          No copy was recorded for this run.
         </p>
       </Block>
     );
   }
 
   if (!record.published) {
+    const line = DECLINE_LINE[record.reason];
     return (
       <Block label="Project" className="border-warn/45 bg-warn-dim/40">
         <p className="text-[12px] font-semibold text-ink">
-          The copy was attempted and refused
+          Nothing was copied
           <span className="ml-1.5 font-mono text-[11px] font-normal text-warn">
             {record.reason}
           </span>
         </p>
-        <p className="mt-1 text-[12px] leading-relaxed text-ink-dim">{record.detail}</p>
+        {/*
+         * ONE SHORT LINE INSTEAD OF THE SERVER'S PARAGRAPH — and the paragraph
+         * is still one click away rather than gone.
+         *
+         * `record.detail` is machine-written prose that narrates an absolute
+         * host path, and on the run the owner screenshotted it rendered as four
+         * lines restating the artifact field above it. It is not DELETED because
+         * it is the only place some refusals say anything specific — `copy-failed`
+         * puts the filesystem's own error in there — so it goes into a shut
+         * disclosure, in the same register as `OutcomeNotice`'s "Last recorded
+         * cause": a record of what the server wrote, not a sentence written for a
+         * reader.
+         *
+         * A REASON THIS BUILD DOES NOT KNOW STILL GETS `detail` INLINE. That is
+         * the branch the `string` type exists for, and hiding the only text a
+         * newer server sent would leave a block that says nothing at all.
+         */}
+        {line === undefined ? (
+          <p className="mt-1 text-[12px] leading-relaxed text-ink-dim">{record.detail}</p>
+        ) : (
+          <>
+            <p className="mt-1 text-[12px] leading-relaxed text-ink-dim">{line}</p>
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[11.5px] text-ink-faint marker:text-ink-faint">
+                What the publisher recorded
+              </summary>
+              <p className="mt-1 text-[11.5px] leading-relaxed text-ink-dim">
+                {record.detail}
+              </p>
+            </details>
+          </>
+        )}
+        {/*
+         * "Nothing was written to `projects/`; the run's own workspace is
+         * untouched" is DELETED. Both clauses say that a refusal did not do
+         * anything, which is what a refusal is — and the heading directly above
+         * now reads "Nothing was copied" in as many words.
+         */}
         <p className="mt-1 text-[11.5px] text-ink-faint">
-          Attempted {formatClock(record.attemptedAt)}. Nothing was written to{" "}
-          <code className="font-mono">projects/</code>; the run&rsquo;s own workspace is
-          untouched.
+          Attempted {formatClock(record.attemptedAt)}.
         </p>
       </Block>
     );
@@ -204,15 +308,19 @@ export function PublishedProjectPanel({ run }: { run: RunDetail }): ReactNode {
       )}
 
       {/*
-       * THE FOLDER IS GONE. Said plainly, with what is still true underneath it:
-       * the run's workspace is evidence and is never moved, so the code exists
-       * even when this copy does not.
+       * THE FOLDER IS GONE. Said plainly, with the one thing that is still true
+       * underneath it: the run's workspace is evidence and is never moved, so
+       * the code exists even when this copy does not.
+       *
+       * DELETED: "it is yours, and nothing here removes it". Reassurance about
+       * an action nobody took, on the one line whose job is to say the folder is
+       * missing. KEPT INLINE: where the code still is — it is the reader's only
+       * route to the work from this state, and a warn-toned line is read.
        */}
       {project === null && data !== undefined && (
         <p className="mt-1.5 text-[12px] leading-relaxed text-warn">
-          That folder is not there now. It was copied at the time above; it has since been
-          moved, renamed or deleted &mdash; it is yours, and nothing here removes it. The
-          run&rsquo;s own workspace still holds the same code, at the artifact path above.
+          That folder is not there now &mdash; moved, renamed or deleted. The same code
+          is still in the run&rsquo;s own workspace.
         </p>
       )}
 
@@ -220,7 +328,10 @@ export function PublishedProjectPanel({ run }: { run: RunDetail }): ReactNode {
         <p className="mt-1.5 text-[11.5px] text-ink-faint">
           {error === undefined
             ? "Reading the projects list…"
-            : `The projects list could not be read, so whether this folder is still there is unknown: ${errorMessage(error)}`}
+            : // Shorter, and the meaning it must not lose is that this is an
+              // UNKNOWN, not a missing folder — hence "could not check", never
+              // "not there".
+              `Could not check whether this folder is still there: ${errorMessage(error)}`}
         </p>
       )}
     </Block>

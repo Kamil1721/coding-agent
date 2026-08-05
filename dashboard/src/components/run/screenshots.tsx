@@ -33,8 +33,8 @@
  * the owner ASKED FOR while parked — and the single old heading, "the mockups
  * the run was built to", is a false claim about two of those three. The grouping
  * is `groupReferences`, which decides it from `directions[]` and `requests[]`
- * rather than from filenames; a run with neither yields one group and the
- * original heading, verbatim.
+ * rather than from filenames; a run with neither yields one group headed "the
+ * mockups the run was built to", which for such a run is exactly true.
  *
  * NATURAL ASPECT, NO CROP, NO HEIGHT CAP. The captures are VIEWPORT-sized by
  * construction — the scorer shoots one per breakpoint, and the three on the run
@@ -48,9 +48,10 @@
  * THE PATHS DID NOT GO AWAY, THEY WENT DOWN. `design-lock.tsx:250-253` removed
  * the path from each mockup card explicitly on the grounds that "the path is
  * carried in full, with a copy button, by the screenshots panel further down the
- * same page". So the technical-details disclosure at the bottom lists EVERY
- * capture, references included; trimming it to the product captures would make
- * that comment false in a file this one cannot edit.
+ * same page". So the disclosure at the bottom — headed "File paths on disk"
+ * since 2026-08-05, "Technical details" before that — lists EVERY capture,
+ * references included; trimming it to the product captures would make that
+ * comment false in a file this one cannot edit.
  */
 
 import { useState, type ReactNode } from "react";
@@ -59,6 +60,7 @@ import type { DesignLockState, Screenshot } from "@/lib/api-types";
 import { formatClock } from "@/lib/format";
 import { groupReferences, splitCaptures } from "@/lib/mockups";
 import { screenshotSrc } from "@/lib/screenshots";
+import { Explain } from "@/components/explain";
 import { EmptyState, Lightbox, MonoPath, Panel } from "@/components/ui";
 
 function Shot({ shot, runId }: { shot: Screenshot; runId: string }): ReactNode {
@@ -113,10 +115,19 @@ function Shot({ shot, runId }: { shot: Screenshot; runId: string }): ReactNode {
           />
         </button>
       ) : (
+        /*
+         * BOTH FALLBACKS SHORTENED, AND THE TWO STILL SAY DIFFERENT THINGS —
+         * 2026-08-05. The first is "this app cannot build a URL for that path",
+         * the second is "it asked and the server did not answer". Collapsing
+         * them into one string would be the plainer screen and the wrong one.
+         * The clause each lost — "it is in the technical details below" — named
+         * a disclosure four inches down that both cards sit above, and the
+         * disclosure is still there and still lists every path.
+         */
         <div className="flex h-[128px] items-center justify-center bg-canvas px-3 text-center text-[11px] leading-snug text-ink-faint">
           {src === null
-            ? "Captured on disk. Nothing here can turn that path into a URL — it is in the technical details below."
-            : "The server did not return this capture. It is still on disk, at the path in the technical details below."}
+            ? "On disk only — this app cannot open that path."
+            : "The server did not return this capture. It is still on disk."}
         </div>
       )}
 
@@ -201,17 +212,40 @@ export function ScreenshotsPanel({
 
   return (
     <Panel
-      title="The finished site"
       /*
-       * NO SUBTITLE WHEN THERE IS NOTHING TO DESCRIBE. Every sentence available
-       * here — the count, the masking rule — is a statement about captures that
-       * exist, and on a run parked at the design lock none do. The empty state
-       * below is the only true thing to say in that case, and it says it once.
+       * THE MASKING RULE MOVED BEHIND THE GLYPH — 2026-08-05, and it moved
+       * rather than going. A reader looking at a blacked-out region needs to
+       * know it is masking and not a rendering fault, and that masking cannot be
+       * added or removed after the fact changes what they do: it is a reason to
+       * re-run rather than to go looking for an unmasked copy of the same PNG.
+       * The count and provenance stay inline; they are what the heading is short
+       * of, not an explanation of it.
+       *
+       * NO GLYPH AND NO SUBTITLE WHEN THERE IS NOTHING TO DESCRIBE. Both
+       * sentences are statements about captures that exist, and on a run parked
+       * at the design lock none do. The empty state below is the only true thing
+       * to say then, and it says it once.
        */
+      title={
+        <>
+          The finished{" "}
+          {/* Last word and glyph in one nowrap run — see the same fix in
+              `criteria.tsx`, where the orphaned glyph was screenshotted. */}
+          <span className="whitespace-nowrap">
+            site
+            {product.length > 0 && (
+              <Explain about="masking" className="ml-1 normal-case" testId="explain-masking">
+                Masking is applied when a capture is taken. It cannot be added or
+                removed afterwards.
+              </Explain>
+            )}
+          </span>
+        </>
+      }
       subtitle={
         product.length === 0
           ? undefined
-          : `${String(product.length)} capture${product.length === 1 ? "" : "s"} of the site this run built, taken by the scorer after the build. Masking is applied at capture time and cannot be undone or re-applied later.`
+          : `${String(product.length)} capture${product.length === 1 ? "" : "s"} of the site this run built, taken after the build.`
       }
     >
       {/*
@@ -222,10 +256,10 @@ export function ScreenshotsPanel({
        * disclosure below still renders, so the tab is not blank.
        */}
       {product.length === 0 ? (
-        <EmptyState>
-          No capture of the site yet. The scorer takes these after the build, in a
-          sealed container.
-        </EmptyState>
+        // "in a sealed container" is DELETED here and nowhere else: it is the
+        // strength of an ACCEPTANCE claim, which `OutcomeNotice` still makes,
+        // and it says nothing about a capture that has not been taken.
+        <EmptyState>No capture of the site yet — these are taken after the build.</EmptyState>
       ) : (
         // Two-up at this sheet's width (560px, so ~260px a column) rather than
         // one-up: at natural aspect a single column costs about twice the scroll
@@ -249,15 +283,26 @@ export function ScreenshotsPanel({
        * still the owner commissioned at the park, which the build may not even
        * contain a section for.
        *
-       * `ungrouped` KEEPS THE ORIGINAL SENTENCE, WORD FOR WORD. It is the whole
-       * of a pre-canvass run, and this panel must read on those three runs
-       * exactly as it read before directions existed.
+       * WHAT WAS CUT FROM EACH, 2026-08-05, AND WHAT COULD NOT BE. These are
+       * shut-by-default summaries, so every word in one is on screen whether or
+       * not the reader wants the group — but the clause that says what a group
+       * was NOT graded against is the whole reason there are four of them. So
+       * the pointers went ("shown full-size on the design dock", "kept as a
+       * record of the choice", "at the design park") and the grading claims
+       * stayed, word for word.
+       *
+       * `ungrouped` NO LONGER MATCHES `built` VERBATIM, and that is deliberate:
+       * it used to end "shown full-size on the design dock", which is where the
+       * mockups appeared before the rail, and a pointer at a surface is exactly
+       * what this pass removes. The two headings still differ in the way they
+       * always did — a pre-canvass run cannot say which direction was chosen,
+       * because there was only one.
        */}
       {groups.ungrouped.length > 0 && (
         <ReferenceGroup
           runId={runId}
           shots={groups.ungrouped}
-          summary={`Design references (${String(groups.ungrouped.length)}) — the mockups the run was built to, shown full-size on the design dock`}
+          summary={`Design references (${String(groups.ungrouped.length)}) — the mockups the run was built to`}
         />
       )}
 
@@ -265,7 +310,7 @@ export function ScreenshotsPanel({
         <ReferenceGroup
           runId={runId}
           shots={groups.built}
-          summary={`The direction that was built (${String(groups.built.length)}) — the mockups this run was made to, and graded against`}
+          summary={`The direction that was built (${String(groups.built.length)}) — the mockups this run was graded against`}
         />
       )}
 
@@ -273,7 +318,7 @@ export function ScreenshotsPanel({
         <ReferenceGroup
           runId={runId}
           shots={groups.offered}
-          summary={`Directions that were offered and not built (${String(groups.offered.length)}) — kept as a record of the choice; nothing was graded against these`}
+          summary={`Offered and not built (${String(groups.offered.length)}) — nothing was graded against these`}
         />
       )}
 
@@ -281,14 +326,17 @@ export function ScreenshotsPanel({
         <ReferenceGroup
           runId={runId}
           shots={groups.requested}
-          summary={`Stills you asked for at the design park (${String(groups.requested.length)}) — previews, not necessarily sections the build produced`}
+          summary={`Stills you asked for (${String(groups.requested.length)}) — previews, not necessarily what the build produced`}
         />
       )}
 
       {screenshots.length > 0 && (
         <details className="mt-2 rounded border border-line bg-canvas/40">
           <summary className="cursor-pointer px-3 py-2 text-[11.5px] text-ink-dim marker:text-ink-faint">
-            Technical details — where these files are on disk
+            {/* Was "Technical details — where these files are on disk". The
+                summary sits directly above a list of paths, so the second half
+                described what the reader would see on opening it. */}
+            File paths on disk
           </summary>
           {/*
            * EVERY capture, product and reference alike, in the order the run
