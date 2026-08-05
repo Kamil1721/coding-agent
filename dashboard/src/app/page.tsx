@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 
 import { AttachmentChips } from "@/components/attachment-chips";
 import { AuthPanel } from "@/components/auth-panel";
+import { Explain } from "@/components/explain";
 import { ModelPicker } from "@/components/model-picker";
 import { FalseFinishBadge } from "@/components/outcome";
 import { Badge, Button, Dot, Panel, cx } from "@/components/ui";
@@ -510,7 +511,7 @@ export default function NewTicketPage(): ReactNode {
               </p>
             )}
 
-            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <button
                 type="button"
                 onClick={() => fileInput.current?.click()}
@@ -518,6 +519,31 @@ export default function NewTicketPage(): ReactNode {
               >
                 Attach images or documents
               </button>
+              {/*
+                * THE IDENTITY RULE MOVED HERE, OUT OF THE PARAGRAPH BELOW THE CHIPS
+                * (2026-08-05, the prose pass). The sentence is unchanged and is not
+                * cut: `ticketWithReferences` folds every image and document digest
+                * into the ticket id, so the same words with a different file address
+                * a different set of tests, and a person who does not know that will
+                * attach a screenshot to a ticket he thinks he already submitted.
+                *
+                * IT IS PERMANENT NOW WHERE THE PARAGRAPH WAS CONDITIONAL, AND THAT IS
+                * A GAIN RATHER THAN THE COST IT LOOKS LIKE. The paragraph appeared at
+                * the first chip — i.e. AFTER the decision it describes. On the glyph
+                * beside the intake it is readable while deciding whether to attach at
+                * all, and costs no words on the screen either way.
+                *
+                * `items-baseline` BECAME `items-center` FOR THE SAME REASON THE GLYPH
+                * IS DRAWN RATHER THAN A LETTER: an 18px circle aligned on the text
+                * baseline of an 11.5px link sits visibly low.
+                *
+                * KNOWN SPEC BREAK, reported to the repair wave rather than fixed here
+                * (this lane may not edit existing specs):
+                * `ticket-redundancy.browser.spec.ts:183` asserts this sentence has
+                * count 0 until a file is attached. It is now present — as `sr-only`
+                * text — from first paint.
+                */}
+
               {/*
                 * THE "or paste and drop them into the brief above" HINT IS CUT
                 * (2026-08-04, the redundancy pass). It taught an affordance that
@@ -534,7 +560,9 @@ export default function NewTicketPage(): ReactNode {
                 * spec at a control it was not written for. One input also
                 * matches how the files arrive — a drop is a drop, and the
                 * classification happens in `planAttachmentIntake` either way.
-                */}
+                */}              <Explain about="attaching files">
+                A different file makes this a different ticket, with its own tests.
+              </Explain>
               <input
                 ref={fileInput}
                 type="file"
@@ -551,34 +579,23 @@ export default function NewTicketPage(): ReactNode {
             </div>
 
             {/*
-              * THE DISCLOSURE, WIDENED RATHER THAN DOUBLED. A document is part of
-              * the ticket's identity on exactly the same terms as an image —
-              * `ticketWithReferences` folds both digests into the id — so a
-              * second near-identical sentence beside this one would cost the
-              * owner (who has been cutting text off this form all week) a line to
-              * learn nothing new. "File" is the word that covers both.
+              * THE DISCLOSURE THAT SAT HERE IS NOT DELETED, IT IS ON THE `Explain`
+              * BESIDE THE ATTACH CONTROL ABOVE (2026-08-05, the prose pass). It read
+              * "A different file makes this a different ticket, with its own tests."
+              * — verbatim what the glyph now carries — and the reasoning it arrived
+              * with still holds and is recorded there: a document is part of the
+              * ticket's identity on exactly the same terms as an image
+              * (`ticketWithReferences` folds both digests into the id), and "file" is
+              * the word that covers both. What it deliberately does not say — that
+              * an agent READS the attachment — is unchanged; that is decided
+              * server-side and reported on the run's own Activity.
               *
-              * WHAT IT DELIBERATELY DOES NOT SAY: that a seat READS the
-              * attachment. That is decided server-side per seat and reported on
-              * the run's own event stream, and no sentence on this form claims it
-              * for images either.
-              *
-              * IT IS NOW CONDITIONAL ON THERE BEING A FILE, AND SHORTER (2026-08-04,
-              * the redundancy pass). The RULE is load-bearing and was not cut: an
-              * attached file changes the ticket id, so it changes which frozen
-              * suite the build is graded against, and a person who does not know
-              * that will attach a screenshot to a ticket they think they already
-              * submitted. But it is a fact about ATTACHMENTS, and on the empty
-              * form it was a paragraph about a thing that had not happened. It now
-              * appears at the moment it starts applying, which is the first chip.
-              * The wording lost "frozen acceptance suite" for "its own tests",
-              * which is the vocabulary the rest of this pass moved to.
+              * WHY IT MOVED RATHER THAN STAYING CONDITIONAL. Conditional prose was
+              * the 2026-08-04 answer to the same complaint, and it only half worked:
+              * the sentence appeared at the first chip, which is after the decision
+              * it is about. Behind the glyph it is readable before attaching and
+              * costs no line at all after.
               */}
-            {attachments.length > 0 && (
-              <p className="text-[11px] leading-snug text-ink-faint">
-                A different file makes this a different ticket, with its own tests.
-              </p>
-            )}
 
             {/*
               * THE CAPTURE SENTENCE, SHOWN ONLY WHEN THE BRIEF LINKS SOMEWHERE.
@@ -626,13 +643,25 @@ export default function NewTicketPage(): ReactNode {
               * screenshots for the builder"): it names an internal artefact split
               * the owner cannot act on while writing the brief, and the sentence
               * is true without it.
+              *
+              * SPLIT 2026-08-05, THE PROSE PASS: SENTENCE ONE STAYS ON SCREEN, TWO
+              * AND THREE ARE BEHIND THE GLYPH. Nothing is deleted. The first
+              * sentence is the only one a person can act on while writing — it is
+              * why the paragraph appears at all, and it appears the moment a link
+              * does, which is a state he cannot have predicted. The seal ("never
+              * opened again") and the unreachable clause both describe what happens
+              * AFTER submission, so they are exactly the middle outcome: hidden,
+              * never lost. The unreachable clause in particular is still verbatim,
+              * because the paragraph above is the record of why it may not go.
               */}
             {linksToAPage(ticketText) && (
               <p className="text-[11px] leading-snug text-ink-faint">
                 The first link in this brief is captured before the tests are written.
-                The live page is never opened again, so anything your build is measured
-                against is what was taken then. If the page cannot be reached the run
-                says so and the ticket is your words alone.
+                <Explain about="capturing that link" className="ml-1">
+                  The live page is never opened again, so anything your build is
+                  measured against is what was taken then. If the page cannot be
+                  reached the run says so and the ticket is your words alone.
+                </Explain>
               </p>
             )}
           </div>
@@ -688,10 +717,30 @@ export default function NewTicketPage(): ReactNode {
                * is an example, not the rule — and the category survived, as did
                * "graded against a stub" rather than "fails", which is the half the
                * reasoning above exists to protect.
+               *
+               * SPLIT RATHER THAN DISCLOSED, 2026-08-05. The paragraph above refused
+               * to put this behind a glyph, and it is still right for the part it was
+               * arguing about: the CONDITION ("grading runs offline, with no logins")
+               * has to be readable while the brief is being typed, because it is the
+               * only thing on this form that can stop a payments story being written
+               * against a grader that cannot reach a payment provider. That half is
+               * still permanent, unconditional inline text, and
+               * `ticket-prose.browser.spec.ts` measures its rendered box so that
+               * moving it behind the glyph fails rather than merely looking tidier.
+               * What went behind the glyph is the CONSEQUENCE — the list of things
+               * that get a stand-in, and the false pass — which is read once and
+               * changes no wording. "A stand-in the build wrote itself" replaces "a
+               * stub", the only word in the sentence a person who does not write code
+               * cannot be assumed to have, and the false pass is now stated outright
+               * rather than implied, because it is the outcome worth naming.
                */}
               <span>
-                Grading runs with no network and no logins, so anything needing a real
-                payment provider, database or login is graded against a stub.
+                Grading runs offline, with no logins.
+                <Explain about="grading offline" className="ml-1">
+                  Anything that needs a real payment provider, hosted database or
+                  login is graded against a stand-in the build wrote itself, so it can
+                  pass without ever being truly checked.
+                </Explain>
               </span>
             </div>
             <span className="numeric shrink-0">{trimmed.length} chars</span>
@@ -771,53 +820,72 @@ export default function NewTicketPage(): ReactNode {
              * rewrite back into the present tense has to delete a test to do it.
              */}
             <div className="px-3 py-3">
-              <label className="flex flex-col gap-1.5">
-                {/*
-                  * THIS SENTENCE IS THE ROW'S LABEL NOW, and it is verbatim on
-                  * purpose: `ticket-motion.browser.spec.ts:122` resolves the field
-                  * with `getByLabel(/animation you want matched/i)` and four tests
-                  * drive it. The deleted `Motion reference` panel header was the
-                  * redundancy — it named the same thing twice, once in internal
-                  * vocabulary and once in words a person uses.
-                  */}
-                <span className="text-[13px] font-medium text-ink">
-                  A page whose animation you want matched
-                </span>
-                {/*
-                  * `type="url"` FOR THE KEYBOARD, NOT FOR VALIDATION. It is not inside
-                  * a field set this form validates and the submit path never reads
-                  * `checkValidity`, so a malformed string still posts and the server
-                  * still answers; what the type buys is the URL keyboard on a phone
-                  * and the browser's own autofill behaviour.
-                  */}
-                <input
-                  type="url"
-                  inputMode="url"
-                  placeholder="https://…"
-                  value={motionUrl}
-                  onChange={(event) => setMotionUrl(event.target.value)}
-                  // The bordered-field idiom this app already has, copied from the
-                  // plan dialogue's answer box rather than invented: `bg-canvas`
-                  // against the panel's `bg-surface` is what makes a field read as a
-                  // field, and `focus:border-line-strong` is the focus affordance
-                  // every other input on this side of the app uses.
-                  className="w-full rounded-sm border border-line bg-canvas px-2 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-line-strong focus:outline-none"
-                />
-              </label>
               {/*
-                * SHORTENED 2026-08-04. The rounding clause ("durations are rounded,
-                * because two readings of the same page never agree exactly") is cut:
-                * it described the precision of a reading rather than anything the
-                * owner decides while pasting a URL, and the run's own event stream,
-                * which the surviving sentence still points at, is where a specific
-                * reading is reported. The two em-dashes went with it; the sentence is
-                * a comma list now.
+                * THE WRAPPING `<label>` BECAME AN EXPLICIT `htmlFor`/`id` PAIR, AND
+                * THAT IS NOT COSMETIC — it is what keeps the glyph out of the field's
+                * NAME. Inside a wrapping label, every descendant's text joins the
+                * label's accessible-name computation: the trigger's `aria-label`
+                * ("Explain: …") and the bubble's own sentence — which is rendered
+                * `sr-only` at all times so a browse-mode reader can reach it — would
+                * both have been read out as part of "A page whose animation you want
+                * matched". A field whose name is a paragraph is the wall of prose
+                * with a screen reader attached.
+                *
+                * THE LABEL TEXT IS UNCHANGED AND STILL VERBATIM:
+                * `ticket-motion.browser.spec.ts:122` resolves the field with
+                * `getByLabel(/animation you want matched/i)` and four tests drive it.
+                * `htmlFor` keeps that resolution working.
                 */}
-              <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
-                Only the movement is taken from this page, not its words, layout or
-                colours. What the run made of the link is on the run&rsquo;s own event
-                stream.
-              </p>
+              <div className="flex flex-wrap items-center gap-x-1">
+                <label
+                  htmlFor="motion-url"
+                  className="text-[13px] font-medium text-ink"
+                >
+                  A page whose animation you want matched
+                </label>
+                {/*
+                  * SENTENCE ONE OF THE OLD NOTE, BEHIND THE GLYPH. It states the LIMIT
+                  * of the reading, which changes whether a page is worth pasting at all
+                  * (its layout and palette are NOT inherited), but the label above
+                  * already says what the field is for, so a reader who never opens this
+                  * has been told nothing wrong.
+                  *
+                  * "from this page" IS DROPPED FROM THE WORDING because the glyph sits
+                  * on the field the page is typed into; the referent is the row.
+                  *
+                  * SENTENCE TWO IS DELETED, NOT HIDDEN: "What the run made of the link
+                  * is on the run's own event stream." It pointed at a surface that only
+                  * exists after submission, and it named it in vocabulary that is not on
+                  * the screen it points at — that panel is called Activity. Nothing a
+                  * person types changes because of it. Reported as a deletion.
+                  */}
+                <Explain about="what is taken from that page">
+                  Only the movement is taken, not its words, layout or colours.
+                </Explain>
+              </div>
+              {/*
+                * `type="url"` FOR THE KEYBOARD, NOT FOR VALIDATION. It is not inside
+                * a field set this form validates and the submit path never reads
+                * `checkValidity`, so a malformed string still posts and the server
+                * still answers; what the type buys is the URL keyboard on a phone
+                * and the browser's own autofill behaviour.
+                */}
+              <input
+                id="motion-url"
+                type="url"
+                inputMode="url"
+                placeholder="https://…"
+                value={motionUrl}
+                onChange={(event) => setMotionUrl(event.target.value)}
+                // The bordered-field idiom this app already has, copied from the
+                // plan dialogue's answer box rather than invented: `bg-canvas`
+                // against the panel's `bg-surface` is what makes a field read as a
+                // field, and `focus:border-line-strong` is the focus affordance
+                // every other input on this side of the app uses.
+                //
+                // `mt-1.5` REPLACES THE FLEX GAP the wrapping label used to give it.
+                className="mt-1.5 w-full rounded-sm border border-line bg-canvas px-2 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-line-strong focus:outline-none"
+              />
             </div>
 
             {/*
@@ -871,7 +939,33 @@ export default function NewTicketPage(): ReactNode {
                 * first choice reads "Ask me which to build" rather than repeating the
                 * word one line under itself.
                 */}
-              <p className="text-[13px] font-medium text-ink">Mockups</p>
+              <p className="flex flex-wrap items-center gap-x-1 text-[13px] font-medium text-ink">
+                Mockups
+                {/*
+                  * THE OLD NOTE UNDER THIS ROW, VERBATIM AND INTACT, BEHIND THE GLYPH
+                  * (2026-08-05, the prose pass). Both facts are load-bearing and
+                  * neither could be cut: that "Ask" STOPS a run the owner may have
+                  * left unattended, and that not answering hands the pick to
+                  * ui-designer rather than failing the run. The reasoning above — why
+                  * it says "once the mockups exist", why no duration is named — is
+                  * unchanged and still applies to the same string.
+                  *
+                  * HIDDEN RATHER THAN KEPT INLINE, and the test is recoverability: a
+                  * reader who never opens this and picks "Ask" gets a run that parks,
+                  * shows a notice, and carries on by itself when the window closes.
+                  * Nothing is unrecoverable, so it is the middle outcome.
+                  *
+                  * ON THE `<p>` AND NOT INSIDE THE RADIO GROUP: the group is named by
+                  * `aria-label="Mockups"`, a string, so the glyph cannot leak into any
+                  * control's accessible name here the way it would inside a wrapping
+                  * `<label>` (see the motion row).
+                  */}
+                <Explain about="asking which mockup to build">
+                  Asking stops the run once the mockups exist and waits for your pick.
+                  If you do not answer in time, ui-designer picks and the run carries
+                  on.
+                </Explain>
+              </p>
               <div
                 role="radiogroup"
                 aria-label="Mockups"
@@ -898,10 +992,6 @@ export default function NewTicketPage(): ReactNode {
                   </label>
                 ))}
               </div>
-              <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
-                Asking stops the run once the mockups exist and waits for your pick. If you
-                do not answer in time, ui-designer picks and the run carries on.
-              </p>
             </div>
 
             {/*
@@ -940,9 +1030,17 @@ export default function NewTicketPage(): ReactNode {
                 />
                 <span className="text-[13px] text-ink">Deploy a preview</span>
               </label>
-              <p className="mt-1.5 text-[11.5px] leading-snug text-ink-faint">
-                When off, the build stays on this machine.
-              </p>
+              {/*
+                * "When off, the build stays on this machine." IS DELETED, NOT HIDDEN
+                * (2026-08-05, the prose pass). It described the state of an UNCHECKED
+                * checkbox, which the unchecked checkbox already states, and the one
+                * fact under it — where the build ends up — is on the run's own Result
+                * panel, which names the workspace path for every run whether the box
+                * was ticked or not. A glyph is not cheaper than a deletion. Reported
+                * as a deletion rather than a move: a reader who assumed an unticked
+                * box still published somewhere would have been corrected by this
+                * line, and now is corrected by the Result panel instead.
+                */}
             </div>
           </div>
         </Panel>

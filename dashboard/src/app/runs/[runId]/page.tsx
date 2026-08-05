@@ -108,6 +108,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { Explain } from "@/components/explain";
 import { DesignLockPanel } from "@/components/run/design-lock";
 import { PlanDialoguePanel } from "@/components/run/plan-dialogue";
 import { PreBuildPanel } from "@/components/run/prebuild-panel";
@@ -149,6 +150,14 @@ import { useLiveRun, useNow } from "@/lib/use-run-stream";
  * What actually happens to a message typed RIGHT NOW — or null when
  * `OrchestratorChat`'s own copy already covers this state correctly.
  *
+ * TWO FIELDS SINCE 2026-08-05, AND THE SPLIT IS THE POINT. `text` is the one line
+ * that changes what the reader does next — whether it is worth typing at all —
+ * and is on screen. `detail` is the mechanism behind it and lives behind the
+ * `Explain` glyph at the call site: a reader who never opens it has been told
+ * nothing false, and a reader who wants to know why gets the whole reason. The
+ * three states used to spend 137 words on this paragraph permanently; they now
+ * spend 41 on screen and keep every fact.
+ *
  * READ OUT OF THE SERVER AT THE TWO SITES THAT DECIDE IT, because it is not
  * guessable from the status alone and this dashboard's worst habit is copy that
  * promises more than the mechanism:
@@ -177,43 +186,76 @@ import { useLiveRun, useNow } from "@/lib/use-run-stream";
  * segment. The only truthful record of one message's fate is the per-message state
  * line the component renders under it (queued / read at T / never read).
  */
-function chatDeliveryNote(run: RunDetail): string | null {
+interface DeliveryNote {
+  /** On screen, above the composer. One line, and it decides whether to type. */
+  readonly text: string;
+  /** Behind the glyph. Why the line above is true. */
+  readonly detail: string;
+  /** The glyph's accessible name: "Explain: <about>". */
+  readonly about: string;
+}
+
+function chatDeliveryNote(run: RunDetail): DeliveryNote | null {
   if (isTerminalStatus(run.status)) return null;
   if (run.status === "queued") {
-    return (
-      "This run has not started yet — the queue is serial, so it is waiting for the " +
-      "run ahead of it. Anything you send now is stored, and travels into the prompt " +
-      "its first segment is composed from."
-    );
+    return {
+      // "the queue is serial" MOVED INTO THE DETAIL AND LOST THE WORD: a reader
+      // who has not been told this app runs one build at a time cannot use
+      // "serial", and what he can use is "waiting for the run ahead of it".
+      text: "This run has not started yet, so anything you send is stored, not delivered.",
+      detail:
+        "It is waiting for the run ahead of it. What you send is added to the " +
+        "instructions the first design or build agent gets, which is the earliest " +
+        "anything you say can change what gets built.",
+      about: "messages on a run that has not started",
+    };
   }
   switch (run.phase) {
     case "spec":
-      return (
+      return {
         /*
          * "THE TESTS FOR THIS TICKET ARE BEING WRITTEN" — 2026-08-05, replacing
          * "The acceptance suite is being written". `suite` is on the owner's
          * banned list; the fact the sentence exists to carry is that the run is
-         * in the phase BEFORE any build session exists, which is why a message
+         * in the phase BEFORE any agent is building, which is why a message
          * cannot be delivered live. The stage card for this phase already reads
          * "Writing the tests from your ticket, before any code exists"
          * (`server/src/graph.ts`), so this is the same phase named the same way
          * in both places.
+         *
+         * "no build session to push into" WENT WITH THE SAME PASS. It named the
+         * `#liveInputs` channel in the vocabulary of the code that owns it; what
+         * a reader can act on is that nothing is building yet, which is the
+         * first line of the detail.
          */
-        "The tests for this ticket are still being written and there is no build " +
-        "session to push into yet, so a message now is stored rather than delivered. " +
-        "Stored messages " +
-        "are folded into the next design or build segment's prompt — for a run at this " +
-        "phase that is the first one it composes, which is the earliest point anything " +
-        "you say can shape what gets built."
-      );
+        text: "The tests are still being written, so a message is stored rather than delivered.",
+        detail:
+          "No agent is building yet. What you send is added to the instructions the " +
+          "first design or build agent gets, which is the earliest anything you say " +
+          "can change what gets built.",
+        about: "messages while the tests are being written",
+      };
     case "gate":
     case "judge":
-      return (
-        "The build segments are over. A stored message is only folded into a design or " +
-        "build segment prompt — the gate's fix rounds and the judge compose their own " +
-        "and read none — so a message sent now is likely to end up recorded as never " +
-        "read."
-      );
+      return {
+        /*
+         * "PAST THE BUILD AND INTO TESTING" RATHER THAN "THE BUILD SEGMENTS ARE
+         * OVER", and the wording is careful for a reason the shorter version got
+         * wrong: the gate's FIX ROUNDS still change code, so "the building is
+         * over" would be false. The run is past the build SEGMENTS — the ones
+         * that read a stored message — which is what makes the warning true.
+         *
+         * "the gate's fix rounds and the judge" IS THE JARGON THIS SENTENCE WAS
+         * CARRYING. Both are seat names from the orchestrator; on screen they are
+         * "the test-fixing rounds" and "the final review", which is what they do.
+         */
+        text: "This run is past the build, so a message now will most likely never be read.",
+        detail:
+          "Only the design and build agents are given stored messages. The " +
+          "test-fixing rounds and the final review write their own instructions and " +
+          "read none.",
+        about: "messages after the build",
+      };
     default:
       // `build` (running, parked or between segments) and the momentary `done`
       // before a run turns terminal. The component's own two-path paragraph is
@@ -965,7 +1007,14 @@ export default function RunPage(): ReactNode {
         <div hidden={openPanel !== "chat"}>
           {deliveryNote !== null && (
             <p className="border-b border-line bg-canvas/40 px-3 py-2 text-[11.5px] leading-relaxed text-ink-dim">
-              {deliveryNote}
+              {deliveryNote.text}
+              <Explain
+                about={deliveryNote.about}
+                className="ml-1"
+                testId="explain-delivery"
+              >
+                {deliveryNote.detail}
+              </Explain>
             </p>
           )}
           <OrchestratorChat
