@@ -61,6 +61,14 @@
  *      FIFTH `conduit-core` edge, because the socket-only `socket-echo` node
  *      arrived and was drawn on a finished run.
  *
+ * MUTATION 3 WAS RE-RUN AFTER THE TRACE TEST WAS RE-POINTED — 2026-08-05. That
+ * test reached its pane through a `run detail` button and a `Trace` tab, both of
+ * which the icon rail deleted; it now opens the rail's **Activity** entry, and a
+ * repair whose assertions are never watched failing is a repair that measures the
+ * click. `use-run-stream.ts:917` with `streamClosed ||` deleted again: 2 of 4 RED,
+ * the same two as before — the edge count in the first test, and the re-pointed
+ * trace test at its rewritten empty-state sentence. Reverted, green again.
+ *
  * The one thing that does NOT work yet is marked `fixme` at the bottom with the
  * wave that turns it on; it is not weakened into something that passes.
  */
@@ -174,9 +182,17 @@ test.describe("a finished run, opened cold", () => {
   }) => {
     await openCanvas(page, FINISHED_RUN_ID);
 
-    await page.getByRole("button", { name: "run detail" }).click();
-    await page.getByRole("tab", { name: "Trace" }).click();
-    const trace = page.locator("#run-panel-trace");
+    /*
+     * RE-POINTED 2026-08-05. This was `run detail` → the `Trace` tab →
+     * `#run-panel-trace`, and it timed out on the button: the 560px sheet is gone
+     * and `canvas/rail.tsx` replaced it with an icon rail whose one panel is
+     * `#rail-panel`. The Trace tab is the rail entry labelled **Activity**
+     * (`ActivityPanel`, `canvas/sheet.tsx`), which mounts THE SAME `TracePane`
+     * this test has always measured. Addressed by `data-testid` rather than by
+     * accessible name because that name is the tooltip sentence, i.e. copy.
+     */
+    await page.getByTestId("rail-activity").click();
+    const trace = page.locator("#rail-panel");
 
     /*
      * A PRECONDITION, NOT THE MEASUREMENT — and this comment used to claim the
@@ -204,9 +220,17 @@ test.describe("a finished run, opened cold", () => {
      * frame of any kind replaces this sentence with a list. It went red under
      * mutation 2 and mutation 3.
      */
-    await expect(trace).toContainText(
-      "This run finished before the page was opened, so there is no live trace to replay.",
-    );
+    /*
+     * THE SENTENCE WAS REWRITTEN, NOT REMOVED — `run/trace.tsx:192`, 2026-08-05.
+     * It read "This run finished before the page was opened, so there is no live
+     * trace to replay."; the prose lane cut the second clause (an empty pane does
+     * not need to be told it is empty) and kept the pointer at Result, which is
+     * the half a reader can act on. The measurement is unchanged: this string
+     * needs BOTH `stream === "closed"` AND a trace that never took a row, and one
+     * delivered frame of any kind replaces it with a list.
+     */
+    await expect(trace).toContainText("This run finished before you opened this page.");
+    await expect(trace).toContainText("The criteria and captures are on Result.");
 
     /*
      * AND THE ECHO, WHICH IS CORROBORATION RATHER THAN PROOF — stated plainly,

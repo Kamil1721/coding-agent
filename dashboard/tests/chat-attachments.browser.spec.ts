@@ -27,9 +27,11 @@
  * THE LEAK NEEDS THE THIRD ASSERTION AND THE FIRST TWO ARE NOT ENOUGH.
  * "second.png's URL was not revoked" is true of the BROKEN code too — that is
  * what leaking means. What separates them is that after the fix the survivor is
- * still HELD: its chip is on screen, and closing the sheet unmounts the
- * composer and revokes it. Broken, it was dropped from state before the unmount
- * sweep could ever see it, so it is never revoked at all.
+ * still HELD: its chip is on screen, and unmounting the composer revokes it.
+ * Broken, it was dropped from state before the unmount sweep could ever see it,
+ * so it is never revoked at all. (WHAT UNMOUNTS IT changed on 2026-08-05 — it
+ * used to be closing the sheet, and closing the rail's panel does not; see the
+ * re-pointing note at the foot of this block.)
  *
  * ─── MUTATIONS RUN, WATCHED FAIL, AND RESTORED ───
  *
@@ -65,6 +67,45 @@
  * COMPONENT — it did, on the first run, before a line was changed. It is a
  * control on the success gate (`.catch` must not release), not evidence for
  * this fix, and it is labelled that way rather than counted.
+ *
+ * ─── RE-POINTED 2026-08-05, AND ONE ASSERTION HAD LOST ITS TRIGGER ───
+ *
+ * THE WAY IN. Both tests died on `getByRole("button", { name: /^chat/ })`. The
+ * rail replaced the old `chat` button with an icon whose accessible name is its
+ * whole tooltip sentence — "Chat — send this run an instruction or a reference
+ * image." — so the anchored, case-sensitive regex stopped matching. It is
+ * `getByTestId("rail-chat")` now: that name is COPY, rewritten twice in the week
+ * this repair was made, and a spec bound to it reports an editorial change as an
+ * object-URL leak.
+ *
+ * THE THIRD ASSERTION NEEDED A NEW UNMOUNT, AND THIS IS THE PART WORTH READING.
+ * "It is HELD, not leaked" is measured by unmounting the composer and watching
+ * the survivor's URL come back — `orchestrator-chat.tsx:541` is the sweep
+ * (`useEffect(() => () => releaseAttachments(held.current), [])`), and it can
+ * only find what is still in the component's state. CLOSING THE PANEL NO LONGER
+ * UNMOUNTS ANYTHING: `runs/[runId]/page.tsx:1006` mounts the chat at the run
+ * view's level and merely sets `hidden`, deliberately, so a half-typed
+ * instruction survives clicking Files. That is a product improvement and it
+ * silently voided this assertion — `getByRole` ignores a `hidden` subtree, so
+ * "the composer is gone" would still have PASSED while the sweep had not run and
+ * the revoke had not happened.
+ *
+ * So the unmount is now a CLIENT-SIDE NAVIGATION away from the run view: the
+ * app shell's "agent console" `<Link href="/">` (`components/app-shell.tsx:158`).
+ * It has to be a `<Link>` click and not `page.goto` — a full navigation destroys
+ * the document, and with it `window.__blobLog`, so the revoke would be
+ * unobservable rather than absent. MEASURED, not assumed: with the navigation
+ * replaced by the old panel-close the test goes GREEN on `toHaveCount(0)` and RED
+ * on the revoke, which is exactly the hole described above. That experiment was
+ * run — the failure came in past `expect(sendButton).toHaveCount(0)`, at
+ * `expect(revoked).toContain(secondUrl)` with only the SENT url in the array.
+ *
+ * M5, THE CONTROL FOR THE NEW UNMOUNT — 2026-08-05. `orchestrator-chat.tsx:541`,
+ * the sweep itself, replaced by `useEffect(() => () => undefined, [])`. RED at
+ * the same revoke assertion, with the sent url present and the survivor's absent;
+ * the second test stayed green, which is right, since it revokes nothing either
+ * way. So the navigation really unmounts the composer and the sweep really runs:
+ * the third assertion is live again rather than merely re-worded.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -116,6 +157,19 @@ function revoked(page: Page): Promise<readonly string[]> {
 }
 
 /**
+ * The composer's send button — `exact`, and that is not tidiness.
+ *
+ * MEASURED: `getByRole("button", { name: "send" })` is a SUBSTRING match, and the
+ * rail's own Chat icon is named with its whole tooltip sentence — "Chat — send
+ * this run an instruction or a reference image." So the loose name resolved to
+ * two buttons and Playwright refused it in strict mode. `exact: true` is what
+ * separates the control from a sentence describing it, and it also keeps
+ * `sending…` out, which the assertions below depend on being a different state.
+ */
+const sendButton = (page: Page) =>
+  page.getByRole("button", { name: "send", exact: true });
+
+/**
  * The `blob:` URL the chip for `name` is actually rendering.
  *
  * READ OFF THE `<img>` RATHER THAN FROM THE CREATION ORDER, because anything
@@ -163,8 +217,8 @@ async function openHeldChat(page: Page): Promise<HeldSend> {
   });
 
   await page.goto(`/runs/${RUN_ID}`);
-  await page.getByRole("button", { name: /^chat/ }).click();
-  await expect(page.getByRole("button", { name: "send" })).toBeVisible();
+  await page.getByTestId("rail-chat").click();
+  await expect(sendButton(page)).toBeVisible();
 
   return {
     release: () => {
@@ -190,7 +244,7 @@ test("an image attached while the send is in flight survives it, and is still he
   await attach(page, "first.png");
   const firstUrl = await previewUrlOf(page, "first.png");
 
-  await page.getByRole("button", { name: "send" }).click();
+  await sendButton(page).click();
   // The composer says `sending…` for exactly as long as the POST is held, so
   // this is the in-flight window and everything below happens inside it.
   await expect(page.getByRole("button", { name: "sending…" })).toBeVisible();
@@ -200,7 +254,7 @@ test("an image attached while the send is in flight survives it, and is still he
   expect(secondUrl).not.toBe(firstUrl);
 
   held.release();
-  await expect(page.getByRole("button", { name: "send" })).toBeVisible();
+  await expect(sendButton(page)).toBeVisible();
 
   // ── what was SENT is gone, and its preview was handed back ────────────────
   // The positive control: a release that never happened would satisfy every
@@ -218,11 +272,22 @@ test("an image attached while the send is in flight survives it, and is still he
   await expect(page.locator('img[alt="second.png"]')).toHaveJSProperty("naturalWidth", 1);
 
   // ── and it is HELD, not leaked ────────────────────────────────────────────
-  // This is the assertion the leak needs. "not revoked" is equally true of the
-  // broken version; being revoked ON UNMOUNT is only true when the survivor is
-  // still in the component's state for the sweep to find.
-  await page.getByTitle("Close (Escape)").click();
-  await expect(page.getByRole("button", { name: "send" })).toHaveCount(0);
+  /*
+   * This is the assertion the leak needs. "not revoked" is equally true of the
+   * broken version; being revoked ON UNMOUNT is only true when the survivor is
+   * still in the component's state for the sweep to find.
+   *
+   * THE UNMOUNT IS A CLIENT-SIDE NAVIGATION, NOT A PANEL CLOSE — see this file's
+   * header. Closing the rail panel leaves the composer mounted and merely
+   * `hidden`, so it revokes nothing and the old form of this check passed on a
+   * document still holding the blob.
+   */
+  await page.getByRole("link", { name: /agent console/ }).click();
+  await expect(page).toHaveURL(/\/$/);
+  // The composer really is gone from the document, not merely hidden: `hidden`
+  // takes a subtree out of the accessibility tree too, so this alone would not
+  // have told the two apart. It is the precondition, and the revoke is the fact.
+  await expect(sendButton(page)).toHaveCount(0);
   expect(await revoked(page)).toContain(secondUrl);
 });
 
@@ -243,11 +308,11 @@ test("a send that is REFUSED keeps every chip, and revokes nothing", async ({ pa
   });
 
   await page.goto(`/runs/${RUN_ID}`);
-  await page.getByRole("button", { name: /^chat/ }).click();
+  await page.getByTestId("rail-chat").click();
   await attach(page, "kept.png");
   const keptUrl = await previewUrlOf(page, "kept.png");
 
-  await page.getByRole("button", { name: "send" }).click();
+  await sendButton(page).click();
   await expect(page.getByText("this run has finished")).toBeVisible();
 
   await expect(page.getByTitle("kept.png")).toBeVisible();

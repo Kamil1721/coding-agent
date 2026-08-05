@@ -40,6 +40,68 @@
  * the file that measures motion. The detail bodies are spread from the real
  * `RUN_DETAIL`, so a field added to `RunDetail` cannot leave this file compiling
  * against a shape the app no longer receives.
+ *
+ * ─── RE-POINTED 2026-08-05, AND THE COPY RE-READ OFF THE COMPONENT ───
+ *
+ * WHERE IT MOVED. Every test here died in `serve` waiting for a button named
+ * `run detail`. The 560px sheet and its seven tabs are gone; `canvas/rail.tsx`
+ * put one panel behind an icon rail, and `MotionReadoutPanel` is now mounted by
+ * `OverviewPanel` (`canvas/sheet.tsx:942`) — i.e. the rail entry labelled
+ * **Overview**, `#rail-panel`. The "Ticket tab" of the assertion names below is
+ * now the Overview panel's "What you asked for" section. NOTHING ABOUT WHAT IS
+ * MEASURED CHANGED: same component, same four bodies, same three states.
+ *
+ * WHAT DID CHANGE IS FOUR STRINGS, and they were re-read off `run/motion.tsx`
+ * rather than remembered. The prose lane rewrote the panel's own copy in the same
+ * wave, so three assertions were stale and one was almost-stale:
+ *
+ *   · "Presence only: … its content was NOT compared" → "Seen to run. Nothing was
+ *     measured about how it moves." (motion.tsx:176). The assertion that carried
+ *     the load in this file is the NUMBERS one below it, which is unchanged.
+ *   · "nothing was observed to move" → "This page was opened and watched, and
+ *     nothing moved." (motion.tsx:297).
+ *   · the empty branch's negative assertion named "reduced-motion preference",
+ *     a phrase no longer on the surface in any branch. It is now `/reduced
+ *     motion/i`, which is what the two reduced-motion sentences (motion.tsx:331,
+ *     :332) actually say — so the absence is asserted against the wording that
+ *     exists rather than against wording that could not appear whatever the
+ *     component did.
+ *   · "about 120ms apart" gained "across siblings" (motion.tsx:142) and still
+ *     matches, because `getByText` with a string is a substring match.
+ *
+ * AND A CLAIM ABOUT `innerText` WAS TESTED AND FOUND FALSE, WHICH IS WORTH MORE
+ * HERE THAN THE CHANGE IT WAS MEANT TO JUSTIFY. The wave's hand-off states that
+ * `innerText` EXCLUDES the sr-only body of a shut `<Explain>` and that a spec
+ * reading it therefore has a hole: a banned word, or a figure, one hover away and
+ * unseen. This panel now has two of those bubbles, so it was measured rather than
+ * believed — `parityClauses` was moved INSIDE an `<Explain>` on the presence-only
+ * row and the file run both ways:
+ *
+ *   textContent → RED ("the presence-only row published 1800 …")
+ *   innerText   → RED, on the same assertion, with the hidden clause and the
+ *                 subtitle's whole bubble printed in the received string.
+ *
+ * So on this surface `innerText` reports a shut bubble, and the hole does not
+ * exist here: `sr-only` is `clip`, not `display:none`, and a clipped element is
+ * still rendered. `textContent` is kept anyway — it is the read with no layout
+ * in it at all, and `innerText` additionally applies `text-transform`, which is
+ * how a heading arrives UPPERCASE and quietly stops matching — but it is kept as
+ * a preference, not as a repair, and nobody should cite this file as evidence for
+ * the hole.
+ *
+ * TWO MUTATIONS TO PRODUCTION CODE, APPLIED, WATCHED AND REVERTED — 2026-08-05,
+ * because a spec whose navigation was rewritten and whose assertions were never
+ * watched failing is a spec that measures the click:
+ *
+ *   1. `run/motion.tsx:163` — the `entry.parity` branch pinned to `true`, so a
+ *      presence-only row prints the sampler's figures like any other. 1 of 5 RED,
+ *      the presence-only test, first at the row's own sentence.
+ *   2. same file:176 — the sentence KEPT and `parityClauses(entry)` appended to
+ *      it, which is the sharper version of the same defect: the row still says
+ *      nothing was measured and publishes the measurement beside it. 1 of 5 RED
+ *      at the digits assertion — "the presence-only row published 1800 as if it
+ *      were measured". That is the assertion this file calls load-bearing, and it
+ *      is the one that had to be seen failing.
  */
 
 import { expect, test, type Page, type Route } from "@playwright/test";
@@ -49,10 +111,14 @@ import { RUN_DETAIL } from "./fixtures/run-fixture";
 
 const RUN = "harness-motion-readout-run";
 
-/** The tabpanel `sheet.tsx` ids after the selected tab. The sheet opens here. */
-const TICKET_PANEL = "#run-panel-ticket";
+/**
+ * The rail's one panel. `rail.tsx` ids it `rail-panel` and mounts exactly one
+ * body inside it; this file opens Overview, which is where the run page mounts
+ * `MotionReadoutPanel`.
+ */
+const OVERVIEW_PANEL = "#rail-panel";
 
-/** The panel's own heading. Nothing else on the Ticket tab carries this string. */
+/** The panel's own heading. Nothing else on Overview carries this string. */
 const HEADING = "Motion read from the reference";
 
 const REFERENCE_URL = "https://gsap.com/";
@@ -235,25 +301,65 @@ async function serve(page: Page, body: RunDetail | LegacyDetail): Promise<Harnes
   });
 
   await page.goto(`/runs/${RUN}`);
-  // The sheet opens on the Ticket tab (`openRunSheet` sets it explicitly), so
-  // the panel is one click away and no tab click is needed.
-  await page.getByRole("button", { name: "run detail" }).click();
-  await expect(ticketPanel(page)).toBeVisible();
+  await openOverview(page);
   return { crashes };
 }
 
-const ticketPanel = (page: Page) => page.locator(TICKET_PANEL);
+/**
+ * Bring the Overview panel to the front, WITHOUT ASSUMING IT IS SHUT.
+ *
+ * A BARE CLICK IS WRONG HERE AND IT WAS MEASURED BEING WRONG: the rail button is
+ * a toggle (`rail.tsx#RailButton`, `onOpen(selected ? null : entry.id)`) and the
+ * run page OPENS OVERVIEW BY DEFAULT — `openPanel` is
+ * `chosenPanel !== undefined ? chosenPanel : hasQuestions && … ? "questions" :
+ * "overview"` (`runs/[runId]/page.tsx`). So the first repair of this file clicked
+ * the panel it wanted CLOSED and all five tests failed on a `hidden` region.
+ * `aria-expanded` is the rail's own answer to "is this one open" — it is on the
+ * button for a screen reader regardless — and it is read rather than assumed.
+ *
+ * Wrapped in `toPass` because the default is DERIVED FROM THE RUN DETAIL, which
+ * arrives over a fetch: a panel opened before the body lands can be re-derived
+ * out from under a bare click.
+ *
+ * By `data-testid`, not by accessible name: that name is the whole tooltip
+ * sentence, i.e. copy, and a way-in bound to it reports an editorial change as a
+ * motion regression.
+ */
+async function openOverview(page: Page): Promise<void> {
+  const button = page.getByTestId("rail-overview");
+  await expect(async () => {
+    if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
+    await expect(button).toHaveAttribute("aria-expanded", "true");
+  }).toPass({ timeout: 15_000 });
+  await expect(overviewPanel(page)).toBeVisible();
+}
+
+const overviewPanel = (page: Page) => page.locator(OVERVIEW_PANEL);
+/**
+ * The motion panel's own `<section>` — the NEAREST one around its heading.
+ *
+ * NOT `locator("section").filter({ has: heading })`, WHICH IS AMBIGUOUS HERE AND
+ * WAS MEASURED BEING SO. On the old Ticket tab this panel was a top-level
+ * section; inside Overview it is nested in `overview-ticket`
+ * (`canvas/sheet.tsx`), so a `filter` on `has:` matched the wrapper AND the panel
+ * and Playwright refused the locator in strict mode. Every assertion below is
+ * scoped to this element and the wrapper's other sections — the brief, the
+ * attachments — must not be able to satisfy them, so widening the scope to the
+ * outer section would have been the wrong repair: the presence-only test asserts
+ * digits are ABSENT from it, and the more of the page it covers the less that
+ * says.
+ */
 const motionPanel = (page: Page) =>
-  ticketPanel(page)
-    .locator("section")
-    .filter({ has: page.getByRole("heading", { name: HEADING }) });
-/** The brief the Ticket tab always renders — the control for "the tab is alive". */
-const verbatimBrief = (page: Page) => ticketPanel(page).getByText("the ticket, verbatim");
+  overviewPanel(page)
+    .getByRole("heading", { name: HEADING })
+    .locator("xpath=ancestor::section[1]");
+/** The brief Overview always renders — the control for "the panel is alive". */
+const verbatimBrief = (page: Page) => overviewPanel(page).getByText("the ticket, verbatim");
 
 /* ------------------------------------------------------------------ */
 
 test.describe("a ticket whose reference page was read", () => {
-  test("every entry's own numbers are on the Ticket tab", async ({ page }) => {
+  test("every entry's own numbers are on the Overview panel", async ({ page }) => {
     const harness = await serve(page, READ);
     const panel = motionPanel(page);
     await expect(panel).toHaveCount(1);
@@ -280,14 +386,21 @@ test.describe("a ticket whose reference page was read", () => {
     await expect(panel.getByText("aurora-wash")).toBeVisible();
     await expect(panel.getByText("about 1250ms")).toBeVisible();
 
-    // Detected libraries, and the sentence that stops them reading as an order.
+    /*
+     * THE DETECTED LIBRARIES. The comment here used to promise "and the sentence
+     * that stops them reading as an order" — that sentence ("It is not an
+     * instruction to build with the same one") was deleted from `motion.tsx` on
+     * 2026-08-05 and the scope now rides on the words "on the reference page" in
+     * the line itself, which is why they are asserted with the names.
+     */
+    await expect(panel.getByText(/found on the reference page/)).toBeVisible();
     await expect(panel.getByText("gsap, lenis")).toBeVisible();
 
     // `respectsReducedMotion: false` also comes out of `probeReducedMotion`'s
     // catch, so the panel may not say the page ignores the preference.
     await expect(panel.getByText(/could not be taken/)).toBeVisible();
 
-    expect(harness.crashes, "the Ticket tab threw").toEqual([]);
+    expect(harness.crashes, "the Overview panel threw").toEqual([]);
   });
 
   test("a presence-only row says its content was not compared, and prints no figure", async ({
@@ -298,12 +411,31 @@ test.describe("a ticket whose reference page was read", () => {
 
     const row = panel.locator("li").filter({ hasText: "main.app-shell" });
     await expect(row).toHaveCount(1);
-    await expect(row).toContainText(/NOT compared/);
+    /*
+     * THE ROW SAYS WHAT WAS AND WAS NOT CHECKED — re-read off `motion.tsx:176`
+     * after the prose lane rewrote it ("Presence only: this was observed to run,
+     * and its content was NOT compared. Nothing was measured about how it moves."
+     * → the two clauses below). Both halves are asserted: "seen to run" without
+     * "nothing was measured" would let this row read as a measurement, and
+     * "nothing was measured" without "seen to run" would read as a failed capture.
+     */
+    await expect(row).toContainText("Seen to run.");
+    await expect(row).toContainText("Nothing was measured about how it moves.");
 
-    // THE ASSERTION THAT CAN FAIL. Everything above is satisfied by a panel that
-    // prints every field of every entry; this one is not. 1800ms is the sampling
-    // window, and 240/0.99 were never compared against anything.
-    const text = (await panel.innerText()).replace(/\s+/g, " ");
+    /*
+     * THE ASSERTION THAT CAN FAIL. Everything above is satisfied by a panel that
+     * prints every field of every entry; this one is not. 1800ms is the sampling
+     * window, and 240/0.99 were never compared against anything.
+     *
+     * `textContent`, NOT `innerText` — 2026-08-05, AND NOT FOR THE REASON THE
+     * WAVE'S HAND-OFF GIVES. Measured on this panel with the figures moved behind
+     * an `<Explain>`: BOTH reads report a shut bubble, so the switch closed no
+     * hole (the header records the run). It is kept because `innerText` is a
+     * rendered read — it applies `text-transform`, and this panel sits under an
+     * uppercase heading — while `textContent` is the text the document contains,
+     * which is the right subject for "this number reaches no reader".
+     */
+    const text = ((await panel.textContent()) ?? "").replace(/\s+/g, " ");
     for (const digits of PRESENCE_ONLY_NUMBERS) {
       expect(text, `the presence-only row published ${digits} as if it were measured`).not.toContain(
         digits,
@@ -319,10 +451,19 @@ test("a page that was read while nothing moved says so, and is not an empty list
   const panel = motionPanel(page);
   await expect(panel).toHaveCount(1);
 
-  await expect(panel).toContainText(/nothing was observed to move/);
-  // NOT the reading's verdict on reduced motion: with no observation to be about,
-  // `respectsReducedMotion: true` is a fact about an empty list.
-  await expect(panel.getByText(/reduced-motion preference/)).toHaveCount(0);
+  await expect(panel).toContainText("This page was opened and watched, and nothing moved.");
+  /*
+   * NOT the reading's verdict on reduced motion: with no observation to be about,
+   * `respectsReducedMotion: true` is a fact about an empty list.
+   *
+   * THE PATTERN IS `/reduced motion/i` AND THAT IS A REPAIR. It read
+   * `/reduced-motion preference/`, a phrase `motion.tsx` no longer prints in
+   * EITHER branch — so the absence was asserted against wording that could not
+   * have appeared however the component behaved, which is a check that can only
+   * observe success. Both surviving sentences (motion.tsx:331-332) contain
+   * "reduced motion", so this one goes red if the verdict is drawn here.
+   */
+  await expect(panel.getByText(/reduced motion/i)).toHaveCount(0);
   // A heading over an empty list is the shape the brief rules out by name.
   await expect(panel.locator("li")).toHaveCount(0);
 
@@ -348,6 +489,6 @@ test.describe("a ticket that named no motion reference", () => {
     await expect(motionPanel(page)).toHaveCount(0);
     await expect(verbatimBrief(page)).toBeVisible();
     // THE ONE TEST THAT NOTICES A DELETED `?? null` AT THE CALL SITE.
-    expect(harness.crashes, "an absent `motion` key took the Ticket tab down").toEqual([]);
+    expect(harness.crashes, "an absent `motion` key took the Overview panel down").toEqual([]);
   });
 });

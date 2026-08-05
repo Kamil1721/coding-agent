@@ -76,6 +76,20 @@
  * from the timeline row in `inspector.tsx` left all six green. The diff's own
  * scroller holds the line without it. The comment there has been corrected to
  * claim a reason rather than an observation.
+ *
+ * TWO OF THEM WERE RE-RUN AGAINST THE RE-POINTED WAY IN — 2026-08-05, after the
+ * sheet's `Agents` tab became a section of the rail's Overview panel. A spec
+ * whose navigation was rewritten and whose assertions were never watched failing
+ * is a spec that measures the navigation:
+ *
+ *   · `run/diff.tsx#CappedNotice` silenced with an early `return null`. 2 of 6
+ *     RED, both capped tests — the same count as mutation 2 above, which is what
+ *     says the two REWRITTEN strings ("3 further blocks of changes are not
+ *     shown", "The counts above cover all of it") are really being read.
+ *   · `canvas/inspector.tsx:301` — the `entry.kind === "diff"` branch made
+ *     unreachable. 5 of 6 RED, the same count and the same surviving test as
+ *     mutation 3 above. That is the one that proves the roster inside Overview
+ *     still reaches a MOUNTED inspector rather than a page that merely renders.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -298,24 +312,44 @@ async function serveDiffGraph(page: Page): Promise<void> {
  * NOT A NODE CLICK. `onNodeClick` is a TOGGLE over React Flow's own hit testing
  * and the cards carry their own buttons; the roster is a plain `<ul>` of plain
  * `<button>`s built for exactly this ("picking one here selects its card on the
- * canvas"), and it reaches the same `DetailSheet`. It also matches the
- * `run detail` → tab idiom every other browser spec in this tree uses.
+ * canvas"), and it reaches the same `DetailSheet`.
+ *
+ * RE-POINTED 2026-08-05, AND THE ROSTER DID NOT MOVE — its container did. All
+ * six tests timed out here on a button named `run detail`: the 560px sheet and
+ * its `Agents` tab are gone, replaced by `canvas/rail.tsx`'s icon rail. The same
+ * `AgentRoster` is now a section of the **Overview** panel
+ * (`canvas/sheet.tsx:985`, `testId="overview-agents"`), and picking a name there
+ * still writes `selectedId` on the run page, which still renders the same
+ * `DetailSheet`. Every assertion below is unchanged, because none of them was
+ * ever about the sheet's chrome.
+ *
+ * STILL SCOPED, AND FOR THE ORIGINAL REASON: the canvas card behind it is ALSO a
+ * `role="button"` named after the same agent (`agent-shell-<id>`, with an
+ * `aria-label` for the keyboard walk). An unscoped `getByRole` resolves to both
+ * and Playwright refuses it — correctly, since clicking either would have opened
+ * the sheet and only one of them is the deterministic path this helper claims to
+ * use. The scope is the roster's own section id rather than a tabpanel that no
+ * longer exists.
  */
 async function openAgent(page: Page, agent: string): Promise<void> {
   await page.goto(`/runs/${FINISHED_RUN_ID}`);
   await expect(page.getByTestId("rf__node-root")).toBeVisible();
-  await page.getByRole("button", { name: "run detail" }).click();
-  await page.getByRole("tab", { name: "Agents" }).click();
   /*
-   * SCOPED TO THE TAB PANEL, because the canvas card behind it is ALSO a
-   * `role="button"` named after the same agent (`agent-shell-<id>`, with an
-   * `aria-label` for the keyboard walk). An unscoped `getByRole` resolves to
-   * both and Playwright refuses it — correctly, since clicking either would have
-   * opened the sheet and only one of them is the deterministic path this helper
-   * claims to use.
+   * NOT A BARE CLICK ON THE RAIL BUTTON, AND THAT WAS MEASURED. The button is a
+   * toggle (`rail.tsx#RailButton`) and the run page OPENS OVERVIEW BY DEFAULT
+   * (`openPanel` falls back to `"overview"` when the reader has chosen nothing),
+   * so clicking it unconditionally SHUTS the panel this helper is trying to read.
+   * `aria-expanded` is the rail's own answer to "is this one open"; `toPass`
+   * because that default is derived from the run detail, which arrives over a
+   * fetch and can re-derive under a click that came too early.
    */
+  const overview = page.getByTestId("rail-overview");
+  await expect(async () => {
+    if ((await overview.getAttribute("aria-expanded")) !== "true") await overview.click();
+    await expect(overview).toHaveAttribute("aria-expanded", "true");
+  }).toPass({ timeout: 15_000 });
   await page
-    .locator("#run-panel-agents")
+    .getByTestId("overview-agents")
     .getByRole("button", { name: new RegExp(agent) })
     .click();
 }
@@ -397,10 +431,19 @@ test.describe("an applied edit, drawn on a run that has already finished", () =>
      * fact. A vaguer sentence — "truncated" — would satisfy a reader and tell
      * them nothing about how much is missing.
      */
+    /*
+     * TWO OF THESE THREE STRINGS WERE REWRITTEN ON 2026-08-05 and are re-read off
+     * `run/diff.tsx:123` and `:138` rather than remembered: "3 further hunks are
+     * not shown" → "3 further blocks of changes are not shown" (`hunk` is a git
+     * word that survives in the type, in `hunkHeader()` and in the `@@` line, but
+     * not in a sentence written for the owner), and "The counts above are of the
+     * whole edit" → "The counts above cover all of it". THE ARITHMETIC IS
+     * UNTOUCHED, and it is the arithmetic this test exists for.
+     */
     const notice = capped.getByTestId("diff-capped");
     await expect(notice).toContainText("Showing 3 of 223 lines.");
-    await expect(notice).toContainText("3 further hunks are not shown.");
-    await expect(notice).toContainText("The counts above are of the whole edit.");
+    await expect(notice).toContainText("3 further blocks of changes are not shown.");
+    await expect(notice).toContainText("The counts above cover all of it.");
   });
 
   test("a line cut short is capped too, even though no line is missing", async ({
@@ -462,7 +505,10 @@ test.describe("an applied edit, drawn on a run that has already finished", () =>
      * which is the same class of untruth as drawing a capped patch whole.
      */
     const note = page.getByTestId("diff-shell-note");
-    await expect(note).toContainText("Only edits made with the file tools leave a patch.");
+    // "…leave a patch." → "…appear here." (`run/diff.tsx:302`, 2026-08-05). The
+    // claim is the same one and it is still the only sentence stopping the list
+    // of drawn patches being read as the list of edits.
+    await expect(note).toContainText("Only edits made with the file tools appear here.");
     await expect(
       note,
       "the count comes from this agent's own recorded Bash calls, not from a fixed sentence",
