@@ -518,6 +518,46 @@ test("BOOT, AUTO-RESUME OFF: an elapsed window resumes NOTHING and the boot swee
   }
 });
 
+test("THE KILL SWITCH BEATS THE LEGACY FLAG: 0 wins even with DASHBOARD_RATE_LIMIT_AUTO_RESUME=1", async () => {
+  /*
+   * THE SEAM THIS CLOSES, 2026-08-05. `#recoveryEnabled` read
+   *
+   *     if (autoRecoverEnabled(env)) return true;
+   *     return klass === "throttled" && rateLimitAutoResume(env);
+   *
+   * which was correct while `DASHBOARD_AUTO_RECOVER` was OPT-IN: two flags that
+   * could only ever ADD consent to each other. Now that it is an OFF SWITCH, the
+   * second line let a stale legacy variable overrule the owner's "0" for the
+   * `throttled` class — and a kill switch one forgotten plist entry can defeat
+   * is not a kill switch. The whole reason the environment variable was kept is
+   * that he can stop unattended spending WITHOUT A REBUILD.
+   *
+   * CONTROL: put the two lines back in `#recoveryEnabled` and this goes red at
+   * `queued` — the run resumes itself on the legacy flag while the owner's own
+   * switch says not to.
+   */
+  const h = harness({ [RECOVERY_ENABLED_ENV]: "0", [RATE_LIMIT_AUTO_RESUME_ENV]: "1" });
+  try {
+    // Refused 40 minutes ago into a 30-minute window: the wait is served, so an
+    // enabled sweep WOULD requeue this row. That is what makes the assertion
+    // below discriminating rather than an absence with many causes.
+    seedRateLimited(h.store, "run-killed", { minutesAgo: 40, retryAfterSec: HALF_HOUR_SEC });
+    const before = h.store.getRun("run-killed")?.rateLimitedAt ?? null;
+    assert.ok(before !== null, "the fixture must carry an instant, or this test proves nothing");
+    await h.orchestrator.shutdown();
+
+    h.orchestrator.reconcileOnBoot();
+
+    const row = h.store.getRun("run-killed");
+    assert.equal(row?.status, "rate_limited", "the owner switched it off; nothing may resume on the old flag");
+    assert.equal(row?.rateLimitedAt, before, "and nothing swept this row");
+    assert.equal(row?.resumeCount, 0);
+    assert.equal(row?.autoContinueCount, 0, "a refusal charges nothing");
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("a manual resume disarms the park: the instant is cleared and the cap counter moves", async () => {
   const h = harness({ [RATE_LIMIT_AUTO_RESUME_ENV]: "1" });
   try {

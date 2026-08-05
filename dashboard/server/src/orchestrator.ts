@@ -656,6 +656,19 @@ export const DASHBOARD_SANDBOX: SandboxSpec = Object.freeze({
  * to be wrong in. So it enables the `throttled` class ALONE; every other class
  * needs the new flag. `Orchestrator.#recoveryEnabled` is the four lines that say
  * so, and it is the only reader of either flag.
+ *
+ * ─── AND IT IS NOW INERT, DELIBERATELY, 2026-08-05
+ *
+ * `DASHBOARD_AUTO_RECOVER` became ON BY DEFAULT (recovery.ts:autoRecoverEnabled;
+ * it was opt-in and nothing on this machine set it, so the feature never ran).
+ * Every class this variable could enable is therefore already enabled, and the
+ * only combination it could still change was "AUTO_RECOVER=0 with this one set",
+ * where it OVERRULED THE OWNER'S OFF SWITCH for `throttled`. `#recoveryEnabled`
+ * no longer reads it for that reason. The paragraphs above are the reasoning as
+ * it stood and they were not wrong; they were answering the question an opt-in
+ * flag asks. This function stays exported and tested so that setting the
+ * variable is still not an error, and so that a future reader of a launchd plist
+ * that sets it can find out here what it does now: nothing.
  */
 export const RATE_LIMIT_AUTO_RESUME_ENV = "DASHBOARD_RATE_LIMIT_AUTO_RESUME";
 
@@ -1506,11 +1519,25 @@ export class Orchestrator {
    * Boot reconciliation.
    *
    * A run persisted as `running` is not running: its subprocess died with the
-   * server. It is marked `rate_limited`... no — it is marked QUEUED only if the
-   * owner asks, because silently restarting a build on server start would spend
-   * quota without anyone present. It is moved to `awaiting_input`, which is the
-   * contract's state for "a human has to decide", and the log says exactly what
-   * happened and that `resume` will continue it.
+   * server. It is REQUEUED, and since 2026-08-05 that is the default rather than
+   * the exception.
+   *
+   * WHAT THIS PARAGRAPH USED TO SAY, and why it was reversed: "it is marked
+   * QUEUED only if the owner asks, because silently restarting a build on server
+   * start would spend quota without anyone present. It is moved to
+   * `awaiting_input`, which is the contract's state for 'a human has to decide'".
+   * The caution was real and the consequence was not the one intended: nothing
+   * in this repository ever set `DASHBOARD_AUTO_RECOVER`, so "only if the owner
+   * asks" meant EVERY interrupted run waited on a click, which is how 52 minutes
+   * and 12 hours of finished work came to be thrown away. The flag is now an OFF
+   * switch; set `DASHBOARD_AUTO_RECOVER=0` and every sentence above is true
+   * again.
+   *
+   * THE SPEND IS STILL BOUNDED AND STILL ANNOUNCED. `autoContinueCount` is the
+   * crash-loop brake and is incremented on the branch below that commits to a
+   * continuation; at {@link AUTO_CONTINUE_MAX} the sweep stops requeueing and
+   * writes `awaiting_input` with the cap's own sentence on the log. Either way
+   * the run says what happened to it and who continues it.
    */
   reconcileOnBoot(): void {
     for (const row of this.#deps.store.listByStatus("running")) {
@@ -5624,15 +5651,36 @@ export class Orchestrator {
   /**
    * Which flag lets a failure of this class continue itself.
    *
-   * TWO FLAGS AND ONE READER, so the widening of consent is visible in four
-   * lines rather than spread over every call site. See
-   * {@link RATE_LIMIT_AUTO_RESUME_ENV}: an owner who set the older variable
+   * ONE FLAG AND ONE READER SINCE 2026-08-05, AND THE SECOND FLAG'S SEAM IS THE
+   * REASON. This used to read:
+   *
+   *     if (autoRecoverEnabled(this.#deps.env)) return true;
+   *     return klass === "throttled" && rateLimitAutoResume(this.#deps.env);
+   *
+   * and its docblock said "TWO FLAGS AND ONE READER, so the widening of consent
+   * is visible in four lines": an owner who set {@link RATE_LIMIT_AUTO_RESUME_ENV}
    * agreed to "let a run the provider refused restart itself" and to nothing
-   * else, so it enables `throttled` alone.
+   * else, so it enabled `throttled` alone. That was the right shape while
+   * `DASHBOARD_AUTO_RECOVER` was opt-in, because then the two flags only ever
+   * ADDED consent to each other.
+   *
+   * IT IS NOW AN OFF SWITCH, AND AN OR CANNOT CARRY AN OFF SWITCH. With
+   * recovery on by default, `autoRecoverEnabled` returns false in exactly one
+   * case — the owner wrote `DASHBOARD_AUTO_RECOVER=0` — and the old second line
+   * then let the LEGACY variable overrule him for the `throttled` class. A kill
+   * switch that one stale variable can defeat is not a kill switch, and the
+   * whole point of keeping the environment variable was that the owner can stop
+   * unattended spending without a rebuild. His most specific and most recent
+   * instruction wins.
+   *
+   * NOTHING IS LOST FOR AN OWNER WHO SET THE OLD ONE. Recovery is on by default,
+   * so `DASHBOARD_RATE_LIMIT_AUTO_RESUME=1` now grants what it always granted
+   * and more; the ONLY behaviour this removes is the combination "0 and 1
+   * together", which never meant anything but a contradiction.
    */
   #recoveryEnabled(klass: FailureClass): boolean {
-    if (autoRecoverEnabled(this.#deps.env)) return true;
-    return klass === "throttled" && rateLimitAutoResume(this.#deps.env);
+    void klass;
+    return autoRecoverEnabled(this.#deps.env);
   }
 
   /**
@@ -5663,13 +5711,25 @@ export class Orchestrator {
    * a fault that was never its own.
    *
    * `transient` IS CLASSIFIED AND THEN FALLS THROUGH, and that is stated rather
-   * than hidden: `recovery.ts` ships that class with an EMPTY ALLOW-LIST (no
-   * real error maps to it, because the subscription seat cannot tell a 503 from
-   * an expired auth session), and this version has no park state for a
-   * non-throttled wait — `rate_limited` would be a lie and `awaiting_input`
-   * would be an infinite park after a restart, because `reconcileOnBoot`'s
-   * second loop skips a row with no durable park record. When something earns
-   * the `transport` signal, the missing piece is a park state, not a policy.
+   * than hidden. The sentence here USED TO SAY "`recovery.ts` ships that class
+   * with an EMPTY ALLOW-LIST (no real error maps to it, because the subscription
+   * seat cannot tell a 503 from an expired auth session)". HALF OF THAT STOPPED
+   * BEING TRUE ON 2026-08-05: `recovery.ts:seatKindOf` now derives the seat's
+   * kind from `SeatCallError.retryable` and `.status` — the fields that exist —
+   * so a `retryable` 5xx (anthropic-seat.ts:709) maps to `transport` from a real
+   * error rather than from a test injection.
+   *
+   * IT STILL CANNOT HAPPEN HERE, FOR THE REASON THE OLD SENTENCE GAVE. The
+   * dashboard's only seat is `SubscriptionSeatCaller`, which drives the Claude
+   * CLI as a subprocess and reports `status: null` on every throw, so no 5xx
+   * exists on this path and nothing reaches `transient`.
+   *
+   * AND IF IT DID, THIS METHOD WOULD STILL RETURN FALSE AND THE RUN WOULD STILL
+   * BE FAILED. That is the part to fix, and it is unchanged: there is no park
+   * state for a non-throttled wait — `rate_limited` would be a lie and
+   * `awaiting_input` would be an infinite park after a restart, because
+   * `reconcileOnBoot`'s second loop skips a row with no durable park record. The
+   * missing piece was never the policy or the signal; it is a park state.
    */
   #recoverFrom(runId: string, error: unknown, signal: AbortSignal, detail: string): boolean {
     const row = this.#deps.store.getRun(runId);
