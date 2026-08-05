@@ -1142,3 +1142,320 @@ test("the producer's notes clear the screenshot boundary on every branch", () =>
     assert.ok(answer.note.length > 30, "a note nobody can read is a finding the owner never sees");
   }
 });
+
+/* ---- 13. VIS-F-EMPTY-FRAME — calibrated on the real artefacts ---------- */
+
+/**
+ * WHY THIS SECTION EXISTS AT ALL. `VIS-F-EMPTY-FRAME` is the ONE entry a
+ * `"gating"` run unlocks (section 1 asserts that by literal), so the moment a
+ * producer is wired it is the first and only thing that can fail a run — and it
+ * shipped with the least calibration evidence of the four. That combination is
+ * how a gate fails the owner's best work on its first outing and is switched off
+ * forever. Section 12 did this for `VIS-F-REF-GROUND-INVERTED` and the answer
+ * came back LOCK IT. This section asks the same question of this entry, and the
+ * answer came back the other way — so the evidence has to be here, in the shape
+ * that goes red if the mechanism stops doing the work.
+ *
+ * WHERE EVERY NUMBER BELOW CAME FROM. Measured 2026-08-05 with the playwright
+ * chromium in `bakeoff/node_modules` (browser build 151.0.7922.34), each artefact
+ * tree served from a static file server on an ephemeral 127.0.0.1 port, rendered
+ * through the CONTAINER'S OWN CONTEXT rather than a convenient one —
+ * `viewport` per breakpoint, `locale en-US`, `timezoneId UTC`, `colorScheme
+ * light`, `reducedMotion reduce` (`scorer-container.ts:625-633`), `page.goto`
+ * with `waitUntil: "load"` then the same 750 ms settle (`:661-665`) — and read
+ * with the corroboration rule's own expression, `document.body.innerText.trim()
+ * .length`, at all three `DEFAULT_BREAKPOINTS` (`scorer-protocol.ts:769-773`).
+ * The run directories were opened READ-ONLY and nothing was written to them.
+ *
+ * WHAT A NUMBER HERE IS AND IS NOT. It is a transcription, exactly as section 12
+ * is: the run trees are gitignored (`.gitignore:25`) so no test may depend on
+ * them existing. The transcription is not what makes these tests able to fail —
+ * feeding these numbers through {@link evaluateVisualSubstance} is, and the
+ * mutations that were RUN against it are named on each test. The committed
+ * fixtures get a second, static anchor further down, so an artefact edited to
+ * make a number stale goes red on disk rather than staying quietly wrong.
+ */
+const EMPTY_FRAME_ID = "VIS-F-EMPTY-FRAME";
+
+/** The real labels, not the test file's `375x812` shorthand. */
+const REAL_BREAKPOINTS = ["375", "768", "1280"] as const;
+
+interface MeasuredArtefact {
+  readonly artefact: string;
+  /** Whether a `violated` answer here MUST survive to a gating finding. */
+  readonly mustFire: boolean;
+  /** `document.body.innerText.trim().length` at 375, 768 and 1280. */
+  readonly innerText: readonly [number, number, number];
+  /** Committed under `dashboard/server/calibration/`, or a gitignored run tree. */
+  readonly committed: boolean;
+}
+
+/**
+ * NINE ARTEFACTS, AND THE TWO THAT MUST FIRE ARE THE TWO THAT ARE ACTUALLY
+ * EMPTY. Both halves of the calibration are in this one table: remove the fire
+ * rows and the entry becomes a check that can only observe success; remove the
+ * pass rows and nothing measures the false-fail direction that killed the
+ * character-floor family (design note §6).
+ */
+const MEASURED_INNER_TEXT: readonly MeasuredArtefact[] = [
+  // MUST PASS. The one build this project has ever shipped green. A FUNCTIONAL
+  // finding here is the single worst thing this file could do.
+  { artefact: "run-2026-07-29T23-28-46-665Z-3d4d1ccb", mustFire: false, innerText: [326, 326, 326], committed: false },
+  // MUST PASS, AND IT IS THE CORRECTION. This run built and scored 0 of 16, so
+  // it reads like the obvious empty artefact and was named as the fire case.
+  // It renders 6500 characters and 11 inline SVGs. Bad is not empty.
+  { artefact: "run-2026-07-30T20-16-40-242Z-052c6e02", mustFire: false, innerText: [6500, 6513, 6585], committed: false },
+  { artefact: "correct-portfolio", mustFire: false, innerText: [2158, 2158, 2158], committed: true },
+  { artefact: "hollow-section", mustFire: false, innerText: [479, 479, 479], committed: true },
+  { artefact: "stock-motion-only", mustFire: false, innerText: [198, 198, 198], committed: true },
+  { artefact: "missing-section", mustFire: false, innerText: [161, 161, 161], committed: true },
+  // The closest any passing artefact comes to the boundary, and it is 60 away.
+  { artefact: "stub-markers", mustFire: false, innerText: [60, 60, 60], committed: true },
+  // MUST FIRE. Both render `<body><div id="root"></div></body>` and nothing else.
+  { artefact: "blank-page", mustFire: true, innerText: [0, 0, 0], committed: true },
+  { artefact: "reward-hacked", mustFire: true, innerText: [0, 0, 0], committed: true },
+];
+
+function framesOf(artefact: string): VisualFrame[] {
+  return REAL_BREAKPOINTS.map((breakpoint) => ({ flowId: artefact, breakpoint }));
+}
+
+/** The page's own measurement, per frame, as a producer would hand it over. */
+function evidenceOf(measured: MeasuredArtefact): { frame: VisualFrame; innerTextLength: number }[] {
+  return framesOf(measured.artefact).map((frame, index) => ({
+    frame,
+    innerTextLength: measured.innerText[index] ?? -1,
+  }));
+}
+
+/**
+ * THE WORST GRADER THE ENTRY COULD BE HANDED: `violated` on every frame of every
+ * artefact, including the good build. Calibrating against a WELL-BEHAVED grader
+ * would measure the model and not the mechanism, and the mechanism is the half
+ * this lane can settle without spending a live run.
+ */
+function adversarialAnswers(artefact: string): VisualObservationAnswer[] {
+  return framesOf(artefact).map((frame) => ({
+    observationId: EMPTY_FRAME_ID,
+    frame,
+    verdict: "violated" as const,
+    note: "a single flat field of background colour, no glyph and no control anywhere in the frame",
+  }));
+}
+
+function gatingRecord(measured: MeasuredArtefact): ReturnType<typeof evaluateVisualSubstance> {
+  return evaluateVisualSubstance({
+    mode: "gating",
+    frames: framesOf(measured.artefact),
+    answers: adversarialAnswers(measured.artefact),
+    pageEvidence: evidenceOf(measured),
+  });
+}
+
+test("MEASURED: an adversarial grader CANNOT fail the one build that ever passed", () => {
+  // THE HALF THAT MATTERS MOST, and it is settled by MEASUREMENT rather than by
+  // the model behaving: the good build renders 326 characters at all three
+  // breakpoints, so even a grader answering `violated` on every frame produces
+  // zero gating findings. That is a property of the page, not of the grader.
+  //
+  // NEGATIVE CONTROL, RUN: delete the `measured.innerTextLength > 0` branch in
+  // `corroborate` (visual-substance.ts) so a violated answer is admitted — this
+  // test goes red with 3 gating findings on the build that must pass.
+  const good = MEASURED_INNER_TEXT.find((m) => m.artefact.includes("3d4d1ccb"));
+  assert.ok(good !== undefined, "the known-good build left the table");
+  assert.deepEqual([...good.innerText], [326, 326, 326]);
+
+  const record = gatingRecord(good);
+  assert.equal(gatingFindingCount(record), 0, "the build that ever passed was failed by this entry");
+  assert.equal(record.violations.length, 0);
+  for (const row of record.outcomes.filter((o) => o.observationId === EMPTY_FRAME_ID)) {
+    assert.equal(row.verdict, "unknown");
+    assert.equal(row.unknownReason, "corroboration_contradicted");
+    // NOT laundered into a pass, and the grader's own word survives so shadow
+    // mode still measures the MODEL's rate rather than the rule's.
+    assert.notEqual(row.verdict, "satisfied");
+    assert.equal(row.rawVerdict, "violated");
+  }
+  assert.equal(record.corroborationWithheld.length, 3, "the rule must be visibly doing the work");
+});
+
+test("MEASURED: it FIRES on the two artefacts that really are empty, at every breakpoint", () => {
+  // THE OTHER HALF. A check that cannot fire is this project's signature defect,
+  // and it sorts every fixture correctly while doing nothing.
+  //
+  // NEGATIVE CONTROL, RUN: flip `shadowLocked` to `true` on VIS-F-EMPTY-FRAME —
+  // this test goes red at 0 gating findings while the pass-half test above stays
+  // green, which is exactly how "fires on nothing" and "fires on everything" are
+  // told apart.
+  const fires = MEASURED_INNER_TEXT.filter((m) => m.mustFire);
+  assert.deepEqual(fires.map((m) => m.artefact), ["blank-page", "reward-hacked"]);
+  for (const measured of fires) {
+    const record = gatingRecord(measured);
+    assert.equal(gatingFindingCount(record), 3, `${measured.artefact}: it must fire at all three breakpoints`);
+    assert.equal(record.corroborationWithheld.length, 0, `${measured.artefact}: nothing should be withheld`);
+    const findings = verdictFindings(record);
+    assert.deepEqual(
+      findings.map((f) => f.frame.breakpoint),
+      [...REAL_BREAKPOINTS],
+    );
+    assert.equal(findings[0]?.declaredTier, "FUNCTIONAL");
+    assert.equal(findings[0]?.withheldBecause, null);
+  }
+});
+
+test("MEASURED: over all nine artefacts the fire set is EXACTLY the two hollow ones", () => {
+  // The whole table through the real module, one adversarial grader, no
+  // exceptions and no special cases. This is the assertion that would catch a
+  // rule that fires on everything: seven of the nine must come back clean.
+  const fired: string[] = [];
+  for (const measured of MEASURED_INNER_TEXT) {
+    const record = gatingRecord(measured);
+    const count = gatingFindingCount(record);
+    assert.equal(
+      count > 0,
+      measured.mustFire,
+      `${measured.artefact}: expected mustFire=${String(measured.mustFire)}, got ${String(count)} gating findings`,
+    );
+    if (count > 0) fired.push(measured.artefact);
+  }
+  assert.deepEqual(fired, ["blank-page", "reward-hacked"]);
+  assert.equal(MEASURED_INNER_TEXT.filter((m) => !m.mustFire).length, 7, "the pass half must not be able to shrink to nothing");
+});
+
+test("MEASURED: the artefact that scored 0 of 16 is a MUST-PASS here, not the fire case", () => {
+  // ON THE RECORD BECAUSE THE PLAN SAID OTHERWISE. `052c6e02` was named as the
+  // obvious empty artefact on the strength of its score. It renders 6500 / 6513 /
+  // 6585 characters — more than any other artefact measured — and this entry
+  // cannot touch it. A run can be worthless and still not be EMPTY, and the only
+  // question this entry is allowed to ask is the second one.
+  const bad = MEASURED_INNER_TEXT.find((m) => m.artefact.includes("052c6e02"));
+  assert.ok(bad !== undefined, "the 0-of-16 build left the table");
+  assert.equal(bad.mustFire, false);
+  assert.ok(Math.min(...bad.innerText) > 6000, "the transcription no longer says what it says above");
+  assert.equal(gatingFindingCount(gatingRecord(bad)), 0);
+});
+
+test("THE BOUNDARY IS ZERO AND NOBODY CHOSE IT — the closest passing artefact is 60 away", () => {
+  // THE STRUCTURAL DIFFERENCE FROM THE REJECTED CHARACTER-FLOOR FAMILY (design
+  // note §6): those floors were 200 and 40, numbers the ticket never stated, and
+  // they failed the CORRECT artefact at every value. The number here is 0, which
+  // is not a floor but the question's own answer — "nothing rendered" — and
+  // there is no value of it that could fail `stub-markers` at 60 without first
+  // ceasing to mean empty. If a future edit turns this into a chosen number,
+  // this assertion is where it shows up.
+  const fireMax = Math.max(...MEASURED_INNER_TEXT.filter((m) => m.mustFire).flatMap((m) => [...m.innerText]));
+  const passMin = Math.min(...MEASURED_INNER_TEXT.filter((m) => !m.mustFire).flatMap((m) => [...m.innerText]));
+  assert.equal(fireMax, 0, "an artefact that must fire renders text — the fire set is not empty-by-measurement");
+  assert.equal(passMin, 60, "stub-markers is the closest pass and it is 60 characters clear of the boundary");
+  assert.ok(passMin > fireMax, "the two sets overlap and the rule cannot separate them");
+});
+
+test("THE PRODUCER DOES NOT EXIST YET, SO THE ENTRY IS INERT RATHER THAN DANGEROUS", () => {
+  // THE WIRING PRECONDITION, ASSERTED ON DISK. `scorer-container.ts:703` reads
+  // `document.body.innerText` inside `page.evaluate` and throws it away;
+  // `PageObservations` (`:560-565`) returns four fields and none is a length.
+  // So NOTHING outside the browser can supply `pageEvidence` today, and with no
+  // evidence every violated answer becomes `unknown`/`corroboration_missing` —
+  // non-passing, non-gating. Wiring the gate without wiring the measurement
+  // yields a gate that fires on nothing, which is the defect this project keeps
+  // shipping, so it fails LOUDLY here rather than silently in a run.
+  //
+  // WHEN THIS TEST GOES RED IT IS GOOD NEWS: someone added the field, the entry
+  // just became able to fire, and the fire half above is what makes that safe.
+  const scorer = readFileSync(
+    new URL("../../../bakeoff/src/scorer-container.ts", import.meta.url).pathname,
+    "utf8",
+  );
+  const observations = /interface PageObservations \{([\s\S]*?)\}/.exec(scorer);
+  assert.ok(observations !== null, "PageObservations moved; re-verify the wiring precondition by hand");
+  assert.equal(
+    /innerText|textLength/i.test(observations[1] ?? ""),
+    false,
+    "the scorer now returns a text measurement — VIS-F-EMPTY-FRAME can fire for real; update this test and section 13",
+  );
+
+  const blank = MEASURED_INNER_TEXT.find((m) => m.artefact === "blank-page");
+  assert.ok(blank !== undefined);
+  const withoutEvidence = evaluateVisualSubstance({
+    mode: "gating",
+    frames: framesOf(blank.artefact),
+    answers: adversarialAnswers(blank.artefact),
+  });
+  assert.equal(gatingFindingCount(withoutEvidence), 0, "an uncorroborated finding reached the verdict");
+  for (const row of withoutEvidence.outcomes.filter((o) => o.observationId === EMPTY_FRAME_ID)) {
+    assert.equal(row.unknownReason, "corroboration_missing");
+  }
+});
+
+test("MEASURED ON DISK: the two firing fixtures are hollow, and the passing ones are not", () => {
+  // The transcription above is anchored to the committed artefacts here, so a
+  // fixture edited into a different page turns this red instead of leaving a
+  // stale number quietly deciding a gate. The run trees cannot be anchored this
+  // way — they are gitignored — which is why the fire half rests on fixtures
+  // that ARE committed and the run trees only ever appear on the pass side.
+  const bodyText = (name: string): string => {
+    const html = readFileSync(join(artefactDir(name), "index.html"), "utf8");
+    const body = /<body[^>]*>([\s\S]*)<\/body>/i.exec(html);
+    assert.ok(body !== null, `${name}: no <body> to read`);
+    return (body[1] ?? "")
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]*>/g, "")
+      .trim();
+  };
+  for (const measured of MEASURED_INNER_TEXT.filter((m) => m.committed)) {
+    const text = bodyText(measured.artefact);
+    if (measured.mustFire) {
+      assert.equal(text, "", `${measured.artefact}: it carries markup text, so innerText 0 is stale`);
+    } else {
+      assert.ok(text.length > 0, `${measured.artefact}: its body carries no text at all — it belongs on the fire side`);
+    }
+  }
+  // And the two that fire are the SAME page, which is why they measure the same.
+  assert.equal(bodyText("blank-page"), bodyText("reward-hacked"));
+});
+
+test("VIS-F-EMPTY-REGION STAYS LOCKED, and the lock's premise is re-checked on disk", () => {
+  // Lane C was asked to unlock this one too if it could do it honestly. It
+  // cannot: the lock is not about whether a model can see hollow (measured 6
+  // frames of 6) but about the threshold between "an empty band that is the crop
+  // ending" and "an empty band that is a hollow region", which needs the region's
+  // own `getBoundingClientRect()` carried alongside the capture. Re-verified
+  // 2026-08-05: the scorer records no geometry of any kind.
+  //
+  // AND THE CORROBORATION RULE CANNOT BE BORROWED FOR IT. `hollow-section`
+  // measures 479 characters of `innerText` — that is the entire point of the
+  // fixture — so `page_text_empty` would silence the one artefact it must fire on.
+  const region = VISUAL_OBSERVATIONS.find((o) => o.id === "VIS-F-EMPTY-REGION");
+  assert.ok(region !== undefined);
+  assert.equal(region.shadowLocked, true);
+  assert.equal(region.corroboration, null);
+  const scorer = readFileSync(
+    new URL("../../../bakeoff/src/scorer-container.ts", import.meta.url).pathname,
+    "utf8",
+  );
+  assert.equal(
+    /getBoundingClientRect/.test(scorer),
+    false,
+    "the scorer now measures geometry — VIS-F-EMPTY-REGION's lock reason can be revisited",
+  );
+  const hollow = MEASURED_INNER_TEXT.find((m) => m.artefact === "hollow-section");
+  assert.ok(hollow !== undefined);
+  assert.ok(Math.min(...hollow.innerText) > 400, "the hollow fixture stopped carrying text");
+  assert.equal(gatingFindingCount(gatingRecord(hollow)), 0, "EMPTY-FRAME must not fire on the hollow fixture");
+});
+
+test("VIS-F-PLACEHOLDER-MEDIA STAYS LOCKED — the fire half still has no artefact", () => {
+  // Narrowed rather than lifted, 2026-08-05. The real run trees DO now carry
+  // images (the known-good build: 2 `<img>` and 5 inline `<svg>`), so the
+  // non-false-fail half has a source it did not have. The FIRE half has none —
+  // no artefact anywhere in this tree shows a broken-image glyph, a placeholder
+  // tile or a placeholder service's watermark — and case 07's separator (a flat
+  // grey tile is a placeholder or a compositional block depending on what the
+  // page is FOR, which the capture does not carry) is untouched by them. One
+  // half of a two-sided calibration is not a calibration.
+  const media = VISUAL_OBSERVATIONS.find((o) => o.id === "VIS-F-PLACEHOLDER-MEDIA");
+  assert.ok(media !== undefined);
+  assert.equal(media.shadowLocked, true);
+  assert.match(media.lockReason ?? "", /NARROWED 2026-08-05, AND THE LOCK SURVIVES IT/);
+});

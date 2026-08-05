@@ -146,8 +146,25 @@ import type { VisualCriterion } from "./visual-criteria.js";
  * is admitted.
  *
  * `"page_text_empty"` — `document.body.innerText.trim().length === 0` for that
- * flow and breakpoint. The scorer already collects it; nothing new is captured
- * and the capture is not widened.
+ * flow and breakpoint.
+ *
+ * CORRECTED 2026-08-05, AND IT IS A REVERSAL OF WHAT THIS PARAGRAPH USED TO SAY.
+ * It said "the scorer already collects it; nothing new is captured". Measured:
+ * `scorer-container.ts:703` READS `document.body.innerText` inside
+ * `page.evaluate`, and then throws it away — it is a local used for four
+ * placeholder regexes, and the object that crosses back out,
+ * `PageObservations` (`scorer-container.ts:560-565`), has exactly four fields
+ * (`brokenImages`, `horizontalOverflow`, `bodyFontFamily`, `placeholders`) and
+ * none of them is a text length. So NO PRODUCER CAN SUPPLY {@link
+ * VisualPageEvidence} TODAY without widening that return; the capture still
+ * does not need widening, but the evaluate callback does.
+ *
+ * THE FAILURE MODE OF THAT GAP IS FAIL-SAFE, WHICH IS WHY THE ENTRY MAY STILL
+ * SHIP UNLOCKED. With no evidence, {@link corroborate} returns
+ * `unknown`/`corroboration_missing`, which is non-passing AND non-gating — so
+ * until the scorer returns the number, `VIS-F-EMPTY-FRAME` cannot fail a run and
+ * cannot pass one either. It is inert, not dangerous. `visual-substance.test.ts`
+ * section 13 asserts that direction rather than describing it.
  *
  * A UNION OF ONE, ON PURPOSE. `VIS-F-EMPTY-REGION` needs a different fact — the
  * region's own `getBoundingClientRect()` carried alongside the capture, so the
@@ -275,6 +292,30 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
     // the check that gate is mistaken for.
     shadowLocked: false,
     lockReason: null,
+    // CALIBRATED ON THE REAL ARTEFACTS, 2026-08-05, BOTH DIRECTIONS, AND THAT IS
+    // WHY IT STAYS UNLOCKED. This is the one entry a `"gating"` run unlocks, so
+    // "it fires on nothing" and "it fires on everything" both had to be ruled
+    // out by measurement rather than by the wording above. Rendered through the
+    // container's own context (`scorer-container.ts:625-633`) at all three
+    // `DEFAULT_BREAKPOINTS`, reading `document.body.innerText.trim().length`:
+    // the two hollow artefacts measure 0/0/0 (`blank-page`, `reward-hacked`) and
+    // EVERY artefact that must pass measures non-zero — the one build that ever
+    // passed (`run-2026-07-29T23-28-46-665Z-3d4d1ccb`) 326/326/326, the build
+    // that scored 0 of 16 (`run-2026-07-30T20-16-40-242Z-052c6e02`)
+    // 6500/6513/6585, `correct-portfolio` 2158, `hollow-section` 479,
+    // `stock-motion-only` 198, `missing-section` 161, `stub-markers` 60. Nine
+    // artefacts, two fire, seven pass, nothing in between and no tie. The
+    // boundary is ZERO — the question's own answer, not a floor anybody chose —
+    // which is the structural difference from the rejected character-floor
+    // family of §6. The numbers and the command that produced them are in
+    // `visual-substance.test.ts` section 13.
+    //
+    // AND THE ARTEFACT THE PLAN EXPECTED TO FIRE DOES NOT. `052c6e02` built and
+    // scored 0 of 16, so it reads like the obvious empty artefact; it renders
+    // 6500 characters and 11 inline SVGs. It is a MUST-PASS case here, not the
+    // fire case. Bad and empty are different questions, which is the whole of
+    // what this entry may ask.
+    //
     // THE MEASURED PRECONDITION, and it is what took the adversarial false-fail
     // count from four to zero. Two of eight CORRECT builds answered `violated`
     // here on the pixels alone: a sanctioned remote photo under `--network=none`
@@ -323,7 +364,10 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
       "by the reader: on the adversarial set's fold-orphaned-heading pair, two of three breakpoints " +
       "separated only on 341px-against-50px and 185px-against-48px of empty frame, a magnitude no " +
       "wording here supplies. Unlocking it needs the region's own geometry carried alongside the " +
-      "capture, which is a change to what the SCORER records.",
+      "capture, which is a change to what the SCORER records. RE-VERIFIED 2026-08-05 AND STILL " +
+      "BLOCKING: `grep -n getBoundingClientRect bakeoff/src/scorer-container.ts` returns nothing, " +
+      "and `PageObservations` (`:560-565`) is still four fields, none of them geometry. Nothing " +
+      "has moved in the direction that would let this be unlocked.",
     // No rule can be named for it yet: the fact it needs — the region's
     // `getBoundingClientRect()` at that breakpoint — is not in the scorer's
     // output. Naming `page_text_empty` here would be actively wrong; the hollow
@@ -361,7 +405,15 @@ export const VISUAL_OBSERVATIONS: readonly VisualObservation[] = [
       "measured fully in frame at 375 containing zero characters — pixel for pixel this entry's " +
       "named trigger ('a uniform grey tile') AND its named non-trigger ('a solid colour block used " +
       "compositionally') at once. The separator is what the page is for, which the capture does not " +
-      "carry. This entry needs a ticket, not a better prompt.",
+      "carry. This entry needs a ticket, not a better prompt. NARROWED 2026-08-05, AND THE LOCK " +
+      "SURVIVES IT. The 'zero artefacts contain an image' premise is still exactly true of the " +
+      "seven committed calibration fixtures — the grep above, re-run, still returns nothing — but " +
+      "it is NO LONGER true of the real run trees: the known-good build's `index.html` carries 2 " +
+      "`<img>` and 5 inline `<svg>`, and the 2026-07-30 build carries 11 `<svg>`. So the " +
+      "NON-FALSE-FAIL half now has a source it did not have. The FIRE half still has none — no " +
+      "artefact in this tree shows a broken-image glyph, a placeholder tile or a service's " +
+      "watermark — and case 07's separator is untouched by them, so it is still the disqualifier. " +
+      "One half of a two-sided calibration is not a calibration.",
     corroboration: null,
   },
   {
