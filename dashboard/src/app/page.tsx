@@ -725,7 +725,7 @@ export default function NewTicketPage(): ReactNode {
                * only thing on this form that can stop a payments story being written
                * against a grader that cannot reach a payment provider. That half is
                * still permanent, unconditional inline text, and
-               * `ticket-prose.browser.spec.ts` measures its rendered box so that
+               * `pages-prose.browser.spec.ts` measures its rendered box so that
                * moving it behind the glyph fails rather than merely looking tidier.
                * What went behind the glyph is the CONSEQUENCE — the list of things
                * that get a stand-in, and the false pass — which is read once and
