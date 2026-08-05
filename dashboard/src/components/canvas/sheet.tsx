@@ -1007,12 +1007,27 @@ export function OverviewPanel({
        * FACT is kept because it is the difference between a stale reading and a
        * live one: a reader who takes this for the machine's state now will act on
        * it. Hidden, not deleted.
+       *
+       * AND THE FACT ITSELF WAS WRONG, WHICH IS WHY THE HIDDEN SENTENCE IS LONGER
+       * THAN THE EYEBROW IT REPLACED. "Reported once … at the start of the run"
+       * is not what the server does. `graph_inventory` is emitted from
+       * `builders/claude-builder.ts:1420`, inside the `system/init` branch of the
+       * per-SEGMENT message loop — so it fires once for every CLI session a run
+       * opens, not once for the run. And `graph.ts:960` REPLACES `state.inventory`
+       * wholesale on each one. What this panel shows is therefore the most recent
+       * segment's reading, not the run's first.
+       *
+       * The first draft of the replacement said "…and not updated since", which
+       * would have made a false claim shorter and friendlier than the true one.
+       * It says what the code does instead. A plain word that misleads is worse
+       * than the jargon it replaced.
        */}
       <PanelSection
         title="machine and cost"
         explain={
           <Explain about="machine and cost" className="ml-1" testId="explain-env">
-            Reported once by the CLI when the run started, and not updated since.
+            The CLI reports this each time it starts a step. What is shown is the
+            latest reading, not a live one.
           </Explain>
         }
         testId="overview-env"

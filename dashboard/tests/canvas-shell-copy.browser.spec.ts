@@ -234,6 +234,43 @@ test.describe("the agent-list fact survived being hidden", () => {
       "the faster read when you already know the name",
     );
   });
+
+  /**
+   * THE OTHER MOVED FACT, AND THE ONE THAT TURNED OUT TO BE FALSE.
+   *
+   * "reported once, by the CLI, at the start of the run" was a second uppercase
+   * mono strip under the "machine and cost" heading. Moving it behind the glyph
+   * was the easy half; reading the mechanism was the half that mattered.
+   * `graph_inventory` is emitted inside the per-SEGMENT `system/init` branch
+   * (`server/src/builders/claude-builder.ts:1420`) and `graph.ts:960` replaces
+   * `state.inventory` wholesale on each one — so it fires once per CLI session,
+   * not once per run, and the panel shows the LATEST reading.
+   *
+   * THIS TEST ASSERTS THE CORRECTED CLAIM AND FORBIDS THE OLD ONE, because the
+   * old one is the shorter and friendlier sentence and is exactly what a future
+   * tidy-up would reach for.
+   *
+   * MUTATION 10 APPLIED TO `canvas/sheet.tsx`: put the bubble's text back to
+   * "Reported once by the CLI when the run started, and not updated since."
+   * Red on both assertions. Reverted.
+   */
+  test("the machine reading says it is the latest, not the first", async ({ page }) => {
+    await openRun(page, RUN_ID);
+    await openPanel(page, "overview");
+
+    const section = page.getByTestId("overview-env");
+    await expect(section.getByTestId("explain-env")).toHaveCount(1);
+
+    const body = page.getByTestId("explain-env-body");
+    await expect(body).toContainText("each time it starts a step");
+    await expect(body).toContainText("the latest reading");
+
+    const panel = (await page.getByTestId("rail-panel").textContent()) ?? "";
+    expect(
+      panel,
+      "the panel claims one reading at the start of the run, which the emitter does not do",
+    ).not.toMatch(/reported once|not updated since/i);
+  });
 });
 
 /* ------------------------------------------------------------------ */
