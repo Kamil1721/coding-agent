@@ -1071,5 +1071,6 @@ function ZoomedStill({
   const src = screenshotSrc(runId, shot.path);
   if (src === null) return null;
   const section = mockupSection(shot.label);
-  return <Lightbox src={src} alt={`${section} still`} caption={section} onClose={onClose} />;
+  // `mockup`, like every other label on this surface — see `DirectionStill`.
+  return <Lightbox src={src} alt={`${section} mockup`} caption={section} onClose={onClose} />;
 }
