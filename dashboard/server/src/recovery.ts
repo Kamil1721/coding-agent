@@ -418,13 +418,17 @@ export function signalsFor(
     named === "BakeoffError" && typeof shape?.code === "string" && typeof shape.remediation === "string"
       ? shape.code
       : null;
-  const seatKind =
-    named === "SeatCallError" && isSeatFailureKind(shape?.kind) ? (shape?.kind as SeatFailureKind) : null;
+  // A `SeatCallError` WITHOUT A `kind` READS AS NO SIGNAL, WHICH MEANS STOP.
+  // That is today's error, before the seat layer is taught to type its failures:
+  // until it is, every seat failure — throttle included — lands in
+  // `unclassified` and refuses. Under-recovering while the signal is missing is
+  // the direction this module is allowed to be wrong in.
+  const seatKind = named === "SeatCallError" && isSeatFailureKind(shape?.kind) ? shape.kind : null;
 
   return { aborted, abortReason, interrupted: false, bakeoffCode, seatKind, refusal };
 }
 
-function isSeatFailureKind(value: unknown): boolean {
+function isSeatFailureKind(value: unknown): value is SeatFailureKind {
   return value === "throttled" || value === "protocol" || value === "transport" || value === "unknown";
 }
 
@@ -610,6 +614,7 @@ export type RecoveryStopCode =
   | "no_retry_after" // the provider named no reset instant
   | "retry_after_not_future" // it named one that had already passed
   | "no_refusal_instant" // nothing recorded WHEN the refusal happened
+  | "unreadable_now" // the caller's own clock did not parse as an instant
   | "wait_unrepresentable" // longer than a 32-bit timer
   | "wait_too_long"; // longer than this server waits unattended
 
@@ -693,7 +698,7 @@ export function planRecovery(input: RecoveryInput): RecoveryDecision {
 
   if (klass === "transient") {
     const firesAt = plusMs(input.now, TRANSIENT_BACKOFF_MS);
-    if (firesAt === null) return { kind: "stop", klass, code: "no_refusal_instant", reason: UNREADABLE_NOW };
+    if (firesAt === null) return { kind: "stop", klass, code: "unreadable_now", reason: UNREADABLE_NOW };
     return {
       kind: "wait",
       klass,
@@ -823,7 +828,7 @@ function planThrottledWait(klass: FailureClass, input: RecoveryInput): RecoveryD
   }
 
   const firesAt = plusMs(input.now, delayMs);
-  if (firesAt === null) return { kind: "stop", klass, code: "no_refusal_instant", reason: UNREADABLE_NOW };
+  if (firesAt === null) return { kind: "stop", klass, code: "unreadable_now", reason: UNREADABLE_NOW };
   return {
     kind: "wait",
     klass,

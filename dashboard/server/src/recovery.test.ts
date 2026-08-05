@@ -273,6 +273,48 @@ test("RUNAWAY GUARD: a thrown non-Error, and an error with a plausible-looking `
   }
 });
 
+test("RUNAWAY GUARD: a seat error with NO typed kind — today's error — stops", () => {
+  // Until the seat layer is taught to type its failures, every seat error looks
+  // like this, throttles included, and every one of them refuses. That is the
+  // safe half of the shipping order: under-recovering while the signal is
+  // missing costs a press of Resume; over-recovering costs the quota.
+  const err = Object.assign(new Error("the builder seat call failed"), { name: "SeatCallError" });
+  const signals = signalsFor(err, null, null);
+  assert.equal(signals.seatKind, null);
+  assert.equal(classifyPhaseFailure(signals), "unclassified");
+  assert.equal(decide({ signals }).kind, "stop");
+});
+
+test("INVARIANT: no decision ever waits zero or less — a `wait` always waits", () => {
+  // The sweep exists because "armed for 0 ms" is a continuation wearing a park's
+  // clothes: the wire would show a countdown, the log would say parked, and the
+  // run would re-enter the same refusal on the next tick of the event loop.
+  const cases: PhaseFailureSignals[] = [
+    { ...NO_SIGNALS, refusal: refusal() },
+    { ...NO_SIGNALS, refusal: refusal({ retryAfterSec: 1 }) },
+    { ...NO_SIGNALS, refusal: refusal({ retryAfterSec: SEVEN_DAY_SEC, kind: "seven_day" }) },
+    { ...NO_SIGNALS, seatKind: "transport" },
+    interruptedSignals(),
+  ];
+  for (const signals of cases) {
+    for (const count of [0, 1, 2, 3]) {
+      for (const now of [NOW, REFUSED_AT, "2026-08-09T01:00:00.000Z", "not an instant"]) {
+        const d = planRecovery({
+          signals,
+          autoContinueCount: count,
+          enabled: true,
+          now,
+          maxWaitMs: RECOVERY_MAX_AUTO_WAIT_MS,
+        });
+        if (d.kind === "wait") {
+          assert.ok(d.delayMs > 0, `${JSON.stringify(signals)} @ ${now} armed ${String(d.delayMs)} ms`);
+          assert.ok(Number.isFinite(Date.parse(d.firesAt)), "firesAt has to be a readable instant");
+        }
+      }
+    }
+  }
+});
+
 test("the classifier physically cannot see a message: prose alone yields no signals", () => {
   // PhaseFailureSignals has no message field. This asserts the adapter does not
   // smuggle one in: an error whose text screams "rate limit" produces the same
