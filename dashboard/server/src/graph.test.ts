@@ -1032,7 +1032,39 @@ test("COPY: no seat jargon reaches a string the owner reads", () => {
    * guarantee is asserted separately below, so shortening the sentence cannot
    * quietly drop it.
    */
-  const banned = [/\bseat\b/i, /\bdigest\b/i, /\bsuite\b/i, /\bfreeze\b/i];
+  /*
+   * WIDENED 2026-08-05 TO THE OWNER'S WHOLE LIST, AND TO THE INFLECTIONS.
+   *
+   * `verdict`, `trace` and `env` are the three the rail rename deleted from the
+   * client and which grew straight back inside the panels — a card headed TRACE
+   * inside the panel headed Activity, "Not the design references on the Verdict
+   * tab". They belong on the same list as `seat` for the same reason: this
+   * module writes stage cards the owner reads, and nothing else was checking
+   * them.
+   *
+   * THE PLURALS AND `frozen` ARE THE POINT OF THE WIDENING, NOT DECORATION.
+   * `\bfreeze\b` does not match "frozen", and "the frozen acceptance suite" was
+   * on screen for the whole time this list said `freeze` was banned. A word list
+   * that misses the inflection the copy actually uses measures nothing. Nothing
+   * here is relaxed: every original pattern still holds, the plurals only add
+   * surface, and the freeze stage's promise is still asserted separately below
+   * so shortening a sentence cannot quietly drop it.
+   *
+   * THE CLIENT HALF OF THE SAME RULE is `dashboard/tests/prose-guard.browser.spec.ts`,
+   * which sweeps every rendered panel with this same list. It deliberately skips
+   * the canvas (`.react-flow`), because these stage cards are folded here and
+   * this is where they can be checked without a browser.
+   */
+  const banned = [
+    /\bseats?\b/i,
+    /\bdigests?\b/i,
+    /\bsuites?\b/i,
+    /\bfreezes?\b/i,
+    /\bfrozen\b/i,
+    /\bverdicts?\b/i,
+    /\btraces?\b/i,
+    /\benv\b/i,
+  ];
   const seen: string[] = [];
   for (const phase of ["plan", "spec"] as const) {
     for (const stage of foldGraphAll([{ type: "phase", phase }]).stages ?? []) {
