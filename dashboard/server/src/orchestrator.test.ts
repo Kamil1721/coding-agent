@@ -4454,3 +4454,52 @@ test("WITH THE FLAG OFF, an interrupted run waits for a human exactly as it alwa
     await h.cleanup();
   }
 });
+
+test("A PHASE THAT THROWS ON A REFUSAL PARKS, it does not fail — the seam #execute never had", async () => {
+  /*
+   * THE OTHER WAY IN, AND THE ONE THAT LOST THE 2026-08-04 RUN. A phase that
+   * RETURNS a rate-limited outcome has been handled since the build lane grew
+   * one; a phase that THROWS had no equivalent, so it escaped to `#start`'s
+   * catch and was recorded as a harness fault — status `failed`, which
+   * `isTerminal` makes unresumable, on a run nothing was wrong with.
+   *
+   * THE REFUSAL REACHES THE SINK AND THE CALL THEN THROWS, which is the real
+   * order: the SDK reports a window through `onRateLimit` and the failure
+   * arrives separately, carrying no window of its own. That is why the
+   * classifier is given a CARRIED refusal rather than a field on the error —
+   * there is no field on the error.
+   */
+  const h = await designRun({
+    autoStart: false,
+    env: { DASHBOARD_AUTO_RECOVER: "1" },
+    onRequest: (request) => {
+      if (request.resumeSessionId !== null) return;
+      request.sink.rateLimit({ limited: true, retryAfterSec: 1, kind: "five_hour", utilization: null });
+      throw new Error("Claude Code process exited unexpectedly");
+    },
+  });
+  try {
+    h.orchestrator.pump();
+    await h.waitFor(() => h.status() === "rate_limited", 20_000, "the throw was not classified as a refusal");
+
+    const row = h.store.getRun(h.runId);
+    assert.equal(row?.status, "rate_limited");
+    assert.equal(isTerminal(row?.status ?? "failed"), false, "a parked run must stay resumable");
+    assert.equal(row?.recoveryClass, "throttled", "the class is recorded, not guessed at later");
+    assert.equal(row?.autoContinueCount, 1);
+    assert.ok(
+      runLog(h).some((text) => /parked rather than failed/i.test(text)),
+      `the run says why it stopped: ${JSON.stringify(runLog(h).slice(-3))}`,
+    );
+    // AND NO BACKLOG ENTRY. `#recordUnmeasuredBacklog` writes "what this run did
+    // not close", which is a statement about a run that ENDED — filing one for a
+    // fault the run is about to retry fills the backlog with entries the next
+    // attempt erases.
+    assert.ok(
+      !runLog(h).some((text) => /unmeasured/i.test(text)),
+      "a run that is continuing has not left anything unmeasured yet",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
