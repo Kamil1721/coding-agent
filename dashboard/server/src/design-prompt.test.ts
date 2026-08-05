@@ -2,6 +2,8 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
 import type { DesignCapability } from "./design-capability.js";
+import { GEMINI_IMAGE_SCRIPT } from "./design-capability.js";
+import { designReferenceSection } from "./ticket-refs.js";
 import { legPlannerInput } from "./design/video-lane.js";
 import type { VideoLegPlan } from "./design/video-legs.js";
 import { DEFAULT_VIDEO_LEG_CAP, planVideoLegs, resolveLegCap, VEO_ASPECTS } from "./design/video-legs.js";
@@ -434,6 +436,148 @@ test("an unlocked manifest still hands over every path, and says nothing is lock
   const p = handoff({ manifest: unlocked });
   assert.ok(p.includes(HERO));
   assert.match(p, /no mockup (is |was )?locked/i);
+});
+
+/* ---- R1: the owner's own reference reaches the model, not just the prose ---- */
+
+test("THE FIRST GENERATION IS SEEDED FROM THE OWNER'S REFERENCE, via -i and not via prose", () => {
+  // THE MEASUREMENT BEHIND THIS. `designReferenceSection` tells the lane that an
+  // attached image is "the direction the owner has already chosen. Derive from
+  // them." That reaches the lane as WORDS. The `-i` chain described in the same
+  // prompt seeds every generation from the previous SIBLING, so on the one run
+  // that passed, six generations ran mockup-to-mockup and Gemini was never shown
+  // anything the owner supplied. "Derive from his reference" was a request the
+  // tool call could not honour.
+  const p = full();
+  assert.match(p, /SEED THE FIRST GENERATION FROM THE OWNER'S OWN REFERENCE/);
+  assert.match(p, /FIRST generation of EVERY direction/, "every direction, not just the first one rendered");
+  assert.match(p, /`-i` is the only way the model is shown it/, "the reason, which is what generalises");
+});
+
+test("AND THE FORWARD REFERENCE RESOLVES — the heading it quotes is the heading that is appended", () => {
+  // THE DISCRIMINATING HALF. `orchestrator.ts` composes
+  // `designSegmentPrompt(...) + designReferenceSection(references)`, so the paths
+  // arrive from a module this one cannot call. A paragraph naming a heading
+  // nobody writes reads exactly as well as one that resolves, and every other
+  // assertion above stays green while it is wrong.
+  const heading = "THE OWNER GAVE YOU REFERENCES";
+  const appended = designReferenceSection({
+    images: [{ path: "/runs/r1/refs/owner-hero.png", sha256: "b".repeat(64), bytes: 2048 }],
+    capture: null,
+  });
+  assert.ok(appended.includes(heading), "ticket-refs.ts no longer emits the heading design-prompt.ts quotes");
+  assert.ok(full().includes(heading), "design-prompt.ts no longer quotes the heading ticket-refs.ts emits");
+  // AND IT IS CONDITIONAL, because the section is: `hasReferences` renders "" when
+  // he attached nothing, and an unconditional sentence would send the lane after a
+  // heading that is not there.
+  assert.equal(designReferenceSection({ images: [], capture: null }), "");
+  assert.match(full(), /Where that section is present/);
+});
+
+test("A DEGRADED LANE NO LONGER BLESSES A BORROWED PHOTOGRAPH", () => {
+  // THE SENTENCE THAT WAS HERE: "A chosen photograph with a real URL is fine; a
+  // random one is not." Under the owner's standing rule it is false, and it was
+  // this lane's own prompt contradicting it. The mechanical half agrees for an
+  // unrelated reason: the artefact is judged by `docker run --network=none`, so a
+  // remote URL is a broken image at the moment it is graded.
+  const p = full({ mode: "degraded" });
+  assert.doesNotMatch(p, /chosen photograph with a real URL is fine/i, "the blessing must be gone");
+  assert.doesNotMatch(p, /photograph.{0,40}is fine/is, "and not restated in another spelling");
+  assert.match(p, /every shipped visual is generated through the image tool/i);
+  assert.match(p, /stock photo\s+host, an icon CDN/i, "the exclusion names what is reached for instead");
+});
+
+/* ---- R4: every shipped asset is generated, and nothing is fetched ------- */
+
+test("R4 — THE BUILD IS TOLD TO GENERATE THE ASSETS IT SHIPS, with the tool and the path", () => {
+  // THE GAP THIS CLOSES, MEASURED ON THE ONE RUN THAT PASSED. Six
+  // `gemini-image.sh` calls, all six writing `design-refs/*.png` between 02:49 and
+  // 02:52; the two files the site ships were written at 02:57 inside the BUILD
+  // segment and are half-width crops of the mockups. The prompt got MOCKUPS
+  // generated and said nothing whatever about the assets that ship.
+  const p = handoff();
+  assert.match(p, /EVERY IMAGE THIS SITE SHIPS IS GENERATED HERE/);
+  assert.ok(p.includes(GEMINI_IMAGE_SCRIPT), "the tool is named by the path design-capability.ts owns");
+  assert.ok(p.includes(`${WS}/assets/`), "and the output goes inside the workspace");
+  assert.match(p, /-i <the locked mockup>/, "seeded from the design, so the photograph belongs to it");
+  assert.match(p, /Read each result before you ship it/i, "a generation nobody looked at is not a closed loop");
+  // AND THE BLOCK DOES NOT MODEL THE TELL IT GOES ON TO FORBID. Three paragraphs
+  // later the same prompt calls the em-dash the single most reliable sign a
+  // machine wrote the page; carrying one here gives the instruction a reason to be
+  // discounted. Scoped to the lines this lane added, because two older lines in
+  // the same function predate the ban and are left alone.
+  const added = p.slice(p.indexOf("EVERY IMAGE THIS SITE SHIPS"));
+  assert.doesNotMatch(added, /[—–]/, "the R4 and slop blocks must not contain the character they ban");
+});
+
+test("R4 — THE EXCLUSION IS ABOUT WHAT THE PAGE LOADS, and spares what the visitor clicks", () => {
+  // THE NARROWNESS IS LOAD-BEARING AND IT IS CALIBRATED AGAINST A REAL ARTEFACT.
+  // `run-2026-07-30T20-16-40-242Z-052c6e02` ships github.com and linkedin.com
+  // anchors alongside four self-hosted woff2 files and is CORRECT by this rule. A
+  // sentence that said "no external URLs" would condemn it, which is the false-fail
+  // shape this repository has already been bitten by.
+  const p = handoff();
+  assert.match(p, /NOTHING THE PAGE LOADS MAY COME FROM OFF THIS MACHINE/);
+  assert.match(p, /No icon library, no icon or\s+font CDN, no stock photo host/i);
+  assert.match(p, /`src`.*`url\(\)`|`url\(\)` in the CSS/is, "the subject is named as subresources");
+  assert.match(p, /A link the visitor CLICKS is not an asset/, "and an anchor is explicitly spared");
+  assert.match(p, /no network/i, "the second, mechanical reason — the gate runs with none");
+});
+
+test("R4 — A DEGRADED RUN KEEPS THE EXCLUSION AND DROPS THE TOOL", () => {
+  // The run with no stills is the run most tempted to fetch one, so the half that
+  // forbids it must not be the half that only renders when the tool works. And
+  // pointing a keyless machine at a script that cannot run is the one thing this
+  // prompt must never do.
+  const p = handoff({ manifest: null, mode: "degraded" });
+  assert.match(p, /NOTHING THE PAGE LOADS MAY COME FROM OFF THIS MACHINE/, "the exclusion survives");
+  assert.match(p, /THIS RUN SHIPS NO PHOTOGRAPHY/);
+  assert.ok(!p.includes(GEMINI_IMAGE_SCRIPT), "a degraded lane is never pointed at a tool it does not have");
+  assert.match(p, /an absent image is a smaller defect/i);
+});
+
+test("R4 — AN OFF LANE STILL SAYS NOTHING AT ALL", () => {
+  // A CLI ticket has no assets and no page. The whole handoff is "" on that
+  // branch and this must not be the addition that breaks it.
+  assert.equal(handoff({ manifest: null, mode: "off", dials: "" }), "");
+});
+
+/* ---- R2: the slop signatures, named where they are cheaper than a gate --- */
+
+test("R2 — THE KNOWN TELLS ARE NAMED, so avoiding one does not depend on taste", () => {
+  const p = handoff();
+  assert.match(p, /WHAT AN AI-BUILT PAGE LOOKS LIKE/);
+  for (const tell of [
+    "em-dash",
+    "eyebrow over every section",
+    "Three identical cards in a row",
+    "faked out of divs",
+    "lorem ipsum",
+    "purple-to-pink gradient",
+  ]) {
+    assert.ok(p.includes(tell), `the tell "${tell}" is not named, so nothing but taste catches it`);
+  }
+  // AND THE FRAMING, which is the part that keeps a ban list from becoming the
+  // brief: the design decides what the page is, this list decides what it is not.
+  assert.match(p, /defaults to\s+avoid, not a checklist to satisfy/i);
+});
+
+test("R2 — THE SKILLS' ASSET ADVICE IS OVERRIDDEN AT THE POINT OF USE", () => {
+  // PRIMARY SOURCE, VERIFIED: `taste-skill/SKILL.md:269, :277, :626` recommend
+  // `picsum.photos` and `cdn.simpleicons.org`, and `redesign-skill/SKILL.md:43`
+  // recommends `picsum.photos` for section backgrounds. Those files are the
+  // owner's, shared with his other projects, and are NOT edited from here — so
+  // the pipeline was instructing the builder to do the exact thing R4 forbids, in
+  // the same run in which it forbade it. The conflict is resolved in the prompt,
+  // which is the only place this repository controls.
+  const p = handoff();
+  assert.match(p, /WHERE A SKILL DISAGREES WITH THE PARAGRAPHS ABOVE, THE PARAGRAPHS WIN/);
+  assert.match(p, /picsum\.photos/, "the conflicting recommendation is named, or the override is deniable");
+  assert.match(p, /cdn\.simpleicons\.org/);
+  assert.match(p, /so is the library/i, "an icon library is a library too");
+  // AND IT IS A NARROW OVERRIDE. Discarding the skills wholesale would throw away
+  // the layout, type and restraint rules this block relies on to mean anything.
+  assert.match(p, /Everything\s+else those skills say/i);
 });
 
 /* ---- Task 12: the visual gate, and the author who may not grade -------- */

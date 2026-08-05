@@ -375,6 +375,68 @@ function harnessEnvironmentSection(): readonly string[] {
   ];
 }
 
+/**
+ * THE HEADING `builderReferenceSection` EMITS, quoted so the forward reference
+ * below resolves.
+ *
+ * A FORWARD REFERENCE INTO ANOTHER MODULE'S TEXT, AND THAT IS WHY IT IS A NAMED
+ * CONSTANT AND NOT AN INLINE STRING. `orchestrator.ts` composes the build
+ * segment's prompt as `#buildSegmentPrompt(...) + builderReferenceSection(...)`,
+ * so the owner's attached files arrive AFTER everything this file writes, under a
+ * heading `ticket-refs.ts:665` owns. This file cannot render those paths — it is
+ * never handed them — but it can say which section carries them and what
+ * authority they have, and a paraphrase would send the builder looking for a
+ * heading that is not there. `build-prompt.test.ts` runs the real
+ * `builderReferenceSection` and asserts the two spellings still agree.
+ */
+const OWNER_REFERENCE_HEADING = "REFERENCES THE OWNER ATTACHED TO THIS TICKET";
+
+/**
+ * WHOSE JUDGEMENT DECIDES WHAT THIS LOOKS LIKE.
+ *
+ * THE GAP THIS CLOSES. `builderReferenceSection` already lists the owner's
+ * attached images and says "where they and your own judgement disagree about how
+ * something should look, follow them" — but it only renders when he attached
+ * something, and it is the LAST thing in a prompt whose earlier sections are all
+ * about the harness, the specialists and the report format. Nothing earlier
+ * established that his material is the authority at all, so a build with a
+ * reference and a build without one open the same way: with a ticket and a free
+ * hand.
+ *
+ * IT IS DELIBERATELY CONDITIONAL IN ITS WORDING. `hasReferences` returns "" when
+ * he attached nothing, so an unconditional "read the files he gave you" would, on
+ * most runs, name a section that does not exist — an instruction to open nothing,
+ * which is the failure `builderReferenceSection`'s own `shots.length > 0` guard
+ * exists to avoid on the other side of the seam.
+ *
+ * NO LANE, NO AGENT AND NO FRAMEWORK IS NAMED, for the reasons
+ * `harnessEnvironmentSection` gives: this text reaches a CLI ticket and a landing
+ * page alike, and a ticket with an attached screenshot is not necessarily a
+ * visual ticket. What is asserted here is true of every run — the owner's own
+ * material outranks the model's defaults — so it is stated for every run.
+ *
+ * WHAT IT DOES NOT DO. Nothing verifies a `Read` happened against those paths,
+ * exactly as `ticket-refs.ts` says of its own block. A run that ignores this is
+ * indistinguishable here from one that followed it, and only the artefact shows
+ * the difference.
+ */
+function ownerAuthoritySection(): readonly string[] {
+  return [
+    "",
+    "WHAT THE WORK IS HELD TO",
+    "- The ticket below is the specification, in the owner's own words. Read it as a brief to",
+    "  satisfy, not as a theme to riff on.",
+    `- Where he attached files, they are listed later in this prompt under`,
+    `  "${OWNER_REFERENCE_HEADING}", with absolute paths. Open every one`,
+    "  before you build anything. A path in a prompt stays a path until something reads it.",
+    "- What he supplied is the authority on how this looks and behaves. It outranks your own",
+    "  taste, the defaults of any skill you load, and whatever pattern comes to hand first.",
+    "  Build the thing he showed you, not the adjacent thing that is easier to justify.",
+    "- Do not describe the result as matching something you were not given. If you had no",
+    "  reference for a section, say that in your self-report rather than claiming a fit.",
+  ];
+}
+
 export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
   const { ticketText, workspaceDir } = request;
   return [
@@ -394,7 +456,12 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
     // would be a second false statement replacing the first.
     "- You have network access while you build and may install dependencies. What you ship is",
     "  judged without either; the next section is the environment that judges it.",
+    // AFTER THE ENVIRONMENT, NOT BEFORE IT. The bullet immediately above says "the
+    // next section is the environment that judges it", and inserting anything
+    // between the two makes that sentence false about its own prompt — the one
+    // class of edit this file is least allowed to make.
     ...harnessEnvironmentSection(),
+    ...ownerAuthoritySection(),
     "",
     "SHIP THE SIMPLEST THING THE TICKET ACTUALLY ASKS FOR",
     "- If the ticket needs no server-side behaviour, plain HTML and CSS is a COMPLETE answer.",
@@ -460,5 +527,14 @@ export function resumeBuilderPrompt(reason: string): string {
     "Continue from where you stopped. The workspace is unchanged and still yours.",
     `When you are finished, or if you cannot finish, write ${WORKSPACE.selfReport} as described earlier.`,
     ...harnessEnvironmentSection(),
+    // THE SAME EXCEPTION, FOR THE SAME MEASURED REASON AS THE ENVIRONMENT ABOVE.
+    // `orchestrator.ts` appends `builderReferenceSection(references)` to the build
+    // segment's prompt on BOTH branches — first turn and resume alike — so a
+    // resumed build receives the owner's attached paths with nothing having said
+    // what they outrank. And a design-lane run only ever takes the resume branch:
+    // segment 1 is `designSegmentPrompt` and segment 2 resumes that session, so
+    // `dashboardBuilderPrompt` is never sent at all. Omitting it here would put
+    // this whole section exactly where visual runs cannot see it.
+    ...ownerAuthoritySection(),
   ].join("\n");
 }

@@ -33,7 +33,11 @@
 
 import { join } from "node:path";
 
-import type { DesignCapability } from "./design-capability.js";
+// THE SCRIPT PATH IS IMPORTED, NOT RETYPED, for the same reason the video cap
+// below is: a literal here would be a second declaration site for a path
+// `design-capability.ts` owns, and the drift would be silent in the worst
+// direction — a build told to run a script that is not where this file says.
+import { GEMINI_IMAGE_SCRIPT, type DesignCapability } from "./design-capability.js";
 // THE CAP AND THE ASPECT SET ARE IMPORTED FROM THE PLANNER THAT ENFORCES THEM.
 // A `2` and a `"16:9" or "9:16"` typed into this file would be a second
 // declaration site for numbers `video-legs.ts` owns, and the failure would be
@@ -280,11 +284,37 @@ export function designSegmentPrompt(input: {
         "",
       );
     }
+    /*
+     * THE LAST SENTENCE USED TO READ "A chosen photograph with a real URL is
+     * fine; a random one is not." IT IS FALSE ON THIS PRODUCT, and it was the
+     * only place this lane's own prompt contradicted the owner's standing rule:
+     * "designs are always made using gemini connection rather than pulled from
+     * some library". A degraded lane cannot reach Gemini at all, so the honest
+     * answer is NO photograph rather than a borrowed one.
+     *
+     * AND THE MECHANICAL HALF AGREES WITH THE RULE FOR A SECOND, UNRELATED
+     * REASON. The artefact is judged by `docker run --network=none`, so a remote
+     * URL is a broken image at the moment it is graded, whatever it looks like on
+     * this machine. That is true of a "chosen photograph" exactly as it is true
+     * of a generator.
+     *
+     * THE HOOK STILL DISAGREES, AND IT IS RECORDED RATHER THAN PAPERED OVER.
+     * `builders/antislop-rules.ts:265-267` tells the builder verbatim that "a
+     * specific chosen photograph, e.g. an `images.unsplash.com/photo-...` URL, is
+     * fine" — that string is the DENIAL REASON a builder reads at the moment it
+     * reaches for one, so it is the most persuasive sentence in the pipeline and
+     * it argues the wrong way. That file is outside this lane's remit; the
+     * divergence is reported, and the rule is stated here where a lane can act on
+     * it.
+     */
     lines.push(
-      "DO NOT substitute placeholder imagery. picsum, placehold.co and",
-      "unsplash.com/random are denied at write time by the anti-slop hook, so reaching",
-      "for them costs the run a denial loop rather than an image. A chosen photograph",
-      "with a real URL is fine; a random one is not.",
+      "DO NOT SUBSTITUTE BORROWED IMAGERY FOR THE STILLS THIS RUN CANNOT MAKE. picsum,",
+      "placehold.co and unsplash.com/random are denied at write time by the anti-slop hook,",
+      "so reaching for them costs the run a denial loop rather than an image. A stock photo",
+      "host, an icon CDN or any other remote picture is no better an answer: on this product",
+      "every shipped visual is generated through the image tool, and this run has no image",
+      "tool. Written direction is what you produce instead — say what the image WOULD be, in",
+      "enough detail to generate or shoot it later.",
       "",
     );
   } else {
@@ -343,6 +373,42 @@ export function designSegmentPrompt(input: {
       "STRICTLY SEQUENTIAL, ONE IMAGE AT A TIME. After the first image, pass the",
       "previous image with `-i` on every subsequent generation. That is what holds the",
       "palette across the set; generating in parallel produces five unrelated pictures.",
+      "",
+      /*
+       * THE OWNER'S OWN IMAGE HAS NEVER REACHED THE MODEL, AND `-i` IS THE ONLY
+       * CHANNEL THAT WOULD.
+       *
+       * `designReferenceSection` (ticket-refs.ts:759) appends the absolute path of
+       * everything he attached AFTER this text and tells the lane "these are the
+       * direction the owner has already chosen. Derive from them." That reaches
+       * the lane as PROSE. The chain described immediately above seeds every
+       * generation from the previous SIBLING, so the FIRST generation of each
+       * direction is seeded from nothing and every later one inherits that
+       * invention — which means an attached reference influences the pixels only
+       * through whatever words the lane chose to type about it.
+       *
+       * MEASURED ON THE ONE RUN THAT PASSED: six generations, and the `-i` chain
+       * ran mockup-to-mockup throughout. Gemini has never been shown a picture the
+       * owner supplied. "Derive from his reference" was therefore a request the
+       * tool call could not honour even on a lane that meant to honour it. This
+       * paragraph is the request the tool call CAN honour, and it costs one flag.
+       *
+       * WRITTEN CONDITIONALLY BECAUSE THE SECTION IS APPENDED CONDITIONALLY.
+       * `hasReferences` returns "" when he attached nothing, so an unconditional
+       * sentence here would send the lane looking for a heading nobody wrote —
+       * the same failure `pruneMissingRefs` exists to prevent on the other side.
+       * The heading is quoted rather than paraphrased so the forward reference
+       * resolves; `design-prompt.test.ts` runs the real `designReferenceSection`
+       * and asserts the two spellings still match.
+       */
+      'SEED THE FIRST GENERATION FROM THE OWNER\'S OWN REFERENCE, WHERE HE GAVE ONE. A later',
+      'section of this prompt, headed "THE OWNER GAVE YOU REFERENCES", lists absolute paths to',
+      "the images he attached and to any page he named. Where that section is present, pass",
+      "the closest of those files with `-i` on the FIRST generation of EVERY direction, and",
+      "let the sequential chain carry it from there. Describing his reference in the prompt",
+      "text is not the same thing: `-i` is the only way the model is shown it. A chain seeded",
+      "from your own first invention offers him three readings of YOUR idea, and the picture",
+      "he supplied decided nothing.",
       "",
       `CLOSED LOOP, MANDATORY. After each generation, Read the image file and critique it`,
       `against the routed skill's rules. Regenerate a weak image with a corrected prompt —`,
@@ -729,6 +795,174 @@ function expandBrief(
 export const IMAGE_TO_CODE_SKILL = "image-to-code";
 
 /**
+ * R4 — THE OWNER'S STANDING RULE, AT THE ONLY SEAM THAT REACHES THE BUILD.
+ *
+ * HIS WORDS: "designs are always made using gemini connection rather than pulled
+ * from some library". Nothing in this tree said that to the agent that ships the
+ * assets. What `designSegmentPrompt` asks for is MOCKUPS, in `design-refs/`; what
+ * the page LOADS is a different set of files entirely, and no prompt mentioned
+ * them.
+ *
+ * MEASURED ON THE ONE RUN THAT PASSED, and this is the whole argument for the
+ * block below. `run-2026-07-29T23-28-46-665Z-3d4d1ccb` made six `gemini-image.sh`
+ * calls and every one of them wrote `design-refs/*.png`, between 02:49 and 02:52.
+ * The two files the site actually ships — `assets/hero-workshop.jpg` at 688x599
+ * and `assets/storefront.jpg` at 698x628, both written at 02:57, inside the BUILD
+ * segment — are half-width crops of the 1376x768 mockups and match none of them
+ * by digest. That build satisfied the rule by the builder's own good judgement:
+ * it cropped Gemini pixels rather than fetching a stock photo, because it
+ * happened to think of it. Judgement that good is not a mechanism, and the next
+ * build's first instinct is a CDN.
+ *
+ * THE TOOL IS REACHABLE FROM THE BUILD SEGMENT, WHICH IS WHY THIS IS AN
+ * INSTRUCTION AND NOT A WISH. Both segments are the SAME subprocess with the same
+ * environment: `orchestrator.ts` passes `env: designSubprocessEnv(...)` on every
+ * `builder.build(...)` call, `GEMINI_API_KEY` and `NANOBANANA_API_KEY` are
+ * deliberately absent from `STRIPPED_ENV_NAMES` (design-env.ts says so and its
+ * test guards it), and the run above produced real Gemini output from inside the
+ * CLI sandbox on this machine. `mode === "full"` additionally means a key
+ * resolved, the script exists and the preflight passed (design-lane.ts:117-118),
+ * so on that branch the path named below is a path that has run.
+ *
+ * THE EXCLUSION IS STATED SEPARATELY FROM THE POSITIVE RULE, and it is the half
+ * that survives a degraded run: no icon library, no font CDN, no stock host, no
+ * remote subresource of any kind. The sealed gate agrees with it for an unrelated
+ * reason — `docker run --network=none` — so a remote asset is a broken image at
+ * the moment the artefact is judged, whatever it looks like here. Two independent
+ * reasons for one rule is why the rule is worth stating twice.
+ *
+ * AN OUTBOUND LINK IS NOT AN ASSET, AND THE WORDING IS NARROW ON PURPOSE. The
+ * 2026-07-30 build ships `github.com`/`linkedin.com` anchors alongside four
+ * self-hosted `woff2` files and is a correct artefact by this rule; a sentence
+ * that said "no external URLs" would condemn it. The subject is what the page
+ * LOADS — `src`, `url()`, and the `href` of a stylesheet, font or script — never
+ * what the visitor clicks.
+ *
+ * WHAT IS NOT WIRED, SAID PLAINLY. `DASHBOARD_GEMINI_IMAGE_SCRIPT` can move the
+ * script (design-capability.ts:119) and this function has no `capability` to read
+ * it from, so an overridden run is told the default path. Passing
+ * `capability.imageScript` through `designHandoffSection` is one argument at the
+ * `orchestrator.ts` call site, which belongs to another workflow this week.
+ */
+function assetProvenanceLines(mode: DesignLaneMode, workspace: string): readonly string[] {
+  // THE EXCLUSION, WORD FOR WORD THE SAME ON BOTH BRANCHES. A degraded run is
+  // exactly the run most tempted to reach for a URL — it has no stills — so the
+  // half that forbids it must not be the half that only renders when the tool
+  // works.
+  const exclusion: readonly string[] = [
+    "NOTHING THE PAGE LOADS MAY COME FROM OFF THIS MACHINE. No icon library, no icon or",
+    "font CDN, no stock photo host, no remote script or stylesheet. Every `src`, every",
+    "`url()` in the CSS, and every stylesheet, font and script `href` must resolve to a file",
+    "inside this workspace. A link the visitor CLICKS is not an asset: an ordinary `<a href>`",
+    "to a real site is fine and always was.",
+    "",
+    "TWO REASONS, AND EITHER ALONE IS ENOUGH. It is the owner's standing rule for this",
+    "product. And the artefact is judged inside a container with no network, so a remote",
+    "asset is a broken image at the moment it is graded, however it renders here.",
+    "",
+  ];
+
+  if (mode === "degraded") {
+    return [
+      "THIS RUN SHIPS NO PHOTOGRAPHY. Image generation was unavailable on this machine, and a",
+      "borrowed picture is not the fallback — an absent image is a smaller defect than one",
+      "that came from somewhere else. Build the sections out of type, colour, space and",
+      "layout, and say in your self-report which placements still want a real image.",
+      "",
+      ...exclusion,
+    ];
+  }
+
+  return [
+    "EVERY IMAGE THIS SITE SHIPS IS GENERATED HERE. Not fetched, not cropped out of a mockup,",
+    "not drawn by hand as decorative SVG:",
+    "",
+    `  ${GEMINI_IMAGE_SCRIPT} "<full art-directed prompt>" -a <aspect> -i <the locked mockup> \\`,
+    `      -o ${join(workspace, "assets", "<name>.jpg")}`,
+    "",
+    "  -a  1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9      -i  a reference image, for style",
+    "  -o  output path, inside this workspace                  -m  model override",
+    "",
+    // NO EM-DASH IN THIS BLOCK, DELIBERATELY. Three paragraphs below, the same
+    // prompt tells the builder the character is the single most reliable tell
+    // that a machine wrote the page. An instruction that models the thing it
+    // forbids is an instruction with a reason to be discounted, and this is the
+    // one file where that is cheap to avoid. (Two older lines in this function
+    // still carry one; they predate the ban and are left alone rather than
+    // rewritten for cosmetics, which is recorded rather than hidden.)
+    "It resolves its own credential; you never need one and must never look for one. Generate",
+    "ONE AT A TIME and Read each result before you ship it. A generation nobody looked at is a",
+    "picture nobody has seen. Pass the LOCKED mockup with `-i` so the photograph belongs to",
+    "the design instead of merely sitting next to it.",
+    "",
+    "NAME THE FILE FOR WHAT COMES BACK. The tool writes the bytes the model returned, and",
+    "today those are JPEG, so use `.jpg`. A `.png` name over JPEG bytes is a file that lies",
+    "about itself, and some tooling refuses to decode it rather than sniffing.",
+    "",
+    ...exclusion,
+    "IF A GENERATION FAILS TWICE ON THE SAME ASSET, SHIP THE SECTION WITHOUT THE IMAGE. Do",
+    "not fall back to a URL, to a library icon, or to divs arranged to look like a screenshot.",
+    "Say so in your self-report instead: an honest gap is recoverable and a borrowed asset is",
+    "the thing this rule exists to stop.",
+    "",
+  ];
+}
+
+/**
+ * R2 — THE SLOP SIGNATURES, NAMED, BECAUSE NAMING ONE IS CHEAPER THAN DETECTING
+ * IT.
+ *
+ * A gate can only REJECT. Three rejections of slop still hand the owner slop,
+ * three times slower, and every rejection resumes the SAME builder session, which
+ * is the resource this pipeline has already lost a run to. So the cheapest place
+ * to spend on "not AI slop" is here, before the markup exists.
+ *
+ * THESE ARE THE MECHANICALLY RECOGNISABLE ONES ONLY, and that is the selection
+ * rule rather than an accident of what fitted. Each line below names a pattern an
+ * agent can check its own output for by looking: a character, a count, a repeated
+ * layout, a specific string. "Make it tasteful" is not on the list because it is
+ * not actionable, and a longer list is a list that gets skimmed — the parent's
+ * context is the scarce resource (build-prompt.ts says the same thing about
+ * subagent reports, for the same reason).
+ *
+ * THE OVERRIDE PARAGRAPH IS THE LOAD-BEARING ONE. `taste-skill/SKILL.md:269, :277
+ * and :626` recommend `picsum.photos` and `cdn.simpleicons.org` outright, and
+ * `redesign-skill/SKILL.md:43` recommends `picsum.photos` for section
+ * backgrounds. Those files are the owner's, shared with his other projects, and
+ * are NOT edited from here. The pipeline was therefore instructing the builder to
+ * do the exact thing R4 forbids, in the same run in which it forbade it — so the
+ * conflict is resolved at the point of use, in the prompt, which is the only
+ * place this repository controls.
+ */
+function slopSignatureLines(): readonly string[] {
+  return [
+    "WHAT AN AI-BUILT PAGE LOOKS LIKE, SO THAT THIS ONE DOES NOT. These are defaults to",
+    "avoid, not a checklist to satisfy; the design above decides what the page IS.",
+    "  - The em-dash. Not in headlines, body copy, labels, buttons or alt text. A comma, a",
+    "    period or a hyphen. It is the single most reliable tell that a machine wrote it.",
+    "  - An eyebrow over every section (the small uppercase wide-tracked label above a",
+    "    headline). At most one per three sections, and zero is a legitimate answer.",
+    "  - Three identical cards in a row, and any layout family used twice. A section that",
+    "    looks like the one above it is a section nobody designed.",
+    "  - Product UI faked out of divs: a fake dashboard, a fake terminal, a fake task list.",
+    "  - Scroll cues, section-number labels (`001 / CAPABILITIES`), locale-and-weather",
+    "    strips, decorative status dots, version stamps on a marketing page.",
+    "  - Placeholder people and numbers: `John Doe`, `Acme`, `99.99%`, lorem ipsum.",
+    "  - Filler verbs: elevate, seamless, unleash, revolutionise, next-gen. Name the thing.",
+    "  - The purple-to-pink gradient, and Inter over slate, which is where a generated page",
+    "    lands when nobody chose.",
+    "",
+    "WHERE A SKILL DISAGREES WITH THE PARAGRAPHS ABOVE, THE PARAGRAPHS WIN. The taste and",
+    "redesign skills name `picsum.photos`, `images.unsplash.com` and `cdn.simpleicons.org`",
+    "as acceptable asset fallbacks, and they prefer an icon library to a mark you make. On",
+    "this run the hosts are forbidden and so is the library: an icon is generated with the",
+    "image tool, or it is a typographic mark, or the control does without one. Everything",
+    "else those skills say about layout, type, restraint and states stands unchanged.",
+    "",
+  ];
+}
+
+/**
  * The block the orchestrator injects into EVERY build agent's prompt.
  *
  * ALL THREE OF §7.3's MECHANISMS OR NONE OF THEM. Subagents do not share
@@ -806,6 +1040,12 @@ export function designHandoffSection(input: {
         "all. Do not go looking for one.",
       );
     }
+    // THE ASSET RULE AND THE SLOP LIST BELONG TO THE BUILD, NOT TO THE STILLS.
+    // This is the branch where a build has NO mockups to work from — the run most
+    // likely to reach for a stock photo, an icon font or a fake dashboard,
+    // precisely because it has nothing else. Emitting them only on the branch
+    // that HAS stills would put the guidance where it is least needed.
+    zero.push("", ...assetProvenanceLines(input.mode, input.workspace), ...slopSignatureLines());
     return zero.join("\n");
   }
 
@@ -841,6 +1081,12 @@ export function designHandoffSection(input: {
   if (input.dials.length > 0) {
     lines.push("THE DIALS THE DESIGN WAS SET TO. Build to these values:", "", input.dials, "");
   }
+  // AFTER THE MOCKUPS AND THE DIALS, DELIBERATELY. The design is the positive
+  // instruction and it reads first; these two are the constraints on how it gets
+  // realised. A build that read "avoid an eyebrow over every section" before it
+  // knew what the page was would be shaping the page around a list of bans, which
+  // is the failure mode the list itself warns about.
+  lines.push(...assetProvenanceLines(input.mode, input.workspace), ...slopSignatureLines());
   return lines.join("\n");
 }
 

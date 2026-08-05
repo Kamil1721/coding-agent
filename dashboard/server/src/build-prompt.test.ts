@@ -33,6 +33,10 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { DELIVERY_LANES } from "./agent-shortlist.js";
 import { dashboardBuilderPrompt, resumeBuilderPrompt } from "./build-prompt.js";
+import { designHandoffSection, visualGatePrompt } from "./design-prompt.js";
+import { builderReferenceSection } from "./ticket-refs.js";
+import { VISUAL_OBSERVATIONS } from "./visual-substance.js";
+import { visualCriteriaFor } from "./visual-criteria.js";
 
 /**
  * The plan's snippets call `buildPrompt({ ticketText, allowedAgents })`. The real
@@ -349,6 +353,156 @@ test("THE RESUMED BUILD IS TOLD TOO — a design-lane run never sees the first-t
   assert.match(p, /EPERM/);
   assert.match(p, /NO NETWORK/);
   assert.match(p, /README\.md/);
+});
+
+/**
+ * R1 — THE OWNER'S OWN MATERIAL IS THE AUTHORITY, AND THE FORWARD REFERENCE
+ * RESOLVES.
+ *
+ * WHY THE COMPOSITION IS WHAT IS TESTED. `dashboardBuilderPrompt` is never sent
+ * on its own: `orchestrator.ts` sends
+ * `#buildSegmentPrompt(...) + builderReferenceSection(references)` — cited by the
+ * expression rather than by a line, because that file is being edited by another
+ * workflow this week and a number would be wrong by the time it is read — so the owner's
+ * attached paths arrive from a module this one cannot call and is never handed.
+ * A test that only asserted a sentence in this file's own output would be green
+ * over a prompt whose forward reference points at a heading nobody writes — which
+ * is the exact shape of an instruction that reads well and does nothing.
+ *
+ * SO THE ASSERTIONS COME IN PAIRS: the clause is in this file's output, and the
+ * heading it names is in the other file's output, composed the way production
+ * composes them. Deleting the clause is red; renaming either heading is red.
+ */
+const OWNER_IMAGE = "/runs/r1/refs/owner-hero.png";
+const HERO = "/runs/r1/workspace/design-refs/01-hero.png";
+const OWNER_REFS = {
+  images: [{ path: OWNER_IMAGE, sha256: "a".repeat(64), bytes: 1024 }],
+  capture: null,
+};
+
+/** Exactly the composition `orchestrator.ts` performs for a first-turn build. */
+const composedFirstTurn = (): string =>
+  buildPrompt({ ticketText: "rebuild this page", allowedAgents: ["backend-developer"] }) +
+  builderReferenceSection(OWNER_REFS);
+
+test("the owner's attached reference is NAMED in the composed build prompt", () => {
+  const p = composedFirstTurn();
+  assert.ok(p.includes(OWNER_IMAGE), "the absolute path he supplied must reach the builder");
+  assert.match(p, /REFERENCES THE OWNER ATTACHED TO THIS TICKET/, "under the heading this file promises");
+});
+
+test("and the prompt says his material OUTRANKS the model's defaults", () => {
+  // Without this the reference is a list of files at the bottom of a long prompt.
+  // The clause is what makes it the authority rather than an input.
+  const p = buildPrompt({ ticketText: "rebuild this page", allowedAgents: [] });
+  assert.match(p, /WHAT THE WORK IS HELD TO/, "the section exists");
+  assert.match(p, /is the authority on how this looks/i, "and says what the files ARE");
+  assert.match(p, /outranks your own\s+taste/i, "against the model's own preference");
+  assert.match(p, /defaults of any skill you load/i, "and against a loaded skill's recommendation");
+  assert.match(p, /before you build anything/i, "read them first, not after");
+});
+
+test("THE FORWARD REFERENCE RESOLVES — the two spellings of the heading agree", () => {
+  // THE DISCRIMINATING HALF. `build-prompt.ts` quotes a heading that
+  // `ticket-refs.ts` owns and that this file cannot import, because exporting it
+  // is a change to a module outside this lane. If either side is reworded, the
+  // builder is sent to a section that does not exist — and every other assertion
+  // in this block stays green while that happens.
+  const emitted = builderReferenceSection(OWNER_REFS);
+  const quoted = buildPrompt({ ticketText: "x", allowedAgents: [] });
+  const heading = "REFERENCES THE OWNER ATTACHED TO THIS TICKET";
+  assert.ok(emitted.includes(heading), "ticket-refs.ts no longer emits the heading build-prompt.ts quotes");
+  assert.ok(quoted.includes(heading), "build-prompt.ts no longer quotes the heading ticket-refs.ts emits");
+});
+
+test("THE RESUMED BUILD IS HELD TO IT TOO — a visual run never sees the first turn", () => {
+  // Same measured argument as the environment section: with the design lane on,
+  // segment 1 is `designSegmentPrompt` and segment 2 RESUMES it, so
+  // `dashboardBuilderPrompt` is never sent. And `builderReferenceSection` is
+  // appended on BOTH branches, so a resumed build gets the owner's paths either
+  // way. Omitting the clause here puts it exactly where visual runs cannot see it.
+  const p = resumeBuilderPrompt("the design was locked and the build continues from there");
+  assert.match(p, /WHAT THE WORK IS HELD TO/);
+  assert.match(p, /is the authority on how this looks/i);
+  assert.ok(p.includes("REFERENCES THE OWNER ATTACHED TO THIS TICKET"));
+});
+
+test("with nothing attached, the clause does not send the builder after a section that is absent", () => {
+  // `hasReferences` returns "" on most runs, so an unconditional "read the files
+  // he gave you" would name a heading nobody wrote — an instruction to open
+  // nothing, which is the failure `builderReferenceSection`'s own guard exists to
+  // avoid on the other side of the seam.
+  assert.equal(builderReferenceSection({ images: [], capture: null }), "");
+  const p = buildPrompt({ ticketText: "x", allowedAgents: [] });
+  assert.match(p, /Where he attached files/i, "conditional in its wording");
+  assert.doesNotMatch(p, /^- Read the files he gave you/im, "not asserted unconditionally");
+});
+
+/**
+ * THE REDACTION DISCIPLINE, EXTENDED TO THE THING THIS LANE COULD MOST EASILY
+ * LEAK.
+ *
+ * The build prompt's second load-bearing property is "NOTHING ABOUT THE HELD-OUT
+ * SUITE beyond `acceptance is judged elsewhere`" (build-prompt.ts, property 2).
+ * The obvious leak is the acceptance tests, and this function is never handed
+ * them — there is no parameter through which they could arrive.
+ *
+ * THE REACHABLE LEAK IS THE GRADER'S RUBRIC, and this lane is the one that would
+ * introduce it. `visualGatePrompt` legitimately enumerates the visual observation
+ * ids and the visual criteria; a well-meaning edit that pasted the same ids into
+ * the build prompt — "so the builder knows what it will be judged on" — is
+ * teaching to the test, and it would look like an improvement. The two prompts
+ * are asserted against each other so the difference is measured rather than
+ * assumed: the gate's prompt carries the ids, the builder's must not.
+ */
+test("the build prompt leaks no grader rubric — not one observation id, not one criterion id", () => {
+  const p =
+    buildPrompt({ ticketText: "a landing page", allowedAgents: ["taste-frontend-expert"] }) +
+    designHandoffSection({
+      manifest: {
+        version: 1,
+        refs: [
+          {
+            path: HERO,
+            section: "hero",
+            aspect: "16:9",
+            intent: "the hero",
+            direction: null,
+            origin: null,
+          },
+        ],
+        directions: [],
+        chosenDirection: null,
+        directionChoice: null,
+        lockedMockup: HERO,
+        lockedBy: "owner",
+        lockedReason: "chosen in the dashboard",
+        lockedAt: "2026-07-29T10:00:00.000Z",
+      },
+      mode: "full",
+      workspace: "/runs/r1/workspace",
+      dials: "DESIGN_VARIANCE: 3",
+    }) +
+    builderReferenceSection(OWNER_REFS);
+
+  for (const observation of VISUAL_OBSERVATIONS) {
+    assert.ok(!p.includes(observation.id), `the builder is told the observation id ${observation.id}`);
+  }
+  for (const criterion of visualCriteriaFor({ lockedMockup: HERO })) {
+    assert.ok(!p.includes(criterion.id), `the builder is told the criterion id ${criterion.id}`);
+  }
+  // AND THE POSITIVE CONTROL, so the loops above cannot be green for the wrong
+  // reason. Empty id sets would make both loops vacuous, and ids that never
+  // appear in ANY prompt would make the whole test unfalsifiable. The GATE's
+  // prompt is where they legitimately live, so it is asserted to carry them.
+  assert.ok(VISUAL_OBSERVATIONS.length > 0, "an empty observation set makes the assertion vacuous");
+  assert.ok(visualCriteriaFor({ lockedMockup: null }).length > 0, "an empty criteria set is vacuous too");
+  const gate = visualGatePrompt({ manifest: null, workspace: "/runs/r1/workspace", previewUrl: null });
+  assert.ok(
+    VISUAL_OBSERVATIONS.some((observation) => gate.includes(observation.id)),
+    "the grader's own prompt must carry these ids, or this test is asserting the absence of a string " +
+      "that appears nowhere",
+  );
 });
 
 test("the parts of the prompt Phase 0 depends on are unchanged", () => {
