@@ -252,6 +252,21 @@ test("the identity rule is never painted on the form, and is one gesture from be
   // has no conditional state left to observe. Count 0 against THAT form asserts
   // the sentence was deleted — the opposite of what the old test was protecting.
   //
+  // ONE ASSERTION OF THE OLD TEST IS DROPPED RATHER THAN TRANSLATED, AND IT IS
+  // NAMED HERE BECAUSE A DELETION NOBODY MENTIONS IS HOW A SUITE GETS WEAKER.
+  // The third phase removed the chip and re-asserted count 0, to catch a guard
+  // written as "has ever had a file". There is no such guard left to falsify —
+  // the sentence is unconditional — so against this component that assertion is
+  // vacuous: it would pass whatever the removal did.
+  //
+  // THE PHASE ITSELF IS KEPT, WITH THE ASSERTION REPLACED RATHER THAN REMOVED.
+  // Dropping the click as well would have cost something the old test really was
+  // buying: grepped across `dashboard/tests`, this was the ONLY place in the
+  // suite that pressed a chip's remove button (`attachment-chips.tsx`'s
+  // `aria-label={`remove ${name}`}`). So the click stays and now asserts what
+  // removal actually does — the chip goes — which is a claim about the control
+  // instead of a claim about a guard that no longer exists.
+  //
   // THE INTENT SURVIVES INTACT AND IS ASSERTED DIRECTLY: it is not shown to a
   // sighted reader who did not ask for it, and it is not lost to anyone. Both
   // halves are still here, and each still fails on its own kind of regression —
@@ -270,6 +285,14 @@ test("the identity rule is never painted on the form, and is one gesture from be
     "a permanent lecture about attachments on a form with no attachment is the state this pass " +
       "moved the form out of",
   ).toBeLessThan(UNPAINTED_MAX_AREA);
+  // RENDERED, THOUGH — and this is the assertion the box measurement cannot
+  // make. `display: none` and `visibility: hidden` are both unpainted and both
+  // OUT of the accessibility tree, so a sentence hidden that way is deleted for
+  // the reader it was hidden FOR, and its box measures 0, which passes the bound
+  // above. `sr-only` is the one state that is unpainted and still exposed, and
+  // Playwright's visibility check is exactly the line between them: it fails for
+  // the other two and passes for a clipped 1x1 span. Measured, not assumed.
+  await expect(identityRule(page)).toBeVisible();
 
   // IT IS A SENTENCE THE PAGE HANDS TO A READER, not text orphaned in the DOM.
   // Hiding it was only allowed because the glyph names this exact element as its
@@ -301,6 +324,13 @@ test("the identity rule is never painted on the form, and is one gesture from be
   await expect
     .poll(async () => paintedArea(identityRule(page)))
     .toBeGreaterThan(PAINTED_MIN_AREA);
+
+  // AND THE CHIP COMES OFF AGAIN. The suite's only exercise of the remove
+  // button; see the note at the top of this test for why it is here and what it
+  // replaced. `getByTitle` is how `attachPng` above confirms a chip arrived, so
+  // the two ends of the intake are asserted the same way.
+  await page.getByRole("button", { name: /remove brand-sheet\.png/i }).click();
+  await expect(page.getByTitle("brand-sheet.png")).toHaveCount(0);
 });
 
 test("the capture rule is absent until the brief links somewhere, and keeps the unreachable clause", async ({
