@@ -553,8 +553,22 @@ test.describe("a run that is not awaiting a design choice", () => {
     await expect(panel(page).getByText("nothing locked", { exact: true })).toBeVisible();
     await expect(cards(page)).toHaveCount(0);
     // The consequence is stated, because it changes what a pass on this run
-    // means: the visual gate had no reference and fell back to its floor.
-    await expect(panel(page).getByText(/rule-based floor/)).toBeVisible();
+    // means: the look was checked against no reference at all.
+    //
+    // TRANSCRIBED FROM THE PANEL, NOT FROM THE MECHANISM. This read
+    // `/rule-based floor/` until 2026-08-05, when the copy pass took the
+    // internal name of the fallback off the screen — it survives only as a
+    // source comment in `design-lock.tsx`, and a spec that matched it would have
+    // been asserting against a comment. What replaced it is the same fact in the
+    // words a reader gets, and it is the whole sentence rather than a fragment
+    // because BOTH halves are the point: no reference, and weaker rather than
+    // failed.
+    await expect(
+      panel(page).getByText(
+        "No design was locked, so the site was checked without a reference. That is a weaker " +
+          "check, not a failing one.",
+      ),
+    ).toBeVisible();
   });
 
   test("a lock on a mockup that was never published is said out loud", async ({ page }) => {
@@ -563,7 +577,9 @@ test.describe("a run that is not awaiting a design choice", () => {
     // Distinguishing no card here would read as "no design was locked", which is
     // the opposite of what the record says. The path is shown instead.
     await expect(panel(page).getByText("locked", { exact: true })).toHaveCount(0);
-    await expect(panel(page).getByText(/not among the mockups published/)).toBeVisible();
+    // "is not among the mockups published on this run" became "is not one of the
+    // mockups shown here" on 2026-08-05. Same claim, shorter.
+    await expect(panel(page).getByText(/not one of the mockups shown here/)).toBeVisible();
     // And ui-designer's reason — the one reason on this screen an agent wrote
     // rather than the host — is carried verbatim.
     await expect(panel(page).getByText(/the strongest hero of the set/)).toBeVisible();
@@ -591,7 +607,12 @@ test.describe("a run that is not awaiting a design choice", () => {
     await expect(cards(page)).toHaveCount(MOCKUPS.length);
     await expect(directionCards(page)).toHaveCount(0);
     await expect(page.getByText(/compare the .* directions side by side/)).toHaveCount(0);
-    await expect(page.getByText(/The acceptance suite was frozen/)).toHaveCount(0);
+    // THE REPLY BOX IS NOT DRAWN EITHER, and this line names the sentence that
+    // box carries TODAY. It read `/The acceptance suite was frozen/` — a string
+    // the 2026-08-05 copy pass deleted from the app entirely — so it had stopped
+    // being a check on this branch and become a check that a deleted sentence
+    // stays deleted, which is true on every page in the product.
+    await expect(page.getByText(/Asking here changes what gets built/)).toHaveCount(0);
   });
 });
 
@@ -643,7 +664,12 @@ test.describe("choosing a direction", () => {
     // Two overlapping click targets on one card is how an owner locks a design
     // when he meant to look at it. The still zooms; the button chooses.
     await page.getByRole("button", { name: /^Enlarge the / }).first().click();
-    await expect(page.getByRole("dialog", { name: /hero still/ })).toBeVisible();
+    // THE DIALOG IS STILL THERE; ITS NAME MOVED. `Lightbox` names itself with
+    // its `alt` (`ui.tsx`), and `ZoomedStill` passes `${section} mockup` since
+    // the 2026-08-05 pass took the word "still" off every label a reader meets —
+    // it reads as a verb first. Matched on the ROLE plus the section, so a zoom
+    // that stopped being a dialog, or opened on the wrong image, still fails.
+    await expect(page.getByRole("dialog", { name: /hero mockup/ })).toBeVisible();
   });
 
   test("Escape closes the still first and the comparison second", async ({ page }) => {
@@ -653,7 +679,9 @@ test.describe("choosing a direction", () => {
     await expect(layer).toBeVisible();
 
     await page.getByRole("button", { name: /^Enlarge the / }).first().click();
-    const still = page.getByRole("dialog", { name: /hero still/ });
+    // `/hero still/` until 2026-08-05 — see the test above; the name is the
+    // `alt`, and "still" became "mockup" everywhere on this surface.
+    const still = page.getByRole("dialog", { name: /hero mockup/ });
     await expect(still).toBeVisible();
 
     /*
@@ -672,14 +700,26 @@ test.describe("choosing a direction", () => {
     await expect(directionCards(page)).toHaveCount(DIRECTIONS.length);
   });
 
-  test("the frozen suite is stated where he types, with both caps", async ({ page }) => {
+  test("the limit on what asking can do is stated where he types, with both caps", async ({
+    page,
+  }) => {
     await serve(page, CANVASS);
 
+    /*
+     * THE OPERATIVE HALF, WHICH IS ALL THAT IS LEFT OF IT. This was the
+     * 32-word "The acceptance suite was frozen in the spec phase. …" sentence
+     * until 2026-08-05; the first clause said WHEN the tests were written, which
+     * changes nothing the owner can do while typing, and was deleted rather than
+     * hidden. The half that bounds what he is about to spend a render on is
+     * still at reading size against the box, which is what this test is for —
+     * the title said "the frozen suite" and now says what the sentence says.
+     *
+     * TRANSCRIBED, NOT IMPORTED. `design-directions.tsx` exports this string as
+     * `ASK_LIMIT_SENTENCE`; asserting against that export would pass on any
+     * rewording of it, which is the one thing a copy spec must not do.
+     */
     await expect(
-      page.getByText(
-        "The acceptance suite was frozen in the spec phase. What you ask for here changes what gets " +
-          "built and what the build is compared against visually — it does not change what counts as done.",
-      ),
+      page.getByText("Asking here changes what gets built, not what counts as done."),
     ).toBeVisible();
     // He is spending image generations on a parked run; being refused is the
     // wrong way to find out how many are left.
@@ -722,7 +762,9 @@ test.describe("choosing a direction", () => {
     await serve(page, CANVASS_SPENT);
 
     await expect(
-      page.getByText("No more renders on this run — pick one of the directions above."),
+      // "No more renders on this run —" was cut to "No renders left —" on
+      // 2026-08-05. The half that tells him what to do instead is unchanged.
+      page.getByText("No renders left — pick one of the directions above."),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "ask for it" })).toHaveCount(0);
     // The directions are still choosable — the cap bounds the dialogue, not the
@@ -750,10 +792,22 @@ test.describe("choosing a direction", () => {
     // make that there was nothing to publish.
     await expect(directionCards(page)).toHaveCount(DIRECTIONS.length);
     await expect(chooseButtons(page)).toHaveCount(DIRECTIONS.length);
+    // "Written art direction, with no stills" became "Written art direction, no
+    // pictures: …" — same two facts, and "still" is gone from this surface.
     await expect(
-      page.getByText(/Written art direction, with no stills/).first(),
+      page.getByText(/Written art direction, no pictures/).first(),
     ).toBeVisible();
-    await expect(page.getByText(/there was nothing to publish/)).toHaveCount(0);
+    /*
+     * AND THE EMPTY STATE IS NOT UNDER IT, which is the half of this test that
+     * catches the regression it was written for. The forbidden string was
+     * `/there was nothing to publish/` — a clause the 2026-08-05 pass deleted
+     * from the app — so the check had quietly become unfalsifiable. The
+     * `EmptyState` that `mockups: []` used to reach is still in the tree
+     * (`design-lock.tsx`), and this is the sentence it renders.
+     */
+    await expect(
+      page.getByText("The design lane recorded no mockups on this run."),
+    ).toHaveCount(0);
   });
 });
 
@@ -768,11 +822,20 @@ test.describe("after the choice", () => {
      * stage B. The old ordering printed "The DESIGN lane finished without a
      * design to lock" over a run that was busy rendering the design.
      */
+    /*
+     * THE FORBIDDEN SUBTITLE IS THE ONE `unlocked` REALLY CARRIES. This read
+     * "The DESIGN lane finished without a design to lock", which is how the
+     * subtitle was worded before 2026-08-05 and appears nowhere in the app now —
+     * so the guard could not have failed even if this run took the `unlocked`
+     * branch outright. It is the shipped string, so the branch mix-up it exists
+     * to catch is caught again.
+     */
     await expect(
-      page.getByText("The DESIGN lane finished without a design to lock"),
+      page.getByText("The design lane finished with nothing to lock."),
     ).toHaveCount(0);
+    // "The rest of its sections" → "Its other sections".
     await expect(
-      page.getByText("Your direction is chosen. The rest of its sections are being rendered now."),
+      page.getByText("Your direction is chosen. Its other sections are being rendered now."),
     ).toBeVisible();
     await expect(page.getByText(/You chose Terminal grid\./)).toBeVisible();
     // Nothing is being asked of him now, so nothing offers.
@@ -782,15 +845,27 @@ test.describe("after the choice", () => {
   test("settled: which direction won, and that the others were not built", async ({ page }) => {
     await serve(page, CANVASS_SETTLED);
 
-    await expect(
-      page.getByText(
-        "You chose Terminal grid. The other 2 directions were offered and not built — nothing was graded against them.",
-      ),
-    ).toBeVisible();
+    /*
+     * WHO CHOSE, AND WHICH ONE — the sentence, minus a clause that is now the
+     * two badges below it.
+     *
+     * THE CLAUSE THAT CAME OFF IS DISCLOSED RATHER THAN QUIETLY DROPPED. It read
+     * " The other 2 directions were offered and not built — nothing was graded
+     * against them", and `design-lock.tsx`'s `directionSentence` records
+     * deleting it on 2026-08-05 as a sentence whose whole content was the label
+     * one row under it. The two assertions that follow ARE that content, on the
+     * cards, counted — so what this test checks is unchanged even though the
+     * string it transcribes is shorter.
+     */
+    await expect(page.getByText("You chose Terminal grid.")).toBeVisible();
     // Marked on the cards as well as in the sentence: a reader who skims the
     // columns must not read a discarded direction as part of the build.
     await expect(page.getByText("not built", { exact: true })).toHaveCount(2);
-    await expect(page.getByText("building this", { exact: true })).toHaveCount(1);
+    // "building this" until 2026-08-05, and the rename was a correction rather
+    // than a trim: `state` cannot tell stage B from a finished run, so that badge
+    // was wrong in both directions — nothing is built yet during the expansion,
+    // and it was built, past tense, afterwards.
+    await expect(page.getByText("chosen", { exact: true })).toHaveCount(1);
     // And the one still the gate actually graded against is distinguished, which
     // is `lockedMockup`'s unchanged meaning.
     await expect(page.getByText("locked", { exact: true })).toHaveCount(1);
