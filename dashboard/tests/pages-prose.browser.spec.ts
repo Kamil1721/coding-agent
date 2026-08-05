@@ -85,6 +85,12 @@
  *     "the capture rule keeps its unreachable clause". A moved paragraph that
  *     quietly loses a clause on the way is the failure this lane was warned
  *     about; a bubble that merely EXISTS would satisfy anything weaker.
+ * M8  `app/page.tsx` — the motion bubble's second sentence ("What was read from
+ *     it is shown on the run's own page") deleted, which is what the first draft
+ *     of this pass actually shipped. RED in "the deleted paragraphs are gone from
+ *     the DOM…". It is here because that sentence LOOKS like a pointer worth
+ *     cutting and is not: `ticket-motion.browser.spec.ts:174` records that the
+ *     form may not be read as asserting the link was read.
  */
 
 import { expect, test, type Page, type Route } from "@playwright/test";
@@ -407,6 +413,12 @@ test("the deleted paragraphs are gone from the DOM, and the kept facts are not",
   await expect(page.getByRole("button", { name: /^Explain: / })).toHaveCount(4);
   expect(await anywhereInDom(page, /Asking stops the run once the mockups exist/i)).toBe(true);
   expect(await anywhereInDom(page, /Only the movement is taken/i)).toBe(true);
+  // AND THE MOTION NOTE STILL DEFERS. `ticket-motion.browser.spec.ts:174` records
+  // why the second half of that note may not simply vanish: this form must not
+  // be read as claiming a reading HAPPENED. The old wording pointed at "the
+  // run's own event stream" — a phrase on no screen in this app — so the
+  // vocabulary changed and the deferral did not (M8).
+  expect(await anywhereInDom(page, /what was read from it is shown on the run/i)).toBe(true);
 });
 
 /* ───────────────────────────── THE RUN VIEW ──────────────────────────────── */

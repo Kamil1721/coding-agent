@@ -853,14 +853,24 @@ export default function NewTicketPage(): ReactNode {
                   * "from this page" IS DROPPED FROM THE WORDING because the glyph sits
                   * on the field the page is typed into; the referent is the row.
                   *
-                  * SENTENCE TWO IS DELETED, NOT HIDDEN: "What the run made of the link
-                  * is on the run's own event stream." It pointed at a surface that only
-                  * exists after submission, and it named it in vocabulary that is not on
-                  * the screen it points at — that panel is called Activity. Nothing a
-                  * person types changes because of it. Reported as a deletion.
+                  * SENTENCE TWO IS REWORDED, NOT DELETED — and the first draft of this
+                  * pass DID delete it, which was wrong. It read "What the run made of
+                  * the link is on the run's own event stream": the vocabulary had to go
+                  * (that panel is called Activity, and "event stream" is not a phrase on
+                  * any screen), but its JOB is load-bearing and is recorded at
+                  * `ticket-motion.browser.spec.ts:174` — this form must not claim that a
+                  * reading HAPPENED. It hands that question to the run, which is the
+                  * same rule the attachment disclosure follows: sending something is not
+                  * the same as an agent reading it.
+                  *
+                  * IT NOW POINTS AT THE RUN'S OWN PAGE, which is where the motion
+                  * readout is rendered. The old spec's exact string is gone either way,
+                  * so that test needs re-pointing at the property rather than the
+                  * sentence — reported to the repair wave.
                   */}
                 <Explain about="what is taken from that page">
-                  Only the movement is taken, not its words, layout or colours.
+                  Only the movement is taken, not its words, layout or colours. What was
+                  read from it is shown on the run&rsquo;s own page.
                 </Explain>
               </div>
               {/*
