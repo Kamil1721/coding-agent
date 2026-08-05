@@ -377,6 +377,43 @@ test.describe("pointer and touch", () => {
     await expectShut(bubble);
   });
 
+  test("opening one shuts the others, so bubbles never stack", async ({ page }) => {
+    await openBench(page);
+
+    const first = page.getByTestId("explain-flow-body");
+    const second = page.getByTestId("explain-canvas-body");
+
+    /*
+     * THREE OPEN BUBBLES IS THE WALL OF PROSE AGAIN, NOW FLOATING. Each glyph is
+     * its own component, so nothing makes them exclusive by default — a reader
+     * clicking down a panel would end up with a stack of them over the content
+     * they were reading.
+     *
+     * THE SECOND ONE IS OPENED BY HOVER, and it took two rewrites to find the
+     * case where the exclusivity loop is the only thing that can close the
+     * first — both recorded rather than tidied away, because they say what the
+     * loop is and is not for:
+     *
+     *   Click, then CLICK the second: green with the loop deleted. The second
+     *     click blurs the first trigger and lands outside its wrapper, so
+     *     `onBlur` and the outside-click listener both close it already.
+     *   Click WITHOUT FOCUS (WebKit's behaviour), then click the second: green
+     *     too, for the second of those reasons.
+     *   Click, then HOVER the second: nothing is clicked and no focus moves, so
+     *     this is the one that needs `show()`.
+     *
+     * MUTATION APPLIED: removed the `for (const other of MOUNTED_CLOSERS)` loop
+     * from `show()`. Both bubbles were painted at once and this went red.
+     * Reverted.
+     */
+    await page.getByTestId("explain-flow").click();
+    await expectShowing(first, FLOW_TEXT);
+
+    await page.getByTestId("explain-canvas").hover();
+    await expectShowing(second, "What this card did, in one sentence.");
+    await expectShut(first);
+  });
+
   test("opened by a click that granted no focus, an outside click still closes it", async ({
     page,
   }) => {
@@ -451,9 +488,9 @@ test.describe("it costs the page nothing", () => {
      * pushes the words it is explaining out from under the reader's eye, which
      * is a worse experience than the paragraph it replaced.
      *
-     * MUTATION APPLIED: dropped `fixed` from the open bubble's class list, so it
-     * laid out in flow at the end of `<body>`. `docHeight` grew by 44 and this
-     * went red. Reverted.
+     * MUTATION APPLIED: dropped `fixed` from the open bubble's class list, so
+     * the portaled bubble laid out in flow at the end of `<body>`. The whole
+     * measurement came back different and this went red. Reverted.
      */
     expect(opened, "opening the bubble moved the page").toEqual(closed);
   });

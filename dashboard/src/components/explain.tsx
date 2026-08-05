@@ -169,6 +169,20 @@ function place(
  */
 type OpenBy = "hover" | "sticky";
 
+/**
+ * ONE BUBBLE AT A TIME, ACROSS EVERY INSTANCE ON THE PAGE.
+ *
+ * Without this each glyph is independent, and a reader who clicks three of them
+ * in a panel is left with three bubbles stacked over the content they were
+ * reading — the wall of prose back again, and now floating. A click that opens
+ * one is also a decision to stop reading the last one.
+ *
+ * A module-level set rather than context: the six adopting lanes wrap strings
+ * wherever the string is, and requiring a provider around every one of them
+ * would be an adoption cost paid on every screen for a rule with no options.
+ */
+const MOUNTED_CLOSERS = new Set<() => void>();
+
 export function Explain({
   about,
   children,
@@ -196,6 +210,22 @@ export function Explain({
     setOpenBy(null);
     setCoords(null);
   }, []);
+
+  useEffect(() => {
+    MOUNTED_CLOSERS.add(close);
+    return () => {
+      MOUNTED_CLOSERS.delete(close);
+    };
+  }, [close]);
+
+  /** Open this one and shut every other one on the page. */
+  const show = useCallback(
+    (mode: OpenBy): void => {
+      for (const other of MOUNTED_CLOSERS) if (other !== close) other();
+      setOpenBy(mode);
+    },
+    [close],
+  );
 
   /*
    * POSITION, AND THEN KEEP POSITIONING. The scroll listener is CAPTURING, which
@@ -284,7 +314,7 @@ export function Explain({
       // than the tidy one.
       byKeyboard = true;
     }
-    if (byKeyboard) setOpenBy("sticky");
+    if (byKeyboard) show("sticky");
   };
 
   /* Leaving the control entirely closes it — including into the bubble, which is
@@ -300,14 +330,14 @@ export function Explain({
      closing it: the reader is asking to keep reading, not to stop. */
   const onClick = (): void => {
     if (openBy === "sticky") close();
-    else setOpenBy("sticky");
+    else show("sticky");
   };
 
   const onPointerEnter = (event: ReactPointerEvent<HTMLSpanElement>): void => {
     // Touch fires pointerenter immediately before click; opening here would make
     // the click that follows a close.
     if (event.pointerType !== "mouse") return;
-    if (openBy === null) setOpenBy("hover");
+    if (openBy === null) show("hover");
   };
 
   const onPointerLeave = (): void => {
