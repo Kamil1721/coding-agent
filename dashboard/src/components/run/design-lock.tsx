@@ -28,6 +28,31 @@
  * may a card keep looking interactive once the lock has resolved: outside
  * `pending` there is no button in the tree at all, not a disabled one.
  *
+ * ─── 2026-08-05: THE PROSE CAME OFF, AND WHERE EACH FACT WENT ───
+ *
+ * The owner measured 239 words of permanent explanation in this file and asked
+ * for the same product with the paragraphs gone: "If something really must have a
+ * explanation it should have little i icon". Three outcomes were available per
+ * paragraph and most took the first.
+ *
+ * DELETED, because the panel said them twice or three times. The `pending` body
+ * paragraph carried "Choosing is not required: if the window closes first,
+ * ui-designer picks…" while the subtitle said the same thing above it and
+ * `ParkClock` said it a third time beside the countdown. The `expanding` tail
+ * ("the one the gate grades against is locked when they land") is a consequence
+ * of a choice already made. `directionSentence`'s trailing clause about the other
+ * directions restated the "not built" badge on their own cards.
+ *
+ * BEHIND `Explain`, because they change WHICH card the owner clicks: on a
+ * pre-canvass run, that the finished site is compared against the ONE mockup he
+ * picks rather than against the set; on a canvassed run, that the direction he
+ * picks is expanded into the rest of its sections. Neither is recoverable after
+ * the click, and neither is visible anywhere else on the surface.
+ *
+ * ONE VERB FOR THE VISUAL COMPARISON, in this file and in `design-directions`:
+ * "compared against". "The visual gate grades…" was internal vocabulary, and two
+ * names for one mechanism on one screen is worse than the jargon.
+ *
  * WHAT IS DELIBERATELY NOT SHOWN. There is no `intent` line: `DesignRef` carries
  * one on the server, `Screenshot` does not, and the label is the only place a
  * section reaches this side.
@@ -72,6 +97,7 @@ import { designParkClock } from "@/lib/design-directions";
 import { screenshotSrc } from "@/lib/screenshots";
 import type { TraceEntry } from "@/lib/use-run-stream";
 import { DesignCanvass } from "@/components/run/design-directions";
+import { Explain } from "@/components/explain";
 import { Badge, EmptyState, Lightbox, MonoPath, Panel, cx } from "@/components/ui";
 import type { Tone } from "@/lib/presentation";
 
@@ -150,9 +176,10 @@ function chooserOf(lockedBy: "owner" | "ui-designer" | "fallback" | null): Choos
   if (lockedBy === "fallback") {
     return {
       tone: "warn",
-      badge: "no judgement applied",
-      sentence:
-        "Neither you nor ui-designer produced a usable choice, so the first mockup in manifest order was taken.",
+      // "no judgement applied" was the badge and it is the one thing a fallback
+      // is; "no one chose" says it without asking the reader to parse it.
+      badge: "no one chose",
+      sentence: "No usable choice was made, so the first mockup in the list was taken.",
     };
   }
   return { tone: "neutral", badge: "locked", sentence: "The run recorded no chooser." };
@@ -260,9 +287,16 @@ function MockupCard({
         )
       ) : (
         <div className="flex h-[156px] items-center justify-center bg-canvas px-3 text-center text-[11px] leading-snug text-ink-faint">
+          {/*
+           * BOTH FALLBACKS KEEP THEIR DISTINCTION AND LOSE THEIR EXPLANATION.
+           * Which of the two happened is worth saying — one is a path this side
+           * cannot turn into a URL, the other is a server that did not answer —
+           * but WHY the first one cannot, and where the path is printed instead,
+           * were sentences about this app's plumbing.
+           */}
           {src === null
-            ? "This mockup is on disk. Nothing here can turn that path into a URL — it is shown below instead."
-            : "The server did not return this mockup. It is still on disk at the path below."}
+            ? "This mockup is on disk and cannot be shown here."
+            : "The server did not return this mockup. It is still on disk."}
         </div>
       )}
 
@@ -304,20 +338,28 @@ function MockupCard({
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * The subtitle carries the STATE. The instruction is a line further down.
+ *
+ * `Panel` renders this at `text-[11px] text-ink-faint` — the faintest type on
+ * the surface — so the sentence a parked owner has to act on does not live here.
+ * It used to: "One of these is built and graded against. Pick it, or let the
+ * window close and ui-designer picks", with a 48-word paragraph under it saying
+ * the same thing again at reading size.
+ */
 const SUBTITLE: Readonly<Record<DesignLockPhase, string>> = {
-  pending:
-    "One of these is built and graded against. Pick it, or let the window close and ui-designer picks.",
-  closing: "The window closed. Re-reading the run to see which design was locked.",
+  pending: "The design lane is offering a choice.",
+  closing: "The window closed. Checking which design was locked.",
   /*
    * THE WINDOW THIS ENTRY EXISTS FOR. Between the direction choice and the hero
    * lock the record reads `{awaiting: false, locked: null}` for the whole of
    * stage B — a full per-section image set, minutes long — and the phase that
-   * shape used to derive was `unlocked`, whose subtitle is "The DESIGN lane
-   * finished without a design to lock". The opposite of what is happening.
+   * shape used to derive was `unlocked`, whose subtitle says the design lane
+   * finished with nothing to lock. The opposite of what is happening.
    */
-  expanding: "Your direction is chosen. The rest of its sections are being rendered now.",
-  settled: "The design this run was built to, and graded against.",
-  unlocked: "The DESIGN lane finished without a design to lock.",
+  expanding: "Your direction is chosen. Its other sections are being rendered now.",
+  settled: "The design this run was built to, and compared against.",
+  unlocked: "The design lane finished with nothing to lock.",
 };
 
 /**
@@ -380,9 +422,13 @@ function ReasonBlock({ reason }: { reason: string }): ReactNode {
         onClick={() => setOpen((previous) => !previous)}
         className="mt-1.5 text-[11px] text-accent underline-offset-2 hover:underline"
       >
-        {open
-          ? "fold"
-          : `unfold the whole reason${parts.length > 1 ? ` (${String(parts.length)} sentences)` : ""}`}
+        {/*
+         * THE COUNT STAYS AND THE WORDS AROUND IT GO. "unfold the whole reason
+         * (3 sentences)" under three clamped lines said "the whole reason" to a
+         * reader looking at part of it; the number is the half that tells him how
+         * much he is missing.
+         */}
+        {open ? "fold" : `unfold${parts.length > 1 ? ` (${String(parts.length)} sentences)` : ""}`}
       </button>
     </div>
   );
@@ -392,28 +438,27 @@ function ReasonBlock({ reason }: { reason: string }): ReactNode {
  * Who chose the DIRECTION, in one sentence that does not flatter a fallback.
  *
  * SEPARATE FROM `chooserOf` BECAUSE THE TWO CHOICES ARE DIFFERENT FACTS. The
- * direction decides what gets BUILT; the locked still decides what the finished
- * site is GRADED against. On an owner-chosen run they can even have different
+ * direction decides what gets BUILT; the locked image decides what the finished
+ * site is COMPARED against. On an owner-chosen run they can even have different
  * choosers — he picks the direction, and the hero of that direction is locked
  * automatically at the end of the expansion, carrying his attribution forward.
+ *
+ * THE CLAUSE ABOUT THE OTHER DIRECTIONS IS GONE, and with it the `others` count
+ * this function used to take. It read " The other 2 directions were offered and
+ * not built — nothing was graded against them", one row above the two cards
+ * carrying a `not built` badge each. A sentence whose whole content is the label
+ * under it is the first thing the 2026-08-05 cut deletes.
  */
 function directionSentence(
   by: "owner" | "ui-designer" | "fallback" | null,
   name: string,
-  others: number,
 ): string {
-  const rest =
-    others === 0
-      ? ""
-      : ` The other ${String(others)} ${others === 1 ? "direction was" : "directions were"} offered and not built — nothing was graded against them.`;
-  if (by === "owner") return `You chose ${name}.${rest}`;
-  if (by === "ui-designer") {
-    return `No choice arrived in time, so ui-designer chose ${name}.${rest}`;
-  }
+  if (by === "owner") return `You chose ${name}.`;
+  if (by === "ui-designer") return `No choice arrived in time, so ui-designer chose ${name}.`;
   if (by === "fallback") {
-    return `Neither you nor ui-designer produced a usable choice, so the first direction offered — ${name} — was taken, with no judgement applied.${rest}`;
+    return `No usable choice was made, so ${name}, the first one offered, was taken.`;
   }
-  return `The run was built in the ${name} direction and recorded no chooser.${rest}`;
+  return `The run was built in the ${name} direction and recorded no chooser.`;
 }
 
 export function DesignLockPanel({
@@ -527,56 +572,100 @@ export function DesignLockPanel({
       bodyClassName="p-0"
     >
       <div className="space-y-3 px-3 py-3">
-        {phase === "pending" && (
-          <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-            {hasDirections
-              ? "The direction you pick is expanded into the rest of its sections, and the build is made to it. The others stay on record as what was offered. Choosing is not required: if the window closes first, ui-designer picks and the run records that the pick was automatic."
-              : "Every build agent is given the locked mockup, and the visual gate grades the finished site against it rather than against the set. Choosing is not required: if the window closes first, ui-designer picks and the run records that the pick was automatic."}
-          </p>
-        )}
+        {/*
+         * THE ONE INSTRUCTION, AT READING SIZE, WITH THE FACT THAT DECIDES THE
+         * CLICK BEHIND THE `i`.
+         *
+         * What each branch keeps is what an owner cannot recover after clicking:
+         * on a canvassed run the pick is EXPANDED rather than built as it stands,
+         * and on a pre-canvass run the finished site is compared against the ONE
+         * image he picks and not against the set. Neither appears anywhere else
+         * on this surface. What both branches dropped is "Choosing is not
+         * required: if the window closes first, ui-designer picks…" — 25 words the
+         * subtitle used to carry above it as well.
+         *
+         * THE TWO BRANCHES DIFFER BY ONE CLAUSE, AND THE DIFFERENCE IS MEASURED
+         * OFF THE SCREEN RATHER THAN CHOSEN. A canvassed run draws `ParkClock`
+         * directly below this line, and its whole sentence is "If you do nothing,
+         * ui-designer picks and the run carries on" — so saying "or let the window
+         * close and ui-designer picks" here is that fact twice, five lines apart.
+         * A pre-canvass run has no clock, so its line is the only place the owner
+         * is told he does not have to answer, and it keeps the clause.
+         *
+         * IT IS ALSO GATED ON THERE BEING SOMETHING TO PICK. `pending` with a
+         * direction already chosen renders a deck with no choose buttons; an
+         * instruction to pick, over cards that cannot be picked, is worse than no
+         * instruction.
+         */}
+        {phase === "pending" &&
+          (hasDirections ? (
+            canvassOpen && (
+              <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
+                Pick a direction.
+                <Explain
+                  about="picking a direction"
+                  testId="explain-pick-direction"
+                  className="ml-1"
+                >
+                  The rest of its sections are rendered in the direction you pick, and the site
+                  is built to it.
+                </Explain>
+              </p>
+            )
+          ) : (
+            <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
+              Pick a mockup, or let the window close and ui-designer picks.
+              <Explain about="picking a mockup" testId="explain-pick-mockup" className="ml-1">
+                The finished site is compared against the one you pick, not against the whole
+                set.
+              </Explain>
+            </p>
+          ))}
 
         {/*
          * STAGE B, WHICH IS NEITHER A PARK NOR A RESULT. The choice is made and
          * the lane is rendering the rest of that direction's sections; nothing is
          * locked yet and nothing is being asked of the owner.
          */}
+        {/*
+         * THE TAIL CAME OFF THIS ONE, not the sentence. "The rest of its sections
+         * are being rendered now" is the `expanding` SUBTITLE word for word, two
+         * lines above, and "the one the gate grades against is locked when they
+         * land" is a consequence of a choice already made — there is nothing left
+         * for the reader to do about it.
+         */}
         {phase === "expanding" && chosenDirection !== null && (
           <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-            {directionSentence(
-              lock.chosenDirectionBy,
-              chosenDirection.name,
-              directions.length - 1,
-            )}{" "}
-            The rest of its sections are being rendered now; the one the gate grades against is
-            locked when they land.
+            {directionSentence(lock.chosenDirectionBy, chosenDirection.name)}
           </p>
         )}
 
         {(phase === "settled" || phase === "unlocked") && chosenDirection !== null && (
           <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-            {directionSentence(
-              lock.chosenDirectionBy,
-              chosenDirection.name,
-              directions.length - 1,
-            )}
+            {directionSentence(lock.chosenDirectionBy, chosenDirection.name)}
           </p>
         )}
 
         {phase === "settled" && (
           <div className="space-y-2">
-            <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-              {/*
-               * ON A CANVASSED RUN THE DIRECTION SENTENCE IS ALREADY ABOVE, and
-               * this one is about a different thing: which single still the gate
-               * graded against. Repeating "You picked this one" under "You chose
-               * Editorial slab" would read as one fact said twice, when what the
-               * owner picked (a direction) and what was locked (its hero) are two
-               * records with two choosers.
-               */}
-              {hasDirections
-                ? "The hero of that direction is the one still the visual gate graded the finished site against."
-                : chooser.sentence}
-            </p>
+            {/*
+             * ON A CANVASSED RUN THIS LINE IS NOT DRAWN AT ALL, and that is the
+             * 2026-08-05 cut rather than a branch that was always there. It used
+             * to read "The hero of that direction is the one still the visual gate
+             * graded the finished site against" — one row under "You chose
+             * Editorial slab", explaining a badge that is on screen. The fact it
+             * carried now sits behind the `i` on the `locked` badge itself, in
+             * `design-directions.tsx`, where the image it is about is.
+             *
+             * A pre-canvass run still gets `chooser.sentence`: there is no
+             * direction sentence above it, so without this line the settled record
+             * would not say who chose.
+             */}
+            {!hasDirections && (
+              <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
+                {chooser.sentence}
+              </p>
+            )}
             {/*
              * THE VERBATIM REASON IS SHOWN FOR `ui-designer` ONLY, and that is
              * not the record being hidden. §17.3 rule 4's "why" reaches the
@@ -603,18 +692,26 @@ export function DesignLockPanel({
           </div>
         )}
 
+        {/*
+         * KEPT INLINE, SHORTER. This is the one paragraph on the surface that
+         * QUALIFIES A RESULT the reader is looking at — the run was checked, but
+         * with nothing to check the look against — and a reader who misses it
+         * comes away trusting a weaker judgement than he has. "fell back to its
+         * rule-based floor" was the mechanism, and naming it changed nothing he
+         * could do.
+         */}
         {phase === "unlocked" && (
           <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-            No mockup was locked, so the visual gate fell back to its rule-based floor. This
-            run was graded without a reference design — which is a weaker judgement, not a
-            failing one.
+            No design was locked, so the site was checked without a reference. That is a
+            weaker check, not a failing one.
           </p>
         )}
 
         {/*
-         * BETWEEN THE EXPLANATION AND THE DECK, pointing into the first card:
-         * the run arrived here and stopped. Above the prose it read as a stray
-         * mark; spanning the panel it read as a dotted rule.
+         * BETWEEN THE COPY AND THE DECK, pointing into the first card: the run
+         * arrived here and stopped. Above the copy it read as a stray mark;
+         * spanning the panel it read as a dotted rule. (It sat under a paragraph
+         * when it was placed; since 2026-08-05 that paragraph is one line.)
          */}
         <LockConnector flowing={pending} />
 
@@ -639,10 +736,12 @@ export function DesignLockPanel({
             onSendRequest={onSendRequest}
           />
         ) : lock.mockups.length === 0 ? (
-          <EmptyState>
-            The DESIGN lane recorded no mockups on this run. Nothing here is missing from the
-            page; there was nothing to publish.
-          </EmptyState>
+          /*
+           * "Nothing here is missing from the page; there was nothing to publish"
+           * was reassurance about the sentence in front of it. The first sentence
+           * already says the lane recorded none.
+           */
+          <EmptyState>The design lane recorded no mockups on this run.</EmptyState>
         ) : (
           <ul className="grid list-none grid-cols-[repeat(auto-fit,minmax(212px,1fr))] gap-3">
             {lock.mockups.map((shot) => (
@@ -669,7 +768,7 @@ export function DesignLockPanel({
          */}
         {phase === "settled" && chosen === null && lock.locked !== null && (
           <p className="flex flex-wrap items-center gap-2 text-[11.5px] text-ink-faint">
-            The locked design is not among the mockups published for this run:
+            The locked design is not one of the mockups shown here:
             <MonoPath path={lock.locked} max={56} />
           </p>
         )}

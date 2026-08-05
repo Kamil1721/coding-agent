@@ -46,12 +46,29 @@
  *
  * ─── AND THE LIMIT IS ON SCREEN, WHERE HE IS TYPING ───
  *
- * The acceptance suite was frozen in the `spec` phase, which is over before this
- * park opens. Asking here changes what gets BUILT and what the build is compared
- * against VISUALLY; it changes nothing about what counts as done. That sentence
- * sits against the reply box rather than in this docblock, because an owner who
- * asks for a whole new page at this point is asking for something the verdict
- * will never check.
+ * The acceptance tests were written and locked in the `spec` phase, which is over
+ * before this park opens. Asking here changes what gets BUILT and what the build
+ * is compared against VISUALLY; it changes nothing about what counts as done.
+ * That sentence sits against the reply box rather than in this docblock, because
+ * an owner who asks for a whole new page at this point is asking for something
+ * the run will never check.
+ *
+ * ─── 2026-08-05: 145 WORDS OF EXPLANATION CAME OFF THIS FILE ───
+ *
+ * The owner's ask was "If something really must have a explanation it should have
+ * little i icon", and the two words he named as meaningless are on this surface:
+ * "suite" and "freeze". What each paragraph became is recorded at its own call
+ * site; the two rules the whole pass followed are here.
+ *
+ * A FACT THAT CHANGES WHAT HE DOES MAY BE HIDDEN AND MAY NOT BE DELETED. The one
+ * sentence in this file that survives at reading size is the ask limit, because
+ * he reads it while spending a capped, unrecoverable render. Everything that
+ * described a CONSEQUENCE of a click he has not made yet is gone.
+ *
+ * ONE VERB FOR THE VISUAL COMPARISON, shared with `design-lock.tsx`: "compared
+ * against". "The visual gate grades the finished site" was the internal name for
+ * the same mechanism, and a screen that uses both names for it is worse than one
+ * that uses the jargon twice.
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -67,6 +84,7 @@ import {
 import { formatTimeOnly } from "@/lib/format";
 import { countOf, directionsOf, isPublishedAs, mockupSection, requestsOf } from "@/lib/mockups";
 import { screenshotSrc } from "@/lib/screenshots";
+import { Explain } from "@/components/explain";
 import { Badge, Button, Lightbox, MonoPath, cx } from "@/components/ui";
 
 /* ------------------------------------------------------------------ */
@@ -135,17 +153,35 @@ function CloseGlyph(): ReactNode {
 }
 
 /* ------------------------------------------------------------------ */
-/* THE VERBATIM SENTENCE                                               */
+/* THE ONE SENTENCE THAT STAYS AT READING SIZE                         */
 /* ------------------------------------------------------------------ */
 
 /**
- * REQUIRED COPY, not a caption this component may reword. The run log carries
- * the same sentence when the park opens; both exist so the owner cannot come to
- * believe that what he asks for here is what the run will be judged on.
+ * The limit on what asking here can do — REQUIRED COPY, not a caption this
+ * component may reword away. It exists so the owner cannot come to believe that
+ * what he asks for here is what the run will be judged on.
+ *
+ * RENAMED AND REWRITTEN 2026-08-05, from `FROZEN_SUITE_SENTENCE`. It read: "The
+ * acceptance suite was frozen in the spec phase. What you ask for here changes
+ * what gets built and what the build is compared against visually — it does not
+ * change what counts as done." Two of the owner's named-as-meaningless words
+ * ("suite", "frozen") in the first clause, thirty-two words, and only the second
+ * half was about anything he could act on. What survives is the operative half.
+ *
+ * WHAT THE FIRST CLAUSE CARRIED AND WHERE IT WENT: NOWHERE. That the tests were
+ * written in an earlier phase is the REASON asking cannot move them, and a reason
+ * does not change what he types — the limit itself does. It was deleted rather
+ * than put behind an `i`, which this app's `Explain` docblock asks for by name:
+ * "an `i` is not cheaper than deleting".
+ *
+ * THE SERVER STILL SAYS THE LONG ONE. `server/src/design-dialogue.ts`'s
+ * `DESIGN_FROZEN_SUITE_NOTICE` is appended to the park's chat message and to
+ * every rendered answer, so the old wording — "suite", "frozen" and all — is
+ * still on screen in the transcript. That file is another lane's; the divergence
+ * is deliberate and reported rather than silently mirrored here.
  */
-export const FROZEN_SUITE_SENTENCE =
-  "The acceptance suite was frozen in the spec phase. What you ask for here changes what gets built " +
-  "and what the build is compared against visually — it does not change what counts as done.";
+export const ASK_LIMIT_SENTENCE =
+  "Asking here changes what gets built, not what counts as done.";
 
 /* ------------------------------------------------------------------ */
 /* One direction                                                       */
@@ -184,9 +220,14 @@ function DirectionStill({
   if (src === null || failed) {
     return (
       <div className="flex h-[120px] items-center justify-center border-t border-line bg-canvas px-3 text-center text-[11px] leading-snug text-ink-faint">
+        {/*
+         * WHICH OF THE TWO HAPPENED IS KEPT; WHY IT HAPPENED IS NOT. "Nothing
+         * here can turn that path into a URL" described this app's own plumbing
+         * to someone looking at a missing picture.
+         */}
         {src === null
-          ? "This still is on disk. Nothing here can turn that path into a URL."
-          : "The server did not return this still. It is still on disk."}
+          ? "This image is on disk and cannot be shown here."
+          : "The server did not return this image. It is on disk."}
       </div>
     );
   }
@@ -207,15 +248,21 @@ function DirectionStill({
        * layer whose entire job is offering the choice. Cropping the stills to fit
        * was the other candidate and it loses the thing being compared.
        */}
+      {/*
+       * "still" IS GONE FROM EVERY LABEL A READER MEETS. It is the word this
+       * file's own author used for one rendered image, and it reads as a verb
+       * first — "The server did not return this still. It is still on disk" was
+       * on screen. `mockup`/`image` costs nothing and is what he is looking at.
+       */}
       <button
         type="button"
         onClick={() => onZoom(shot)}
-        aria-label={`Enlarge the ${section} still`}
+        aria-label={`Enlarge the ${section} mockup`}
         className="block w-full cursor-zoom-in"
       >
         <img
           src={src}
-          alt={`${section} still`}
+          alt={`${section} mockup`}
           loading="lazy"
           onError={() => setFailed(true)}
           className="block h-auto w-full bg-canvas"
@@ -224,12 +271,19 @@ function DirectionStill({
       <figcaption className="flex items-center justify-between gap-2 px-2 py-1 text-[11px] text-ink-faint">
         <span className="min-w-0 truncate">{section}</span>
         {locked && (
-          <Badge
-            tone="accent"
-            className="shrink-0"
-            title="The visual gate grades the finished site against this one still."
-          >
+          <Badge tone="accent" className="shrink-0">
             locked
+            {/*
+             * THE FACT THAT USED TO BE A `title` ON THIS BADGE, and a paragraph
+             * in `design-lock.tsx` besides ("The hero of that direction is the
+             * one still the visual gate graded the finished site against"). Both
+             * are this one sentence, attached to the image it is about, reachable
+             * by keyboard and on touch — which `title` never was.
+             */}
+            {/* No `ml-1`: `Badge` is an inline-flex with its own `gap-1.5`. */}
+            <Explain about="the locked image" testId="explain-locked-image">
+              The finished site was compared against this one image.
+            </Explain>
           </Badge>
         )}
       </figcaption>
@@ -286,13 +340,25 @@ function DirectionCard({
           </h3>
           <p className="mt-1 text-[12px] leading-relaxed text-ink-dim">{direction.distinction}</p>
         </div>
+        {/*
+         * "chosen", NOT "building this", AND THE ASYMMETRY WITH "not built" IS
+         * DELIBERATE. `state` cannot tell stage B from a settled run — both are
+         * `chosen` — so "building this" was already wrong twice: during the
+         * expansion nothing is being built yet (sections are still rendering),
+         * and on a finished run it was built, past tense. "chosen" is true in
+         * both, and "not built" opposite it is true in both as well.
+         *
+         * The `title` on "not built" said "Offered, and not built. The run was
+         * never graded against it" — a tooltip restating the two words under the
+         * pointer.
+         */}
         {state === "chosen" && (
           <Badge tone="accent" className="shrink-0">
-            building this
+            chosen
           </Badge>
         )}
         {state === "discarded" && (
-          <Badge tone="neutral" className="shrink-0" title="Offered, and not built. The run was never graded against it.">
+          <Badge tone="neutral" className="shrink-0">
             not built
           </Badge>
         )}
@@ -310,12 +376,21 @@ function DirectionCard({
          * once, at the same height, and the stills are the argument underneath.
          */
         <div className="px-2.5 pb-2">
+          {/*
+           * THE `title` CAME OFF, NOT THE FACT. It was 28 words on hover — "The
+           * rest of the sections are rendered in this direction, and the build is
+           * made to it. The others are kept as a record of what was offered" —
+           * repeated identically on all three buttons, invisible to a keyboard
+           * and to touch. Its first half is behind the `i` on the panel's own
+           * instruction line (`design-lock.tsx`, "picking a direction") and, in
+           * the comparison layer, on the heading above these cards. Its second
+           * half is the `not built` badge those two cards carry afterwards.
+           */}
           <Button
             variant="primary"
             className="w-full justify-center"
             disabled={disabled}
             onClick={() => onChoose(direction.slug)}
-            title="The rest of the sections are rendered in this direction, and the build is made to it. The others are kept as a record of what was offered."
           >
             {choosing ? "choosing…" : `Build in the ${direction.name} direction`}
           </Button>
@@ -342,7 +417,7 @@ function DirectionCard({
          */
         <div className="space-y-1.5 border-t border-line px-2.5 py-2">
           <p className="text-[11.5px] leading-relaxed text-ink-dim">
-            Written art direction, with no stills: image generation was not available on this run.
+            Written art direction, no pictures: image generation was not available on this run.
           </p>
           {direction.notes !== null && <MonoPath path={direction.notes} max={44} />}
         </div>
@@ -478,9 +553,17 @@ function ParkClock({ clock, nowMs }: { clock: DesignParkClock; nowMs: number }):
             )}
           </p>
         )}
+        {/*
+         * KEPT INLINE, HALVED. It is the consequence of the countdown beside it,
+         * and a reader who misses it does not know he can walk away — that is the
+         * "before acting, cannot recover" case. What came off was the second
+         * half: "its reason is recorded here — not a failure, and not something
+         * you have to answer" is reassurance about a thing that has not happened,
+         * and the record it promises is drawn by `design-lock.tsx` afterwards
+         * whether or not this sentence said so.
+         */}
         <p className={cx("text-[11px] leading-relaxed text-ink-dim", countdown !== null && "mt-0.5")}>
-          If you do nothing, ui-designer picks a direction, the run carries on, and its reason is
-          recorded here — not a failure, and not something you have to answer.
+          If you do nothing, ui-designer picks and the run carries on.
         </p>
       </div>
     </div>
@@ -616,7 +699,8 @@ function RequestBox({
         setSection("");
         setSentFor(body);
       } else {
-        setError("That did not go through. Nothing was spent; the box still has what you typed.");
+        // "the box still has what you typed" described the box he is looking at.
+        setError("That did not go through. Nothing was spent.");
       }
     });
   }, [body, onSend, sending, spent]);
@@ -635,8 +719,8 @@ function RequestBox({
          */
         <p className="text-[12px] leading-relaxed text-warn">
           {rendersLeft === 0
-            ? "No more renders on this run — pick one of the directions above."
-            : "No more turns at this park — pick one of the directions above."}
+            ? "No renders left — pick one of the directions above."
+            : "No turns left — pick one of the directions above."}
         </p>
       ) : (
         <>
@@ -705,8 +789,10 @@ function RequestBox({
           </div>
 
           {sentFor !== null && (
+            // "the run stays parked meanwhile" answered a worry the panel around
+            // it already answers: the countdown is still running above this box.
             <p className="text-[10.5px] leading-relaxed text-accent">
-              Sent. The still appears above when it has been rendered; the run stays parked meanwhile.
+              Sent. The picture appears above when it is ready.
             </p>
           )}
           {error !== null && <p className="text-[11px] text-fail">{error}</p>}
@@ -714,12 +800,15 @@ function RequestBox({
       )}
 
       {/*
-       * THE HONEST LIMIT, WHERE HE IS TYPING. Verbatim, and not shortened: the
-       * distinction between "what gets built" and "what counts as done" is the
-       * whole of it, and a paraphrase that drops either half is the panel letting
-       * him believe the verdict will check what he just asked for.
+       * THE HONEST LIMIT, WHERE HE IS TYPING, AND THE ONE PARAGRAPH ON THIS
+       * SURFACE THAT WAS NOT ALLOWED BEHIND THE `i`. He is about to spend one of
+       * a capped, unrecoverable number of renders — "5 of 6 renders left" is on
+       * the line above — and the distinction between "what gets built" and "what
+       * counts as done" is what stops him spending it on a whole new page the run
+       * will never check. Both halves are still here; only the clause about WHEN
+       * the tests were written came off (see `ASK_LIMIT_SENTENCE`).
        */}
-      <p className="text-[10.5px] leading-relaxed text-ink-faint">{FROZEN_SUITE_SENTENCE}</p>
+      <p className="text-[10.5px] leading-relaxed text-ink-faint">{ASK_LIMIT_SENTENCE}</p>
     </div>
   );
 }
@@ -736,7 +825,6 @@ function RequestBox({
 function ChooserLayer({
   children,
   footer,
-  count,
   onClose,
   onEscape,
 }: {
@@ -749,7 +837,6 @@ function ChooserLayer({
    * sits below the fold on the screen where he is being invited to ask.
    */
   footer: ReactNode;
-  count: number;
   onClose: () => void;
   /** Returns true when it consumed the key — a zoomed still closes before the layer. */
   onEscape: () => boolean;
@@ -783,10 +870,17 @@ function ChooserLayer({
             <h2 className="text-[15px] font-medium leading-tight text-ink">
               Choose a design direction
             </h2>
+            {/*
+             * THE FIRST SENTENCE DESCRIBED THE SCREEN IT WAS ON. "3 directions,
+             * each rendering the same sections at the same size, so you are
+             * comparing like with like" — the reader is looking at three columns
+             * of matching sections; the count is the `{n} directions` badge and
+             * the sameness is the layout's whole point, visible at a glance.
+             * What is left is the half he cannot see: what the click does.
+             */}
             <p className="mt-1 max-w-[80ch] text-[12px] leading-relaxed text-ink-dim">
-              {String(count)} directions, each rendering the same sections at the same size, so you
-              are comparing like with like. The one you pick is expanded into the full set and the
-              build is made to it.
+              The one you pick is expanded into the rest of its sections, and the site is built
+              to it.
             </p>
           </div>
           <button
@@ -927,7 +1021,6 @@ export function DesignCanvass({
             The directions are open over the canvas.
           </p>
           <ChooserLayer
-            count={directions.length}
             onClose={() => setOpen(false)}
             onEscape={consumeEscape}
             footer={ask}
