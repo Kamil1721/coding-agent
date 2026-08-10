@@ -548,8 +548,58 @@ test("THE OWNER'S OWN runs.db OPENS AND KEEPS ITS RUNS — the only database tha
       assert.equal(rows.length, runIds.length, "the migration must not lose a run");
       for (const row of rows) {
         assert.equal(row.autoContinueCount, 0, `${row.runId} has never continued itself, and 0 says so`);
-        assert.equal(row.recoveryClass, null, `${row.runId} was never classified, and null says so`);
-        assert.deepEqual(store.listAttempts(row.runId), [], `${row.runId} predates the attempt ledger`);
+        /*
+         * THE CLASS IS READ, NOT PINNED TO `null`, AND THE REASON IS DATED.
+         *
+         * This line asserted `=== null` — "no run in the owner's database has
+         * ever been classified" — and on 2026-08-09
+         * `run-2026-08-09T21-04-00-713Z-a913c871` wrote `structural` into that
+         * column. The assertion was measuring the ABSENCE OF A FEATURE that has
+         * since shipped, so it went red for the one reason a fixture must never
+         * go red: the product started working. Proven pre-existing the clean way
+         * — the BASELINE tree from `gate-verified-2026-08-10`, built in scratch
+         * against this same live database, fails the identical assertion.
+         *
+         * WHAT IS ASSERTED INSTEAD IS WHAT THIS TEST IS FOR: the column reads
+         * through the migration without throwing, and its value is either "not
+         * classified" or a non-blank word. It is deliberately NOT a whitelist of
+         * class names: `runs.recovery_class` is read with `strOrNull` rather than
+         * `oneOf` precisely so a word written by a newer build reads through
+         * instead of throwing, and a copy of the union in this file would turn
+         * that tolerance into a red test the next time the classifier grows an
+         * arm. The class table's own tests own the vocabulary.
+         */
+        assert.ok(
+          row.recoveryClass === null || (typeof row.recoveryClass === "string" && row.recoveryClass.trim() !== ""),
+          `${row.runId} carries a recovery class that is neither null nor a word: ${JSON.stringify(row.recoveryClass)}`,
+        );
+        /*
+         * SAME CORRECTION, SAME DATE, SAME CAUSE. This asserted the attempt
+         * ledger was EMPTY for every run on the owner's disk — true only while
+         * nothing wrote to it. `a913c871` wrote two rows on 2026-08-09 (attempt 1
+         * `parked` at the plan seat, attempt 2 `completed` carrying the
+         * `suite_not_audited` refusal), so the assertion had become a claim that
+         * the ledger does not work.
+         *
+         * WHAT SURVIVES IS THE PROPERTY THIS TEST OWNS: the rows read back
+         * through the migration without a column throwing, and they are numbered
+         * from 1 with no gaps and no repeats — which is the one thing about an
+         * attempt ledger that a `1, 1, 3` would silently break and that nothing
+         * else here checks.
+         */
+        const attempts = store.listAttempts(row.runId);
+        assert.deepEqual(
+          attempts.map((a) => a.attemptNo),
+          attempts.map((_, i) => i + 1),
+          `${row.runId}'s attempt ledger is not numbered 1..n: ${JSON.stringify(attempts.map((a) => a.attemptNo))}`,
+        );
+        for (const attempt of attempts) {
+          assert.equal(attempt.runId, row.runId, "an attempt row is attributed to the wrong run");
+          assert.ok(
+            typeof attempt.startedAt === "string" && attempt.startedAt.trim() !== "",
+            `${row.runId} attempt ${String(attempt.attemptNo)} has no start instant, so nothing can be timed from it`,
+          );
+        }
       }
       // AND THE HISTORY THE OWNER CARES ABOUT SURVIVED, not merely the shape.
       assert.deepEqual(
@@ -659,6 +709,58 @@ test("re-stamping an already-delivered message does not move its delivery time",
     assert.equal(store.messages("run-idem")[0]?.deliveredAt, firstStamp);
   } finally {
     store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a supervisor_tickets table written before repair_counts existed gains it on open", () => {
+  /*
+   * THE ONLY DATABASE IN EXISTENCE THAT TAKES THIS PATH IS THE OWNER'S.
+   * `supervisor_tickets` was created on `dashboard/data/runs.db` by a build that
+   * ran earlier today, WITHOUT `repair_counts`. `CREATE TABLE IF NOT EXISTS` does
+   * nothing to a table that already exists, so without the migration entry
+   * `readSupervisorRepairCounts` throws "column repair_counts is absent" on that
+   * one machine and on no other — every test starts from `mkdtemp`, where the
+   * schema is always the newest one and the ALTER path is never taken. That
+   * asymmetry is the `design_lock` incident this file already reproduces for
+   * `runs`, and it is reproduced here the same way rather than trusted.
+   */
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-supervisor-migrate-"));
+  try {
+    const databasePath = join(dir, "old.db");
+    const old = RunStore.open(databasePath);
+    old.enqueueSupervisorTicket({ ticketKey: "k-old", ticketText: "a ticket from before", modelId: "m", nextAction: "waiting" });
+    old.close();
+
+    const stripper = new DatabaseSync(databasePath);
+    stripper.exec("ALTER TABLE supervisor_tickets DROP COLUMN repair_counts");
+    assert.ok(
+      !stripper
+        .prepare("PRAGMA table_info(supervisor_tickets)")
+        .all()
+        .map((row) => String(row["name"]))
+        .includes("repair_counts"),
+      "the fixture did not reproduce the pre-repair_counts schema",
+    );
+    stripper.close();
+
+    const migrated = RunStore.open(databasePath);
+    try {
+      // READABLE: the ticket survives, and its counter reads as "no cycle has run",
+      // which is TRUE of every historical row because nothing could run one.
+      assert.equal(migrated.getSupervisorTicket("k-old")?.ticketKey, "k-old");
+      assert.equal(migrated.readSupervisorRepairCounts("k-old"), "{}");
+      // AND WRITABLE: present is not the same as writable, and a brake that cannot
+      // be incremented is a brake that never fires.
+      migrated.updateSupervisorTicket("k-old", { repairCounts: JSON.stringify({ abc: 2 }) });
+      assert.equal(migrated.readSupervisorRepairCounts("k-old"), JSON.stringify({ abc: 2 }));
+      // A ticket that does not exist reads as no cycles rather than throwing: there
+      // is no cycle to start for a row that is gone.
+      assert.equal(migrated.readSupervisorRepairCounts("k-does-not-exist"), "{}");
+    } finally {
+      migrated.close();
+    }
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

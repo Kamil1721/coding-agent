@@ -34,6 +34,8 @@ import { Orchestrator } from "./orchestrator.js";
 import { DASHBOARD_ENV, ensureDirs, resolvePaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { ProjectRunner } from "./project-runner.js";
+import { SupervisorLoop } from "./supervisor.js";
+import { createSupervisorSubmit, startSupervisor } from "./supervisor-boot.js";
 
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const paths = resolvePaths(env);
@@ -48,14 +50,67 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const auth = new AuthProbe({ env });
   const catalog = new ModelCatalog(auth, env);
   const preview = new PreviewHost();
-  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env });
+  /*
+   * THE SUPERVISOR AND THE ORCHESTRATOR NEED EACH OTHER, SO ONE OF THE TWO EDGES
+   * IS LATE-BOUND. The loop submits through the orchestrator, and the
+   * orchestrator tells the loop when a run has settled; the holder is what breaks
+   * that cycle without a second `Orchestrator`, which is the corruption case
+   * `cron/cron-tick.ts` designs out (two pumps against one runs.db).
+   *
+   * THE HOOK IS A LATENCY OPTIMISATION AND NEVER A CORRECTNESS REQUIREMENT. The
+   * loop is correct on its 30 s interval alone, because every decision it takes
+   * is read from the tables; the hook only saves the owner up to 30 s of a
+   * finished run sitting unnoticed.
+   */
+  const supervisorHolder: { loop: SupervisorLoop | null } = { loop: null };
+  const orchestrator = new Orchestrator({
+    store,
+    bus,
+    paths,
+    catalog,
+    auth,
+    preview,
+    env,
+    onRunSettled: () => {
+      const loop = supervisorHolder.loop;
+      if (loop === null) return;
+      // MUST NOT THROW AND MUST NOT BLOCK — see `OrchestratorDeps.onRunSettled`.
+      // A rejection here would otherwise turn a finished run into a harness fault.
+      void Promise.resolve(loop.tick()).catch((error: unknown) => {
+        process.stdout.write(
+          `  supervisor tick after a settled run threw and was absorbed: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
+    },
+  });
+  const supervisorLoop = new SupervisorLoop({
+    store,
+    submit: createSupervisorSubmit({ store, bus, catalog, orchestrator }),
+    // THE CHEAP PATH (§7.5). A rate-limited run is resumed rather than
+    // re-submitted, which is the difference between waiting out a limit and
+    // paying for a second spec phase.
+    resume: (runId) => orchestrator.resume(runId),
+  });
+  supervisorHolder.loop = supervisorLoop;
   // ONE INSTANCE, SHARED WITH THE SERVER. It holds the running children, so the
   // boot reconcile and the shutdown kill below must act on the same object the
   // routes act on — a second runner inside `createDashboardServer` would leave
   // every started project alive after this process exits.
   const projects = new ProjectRunner({ paths, env });
 
-  const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths, projects });
+  const server = createDashboardServer({
+    store,
+    bus,
+    orchestrator,
+    catalog,
+    auth,
+    paths,
+    projects,
+    // WITHOUT THIS FIELD EVERY `POST /api/supervisor/*` ANSWERS 503 AND EVERY GET
+    // ANSWERS `probe.wired: false`. It is the evidence that something on this
+    // machine will act on the row START writes.
+    supervisor: supervisorLoop,
+  });
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -91,11 +146,26 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     process.stdout.write(`  project   ${entry.slug}: ${entry.outcome} — ${entry.detail}\n`);
   }
 
+  /*
+   * THE SUPERVISOR IS ARMED AND STARTED LAST, AFTER BOTH RECONCILES.
+   *
+   * Order is load-bearing twice. `orchestrator.reconcileOnBoot()` has to have run
+   * first, or the loop's first tick reads run rows a dead server left mid-flight
+   * and treats a resumable run as a live one. And `startSupervisor` REFUSES to
+   * install the interval if the boot arm check reports the health discriminator
+   * blind — it forces `desired='stopped'` with the reason on the row instead, so
+   * `GET /api/supervisor` reports the refusal rather than only this stdout.
+   */
+  const supervisor = startSupervisor({ loop: supervisorLoop, store });
+
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     process.stdout.write(`\n${signal}: stopping. In-flight builds are aborted and stay resumable.\n`);
+    // FIRST, AND SYNCHRONOUSLY: a tick that fires during teardown would claim a
+    // ticket and submit a run into a process that is closing its database.
+    supervisor.stop();
     // IN PARALLEL WITH THE ORCHESTRATOR, NOT AFTER IT, AND THE 3 s BELOW IS WHY.
     // That timer fires once this settles; a serial `stopAll` would run inside
     // the same budget the build teardown is already spending and the last child

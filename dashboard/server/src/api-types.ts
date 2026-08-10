@@ -2544,3 +2544,219 @@ export type CodeResponse = CodeTreeResponse | CodeFileResponse;
  * word is shared with the files route on purpose: same condition, same name.
  */
 export type PreviewOwnRefusalCode = "no_index_html" | "invalid_encoding" | "not_a_file";
+
+
+/* ----------------------------------------------------------------------
+ * THE SUPERVISOR CONTROL SURFACE — `GET /api/supervisor` and its three POSTs.
+ *
+ * THESE NAMES ARE NOT THIS FILE'S FIRST DRAFT, AND THE REASON IS WORTH THE
+ * PARAGRAPH. The client mirror at `dashboard/src/lib/api-types.ts` and the strip
+ * that renders it were written against `changedAt`/`at`/`run.quietForMs`/
+ * `queueDepth`/`lastDefect`, and `dashboard/src/lib/api.ts:386-391` types
+ * `startSupervisor()`/`stopSupervisor()` as returning the WHOLE state. A server
+ * shape that merely resembled that would have compiled on both sides and handed
+ * the strip `undefined` for every field it renders — the same class of break as
+ * this morning's, where a server type change passed 259 browser tests because
+ * Playwright's loader is transpile-only. The server owns the wire; it does not
+ * own it in a vacuum, so these are the client's names.
+ *
+ * WHAT IS ADDED BEYOND THE MIRROR, AND WHY IT IS SAFE. `probe.wired`,
+ * `probe.armed`, `probe.armNote` and the two command fields are server-only. A
+ * JSON body carrying fields a narrower mirror does not declare parses fine and
+ * keeps the client compiling, which is the direction that works; the reverse —
+ * a mirror declaring a field the server never sends — is the break.
+ *
+ * ADDITIVE AND SELF-CONTAINED. Nothing here is reachable from `GraphState`,
+ * `SseEvent`, `RunSummary` or `RunDetail`, so none of it crosses into the client
+ * program through `dashboard/src/lib/graph.ts:69`'s re-export. NO SSE EVENT TYPE
+ * IS ADDED EITHER: `contract-parity.test.ts` compares `SSE_EVENT_TYPES` against
+ * the client's mirror in both directions, and a supervisor event added on one
+ * side alone would fail it — correctly. The strip polls this route.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * What the owner asked the supervisor to be doing.
+ *
+ * `draining` is the STOP state and it is not a synonym for stopped: the loop has
+ * stopped CLAIMING new tickets and the in-flight run is still running to its own
+ * verdict. It becomes `stopped` when nothing is in flight. The route comment in
+ * `http.ts` carries the four measured reasons STOP may not abort.
+ */
+export type ApiSupervisorDesired = "running" | "draining" | "stopped";
+
+/** `supervisor_tickets.state` (design §7.2), mirrored from `db.ts`. */
+export type ApiSupervisorTicketState =
+  | "queued"
+  | "claimed"
+  | "running"
+  | "repairing"
+  | "waiting"
+  | "blocked"
+  | "done"
+  | "abandoned";
+
+export interface ApiSupervisorTicketView {
+  readonly ticketKey: string;
+  readonly title: string;
+  readonly state: ApiSupervisorTicketState;
+  /**
+   * FROM `supervisor_tickets`, NOT `run_attempts`. Design §7.6.2 field 4: that
+   * table files a failure as a completion — `#finish` writes
+   * `endClass: "completed"` on a run whose row says `status=failed` — so run
+   * a913c871's attempt 2 reads as a success there.
+   */
+  readonly attemptNo: number;
+  readonly maxAttempts: number;
+}
+
+export interface ApiSupervisorRunView {
+  readonly runId: string;
+  readonly phase: ApiPhase | null;
+  readonly status: ApiRunStatus;
+  /**
+   * Milliseconds since the last event on this run EXCLUDING rate-limit
+   * telemetry, or null when the clock has nothing to read.
+   *
+   * THE EXCLUSION IS THE FIELD'S WHOLE VALUE, and it is measured: seven
+   * `rate_limit` frames chopped run a913c871's 84m31s of working silence into a
+   * largest apparent gap of 25.2 minutes, and both numbers are under
+   * `DEFAULT_SILENCE_WARN_MIN = 90`, which is why nothing fired for an hour and
+   * a half. Null is NOT zero and NOT "fine" — the client treats it as unprovable
+   * liveness and refuses to render a confident `running`.
+   */
+  readonly quietForMs: number | null;
+}
+
+/** One authoring attempt and what the audit said about it. */
+export interface ApiSupervisorAttemptView {
+  readonly n: number;
+  readonly at: string;
+  /** The audit's blocking findings for this attempt, one string per finding. */
+  readonly problems: readonly string[];
+}
+
+/** The stable fingerprint — site plus sorted field paths, never prose. */
+export interface ApiSupervisorDefectView {
+  readonly signature: string;
+  readonly failureClass: string;
+  readonly bakeoffCode: string | null;
+  readonly at: string;
+  /**
+   * May an automated agent propose a repair for this class — {@link isRepairable},
+   * NOT `boundFor(klass) > 0`.
+   *
+   * CORRECTED 2026-08-10. This comment used to read "did the classifier give this
+   * class a nonzero budget", which is what the producer actually computed and is a
+   * RETRY-BUDGET question: every class `classOfBakeoffCode` returns is bound 0, so
+   * the field was `false` for all twelve `BakeoffError` codes while `supervisor.ts`
+   * routed the same failure to `repairing`. One predicate now answers it.
+   *
+   * NOTHING GATES ON IT YET, and that is stated so the next reader does not assume
+   * otherwise: `grep -arn repairable` finds the writer (`defect-record.ts` via
+   * `orchestrator.ts`), this declaration, and two fixture literals in
+   * `tools/repair/fixtures.mjs`. No code branches on it, so `unclassified` reading
+   * `true` authorises no work today — it makes the record agree with the panel.
+   */
+  readonly repairable: boolean;
+}
+
+export interface ApiSupervisorRepairView {
+  readonly patchId: string;
+  readonly filesChanged: readonly string[];
+  readonly appliedAt: string;
+  /** Null = the confirming re-run has not finished. NOT the same as false. */
+  readonly rerunPassed: boolean | null;
+}
+
+/**
+ * THE ROUTE'S OWN ARM CHECK, ON THE WIRE.
+ *
+ * The endpoint states how much it actually looked at, so "stopped with an empty
+ * queue" and "the reader is blind" cannot render identically. A panel whose
+ * failure mode is showing nothing is this repository's signature defect.
+ *
+ * `wired` is the third state and the one a 503 would have hidden: the durable
+ * desired state is readable from the database whether or not a loop exists, so
+ * a surface that only ever reported the row would show a confident `RUNNING`
+ * with nothing on this machine able to claim a ticket. `armed` is false when the
+ * route's own boot arm check could not tell its outputs apart; `armNote` always
+ * says which.
+ */
+export interface ApiSupervisorProbe {
+  readonly ticketsSeen: number;
+  readonly runsSeen: number;
+  readonly eventsSeen: number;
+  readonly wired: boolean;
+  readonly armed: boolean;
+  readonly armNote: string;
+  /**
+   * The wire fields this build has no producer for, named.
+   *
+   * NOT AN APOLOGY — THE CONTROL. `attempts: []`, `lastDefect: null` and
+   * `lastRepair: null` are indistinguishable, to a reader, from "three attempts
+   * happened and none was recorded", which is exactly how run a913c871's
+   * authoring trail was lost. Naming them means an empty list reads as *nobody
+   * writes one yet* rather than *nothing happened*, and the day a producer lands
+   * the name leaves this array. SERVER-ONLY.
+   */
+  readonly unsourced: readonly string[];
+}
+
+/** `GET /api/supervisor`. */
+export interface ApiSupervisorState {
+  readonly desired: ApiSupervisorDesired;
+  readonly changedAt: string;
+  /** owner|boot|guard. */
+  readonly changedBy: string;
+  /** Never blank — `supervisor_state.reason TEXT NOT NULL`, design §7.2. */
+  readonly reason: string;
+  /**
+   * THE SERVER'S OWN CLOCK AT THE INSTANT IT ANSWERED. Without it the strip
+   * cannot tell a live reading from one frozen in a backgrounded tab, and
+   * rendering a stale snapshot as live is worse than a false "backend down".
+   */
+  readonly at: string;
+  readonly ticket: ApiSupervisorTicketView | null;
+  readonly run: ApiSupervisorRunView | null;
+  readonly attempts: readonly ApiSupervisorAttemptView[];
+  readonly lastDefect: ApiSupervisorDefectView | null;
+  /**
+   * `supervisor_tickets.last_defect_id`. SERVER-ONLY, and it exists because the
+   * full {@link ApiSupervisorDefectView} has no producer yet: the id is the one
+   * piece of the defect that IS durable today, and dropping it would make a
+   * ticket that has a recorded defect render identically to one that never
+   * failed.
+   */
+  readonly lastDefectId: string | null;
+  readonly lastRepair: ApiSupervisorRepairView | null;
+  /** `supervisor_tickets.patch_id`. SERVER-ONLY, for the reason above. */
+  readonly lastPatchId: string | null;
+  /** `next_action TEXT NOT NULL` with no default. Always a sentence, never "". */
+  readonly nextAction: string;
+  readonly nextActionAt: string | null;
+  /** The SUPERVISOR's backlog: `supervisor_tickets` in state `queued`. */
+  readonly queueDepth: number;
+  /**
+   * Runs in `runs.status = 'queued'`, which STOP does not control — `pump()` is
+   * untouched, so a run the owner submits from the page still starts while the
+   * supervisor is stopped. Two questions, two numbers, and a single "queue
+   * depth" would answer neither honestly. SERVER-ONLY, not in the client mirror.
+   */
+  readonly queuedRuns: number;
+  readonly probe: ApiSupervisorProbe;
+}
+
+/**
+ * `POST /api/supervisor/start` | `/stop` | `/abort-now`.
+ *
+ * THE WHOLE STATE, NOT `{ok:true}`. The client's `startSupervisor()` is typed to
+ * return `SupervisorState` and renders it immediately, so a command that
+ * answered a receipt would leave the strip a poll behind its own button.
+ * `changed` and `note` ride on top and are server-only.
+ */
+export interface ApiSupervisorCommandResponse extends ApiSupervisorState {
+  /** False when the command was a no-op — starting an already-running supervisor. */
+  readonly changed: boolean;
+  /** Never blank: what the command did, in one sentence. */
+  readonly note: string;
+}

@@ -425,6 +425,150 @@ function flagOrNull(value: boolean | null | undefined): number | null {
 }
 
 /* -------------------------------------------------------------------------
+ * The supervisor's row shapes
+ * ---------------------------------------------------------------------- */
+
+/**
+ * What the OWNER last asked for, not what is happening.
+ *
+ * `draining` is the whole of STOP: the loop stops claiming and the in-flight
+ * run runs to its own verdict. Aborting instead would convert a resumable run
+ * into a terminal one (`isTerminal`), which is the loss `reconcileOnBoot`'s
+ * docblock exists to end.
+ */
+export type SupervisorDesired = "running" | "draining" | "stopped";
+
+export interface SupervisorState {
+  readonly desired: SupervisorDesired;
+  readonly changedAt: string;
+  /** `owner` | `boot` | `guard` — who moved it, never blank. */
+  readonly changedBy: string;
+  /** Why. Never blank; {@link RunStore.setSupervisorState} refuses an empty one. */
+  readonly reason: string;
+}
+
+/**
+ * A supervisor ticket's state.
+ *
+ * `queued` and `claimed` are the two halves of one instant and must stay
+ * separate: a crash between the claim and the submission leaves a `claimed`
+ * ticket with a null `currentRunId`, and that pair is the ONLY readable
+ * evidence that a submission was lost. Collapsing them would make a lost
+ * submission indistinguishable from an idle queue — which is the failure this
+ * whole lane exists to catch.
+ */
+export type SupervisorTicketState =
+  | "queued"
+  | "claimed"
+  | "running"
+  | "repairing"
+  | "waiting"
+  | "blocked"
+  | "done"
+  | "abandoned";
+
+export interface SupervisorTicket {
+  readonly ticketKey: string;
+  readonly ticketText: string;
+  readonly modelId: string;
+  readonly designLock: string;
+  readonly state: SupervisorTicketState;
+  readonly attemptNo: number;
+  readonly maxAttempts: number;
+  /** JSON, the per-class budgets of the design's §3.5. Carried, not parsed here. */
+  readonly classCounts: string;
+  /*
+   * `repair_counts` IS DELIBERATELY NOT A FIELD ON THIS INTERFACE, and the
+   * reason is a cross-lane one worth writing down.
+   *
+   * The column exists (see the schema and {@link RunStore.readSupervisorRepairCounts})
+   * and `SupervisorTicketPatch` can write it, but adding a REQUIRED field here
+   * breaks every hand-built `SupervisorTicket` literal in the tree — including
+   * `http.ts`'s own arm-check fixture, which another lane owns — and adding an
+   * OPTIONAL one would make "no cycles spent" and "this fixture does not model
+   * the counter" the same value on a brake. The counter has exactly one reader,
+   * `supervisor.ts#readRepairCounts`, so it is fetched by the one method that
+   * needs it instead of travelling on every row.
+   */
+  readonly currentRunId: string | null;
+  readonly lastRunId: string | null;
+  readonly lastClass: string | null;
+  readonly lastDefectId: string | null;
+  readonly patchId: string | null;
+  readonly enqueuedAt: string;
+  readonly updatedAt: string;
+  /** Always a sentence. Never `''`; the schema has no default and this is why. */
+  readonly nextAction: string;
+  readonly nextActionAt: string | null;
+}
+
+export interface NewSupervisorTicket {
+  readonly ticketKey: string;
+  readonly ticketText: string;
+  readonly modelId: string;
+  readonly nextAction: string;
+  readonly maxAttempts?: number;
+  readonly designLock?: string;
+}
+
+export interface SupervisorTicketPatch {
+  readonly state?: SupervisorTicketState;
+  readonly attemptNo?: number;
+  readonly classCounts?: string;
+  readonly repairCounts?: string;
+  readonly currentRunId?: string | null;
+  readonly lastRunId?: string | null;
+  readonly lastClass?: string | null;
+  readonly lastDefectId?: string | null;
+  readonly patchId?: string | null;
+  readonly nextAction?: string;
+  readonly nextActionAt?: string | null;
+}
+
+/**
+ * One line of the supervisor's journal.
+ *
+ * `cron-tick.ts:14-20` is the precedent, verbatim in intent: six of the seven
+ * ways a tick can end produce the identical observable, so every terminal path
+ * appends exactly one row naming the decision and why.
+ */
+export interface SupervisorLogEntry {
+  readonly seq: number;
+  readonly at: string;
+  readonly ticketKey: string | null;
+  readonly runId: string | null;
+  readonly decision: string;
+  readonly reason: string;
+}
+
+const SUPERVISOR_DESIRED: readonly SupervisorDesired[] = ["running", "draining", "stopped"];
+
+const SUPERVISOR_TICKET_STATES: readonly SupervisorTicketState[] = [
+  "queued",
+  "claimed",
+  "running",
+  "repairing",
+  "waiting",
+  "blocked",
+  "done",
+  "abandoned",
+];
+
+/**
+ * The state a database that has never seen a supervisor reports.
+ *
+ * STOPPED, not running: a process that boots and starts spending because a
+ * table was empty is the opposite of an owner-controlled switch. The reason
+ * string is non-empty here for the same rule the column enforces.
+ */
+const SUPERVISOR_STATE_SEED: SupervisorState = {
+  desired: "stopped",
+  changedAt: "",
+  changedBy: "boot",
+  reason: "the supervisor has never been started on this database",
+};
+
+/* -------------------------------------------------------------------------
  * Enum guards — a column is text, and text can be anything
  * ---------------------------------------------------------------------- */
 
@@ -690,6 +834,72 @@ CREATE TABLE IF NOT EXISTS metered_spend (
   updated_at              TEXT NOT NULL,
   PRIMARY KEY (run_id, kind, model)
 ) WITHOUT ROWID;
+
+/*
+ * ─── THE SUPERVISOR'S THREE TABLES ───
+ *
+ * They are NEW TABLES, which is the cheap half of this schema: CREATE TABLE IF
+ * NOT EXISTS makes them empty on the owner's existing database and nothing in
+ * ADDED_RUN_COLUMNS has to know about them. No column is added to "runs" here,
+ * deliberately -- the supervisor's counters answer a different question from
+ * runs.auto_continue_count and recovery.ts is explicit that mixing two counters
+ * into one is how a bound stops working.
+ *
+ * WHY THE STATE IS A TABLE AND NOT A FIELD ON THE PROCESS. The whole point of
+ * the loop is that it survives its own restart: which ticket is in flight, and
+ * whether the owner asked for RUNNING or STOPPED, must be readable by a process
+ * that has just booted and remembers nothing.
+ *
+ * next_action TEXT NOT NULL WITH NO DEFAULT IS THE ANTI-SIGNATURE-DEFECT
+ * MEASURE, AT THE SCHEMA LEVEL. This repository's catalogued failure is a
+ * display that reports work it never observed; a ticket row that could be
+ * written with nothing to say about itself is that defect with a database
+ * behind it. SQLite refuses the INSERT instead. Adding DEFAULT '' to this
+ * column would turn supervisor.test.ts's "a ticket cannot be filed mute" red,
+ * which is the point of writing it down here.
+ *
+ * (No backticks anywhere in this comment: the whole schema is a template
+ * literal and one would end it.)
+ */
+CREATE TABLE IF NOT EXISTS supervisor_state (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  desired    TEXT NOT NULL,
+  changed_at TEXT NOT NULL,
+  changed_by TEXT NOT NULL,
+  reason     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS supervisor_tickets (
+  ticket_key     TEXT PRIMARY KEY,
+  ticket_text    TEXT NOT NULL,
+  model_id       TEXT NOT NULL,
+  design_lock    TEXT NOT NULL DEFAULT 'auto',
+  state          TEXT NOT NULL,
+  attempt_no     INTEGER NOT NULL DEFAULT 0,
+  max_attempts   INTEGER NOT NULL DEFAULT 3,
+  class_counts   TEXT NOT NULL DEFAULT '{}',
+  repair_counts  TEXT NOT NULL DEFAULT '{}',
+  current_run_id TEXT,
+  last_run_id    TEXT,
+  last_class     TEXT,
+  last_defect_id TEXT,
+  patch_id       TEXT,
+  enqueued_at    TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  next_action    TEXT NOT NULL,
+  next_action_at TEXT
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS supervisor_tickets_state ON supervisor_tickets (state, enqueued_at);
+
+CREATE TABLE IF NOT EXISTS supervisor_log (
+  seq        INTEGER PRIMARY KEY,
+  at         TEXT NOT NULL,
+  ticket_key TEXT,
+  run_id     TEXT,
+  decision   TEXT NOT NULL,
+  reason     TEXT NOT NULL
+);
 `;
 
 const RUN_COLUMNS = [
@@ -884,6 +1094,34 @@ function migrateMessages(db: DatabaseSync): void {
   addMissingColumns(db, "messages", ADDED_MESSAGE_COLUMNS);
 }
 
+/**
+ * The same hook on `supervisor_tickets`, and this one DOES defend a database
+ * that exists.
+ *
+ * `supervisor_tickets` was created by a build that ran against the owner's own
+ * `dashboard/data/runs.db` earlier today, WITHOUT `repair_counts`.
+ * `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so
+ * without this entry `toSupervisorTicket` would throw "column repair_counts is
+ * absent" on that one database and on no other — every test starts from
+ * `mkdtemp`, where the newest schema is always complete. That asymmetry is
+ * exactly the `design_lock` incident this file already records, and it is why
+ * `db.test.ts` reproduces it with a DROP COLUMN fixture rather than trusting the
+ * schema.
+ *
+ * `'{}'` is the honest default: no historical ticket has ever had a repair cycle,
+ * because nothing could run one.
+ */
+const ADDED_SUPERVISOR_TICKET_COLUMNS: readonly { readonly name: string; readonly ddl: string }[] = [
+  {
+    name: "repair_counts",
+    ddl: "ALTER TABLE supervisor_tickets ADD COLUMN repair_counts TEXT NOT NULL DEFAULT '{}'",
+  },
+];
+
+function migrateSupervisorTickets(db: DatabaseSync): void {
+  addMissingColumns(db, "supervisor_tickets", ADDED_SUPERVISOR_TICKET_COLUMNS);
+}
+
 export class RunStore {
   readonly #db: DatabaseSync;
 
@@ -907,6 +1145,7 @@ export class RunStore {
     // returns no rows, so the order also decides whether an ALTER would be
     // attempted against nothing.
     migrateMessages(db);
+    migrateSupervisorTickets(db);
     return new RunStore(db);
   }
 
@@ -1701,6 +1940,217 @@ export class RunStore {
   runSpend(runId: string): ApiRunSpend {
     return runSpend(this.listSeatSpend(runId), this.listMeteredSpend(runId));
   }
+
+  /* ---- the supervisor ------------------------------------------------ */
+
+  /**
+   * What the owner last asked for. A database with no row reports
+   * {@link SUPERVISOR_STATE_SEED} — stopped — rather than throwing or guessing.
+   */
+  readSupervisorState(): SupervisorState {
+    const row = this.#db.prepare(`SELECT * FROM supervisor_state WHERE id = 1`).get() as Row | undefined;
+    if (row === undefined) return SUPERVISOR_STATE_SEED;
+    return {
+      desired: oneOf(SUPERVISOR_DESIRED, str(row, "desired"), "supervisor desired state"),
+      changedAt: str(row, "changed_at"),
+      changedBy: str(row, "changed_by"),
+      reason: str(row, "reason"),
+    };
+  }
+
+  /**
+   * Move the switch, and say who and why.
+   *
+   * THE BLANK-REASON THROW IS NOT DEFENSIVE PROGRAMMING. Every transition here
+   * is something the owner will later ask about — "why did it stop at 03:00" —
+   * and a row that answers `''` is the signature defect wearing a state
+   * machine. The schema cannot enforce non-empty, so the writer does.
+   */
+  setSupervisorState(desired: SupervisorDesired, changedBy: string, reason: string): SupervisorState {
+    if (reason.trim() === "") throw new Error("a supervisor state change needs a reason; '' is not one");
+    if (changedBy.trim() === "") throw new Error("a supervisor state change needs an author; '' is not one");
+    const at = new Date().toISOString();
+    this.#db
+      .prepare(
+        `INSERT INTO supervisor_state (id, desired, changed_at, changed_by, reason)
+         VALUES (1, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET desired = excluded.desired, changed_at = excluded.changed_at,
+           changed_by = excluded.changed_by, reason = excluded.reason`,
+      )
+      .run(desired, at, changedBy, reason);
+    return { desired, changedAt: at, changedBy, reason };
+  }
+
+  /**
+   * File a ticket for the supervisor to run.
+   *
+   * `INSERT OR IGNORE`-free on purpose: a duplicate key is a caller bug worth a
+   * throw, not a silently dropped brief.
+   */
+  enqueueSupervisorTicket(input: NewSupervisorTicket): SupervisorTicket {
+    if (input.nextAction.trim() === "") {
+      throw new Error("a supervisor ticket needs a nextAction sentence; '' is not one");
+    }
+    // The brief is owner-authored and persisted, so it takes the same redaction
+    // pass `createRun` gives `ticketText`.
+    const safe = redactForPersistence({ ticketText: input.ticketText, nextAction: input.nextAction });
+    const now = new Date().toISOString();
+    this.#db
+      .prepare(
+        `INSERT INTO supervisor_tickets (ticket_key, ticket_text, model_id, design_lock, state,
+           attempt_no, max_attempts, class_counts, repair_counts, enqueued_at, updated_at, next_action)
+         VALUES (?, ?, ?, ?, 'queued', 0, ?, '{}', '{}', ?, ?, ?)`,
+      )
+      .run(
+        input.ticketKey,
+        safe.ticketText,
+        input.modelId,
+        input.designLock ?? "auto",
+        input.maxAttempts ?? 3,
+        now,
+        now,
+        safe.nextAction,
+      );
+    const ticket = this.getSupervisorTicket(input.ticketKey);
+    if (ticket === null) throw new Error(`supervisor ticket ${input.ticketKey} vanished immediately after insert`);
+    return ticket;
+  }
+
+  /**
+   * The per-signature repair-cycle counter, as stored JSON.
+   *
+   * ITS OWN READER because it is not on {@link SupervisorTicket} — see the note
+   * where the field is deliberately absent. Returns '{}' for a ticket that does
+   * not exist, which is the same answer as a ticket that has had no cycle: this
+   * value only ever gates whether ANOTHER cycle may start, and there is no cycle
+   * to start for a row that is gone.
+   */
+  readSupervisorRepairCounts(ticketKey: string): string {
+    const row = this.#db.prepare(`SELECT repair_counts FROM supervisor_tickets WHERE ticket_key = ?`).get(ticketKey) as
+      | Row
+      | undefined;
+    return row === undefined ? "{}" : str(row, "repair_counts");
+  }
+
+  getSupervisorTicket(ticketKey: string): SupervisorTicket | null {
+    const row = this.#db.prepare(`SELECT * FROM supervisor_tickets WHERE ticket_key = ?`).get(ticketKey) as
+      | Row
+      | undefined;
+    return row === undefined ? null : toSupervisorTicket(row);
+  }
+
+  /** Oldest first, so the queue is a queue. */
+  listSupervisorTickets(states?: readonly SupervisorTicketState[]): readonly SupervisorTicket[] {
+    const rows =
+      states === undefined
+        ? (this.#db.prepare(`SELECT * FROM supervisor_tickets ORDER BY enqueued_at ASC`).all() as Row[])
+        : (this.#db
+            .prepare(
+              `SELECT * FROM supervisor_tickets WHERE state IN (${states.map(() => "?").join(",")})
+               ORDER BY enqueued_at ASC`,
+            )
+            .all(...states) as Row[]);
+    return rows.map(toSupervisorTicket);
+  }
+
+  /**
+   * The conditional claim, and the boolean is the whole contract.
+   *
+   * `WHERE state = 'queued'` plus `changes() === 1` is what makes a double tick
+   * (the 30 s interval and the `#finish` hook landing together) unable to claim
+   * the same ticket twice. A read-then-write would race even on one thread,
+   * because the read and the write are two statements with an `await` between
+   * them in every real caller.
+   */
+  claimSupervisorTicket(ticketKey: string, nextAction: string): boolean {
+    if (nextAction.trim() === "") throw new Error("a claim needs a nextAction sentence; '' is not one");
+    const result = this.#db
+      .prepare(
+        `UPDATE supervisor_tickets SET state = 'claimed', updated_at = ?, next_action = ?
+         WHERE ticket_key = ? AND state = 'queued'`,
+      )
+      .run(new Date().toISOString(), nextAction, ticketKey);
+    return Number(result.changes) === 1;
+  }
+
+  updateSupervisorTicket(ticketKey: string, patch: SupervisorTicketPatch): SupervisorTicket {
+    if (patch.nextAction !== undefined && patch.nextAction.trim() === "") {
+      throw new Error("a supervisor ticket cannot be patched to a blank nextAction");
+    }
+    const sets: string[] = ["updated_at = ?"];
+    const values: (string | number | null)[] = [new Date().toISOString()];
+    const put = (column: string, value: string | number | null): void => {
+      sets.push(`${column} = ?`);
+      values.push(value);
+    };
+    if (patch.state !== undefined) put("state", patch.state);
+    if (patch.attemptNo !== undefined) put("attempt_no", patch.attemptNo);
+    if (patch.classCounts !== undefined) put("class_counts", patch.classCounts);
+    if (patch.repairCounts !== undefined) put("repair_counts", patch.repairCounts);
+    if (patch.currentRunId !== undefined) put("current_run_id", patch.currentRunId);
+    if (patch.lastRunId !== undefined) put("last_run_id", patch.lastRunId);
+    if (patch.lastClass !== undefined) put("last_class", patch.lastClass);
+    if (patch.lastDefectId !== undefined) put("last_defect_id", patch.lastDefectId);
+    if (patch.patchId !== undefined) put("patch_id", patch.patchId);
+    if (patch.nextAction !== undefined) put("next_action", patch.nextAction);
+    if (patch.nextActionAt !== undefined) put("next_action_at", patch.nextActionAt);
+    values.push(ticketKey);
+    this.#db.prepare(`UPDATE supervisor_tickets SET ${sets.join(", ")} WHERE ticket_key = ?`).run(...values);
+    const ticket = this.getSupervisorTicket(ticketKey);
+    if (ticket === null) throw new Error(`supervisor ticket ${ticketKey} is absent`);
+    return ticket;
+  }
+
+  logSupervisorDecision(entry: {
+    readonly ticketKey: string | null;
+    readonly runId: string | null;
+    readonly decision: string;
+    readonly reason: string;
+  }): SupervisorLogEntry {
+    if (entry.reason.trim() === "") throw new Error(`supervisor decision '${entry.decision}' was logged with no reason`);
+    const at = new Date().toISOString();
+    const result = this.#db
+      .prepare(`INSERT INTO supervisor_log (at, ticket_key, run_id, decision, reason) VALUES (?, ?, ?, ?, ?)`)
+      .run(at, entry.ticketKey, entry.runId, entry.decision, entry.reason);
+    return { seq: Number(result.lastInsertRowid), at, ...entry };
+  }
+
+  /** Newest first — the journal is read from its end. */
+  listSupervisorLog(limit = 50): readonly SupervisorLogEntry[] {
+    const rows = this.#db
+      .prepare(`SELECT * FROM supervisor_log ORDER BY seq DESC LIMIT ?`)
+      .all(limit) as Row[];
+    return rows.map((row) => ({
+      seq: num(row, "seq"),
+      at: str(row, "at"),
+      ticketKey: strOrNull(row, "ticket_key"),
+      runId: strOrNull(row, "run_id"),
+      decision: str(row, "decision"),
+      reason: str(row, "reason"),
+    }));
+  }
+}
+
+function toSupervisorTicket(row: Row): SupervisorTicket {
+  return {
+    ticketKey: str(row, "ticket_key"),
+    ticketText: str(row, "ticket_text"),
+    modelId: str(row, "model_id"),
+    designLock: str(row, "design_lock"),
+    state: oneOf(SUPERVISOR_TICKET_STATES, str(row, "state"), "supervisor ticket state"),
+    attemptNo: num(row, "attempt_no"),
+    maxAttempts: num(row, "max_attempts"),
+    classCounts: str(row, "class_counts"),
+    currentRunId: strOrNull(row, "current_run_id"),
+    lastRunId: strOrNull(row, "last_run_id"),
+    lastClass: strOrNull(row, "last_class"),
+    lastDefectId: strOrNull(row, "last_defect_id"),
+    patchId: strOrNull(row, "patch_id"),
+    enqueuedAt: str(row, "enqueued_at"),
+    updatedAt: str(row, "updated_at"),
+    nextAction: str(row, "next_action"),
+    nextActionAt: strOrNull(row, "next_action_at"),
+  };
 }
 
 function toSeatSpendRow(row: Row): ApiSeatSpend {

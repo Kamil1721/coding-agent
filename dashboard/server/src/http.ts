@@ -137,7 +137,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { DEFAULT_PORT, LOOPBACK_HOST } from "./dashboard-url.js";
 import { ADVERSARY_RECORD_FILE, adversaryPassFromRecord } from "./adversary.js";
@@ -151,6 +151,11 @@ import type {
   ApiProjectStopResponse,
   ApiProjectsResponse,
   ApiRepublishResponse,
+  ApiSupervisorCommandResponse,
+  ApiSupervisorDesired,
+  ApiSupervisorProbe,
+  ApiSupervisorState,
+  ApiSupervisorTicketView,
   CreateRunResponse,
   HealthResponse,
   ModelOption,
@@ -176,7 +181,13 @@ import { GateProbe } from "./health-gate.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import { isTerminal } from "./db.js";
-import type { RunRow, RunStore } from "./db.js";
+import type {
+  RunRow,
+  RunStore,
+  SupervisorState as StoredSupervisorState,
+  SupervisorTicket,
+  SupervisorTicketState,
+} from "./db.js";
 import { DESIGN_MOCKUP_COPY_PREFIX, DESIGN_MOCKUP_LABEL, readDesignLock } from "./design-lock.js";
 import type { DesignLockRecord } from "./design-lock.js";
 import { MAX_DESIGN_LOCK_TURNS, MAX_DESIGN_ON_DEMAND_RENDERS } from "./design-prompt.js";
@@ -199,7 +210,7 @@ import {
   secretStoreFile,
 } from "./secret-intake.js";
 import type { SecretIntakeStatus } from "./secret-intake.js";
-import { briefHasContent, ticketWithReferences } from "./ticket.js";
+import { briefHasContent, ticketWithReferences, titleFromBrief } from "./ticket.js";
 import {
   MAX_REFERENCE_IMAGES,
   MAX_REFERENCE_IMAGE_BYTES,
@@ -363,6 +374,53 @@ export interface RunController {
   deliverDesignRequest?(runId: string): boolean;
 }
 
+/**
+ * The one thing this router needs the SUPERVISOR OBJECT for.
+ *
+ * A PORT OF ONE METHOD, AND THAT NARROWNESS IS THE DESIGN. Everything the
+ * surface reports — the desired state, the tickets, their `next_action`, the
+ * attempt numbers — is already durable in `supervisor_state` and
+ * `supervisor_tickets` (design §7.2) and is read here through `deps.store`,
+ * which is the SAME source `SupervisorLoop.snapshot()` reads. A panel that says
+ * "idle" and a loop that is stuck therefore cannot disagree, because there is no
+ * second copy of the answer to drift. A fatter port would have created one.
+ *
+ * WHAT THE OBJECT IS STILL FOR: it is the evidence that something on this
+ * machine will ACT on the row. START writes `desired='running'` and then nudges
+ * the loop so the owner does not wait out the 30 s interval; with no loop
+ * present, START refuses rather than writing a row nothing will read. That
+ * distinction is the difference between a switch and a picture of a switch.
+ *
+ * NOTHING HERE CREATES A RUN. The loop claims a ticket and submits it (design
+ * §7.3 step 4) through the extracted `submitRun`; this router never mints a
+ * ticket identity of its own. A bypassed `createRun` mints a DIFFERENT ticket
+ * id, which finds no frozen suite and pays for a whole fresh spec phase — with
+ * no throw and no compile error, which is why it has to be designed out rather
+ * than remembered.
+ */
+export interface SupervisorController {
+  /**
+   * Run one decision pass now, synchronously, re-entrancy-guarded by the loop.
+   *
+   * Called after START only. It is not called on GET: a status read that
+   * advanced the state machine would make the dashboard's own polling a driver
+   * of the system it is watching.
+   */
+  tick(): unknown;
+}
+
+/**
+ * How the in-flight ticket is chosen, oldest first within the first non-empty
+ * band.
+ *
+ * `claimed` IS IN THE LIST AND MUST BE. A ticket claimed with a null
+ * `currentRunId` is the only readable evidence that a submission was lost
+ * between the claim and the run row; dropping it from this list would render
+ * that state as "idle", which is precisely the failure the surface exists to
+ * catch.
+ */
+const SUPERVISOR_ACTIVE_STATES: readonly SupervisorTicketState[] = ["claimed", "running", "repairing", "waiting"];
+
 export interface HttpDeps {
   readonly store: RunStore;
   readonly bus: RunEventBus;
@@ -430,6 +488,21 @@ export interface HttpDeps {
    * would leave its children running after exit.
    */
   readonly projects?: ProjectRunner;
+  /**
+   * The autonomy supervisor, if this process has one.
+   *
+   * OPTIONAL, AND THE ABSENT CASE IS A FIRST-CLASS ANSWER RATHER THAN A HOLE.
+   * `GET /api/supervisor` with no supervisor returns **200 with
+   * `probe.wired:false`** and a sentence, not a 503 and not a plausible-looking
+   * `stopped`. Both alternatives were rejected for the same reason: a 503 is
+   * indistinguishable from "the dashboard is down", and a synthetic `stopped`
+   * is indistinguishable from a healthy idle system — so the one state the owner
+   * most needs to see, *there is no supervisor behind your start button*, would
+   * be the state that renders identically to two others. The three POSTs DO
+   * refuse with 503, because a command that cannot be carried out must not
+   * answer 200.
+   */
+  readonly supervisor?: SupervisorController;
 }
 
 /**
@@ -443,6 +516,8 @@ export interface HttpDeps {
 interface ResolvedHttpDeps extends HttpDeps {
   readonly gate: GateProbe;
   readonly projects: ProjectRunner;
+  /** The boot arm check's verdict, carried onto every supervisor response. */
+  readonly supervisorArm: { readonly armed: boolean; readonly armNote: string };
 }
 
 /**
@@ -857,6 +932,678 @@ export class BodyTooLargeError extends Error {
   }
 }
 
+/* ----------------------------------------------------------------------
+ * THE SUPERVISOR CONTROL SURFACE.
+ *
+ * Four routes and one composer. The composer is exported because the boot ARM
+ * CHECK drives it directly: a panel whose failure mode is "renders the same
+ * thing whatever happened" is exactly the defect this project keeps catching,
+ * and the only way to know the composer can produce different answers is to
+ * make it produce them while the answer is known.
+ * ---------------------------------------------------------------------- */
+
+/** What `nextAction` reads when the supervisor supplied nothing. Never blank. */
+export const SUPERVISOR_NO_NEXT_ACTION =
+  "the supervisor reported no next action — that is a supervisor defect, not an idle state";
+
+/** What `probe.armNote` reads when there is nothing behind the route. */
+export const SUPERVISOR_NOT_WIRED =
+  "no supervisor is wired into this server: nothing will claim a ticket, and start/stop will refuse";
+
+const SUPERVISOR_NO_REASON = "the supervisor recorded no reason for this state";
+
+function nonBlank(value: string, fallback: string): string {
+  return value.trim().length > 0 ? value : fallback;
+}
+
+/**
+ * Milliseconds since this run last did something that was NOT routine telemetry.
+ *
+ * THE `rate_limit` EXCLUSION IS THE ENTIRE VALUE OF THIS FUNCTION, and it is
+ * measured rather than tasteful: on run `a913c871` seven `rate_limit` frames
+ * arrived during one 84m31s stretch in which the spec seat produced nothing, so
+ * `runs.last_event_at` — which every event resets — showed a largest gap of
+ * 25.2 minutes. Both numbers sit under `DEFAULT_SILENCE_WARN_MIN = 90`, which is
+ * why nothing fired for an hour and a half. A quiet clock that counts telemetry
+ * as progress reports a working system for as long as the provider keeps
+ * answering.
+ *
+ * IT DOES NOT USE `store.lastRunEventAt`, deliberately: that reader is the
+ * resets-on-anything one. The scan walks this run's events backwards and stops
+ * at the first non-telemetry frame.
+ *
+ * With no such event the clock runs from `startedAt`, because "this run has
+ * produced nothing at all" is the loudest version of quiet, not the absence of
+ * an answer.
+ */
+export function supervisorQuietMs(store: RunStore, row: RunRow, nowMs: number): number {
+  const events = store.eventsSince(row.runId, 0);
+  let since = row.startedAt;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const stored = events[i];
+    if (stored === undefined) continue;
+    if (stored.event.type === "rate_limit") continue;
+    since = stored.at;
+    break;
+  }
+  const parsed = Date.parse(since);
+  if (Number.isNaN(parsed)) return 0;
+  return Math.max(0, nowMs - parsed);
+}
+
+/**
+ * Everything the composer reads, gathered once so the composer itself is pure.
+ *
+ * THE ARM CHECK IS THE REASON IT IS PURE. A composer that reached into the store
+ * could only be armed by writing fake rows into the owner's database, which is
+ * to say it would not be armed at all.
+ */
+export interface SupervisorComposerInput {
+  readonly state: StoredSupervisorState;
+  /** The ticket the loop is on, chosen by {@link SUPERVISOR_ACTIVE_STATES}. */
+  readonly activeTicket: SupervisorTicket | null;
+  readonly run: RunRow | null;
+  readonly quietForMs: number | null;
+  /** `supervisor_tickets` in state `queued`. */
+  readonly queueDepth: number;
+  /** Every supervisor ticket row, terminal ones included. */
+  readonly ticketsSeen: number;
+  readonly queuedRuns: number;
+  readonly runsSeen: number;
+  readonly eventsSeen: number;
+  readonly wired: boolean;
+  readonly armed: boolean;
+  readonly armNote: string;
+  readonly at: string;
+}
+
+/**
+ * The wire fields that have no producer in this build, named on the wire.
+ *
+ * THIS IS NOT AN APOLOGY, IT IS THE CONTROL. `attempts: []`, `lastDefect: null`
+ * and `lastRepair: null` are indistinguishable, to a reader, from "three
+ * attempts happened and none is recorded" — which is exactly how run a913c871's
+ * authoring trail was lost. Naming them means an empty attempts list can be read
+ * as *nobody is writing one yet* rather than as *nothing happened*, and the day
+ * a producer lands the name disappears from this array and the test that counts
+ * it goes red.
+ */
+const SUPERVISOR_UNSOURCED = ["attempts", "lastDefect", "lastRepair"] as const;
+
+/**
+ * What `nextAction` says when no ticket is carrying its own sentence.
+ *
+ * EVERY BRANCH RETURNS A DIFFERENT ONE, and that is the requirement rather than
+ * a nicety: this is the field the owner reads after eight hours away, and design
+ * §7.2 gives `next_action` no default for the same reason — a state that has
+ * nothing to say about itself is a state nobody can act on.
+ */
+function supervisorIdleAction(input: SupervisorComposerInput): string {
+  if (!input.wired) return SUPERVISOR_NOT_WIRED;
+  const queued = `${String(input.queueDepth)} ticket(s) queued`;
+  if (input.state.desired === "stopped") {
+    return input.queueDepth === 0
+      ? "stopped, and nothing is queued — POST /api/supervisor/start after filing a ticket"
+      : `stopped with ${queued}; nothing will be claimed until START`;
+  }
+  if (input.state.desired === "draining") {
+    return input.run === null
+      ? `draining with nothing in flight; the next tick settles to stopped, holding ${queued}`
+      : `draining: ${input.run.runId} runs to its own verdict and no new ticket will be claimed`;
+  }
+  return input.queueDepth === 0
+    ? "running with an empty queue; there is nothing to claim"
+    : `running: the next tick claims the oldest of ${queued}`;
+}
+
+/**
+ * Compose the wire body.
+ *
+ * Every never-blank promise in `ApiSupervisorState` is kept HERE rather than
+ * trusted from the store, because the router is the last place that can keep
+ * it: a blank `nextAction` renders as an empty line, which reads as "idle" and
+ * in fact means a ticket was written into a state with nothing to say about
+ * itself.
+ */
+export function composeSupervisorState(input: SupervisorComposerInput): ApiSupervisorState {
+  const ticket: ApiSupervisorTicketView | null =
+    input.activeTicket === null
+      ? null
+      : {
+          ticketKey: input.activeTicket.ticketKey,
+          title: titleFromBrief(input.activeTicket.ticketText),
+          state: input.activeTicket.state,
+          attemptNo: input.activeTicket.attemptNo,
+          maxAttempts: input.activeTicket.maxAttempts,
+        };
+  const probe: ApiSupervisorProbe = {
+    ticketsSeen: input.ticketsSeen,
+    runsSeen: input.runsSeen,
+    eventsSeen: input.eventsSeen,
+    wired: input.wired,
+    armed: input.armed,
+    armNote: input.wired ? input.armNote : SUPERVISOR_NOT_WIRED,
+    unsourced: SUPERVISOR_UNSOURCED,
+  };
+  return {
+    desired: input.state.desired,
+    changedAt: input.state.changedAt,
+    changedBy: input.state.changedBy,
+    reason: nonBlank(input.state.reason, SUPERVISOR_NO_REASON),
+    at: input.at,
+    ticket,
+    run:
+      input.run === null
+        ? null
+        : { runId: input.run.runId, phase: input.run.phase, status: input.run.status, quietForMs: input.quietForMs },
+    attempts: [],
+    lastDefect: null,
+    lastDefectId: input.activeTicket?.lastDefectId ?? null,
+    lastRepair: null,
+    lastPatchId: input.activeTicket?.patchId ?? null,
+    nextAction:
+      input.activeTicket === null
+        ? supervisorIdleAction(input)
+        : nonBlank(input.activeTicket.nextAction, SUPERVISOR_NO_NEXT_ACTION),
+    nextActionAt: input.activeTicket?.nextActionAt ?? null,
+    queueDepth: input.queueDepth,
+    queuedRuns: input.queuedRuns,
+    probe,
+  };
+}
+
+/** The three synthetic states the boot arm check drives the composer with. */
+const ARM_STATE: StoredSupervisorState = {
+  desired: "stopped",
+  changedAt: "2026-08-10T00:00:00.000Z",
+  changedBy: "boot",
+  reason: "arm check",
+};
+
+const ARM_TICKET: SupervisorTicket = {
+  ticketKey: "arm-check",
+  ticketText: "arm check",
+  modelId: "opus[1m]",
+  designLock: "auto",
+  state: "running",
+  attemptNo: 2,
+  maxAttempts: 3,
+  classCounts: "{}",
+  currentRunId: "arm-run",
+  lastRunId: null,
+  lastClass: null,
+  lastDefectId: null,
+  patchId: null,
+  enqueuedAt: "2026-08-10T00:00:00.000Z",
+  updatedAt: "2026-08-10T00:00:00.000Z",
+  nextAction: "waiting for arm-run to reach a verdict",
+  nextActionAt: null,
+};
+
+const ARM_INPUT: SupervisorComposerInput = {
+  state: ARM_STATE,
+  activeTicket: null,
+  run: null,
+  quietForMs: null,
+  queueDepth: 0,
+  ticketsSeen: 0,
+  queuedRuns: 0,
+  runsSeen: 0,
+  eventsSeen: 0,
+  wired: true,
+  armed: true,
+  armNote: "arming",
+  at: "2026-08-10T00:00:00.000Z",
+};
+
+/**
+ * THE ROUTE'S START-UP ARM CHECK, run once per server while the answer is known.
+ *
+ * TWO ARMS, AND THE SECOND IS THE ONE THAT MATTERS.
+ *
+ * ARM ONE drives {@link composeSupervisorState} with three inputs that MUST
+ * produce three different bodies — not wired, stopped with an empty queue, and
+ * running on a ticket. A composer that has gone constant (an early `return`, a
+ * swallowed argument) passes every "is it 200 with a body" test ever written and
+ * fails this one. THE `probe` BLOCK IS STRIPPED BEFORE COMPARING, and that is
+ * not tidiness: `probe.wired` and the counters are assembled outside the
+ * composer's own branches, so they differ between these three inputs even when
+ * everything the OWNER reads has collapsed to one constant. Measured, on this
+ * file: a mutation that made the composer always return the not-wired body left
+ * an unstripped arm reporting "3 distinguishable states" while three route
+ * assertions went red. Comparing the state alone is what makes the arm strictly
+ * stronger than the tests it guards.
+ *
+ * ARM TWO READS THE LIVE STORE ONCE and prints what it measured, in the idiom
+ * that caught a real bug on 2026-08-09 (`ARM CHECK: seat matcher finds N
+ * process(es); ceiling reads '64000'`). Arm one cannot see the failure this
+ * component will actually have — a surface reading a different database, or a
+ * loop nobody drives — and the cheap defence is to make the boot log state, in
+ * measured values, what it read and whether anything will act on it.
+ *
+ * IT DOES NOT THROW, IN EITHER ARM. The owner's requirement is a system that
+ * does not stop, and refusing to boot the dashboard because a status composer
+ * looked odd would trade the whole surface for one panel. A blind composer sets
+ * `probe.armed:false` on EVERY response instead, so the blindness travels on the
+ * wire and the panel can say so.
+ */
+export function armSupervisorRoute(
+  store: RunStore,
+  supervisor: SupervisorController | undefined,
+  log: (line: string) => void = (line) => {
+    process.stderr.write(`${line}\n`);
+  },
+): { readonly armed: boolean; readonly armNote: string } {
+  const stateOnly = (state: ApiSupervisorState): string => {
+    const { probe: _probe, ...rest } = state;
+    void _probe;
+    return JSON.stringify(rest);
+  };
+  const bodies = [
+    stateOnly(composeSupervisorState({ ...ARM_INPUT, wired: false })),
+    stateOnly(composeSupervisorState(ARM_INPUT)),
+    stateOnly(
+      composeSupervisorState({
+        ...ARM_INPUT,
+        state: { ...ARM_STATE, desired: "running" },
+        activeTicket: ARM_TICKET,
+        ticketsSeen: 1,
+      }),
+    ),
+  ];
+  const distinct = new Set(bodies).size;
+  const armed = distinct === bodies.length;
+  const armNote = armed
+    ? `composer renders ${String(distinct)} distinguishable states`
+    : `BLIND: the composer renders only ${String(distinct)} of ${String(bodies.length)} states`;
+  log(`ARM CHECK: supervisor route ${armNote}`);
+
+  const state = store.readSupervisorState();
+  const tickets = store.listSupervisorTickets();
+  const active = tickets.find((candidate) => SUPERVISOR_ACTIVE_STATES.includes(candidate.state)) ?? null;
+  log(
+    `ARM CHECK: supervisor route reads desired='${state.desired}' since ${state.changedAt}, ` +
+      `${String(tickets.length)} ticket(s), ${String(tickets.filter((t) => t.state === "queued").length)} queued, ` +
+      `active=${active === null ? "none" : `${active.ticketKey}/${active.state}`}, ` +
+      `loop=${supervisor === undefined ? "NOT WIRED — nothing will claim a ticket and START will refuse" : "wired"}`,
+  );
+  return { armed, armNote };
+}
+
+/**
+ * `GET /api/supervisor` — the whole machine-readable state, in one poll.
+ *
+ * READ FROM THE STORE, WHICH IS THE SAME SOURCE THE LOOP DECIDES FROM. There is
+ * no second copy of the answer, so a panel that says "idle" and a loop that is
+ * stuck cannot disagree. The counts and the quiet clock are computed here for
+ * the same reason: a pass-through field is one whose only provable property is
+ * that it was passed through.
+ *
+ * `probe.eventsSeen` is scoped to the CURRENT RUN, not to the database, because
+ * its job is to say whether the quiet clock had anything to look at.
+ */
+function supervisorSnapshot(deps: ResolvedHttpDeps): ApiSupervisorState {
+  const tickets = deps.store.listSupervisorTickets();
+  const activeTicket = tickets.find((candidate) => SUPERVISOR_ACTIVE_STATES.includes(candidate.state)) ?? null;
+  const runId = activeTicket?.currentRunId ?? null;
+  const run = runId === null ? null : deps.store.getRun(runId);
+  const runs = deps.store.listRuns();
+  return composeSupervisorState({
+    state: deps.store.readSupervisorState(),
+    activeTicket,
+    run,
+    quietForMs: run === null ? null : supervisorQuietMs(deps.store, run, Date.now()),
+    queueDepth: tickets.filter((candidate) => candidate.state === "queued").length,
+    ticketsSeen: tickets.length,
+    queuedRuns: runs.filter((candidate) => candidate.status === "queued").length,
+    runsSeen: runs.length,
+    eventsSeen: run === null ? 0 : deps.store.latestSeq(run.runId),
+    wired: deps.supervisor !== undefined,
+    armed: deps.supervisorArm.armed,
+    armNote: deps.supervisorArm.armNote,
+    at: new Date().toISOString(),
+  });
+}
+
+/** The three commands, and nothing else answers on this prefix. */
+const SUPERVISOR_ACTIONS = ["start", "stop", "abort-now"] as const;
+type SupervisorAction = (typeof SUPERVISOR_ACTIONS)[number];
+
+function isSupervisorAction(value: string): value is SupervisorAction {
+  return (SUPERVISOR_ACTIONS as readonly string[]).includes(value);
+}
+
+/**
+ * `POST /api/supervisor/tickets` — the only way a ticket ever enters the queue.
+ *
+ * THE KEY IS MINTED HERE, FROM THE BRIEF, AND THE CALLER MAY NOT SUPPLY ONE.
+ * `store.enqueueSupervisorTicket` is deliberately `INSERT OR IGNORE`-free ("a
+ * duplicate key is a caller bug worth a throw"), which is right for a library and
+ * fatal for a route: a double-submitted form would throw out of the router as a
+ * 500. Minting from the brief digest makes the duplicate case DECIDABLE — the
+ * same brief is the same ticket, and the second POST is a 409 that says so — and
+ * removes an entire class of caller error. It also means a retried POST after a
+ * dropped connection cannot file the work twice.
+ *
+ * THE MODEL ID IS CHECKED AGAINST THE CATALOG, AND ONLY WHEN THE CATALOG CAN
+ * ACTUALLY ANSWER (added 2026-08-10 — this docblock used to say it was not checked
+ * at all, and gave the right reason for the wrong rule).
+ *
+ * WHAT WAS MEASURED. `{"modelId":"no-such-model"}` answered 201 and queued the
+ * ticket; the typo became a failure two ticks later, in the SUBMIT step —
+ * `supervisor_log`: "the submission threw…: no-such-model is not in the catalog, so
+ * this ticket cannot be submitted" — which spends an attempt and leaves a `blocked`
+ * ticket. Nothing spins and nothing is orphaned, so this was never fatal; it is
+ * simply a brief that never runs, discovered in the morning. The docs the owner is
+ * told to read promise `400 invalid_model` among the legible refusals, and now it
+ * exists.
+ *
+ * AND WHY THE OLD RULE'S REASONING IS KEPT RATHER THAN OVERRULED. A ticket filed at
+ * 2am against a provider whose auth has lapsed must still be FILED: auth can come
+ * back before the loop claims it, and the queue must not depend on a network read.
+ * Those are two different facts and {@link ModelCatalog} separates them —
+ * `entries()` keeps an unavailable row WITH its reason. So:
+ *
+ *   the id is in the catalog                  -> FILE, whatever `available` says
+ *   the id is absent and the catalog enumerated -> 400 `invalid_model`; a typo can
+ *                                                  never run, at any hour
+ *   the id is absent and the catalog       -> FILE, because a failed probe cannot
+ *     could not ENUMERATE                     tell a typo from an outage, and losing
+ *                                             the brief is the worse of the two
+ *
+ * The third branch is not hypothetical: `ModelCatalog.entries()` collapses to a
+ * single fallback row when `fetchAnthropicModels` throws OR when the Claude CLI is
+ * not logged in, so a rule that refused on absence alone would reject every real
+ * model id the moment the probe failed. That is the failure the previous rule was
+ * written to avoid, and it is still avoided — `catalog.enumerated()` is the field
+ * that separates the two, and it is asked rather than inferred: inferring it from the
+ * row ids read a HEALTHY catalog as degraded on this machine, because the real CLI
+ * lists a model whose id is `default`.
+ */
+async function fileSupervisorTicket(
+  deps: ResolvedHttpDeps,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  // THE SAME CROSS-ORIGIN REFUSAL start/stop MAKE. Filing is what start then
+  // spends the owner's quota on, so it is not a lesser write. An ABSENT `Origin`
+  // is allowed, because curl and the cron tick send none.
+  if (!originIsDashboard(request.headers.origin)) {
+    sendError(
+      response,
+      403,
+      "cross_origin_write",
+      "a supervisor ticket may only be filed from the dashboard's own page",
+      "Use the dashboard at http://127.0.0.1:4319, or send the request with no Origin header.",
+    );
+    return;
+  }
+
+  const text = await readBody(request).catch((error: unknown) => {
+    sendError(response, 400, "invalid_body", describeError(error), "POST a JSON object with ticketText and modelId.");
+    return null;
+  });
+  if (text === null) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    sendError(response, 400, "invalid_body", describeError(error), "POST a JSON object with ticketText and modelId.");
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    sendError(response, 400, "invalid_body", "the body must be a JSON object", null);
+    return;
+  }
+  const body = parsed as Record<string, unknown>;
+  const ticketText = body["ticketText"];
+  const modelId = body["modelId"];
+
+  // `briefHasContent`, NOT `.trim()`: a brief of zero-width or format characters
+  // trims to a non-empty string while rendering as an empty field, and this queue
+  // is the one that spends money unattended. Same function `POST /api/runs` uses.
+  if (typeof ticketText !== "string" || !briefHasContent(ticketText)) {
+    sendError(
+      response,
+      400,
+      "invalid_ticket",
+      "ticketText must be a non-empty string — a brief of only invisible characters is empty",
+      null,
+    );
+    return;
+  }
+  if (ticketText.length > MAX_TICKET_CHARS) {
+    sendError(
+      response,
+      400,
+      "invalid_ticket",
+      `ticketText is ${String(ticketText.length)} characters; the cap is ${String(MAX_TICKET_CHARS)}`,
+      "Split the work into separate tickets. A brief this long is usually two tickets.",
+    );
+    return;
+  }
+  if (typeof modelId !== "string" || modelId.trim() === "") {
+    sendError(response, 400, "invalid_model", "modelId must be a non-empty string", "GET /api/models lists them.");
+    return;
+  }
+  /*
+   * THE TYPO GUARD. See this function's docblock for why absence alone is not
+   * enough: the fallback row means the catalog could not enumerate, and refusing
+   * then would lose a good brief to a network failure.
+   */
+  if ((await deps.catalog.resolve(modelId)) === null) {
+    /*
+     * `catalog.enumerated()`, NOT AN INSPECTION OF THE ROWS. The first version of
+     * this guard inferred "the catalog answered" from the ABSENCE of the fallback
+     * row's id, and the live CLI falsified it the same hour: this machine's
+     * `/api/models` lists `default` ALONGSIDE `opus[1m]`, `sonnet` and `haiku`,
+     * because the CLI enumerates a model of its own with that id. The catalog knows
+     * whether it enumerated; nothing else can work it out.
+     */
+    if (await deps.catalog.enumerated()) {
+      sendError(
+        response,
+        400,
+        "invalid_model",
+        `${modelId} is not in the catalog, so this ticket could never be submitted`,
+        "GET /api/models lists every id that can actually run. Nothing was queued.",
+      );
+      return;
+    }
+  }
+  const maxAttempts = body["maxAttempts"];
+  if (maxAttempts !== undefined && (typeof maxAttempts !== "number" || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10)) {
+    sendError(
+      response,
+      400,
+      "invalid_body",
+      "maxAttempts must be an integer between 1 and 10 when present",
+      "It is the ceiling on how many runs this one brief may cost. Absent means 3.",
+    );
+    return;
+  }
+
+  const ticketKey = `t-${createHash("sha256").update(ticketText, "utf8").digest("hex").slice(0, 16)}`;
+  if (deps.store.getSupervisorTicket(ticketKey) !== null) {
+    sendError(
+      response,
+      409,
+      "ticket_already_queued",
+      `this exact brief is already filed as ${ticketKey}`,
+      "Change the brief, or read the existing ticket on GET /api/supervisor. A retried POST is not a second ticket.",
+    );
+    return;
+  }
+
+  const filed = deps.store.enqueueSupervisorTicket({
+    ticketKey,
+    ticketText,
+    modelId,
+    designLock: "auto",
+    ...(typeof maxAttempts === "number" ? { maxAttempts } : {}),
+    // NEVER BLANK BY CONTRACT — the store throws on an empty one — and it says
+    // what the owner still has to do, because a filed ticket on a STOPPED
+    // supervisor is work that will never start until someone presses start.
+    nextAction:
+      deps.store.readSupervisorState().desired === "running"
+        ? "waiting for the supervisor to claim it, which is the next tick"
+        : "nothing until the supervisor is running — POST /api/supervisor/start",
+  });
+  deps.store.logSupervisorDecision({
+    ticketKey: filed.ticketKey,
+    runId: null,
+    decision: "claimed",
+    reason: `the owner filed this ticket from the dashboard: ${titleFromBrief(ticketText)}`,
+  });
+  sendJson(response, 201, {
+    ticketKey: filed.ticketKey,
+    title: titleFromBrief(ticketText),
+    state: filed.state,
+    maxAttempts: filed.maxAttempts,
+    nextAction: filed.nextAction,
+    queuedTickets: deps.store.listSupervisorTickets(["queued"]).length,
+    desired: deps.store.readSupervisorState().desired,
+  });
+}
+
+async function supervisorCommand(
+  deps: ResolvedHttpDeps,
+  action: string,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  if (!isSupervisorAction(action)) {
+    sendError(response, 404, "not_found", `no route for POST /api/supervisor/${action}`, null);
+    return;
+  }
+  /* THE SAME CROSS-ORIGIN REFUSAL THE PROJECT AND SECRET ROUTES MAKE, and for a
+   * larger effect than either: these decide whether this machine spends the
+   * owner's subscription quota unattended for the next eight hours. A page the
+   * owner did not open cannot READ this API — no CORS header is ever set — but
+   * without a preflight it can still POST. An ABSENT `Origin` is allowed,
+   * because curl and the cron tick send none. */
+  if (!originIsDashboard(request.headers.origin)) {
+    sendError(
+      response,
+      403,
+      "cross_origin_write",
+      "the supervisor may only be started or stopped from the dashboard's own page",
+      "Use the dashboard at http://127.0.0.1:4319, or send the request with no Origin header.",
+    );
+    return;
+  }
+
+  let body: Record<string, unknown> = {};
+  const text = await readBody(request).catch((error: unknown) => {
+    sendError(response, 400, "invalid_body", describeError(error), "POST a small JSON object, or no body at all.");
+    return null;
+  });
+  if (text === null) return;
+  if (text.trim().length > 0) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      sendError(response, 400, "invalid_body", describeError(error), "POST a JSON object, or no body at all.");
+      return;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      sendError(response, 400, "invalid_body", "the body must be a JSON object", "Or send no body at all.");
+      return;
+    }
+    body = parsed as Record<string, unknown>;
+  }
+
+  /* THE CONFIRM IS CHECKED BEFORE THE WIRING, so that a client discovering this
+   * route learns it is destructive whether or not a loop happens to be running.
+   * It is only on abort-now: START and STOP are both non-destructive, and a
+   * confirm on STOP would train the owner to click through the one that
+   * matters. */
+  if (action === "abort-now" && body["confirm"] !== true) {
+    sendError(
+      response,
+      400,
+      "confirm_required",
+      "aborting now cancels the in-flight run, and a cancelled run is TERMINAL: resume() refuses it, the " +
+        "classifier calls it intentional at bound 0, and nothing will auto-continue it. The workspace and the " +
+        "session are lost.",
+      'POST {"confirm":true} if that is what you want. To stop WITHOUT losing the run, POST /api/supervisor/stop, ' +
+        "which drains: it stops claiming new tickets and lets the current run finish.",
+    );
+    return;
+  }
+
+  /* A SWITCH WITH NOTHING BEHIND IT REFUSES RATHER THAN WRITING A ROW.
+   * `setSupervisorState` would happily persist `desired='running'` here, and the
+   * next GET would report a confident RUNNING that nothing on this machine can
+   * act on — a start button that reports success and starts nothing is this
+   * repository's signature defect with a label on it. The GET still answers 200
+   * and says `probe.wired:false`, which is the honest version of the same fact. */
+  if (deps.supervisor === undefined) {
+    sendError(
+      response,
+      503,
+      "supervisor_not_wired",
+      "no supervisor loop is wired into this server, so nothing would act on a change to the desired state",
+      "This build has the control surface but not the loop. GET /api/supervisor reports the same thing with " +
+        "probe.wired:false and refuses to guess.",
+    );
+    return;
+  }
+
+  const reason =
+    typeof body["reason"] === "string" && body["reason"].trim().length > 0
+      ? body["reason"]
+      : `the owner posted /api/supervisor/${action}`;
+  const before = deps.store.readSupervisorState();
+  const inFlight =
+    deps.store
+      .listSupervisorTickets()
+      .find((candidate) => SUPERVISOR_ACTIVE_STATES.includes(candidate.state))?.currentRunId ?? null;
+
+  if (action === "abort-now") {
+    /* THE DESTRUCTIVE PATH STOPS HERE, DELIBERATELY UNFINISHED RATHER THAN HALF
+     * DONE. Cancelling the run without moving its ticket to `blocked` would
+     * leave the next START re-spending on the run the owner just killed, and the
+     * ticket writer is the supervisor's, not this router's. A 501 naming the
+     * missing half is honest; a partial abort is not. */
+    sendError(
+      response,
+      501,
+      "abort_not_wired",
+      "the supervisor cannot yet park an aborted ticket as `blocked`, and cancelling the run without that " +
+        "would make the next START re-spend on the run you just killed",
+      "POST /api/supervisor/stop to drain, or cancel the run directly with POST /api/runs/:id/cancel and " +
+        "accept that its ticket stays claimed.",
+    );
+    return;
+  }
+
+  const desired: ApiSupervisorDesired = action === "start" ? "running" : "draining";
+  const changed = before.desired !== desired;
+  if (changed) deps.store.setSupervisorState(desired, "owner", reason);
+  /* THE NUDGE IS AFTER THE WRITE AND ONLY ON START. The loop reads the row it
+   * decides from, so ticking before the write would decide on the old state;
+   * and ticking on STOP would be asking a loop that has just been told to stop
+   * claiming to go and have a look. */
+  if (action === "start") deps.supervisor.tick();
+
+  const state = supervisorSnapshot(deps);
+  const answer: ApiSupervisorCommandResponse = {
+    ...state,
+    changed,
+    note: changed
+      ? action === "start"
+        ? `the supervisor is running; ${String(state.queueDepth)} ticket(s) queued`
+        : inFlight === null
+          ? "draining with nothing in flight; the next tick settles to stopped"
+          : `draining: ${inFlight} runs to its own verdict and no new ticket will be claimed`
+      : `the supervisor was already ${before.desired}; nothing changed`,
+  };
+  sendJson(response, 200, answer);
+}
+
+
 export function createDashboardServer(deps: HttpDeps): Server {
   const resolved: ResolvedHttpDeps = {
     ...deps,
@@ -866,6 +1613,10 @@ export function createDashboardServer(deps: HttpDeps): Server {
     // A DEFAULT RUNNER SPAWNS NOTHING until a route asks it to, so building one
     // for a server that never serves `/api/projects` costs an object.
     projects: deps.projects ?? new ProjectRunner({ paths: deps.paths, env: deps.env ?? process.env }),
+    // ONCE PER SERVER, AT BOOT, WHILE THE ANSWER IS KNOWN. Never per request:
+    // an arm check that runs when the thing it checks is already suspect is a
+    // post-mortem, not an arm check.
+    supervisorArm: armSupervisorRoute(deps.store, deps.supervisor),
   };
   const server = createServer((request, response) => {
     void handle(resolved, request, response).catch((error: unknown) => {
@@ -1006,6 +1757,90 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
         sendJson(response, 200, body);
         return;
       }
+    }
+    sendError(response, 404, "not_found", `no route for ${method} ${path}`, null);
+    return;
+  }
+
+  /* GET  /api/supervisor
+   * POST /api/supervisor/start  |  /api/supervisor/stop  |  /api/supervisor/abort-now
+   *
+   * ── WHAT STOP MEANS, AND WHY IT MAY NOT ABORT ──────────────────────────────
+   *
+   * STOP DRAINS. It sets `desired='draining'`: the loop stops CLAIMING new
+   * tickets, the run already in flight keeps going to its own verdict, and the
+   * state becomes `stopped` when nothing is in flight. The reason is in the
+   * code, not in taste — aborting converts a RESUMABLE run into an UNRESUMABLE
+   * one:
+   *
+   *   · `cancel()` aborts the active run and `#finish` writes a terminal status;
+   *   · `resume()` refuses a terminal row (`orchestrator.ts:1494/1518`, and
+   *     `db.ts:496` names `passed|failed|cancelled` terminal);
+   *   · the classifier then answers `intentional`, and `boundFor("intentional")`
+   *     is 0 (`recovery.ts:144-145`), so nothing will ever auto-continue it.
+   *
+   * So an abort-flavoured STOP throws away the workspace and the session, which
+   * is the precise loss `reconcileOnBoot`'s own docblock exists to end: "that is
+   * how 52 minutes and 12 hours of real work came to be waiting on a click."
+   * A drain needs no new terminal status, no new abort path and no change to
+   * `isTerminal`.
+   *
+   * ABORT-NOW IS A SEPARATE ROUTE, SEPARATELY NAMED, AND REQUIRES `{"confirm":
+   * true}` in the body. It is the destructive one. Its ticket goes to `blocked`
+   * rather than `queued` so the next START does not immediately re-spend on the
+   * run the owner just killed.
+   *
+   * ── SCOPE: THIS IS THE SUPERVISOR'S SWITCH, NOT THE ORCHESTRATOR'S ─────────
+   *
+   * STOP does not touch `pump()`. A run the owner submits from the page still
+   * starts while the supervisor is stopped, and `queuedRuns` in the body is the
+   * number that shows it. Any UI for this must say so or it lies about its
+   * scope.
+   *
+   * ── NO RUN IS CREATED HERE ────────────────────────────────────────────────
+   *
+   * START sets the desired state and lets the loop claim; it does not submit.
+   * Submission goes through the extracted `submitRun` on the supervisor's side,
+   * because bypassing `createRun`'s body mints a DIFFERENT ticket identity — no
+   * frozen suite, a second paid spec phase, no throw and no compile error.
+   *
+   * ── WHY THE GET IS 200 WHEN NOTHING IS WIRED ──────────────────────────────
+   *
+   * See `HttpDeps.supervisor`. Three states have to be distinguishable by the
+   * client: stopped-with-tickets, stopped-with-an-empty-queue, and no supervisor
+   * at all. A 503 for the third collapses it into "the dashboard is unreachable".
+   * The POSTs answer 503, because a command that cannot be carried out must not
+   * answer 200. */
+  if (segments[1] === "supervisor") {
+    if (segments.length === 2 && method === "GET") {
+      sendJson(response, 200, supervisorSnapshot(deps));
+      return;
+    }
+    /*
+     * FILING IS NOT A COMMAND, SO IT IS NOT ROUTED THROUGH `supervisorCommand`.
+     *
+     * BEFORE THIS ROUTE EXISTED THE QUEUE COULD NOT BE NON-EMPTY. Measured
+     * 2026-08-10: `enqueueSupervisorTicket` had callers only in two test files —
+     * no route, no client function, no control — so START ran a loop over an
+     * empty queue for eight hours and answered its own message, "stopped, and
+     * nothing is queued — POST /api/supervisor/start after filing a ticket", for
+     * a filing endpoint that did not exist.
+     *
+     * IT IS BRANCHED BEFORE THE COMMAND DISPATCH, AND THE DIFFERENCE IS NOT
+     * COSMETIC. `supervisorCommand` answers 503 with no loop wired, correctly: a
+     * command that cannot be carried out must not answer 200. A FILING can always
+     * be carried out — it is a durable row that outlives this process and is
+     * claimed by the next boot's first tick — so refusing it would collapse "no
+     * loop is wired" into "there is no queue", which is the conflation the whole
+     * status surface exists to prevent.
+     */
+    if (segments.length === 3 && segments[2] === "tickets" && method === "POST") {
+      await fileSupervisorTicket(deps, request, response);
+      return;
+    }
+    if (segments.length === 3 && method === "POST") {
+      await supervisorCommand(deps, segments[2] ?? "", request, response);
+      return;
     }
     sendError(response, 404, "not_found", `no route for ${method} ${path}`, null);
     return;

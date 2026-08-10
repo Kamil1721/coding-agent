@@ -75,6 +75,7 @@ import {
   resolveHarnessIdentity,
 } from "bakeoff/dist/spec-agent.js";
 import {
+  AUDIT_FILENAME,
   CLI_DEFAULT_MAX_OUTPUT_TOKENS,
   MAX_STREAMABLE_OUTPUT_TOKENS,
 } from "bakeoff/dist/spec-types.js";
@@ -222,12 +223,20 @@ import {
   autoRecoverEnabled,
   classifyPhaseFailure,
   interruptedSignals,
+  isRepairable,
   planRecovery,
   recoveryMaxWaitMs,
   signalsFor,
 } from "./recovery.js";
 import type { FailureClass, PhaseFailureSignals, RecoveryDecision, RefusalEvidence } from "./recovery.js";
 import { RunEventBus } from "./bus.js";
+import {
+  buildDefectRecord,
+  existingArtefacts,
+  readAuthoringAttempts,
+  writeAuthoringTrail,
+  writeDefectRecord,
+} from "./defect-record.js";
 import { judgeArtifact } from "./judge.js";
 import type { ModelCatalog } from "./models.js";
 import { ensureRunDirs, gateEnv, runPathsFor, safeSegment } from "./paths.js";
@@ -459,6 +468,21 @@ export interface OrchestratorDeps {
   readonly store: RunStore;
   readonly bus: RunEventBus;
   readonly paths: DashboardPaths;
+  /**
+   * Called once per TERMINAL transition, after the verdict, the defect record
+   * and the terminal `status` event are all durable.
+   *
+   * IT EXISTS SO THE SUPERVISOR DOES NOT HAVE TO POLL FOR THE ONE EVENT IT
+   * CARES ABOUT. `supervisor.ts`'s loop is correct with nothing but its 30 s
+   * interval — every decision it takes is read from the tables — so this is a
+   * latency optimisation and never a correctness requirement. Optional for the
+   * same reason: an orchestrator constructed without it behaves exactly as it
+   * did before, which is what keeps every existing test honest.
+   *
+   * IT MUST NOT THROW AND MUST NOT BLOCK. `#finish` wraps it; a hook that
+   * re-enters `#finish` is stopped by the loop's own re-entrancy guard.
+   */
+  readonly onRunSettled?: (runId: string) => void;
   readonly catalog: ModelCatalog;
   readonly auth: AuthProbe;
   readonly preview: PreviewHost;
@@ -1210,6 +1234,25 @@ export class Orchestrator {
    * correct answer and not a gap to paper over.
    */
   readonly #lastRefusal = new Map<string, RefusalEvidence>();
+
+  /**
+   * The failure signals of the throw that ended a run, carried from the seam
+   * that classified it to the funnel that records it.
+   *
+   * ONE ENTRY, DELETED IN `#finish`. `runs.recovery_class` keeps the class and
+   * nothing else, so `bakeoffCode` — the twelve-member discriminator written at
+   * the throw site — would otherwise be unreadable by the time the defect
+   * record is written. Re-deriving it from `failure_reason` is the prose match
+   * `recovery.ts` forbids.
+   */
+  readonly #lastSignals = new Map<string, PhaseFailureSignals>();
+
+  /**
+   * The spec phase's last authoring failure, per run, so the trail written in
+   * `#specPhase`'s `finally` can read whatever the error carries. Set on the
+   * failure path only; deleted with the trail.
+   */
+  readonly #lastAuthoringError = new Map<string, unknown>();
 
   /**
    * The SILENCE WATCH's live half — one interval per run that is actually
@@ -1966,9 +2009,16 @@ export class Orchestrator {
        */
       if (this.#recoverFrom(runId, error, abort.signal, detail)) return;
       this.#recordUnmeasuredBacklog(runId, "infra", detail);
-      this.#deps.store.updateRun(runId, {
-        recoveryClass: classifyPhaseFailure(this.#signalsFor(runId, error, abort.signal)),
-      });
+      /*
+       * THE SIGNALS ARE COMPUTED ONCE AND CARRIED, not recomputed in `#finish`.
+       * `bakeoffCode` is written at the throw site and lives on the error; the
+       * `runs` row keeps only the CLASS. Without this hand-off the defect record
+       * would have to re-derive the code from the failure text, which is the
+       * one discrimination `PhaseFailureSignals` forbids by name.
+       */
+      const signals = this.#signalsFor(runId, error, abort.signal);
+      this.#lastSignals.set(runId, signals);
+      this.#deps.store.updateRun(runId, { recoveryClass: classifyPhaseFailure(signals) });
       this.#finish(runId, "failed", {
         endedAt: new Date().toISOString(),
         failureReason: detail,
@@ -3178,11 +3228,33 @@ export class Orchestrator {
         makeReadOnly: true,
         overwrite: false,
       }));
+    } catch (error) {
+      // CARRIED, NOT PARSED. The trail below and the defect record both read
+      // this object STRUCTURALLY (`readAuthoringAttempts`); nothing reads its
+      // message. Rethrown unchanged so the recovery seam sees the same error it
+      // has always seen.
+      this.#lastAuthoringError.set(runId, error);
+      throw error;
     } finally {
       // FIRST IN THE `finally`, BEFORE ANYTHING THAT CAN THROW. A heartbeat that
       // outlives its call is a display reporting work nobody is doing, and
       // `#recordSpend` below reaches SQLite.
       heartbeat();
+      /*
+       * THE AUTHORING TRAIL, ON BOTH PATHS, AND THE FAILURE PATH IS THE ONE
+       * THAT MATTERS. `freezeSuite` writes `authoringTrail` into the frozen
+       * AUDIT file — on SUCCESS only. Run `a913c871`'s three rejected attempts
+       * therefore existed in no harness artefact at all and had to be
+       * reconstructed from the CLI's own session transcripts nine hours later.
+       *
+       * WHAT IT CAN SAY TODAY IS LESS THAN WHAT IT SHOULD SAY, AND IT SAYS SO.
+       * The thrown `BakeoffError` carries no `attempts` array yet (that half is
+       * digest-moving, design §8.0a), so on the failure path this file records
+       * `attemptsAvailable: false` and names the reason. A trail claiming zero
+       * attempts on a run that made three would be the very defect the trail
+       * exists to end.
+       */
+      this.#writeAuthoringTrail(runId, ticket.id, acceptanceRoot, suiteSha256);
       if (suiteSha256 === null) {
         this.#emitLog(runId, "info", specPhaseCostLine(specCaller.tokens, judgeCaller.tokens));
       } else {
@@ -3221,6 +3293,70 @@ export class Orchestrator {
     );
     this.#recordCriteria(runId, record.suite);
     return record.suite;
+  }
+
+  /**
+   * `results/authoring-trail.json`, written on the success path and the failure
+   * path, from whatever structured evidence exists.
+   *
+   * THREE SOURCES, TRIED IN ORDER, AND THE THIRD IS AN HONEST REFUSAL:
+   *   1. the thrown error, if it carries `attempts` (once §8.0a lands),
+   *   2. the frozen `AUDIT.json`, which carries `authoringTrail` on success,
+   *   3. nothing — recorded as `attemptsAvailable: false` with the reason.
+   *
+   * IT CANNOT FAIL THE RUN, and on the failure path that matters twice over: it
+   * runs inside a `finally` while the stack is already unwinding from a real
+   * failure, so a throw here would REPLACE the cause the owner needs with a
+   * filesystem complaint. Same argument the `assertUnused()` placement makes
+   * eight lines up.
+   */
+  #writeAuthoringTrail(runId: string, ticketId: string, acceptanceRoot: string, suiteSha256: string | null): void {
+    try {
+      const fromError = readAuthoringAttempts(this.#lastAuthoringError.get(runId) ?? null);
+      let attempts = fromError;
+      let source =
+        fromError === null
+          ? ""
+          : "the thrown authoring error carried its own attempt history";
+      if (attempts === null) {
+        const auditPath = join(acceptanceRoot, ticketId, AUDIT_FILENAME);
+        if (existsSync(auditPath)) {
+          attempts = readAuthoringAttempts(JSON.parse(readFileSync(auditPath, "utf8")) as unknown);
+          if (attempts !== null) source = `read from the frozen audit file ${auditPath}`;
+        }
+      }
+      if (attempts === null) {
+        source =
+          "UNAVAILABLE: the spec phase produced no readable attempt history. On the failure path the " +
+          "thrown BakeoffError carries no attempts array (design §8.0a is digest-moving and has not " +
+          "landed) and no frozen AUDIT.json exists, because that file is written on success only. " +
+          "This is the a913c871 hole, recorded rather than reported as zero attempts.";
+      }
+      const path = writeAuthoringTrail(
+        {
+          runId,
+          at: new Date().toISOString(),
+          ticketId,
+          outcome: suiteSha256 === null ? "failed" : "frozen",
+          suiteSha256,
+          attempts: attempts ?? [],
+          attemptsAvailable: attempts !== null,
+          source,
+        },
+        runPathsFor(this.#deps.paths, runId).results,
+      );
+      this.#emitLog(
+        runId,
+        "info",
+        `authoring trail — ${
+          attempts === null
+            ? "no attempt history was available; the reason is recorded in"
+            : `${String(attempts.length)} attempt(s) recorded in`
+        } ${path}`,
+      );
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the authoring trail could not be written: ${describeError(error)}`);
+    }
   }
 
   /**
@@ -7110,6 +7246,7 @@ export class Orchestrator {
         inferredCriteria: updated.inferredCriteria,
       });
     }
+    this.#writeDefectRecord(runId, status, row);
     this.#publishProject(runId, row);
     // AFTER THE VERDICT, NEVER BEFORE IT. `#writeVerdict` two lines up is the one
     // reader of this entry; dropping it earlier would silently return the run to
@@ -7117,6 +7254,99 @@ export class Orchestrator {
     // and nothing would look wrong.
     this.#visualGate.delete(runId);
     this.#emit(runId, { type: "status", status });
+    /*
+     * THE SETTLE HOOK IS LAST, AFTER THE TERMINAL `status`. A supervisor that
+     * observed the transition earlier could read a row whose verdict and defect
+     * record were not yet on disk, and would then re-submit a ticket whose
+     * evidence it never saw. It is optional and wrapped: a hook that throws must
+     * not turn a finished run into a harness fault.
+     */
+    try {
+      this.#deps.onRunSettled?.(runId);
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the run-settled hook threw and was ignored: ${describeError(error)}`);
+    }
+  }
+
+  /**
+   * THE DEFECT RECORD, WRITTEN AT EVERY TERMINAL TRANSITION — PASSED INCLUDED.
+   *
+   * Run `a913c871` cost nine hours of owner time and a manual post-mortem
+   * reconstructed from CLI session transcripts outside the harness. This is
+   * that post-mortem as a row written one second after death.
+   *
+   * `rate_limited` DELIBERATELY GETS NO RECORD, because it never reaches this
+   * funnel: that run is parked, not finished, and a defect record for it would
+   * describe a run that has not ended.
+   *
+   * IT CANNOT FAIL THE RUN. Same rule as `#writeVerdict` and `#publishProject`:
+   * a filesystem problem while recording a failure must not replace the failure.
+   * The `catch` says so on the run's own log rather than swallowing it, because
+   * a recorder that silently stops recording is the defect this record exists
+   * to end.
+   */
+  #writeDefectRecord(runId: string, status: ApiRunStatus, row: RunRow): void {
+    try {
+      const signals = this.#lastSignals.get(runId) ?? null;
+      const runPaths = runPathsFor(this.#deps.paths, runId);
+      /*
+       * THE FAILURE CLASS IS READ, NEVER RE-DERIVED. `recovery.ts` owns the
+       * taxonomy and its budget table; copying either into this file would
+       * make the record disagree with the decision the run actually took.
+       */
+      const failureClass = status === "passed" ? "none" : (row.recoveryClass ?? "unclassified");
+      /*
+       * `isRepairable`, NOT `boundFor(...) > 0`, AND THE DIFFERENCE WAS VISIBLE TO
+       * THE OWNER. `boundFor` answers "may this run re-enter the phase by itself",
+       * which is 0 for every class `classOfBakeoffCode` returns — so this field was
+       * provably `false` on all twelve `BakeoffError` codes while `supervisor.ts`
+       * put the same ticket into `repairing` ("waiting for a repair proposal for
+       * this failure class"). One question now has one answer, in the file that
+       * owns the taxonomy; the supervisor reads the same function.
+       */
+      const repairable = status === "passed" ? false : isRepairable(failureClass as FailureClass);
+      const record = buildDefectRecord({
+        runId,
+        at: new Date().toISOString(),
+        phase: row.phase,
+        status,
+        failureClass,
+        bakeoffCode: signals?.bakeoffCode ?? null,
+        failureReason: row.failureReason,
+        /*
+         * THE SITE IS STRUCTURED, and on this path it is built from two enum
+         * values plus the code — never from the failure text. When the
+         * digest-moving `DefectDetail` of §3.2 lands, its `site` replaces this
+         * and the signature sharpens; until then a phase+code site is coarse
+         * but STABLE, which is what the fingerprint rule needs.
+         */
+        site: `${row.phase}/${status}/${signals?.bakeoffCode ?? "no-code"}`,
+        // NULL, NOT `[]`. Nothing structured travels on this failure yet.
+        violations: null,
+        attempts: readAuthoringAttempts(this.#lastAuthoringError.get(runId) ?? null),
+        artefacts: existingArtefacts([
+          join(runPaths.results, "authoring-trail.json"),
+          join(runPaths.results, "run.json"),
+          row.verdictPath,
+        ]),
+        repairable,
+      });
+      const written = writeDefectRecord(record, {
+        resultsDir: runPaths.results,
+        defectsDir: join(this.#deps.paths.data, "defects"),
+      });
+      this.#emitLog(
+        runId,
+        "info",
+        `defect record ${record.signature.slice(0, 12)}… written to ${written.recordPath} and appended to ` +
+          `${written.shardPath}${record.unavailable.length === 0 ? "" : ` (${String(record.unavailable.length)} field(s) unavailable and named in the record)`}`,
+      );
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the defect record could not be written: ${describeError(error)}`);
+    } finally {
+      this.#lastSignals.delete(runId);
+      this.#lastAuthoringError.delete(runId);
+    }
   }
 
   /**

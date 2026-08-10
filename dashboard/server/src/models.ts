@@ -71,6 +71,21 @@ import { subscriptionSubprocessEnvStrings } from "./subprocess-env.js";
 export const CODEX_DEFAULT_MODEL_ID = "codex-default";
 
 /**
+ * THE ID OF THE ROW THAT MEANS "THIS CATALOG COULD NOT ENUMERATE".
+ *
+ * `entries()` below emits exactly one Anthropic row with this id when the model
+ * list could not be fetched OR the Claude CLI is not logged in — "whatever the
+ * Claude CLI is configured to use", which is the one thing still runnable when the
+ * enumeration failed. In the healthy case the Anthropic rows carry real vendor ids
+ * and this one is ABSENT, which makes its presence a usable signal rather than a
+ * guess: `POST /api/supervisor/tickets` refuses an unknown model id only when this
+ * row is missing, i.e. only when the catalog is in a position to call something a
+ * typo. Named here rather than compared as a literal in `http.ts`, so the two sites
+ * cannot drift apart silently.
+ */
+export const CATALOG_FALLBACK_MODEL_ID = "default";
+
+/**
  * Whether a provider may be SELECTED for a run — the single declaration site for
  * "Claude only" (owner, 2026-07-28, spec section 14).
  *
@@ -200,6 +215,12 @@ export class ModelCatalog {
   readonly #auth: AuthProbe;
   readonly #env: NodeJS.ProcessEnv;
   #entries: readonly CatalogEntry[] | null = null;
+  /**
+   * DID THE LAST READ ACTUALLY ENUMERATE THE MODELS, or is the row set the single
+   * fallback? Kept because the answer is DESTROYED by the row list itself and a
+   * caller was caught guessing it (2026-08-10, see {@link enumerated}).
+   */
+  #enumerated = false;
   #cachedAtMs = 0;
   readonly #nowMs: () => number;
   readonly #fetchModels: (env: NodeJS.ProcessEnv) => Promise<readonly ModelInfo[]>;
@@ -231,10 +252,11 @@ export class ModelCatalog {
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
+      this.#enumerated = failure === null && infos.length > 0;
       if (failure !== null || infos.length === 0) {
         rows.push({
           option: {
-            id: "default",
+            id: CATALOG_FALLBACK_MODEL_ID,
             label: "Claude (CLI default model)",
             provider: "anthropic",
             tier: "included",
@@ -247,9 +269,10 @@ export class ModelCatalog {
         for (const info of infos) rows.push(anthropicRow(info, true, null));
       }
     } else {
+      this.#enumerated = false;
       rows.push({
         option: {
-          id: "default",
+          id: CATALOG_FALLBACK_MODEL_ID,
           label: "Claude (CLI default model)",
           provider: "anthropic",
           tier: "included",
@@ -292,6 +315,33 @@ export class ModelCatalog {
     return (await this.entries())
       .map((entry) => entry.option)
       .filter((option) => isOfferedProvider(option.provider));
+  }
+
+  /**
+   * WHETHER THIS CATALOG IS IN A POSITION TO CALL AN ID A TYPO.
+   *
+   * `true` only when the model list was fetched and came back non-empty. When the
+   * Claude CLI is not logged in, or the fetch throws, or it returns nothing, the row
+   * set collapses to one fallback entry and this is `false`: "not in the catalog"
+   * then means "the catalog knows nothing", and a caller that refused on it would
+   * reject every real model id because a probe failed.
+   *
+   * WHY THIS IS A METHOD AND NOT A ROW-SHAPE INSPECTION. `POST
+   * /api/supervisor/tickets` first tried to infer it by looking for the fallback
+   * row's id among the entries, on the reasoning that a healthy catalog names real
+   * vendor ids. MEASURED AGAINST THE REAL CLI ON 2026-08-10 AND IT IS FALSE: this
+   * machine's `GET /api/models` returns `['default', 'opus[1m]',
+   * 'claude-fable-5[1m]', 'sonnet', 'haiku']` — the CLI enumerates a model whose own
+   * id is `default`, so the fallback row is indistinguishable from a real one by id
+   * alone, and the inference read a healthy catalog as degraded. The unit test did
+   * not catch it because its fixture list had no such row. The fact lives here, where
+   * it is known, instead of being reconstructed where it is not.
+   *
+   * It awaits {@link entries}, so the answer is never read before it exists.
+   */
+  async enumerated(): Promise<boolean> {
+    await this.entries();
+    return this.#enumerated;
   }
 
   async resolve(modelId: string): Promise<CatalogEntry | null> {
