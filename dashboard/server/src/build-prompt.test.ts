@@ -31,8 +31,12 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readSelfReport, WORKSPACE } from "bakeoff/dist/runner.js";
 import { DELIVERY_LANES } from "./agent-shortlist.js";
-import { dashboardBuilderPrompt, resumeBuilderPrompt } from "./build-prompt.js";
+import { dashboardBuilderPrompt, resumeBuilderPrompt, SELF_REPORT_STATUSES } from "./build-prompt.js";
 import { designHandoffSection, visualGatePrompt } from "./design-prompt.js";
 import { builderReferenceSection } from "./ticket-refs.js";
 import { VISUAL_OBSERVATIONS } from "./visual-substance.js";
@@ -510,9 +514,209 @@ test("the parts of the prompt Phase 0 depends on are unchanged", () => {
   // sealed-suite framing are load-bearing elsewhere (`falseFinish` cannot be
   // computed without the first; the second is what the whole gate protects),
   // and adding a section is not licence to lose them.
+  //
+  // THE SHAPE ASSERTION THAT USED TO LIVE HERE HAS MOVED, AND THE MOVE IS THE
+  // POINT. It ran against `dashboardBuilderPrompt` only, and its companion
+  // `/self-report\.json/` would have passed against `resumeBuilderPrompt` too —
+  // that prompt interpolated the same path while omitting the shape. So the one
+  // check guarding the contract could not observe the failure that actually
+  // shipped. It is now `PART N — the self-report contract` below, run against
+  // every prompt that can end a build and against the real reader.
   const p = buildPrompt({ ticketText: "the ticket", allowedAgents: ["debugger"] });
-  assert.match(p, /self-report\.json/, "the self-report contract survives");
-  assert.match(p, /"done" \| "blocked" \| "incomplete"/);
   assert.match(p, /acceptance is judged separately/);
   assert.match(p, /the ticket$/, "the ticket text is still last");
+});
+
+/* ===========================================================================
+ * PART N — the self-report contract, bound to the reader that consumes it
+ *
+ * WHAT THIS EXISTS TO CATCH, MEASURED. Run `54927ebc` (2026-08-10, 3 h 18 m)
+ * ended with the builder writing a valid 14,740-byte `.bakeoff/self-report.json`
+ * whose status was `"complete"`. `readSelfReport` accepts exactly
+ * `done|blocked|incomplete` and returns `null` for anything else, so the
+ * orchestrator recorded `agentDeclaredDone = false` and reported "absent status,
+ * or not JSON" — wrong on both counts. `falseFinish = agentDeclaredDone &&
+ * !heldOutPass` could not fire. A co-primary metric was disarmed, silently, in
+ * the direction that reads as good news.
+ *
+ * WHY A STRING-MATCH TEST WOULD NOT HAVE CAUGHT IT. The literal was present in
+ * `dashboardBuilderPrompt` the whole time. What failed is that a design-lane run
+ * never sends that function: segment 1 is `designSegmentPrompt`, segment 2
+ * resumes it, and `resumeBuilderPrompt` said "as described earlier" with no
+ * earlier. Asserting the string exists somewhere is exactly the check that stayed
+ * green through the run it was supposed to prevent.
+ *
+ * SO THE TEST IS A ROUND TRIP, NOT A MATCH: take the words OUT of the rendered
+ * prompt, put each through the REAL reader, and require the reader to accept it.
+ * Both ends can then fail. Weakening the prompt (dropping the section, renaming a
+ * word) fails at extraction or acceptance; narrowing the reader fails at
+ * acceptance. The negative controls below prove the arm is live rather than
+ * vacuously green.
+ * ======================================================================== */
+
+/**
+ * The status words as the BUILDER receives them — parsed back out of rendered
+ * prompt text, never imported.
+ *
+ * IT THROWS RATHER THAN RETURNING `[]`, in three distinct places. An extractor
+ * that yields an empty list when its anchor moves turns every assertion
+ * downstream into a tautology over nothing, which is this tree's signature
+ * defect and the exact way the previous check went blind.
+ */
+function statusVocabularyFrom(prompt: string, whose: string): readonly string[] {
+  const line = prompt.split("\n").find((l) => l.includes('{"status":'));
+  if (line === undefined) {
+    throw new Error(
+      `${whose}: the rendered prompt states no self-report shape at all. A builder reading this ` +
+        "prompt has to guess the status vocabulary, and a guess is recorded as no report.",
+    );
+  }
+  const vocabulary = /\{"status":\s*(.+?),\s*"reason"/.exec(line)?.[1];
+  if (vocabulary === undefined) {
+    throw new Error(`${whose}: the shape line names no status vocabulary: ${line}`);
+  }
+  const words = [...vocabulary.matchAll(/"([^"]+)"/g)].flatMap((m) => (m[1] === undefined ? [] : [m[1]]));
+  if (words.length === 0) {
+    throw new Error(`${whose}: the shape line quotes no status words: ${line}`);
+  }
+  return words;
+}
+
+/**
+ * A reason string unique to this probe, so acceptance can be shown to have come
+ * from THIS file rather than from anything the reader found lying around.
+ */
+const PROBE_REASON = "a probe written by build-prompt.test.ts";
+
+/**
+ * Put one status through the REAL reader, via a real file, exactly as a run does.
+ *
+ * IT CHECKS THE REASON CAME BACK, NOT MERELY THAT THE RESULT WAS NON-NULL. A
+ * non-null return proves the reader parsed *something*; it does not prove it
+ * parsed the file this function wrote. If `WORKSPACE.selfReport` were ever a bare
+ * filename, `join(path, "..")` would be the temp root and every assertion here
+ * would still pass, for the wrong reason. Comparing the reason back closes that.
+ */
+function readerAccepts(status: string): boolean {
+  const dir = mkdtempSync(join(tmpdir(), "self-report-contract-"));
+  try {
+    const path = join(dir, WORKSPACE.selfReport);
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, JSON.stringify({ status, reason: PROBE_REASON }), "utf8");
+    const parsed = readSelfReport(dir);
+    if (parsed === null) return false;
+    assert.equal(
+      parsed.reason,
+      PROBE_REASON,
+      "readSelfReport returned a report that is not the one this probe wrote — the round trip is " +
+        "reading some other file, so every acceptance it reports is meaningless",
+    );
+    assert.equal(parsed.status, status, "the reader changed the status it was given");
+    return true;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("ARM CHECK: the probe writes to the nested path the reader actually reads", () => {
+  // The premise `readerAccepts` depends on. If the self-report ever stopped being
+  // a nested path, the helper would still pass while testing the wrong file.
+  assert.ok(
+    WORKSPACE.selfReport.includes("/"),
+    `WORKSPACE.selfReport is ${WORKSPACE.selfReport}, not a nested path — readerAccepts' mkdirSync is a no-op`,
+  );
+  assert.ok(readerAccepts("done"), "the happy path must work, or every negative below is vacuous");
+});
+
+/**
+ * EVERY PROMPT THAT CAN END A BUILD. `#buildSegmentPrompt` (orchestrator.ts:4643)
+ * has exactly two branches and these are they, so this list is the complete
+ * cover. `buildFixPrompt` is excluded on an ordering fact, not an opinion: the
+ * self-report is read at orchestrator.ts:2246 and latched at :2271, both before
+ * `#gateFixLoop`'s single call site at :2425, so a fixer's report can change no
+ * measurement. `designSegmentPrompt` is excluded because a `done` from a segment
+ * that writes no application code would clear the :2378 guard and let the gate
+ * score an unbuilt workspace.
+ */
+const PROMPTS_THAT_CAN_END_A_BUILD: readonly { readonly whose: string; readonly text: string }[] = [
+  {
+    whose: "dashboardBuilderPrompt (first build turn)",
+    text: dashboardBuilderPrompt({
+      workspaceDir: "/tmp/run-42/workspace",
+      ticketText: "the ticket",
+      allowedAgents: ["debugger"],
+    }),
+  },
+  {
+    whose: "resumeBuilderPrompt (every design-lane run's FIRST build turn)",
+    text: resumeBuilderPrompt("the design was locked and the build continues from there"),
+  },
+];
+
+test("every status word the builder is shown is one the real reader accepts", () => {
+  assert.ok(PROMPTS_THAT_CAN_END_A_BUILD.length > 0, "an empty prompt list makes this vacuous");
+  for (const { whose, text } of PROMPTS_THAT_CAN_END_A_BUILD) {
+    const shown = statusVocabularyFrom(text, whose);
+    assert.ok(shown.length > 0, `${whose}: no words extracted`);
+    for (const status of shown) {
+      assert.ok(
+        readerAccepts(status),
+        `${whose} offers "${status}", which readSelfReport rejects. A builder that obeys this ` +
+          "prompt would be recorded as having declared nothing.",
+      );
+    }
+  }
+});
+
+test("NEGATIVE CONTROL: the arm is live — the word the builder actually guessed is rejected", () => {
+  // Not a hypothetical. `"complete"` is what run 54927ebc wrote, and `052c6e02`
+  // before it. If this passes, the round trip above is checking nothing, because
+  // the reader would accept anything handed to it.
+  assert.equal(readerAccepts("complete"), false, "readSelfReport must reject 'complete'");
+  assert.equal(readerAccepts("finished"), false, "readSelfReport must reject 'finished'");
+  assert.equal(readerAccepts(""), false, "readSelfReport must reject an empty status");
+  for (const { whose, text } of PROMPTS_THAT_CAN_END_A_BUILD) {
+    assert.ok(
+      !statusVocabularyFrom(text, whose).includes("complete"),
+      `${whose} must not offer a word the reader rejects`,
+    );
+  }
+});
+
+test("NEGATIVE CONTROL: dropping the contract from a prompt fails loudly, not silently", () => {
+  // The failure this whole part exists to prevent, simulated: a prompt that names
+  // the FILE but not its SHAPE — which is precisely what `resumeBuilderPrompt`
+  // shipped. The old assertion, `/self-report\.json/`, passes on this string.
+  const forwardReference = [
+    "Continue from where you stopped.",
+    `When you are finished, or if you cannot finish, write ${WORKSPACE.selfReport} as described earlier.`,
+  ].join("\n");
+  assert.match(forwardReference, /self-report\.json/, "the old check would have passed this");
+  assert.throws(
+    () => statusVocabularyFrom(forwardReference, "a prompt that defers its shape"),
+    /states no self-report shape at all/,
+    "the extractor must refuse a prompt that only points at the file",
+  );
+});
+
+test("the two prompts state ONE vocabulary, and it is the constant both are rendered from", () => {
+  // Binds the third and fourth copies out of existence. The prompts are rendered
+  // from `SELF_REPORT_STATUSES`, which `build-prompt.ts` proves at compile time to
+  // be exactly the reader's accepted set; this asserts the rendering survived into
+  // the text, on every path, in the same order.
+  const [first, ...rest] = PROMPTS_THAT_CAN_END_A_BUILD.map((p) => statusVocabularyFrom(p.text, p.whose));
+  for (const other of rest) {
+    assert.deepEqual(other, first, "two builder prompts offer different status vocabularies");
+  }
+  assert.deepEqual(first, [...SELF_REPORT_STATUSES], "the rendered vocabulary drifted from the constant");
+});
+
+test("the resume prompt describes the contract instead of deferring it", () => {
+  const resumed = resumeBuilderPrompt("the design was locked and the build continues from there");
+  assert.doesNotMatch(
+    resumed,
+    /as described earlier/,
+    "a design-lane run has no earlier turn that described it — that forward reference is what broke falseFinish",
+  );
+  assert.match(resumed, /exactly this shape/, "the resume prompt must state the shape itself");
 });
