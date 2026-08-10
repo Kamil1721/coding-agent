@@ -450,9 +450,17 @@ is not an accident to repair. `claude-builder.ts:1005`:
 > **driving a browser**, or spawning a remote agent."*
 
 `allowedMcpServers: []`, `allowManagedMcpServersOnly: true`, and the OS sandbox denies the
-mach ports Chromium needs. The seal exists so a prompt-injected builder cannot reach the
-network. **Unblocking it trades that away, so it is not a change to make on a subagent's
-say-so.** Three options, none free:
+mach ports Chromium needs.
+
+**CORRECTION, and it is mine.** An earlier draft of this section said "the seal exists so a
+prompt-injected builder cannot reach the network". **That is false, and the repo had already
+measured it false.** `buildOptions` sets no `sandbox.network` clause at all
+(`claude-builder.ts:1010-1035`), and `orchestrator.ts:701-712` records the disproof *by
+execution* — six `gemini-image.sh` calls from inside a sandboxed build reached
+`generativelanguage.googleapis.com` — which is why the run record's own label is
+`"unrestricted-host-network (NOT a measured denial)"`. The seal that is real is the
+filesystem (`allowWrite` / `denyRead`), the managed-settings locks and MCP removal. **A
+renderer fix trades none of that away**, so the security objection I raised does not apply. Three options, none free:
 
 1. **Leave it.** Accept that rendered-text criteria grade something the builder could not
    check. This run's REQ-015 / REQ-017 are what that costs — `text-transform: uppercase`
@@ -483,3 +491,71 @@ drift check only fires mid-campaign, rule 4/5 run in-process via `bakeoff/dist`,
 take effect on the next run with the image untouched, so the calibration and the run-1
 baseline stay valid.** Rebuild only when something in the scorer's own execution path needs
 it, and re-score the baseline when you do.
+
+---
+
+## 11. THE RENDERER: MEASURED, NOT SHIPPED
+
+The owner chose option 3 (a sealed renderer). Scoping found the SDK knob that is meant for
+exactly this — `sandbox.network.allowMachLookup`, documented verbatim as *"Needed for tools
+that communicate via XPC such as the iOS Simulator or **Playwright**"* (SDK 0.3.220,
+`sdk.d.ts:6169-6171`) — and, importantly, `restrictsEgress` (`orchestrator.ts:760`) reads only
+`deniedDomains` / `allowedDomains` / `strictAllowlist`, so adding it would leave the run
+record's honest `unrestricted-host-network` label untouched. It looked like a four-line change.
+
+**It was probed rather than shipped, and it does not work yet.** Two arms, same sandbox
+config as `buildOptions`, a real `chromium.launchPersistentContext` inside the workspace:
+
+| arm | `allowMachLookup` | Chromium |
+|---|---|---|
+| control | absent (today's config) | **fails** |
+| fix | present, 10 service prefixes | **fails** |
+
+The control failing is the negative control working — it confirms the premise. The fix
+failing means the service set is wrong or the blocker is not mach lookup. Chromium emitted no
+browser log, which points at it dying before it could write one.
+
+Two probe defects were caught and fixed on the way, both the catalogued shape: an ESM import
+error made both arms die before reaching `chromium.launch` while the verdict logic reported
+"NOT SOLVED", and a `--user-data-dir` arg Playwright rejects outright. A probe that reports a
+conclusion it did not measure is the thing this project exists to stop, so the verdict now has
+an explicit INCONCLUSIVE state.
+
+**Not shipped, deliberately.** A `network` clause added on a guess would be
+`restriction-configured-but-unmeasured` — the exact label the codebase already keeps for that
+situation. Next step is to capture Chromium's stderr from inside the sandbox and widen the
+service set from the real denial, not from a plausible list.
+
+### What was done instead, and it is not nothing
+
+`fix-prompt.ts` told the fix seat, on **every** visual failure, that *"the way to check a fix
+is to serve the build, open the flow named above at the breakpoint named above, and look at
+it."* Both halves are impossible: `listen()` is denied and Chromium will not start. A seat
+that follows it spends a round discovering the environment forbids its instructions.
+
+It now says so plainly, offers the technique that does work (the `global.fetch` shim over the
+real router, which is what the last run's fix seat actually used), and names the two defect
+classes a source-only review misses unless told to look for them — **image geometry**
+(`height: auto`) and **`text-transform` changing what `innerText` returns**. Those are the two
+mechanisms behind REQ-015, REQ-017 and the owner's stretched illustrations.
+
+## 12. DEFERRED, WITH THE SCOPE MEASURED
+
+**Visual gate out of shadow.** Shadow is the fallback constant
+`DEFAULT_VISUAL_SUBSTANCE_MODE = "shadow"` (`visual-substance.ts:692`), reached because
+`visualGateInputFor` builds its input without a mode. Flipping it alone would print
+"MODE: GATING" over a check that still cannot fire — the exact failure `verdict.ts:64-72`
+already records for 2026-07-30. And **no existing observation could detect a stretched
+image**, so un-shadowing would not have caught the owner's defect. A new aspect observation
+needs a scorer-protocol bump, a container rebuild, a full recalibration, and a formulation
+that returns a sign rather than a distance (the module rejects invented thresholds by policy).
+
+**Chat-iterate.** Already specified and deliberately unbuilt —
+`FINDINGS-2026-07-30-canvas-asks.md:607-634`, closing *"Not built. Out of session room."* The
+correct shape is a **follow-up run**, not a reopened one: re-entering a terminal run would
+overwrite `heldOutPass`, `falseFinish`, the scorer-out archive and the screenshots, all keyed
+by run id. The one real gap is that `POST /api/runs` cannot seed a workspace from a finished
+run — no parent argument, no lineage column. Scope: one new `run-seed.ts`, a `parent_run_id`
+column, three touched files and a composer change. **Flagged so it is not discovered late:**
+the follow-up publishes to `projects/<slug>-<suffix>`, so the folder the owner has open keeps
+serving the *parent* artefact after a revision lands.
