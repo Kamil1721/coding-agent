@@ -92,6 +92,15 @@ export function RunHud({
     run.designLock === null ? null : designLockPhase(run.status, run.designLock);
 
   return (
+    /*
+     * `bg-surface/95` AND `backdrop-blur` TOGETHER, over a dot grid that is
+     * genuinely moving underneath during a live run: 95% is opaque enough that
+     * the title never has a grid dot behind a counter, and the blur is what stops
+     * the remaining 5% reading as dirt. The lift comes from the shadow at the
+     * mount site rather than from a heavier border — a second border weight on a
+     * canvas whose every card is `border-line` would read as a different family
+     * of object.
+     */
     <div className="rounded border border-line bg-surface/95 px-2.5 py-2 backdrop-blur">
       <div className="flex items-center gap-2">
         <Badge tone={meta.tone} title={meta.meaning}>
@@ -191,11 +200,18 @@ export function RunHud({
               Resume
             </Button>
           )}
+          {/*
+           * THE LABEL NAMES THE PANEL IT OPENS — 2026-08-09. It said "run detail"
+           * and pointed at the right-hand run sheet, which the icon rail deleted;
+           * `sheet.tsx` removed its own copy of this button rather than re-point
+           * it, on the grounds that the words named nothing. Everything the sheet
+           * held is in the rail's Overview panel, so that is what this says.
+           */}
           <Button
             onClick={onOpenDetail}
             title="Ticket, verdict, code, agents, environment, usage and the raw trace."
           >
-            run detail
+            overview
           </Button>
         </div>
       </div>

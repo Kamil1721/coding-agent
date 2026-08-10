@@ -68,13 +68,60 @@ const LIVE_COMET = "path#root-_builder-hot";
 /** The inferred edge's whole group, for asserting what is NOT inside it. */
 const INFERRED_GROUP = `g.react-flow__edge:has(${INFERRED})`;
 
+/**
+ * Read computed properties AND the conduit scale in ONE evaluate.
+ *
+ * NOT TWO ROUND TRIPS, and that is a flake this suite would otherwise have
+ * shipped into a file with exactly this history. The widths below are
+ * `calc(base * var(--conduit-scale))`, and the scale is rewritten whenever the
+ * viewport moves — including 400ms after a node arrives, now that the canvas
+ * re-fits on growth. A width read in one `evaluate` and a scale read in the
+ * next can straddle that write and disagree by 30% for no reason anybody could
+ * reproduce. `conduit-zoom.browser.spec.ts` reads its zoom and its widths in one
+ * pass for the same reason.
+ */
 async function styleOf(locator: Locator, props: readonly string[]): Promise<Style> {
   return locator.evaluate((element, names: readonly string[]): Style => {
     const computed = getComputedStyle(element);
     const out: Style = {};
     for (const name of names) out[name] = computed.getPropertyValue(name);
+    const shell = document.querySelector(".react-flow");
+    if (shell === null) throw new Error("no react-flow shell");
+    const raw = getComputedStyle(shell).getPropertyValue("--conduit-scale").trim();
+    // Unset is the documented default: `var(--conduit-scale, 1)`.
+    out["--conduit-scale"] = raw === "" ? "1" : raw;
     return out;
   }, props);
+}
+
+/**
+ * THE STROKE WIDTHS BELOW ARE NO LONGER LITERALS, AND THIS IS WHY — 2026-08-09.
+ *
+ * `globals.css` used to carry `stroke-width: 2.5` on the guess and `4.5` on the
+ * body; it now carries `calc(2.5px * var(--conduit-scale, 1))`, because at the
+ * zoom the canvas fits itself to, the designed widths landed on screen under a
+ * device pixel and the whole four-layer construction collapsed to a hairline
+ * (`conduit-zoom.browser.spec.ts` has the measurements and the argument). The
+ * computed width is therefore a function of the viewport, and pinning `"2.5px"`
+ * pinned the harness's window size rather than the design.
+ *
+ * WHAT IS PINNED INSTEAD: the BASE. `--conduit-scale` is read out of the
+ * rendered shell and the expectation is `base * scale`, so the 2.5 and the 4.5
+ * are still the numbers this file defends and a change to either still fails
+ * here. What this can NOT tell you is whether the scale is the right scale —
+ * that is deliberately somebody else's job, and `conduit-zoom.browser.spec.ts`
+ * does it by measuring effective SCREEN width against a floor rather than by
+ * multiplying by the same property it is checking.
+ */
+function scaleOf(style: Style): number {
+  const raw = Number.parseFloat(style["--conduit-scale"] ?? "");
+  if (!Number.isFinite(raw) || raw <= 0) throw new Error("--conduit-scale did not resolve");
+  return raw;
+}
+
+/** `stroke-width` as a number, so it can be compared against a scaled base. */
+function widthPx(value: string | undefined): number {
+  return Number.parseFloat(value ?? "");
 }
 
 /** Open the run and wait until React Flow has actually drawn its edges. */
@@ -151,22 +198,43 @@ test.describe("the inferred edge", () => {
       return resolved;
     });
     expect(guess, "--edge-guess is not defined").not.toBe("");
-    expect(inferred).toEqual({
+
+    /*
+     * ONE SCALE, READ ALONGSIDE EACH WIDTH. They are asserted equal first: the
+     * two edges are in the same shell, so a difference could only mean one of
+     * the reads straddled a viewport change, and comparing a width against the
+     * other read's scale would be comparing two moments.
+     */
+    const scale = scaleOf(inferred);
+    expect(scaleOf(settled), "the two reads straddled a viewport change").toBe(scale);
+
+    expect({ ...inferred, "stroke-width": "base", "--conduit-scale": "read" }).toEqual({
       stroke: guess,
-      "stroke-width": "2.5px",
+      "stroke-width": "base",
       "stroke-dasharray": "2px, 7px",
       opacity: "0.72",
-    } satisfies Record<EdgeProp, string>);
-    expect(settled).toEqual({
+      "--conduit-scale": "read",
+    } satisfies Record<EdgeProp | "--conduit-scale", string>);
+    expect(widthPx(inferred["stroke-width"]), "the guess's base width").toBeCloseTo(
+      2.5 * scale,
+      3,
+    );
+
+    expect({ ...settled, "stroke-width": "base", "--conduit-scale": "read" }).toEqual({
       // A `<linearGradient>` reference, not a colour, and that is the fact worth
       // pinning: the settled body carries the PARENT's role hue into the CHILD's,
       // so a reader sees design work handed to a build agent without reading
       // either card. A flat stroke here would be that channel silently removed.
       stroke: 'url("#root-_reviewer-grad")',
-      "stroke-width": "4.5px",
+      "stroke-width": "base",
       "stroke-dasharray": "none",
       opacity: "1",
-    } satisfies Record<EdgeProp, string>);
+      "--conduit-scale": "read",
+    } satisfies Record<EdgeProp | "--conduit-scale", string>);
+    expect(widthPx(settled["stroke-width"]), "the body's base width").toBeCloseTo(
+      4.5 * scale,
+      3,
+    );
   });
 
   test("gets none of the layers that mean `something went through here`", async ({
@@ -256,7 +324,8 @@ test.describe("motion, allowed", () => {
       "animation-duration",
       "stroke-dasharray",
     ]);
-    expect(comet).toEqual({
+    expect({ ...comet, "--conduit-scale": "read" }).toEqual({
+      "--conduit-scale": "read",
       "animation-name": "conduit-travel",
       // 1.6s is the LIVE loop; `--focus` is 1.15s and `--sweep` is 1s over the
       // same keyframes, so the duration is what says which of the three reasons
@@ -304,13 +373,19 @@ test.describe("motion, refused", () => {
       "stroke-dasharray",
       "stroke-width",
     ]);
-    expect(comet).toEqual({
+    expect({ ...comet, "stroke-width": "base", "--conduit-scale": "read" }).toEqual({
       "animation-name": "none",
       "stroke-dasharray": "none",
-      // Thinner than the 2.2px it is when it moves: a stroke that sits on the
-      // wire permanently would swamp the 1.35px specular core at full width.
-      "stroke-width": "1.5px",
+      "stroke-width": "base",
+      "--conduit-scale": "read",
     });
+    // Thinner than the 2.2px it is when it moves: a stroke that sits on the
+    // wire permanently would swamp the 1.35px specular core at full width. The
+    // base is what is pinned; `--conduit-scale` multiplies it exactly as it
+    // multiplies every other conduit width, including in this media query.
+    const scale = scaleOf(comet);
+    expect(widthPx(comet["stroke-width"])).toBeCloseTo(1.5 * scale, 3);
+    expect(widthPx(comet["stroke-width"])).toBeLessThan(2.2 * scale);
   });
 
   test("every pulsing dot in the app is stilled", async ({ page }) => {

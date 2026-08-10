@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import useSWR from "swr";
 
 import {
@@ -20,6 +20,7 @@ import {
   type RunEventType,
   type RunLane,
   type RunStatus,
+  type SpendSeat,
 } from "./api-types";
 import { KEY, apiUrl, swrFetcher } from "./api";
 import { seqOf, useRunGraph } from "./use-run-graph";
@@ -198,6 +199,26 @@ function asAttribution(value: unknown): GraphAttribution | null {
 
 function asAgentState(value: unknown): GraphAgentState | null {
   return value === "running" || value === "completed" || value === "failed" || value === "stopped"
+    ? value
+    : null;
+}
+
+/**
+ * The seat a `rate_limit` frame is attributed to, or null.
+ *
+ * NULL FOR AN UNRECOGNISED STRING, NOT A PASS-THROUGH. The server's own emitter
+ * defaults the field to `null` from call sites whose role is not one of the five
+ * (`plan` is not a member of the union at all), and older stored rows have no
+ * field. All three of those mean "unattributed", which is the truth; inventing a
+ * sixth seat by widening to `string` would put a label in the trace that no
+ * spend row can ever be joined to.
+ */
+function asSpendSeat(value: unknown): SpendSeat | null {
+  return value === "spec" ||
+    value === "audit" ||
+    value === "builder" ||
+    value === "fix" ||
+    value === "judge"
     ? value
     : null;
 }
@@ -382,6 +403,11 @@ export function parseRunEvent(
         type: "rate_limit",
         limited: record["limited"] === true,
         retryAfterSec: retryAfterSec ?? 0,
+        // READ OFF THE WIRE, NOT DEFAULTED TO NULL. `#noteRateLimit` puts the
+        // seat on every frame it emits; hardcoding `null` here would typecheck,
+        // render, and quietly throw away the only thing that tells two seats'
+        // rate-limit frames apart — the defect the server field was added for.
+        seat: asSpendSeat(record["seat"]),
         ...atOf(record),
       };
     }
@@ -890,6 +916,65 @@ export function useLiveRun(runId: string | null): LiveRun {
 
   const status = data?.status;
 
+  /*
+   * WHAT THE STREAM IS ALLOWED TO WRITE INTO, AND THE BLANK PAGE THAT CAME OF
+   * NOT ASKING.
+   *
+   * `applyRunEvent`'s own docblock says it returns nothing when there is no
+   * cached detail to fold into, "the caller then revalidates from REST instead
+   * of inventing a record". THE CALLER DID NOT. It wrote the nothing back:
+   *
+   *     mutate(previous => applyRunEvent(previous, event), { revalidate: false })
+   *
+   * and on a mount where an event beats the REST detail that is not a no-op. It
+   * is a mutation, and SWR DISCARDS THE RESPONSE OF ANY REQUEST THAT STARTED
+   * BEFORE ONE — so the detail already in flight is thrown away rather than
+   * cached. `pollIntervalFor` then returns 0 for `status === undefined` and
+   * nothing fetches again. The page sits on `runs/[runId]/page.tsx`'s
+   * `run === undefined && error === undefined && !isLoading` branch FOREVER: an
+   * empty `main`, no rail, no title, no Cancel.
+   *
+   * MEASURED, not deduced, against `FINISHED_RUN_ID` with the detail held back
+   * 1500ms (`tests/blank-cache.browser.spec.ts`): six seconds after the
+   * navigation the page had made exactly TWO detail requests — the mount's, and
+   * the one the terminal `status` row asks for — and `main.innerHTML` was 322
+   * characters of empty panel. The second request is discarded the same way, by
+   * the `socket-echo` frame the stream writes after the terminal row.
+   *
+   * SO THE FIX IS TO NOT WRITE. This ref mirrors what SWR is holding; while it
+   * is empty the stream folds nothing, the in-flight detail is left alone, and
+   * `missedEvent` records that a fold was skipped so ONE revalidation can be
+   * asked for once there is something to fold into.
+   *
+   * WHY A REF AND NOT `data` IN THE EFFECT'S DEPENDENCIES. The socket effect
+   * must not be torn down and rebuilt every time the detail changes — that
+   * would drop the EventSource on every poll and replay the whole run from row
+   * 0 each time. A ref assigned during render is the same value the effect
+   * would have seen, without the subscription churn.
+   *
+   * WHY NOT WIDEN `pollIntervalFor` INSTEAD, which would also break the seal:
+   * `status === undefined` is equally true of a run that does not exist, and a
+   * non-zero interval there polls a 404 on a timer for as long as the tab is
+   * open. This narrows to the one case that is actually a race.
+   */
+  const detailRef = useRef<RunDetail | undefined>(undefined);
+  const missedEvent = useRef(false);
+
+  /*
+   * WRITTEN IN AN EFFECT, NOT DURING RENDER — and the difference is real here
+   * rather than a lint appeasement. `react-hooks/refs` refuses a ref write
+   * during render, and the reason applies: under a concurrent render that is
+   * thrown away, a render-time write would leave the ref describing a commit
+   * that never happened. An effect runs on the commit that did.
+   *
+   * NOTHING RACES IT. The only reader is the SSE callback below, and the socket
+   * is itself created in an effect on the same commit, so the ref is current
+   * before any frame can arrive.
+   */
+  useEffect(() => {
+    detailRef.current = data;
+  }, [data]);
+
   // EventSource reconnects indefinitely on a normally-closed stream, so a
   // finished run must not hold one open. Derived, not written by an effect:
   // the socket's own state is irrelevant once the run is terminal.
@@ -906,6 +991,28 @@ export function useLiveRun(runId: string | null): LiveRun {
     }, refreshInterval);
     return () => window.clearInterval(timer);
   }, [key, refreshInterval, mutate]);
+
+  /*
+   * ONE CATCH-UP READ, AND ONLY IF SOMETHING WAS ACTUALLY SKIPPED.
+   *
+   * The guard in `ingest` drops the fold rather than the event — the canvas and
+   * the trace still get it — but the detail then reflects the REST snapshot as
+   * of the moment it was generated, and a status that changed between that
+   * moment and the replay would be stale until the next poll (never, on a
+   * terminal run). So the first render that HAS a detail after a skip asks for
+   * it once more. `missedEvent` is cleared before the call, so this cannot
+   * become a loop: the revalidation changes `data`, this effect re-runs, and the
+   * flag is false.
+   *
+   * It is deliberately not a retry-until-success. If that read is lost too, the
+   * cache is no longer empty and the ordinary poll owns the problem.
+   */
+  useEffect(() => {
+    if (data === undefined) return;
+    if (!missedEvent.current) return;
+    missedEvent.current = false;
+    void mutate();
+  }, [data, mutate]);
 
   useEffect(() => {
     // THE SOCKET WAITS FOR THE GRAPH SNAPSHOT. `attachSse` replays from row 0,
@@ -937,6 +1044,22 @@ export function useLiveRun(runId: string | null): LiveRun {
 
       const row = traceRowFor(event);
       if (row !== null) dispatchTrace({ kind: "append", entry: row });
+
+      /*
+       * NOTHING TO FOLD INTO YET — LEAVE THE CACHE AND THE FETCH ALONE.
+       *
+       * Above the `mutate` deliberately: the canvas and the trace have their
+       * own accumulators and neither depends on the detail, so a replay that
+       * arrives first is still drawn in full. It is only the RunDetail fold
+       * that has to wait, and waiting is free — the REST snapshot is the
+       * authority for every field this fold would have touched.
+       *
+       * See the ref's declaration for the failure this replaces.
+       */
+      if (detailRef.current === undefined) {
+        missedEvent.current = true;
+        return;
+      }
 
       let unresolvedCriterion = false;
       void mutate(

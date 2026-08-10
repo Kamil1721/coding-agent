@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["dom", "dom.iterable", "es2022"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "es2022"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -24,7 +28,9 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ]
     }
   },
   "include": [
@@ -35,7 +41,33 @@
     ".next/dev/types/**/*.ts",
     ".next-test/types/**/*.ts",
     ".next-test/dev/types/**/*.ts",
-    "**/*.mts"
+    "**/*.mts",
+    ".next-test/dev/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "server", "dist", ".next", ".next-test"]
+  // `results` IS NOT EXCLUDED FOR TIDINESS. It is the calibration run root:
+  // `server/src/calibration/grade-fixture.ts` sets DEFAULT_CALIBRATION_RUN_ROOT to
+  // `../../../results/calibration-4a/` and hands `<root>/<fixture>/results` to the gate as
+  // BAKEOFF_RESULTS_DIR. The gate stages a COPY of each artefact under `<that>/staging/`
+  // before mounting it into the sealed scorer, and one of those artefacts — `broken-build` —
+  // contains a file that does not compile ON PURPOSE (a deliberate TS2345, see
+  // `server/calibration/broken-build/src/app.ts`). `include` above is `**/*.ts`, so while a
+  // calibration is mid-flight this project's typecheck picks the staged copy up and exits 2
+  // on the one defect that is a fixture's whole reason to exist. The artefact SOURCES were
+  // already safe — they sit under `server/`, which is excluded, and `fixtures.ts:283-289`
+  // says that placement was chosen for exactly this hazard — but the staged copies are not
+  // under `server/` and nothing excluded them.
+  //
+  // MEASURED 2026-08-09 with the real broken fixture staged where the gate puts it:
+  // `npx tsc -p tsconfig.json --noEmit` exits 2 without this entry and 0 with it, and
+  // `--listFiles | grep -c /dashboard/results/` goes 1 -> 0, i.e. the file leaves the
+  // program rather than merely going quiet. Nothing first-party is lost: `results/` is
+  // gitignored and holds graded data, not source.
+  "exclude": [
+    "node_modules",
+    "server",
+    "dist",
+    ".next",
+    ".next-test",
+    "results"
+  ]
 }

@@ -113,9 +113,43 @@ function isFullBleed(pathname: string): boolean {
   return /^\/runs\/[^/]+$/.test(pathname);
 }
 
+/**
+ * THE LISTS TAKE THE WINDOW TOO — 2026-08-09, and it is a different argument
+ * from the run view's, which is why it is a second predicate rather than a
+ * widened regex.
+ *
+ * WHAT WAS LEFT. Fixing the canvas's gutters scoped the escape to `/runs/<id>`
+ * and left `/runs` and `/projects` capped, measured at 2000px as
+ * `main {x: 280, width: 1440}` — 280px of dead ground down each side of a table.
+ * The guard that held the cap in place said, correctly, that deleting it
+ * outright "would also have handed the new-ticket form the full 2000px, which
+ * is worse than the bug — a 2000px-wide textarea".
+ *
+ * SO THE CAP IS KEPT WHERE IT IS DOING WORK AND DROPPED WHERE IT IS NOT, and
+ * the line between them is what the cap is FOR. A `max-width` on a page of
+ * prose or a form protects the MEASURE: past about ninety characters the eye
+ * loses the start of the next line. Neither list has a measure to protect.
+ * `/runs` is a six-column table whose every column is `whitespace-nowrap` or a
+ * badge except ONE — the ticket title, which is `min-w-0 … truncate`. Every
+ * pixel the cap was withholding therefore goes to the single field that is
+ * being cut off, and nothing else on the row moves. `/projects` is the same
+ * shape: a fixed status column, a fixed control column, and a path that is
+ * shortened from the left when it does not fit.
+ *
+ * `/` KEEPS THE CAP, and that is the whole of the original guard's point. It is
+ * a ticket composer — a textarea and prose — and it is the one screen here where
+ * width costs readability.
+ */
+function isWideList(pathname: string): boolean {
+  return pathname === "/runs" || pathname === "/projects";
+}
+
 export function AppShell({ children }: { children: ReactNode }): ReactNode {
   const pathname = usePathname();
   const fullBleed = isFullBleed(pathname);
+  /** No cap, but still padded and still scrolling with the document. */
+  const wide = isWideList(pathname);
+  const capped = !fullBleed && !wide;
 
   return (
     /*
@@ -152,7 +186,7 @@ export function AppShell({ children }: { children: ReactNode }): ReactNode {
         <div
           className={cx(
             "flex h-11 w-full items-center gap-4 px-4",
-            fullBleed ? "" : "mx-auto max-w-[1440px]",
+            capped ? "mx-auto max-w-[1440px]" : "",
           )}
         >
           <Link href="/" className="flex items-center gap-2">
@@ -181,7 +215,9 @@ export function AppShell({ children }: { children: ReactNode }): ReactNode {
             ? // No cap, no padding, and allowed to shrink so the canvas can own
               // exactly the space between header and footer.
               "min-h-0"
-            : "mx-auto max-w-[1440px] px-4 py-4",
+            : // A list keeps the page's padding and loses only the cap; a form
+              // keeps both. See `isWideList`.
+              cx("px-4 py-4", capped && "mx-auto max-w-[1440px]"),
         )}
       >
         {children}

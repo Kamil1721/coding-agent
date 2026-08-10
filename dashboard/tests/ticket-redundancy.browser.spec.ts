@@ -337,6 +337,13 @@ test("the capture rule is absent until the brief links somewhere, and keeps the 
   page,
 }) => {
   await serve(page);
+  /*
+   * THIS ABSENCE HAS THE STRONGEST CONTROL IN THE FILE AND IT IS THREE LINES
+   * DOWN: the SAME locator is asserted visible after the brief gains a link, so
+   * the count-0 cannot be a locator that never matches anything. `serve()` also
+   * returns only once the brief box is painted. Left in place deliberately on
+   * 2026-08-09 while the file's other pre-paint absences were reordered.
+   */
   await expect(captureRule(page)).toHaveCount(0);
 
   await ticketBox(page).fill("Copy the booking flow at https://example.com onto our stack.");
@@ -359,6 +366,18 @@ test("the redundant prose is gone and the load-bearing prose is not", async ({
   // empty page; two presences on their own are satisfied by the form nobody
   // changed. Asserted together, they say the cut was surgical.
   await serve(page);
+
+  /*
+   * THE PANEL THE FOUR CUTS WERE CUT FROM, ASSERTED FIRST — added 2026-08-09.
+   * `serve()` already refuses to return until the brief box is on screen, so
+   * none of the absences below can be read off a blank page; what they COULD be
+   * read off is a page whose merged Options panel failed to render, and in that
+   * state all four would pass while the form was missing its whole second half.
+   * The "Delivery" absence three lines down is a claim ABOUT this panel — that
+   * three panels became one — so the panel has to exist for the claim to mean
+   * anything. Nothing that was asserted here has changed.
+   */
+  await expect(page.getByRole("heading", { name: "Options" })).toBeVisible();
 
   // Cut: restated the panel subtitle three inches above it in longer words.
   await expect(

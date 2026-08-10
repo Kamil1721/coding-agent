@@ -134,6 +134,59 @@ test("a rate_limit frame with no `limited` field is read as NOT limited", () => 
 });
 
 /* -------------------------------------------------------------------------
+ * Who was talking — the seat attribution on a rate_limit frame
+ * ---------------------------------------------------------------------- */
+
+/**
+ * WHY THESE THREE EXIST, AND WHY A TYPECHECK IS NOT ENOUGH.
+ *
+ * The server started stamping `seat` on every `rate_limit` frame because run
+ * `a913c871` recorded six of them and could not say which of the two seats
+ * running in that window each belonged to. The client's mirror had to gain the
+ * field to keep `tsc` at exit 0 — and there is a version of that repair that
+ * makes `tsc` exit 0 while carrying nothing: write `seat: null` at the
+ * wire-parse site. It compiles, it renders, and the frames stay anonymous.
+ *
+ * So the assertion below is on the VALUE THAT CAME OFF THE WIRE, not on the
+ * shape. The third case is the negative control: an unrecognised string must
+ * land `null` rather than pass through, because a seat name that is not one of
+ * the five joins to no spend row and would be a label invented by the parser.
+ */
+test("a rate_limit frame's seat survives the parse instead of arriving anonymous", () => {
+  const frame = JSON.stringify({
+    type: "rate_limit",
+    limited: true,
+    retryAfterSec: 900,
+    seat: "audit",
+  });
+  const event = parseRunEvent(frame, "rate_limit");
+  expect(
+    (event as { seat?: unknown }).seat,
+    "the parser dropped the attribution, so the trace is back to six anonymous rows",
+  ).toBe("audit");
+});
+
+test("a rate_limit frame with no seat reads as unattributed, not as a guess", () => {
+  const frame = JSON.stringify({ type: "rate_limit", limited: false, retryAfterSec: 253699 });
+  const event = parseRunEvent(frame, "rate_limit");
+  expect((event as { seat?: unknown }).seat).toBeNull();
+});
+
+test("a rate_limit frame naming a seat that does not exist is not believed", () => {
+  const frame = JSON.stringify({
+    type: "rate_limit",
+    limited: false,
+    retryAfterSec: 10,
+    seat: "plan",
+  });
+  const event = parseRunEvent(frame, "rate_limit");
+  expect(
+    (event as { seat?: unknown }).seat,
+    "`plan` is not a member of SpendSeat; passing it through invents a sixth seat",
+  ).toBeNull();
+});
+
+/* -------------------------------------------------------------------------
  * The words the reader sees
  * ---------------------------------------------------------------------- */
 
@@ -148,7 +201,12 @@ test("a rate_limit frame with no `limited` field is read as NOT limited", () => 
  * between the event and the sentence.
  */
 test("a report that refused nothing does not get the word `rate limited`", () => {
-  const row = traceRowFor({ type: "rate_limit", limited: false, retryAfterSec: 253_699 });
+  const row = traceRowFor({
+    type: "rate_limit",
+    limited: false,
+    retryAfterSec: 253_699,
+    seat: null,
+  });
   expect(row).not.toBeNull();
   expect(
     row?.text,
@@ -159,7 +217,7 @@ test("a report that refused nothing does not get the word `rate limited`", () =>
 });
 
 test("a real refusal still reads as one, and still warns", () => {
-  const row = traceRowFor({ type: "rate_limit", limited: true, retryAfterSec: 900 });
+  const row = traceRowFor({ type: "rate_limit", limited: true, retryAfterSec: 900, seat: null });
   expect(row?.text).toMatch(/rate limited; retry after 900s/);
   expect(row?.level).toBe("warn");
 });

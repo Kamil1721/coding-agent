@@ -507,21 +507,37 @@ type Patch = Record<string, unknown>;
  * absent, and the failure reads as "the toolbar was never rendered".
  * `access-control-allow-origin` is not optional: the app is on 4322 and the
  * fixture API on 4177.
+ *
+ * THE BODY IS FETCHED ONCE, BEFORE THE ROUTE IS INSTALLED — ported verbatim in
+ * shape from `canvas-shell-copy.browser.spec.ts`, which landed this repair for
+ * three flakes of its own and was the only one of four files to get it.
+ * `await route.fetch()` INSIDE the handler put a second round trip in front of
+ * every detail response, and the run page raced that delay against its own SSE
+ * replay. The product no longer loses that race
+ * (`lib/use-run-stream.ts` — the stream refuses to fold into an empty cache, and
+ * `blank-cache.browser.spec.ts` deliberately loses the race to prove it), so
+ * this is no longer the difference between a page and a blank one. It is still
+ * a round trip this harness has no reason to add, and leaving three files on the
+ * old shape would leave three files whose timing differs from the fourth's for
+ * no stated reason.
  */
 async function patchDetail(page: Page, runId: string, patch: Patch): Promise<string[]> {
   const introduced: string[] = [];
   for (const value of Object.values(patch)) stringsIn(value, introduced);
+
+  const seed = await page.request.get(`${API_ORIGIN}/api/runs/${runId}`);
+  const body = (await seed.json()) as Record<string, unknown>;
+  Object.assign(body, patch);
+  const payload = JSON.stringify(body);
+
   await page.route(
     (url) => url.pathname === `/api/runs/${runId}` && url.search === "",
     async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as Record<string, unknown>;
-      Object.assign(body, patch);
       await route.fulfill({
         status: 200,
         headers: { "access-control-allow-origin": "*", "cache-control": "no-store" },
         contentType: "application/json",
-        body: JSON.stringify(body),
+        body: payload,
       });
     },
   );
@@ -847,27 +863,40 @@ test("a long ticket and a long chat message are data, and the budget leaves them
 }) => {
   const settle = recordSupplied(page);
   await patchDetail(page, PLAN_RUN_ID, { ticketText: LONG_TICKET });
+  /*
+   * SAME PRE-FETCH AS `patchDetail`, AND FOR A WEAKER REASON — said so rather
+   * than implied. `/messages` is not on the blank-page race path: nothing folds
+   * it into the SWR run cache, so a round trip in front of it delays a chat
+   * pane and blanks nothing. It is ported anyway so that every route this file
+   * installs has the same timing, which is what makes "the harness added a
+   * delay" a hypothesis this suite can rule out in one glance instead of four.
+   */
+  const messageSeed = await page.request.get(
+    `${API_ORIGIN}/api/runs/${PLAN_RUN_ID}/messages`,
+  );
+  const seeded = (await messageSeed.json()) as { messages?: unknown[] };
+  const messagePayload = JSON.stringify({
+    messages: [
+      ...(seeded.messages ?? []),
+      {
+        seq: 900,
+        at: "2026-08-04T12:00:00.000Z",
+        role: "owner",
+        text: LONG_MESSAGE,
+        images: [],
+        deliveredAt: "2026-08-04T12:00:01.000Z",
+      },
+    ],
+  });
+
   await page.route(
     (url) => url.pathname === `/api/runs/${PLAN_RUN_ID}/messages`,
     async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as { messages?: unknown[] };
-      const messages = [
-        ...(body.messages ?? []),
-        {
-          seq: 900,
-          at: "2026-08-04T12:00:00.000Z",
-          role: "owner",
-          text: LONG_MESSAGE,
-          images: [],
-          deliveredAt: "2026-08-04T12:00:01.000Z",
-        },
-      ];
       await route.fulfill({
         status: 200,
         headers: { "access-control-allow-origin": "*", "cache-control": "no-store" },
         contentType: "application/json",
-        body: JSON.stringify({ messages }),
+        body: messagePayload,
       });
     },
   );

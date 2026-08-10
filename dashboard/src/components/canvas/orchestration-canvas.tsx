@@ -152,6 +152,64 @@ const EDGE_TYPES = { flow: DelegationEdge, lane: LaneEdge } as const;
 const MIN_ZOOM = 0.12;
 const MAX_ZOOM = 1.5;
 
+/* ----------------------------------------------------------------
+ * The conduit's gauge, which cannot be a constant
+ * ------------------------------------------------------------- */
+
+/**
+ * The thinnest layer of the connector, in user units — `.conduit-core`.
+ *
+ * It is the number the scale below is derived FROM, and it is duplicated from
+ * `globals.css` rather than read out of it, which is a real cost and is stated
+ * rather than hidden: if the core's designed width changes there, this has to
+ * change here or the floor lands in the wrong place. The alternative — reading a
+ * computed style during render to feed a style write — is a layout read on every
+ * viewport frame, which is the more expensive mistake.
+ */
+const CONDUIT_CORE_PX = 1.35;
+
+/**
+ * How far the conduit is allowed to out-grow the graph it is drawn on.
+ *
+ * Full compensation (`1 / zoom`) keeps the cable at its designed SCREEN width at
+ * every zoom, and at the 0.12 floor that is a 108px rim laid over cards a
+ * centimetre wide — the graph disappears under its own wiring. 2.4 binds below
+ * 0.31 zoom, which is past the point where individual cards are readable anyway;
+ * from there down the wires shrink with everything else, as they should.
+ */
+const CONDUIT_SCALE_MAX = 2.4;
+
+/**
+ * The multiplier `globals.css` applies to every conduit stroke width.
+ *
+ * ONE RULE: the specular core never falls below one device pixel. Below a
+ * device pixel a stroke is not a thin line, it is a probabilistic grey smear —
+ * which is what turned the four-layer stack into a hairline at the canvas's own
+ * default fit (0.363924 on a twelve-node run at 1440x900) and made the per-edge
+ * gradient read as a flat tint.
+ *
+ * `Math.max(1, …)` IS THE HALF THAT KEEPS IT HONEST. Above 0.74 zoom the core is
+ * already over a pixel, so the scale is exactly 1 and every width is the one the
+ * design specifies — this function can only ever ADD gauge to a graph that has
+ * been zoomed out, never take a zoomed-in cable and fatten it.
+ */
+export function conduitScaleFor(zoom: number): number {
+  if (!Number.isFinite(zoom) || zoom <= 0) return 1;
+  return Math.min(CONDUIT_SCALE_MAX, Math.max(1, 1 / (CONDUIT_CORE_PX * zoom)));
+}
+
+/**
+ * How much the scale has to move before it is worth writing to the DOM.
+ *
+ * A style write on the shell invalidates every conduit path under it, and
+ * `onMove` fires once per animation frame for the whole of a pan. A pan does not
+ * change the zoom at all, so most frames compute an identical number and this
+ * skips them; during a real zoom gesture 0.02 is about forty writes across the
+ * entire range, which is under one per frame and below the threshold where a
+ * width change is visible as a step.
+ */
+const CONDUIT_SCALE_EPSILON = 0.02;
+
 /**
  * THE FIT'S PADDING IS ASYMMETRIC WHEN SOMETHING FLOATS, AND THAT IS THE TRICK.
  *
@@ -242,6 +300,16 @@ function fitOptionsFor(paneWidth: number, hasNotice: boolean) {
 /** What the manual "fit" button in the zoom controls uses. Symmetric, on purpose:
  *  it answers "show me the whole run" and the reader has asked for it explicitly. */
 const MANUAL_FIT_OPTIONS = { padding: 0.08, maxZoom: 1, minZoom: MIN_ZOOM } as const;
+
+/**
+ * How long a burst of arriving nodes is allowed to settle before the graph is
+ * re-framed.
+ *
+ * Long enough that a fan-out of four agents in one tick is one move rather than
+ * four, short enough that a node which arrives alone is on screen before the
+ * reader has finished noticing it appeared.
+ */
+const GROWTH_REFIT_DEBOUNCE_MS = 400;
 
 /**
  * How much the pane has to change before a re-fit is worth animating.
@@ -1024,17 +1092,46 @@ function CanvasInner({
   }, []);
 
   /**
+   * The conduit gauge currently written onto the shell.
+   *
+   * A ref and a direct style write, NOT state. The alternative is a React Flow
+   * store subscription on the transform, which re-renders this component — and
+   * this component builds every node and edge object — on every frame of a zoom
+   * gesture. Nothing in the tree needs to re-render for this: the number is
+   * consumed entirely by CSS.
+   */
+  const conduitScale = useRef(1);
+  const syncConduitScale = useCallback((): void => {
+    const element = shell.current;
+    if (element === null) return;
+    const next = conduitScaleFor(flow.getZoom());
+    if (Math.abs(next - conduitScale.current) < CONDUIT_SCALE_EPSILON) return;
+    conduitScale.current = next;
+    element.style.setProperty("--conduit-scale", next.toFixed(3));
+  }, [flow]);
+
+  /**
    * `onMoveEnd` fires for this component's own `fitView` too. React Flow passes
    * the triggering event for a user gesture and `null` when the move was
    * programmatic, so the null check is what keeps our own fit from latching the
    * flag and disabling the next re-fit.
+   *
+   * IT ALSO CARRIES THE CONDUIT GAUGE, which is why `onMove` exists below it:
+   * `onMoveEnd` alone would leave the cables at the old gauge for the whole of a
+   * pinch or a wheel zoom and snap them at the end. Both handlers call the same
+   * idempotent, epsilon-guarded write.
    */
   const onMoveEnd = useCallback(
     (event: MouseEvent | TouchEvent | null): void => {
       if (event !== null) viewAdjusted.current = true;
+      syncConduitScale();
     },
-    [],
+    [syncConduitScale],
   );
+
+  const onMove = useCallback((): void => {
+    syncConduitScale();
+  }, [syncConduitScale]);
 
   /**
    * The sheet's inset, clamped to something that leaves a canvas behind it.
@@ -1277,8 +1374,10 @@ function CanvasInner({
     viewAdjusted.current = false;
     setMoved(0);
     setLayoutEpoch((previous) => previous + 1);
-    void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, noticeRef.current));
-  }, [flow]);
+    void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, noticeRef.current)).then(
+      syncConduitScale,
+    );
+  }, [flow, syncConduitScale]);
 
   // The lane comes first when the run has one and no agents yet: on a run parked
   // in the plan phase the only card on the canvas is a stage, and a tab stop
@@ -1577,13 +1676,32 @@ function CanvasInner({
   const drawnCount =
     placement.nodes.length + placement.stages.length + (placement.preview === null ? 0 : 1);
 
+  /**
+   * How many drawn things the last automatic fit framed.
+   *
+   * Read by the growth re-fit below. It is a ref rather than state for the same
+   * reason `hasFitted` is: nothing renders from it, and a state write here would
+   * re-run the node builder on every arriving agent.
+   */
+  const fittedCount = useRef(0);
+
   useEffect(() => {
     if (hasFitted.current) return;
     if (!nodesInitialized) return;
     if (drawnCount === 0) return;
     hasFitted.current = true;
+    fittedCount.current = drawnCount;
 
-    void flow.fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, noticeRef.current));
+    void flow
+      .fitView(fitOptionsFor(shell.current?.clientWidth ?? 0, noticeRef.current))
+      /*
+       * THE GAUGE IS SET FROM THE FIT, NOT BEFORE IT. This is the one viewport
+       * change that happens with nobody watching, and it is the one that picks
+       * the zoom the reader is handed — 0.363924 on a twelve-node run. Setting
+       * `--conduit-scale` off the pre-fit identity transform would leave every
+       * cable at its designed width for a graph drawn at a third of it.
+       */
+      .then(syncConduitScale);
 
     /*
      * THE ARRIVAL SWEEP. One pulse down every connector, staggered by its depth
@@ -1597,7 +1715,74 @@ function CanvasInner({
      */
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     setSweeping(true);
-  }, [nodesInitialized, drawnCount, flow]);
+  }, [nodesInitialized, drawnCount, flow, syncConduitScale]);
+
+  /*
+   * RE-FIT WHEN THE GRAPH GROWS — and only while the view is still the one this
+   * component chose.
+   *
+   * WHAT WAS MEASURED. The fit above runs exactly once, against the graph as it
+   * stood when React Flow first measured it. On a LIVE run that graph is a few
+   * seconds old before it is finished: agents arrive for the whole of the build.
+   * Probed on the harness's live run, 2 of 12 nodes sat entirely outside the pane
+   * at t=1.5s and were still outside at t=7.5s with the viewport transform
+   * BYTE-IDENTICAL — the run grew past its own frame and nothing ever looked
+   * again. The reader's only recovery is the fit button, which they have to know
+   * is there and have to keep pressing.
+   *
+   * WHY FIT-ONCE WAS RIGHT AND IS STILL RIGHT. This file's contract is that a
+   * dragged card keeps its position and a pan is the reader's decision: "fitView
+   * runs exactly once and never after a drag, so the two cannot fight". A
+   * re-fit that ignored that would throw away a viewport somebody chose, which is
+   * worse than a stale one. So this effect reads the SAME `viewAdjusted` latch
+   * the resize re-fit reads, and gives up permanently the moment the reader pans,
+   * zooms or drags. A NEW NODE IS NOT A DRAG — that is the whole distinction.
+   *
+   * GROWTH ONLY, NEVER SHRINKAGE. `drawnCount` also falls: collapsing a group,
+   * or hiding housekeeping agents, removes cards. Re-fitting on the way down
+   * would zoom IN on the reader every time they simplified the picture, which is
+   * the opposite of what the gesture asked for. `<=` is the whole of that rule.
+   *
+   * IT IS DEBOUNCED AND IT IS ANIMATED, and both are about not being annoying.
+   * A build that spawns four agents in one tick would otherwise fit four times in
+   * four frames; the timer coalesces a burst into one move. And the move is 320ms
+   * rather than instantaneous because an unannounced jump of the whole graph
+   * reads as a glitch, while a short ease reads as the canvas making room — the
+   * same duration and the same reduced-motion refusal the selection pan uses.
+   */
+  useEffect(() => {
+    if (!hasFitted.current) return;
+    if (viewAdjusted.current) return;
+    if (!nodesInitialized) return;
+    if (drawnCount <= fittedCount.current) return;
+
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const timer = window.setTimeout(() => {
+      // Re-checked inside the timer: the reader may have grabbed the pane during
+      // the wait, and the viewport is theirs from that instant.
+      if (viewAdjusted.current) return;
+      /*
+       * THE COUNT IS RECORDED WHERE THE FIT HAPPENS, NOT WHERE IT IS SCHEDULED,
+       * and that is a measured repair rather than a preference. Recording it at
+       * schedule time left the canvas at its one-card zoom on a graph that grew
+       * to twelve — `1 -> 1`, byte-identical, exactly the defect this effect
+       * exists to fix. The reason: new cards are UNMEASURED for a render or two,
+       * so `nodesInitialized` drops to false in the middle of a burst. That
+       * render returns early AND its cleanup clears the armed timer; when the
+       * flag comes back the count guard above already matched and nothing
+       * re-arms. Recording inside the timer makes a cleared timer a no-op.
+       */
+      fittedCount.current = drawnCount;
+      void flow
+        .fitView({
+          ...fitOptionsFor(shell.current?.clientWidth ?? 0, noticeRef.current),
+          duration: reduce ? 0 : 320,
+        })
+        .then(syncConduitScale);
+    }, GROWTH_REFIT_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [drawnCount, nodesInitialized, flow, syncConduitScale]);
 
   /*
    * RE-FIT WHEN THE PANE CHANGES SIZE — and only while the view is still the
@@ -1654,12 +1839,12 @@ function CanvasInner({
         return;
       }
       last = next;
-      void flow.fitView(fitOptionsFor(next.width, noticeRef.current));
+      void flow.fitView(fitOptionsFor(next.width, noticeRef.current)).then(syncConduitScale);
     });
 
     observer.observe(element);
     return () => observer.disconnect();
-  }, [flow]);
+  }, [flow, syncConduitScale]);
 
   /** The sweep's off switch, keyed on nothing but the flag it turns off. */
   useEffect(() => {
@@ -1894,6 +2079,7 @@ function CanvasInner({
          * permanently disables the resize re-fit — see `viewAdjusted`.
          */
         onNodeDragStop={markViewAdjusted}
+        onMove={onMove}
         onMoveEnd={onMoveEnd}
         proOptions={{ hideAttribution: true }}
         minZoom={MIN_ZOOM}

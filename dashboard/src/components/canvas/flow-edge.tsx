@@ -110,6 +110,18 @@ const HANDLE_OFFSET = 26;
 const SWEEP_STEP_MS = 190;
 
 /**
+ * How far ahead of the child's stop the parent's stop brightens, in ms.
+ *
+ * The flux keyframe is 2400ms and peaks at 45%, so a 600ms lead puts the
+ * parent-side peak a quarter of a cycle before the child-side one: the bright
+ * band is visibly moving DOWN the wire, in the direction the delegation went,
+ * without either stop ever leaving its own role's hue for long. Zero would make
+ * the whole conduit breathe in unison, which reads as a pulse rather than as
+ * travel; a full half-cycle reads as two independent lights.
+ */
+const FLUX_LEAD_MS = 600;
+
+/**
  * SVG ids have to survive `url(#…)`, and a placed edge id is `n1->group:1`.
  *
  * `>` and `:` are legal in an HTML id and are NOT legal unescaped inside a CSS
@@ -183,6 +195,7 @@ export function DelegationEdge({
 
   const key = safeId(id);
   const gradientId = `${key}-grad`;
+  const stillGradientId = `${key}-still`;
   const bloomId = `${key}-bloom`;
 
   const fromColor = roleColorVar(data?.fromRole ?? "unmapped");
@@ -219,6 +232,21 @@ export function DelegationEdge({
     ["--sweep-delay" as string]: `${String((data?.depth ?? 1) * SWEEP_STEP_MS)}ms`,
   };
 
+  /**
+   * A flux stop's own base hue and its place in the queue.
+   *
+   * The keyframe brightens `--flux-base` and returns to it, so each stop has to
+   * carry the colour it is animating AROUND — one keyframe cannot know a
+   * per-edge hue. The delay is what makes two stops read as one band travelling
+   * rather than as the whole wire breathing: `FLUX_LEAD_MS` earlier on the
+   * parent's stop means the bright band appears at the source and arrives at the
+   * target, which is the direction the work went.
+   */
+  const fluxStyle = (base: string, delayMs: number): CSSProperties => ({
+    ["--flux-base" as string]: base,
+    animationDelay: `${String(delayMs)}ms`,
+  });
+
   return (
     <>
       <defs>
@@ -237,36 +265,159 @@ export function DelegationEdge({
            * where the wire meets its card, and the blend happens in the middle
            * of the run where nothing has to be identified.
            */}
+          {/*
+           * THE TWO INTERIOR STOPS ANIMATE WHEN THE EDGE IS ENERGISED —
+           * 2026-08-09, the owner's "animated gradient stops".
+           *
+           * Each brightens toward a cold white and returns to its own role hue,
+           * the parent's `FLUX_LEAD_MS` ahead of the child's, so a soft band of
+           * light crosses the middle of the cable in the direction the
+           * delegation went. `--flux-base` rides inline because one keyframe
+           * cannot know a per-edge hue; see `conduit-flux` in `globals.css`.
+           *
+           * THE END STOPS NEVER MOVE. They are what makes each role
+           * identifiable where the wire meets its card, and brightening them
+           * would wash the hue out at exactly the two points a reader uses to
+           * tell whose work is on the wire.
+           *
+           * ONLY WHEN ENERGISED, and that is doctrine rather than thrift: a
+           * settled edge nobody is pointing at does not move, which is what
+           * keeps the moving ones worth looking at. At rest these are ordinary
+           * stops with no class and no animation.
+           */}
           <stop offset="0%" stopColor={fromColor} />
-          <stop offset="22%" stopColor={fromColor} />
-          <stop offset="78%" stopColor={toColor} />
+          <stop
+            {...(energised
+              ? {
+                  className: "conduit-flux-stop",
+                  style: fluxStyle(fromColor, -FLUX_LEAD_MS),
+                }
+              : {})}
+            offset="22%"
+            stopColor={fromColor}
+          />
+          <stop
+            {...(energised
+              ? { className: "conduit-flux-stop", style: fluxStyle(toColor, 0) }
+              : {})}
+            offset="78%"
+            stopColor={toColor}
+          />
           <stop offset="100%" stopColor={toColor} />
         </linearGradient>
 
+        {/*
+         * A STATIC TWIN OF THE GRADIENT, FOR THE FILTERED PATH ONLY, AND ONLY
+         * WHILE THE FIRST ONE IS MOVING.
+         *
+         * A gradient is a paint server: every element painting with it repaints
+         * when one of its stops changes. `.conduit-bloom` is the one FILTERED
+         * path on this edge, so if it shared the animated gradient the browser
+         * would re-rasterise a two-pass Gaussian on every frame — exactly the
+         * cost this file's header says was avoided by never filtering the comet.
+         * The comets can keep the animated one; they are unfiltered, and they
+         * are already repainting each frame for their own dash offset.
+         *
+         * WHY THE TWIN IS THE BLOOM'S AND NOT THE BODY'S. `.conduit-body`'s
+         * `stroke` is pinned by `canvas-edges.browser.spec.ts` as
+         * `url("#<edge>-grad")` — the fact that the wire carries the parent's
+         * hue into the child's is a contract, and swapping the body onto a
+         * second id to make room for an animation would have broken it for a
+         * reason that has nothing to do with what that test defends. The bloom
+         * has no such contract, so the duplicate lives there.
+         *
+         * IT DOES NOT EXIST AT REST. When the edge is settled the first gradient
+         * is static and the bloom simply paints from it.
+         */}
         {energised && (
-          <filter
-            id={bloomId}
-            filterUnits="userSpaceOnUse"
-            x={regionX}
-            y={regionY}
-            width={regionW}
-            height={regionH}
+          <linearGradient
+            id={stillGradientId}
+            gradientUnits="userSpaceOnUse"
+            x1={sourceX}
+            y1={sourceY}
+            x2={targetX}
+            y2={targetY}
           >
-            {/*
-             * Two radii merged under the original, which is what makes this a
-             * bloom rather than a blur: the tight pass gives the wire a hot
-             * edge, the wide pass throws light onto the background, and the
-             * unblurred source on top keeps the cable's own line crisp.
-             */}
-            <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="tight" />
-            <feGaussianBlur in="SourceGraphic" stdDeviation="12" result="wide" />
-            <feMerge>
-              <feMergeNode in="wide" />
-              <feMergeNode in="tight" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
+            <stop offset="0%" stopColor={fromColor} />
+            <stop offset="22%" stopColor={fromColor} />
+            <stop offset="78%" stopColor={toColor} />
+            <stop offset="100%" stopColor={toColor} />
+          </linearGradient>
         )}
+
+        {/*
+         * THE BLOOM FILTER IS NO LONGER GATED ON `energised` — 2026-08-09 (C5-4).
+         *
+         * A finished run used to have zero filters, zero blooms and zero
+         * animations on the canvas: correct about the MOTION and wrong about the
+         * light. Motion means "this is happening now" and must stop when it
+         * stops; a bloom means "this cable carries current", which is a fact
+         * about a delegation that happened and is still true afterwards. The
+         * owner watched a run for an hour and then got a wireframe of it.
+         *
+         * SO THE FILTER IS ALWAYS BUILT AND ITS CONTENT IS THE STATE. Energised
+         * keeps the two-radius merge under the original. Settled gets ONE pass and
+         * no merge — the blurred halo alone, with no `SourceGraphic` on top,
+         * because the crisp line is already drawn by `.conduit-body` directly
+         * above this path. That is half the Gaussians of the energised form and it
+         * cannot be mistaken for it: `canvas-presence.browser.spec.ts` reads the
+         * primitive list out of the rendered document and pins both shapes.
+         *
+         * NEITHER FORM ANIMATES, so the cost lands at first paint and at each
+         * zoom step rather than per frame — and it was MEASURED, not assumed.
+         * Chrome tracing, `RasterTask` totalled across a twelve-step zoom
+         * sweep, three repetitions per arm with the bloom's filter switched off
+         * in place as the control: 135.5ms with it against 135.4ms without at
+         * 1440x900, and 909ms against 886ms at 2000x1200.
+         *
+         * "IT IS FREE" USED TO FOLLOW THOSE NUMBERS AND THE NUMBERS DO NOT
+         * SUPPORT IT — corrected 2026-08-09 after review. A 0.1ms difference is
+         * an order of magnitude inside this instrument's own arm-to-arm spread:
+         * in the same four-arm table (`globals.css`, below the flux keyframes)
+         * the as-shipped arm comes out FASTER than the bloom-off arm at
+         * 1440x900 live (703.5 against 717.5) and SLOWEST of all four at
+         * 2000x1200 finished, and a difference whose SIGN flips between
+         * viewports is a difference the instrument cannot resolve. The band is
+         * roughly ±15-20ms. What the table supports is therefore: NOT
+         * DISTINGUISHABLE FROM FREE at four to six edges, against an instrument
+         * with a ±20ms spread. Calling it free at thirty edges — the number the
+         * design doc plans for — would be extrapolation from a graph that was
+         * never drawn.
+         *
+         * WHAT IS UNAFFECTED, because it is the same table read correctly: the
+         * turbulence refusal. 216.8 against 135.4 and 1497 against 703 are five
+         * to eighty times the spread above, and the stdDeviation-200 control
+         * shows the instrument is not merely reporting "filters are expensive".
+         * That measurement discriminates; this one does not.
+         */}
+        <filter
+          id={bloomId}
+          filterUnits="userSpaceOnUse"
+          x={regionX}
+          y={regionY}
+          width={regionW}
+          height={regionH}
+        >
+          {energised ? (
+            <>
+              {/*
+               * Two radii merged under the original, which is what makes this a
+               * bloom rather than a blur: the tight pass gives the wire a hot
+               * edge, the wide pass throws light onto the background, and the
+               * unblurred source on top keeps the cable's own line crisp.
+               */}
+              <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="tight" />
+              <feGaussianBlur in="SourceGraphic" stdDeviation="12" result="wide" />
+              <feMerge>
+                <feMergeNode in="wide" />
+                <feMergeNode in="tight" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </>
+          ) : (
+            <feGaussianBlur in="SourceGraphic" stdDeviation="7" />
+          )}
+        </filter>
       </defs>
 
       {/* 1. The rim: one step lighter than the ground, so the casing reads as a
@@ -276,19 +427,23 @@ export function DelegationEdge({
       {/* 2. The casing: the dark body of the cable. */}
       <path d={path} className="conduit-casing" />
 
-      {/* The static bloom of an energised wire. Filtered once, never animated,
-          and under the coloured body so it reads as light escaping from it. */}
-      {energised && (
-        <path
-          d={path}
-          className="conduit-bloom"
-          stroke={`url(#${gradientId})`}
-          style={{ filter: `url(#${bloomId})` }}
-        />
-      )}
+      {/* The wire's own light. Filtered once, never animated, and under the
+          coloured body so it reads as escaping from it. `data-state` is what
+          `globals.css` dims it by — an energised cable is lit, a settled one
+          still glows. It paints from the STATIC twin whenever the main gradient
+          is animating; see the `<defs>` above for why that matters. */}
+      <path
+        d={path}
+        className="conduit-bloom"
+        data-state={energised ? "energised" : "settled"}
+        stroke={`url(#${energised ? stillGradientId : gradientId})`}
+        style={{ filter: `url(#${bloomId})` }}
+      />
 
       {/* 3. The body: the role gradient. This is the layer carrying the
-             information, and the one the settled spec measures. */}
+             information, and the one the settled spec measures. Always the same
+             gradient id — when the edge is energised, two of that gradient's
+             stops are the thing that moves. */}
       <path
         id={`${key}-settled`}
         d={path}

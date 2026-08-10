@@ -80,13 +80,59 @@ export function elapsedBetween(
   return Math.max(0, end - start);
 }
 
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+/** Past this, a relative age stops being a useful way to say when. */
+const CALENDAR_AFTER_MS = 7 * DAY_MS;
+
+/**
+ * How long ago, in the largest unit that is still a number a reader can hold.
+ *
+ * WHAT THIS FIXES. It used to hand everything to `formatDuration`, whose top
+ * rung is hours, so the run list printed **"253h 36m ago"** — a real string off
+ * this machine, and one nobody can read as "ten and a half days" without doing
+ * arithmetic. `/projects` had already worked around it in prose ("`formatRelative`
+ * tops out in hours — the one real folder here reads '69h 55m ago'") and dated
+ * its rows absolutely instead. That workaround stays correct on its own terms
+ * and is now a choice rather than a forced move.
+ *
+ * THREE RUNGS, AND THE LAST ONE STOPS BEING RELATIVE ON PURPOSE:
+ *
+ *   under a day    — unchanged. `formatDuration` already reads well here
+ *     ("43m 02s ago", "5h 12m ago") and this is the range the dashboard is
+ *     actually watched in.
+ *   under a week   — days and hours: "10d 13h ago". Still countable at a
+ *     glance, and it is the range where "how long has it been" is the question.
+ *   a week or more — the DATE. Past seven days nobody converts "23d ago" into
+ *     a day of the week; they want to know it was the 30th. The year is added
+ *     only when it differs from today's, so the common case stays two tokens.
+ *
+ * `formatDuration` IS DELIBERATELY NOT CHANGED. It also formats how long a run
+ * TOOK, where hours are the right ceiling and a run measured in days is a
+ * pathology worth seeing as `61h 12m` rather than smoothed into `2d 13h`.
+ */
 export function formatRelative(iso: string, nowMs: number): string {
   const ms = parseIso(iso);
   if (ms === null) return iso;
   const delta = nowMs - ms;
+  // A clock skew between the server's stamp and the browser's is not an event.
   if (delta < 0) return "just now";
   if (delta < 45_000) return "just now";
-  return `${formatDuration(delta)} ago`;
+  if (delta < DAY_MS) return `${formatDuration(delta)} ago`;
+
+  if (delta < CALENDAR_AFTER_MS) {
+    const days = Math.floor(delta / DAY_MS);
+    const hours = Math.floor((delta % DAY_MS) / HOUR_MS);
+    return `${String(days)}d ${String(hours).padStart(2, "0")}h ago`;
+  }
+
+  const then = new Date(ms);
+  const sameYear = then.getFullYear() === new Date(nowMs).getFullYear();
+  return then.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
 }
 
 /** `2h 14m 03s` — for a retry-after countdown, which can be hours. */

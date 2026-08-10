@@ -21,10 +21,12 @@ import { Button, CommandLine, MonoPath, Notice } from "@/components/ui";
 export function RateLimitNotice({
   run,
   onResume,
+  onCancel,
   busy,
 }: {
   run: RunDetail;
   onResume: () => void;
+  onCancel: () => void;
   busy: boolean;
 }): ReactNode {
   const retryAfterSec = run.rateLimit?.retryAfterSec ?? null;
@@ -85,10 +87,37 @@ export function RateLimitNotice({
           </span>
         </>
       }
+      /*
+       * CANCEL LANDED HERE ON 2026-08-09, AND IT IS A CORRECTION RATHER THAN AN
+       * ADDITION.
+       *
+       * `runs/[runId]/page.tsx` suppresses the run chip whenever any notice is
+       * up, and justified it in as many words: "`AwaitingInputNotice` and
+       * `RateLimitNotice` carry their own Cancel and Resume." Half of that was
+       * false. This component took `{ run, onResume, busy }` and rendered one
+       * button, so on a rate-limited run with the rail's panel shut the screen
+       * carried NO Cancel at all — which is verbatim the defect the chip was
+       * brought back to close ("a control that stops a run does not belong
+       * behind two clicks"), reappearing in the one state where the run is
+       * stopped and the reader is deciding what to do with it.
+       *
+       * THE TWO MOVES ARE THE SAME TWO `AwaitingInputNotice` OFFERS, and for the
+       * same reason: a stopped run either continues or it does not. Resume stays
+       * `primary` because the countdown above says when it will work; Cancel is
+       * `danger` and second, because a quota that will refill on its own is not
+       * a reason to throw the run away — the notice's own `Explain` says
+       * resuming does not restart it. It is here for the owner who has decided
+       * the run is going wrong and does not want to wait five hours to stop it.
+       */
       actions={
-        <Button variant="primary" onClick={onResume} disabled={busy}>
-          {busy ? "Resuming…" : "Resume run"}
-        </Button>
+        <>
+          <Button variant="primary" onClick={onResume} disabled={busy}>
+            {busy ? "Resuming…" : "Resume run"}
+          </Button>
+          <Button variant="danger" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+        </>
       }
     >
       <p>

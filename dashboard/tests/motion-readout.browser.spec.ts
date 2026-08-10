@@ -474,10 +474,15 @@ test.describe("a ticket that named no motion reference", () => {
   test("`motion: null` renders no panel at all", async ({ page }) => {
     const harness = await serve(page, NO_REFERENCE);
 
-    await expect(motionPanel(page)).toHaveCount(0);
-    // The control: the tab is alive, so "no panel" is an absence rather than a
-    // blank page.
+    /*
+     * THE CONTROL RUNS FIRST — 2026-08-09. The tab being alive is what makes
+     * "no panel" an absence rather than a blank page, and it used to be asserted
+     * AFTER the absence it qualifies: a page that rendered nothing at all
+     * satisfied the count-0 and only tripped one line later. The order is the
+     * whole change; both assertions are the ones that were here.
+     */
     await expect(verbatimBrief(page)).toBeVisible();
+    await expect(motionPanel(page)).toHaveCount(0);
     expect(harness.crashes).toEqual([]);
   });
 
@@ -486,8 +491,9 @@ test.describe("a ticket that named no motion reference", () => {
   }) => {
     const harness = await serve(page, MISSING_KEY);
 
-    await expect(motionPanel(page)).toHaveCount(0);
+    // The control before the absence, for the reason given in the test above.
     await expect(verbatimBrief(page)).toBeVisible();
+    await expect(motionPanel(page)).toHaveCount(0);
     // THE ONE TEST THAT NOTICES A DELETED `?? null` AT THE CALL SITE.
     expect(harness.crashes, "an absent `motion` key took the Overview panel down").toEqual([]);
   });

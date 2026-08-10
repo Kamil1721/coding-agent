@@ -330,10 +330,53 @@ body {
  * to the animated comet, so the blur is rasterised once instead of once a frame.
  */
 
+/*
+ * EVERY WIDTH BELOW IS MULTIPLIED BY `--conduit-scale`, AND THAT IS THE WHOLE OF
+ * THE ZOOM FIX.
+ *
+ * THE DEFECT, measured rather than argued. The canvas fits the graph on load,
+ * and on a twelve-node run at 1440x900 that fit is `zoom 0.363924` — a genuine
+ * fit, nowhere near the 0.12 floor. React Flow scales the edge SVG by the
+ * viewport transform, so at that zoom the four strokes above land on screen as
+ *
+ *     rim 4.7px   casing 3.8px   body 1.6px   core 0.49px
+ *
+ * A 0.49px line is thinner than a device pixel: the compositor paints it as a
+ * grey smear or not at all, the casing and the body merge, and the construction
+ * this file spends sixty lines justifying collapses into a hairline with a flat
+ * tint on it. The reference the widths were drawn against is only legible from
+ * about 0.9 zoom, which the reader reaches by pressing `+` five times. Nobody
+ * does that, so in practice the treatment was invisible at the only zoom the
+ * canvas ever chooses for itself.
+ *
+ * WHAT `--conduit-scale` IS. One number, written onto the canvas shell by
+ * `orchestration-canvas.tsx` whenever the viewport moves, chosen so the THINNEST
+ * layer — the specular core — never goes below one device pixel on screen:
+ *
+ *     scale = clamp(1, 1 / (1.35 * zoom), 2.4)
+ *
+ * It is 1 at and above 0.74 zoom, so THE DESIGNED WIDTHS ARE UNCHANGED wherever
+ * they were already legible, and it never thickens a cable that is zoomed IN —
+ * the failure mode a naive `width / zoom` produces is a 108px rim at the 0.12
+ * floor. At the default 0.364 fit it is 2.04, which puts the core at 1.0px, the
+ * body at 3.3px and the rim at 9.6px on screen: the groove, the casing, the
+ * gradient and the specular line all separately visible at the zoom the reader
+ * is actually given.
+ *
+ * THE RATIOS ARE UNTOUCHED, which is why one multiplier is enough. Every layer,
+ * the guess, the comet and the lane link all take the same factor, so the stack
+ * keeps its proportions and only its overall gauge follows the zoom.
+ *
+ * WHAT IT DELIBERATELY DOES NOT SCALE: the bloom's `stdDeviation` (a filter
+ * primitive attribute, not a CSS property, so it cannot read a custom property)
+ * and the comet's `stroke-dasharray`, which is in `pathLength` units and is
+ * already zoom-independent by construction.
+ */
+
 .conduit-rim {
   fill: none;
   stroke: var(--color-line);
-  stroke-width: 13;
+  stroke-width: calc(13px * var(--conduit-scale, 1));
   stroke-linecap: round;
   opacity: 0.34;
 }
@@ -341,20 +384,20 @@ body {
 .conduit-casing {
   fill: none;
   stroke: #05070a;
-  stroke-width: 10.5;
+  stroke-width: calc(10.5px * var(--conduit-scale, 1));
   stroke-linecap: round;
 }
 
 .conduit-body {
   fill: none;
-  stroke-width: 4.5;
+  stroke-width: calc(4.5px * var(--conduit-scale, 1));
   stroke-linecap: round;
 }
 
 .conduit-core {
   fill: none;
   stroke: #e9eef7;
-  stroke-width: 1.35;
+  stroke-width: calc(1.35px * var(--conduit-scale, 1));
   stroke-linecap: round;
   opacity: 0.38;
 }
@@ -362,9 +405,66 @@ body {
 /* The static ambient bloom of an energised wire. Filtered, never animated. */
 .conduit-bloom {
   fill: none;
-  stroke-width: 5;
+  stroke-width: calc(5px * var(--conduit-scale, 1));
   stroke-linecap: round;
   opacity: 0.55;
+}
+
+/*
+ * THE SETTLED WIRE STILL GLOWS — 2026-08-09, C5-4.
+ *
+ * MEASURED BEFORE IT WAS WRITTEN: a finished run's canvas carried `bloom 0,
+ * filters 0, comets 0, animations 0` at rest, on a graph with four real
+ * conduits. Correct about the motion — nothing is happening, so nothing should
+ * move — and wrong about the light. A bloom is not motion. It says "this cable
+ * carries current", which stays true after the run ends, and without it the
+ * thing the owner watched for an hour settles into a wireframe of itself.
+ *
+ * WHY AN ATTRIBUTE AND NOT A SECOND CLASS. `data-state` is written by
+ * `flow-edge.tsx` from the same `energised` boolean that picks the filter's
+ * shape, so the two can never disagree: one source, two consequences. An
+ * attribute selector also outranks the bare class above regardless of where it
+ * sits in the file, so this cannot be lost to the cascade the way an equal
+ * specificity override written earlier would be.
+ *
+ * THE NUMBERS. Roughly half the opacity, and a slightly wider stroke because a
+ * single-pass blur at stdDeviation 7 spreads less light than a 3+12 merge does:
+ * the settled glow has to come from a fatter source to read at all. It is
+ * deliberately dimmer than an energised wire by more than it is wider — an
+ * energised edge must still be the brightest thing on the canvas, and
+ * `canvas-presence.browser.spec.ts` asserts that ordering rather than either
+ * number alone.
+ *
+ * UNDER `prefers-reduced-motion` THIS IS THE WHOLE SIGNAL, which is the second
+ * reason it exists. With the comet stilled, a reader who has asked for no
+ * motion previously had a flat tint and nothing else; now an energised edge is
+ * both brighter and bloomed, and the difference survives with every animation
+ * switched off.
+ */
+.conduit-bloom[data-state="settled"] {
+  stroke-width: calc(6.5px * var(--conduit-scale, 1));
+  opacity: 0.3;
+}
+
+/*
+ * THE LANE LINK'S GAUGE MOVED HERE FROM AN INLINE ATTRIBUTE — 2026-08-09.
+ *
+ * `flow-edge.tsx` used to write `strokeWidth={pending ? 2.5 : 4.5}` onto the
+ * path and its docblock said the class was "a test hook with no styles behind
+ * it", because `globals.css` was outside that change's file scope. It is not
+ * outside this one, and an inline presentation attribute cannot read
+ * `--conduit-scale` — so the lane would have been the one wire on the canvas
+ * that stayed a hairline at the default fit while every other wire thickened.
+ * The attribute is left on the element as the un-scaled fallback; a CSS
+ * `stroke-width` overrides a presentation attribute, so this rule wins wherever
+ * the stylesheet has loaded.
+ */
+.lane-conduit {
+  stroke-width: calc(4.5px * var(--conduit-scale, 1));
+}
+
+.lane-conduit[data-state="pending"] {
+  stroke-width: calc(2.5px * var(--conduit-scale, 1));
 }
 
 /*
@@ -391,7 +491,7 @@ body {
   fill: none;
   /* See `--edge-guess`: not grey, and not any role's hue. */
   stroke: var(--edge-guess);
-  stroke-width: 2.5;
+  stroke-width: calc(2.5px * var(--conduit-scale, 1));
   stroke-linecap: round;
   stroke-dasharray: 2 7;
   /*
@@ -412,18 +512,18 @@ body {
 }
 
 .conduit-comet--halo {
-  stroke-width: 9;
+  stroke-width: calc(9px * var(--conduit-scale, 1));
   opacity: 0.11;
 }
 
 .conduit-comet--mid {
-  stroke-width: 4.6;
+  stroke-width: calc(4.6px * var(--conduit-scale, 1));
   opacity: 0.3;
 }
 
 .conduit-comet--hot {
   stroke: #f2f6fd;
-  stroke-width: 2.2;
+  stroke-width: calc(2.2px * var(--conduit-scale, 1));
   opacity: 0.92;
 }
 
@@ -435,6 +535,141 @@ body {
     stroke-dashoffset: 0;
   }
 }
+
+/*
+ * THE ANIMATED GRADIENT STOPS — 2026-08-09, C5-6, the second of the three
+ * mechanisms the owner named.
+ *
+ * WHAT MOVES: the two INTERIOR stops of an energised edge's flux gradient, and
+ * nothing else. Each brightens toward white and returns to its own role hue,
+ * the parent's stop `FLUX_LEAD_MS` ahead of the child's, so what a reader sees
+ * is a soft band of light crossing the middle of the cable in the direction the
+ * delegation went. The 0% and 100% stops are untouched: they are what makes the
+ * role identifiable where the wire meets its card.
+ *
+ * LOW AMPLITUDE ON PURPOSE. 42% of the hue mixed with a cold white is about a
+ * quarter of the way to a blown-out stop, and the ease-in-out spends most of
+ * the cycle near the base colour rather than near the peak. The rejected
+ * alternative was animating `stop-opacity`, which punches a translucent hole in
+ * the body and shows the casing through it — that reads as a rendering fault,
+ * not as energy.
+ *
+ * AND AT THE DEFAULT FIT IT IS A CLOSE-INSPECTION CUE, NOT THE LIVENESS SIGNAL —
+ * narrowed 2026-08-09, because "a soft band of light crossing the middle of the
+ * cable" is what this file claimed and it is not what two independent readers
+ * saw at the zoom the canvas picks for itself. THE MECHANISM IS REAL AND
+ * MEASURED: at 0.3693 the amplitude is identical to high zoom (oklab lightness
+ * 0.630 -> 0.817, a and b essentially unchanged) and rAF sampling returns 303
+ * distinct computed `stop-color` values across 313 frames, so it animates and it
+ * is genuinely low-amplitude. What neither reader could do is SEE it: in full
+ * frames at fit zoom the trough and the peak were near-indistinguishable, and in
+ * crops it was just detectable. What carries "this wire is live" at 0.364 is the
+ * BLOOM, whose effective screen width `--conduit-scale` holds at 4.8px across
+ * the whole compensated range (`conduit-zoom.browser.spec.ts` measures exactly
+ * that). Raising the amplitude is a design change with an unmeasured cost and is
+ * left to the owner; overstating what the reader sees is not.
+ *
+ * `color-mix` INSIDE A KEYFRAME, AND IT IS NOT A GUESS: measured in this
+ * browser before it was written — a keyframe interpolating
+ * `color-mix(in oklab, var(--flux-base) …)` produced 40 distinct computed
+ * `stop-color` values across 40 rAF frames. `--flux-base` is set per stop
+ * inline, because one keyframe cannot know a per-edge hue.
+ *
+ * WHY THIS COSTS ALMOST NOTHING — AND IT IS AN ARGUMENT, NOT A MEASUREMENT,
+ * which the sentence below used to leave to inference. A gradient is a paint
+ * server: changing a stop repaints whatever paints with it. The only consumer of
+ * THIS gradient is `.conduit-body`, an unfiltered 4.5px stroke. `.conduit-bloom`
+ * — the one filtered path on the edge — deliberately keeps the static gradient,
+ * so no Gaussian is ever re-rasterised by this animation. See `flow-edge.tsx`.
+ *
+ * THE FOUR-ARM `RasterTask` TABLE BELOW HAS NO FLUX-OFF ARM: its arms are
+ * bloom-off, as-shipped, +feTurbulence and stdDeviation-200. So the one
+ * instrument in this repository that has been shown to discriminate has never
+ * been pointed at this animation, and the rAF sampling that was pointed at it
+ * is pinned to the vsync interval and detects only catastrophic frame loss.
+ * Adding `animation: none` on `.conduit-flux-stop` as a fifth arm, on the LIVE
+ * fixture where it actually runs, is the measurement this paragraph is standing
+ * in for.
+ */
+@keyframes conduit-flux {
+  0%,
+  100% {
+    stop-color: var(--flux-base);
+  }
+
+  45% {
+    stop-color: color-mix(in oklab, var(--flux-base) 42%, #e8f0ff);
+  }
+}
+
+.conduit-flux-stop {
+  animation: conduit-flux 2400ms ease-in-out infinite;
+}
+
+/*
+ * THE THIRD MECHANISM THE OWNER NAMED — `feTurbulence` — WAS BUILT, MEASURED AND
+ * REFUSED. 2026-08-09. This block is the refusal, so nobody re-derives it.
+ *
+ * WHAT WAS TRIED, in the live DOM rather than in the tree: a per-edge
+ * `feTurbulence type="fractalNoise" baseFrequency="0.014 0.06" numOctaves="2"`
+ * feeding an `feDisplacementMap scale="3"` on `.conduit-casing`, so the cable's
+ * dark body picks up a faint waver — a physical imperfection in the conduit, not
+ * a scribble. It looked right. It costs too much.
+ *
+ * THE MEASUREMENT. Chrome tracing, `RasterTask` durations totalled across a
+ * twelve-press zoom sweep driven by the canvas's own zoom control, three
+ * repetitions per arm, interleaved, after an untraced warm-up sweep (the first
+ * raster of a session runs ~50% high and would otherwise be charged to whichever
+ * arm went first). Four arms differing in exactly one thing each:
+ *
+ *                        1440x900 finished   1440x900 live   2000x1200 live   2000x1200 finished
+ *   bloom filter off        135.4 ms            717.5 ms        885.7 ms         (not recorded here)
+ *   AS SHIPPED              135.5 ms            703.5 ms        909.2 ms          243.9 ms
+ *   + feTurbulence          216.8 ms           1497.4 ms       2022.9 ms         (not recorded here)
+ *   stdDeviation 200        143.1 ms            685.8 ms        881.9 ms          229.3 ms
+ *
+ * THE FOURTH COLUMN WAS DROPPED FROM THIS TRANSCRIPTION AND IS RESTORED —
+ * 2026-08-09. Three columns were copied in from a four-column table, in a
+ * comment whose stated purpose is "so nobody re-derives it", and the one left
+ * out was the only one where the shipped arm looks WORST: the review that caught
+ * the omission reports that at 2000x1200 finished the as-shipped arm was the
+ * slowest of the four and the stdDeviation-200 control the fastest — an ordering
+ * this table cannot be used to check, since two of its cells are missing. Two of
+ * that column's four cells are all this file has; the
+ * other two are marked rather than invented, and re-running the sweep is what it
+ * would take to fill them.
+ *
+ * SO READ THE WHOLE THING AS A COARSE INSTRUMENT. The as-shipped arm beats the
+ * bloom-OFF arm at 1440x900 live (703.5 against 717.5) and loses to the
+ * 200-radius arm at 2000x1200 finished: the sign of the bloom's own cost flips
+ * between viewports, which puts the arm-to-arm spread at roughly ±15-20ms.
+ * Differences smaller than that — including the 0.1ms at 1440x900 finished that
+ * `flow-edge.tsx` used to call "free" — are noise, and the claim there has been
+ * corrected to say so.
+ *
+ * READ THE LAST ROW FIRST, because it is what makes the third one believable.
+ * Cranking every Gaussian from 3/7/12 to 200 — a twenty-eight-fold radius — does
+ * not move the number at all: a blur over a region this size is genuinely free,
+ * and an instrument that reported turbulence as expensive while reporting a 200px
+ * blur as expensive too would be measuring its own overhead. It does not.
+ * `feTurbulence` is 1.6x the whole canvas's raster on a settled five-edge graph
+ * and 2.1-2.3x on a live six-edge one: +6.8ms per zoom step at rest, +66 to
+ * +93ms per zoom step while the run is live.
+ *
+ * AND THE COST IS WORST EXACTLY WHEN IT MATTERS. The live figures are ten times
+ * the settled ones because a live canvas re-rasters continuously for its comets,
+ * and every one of those re-rasters regenerates the noise. So the price is paid
+ * during the hour the owner spends watching a run, on the graph with the most
+ * edges. `§3-C4` records eight edges on the richest real run; thirty is the
+ * number the design doc plans for.
+ *
+ * SO IT IS NOT SHIPPED, and the alternative is not "ship it smaller": the two
+ * knobs that would cut the cost are a lower `numOctaves` (already 2, the
+ * minimum that is not a single-frequency ripple) and a smaller region (already
+ * the path's bounding box plus 10). What is shipped instead is the other two
+ * mechanisms from the same sentence — the `feGaussianBlur`+`feMerge` bloom,
+ * which is free by the table above, and the animated stops directly overhead.
+ */
 
 .conduit-comet--live {
   animation: conduit-travel 1.6s linear infinite;
@@ -481,7 +716,7 @@ body {
   }
 
   .conduit-comet--hot {
-    stroke-width: 1.5;
+    stroke-width: calc(1.5px * var(--conduit-scale, 1));
     opacity: 0.8;
   }
 
@@ -491,6 +726,16 @@ body {
 
   .conduit-comet--mid {
     opacity: 0.16;
+  }
+
+  /*
+   * The flux stops hold at their own role hue. Stilling them costs the reader
+   * nothing they were relying on: the gradient still runs parent-hue to
+   * child-hue, and the difference between an energised edge and a settled one
+   * is carried by the bloom above, which is static and stays.
+   */
+  .conduit-flux-stop {
+    animation: none;
   }
 
   .animate-pulse {

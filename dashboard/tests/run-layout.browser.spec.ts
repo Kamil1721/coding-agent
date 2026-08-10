@@ -449,19 +449,13 @@ test.describe("at 1440px — the control, where the old cap was invisible", () =
   });
 });
 
-test.describe("the list route keeps the cap", () => {
+test.describe("the cap survives where it is doing work, and only there", () => {
   test.use({ viewport: { width: 2000, height: 1200 } });
 
-  /*
-   * THE OTHER HALF OF THE FIX, and the one a careless change breaks. The escape is
-   * scoped to `/runs/<id>`; deleting the cap outright would also have handed the
-   * new-ticket form and this list the full 2000px, which is worse than the bug —
-   * a 2000px-wide textarea. `isFullBleed` takes exactly one path segment after
-   * `/runs`, and this is what holds it to that.
-   */
-  test("/runs is still capped and centred at 2000px", async ({ page }) => {
-    await page.goto("/runs");
-    const box = await page.evaluate(() => {
+  async function mainBox(
+    page: import("@playwright/test").Page,
+  ): Promise<{ width: number; left: number; windowWidth: number }> {
+    return page.evaluate(() => {
       const main = document.querySelector("main");
       if (main === null) throw new Error("no main");
       const b = main.getBoundingClientRect();
@@ -471,10 +465,72 @@ test.describe("the list route keeps the cap", () => {
         windowWidth: window.innerWidth,
       };
     });
+  }
 
-    expect(box.width, "the run LIST lost its max-width — the bleed leaked past /runs/<id>").toBe(
+  /*
+   * THE OTHER HALF OF THE FIX, RE-POINTED 2026-08-09 — and the guard is kept,
+   * not dropped.
+   *
+   * IT USED TO SAY `/runs` IS CAPPED, and its stated reason was that deleting
+   * the cap "would also have handed the new-ticket form and this list the full
+   * 2000px, which is worse than the bug — a 2000px-wide textarea". The textarea
+   * half of that is still exactly right and is now asserted directly, below, on
+   * the route that has the textarea. The LIST half was collateral: the same
+   * measurement that found the canvas's 280px gutters found them on `/runs` and
+   * `/projects` too, and a six-column table has no measure for a `max-width` to
+   * protect — every column but the ticket title is `whitespace-nowrap`, so the
+   * withheld width was going nowhere except into truncating the one field that
+   * matters. `AppShell.isWideList` makes that distinction; these two tests are
+   * what stop it collapsing back into "no cap anywhere".
+   */
+  test("/runs uses the whole window at 2000px", async ({ page }) => {
+    await page.goto("/runs");
+    // The list arrives over SWR; measuring before it lands measures the empty
+    // state's box and not the table's.
+    await expect(page.locator("main table")).toBeVisible();
+    const box = await mainBox(page);
+
+    expect(box.width, "the run list is still capped — the gutters are back").toBe(2000);
+    expect(box.left).toBe(0);
+
+    /*
+     * AND THE WIDTH REACHES THE THING IT WAS TAKEN FOR. `main` growing while the
+     * table stays 1440 would satisfy the box assertion above and change nothing
+     * a reader sees, which is the shape of vacuous check this suite exists to
+     * refuse. The table is the only element inside `main` that has to follow.
+     */
+    const table = await page.evaluate(() => {
+      const found = document.querySelector("main table");
+      return found === null ? null : Math.round(found.getBoundingClientRect().width);
+    });
+    expect(table, "no table on /runs — this assertion is measuring nothing").not.toBeNull();
+    expect(table ?? 0).toBeGreaterThan(1440);
+  });
+
+  /* `isWideList` names two routes; asserting one would let the other rot. */
+  test("/projects uses the whole window too", async ({ page }) => {
+    await page.goto("/projects");
+    // `main` exists before the list lands; the cap is on `main` either way, and
+    // this page has no heading of its own to wait on.
+    await expect(page.locator("main")).toBeVisible();
+    const box = await mainBox(page);
+    expect(box.width, "the projects list is still capped").toBe(2000);
+    expect(box.left).toBe(0);
+  });
+
+  test("/ keeps the cap, because a 2000px-wide textarea is worse than a gutter", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const box = await mainBox(page);
+
+    expect(box.width, "the new-ticket form lost its cap — the bleed leaked past the lists").toBe(
       1440,
     );
-    expect(box.left, "the run list is no longer centred").toBeGreaterThan(0);
+    expect(box.left, "the new-ticket form is no longer centred").toBeGreaterThan(0);
+
+    // The control that makes the number above mean something: the composer is
+    // actually on this page, so the cap is protecting a real measure.
+    await expect(page.locator("textarea").first()).toBeVisible();
   });
 });

@@ -121,6 +121,7 @@ import {
 } from "@/components/run/notices";
 import { OrchestrationCanvas } from "@/components/canvas/orchestration-canvas";
 import { RAIL_LABEL, RunRail, type RailPanelId } from "@/components/canvas/rail";
+import { RunHud } from "@/components/canvas/run-hud";
 import {
   ActivityPanel,
   DetailSheet,
@@ -128,7 +129,7 @@ import {
   OverviewPanel,
   ResultPanel,
 } from "@/components/canvas/sheet";
-import { Notice, Panel, Skeleton, cx } from "@/components/ui";
+import { Button, Notice, Panel, Skeleton, cx } from "@/components/ui";
 import {
   ApiError,
   cancelRun,
@@ -813,14 +814,47 @@ export default function RunPage(): ReactNode {
   }
   if (actionError !== null) {
     floating.push(
-      <Notice key="action-error" tone="fail" title="That action did not go through">
+      /*
+       * IT CARRIES CANCEL WHILE THE RUN CAN STILL BE CANCELLED — 2026-08-09.
+       *
+       * This notice suppresses the run chip (see `hudMounted` below) and used to
+       * be a bare `<p>`, so a failed action left the screen with no way to stop
+       * the run until the reader guessed that reopening a rail panel would bring
+       * one back. It also does not clear on its own: `setActionError(null)` runs
+       * only at the TOP of the next action, so the state persists until the
+       * reader attempts something else — and the thing they most likely want to
+       * attempt is exactly this.
+       *
+       * GATED ON THE RUN BEING NON-TERMINAL, because `actionError` is reachable
+       * on a finished run too (a failed retry, say) and offering to cancel
+       * something that has already stopped is a button that can only produce a
+       * second error.
+       */
+      <Notice
+        key="action-error"
+        tone="fail"
+        title="That action did not go through"
+        actions={
+          isTerminalStatus(run.status) ? undefined : (
+            <Button variant="danger" onClick={onCancel} disabled={busy}>
+              Cancel
+            </Button>
+          )
+        }
+      >
         <p>{actionError}</p>
       </Notice>,
     );
   }
   if (run.status === "rate_limited") {
     floating.push(
-      <RateLimitNotice key="rate-limit" run={run} onResume={onResume} busy={busy} />,
+      <RateLimitNotice
+        key="rate-limit"
+        run={run}
+        onResume={onResume}
+        onCancel={onCancel}
+        busy={busy}
+      />,
     );
   }
   /*
@@ -877,6 +911,66 @@ export default function RunPage(): ReactNode {
         {floating}
       </div>
     );
+
+  /*
+   * THE RUN CHIP IS BACK, AND ONLY WHERE NOTHING ELSE IS SAYING WHO THIS IS —
+   * 2026-08-09.
+   *
+   * WHAT WAS MEASURED. `RunHud` had NO IMPORTER: the icon rail took over its job
+   * and `sheet.tsx` records the handover in as many words ("IT IS WHERE THE RUN
+   * CHIP WENT"). That is right while a panel is OPEN. With every panel SHUT the
+   * screen carried no run identity at all — no title, no status, no verdict, no
+   * clock and, worse than any of those, no CANCEL. And shutting the panel is not
+   * an eccentric thing to do: it is the only way to get the canvas above 0.51
+   * zoom, so stopping a run that is going wrong required reopening a 400px panel
+   * first. A control that stops a run does not belong behind two clicks.
+   *
+   * SO IT MOUNTS ON THE COMPLEMENT OF THE PANEL, WHICH IS WHY NOTHING IS SAID
+   * TWICE. `OverviewPanel` carries the same five facts and the same two actions;
+   * `openPanel === null` is exactly "that panel is not available", so the two can
+   * never both be on screen. The rail's own status dot stays either way.
+   *
+   * `notices === undefined` IS THE SECOND HALF AND IT IS NOT BELT AND BRACES.
+   * The floating stack — the rate-limit notice, the awaiting-input notice, the
+   * plan dialogue, the design lock, the pre-build panel — is pinned to the
+   * canvas's top-left at `left-3` (`orchestration-canvas.tsx`, "THE FLOATING
+   * STACK. Top-left, over the flow"), which is where this chip goes. They do not
+   * stack — both are absolutely positioned in the same corner of the same pane,
+   * so mounting both puts one card on top of the other. Two 360px cards in one
+   * corner is not a layout, and the chip is the one to yield.
+   *
+   * "AND NOTHING IT OFFERED IS LOST" WAS WRITTEN HERE AND IT WAS FALSE — the
+   * correction, 2026-08-09, because the sentence it replaces named a fact about
+   * a component that contradicted it. It read "`AwaitingInputNotice` and
+   * `RateLimitNotice` carry their own Cancel and Resume". `AwaitingInputNotice`
+   * did. `RateLimitNotice` took `{ run, onResume, busy }` and rendered ONE
+   * button, and the action-error branch below was a bare `<p>`, so in two of the
+   * four states that suppress this chip the screen carried NO CANCEL — the exact
+   * defect the paragraph above says the chip exists to close, reappearing in the
+   * states where the run is stopped and the reader most wants to stop it.
+   *
+   * SO THE CLAIM IS NOW TRUE BY CONSTRUCTION RATHER THAN BY ASSERTION. Cancel
+   * was added to `RateLimitNotice` and to the action-error notice (non-terminal
+   * runs only), so three of the four suppressing surfaces carry it:
+   *
+   *   `AwaitingInputNotice`  Resume + Cancel        (unchanged)
+   *   `RateLimitNotice`      Resume + Cancel        (added 2026-08-09)
+   *   action-error notice    Cancel, if non-terminal (added 2026-08-09)
+   *   `PreBuildPanel`        NEITHER — see below
+   *
+   * `rail.browser.spec.ts` measures the rate-limited arm directly, with a notice
+   * up and the panel shut, because that is the one of the three a reader arrives
+   * in without asking.
+   *
+   * THE PRE-BUILD PANEL IS THE DELIBERATE REMAINDER. It is the only one of the
+   * four the reader OPENS — it needs a click on the Plan card — and it closes on
+   * its own header button or on Escape (`prebuild-panel.tsx`), which restores the
+   * chip in one click from a control that is on screen and labelled. That is not
+   * the two-click hunt the chip exists to remove: the way out is visible in the
+   * surface the reader just opened. Carried forward as an owner decision rather
+   * than papered over with a Cancel on a panel about planning.
+   */
+  const hudMounted = openPanel === null && notices === undefined;
 
   /*
    * THE QUESTIONS PANEL — the plan dialogue and the design lock, together, because
@@ -950,8 +1044,18 @@ export default function RunPage(): ReactNode {
        * with the same label — `RunHud`'s, inherited when that panel took over the
        * chip's place in the dock. Two `h1`s is worse than one that moves, and the
        * label is identical either way, so the document's title does not change.
+       *
+       * AND IT STANDS DOWN FOR THE CHIP ITSELF — 2026-08-09, now that `RunHud` is
+       * mounted again with the rail's panel shut AND nothing floating over the
+       * canvas. Same argument, same label, same `ticketLabel(run.ticketTitle)`:
+       * whichever of the three is on screen, the document has exactly one
+       * top-level heading and it says the same words. `hudMounted` already
+       * excludes the pre-build panel — it is one of the floating entries — so the
+       * two can never both claim the heading.
        */}
-      {!preBuildOpen && <h1 className="sr-only">{ticketLabel(run.ticketTitle)}</h1>}
+      {!preBuildOpen && !hudMounted && (
+        <h1 className="sr-only">{ticketLabel(run.ticketTitle)}</h1>
+      )}
 
       <RunRail
         open={openPanel}
@@ -1115,6 +1219,58 @@ export default function RunPage(): ReactNode {
          * the graph it is annotating. Nested here so `absolute inset-y-0 right-0`
          * resolves against the pane and not against the panel's edge.
          */}
+        {/*
+         * THE RUN CHIP, FLOATING IN THE PANE'S TOP-LEFT CORNER.
+         *
+         * WHY IT IS HERE AND NOT IN `notices`. The canvas reserves 428px of its
+         * fit for the floating stack, keyed on `notices !== undefined`, and the
+         * comment on that value is explicit that a stack which renders on every
+         * run "would take that reservation on every run and push the graph
+         * permanently right of centre". The chip is on screen for most of a run's
+         * life, so it may not join that stack. It is a plain overlay instead: no
+         * reservation, no effect on the fit.
+         *
+         * THE OVERLAP IT ACCEPTS, stated rather than discovered later. Nothing
+         * reserves space for this, so on a graph whose top-left node sits in this
+         * corner the chip covers it — the same trade every notice already makes.
+         * It is a small one HERE specifically: the chip only exists while the
+         * rail's panel is shut, which is the widest the pane ever is, and the
+         * pane's `ResizeObserver` has just re-fitted the graph centred in it.
+         *
+         * `w-[min(360px,calc(100vw-32px))]` IS THE WIDTH `run-hud.tsx`'s own
+         * docblock is written against — its title's truncation budget and
+         * `ticketLabel`'s character budget are both derived from it, so a
+         * different number here would silently invalidate both.
+         */}
+        {hudMounted && (
+          <div
+            data-testid="run-chip"
+            className="pointer-events-none absolute left-3 top-3 z-10 w-[min(360px,calc(100vw-32px))]"
+          >
+            <div className="pointer-events-auto shadow-[0_18px_44px_-26px_rgba(0,0,0,0.95)]">
+              <RunHud
+                run={run}
+                model={model}
+                nowMs={nowMs}
+                busy={busy}
+                onCancel={onCancel}
+                onResume={onResume}
+                /*
+                 * "run detail" USED TO OPEN THE RIGHT-HAND SHEET, WHICH NO LONGER
+                 * EXISTS. `sheet.tsx` deleted the button for exactly that reason —
+                 * "it opened the right-hand sheet the rail replaces, so it now
+                 * names nothing". Everything it used to reach is in the rail's
+                 * Overview panel, so the handler opens that, and the label below
+                 * names the panel it opens rather than a surface that is gone.
+                 */
+                onOpenDetail={() => {
+                  openRailPanel("overview");
+                }}
+              />
+            </div>
+          </div>
+        )}
+
         {selected !== null && <DetailSheet node={selected} onClose={clearSelection} />}
       </div>
     </div>

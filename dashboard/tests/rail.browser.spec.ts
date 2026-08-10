@@ -26,10 +26,15 @@
  *      fixture's own criterion for Result, the trace pane's empty sentence for
  *      Activity. `toBeVisible()` on a panel proves a box exists, which is the
  *      defect this repository is known for.
- *   3. THE OLD STACK IS GONE AND ITS FACTS ARE NOT. Deleting a surface is only
- *      safe if what it carried is still reachable, so both halves are asserted
- *      together: no "run detail" button and no run chip anywhere, AND the status,
- *      the model, the run id and Cancel all present one click into Overview.
+ *   3. THE CHIP AND THE PANEL ARE COMPLEMENTS. Rewritten 2026-08-09: this point
+ *      used to read "no 'run detail' button and no run chip anywhere", and by
+ *      then BOTH of those strings were dead — nothing in `dashboard/src` renders
+ *      `role="tablist"` at all, and the chip's button says `overview`. The chip
+ *      itself came back on 2026-08-09, mounted on the complement of the panel, so
+ *      what is asserted now is the rule that is actually true and actually
+ *      breakable: exactly ONE of the two surfaces is on screen, both directions
+ *      checked, with the status / model / run id / Cancel present on whichever it
+ *      is. See that test's own docblock for the three mutations.
  *   4. THE PANEL PUSHES; IT DOES NOT COVER. The owner's complaint is that the
  *      canvas is crowded out. Measured as a width difference on the flow pane plus
  *      the absence of any node under the rail.
@@ -372,43 +377,297 @@ test.describe("what each icon opens", () => {
   });
 });
 
+/**
+ * Serve `RUN_ID` back to the page as a RATE-LIMITED run.
+ *
+ * WHY AN INTERCEPT AND NOT A FIXTURE RUN. `RUN_ID`'s detail is measured for
+ * pixels by four other specs (`config.ts` says so twice) and the fixture server
+ * has no rate-limited run at all, so the alternatives were a fifth fixture run
+ * or a two-line rewrite of one response. The intercept touches ONLY
+ * `GET /api/runs/:id`; `/graph`, `/events` and everything else still come from
+ * the fixture server, so the canvas, the rail and the panels are the same ones
+ * every other test in this file measures.
+ *
+ * `limited: true` AND a `retryAfterSec` because `RateLimitNotice` renders a
+ * countdown off the second and the notice's own copy branches on it — a `null`
+ * would exercise the "the provider did not say how long" arm instead, which is
+ * not the arm a reader most often sees.
+ */
+async function openRateLimitedRun(page: Page): Promise<void> {
+  await page.route(`**/api/runs/${RUN_ID}`, async (route) => {
+    const response = await route.fetch();
+    const detail = (await response.json()) as Record<string, unknown>;
+    await route.fulfill({
+      response,
+      json: {
+        ...detail,
+        status: "rate_limited",
+        rateLimit: { limited: true, retryAfterSec: 3_600 },
+      },
+    });
+  });
+  await openRun(page, RUN_ID);
+}
+
 test.describe("the stack that was deleted", () => {
-  test("the run chip and the run-detail sheet are gone, and their facts are not", async ({
+  test("with no notice up, the run chip and the Overview panel are exact complements", async ({
     page,
   }) => {
+    /*
+     * RENAMED 2026-08-09 (second time), AND THE RENAME IS THE FIX. It was "…and
+     * neither one can vanish", under a docblock stating "exactly one of the two
+     * surfaces is on screen at a time". That is a THREE-state rule asserted as a
+     * two-state one: `hudMounted = openPanel === null && notices === undefined`,
+     * and `notices` is non-undefined in four situations (`preBuildOpen`, an
+     * `actionError`, `rate_limited`, the awaiting-input branch). In every one of
+     * those with the panel shut, NEITHER surface is on screen — so "neither one
+     * can vanish" is false of the product, and this fixture (a running run with
+     * no notices) simply never reaches the state that would have shown it.
+     *
+     * The three mutations below still reproduce and the assertions are unchanged;
+     * what changed is that the name no longer claims the arm this test cannot
+     * reach. The arm itself is the test directly below, on a fixture that DOES
+     * reach it.
+     */
     await openRun(page, RUN_ID);
 
     /*
-     * BOTH HALVES ARE THE TEST. Deleting a surface is only safe if what it carried
-     * is still reachable, and asserting only the deletion is how a fact quietly
-     * leaves the product.
+     * REWRITTEN 2026-08-09, AND THE OLD VERSION IS WHY. It read:
      *
-     * MUTATION APPLIED: rendered `<RunHud … onOpenDetail={…}/>` back into the
-     * floating stack in `runs/[runId]/page.tsx`. The "run detail" count went to 1
-     * and this went red. Reverted.
+     *   getByRole("button", { name: "run detail" }).toHaveCount(0)
+     *   getByRole("tablist",  { name: "Run detail" }).toHaveCount(0)
+     *
+     * under a docblock claiming ONE reproduced mutation as proof of BOTH. By the
+     * time it was read again, neither could observe anything:
+     *
+     *   `grep -arn "tablist" dashboard/src` returns NOTHING. No component in this
+     *   product has ever rendered that role, so that line was vacuous on the day
+     *   it was written — the claimed mutation cannot have turned it red, and the
+     *   docblock was crediting it with the other line's proof.
+     *
+     *   every hit for "run detail" in `dashboard/src` is inside a COMMENT.
+     *   `run-hud.tsx:210` renders the literal `overview` now. So the first line
+     *   was a dead string too — and worse, the exact mutation the old docblock
+     *   said it had reproduced (`RunHud` rendered back into the run page) IS THE
+     *   SHIPPED PRODUCT, and the test stayed green through it. The test's own
+     *   name said the run chip was gone while the chip was on screen.
+     *
+     * WHAT REPLACES IT IS THE RULE THAT IS ACTUALLY TRUE, and it is a rule a
+     * product change can break. `page.tsx` mounts the chip on
+     * `openPanel === null && notices === undefined` — the chip and the Overview
+     * panel carry the SAME five facts and the same two actions, so WITH NO NOTICE
+     * UP exactly one of them is on screen. That is checked here in both
+     * directions, because a one-directional check is satisfied by a product that
+     * dropped one of the two surfaces entirely, which is the failure this
+     * describe block was created to catch in the first place.
+     *
+     * THE SECOND CONJUNCT IS NOT MEASURED HERE AND MUST NOT BE CLAIMED HERE.
+     * `notices === undefined` holds for the whole of this fixture's life, so
+     * every assertion below is conditional on it and this test cannot observe
+     * what happens when it is false. The test below reaches that state on
+     * purpose.
+     *
+     * WHAT IS NOT ASSERTED, DELIBERATELY. There is no "the seven-tab sheet is
+     * gone" assertion any more. Every string that named the sheet is now dead in
+     * the product, so any such assertion is unfalsifiable by construction; the
+     * rename guard below (`overview` present, "run detail" absent) is the honest
+     * remainder — it fails if the old label ever comes back, because then the new
+     * one is missing.
+     *
+     * THREE MUTATIONS APPLIED, EACH TO THE PRODUCT, EACH REVERTED. In every one
+     * of them the OLD version of this test — run side by side from a temporary
+     * spec file — STAYED GREEN, which is the measurement that condemned it.
+     *
+     *   `hudMounted = true`  -> step 1 red: "Received: 1" for `run-chip` while
+     *                           the Overview panel is open.
+     *   `hudMounted = false` -> step 3 red: `run-chip` "element(s) not found"
+     *                           with every panel shut.
+     *   run-hud.tsx's label `overview` -> `run detail` -> step 4 red: the
+     *                           `overview` button is not found.
      */
+
+    // 1. A PANEL IS OPEN, so the chip must NOT be stacked over the canvas.
+    await expect(page.getByTestId("rail-panel")).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "run detail" }),
-      "the seven-tab run sheet's entry point is still on the page",
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole("tablist", { name: "Run detail" }),
-      "the seven-tab strip is still rendered",
+      page.getByTestId("run-chip"),
+      "the chip and the Overview panel are both on screen, saying the same five facts twice",
     ).toHaveCount(0);
 
-    // With everything closed, no run-level facts are stacked over the canvas.
+    // 2. The panel is the one holding the facts while it is open: status, model,
+    //    id, and the control that stops a run going wrong.
+    const panelChip = page.getByTestId("overview-this-run");
+    await expect(panelChip).toContainText("running");
+    await expect(panelChip).toContainText("Sonnet 4.6");
+    await expect(panelChip).toContainText(RUN_ID);
+    await expect(panelChip.getByRole("button", { name: "Cancel" })).toBeVisible();
+
+    // 3. SHUT THE PANEL and the other half has to appear — with the same facts
+    //    and the same Cancel, at the canvas's top-left. This is the direction the
+    //    old test could not check, and it is the one the owner needs: shutting the
+    //    panel is the only way to get the canvas above 0.51 zoom.
     await page.getByTestId("rail-overview").click();
     await expect(page.getByTestId("rail-panel")).toBeHidden();
-    await expect(page.getByTestId("overview-this-run")).toBeHidden();
+    await expect(panelChip).toBeHidden();
 
-    // And one click puts every one of them back: status, model, id, and the
-    // control that stops a run going wrong.
-    await page.getByTestId("rail-overview").click();
-    const chip = page.getByTestId("overview-this-run");
-    await expect(chip).toContainText("running");
-    await expect(chip).toContainText("Sonnet 4.6");
+    const chip = page.getByTestId("run-chip");
+    await expect(chip, "with every panel shut the screen carries no run identity and no Cancel").toBeVisible();
     await expect(chip).toContainText(RUN_ID);
     await expect(chip.getByRole("button", { name: "Cancel" })).toBeVisible();
+
+    // 4. THE RENAME GUARD. The chip's third button opens the Overview panel, so
+    //    it is named for the panel it opens. If it ever says "run detail" again —
+    //    the label of a sheet that no longer exists — the first line fails.
+    await expect(
+      chip.getByRole("button", { name: "overview" }),
+      "the chip's panel button lost the name of the panel it opens",
+    ).toBeVisible();
+    await expect(chip.getByRole("button", { name: "run detail" })).toHaveCount(0);
+  });
+
+  test("with a notice up and the panel shut, both surfaces are gone and the notice carries Cancel", async ({
+    page,
+  }) => {
+    /*
+     * THE THIRD STATE, which the test above cannot reach and used to be claimed
+     * by its name anyway. Added 2026-08-09 with the product fix it measures.
+     *
+     * WHAT IS ACTUALLY TRUE HERE, and it is worth stating plainly because it is
+     * NOT the complement rule: with a notice up and the rail's panel shut,
+     * NEITHER the run chip NOR the Overview panel is on screen. `hudMounted`
+     * needs `notices === undefined` and this run has a notice, so the chip is
+     * suppressed by design — two absolutely-positioned 360px cards in the same
+     * top-left corner is not a layout.
+     *
+     * SO THE THING THAT MATTERS IS WHAT SURVIVES THE SUPPRESSION, and until
+     * today the answer was "nothing". `page.tsx` justified suppressing the chip
+     * with "`AwaitingInputNotice` and `RateLimitNotice` carry their own Cancel
+     * and Resume", and `RateLimitNotice` took `{ run, onResume, busy }` — one
+     * button. A rate-limited run with the panel shut therefore carried NO way to
+     * stop it, which is verbatim the defect the chip was reintroduced to close
+     * ("a control that stops a run does not belong behind two clicks"), back in
+     * the one state where the run is stopped and the reader is deciding whether
+     * to keep it. Cancel was added to that notice; this is the assertion that
+     * keeps it there.
+     *
+     * MUTATIONS THAT REDDEN IT, each applied to production source and reverted:
+     *
+     *   delete the `<Button variant="danger" onClick={onCancel}>Cancel</Button>`
+     *     from `RateLimitNotice`'s `actions` -> step 3 red: the Cancel control
+     *     is not found, which is the pre-fix product exactly.
+     *   `hudMounted = openPanel === null` (drop the notices conjunct)
+     *     -> step 2 red: `run-chip` count 1 while the notice is up.
+     */
+    await openRateLimitedRun(page);
+
+    // 1. THE PRECONDITION. If the intercept ever stops taking, everything below
+    //    is a statement about a `running` run with no notices — which is the
+    //    test above, passing again under a different name.
+    const notice = page.getByText("Rate limited", { exact: false }).first();
+    await expect(
+      notice,
+      "the rate-limited detail never reached the page, so this test is measuring the no-notice state",
+    ).toBeVisible();
+
+    // 2. Shut the panel. Now neither of the two run-identity surfaces is up —
+    //    the honest three-state rule, asserted in the state that produces it.
+    await page.getByTestId("rail-overview").click();
+    await expect(page.getByTestId("rail-panel")).toBeHidden();
+    await expect(page.getByTestId("overview-this-run")).toHaveCount(0);
+    await expect(
+      page.getByTestId("run-chip"),
+      "the chip is stacked under the notice in the same corner",
+    ).toHaveCount(0);
+
+    /*
+     * 3. AND THE CONTROL THAT STOPS THE RUN IS STILL ON SCREEN — in the notice
+     *    itself, not merely somewhere on the page. Asserted as "there is an
+     *    element that contains BOTH the rate-limit title and a Cancel button",
+     *    innermost first, so a Cancel that reappeared on some unrelated surface
+     *    cannot stand in for the one this notice is supposed to be carrying.
+     */
+    const cardWithBoth = page
+      .locator("div")
+      .filter({ hasText: "Rate limited" })
+      .filter({ has: page.getByRole("button", { name: "Cancel" }) })
+      .last();
+    await expect(
+      cardWithBoth,
+      "a rate-limited run with every panel shut carries no way to stop it",
+    ).toBeVisible();
+
+    // 4. Resume is still the primary move — the countdown says when it works,
+    //    and Cancel must not have displaced it.
+    await expect(page.getByRole("button", { name: /Resume/ })).toBeVisible();
+  });
+
+  test("a Cancel that FAILS does not take the last Cancel off the screen with it", async ({
+    page,
+  }) => {
+    /*
+     * THE SECOND OF THE FOUR SUPPRESSING STATES, and the nastiest, because the
+     * reader reaches it by pressing the very control that then disappears.
+     *
+     * `actionError` is one of the four things that make `notices` non-undefined,
+     * so it suppresses the run chip exactly like the rate-limit notice does — and
+     * the notice it puts up was a bare `<p>` with no actions at all. So: shut the
+     * panel, press the chip's Cancel, have the request fail, and the chip is
+     * replaced by a card that says the action did not go through and offers
+     * nothing. The one control the reader was reaching for is now behind
+     * reopening a rail panel, which is the two-click hunt the chip exists to
+     * remove, arrived at from the chip itself.
+     *
+     * IT IS ALSO NOT SELF-CLEARING: `setActionError(null)` runs at the TOP of the
+     * next action, so the state persists until the reader attempts something
+     * else — and the something else they want IS this.
+     *
+     * THE 500 IS THE PRODUCT'S OWN FAILURE PATH, not an invented one:
+     * `page.tsx`'s `onCancel` catches and calls `setActionError(errorMessage(…))`.
+     * Intercepting the POST is the same technique `chat-attachments.browser.spec.ts`
+     * uses on the run's messages endpoint.
+     *
+     * MUTATION THAT REDDENS IT: delete the `actions` prop from the action-error
+     * `<Notice>` in `runs/[runId]/page.tsx` — i.e. the pre-fix product — and step
+     * 4 goes red with the Cancel not found.
+     */
+    await page.route(`**/api/runs/${RUN_ID}/cancel`, async (route) => {
+      await route.fulfill({
+        status: 500,
+        headers: { "access-control-allow-origin": "*" },
+        contentType: "application/json",
+        body: JSON.stringify({ error: "the orchestrator refused to stop this run" }),
+      });
+    });
+    await openRun(page, RUN_ID);
+
+    // 1. Shut the panel so the chip is the surface carrying Cancel.
+    await page.getByTestId("rail-overview").click();
+    await expect(page.getByTestId("rail-panel")).toBeHidden();
+    const chip = page.getByTestId("run-chip");
+    await expect(chip).toBeVisible();
+
+    // 2. Press it, and let it fail.
+    await chip.getByRole("button", { name: "Cancel" }).click();
+
+    // 3. The failure notice is up — and it has taken the chip with it, which is
+    //    the behaviour this test is scoped around rather than against.
+    const failure = page.getByText("That action did not go through");
+    await expect(failure).toBeVisible();
+    await expect(page.getByTestId("run-chip")).toHaveCount(0);
+
+    /*
+     * 4. AND CANCEL SURVIVED. Same shape as the rate-limit arm: an element that
+     *    contains BOTH the failure title and a Cancel button, so a Cancel that
+     *    reappeared on some unrelated surface cannot stand in for it.
+     */
+    const cardWithBoth = page
+      .locator("div")
+      .filter({ hasText: "That action did not go through" })
+      .filter({ has: page.getByRole("button", { name: "Cancel" }) })
+      .last();
+    await expect(
+      cardWithBoth,
+      "a failed Cancel left the screen with no way to stop the run — reached by pressing Cancel",
+    ).toBeVisible();
   });
 
   test("the panel pushes the canvas rather than covering it", async ({ page }) => {
@@ -537,7 +796,14 @@ test.describe("a run that is stopped waiting on an answer", () => {
     /*
      * THE CONTROL FOR THE TEST ABOVE. An entry with nothing to show is ABSENT, not
      * greyed out — no rail entry is ever disabled.
+     *
+     * THE RAIL IS ASSERTED PAINTED FIRST — added 2026-08-09. `openRun` waits for
+     * the toolbar, which is the rail's own element, but this test's whole content
+     * is "one named entry is missing from it", and an absence is only that if the
+     * entries around it are on screen. Overview is the entry that is present on
+     * every run there is.
      */
+    await expect(page.getByTestId("rail-overview")).toBeVisible();
     await expect(page.getByTestId("rail-questions")).toHaveCount(0);
 
     /*

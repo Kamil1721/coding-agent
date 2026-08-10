@@ -35,7 +35,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { FINISHED_RUN_ID, RUN_ID } from "./fixtures/config";
+import { API_ORIGIN, FINISHED_RUN_ID, RUN_ID } from "./fixtures/config";
 
 /* ------------------------------------------------------------------ */
 /* Harness                                                             */
@@ -51,23 +51,35 @@ import { FINISHED_RUN_ID, RUN_ID } from "./fixtures/config";
  * copy of `response.headers()` carries hop-by-hop headers a fulfilled response
  * may not restate. `access-control-allow-origin` is required because the app and
  * the fixture API are on different ports.
+ *
+ * THE BODY IS FETCHED ONCE, BEFORE THE ROUTE IS INSTALLED — the shape
+ * `canvas-shell-copy.browser.spec.ts` landed for the blank-page flake and the
+ * only one of four files that got it. `await route.fetch()` inside the handler
+ * put a second round trip in front of every detail response, and the run page
+ * raced that delay against its own SSE replay: an event that arrived first used
+ * to empty the SWR cache for good. The product side of that is fixed in
+ * `lib/use-run-stream.ts` and deliberately lost in
+ * `blank-cache.browser.spec.ts`, so this is now hygiene rather than the repair —
+ * but a harness that adds a delay nobody asked for is still the wrong control.
  */
 async function patchDetail(
   page: Page,
   runId: string,
   patch: (body: Record<string, unknown>) => void,
 ): Promise<void> {
+  const seed = await page.request.get(`${API_ORIGIN}/api/runs/${runId}`);
+  const body = (await seed.json()) as Record<string, unknown>;
+  patch(body);
+  const payload = JSON.stringify(body);
+
   await page.route(
     (url) => url.pathname === `/api/runs/${runId}` && url.search === "",
     async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as Record<string, unknown>;
-      patch(body);
       await route.fulfill({
         status: 200,
         headers: { "access-control-allow-origin": "*", "cache-control": "no-store" },
         contentType: "application/json",
-        body: JSON.stringify(body),
+        body: payload,
       });
     },
   );

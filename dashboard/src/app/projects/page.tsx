@@ -78,10 +78,14 @@ function runIndexOf(runs: readonly RunSummary[]): ReadonlyMap<string, RunSummary
  * row. When there is no run to take a title from, the title IS the slug, so
  * nothing is lost in the case that made it look necessary.
  *
- * THE RUN IS DATED ABSOLUTELY, NOT RELATIVELY. `formatRelative` tops out in
- * hours — the one real folder here reads "69h 55m ago" — and this screen's whole
- * premise is coming back a week later. An absolute stamp also does not tick, so
- * this page needs no clock.
+ * THE RUN IS DATED ABSOLUTELY, NOT RELATIVELY, AND THE REASON HAS CHANGED —
+ * 2026-08-09. It used to be forced: "`formatRelative` tops out in hours — the
+ * one real folder here reads '69h 55m ago'". That is no longer true;
+ * `lib/format.ts` counts days past a day and prints a DATE past a week, so the
+ * relative form would now read "30 Jul" on the same folder. The stamp stays
+ * absolute anyway, because the second half of the old argument still holds on
+ * its own: this screen's premise is coming back a week later, and an absolute
+ * stamp does not tick, so this page needs no clock.
  */
 function ProjectRow({
   project,

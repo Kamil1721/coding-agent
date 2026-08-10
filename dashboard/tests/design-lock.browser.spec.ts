@@ -574,15 +574,34 @@ test.describe("a run that is not awaiting a design choice", () => {
   test("a lock on a mockup that was never published is said out loud", async ({ page }) => {
     await serve(page, LOCKED_ELSEWHERE);
 
-    // Distinguishing no card here would read as "no design was locked", which is
-    // the opposite of what the record says. The path is shown instead.
-    await expect(panel(page).getByText("locked", { exact: true })).toHaveCount(0);
+    /*
+     * THE ABSENCE IS READ LAST, AND THAT ORDERING IS THE FIX OF 2026-08-09. It
+     * used to be the FIRST assertion in this test, and an absence asserted
+     * before anything is known to have painted is answered by the blank page:
+     * measured, not assumed — with this file's `serve()` answering the run
+     * detail 500 the old order reported its failure at the
+     * `/not one of the mockups shown here/` line BELOW, which means the count-0
+     * above it had just passed over a panel that did not exist. Nothing about
+     * WHAT is asserted changed; the two paint assertions simply run first, so
+     * the absence is only ever read off a rendered panel.
+     */
     // "is not among the mockups published on this run" became "is not one of the
     // mockups shown here" on 2026-08-05. Same claim, shorter.
     await expect(panel(page).getByText(/not one of the mockups shown here/)).toBeVisible();
     // And ui-designer's reason — the one reason on this screen an agent wrote
     // rather than the host — is carried verbatim.
     await expect(panel(page).getByText(/the strongest hero of the set/)).toBeVisible();
+    /*
+     * Distinguishing no card here would read as "no design was locked", which is
+     * the opposite of what the record says. The path is shown instead.
+     *
+     * MUTATION APPLIED (2026-08-09), and this one is a product edit, reverted:
+     * a `<span>locked</span>` added to `design-lock.tsx`'s "not one of the
+     * mockups shown here" paragraph — the badge this line exists to refuse.
+     * Red here: `Expected: 0 / Received: 1`, "34 × locator resolved to 1
+     * element". So this guard reads a real panel and can fail on one.
+     */
+    await expect(panel(page).getByText("locked", { exact: true })).toHaveCount(0);
   });
 
   test("the window closed while the page was open: the cards stop offering", async ({ page }) => {
@@ -830,14 +849,23 @@ test.describe("after the choice", () => {
      * branch outright. It is the shipped string, so the branch mix-up it exists
      * to catch is caught again.
      */
-    await expect(
-      page.getByText("The design lane finished with nothing to lock."),
-    ).toHaveCount(0);
+    /*
+     * THE PAINT ASSERTIONS RUN FIRST — 2026-08-09. The forbidden subtitle below
+     * used to be asserted before any of them, and that order is the one this
+     * repository keeps getting wrong: measured with `serve()`'s run-detail route
+     * answering 500, the old order sailed through the count-0 and reported its
+     * failure on the sentence below it, i.e. the absence had been read off a page
+     * with nothing on it. Same three assertions, and now the two that establish
+     * the page come first.
+     */
     // "The rest of its sections" → "Its other sections".
     await expect(
       page.getByText("Your direction is chosen. Its other sections are being rendered now."),
     ).toBeVisible();
     await expect(page.getByText(/You chose Terminal grid\./)).toBeVisible();
+    await expect(
+      page.getByText("The design lane finished with nothing to lock."),
+    ).toHaveCount(0);
     // Nothing is being asked of him now, so nothing offers.
     await expect(chooseButtons(page)).toHaveCount(0);
   });

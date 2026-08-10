@@ -406,23 +406,35 @@ function sentenceAround(text: string, index: number): string {
  * `access-control-allow-origin` is not optional here: the app is served from
  * 4322 and the fixture API from 4177, so a fulfilled response without it is a
  * CORS failure and the same blank page.
+ *
+ * AND THE BODY IS FETCHED ONCE, BEFORE THE ROUTE IS INSTALLED — the last of the
+ * four files to receive the repair `canvas-shell-copy.browser.spec.ts` landed
+ * on 2026-08-05. `await route.fetch()` inside the handler added a round trip of
+ * the harness's own to every detail response, and the run page raced that delay
+ * against its own SSE replay; a stream that won used to write over the SWR cache
+ * and the page never recovered. That product race is closed in
+ * `lib/use-run-stream.ts` and is deliberately lost on purpose in
+ * `blank-cache.browser.spec.ts`, so what this removes now is an unexplained
+ * timing difference between this file and its siblings, not a failure.
  */
 async function patchDetail(
   page: Page,
   runId: string,
   patch: (body: Record<string, unknown>) => void,
 ): Promise<void> {
+  const seed = await page.request.get(`${API_ORIGIN}/api/runs/${runId}`);
+  const body = (await seed.json()) as Record<string, unknown>;
+  patch(body);
+  const payload = JSON.stringify(body);
+
   await page.route(
     (url) => url.pathname === `/api/runs/${runId}` && url.search === "",
     async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as Record<string, unknown>;
-      patch(body);
       await route.fulfill({
         status: 200,
         headers: { "access-control-allow-origin": "*", "cache-control": "no-store" },
         contentType: "application/json",
-        body: JSON.stringify(body),
+        body: payload,
       });
     },
   );

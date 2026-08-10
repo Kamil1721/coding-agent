@@ -1366,6 +1366,22 @@ export type RunEvent =
       readonly type: "rate_limit";
       readonly limited: boolean;
       readonly retryAfterSec: number;
+      /**
+       * Which seat the provider was answering, or `null` when the frame did not
+       * say. MIRRORS `ApiSpendSeat | null` ON THE SERVER'S `SseEvent`, and the
+       * word "mirrors" is doing real work: `dashboard/src/lib/graph.ts` imports
+       * from `../../server/src/graph`, so the server's union is inside this
+       * program and a mirror that omits a REQUIRED member is a type error, not a
+       * cosmetic drift. It was omitted once, and `npx tsc --noEmit` went from 0
+       * to 7 errors while all 259 browser tests stayed green over it — the
+       * playwright loader is transpile-only and cannot see a type break.
+       *
+       * REQUIRED AND NULLABLE, not optional. `seat?:` does not satisfy the
+       * server member under `exactOptionalPropertyTypes`, and optional would
+       * also let a construction site forget the field silently, which is exactly
+       * how the six anonymous `rate_limit` rows in run `a913c871` came to be.
+       */
+      readonly seat: SpendSeat | null;
       readonly at?: string;
     }
   /**

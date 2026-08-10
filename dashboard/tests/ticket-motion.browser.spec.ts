@@ -220,8 +220,12 @@ test("the form no longer promises there is never a comparison against the live p
   await typeTicket(page, "Copy the layout at https://example.com");
 
   // BOTH HALVES, BECAUSE ABSENCE ALONE IS NOT EVIDENCE. A deleted disclosure, an
-  // inverted `linksToAPage` or a broken panel would satisfy the first assertion
-  // and leave the owner with no statement of what the capture does at all.
-  await expect(page.getByText(/never a comparison against the live page/i)).toHaveCount(0);
+  // inverted `linksToAPage` or a broken panel would satisfy the absence below and
+  // leave the owner with no statement of what the capture does at all.
+  //
+  // THE PRESENT HALF IS ASSERTED FIRST (2026-08-09): in the other order the
+  // absence is read off a form whose capture note has not rendered yet, and it
+  // passes for that reason rather than for the deletion it is about.
   await expect(page.getByText(/the live page is never opened again/i)).toBeVisible();
+  await expect(page.getByText(/never a comparison against the live page/i)).toHaveCount(0);
 });
