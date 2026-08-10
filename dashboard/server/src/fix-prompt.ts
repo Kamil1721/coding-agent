@@ -134,9 +134,28 @@ function renderFailure(index: number, failure: FixableFailure): readonly string[
  */
 const VISUAL_INSTRUCTIONS: readonly string[] = Object.freeze([
   "HOW TO WORK A VISUAL FAILURE:",
-  "- There is no command to re-run for these. Each one was observed on a page that had already been " +
-    "rendered, so the way to check a fix is to serve the build, open the flow named above at the " +
-    "breakpoint named above, and look at it.",
+  // THIS USED TO SAY "serve the build … and look at it", AND BOTH HALVES ARE
+  // IMPOSSIBLE HERE. `listen()` is denied on every port and Chromium will not
+  // launch in this sandbox — measured on run 54927ebc, whose builder wrote "so I
+  // never saw the site rendered", and re-measured 2026-08-10 with a negative
+  // control. An instruction to do the impossible costs a turn and teaches the
+  // seat to distrust the rest of the prompt.
+  "- There is no command to re-run for these: each was observed on a page that had already been " +
+    "rendered, and the renderer is not available to you.",
+  "- YOU CANNOT SEE THE PAGE. You cannot serve the build (`listen()` is denied) and you cannot open " +
+    "a browser (Chromium will not start here). Any plan that ends in \"then I'll look at it\" is a " +
+    "plan that ends in nothing. Work from the source and from the observation text above.",
+  "- What you CAN do, and what the last run's fix seat did successfully: replace `global.fetch` with " +
+    "a shim that calls your exported router directly, and run the real test files under `node --test` " +
+    "over no socket. That settles anything about markup, routing or response bodies.",
+  // The two defect classes that survive a source-only review, both measured on
+  // real artefacts, both invisible without a rendered page.
+  "- Two things are NOT settled that way, so check them by reading rather than by hoping. FIRST, " +
+    "image geometry: an `<img>` carrying width/height attributes inside a width-constrained column " +
+    "renders STRETCHED unless CSS also sets `height: auto` or an `aspect-ratio`. Grep your stylesheet " +
+    "for it. SECOND, `text-transform`: it changes what `innerText` returns, so a heading styled " +
+    "uppercase reads back as \"TEEWISE\", not \"Teewise\". If any text must be matched exactly, do not " +
+    "rely on a transform to produce its casing.",
   "- What this build is judged against is the design reference this run LOCKED, which is in the " +
     "workspace with the rest of the run's design material. Read it before you change anything, and " +
     "match it rather than improve on it — a change that is better than the locked design is still a " +

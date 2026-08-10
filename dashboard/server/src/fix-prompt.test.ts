@@ -115,8 +115,25 @@ function visualPrompt(detail: string): string {
 test("a visual task is told how to CHECK a fix, because there is no command to re-run", () => {
   const p = visualPrompt("the hero region contains only placeholder copy");
   assert.match(p, /no command to re-run/);
-  assert.match(p, /serve the build, open the flow named above at the\s+breakpoint named above/);
   assert.doesNotMatch(p, /re-run the failing command yourself/);
+  // IT USED TO SAY "serve the build … and look at it", AND BOTH HALVES ARE
+  // IMPOSSIBLE IN THIS SANDBOX: `listen()` is denied on every port, and Chromium
+  // does not start — the builder on run 54927ebc wrote "so I never saw the site
+  // rendered", and a probe on 2026-08-10 reproduced the launch failure with a
+  // working negative control. Telling a seat to do the impossible spends a round
+  // and teaches it the rest of the prompt is unreliable, so the instruction is
+  // asserted ABSENT here rather than merely replaced.
+  // Keyed to the INSTRUCTION, not the words: the corrected prompt still contains
+  // "serve the build" inside "You cannot serve the build", which is the opposite
+  // of the defect. What must be gone is the imperative.
+  assert.doesNotMatch(p, /way to check a fix is to serve/, "the prompt must not ask for what listen() forbids");
+  assert.doesNotMatch(p, /open the flow named above/, "nor for a rendered page it cannot open");
+  assert.doesNotMatch(p, /and look at it\./, "nor end a plan in looking");
+  assert.match(p, /YOU CANNOT SEE THE PAGE/, "it must say so plainly");
+  assert.match(p, /global\.fetch/, "and give the technique that does work over no socket");
+  // The two defect classes a source-only review misses unless it is told to look.
+  assert.match(p, /height: auto|aspect-ratio/, "image geometry is invisible without a render");
+  assert.match(p, /text-transform/, "so is casing that only exists in innerText");
   // The evidence itself still crosses — the summary alone does not say what was
   // wrong, only where.
   assert.match(p, /the hero region contains only placeholder copy/);
