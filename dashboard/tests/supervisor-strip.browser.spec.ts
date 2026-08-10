@@ -159,7 +159,16 @@ async function paint(page: Page): Promise<{
   background: string;
 }> {
   const strip = page.locator('[data-testid="supervisor-strip"]');
-  await expect(strip).toHaveAttribute("data-liveness", /running|idle|stuck|unreachable|malformed/);
+  /*
+   * `blocked` IS IN THIS REGEX AND WAS ADDED WITH THE STATE (2026-08-10). A
+   * helper that waited for five of six states would time out on the sixth with
+   * "expected /running|idle|…/ received blocked" — a failure that names the
+   * regex rather than the feature, in every test that touches the new state.
+   */
+  await expect(strip).toHaveAttribute(
+    "data-liveness",
+    /running|idle|stuck|blocked|unreachable|malformed/,
+  );
   return strip.evaluate((node) => {
     const badge = node.querySelector('[data-testid="supervisor-liveness"] span');
     const because = node.querySelector('[data-testid="supervisor-because"]');
@@ -304,11 +313,20 @@ test.describe("the three states, and the fourth that is not one of them", () => 
       .toBeGreaterThan(0);
     const armLine = lines.find((line) => line.includes("supervisor strip")) ?? "";
     /*
-     * FIVE, NOT FOUR, SINCE 2026-08-10: `malformed` became its own state and the
-     * arm grew the probe for it in the same edit. A fifth always-on state under a
-     * four-probe arm is the defect this strip exists to avoid, one layer up.
+     * THE COUNT IS DERIVED FROM THE LINE, NOT PINNED TO A LITERAL — corrected
+     * 2026-08-10 after this assertion pinned "5 distinct" and the product grew a
+     * sixth state (`blocked`) in the same round, so the spec went red over a
+     * legitimate widening. Pinning the number tests the number; binding it to the
+     * enumerated states tests the thing that matters — that every state the arm
+     * NAMES is a state it actually distinguished. A probe that lists six and
+     * distinguishes four is the defect this strip exists to avoid, one layer up,
+     * and only this form can see it.
      */
-    expect(armLine).toContain("5 distinct");
+    const enumerated = /resolves \d+ known inputs to ([^(]+)\((\d+) distinct\)/.exec(armLine);
+    expect(enumerated, `the arm line did not state its states and its count: ${armLine}`).not.toBeNull();
+    const states = (enumerated?.[1] ?? "").split("·").map((s) => s.trim()).filter(Boolean);
+    expect(states.length).toBeGreaterThanOrEqual(5);
+    expect(Number(enumerated?.[2])).toBe(states.length);
     expect(armLine).toContain("escalates a913c871 at attempt 2");
     expect(armLine).not.toContain("FAILED");
 
@@ -741,7 +759,10 @@ test("six bodies that are not a reading: each renders a state, and NONE of them 
      * body that is not a reading" and "the route did not answer" are two
      * different things for the owner to do at 3am.
      */
-    await expect(strip).toHaveAttribute("data-liveness", /^(idle|running|stuck|unreachable|malformed)$/);
+    await expect(strip).toHaveAttribute(
+      "data-liveness",
+      /^(idle|running|stuck|blocked|unreachable|malformed)$/,
+    );
     await expect(strip).toHaveAttribute("data-stale", /^(true|false)$/);
 
     const because = page.locator('[data-testid="supervisor-because"]');
@@ -939,8 +960,16 @@ test("the run that died reads STUCK with the field that came back named on scree
   await expect(list).toContainText("attempt 3");
   // THE RECURRENCE IS MARKED, which is the whole point: `id` -> `kind` -> `id`.
   await expect(list).toContainText("rejected, fixed, rejected again");
+  /*
+   * SCOPED 2026-08-10. This read `[data-testid="supervisor-detail"] h3`, which matches
+   * TWO headings — "ticket census — …" and "authoring attempts — …" — so Playwright
+   * failed on strict mode rather than on the product. The assertion was right and the
+   * locator was not: `AttemptProgress` genuinely includes `oscillating` and the
+   * attempts heading renders it. Scoped by the heading's own words, so it still fails
+   * if the product stops naming the comparison.
+   */
   await expect(
-    page.locator('[data-testid="supervisor-detail"] h3'),
+    page.locator('[data-testid="supervisor-detail"] h3').filter({ hasText: "authoring attempts" }),
     "the heading does not name the comparison it just made",
   ).toContainText("oscillating");
 
@@ -975,19 +1004,27 @@ test("the run that died reads STUCK with the field that came back named on scree
  * docblock argues its one-line budget from that number — so the shots a human
  * actually reads are taken here.
  *
- * WHAT THE ASSERTIONS ARE FOR. Five states must produce five different WORDS and
- * five different SENTENCES; they produce FOUR colours, and the missing fifth is
- * deliberate rather than an oversight — `malformed` shares `unreachable`'s amber
- * because both mean "this page cannot see", while red is reserved for "the loop
- * is wedged, act on the run". A malformed body says nothing about the run. The
- * count is asserted at exactly 4 so that a later edit which quietly paints
- * `malformed` red, or collapses it onto `stuck`, reddens this test instead of
- * shipping.
+ * WHAT THE ASSERTIONS ARE FOR. Six states must produce six different WORDS and
+ * six different SENTENCES; they produce FOUR colours, and the two collisions are
+ * deliberate rather than oversights — `malformed` shares `unreachable`'s amber
+ * because both mean "this page cannot see", and `blocked` shares `stuck`'s red
+ * because both mean "act on the run". The count is asserted at exactly 4 so that
+ * a later edit which quietly paints `malformed` red, or gives `blocked` an amber
+ * of its own, reddens this test instead of shipping.
+ *
+ * ─── IT WAS "ALL FIVE STATES" UNTIL 2026-08-10, AND THE RENAME IS THE POINT ───
+ *
+ * `blocked` became an always-on liveness in the census pass. THIS TEST WOULD HAVE
+ * STAYED GREEN FOR EVER: it enumerates its own five states, so a sixth is simply
+ * never driven, and the title would have gone on saying "all five states" about a
+ * strip with six. That is the same defect as an arm check whose probe count does
+ * not move — a confident pass about something nothing looks at — and it is why the
+ * unit suite asserts `report.probes` NAMES rather than only its length.
  */
-test.describe("all five states, viewed at 1440x900", () => {
+test.describe("all six states, viewed at 1440x900", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("five words, five sentences, four colours — and the fifth colour is missing on purpose", async ({
+  test("six words, six sentences, four colours — and both collisions are on purpose", async ({
     page,
   }) => {
     const strip = page.locator('[data-testid="supervisor-strip"]');
@@ -1056,30 +1093,54 @@ test.describe("all five states, viewed at 1440x900", () => {
     await expect(strip).toHaveAttribute("data-liveness", "malformed");
     await shoot("malformed");
 
+    /*
+     * BLOCKED — nothing claimed, nothing queued, and a census in which a ticket
+     * ended `blocked`. This is the state the owner actually came back to, and it
+     * is the one that used to be byte-identical to `idle`.
+     */
+    await page.unroute("**/api/supervisor");
+    await serve(page, IDLE());
+    await serveCensus(page, { tickets: DIED_ROWS });
+    await page.goto("/");
+    await expect(strip).toHaveAttribute("data-liveness", "blocked");
+    await shoot("blocked");
+    await page.unroute("**/api/supervisor/tickets");
+
     expect(
       seen.map((entry) => entry.state),
-      "the five states did not resolve to the five names",
-    ).toEqual(["running", "idle", "stuck", "unreachable", "malformed"]);
+      "the six states did not resolve to the six names",
+    ).toEqual(["running", "idle", "stuck", "unreachable", "malformed", "blocked"]);
 
     const words = new Set(seen.map((entry) => entry.word));
-    expect(words.size, `five states, ${String(words.size)} word(s) on the badge`).toBe(5);
+    expect(words.size, `six states, ${String(words.size)} word(s) on the badge`).toBe(6);
 
     const sentences = new Set(seen.map((entry) => entry.sentence));
-    expect(sentences.size, `five states, ${String(sentences.size)} sentence(s)`).toBe(5);
+    expect(sentences.size, `six states, ${String(sentences.size)} sentence(s)`).toBe(6);
     for (const sentence of sentences) expect(sentence.length).toBeGreaterThan(20);
 
     const colours = new Set(seen.map((entry) => entry.colour));
     expect(
       colours.size,
-      `expected four colours across five states (malformed shares unreachable's amber), read ${String(
+      `expected four colours across six states (malformed shares unreachable's amber, blocked shares stuck's red), read ${String(
         colours.size,
       )}: ${[...colours].join(", ")}`,
     ).toBe(4);
-    // AND THE SHARED PAIR IS THE INTENDED PAIR, not any accidental collision.
+    // AND BOTH SHARED PAIRS ARE THE INTENDED PAIRS, not accidental collisions.
     expect(seen[4]?.colour, "malformed is not painted the same amber as unreachable").toBe(
       seen[3]?.colour,
     );
     expect(seen[4]?.colour, "malformed is painted the same red as stuck").not.toBe(seen[2]?.colour);
+    /*
+     * `blocked` IS RED, AND IT IS THE SAME RED AS `stuck` RATHER THAN A SIXTH
+     * COLOUR. Both mean the owner must act on the run; they differ in when. The
+     * assertion that it is NOT the amber is the load-bearing one — amber means
+     * "this page cannot see", and here the page sees perfectly and what it sees is
+     * that the work failed.
+     */
+    expect(seen[5]?.colour, "blocked is not painted the same red as stuck").toBe(seen[2]?.colour);
+    expect(seen[5]?.colour, "blocked is painted amber, which means 'cannot see'").not.toBe(
+      seen[3]?.colour,
+    );
 
     // The malformed sentence must not blame the run: against the real backend
     // this is the state a HEALTHY supervisor produces today.
@@ -1196,5 +1257,403 @@ test.describe("the render guard", () => {
     const armLine = lines.find((line) => line.includes("render guard")) ?? "";
     expect(armLine).toContain("routes a throw to a failed state");
     expect(armLine).not.toContain("FAILED");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* THE MORNING READOUT IN A BROWSER — "IT FINISHED" vs "IT ALL DIED"   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ NOT EXECUTED WHEN IT WAS WRITTEN (2026-08-10), AND SAYING SO IS PART OF THE
+ * TEST.
+ *
+ * A real Agent-SDK run was live on this machine and `playwright.config.ts`
+ * declares `webServer` at the TOP LEVEL, so every project run boots a `next dev`
+ * beside it. The pure-logic half of this feature was executed and mutation-proved
+ * (`supervisor-strip.unit.spec.ts`, sixteen mutations, every one red); everything
+ * below is unrun. It is written now rather than later because the specs are what
+ * make the next run of this suite meaningful, and a lane that ships components
+ * without them ships a claim nobody can check — but nobody may report these as
+ * green until they have been run.
+ *
+ * WHAT ONLY A BROWSER CAN MEASURE HERE, i.e. why these are not more unit tests.
+ * The unit suite proves the CLASSIFIER tells a finished queue from an all-blocked
+ * one. It cannot prove that the strip PAINTS them differently, that the census
+ * survives a route that 404s on every tick, or that the blocked ticket's own
+ * `next_action` is actually reachable on screen rather than merely present in a
+ * reading nobody renders. Those three are the failures that would leave the owner
+ * with the same useless row he had before.
+ */
+
+/** The census route, fed the same way `/api/supervisor` is. */
+async function serveCensus(
+  page: Page,
+  census: unknown | "abort" | "notfound",
+): Promise<void> {
+  /*
+   * THE PATTERN ENDS AT `tickets` AND THE STATE ROUTE'S ENDS AT `supervisor`, so
+   * the two globs do not overlap: `**\/api/supervisor` requires the URL to END
+   * there. Registered as its own route so a test can vary one and hold the other.
+   */
+  await page.route("**/api/supervisor/tickets", async (route) => {
+    if (census === "abort") {
+      await route.abort("connectionrefused");
+      return;
+    }
+    if (census === "notfound") {
+      /* TODAY'S REAL ANSWER: the GET has no producer, so the route 404s. */
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "no route for GET /api/supervisor/tickets" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(census),
+    });
+  });
+}
+
+const DONE_ROWS = [
+  { ticketKey: "t-1", state: "done", updatedAt: "2026-08-10T05:00:00.000Z" },
+  { ticketKey: "t-2", state: "done", updatedAt: "2026-08-10T06:00:00.000Z" },
+];
+
+const DIED_ROWS = [
+  { ticketKey: "t-1", state: "done", updatedAt: "2026-08-10T05:00:00.000Z" },
+  {
+    ticketKey: "t-2",
+    state: "blocked",
+    updatedAt: "2026-08-10T06:00:00.000Z",
+    lastClass: "structural",
+    nextAction:
+      "no repair driver is wired; run tools/repair/cycle.mjs against an isolated copy and re-enqueue",
+  },
+];
+
+test.describe("the readout the owner reads at 7am", () => {
+  test("a FINISHED queue and an ALL-BLOCKED queue do not paint the same — this is the measured gap", async ({
+    page,
+  }) => {
+    /*
+     * THE GAP, VERBATIM FROM THE MEASUREMENT: with `ticket: null` and
+     * `queueDepth: 0` the state route says the same thing in both cases, and the
+     * strip rendered `IDLE / idle, queue empty` byte for byte whether the night
+     * worked or every ticket died.
+     */
+    await serve(page, IDLE());
+    await serveCensus(page, { tickets: DONE_ROWS });
+    await page.goto(`/runs/${RUN_ID}`);
+    const finished = await paint(page);
+    const finishedCell = await page
+      .locator('[data-testid="supervisor-census"]')
+      .textContent();
+
+    await page.unroute("**/api/supervisor");
+    await page.unroute("**/api/supervisor/tickets");
+    await serve(page, IDLE());
+    await serveCensus(page, { tickets: DIED_ROWS });
+    await page.goto(`/runs/${RUN_ID}`);
+    const died = await paint(page);
+    const diedCell = await page.locator('[data-testid="supervisor-census"]').textContent();
+
+    // THE POSITIVE HALVES — each names its own count.
+    expect(finished.liveness).toBe("idle");
+    expect(finished.headline).toContain("queue finished");
+    expect(finishedCell).toContain("2 done");
+    expect(finishedCell).toContain("0 blocked");
+
+    expect(died.liveness).toBe("blocked");
+    expect(died.headline).toContain("queue ended");
+    expect(diedCell).toContain("1 blocked");
+
+    /*
+     * THE NEGATIVE HALF, AND IT IS THE ONLY ASSERTION A BROWSER CAN MAKE THAT A
+     * UNIT TEST CANNOT: the two rows differ in COLOUR as well as in text. A
+     * distinction that exists only in a string is one a reader scanning a 30px
+     * row at 7am does not make.
+     */
+    expect(died.background).not.toBe(finished.background);
+    expect(died.colour).not.toBe(finished.colour);
+    expect(new Set([finished.because, died.because]).size).toBe(2);
+  });
+
+  test("a queue where every ticket died reads RED, not amber — amber is reserved for 'this page cannot see'", async ({
+    page,
+  }) => {
+    /*
+     * The colour rule this whole component follows: amber means the PAGE cannot
+     * see, red means the OWNER must act. A legible failure painted amber is the
+     * preview card announcing a healthy backend was down, inverted — and it is the
+     * mistake this lane was most likely to make, because every other new state on
+     * this strip has been amber.
+     */
+    await serve(page, IDLE());
+    await serveCensus(page, { tickets: DIED_ROWS });
+    await page.goto(`/runs/${RUN_ID}`);
+    const died = await paint(page);
+
+    await page.unroute("**/api/supervisor");
+    await page.unroute("**/api/supervisor/tickets");
+    await serve(page, IDLE());
+    await serveCensus(page, "notfound");
+    await page.goto(`/runs/${RUN_ID}`);
+    const cannotSee = await paint(page);
+
+    expect(died.liveness).toBe("blocked");
+    expect(cannotSee.liveness).toBe("idle");
+    // The failure and the cannot-see share no tone.
+    expect(died.background).not.toBe(cannotSee.background);
+    // And `blocked` shares the tone `stuck` has always had, because both mean
+    // the same thing to the owner: act on the run.
+    await page.unroute("**/api/supervisor");
+    await page.unroute("**/api/supervisor/tickets");
+    await serve(page, STUCK());
+    await serveCensus(page, "notfound");
+    await page.goto(`/runs/${RUN_ID}`);
+    const stuck = await paint(page);
+    expect(stuck.liveness).toBe("stuck");
+    expect(died.background).toBe(stuck.background);
+  });
+
+  test("the blocked ticket's OWN next_action is on screen — the string that was only in the database", async ({
+    page,
+  }) => {
+    await serve(page, IDLE());
+    await serveCensus(page, { tickets: DIED_ROWS });
+    await page.goto(`/runs/${RUN_ID}`);
+
+    // The 30px row carries it in the sentence…
+    await expect(page.locator('[data-testid="supervisor-because"]')).toContainText(
+      "run tools/repair/cycle.mjs",
+    );
+
+    // …and the detail pane carries the row it came from, with the failure class.
+    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    const failed = page.locator('[data-testid="supervisor-census-failed"]');
+    await expect(failed).toContainText("t-2");
+    await expect(failed).toContainText("blocked");
+    await expect(failed).toContainText("structural");
+    await expect(failed).toContainText("re-enqueue");
+
+    /*
+     * THE NEGATIVE HALF: a census WITHOUT the column must say so on screen rather
+     * than render an empty paragraph. A blank there reads as "there is nothing to
+     * do", which is the opposite of true for a blocked ticket.
+     */
+    await page.unroute("**/api/supervisor");
+    await page.unroute("**/api/supervisor/tickets");
+    await serve(page, IDLE());
+    await serveCensus(page, { tickets: [{ ticketKey: "t-9", state: "blocked" }] });
+    await page.goto(`/runs/${RUN_ID}`);
+    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    await expect(page.locator('[data-testid="supervisor-census-failed"]')).toContainText(
+      "does not carry next_action",
+    );
+    await expect(page.locator('[data-testid="supervisor-census-absent"]')).toContainText(
+      "nextAction",
+    );
+  });
+
+  test("a census route that 404s on every tick leaves the strip rendered and says WHICH kind of missing", async ({
+    page,
+  }) => {
+    /*
+     * TODAY'S BUILD, EXACTLY. `GET /api/supervisor/tickets` has no producer, so
+     * this is what every poll does. The three things that must hold: the page still
+     * renders (a 404 on a second route is not a blank RootLayout), the STATE
+     * reading is not painted as a fault, and the row does not print a count it
+     * does not have.
+     */
+    await serve(page, IDLE());
+    await serveCensus(page, "notfound");
+    await page.goto(`/runs/${RUN_ID}`);
+
+    const painted = await paint(page);
+    expect(painted.liveness).toBe("idle");
+    // NOT amber, NOT red: a missing census route says nothing about the loop.
+    await expect(page.locator('[data-testid="supervisor-strip"]')).toHaveAttribute(
+      "data-liveness",
+      "idle",
+    );
+    // The cell prints a word rather than a number, and never a zero.
+    const cell = page.locator('[data-testid="supervisor-census"]');
+    await expect(cell).toHaveText(/census unread|no census/);
+    await expect(cell).not.toContainText("0 blocked");
+    /*
+     * RETARGETED 2026-08-10. This asserted "did not answer" on
+     * `supervisor-because`, which carries the DESIRED-STATE reason — for this
+     * fixture, "owner set it to stopped: the owner pressed stop and the drain
+     * finished". The census failure lives in `supervisor-census-note`, whose own
+     * docblock (`lib/supervisor.ts:953`) is "Never blank. Why there is no census".
+     * Two different facts in two different sentences is the property this suite is
+     * built on, so the spec was asserting the right substance against the wrong
+     * element — and it is retargeted rather than relaxed: the note must still name
+     * the route and still say it did not answer.
+     */
+    /*
+     * AND THE NOTE LIVES IN THE DETAIL PANEL, so it has to be opened to be read —
+     * found the hard way: asserting it on the collapsed strip failed with
+     * "element(s) not found", which is a third distinct way this one assertion was
+     * wrong. The COLLAPSED row's job is the word above ("census unread" vs "no
+     * census"); the SENTENCE naming the route is one gesture away, and both halves
+     * are asserted rather than either being taken on trust.
+     */
+    await page.getByTestId("supervisor-detail-toggle").click();
+    const note = page.locator('[data-testid="supervisor-census-note"]');
+    await expect(note).toContainText("did not answer");
+    await expect(note).toContainText("/api/supervisor/tickets");
+    // And the headline sentence still speaks only about the loop, never about the census.
+    await expect(page.locator('[data-testid="supervisor-because"]')).not.toContainText(
+      "did not answer",
+    );
+
+    /*
+     * THE PAGE IS STILL THERE — the whole shell did not go down over a 404 on a
+     * route nobody asked for. The nav is asserted first for the reason the
+     * render-guard test above states: a page that keeps the shell and degrades one
+     * row is a different outcome from a page that renders nothing, and only the nav
+     * can tell them apart.
+     */
+    await expect(page.getByRole("link", { name: "Runs", exact: true })).toBeVisible();
+    await expect(page.locator('[data-testid="run-rail"]')).toBeVisible();
+    await expect(page.locator('[data-testid="render-guard-alarm"]')).toHaveCount(0);
+  });
+
+  test("four bodies that are not a census: each renders a state, none of them throws, and none invents a count", async ({
+    page,
+  }) => {
+    /*
+     * THE SHAPE OF THE FAILURE THIS FILE ALREADY HAS ONE OF FOR `/api/supervisor`
+     * (see "six bodies that are not a reading"): a 200 with the wrong body used to
+     * take RootLayout down and blank every page in the app. The census is a second
+     * route that can do the same thing, so it gets the same table.
+     */
+    const shapes: readonly { readonly name: string; readonly body: unknown }[] = [
+      { name: "a run detail answering the census path", body: { runId: "x", status: "running" } },
+      { name: "tickets is a string", body: { tickets: "none" } },
+      { name: "a row with no state", body: { tickets: [{ ticketKey: "t-1" }] } },
+      { name: "a row whose nextAction is an object", body: { tickets: [{ ticketKey: "t-1", state: "blocked", nextAction: { text: "x" } }] } },
+    ];
+
+    for (const shape of shapes) {
+      await page.unroute("**/api/supervisor");
+      await page.unroute("**/api/supervisor/tickets");
+      await serve(page, IDLE());
+      await serveCensus(page, shape.body);
+      await page.goto(`/runs/${RUN_ID}`);
+
+      // The strip is still there, which is the assertion the 77 browser failures
+      // bought: a throwing RootLayout renders no strip, no canvas and no error.
+      const strip = page.locator('[data-testid="supervisor-strip"]');
+      await expect(strip, `${shape.name}: the strip did not render`).toBeVisible();
+      const cell = page.locator('[data-testid="supervisor-census"]');
+      await expect(cell, `${shape.name}: the outcome cell was blank`).not.toHaveText("");
+      await expect(cell, `${shape.name}: a count was invented`).not.toContainText("done ·");
+
+      await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+      const note = page.locator('[data-testid="supervisor-census-note"]');
+      await expect(note, `${shape.name}: the note does not name what is wrong`).toContainText(
+        /tickets is|state is|nextAction is|the body is/,
+      );
+      await expect(note, `${shape.name}: waiting was offered as a cure`).toContainText(
+        "Waiting will not fix this one",
+      );
+    }
+  });
+
+  test("the repair cycle row tells 'nobody reports this' from 'nothing to report'", async ({
+    page,
+  }) => {
+    /*
+     * ITEM C. `lastRepair` is null for three of the four outcomes
+     * `decideRepairOutcome` can produce, so the row above this one says "no patch
+     * has been applied" for a cycle that ran, consulted the ruled-out ledger and
+     * refused a proposal on sight. These two states must not read the same.
+     */
+    await serve(page, IDLE());
+    await serveCensus(page, "notfound");
+    await page.goto(`/runs/${RUN_ID}`);
+    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    const row = page.locator('[data-testid="supervisor-repair-cycle"]');
+    // TODAY: the field is not on the wire at all.
+    await expect(row).toHaveAttribute("data-cycle", "unreported");
+    await expect(row).toContainText("NOT the same as 'no repair was attempted'");
+
+    // A PRODUCER THAT LANDED AND HAS NOTHING TO REPORT.
+    await page.unroute("**/api/supervisor");
+    await page.unroute("**/api/supervisor/tickets");
+    await serve(page, IDLE());
+    await serveCensus(page, "notfound");
+    await page.route("**/api/supervisor", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...IDLE(), lastRepairCycle: null }),
+      });
+    });
+    await page.goto(`/runs/${RUN_ID}`);
+    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    await expect(page.locator('[data-testid="supervisor-repair-cycle"]')).toHaveAttribute(
+      "data-cycle",
+      "null",
+    );
+
+    // A CYCLE THAT RAN AND APPLIED A PATCH WITH NO ROLLBACK POINT — the one fact
+    // the owner would want in the first clause.
+    await page.unroute("**/api/supervisor");
+    await page.unroute("**/api/supervisor/tickets");
+    await serveCensus(page, "notfound");
+    await page.route("**/api/supervisor", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...IDLE(),
+          lastRepairCycle: {
+            signature: "a".repeat(64),
+            outcomeKind: "applied",
+            outcomeCode: "APPLIED",
+            verdict: "ACCEPTED",
+            applied: true,
+          },
+        }),
+      });
+    });
+    await page.goto(`/runs/${RUN_ID}`);
+    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    const applied = page.locator('[data-testid="supervisor-repair-cycle"]');
+    await expect(applied).toHaveAttribute("data-cycle", "reported");
+    await expect(applied).toContainText("NO ROLLBACK POINT WAS RECORDED");
+    await expect(applied).toContainText("an edit, not a repair");
+  });
+
+  test("the outcome cell costs the canvas nothing — the strip is still one 30px line", async ({
+    page,
+  }) => {
+    /*
+     * THE CONSTRAINT THIS STRIP HAS ALWAYS HAD: it mounts on every route including
+     * `/runs/<id>`, whose shell is `h-dvh overflow-hidden` with the canvas as a
+     * `flex-1 min-h-0` child. Every pixel the strip takes is a pixel off the graph,
+     * so a sixth cell that wrapped the row to two lines would cost the canvas 30px
+     * on every page in the app.
+     */
+    await serve(page, IDLE());
+    await serveCensus(page, { tickets: DIED_ROWS });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`/runs/${RUN_ID}`);
+    const box = await page.locator('[data-testid="supervisor-strip"] > div').first().boundingBox();
+    expect(box?.height).toBeLessThanOrEqual(31);
+
+    // AND AT A NARROW WIDTH: the row still does not wrap. The sentence truncates,
+    // which is what `flex-1 truncate` is for, and the cells stay on the line.
+    await page.setViewportSize({ width: 900, height: 800 });
+    const narrow = await page.locator('[data-testid="supervisor-strip"] > div').first().boundingBox();
+    expect(narrow?.height).toBeLessThanOrEqual(31);
+    await expect(page.locator('[data-testid="supervisor-census"]')).toBeVisible();
   });
 });

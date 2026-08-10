@@ -406,14 +406,62 @@ test("EVERY manifest.json ON THIS MACHINE parses — the real files, not a fixtu
     const file = join(workspace, "design-refs", DESIGN_MANIFEST_FILE);
     if (!existsSync(file)) continue;
     checked += 1;
-    const parsed = parseDesignManifest(readFileSync(file, "utf8"), workspace);
+    const raw = readFileSync(file, "utf8");
+    const parsed = parseDesignManifest(raw, workspace);
     assert.ok(parsed !== null, `${entry} must still parse`);
-    assert.deepEqual(parsed.directions, [], `${entry} predates directions and must report none`);
-    assert.equal(parsed.chosenDirection, null);
-    for (const ref of parsed.refs) assert.equal(ref.direction, null, `${entry} must invent no direction`);
-    // AND IT STILL CLASSIFIES AS IT DID. `unresolvedDirectionRefs` is gated on
-    // `directions.length > 0`, so an old manifest cannot reach the new failure.
-    assert.deepEqual(unresolvedDirectionRefs(parsed), []);
+    /*
+     * THE BRANCH IS DECIDED BY THE FILE, NOT BY THE PARSER'S ANSWER — otherwise this
+     * test has the defect it exists to catch. If the branch read
+     * `parsed.directions.length === 0`, a parser that DROPPED the field would send a
+     * modern manifest down the legacy arm and the test would go green on the bug.
+     * So the key is read out of the raw JSON, and a file that declares directions
+     * MUST parse to a non-empty list.
+     */
+    const declared = (JSON.parse(raw) as { directions?: unknown }).directions;
+    const fileDeclaresDirections = Array.isArray(declared) && declared.length > 0;
+    assert.equal(
+      parsed.directions.length > 0,
+      fileDeclaresDirections,
+      `${entry}: the file ${fileDeclaresDirections ? "declares" : "declares no"} directions, ` +
+        `so the parser must report ${fileDeclaresDirections ? "some" : "none"}`,
+    );
+    /*
+     * BRANCHED 2026-08-10. This asserted `directions: []` for every manifest on the
+     * machine — correct for the three runs that existed when it was written, and
+     * false from the moment the multi-direction lane ran for real:
+     * `run-2026-08-10T13-11-12-836Z-54927ebc` wrote 11 refs across 3 directions and
+     * locked `pressed-plate`. The test went red for the RIGHT reason, so it is
+     * branched rather than narrowed — narrowing it to pass is how a check stops
+     * observing anything.
+     */
+    if (parsed.directions.length === 0) {
+      assert.equal(parsed.chosenDirection, null);
+      for (const ref of parsed.refs) assert.equal(ref.direction, null, `${entry} must invent no direction`);
+      // AND IT STILL CLASSIFIES AS IT DID. `unresolvedDirectionRefs` is gated on
+      // `directions.length > 0`, so an old manifest cannot reach the new failure.
+      assert.deepEqual(unresolvedDirectionRefs(parsed), []);
+      continue;
+    }
+    /*
+     * THE MODERN ARM ASSERTS MORE THAN THE LEGACY ONE, on purpose: every ref must
+     * belong to a direction the manifest declares, and the chosen slug must be one
+     * of them. Those are exactly the invariants a manifest rebuilt from a fresh
+     * literal — rather than spread onto the existing one — would break, and that
+     * write is the last one of the run.
+     */
+    const slugs = parsed.directions.map((d) => d.slug);
+    assert.equal(new Set(slugs).size, slugs.length, `${entry}'s direction slugs must be unique`);
+    assert.ok(
+      parsed.chosenDirection !== null && slugs.includes(parsed.chosenDirection),
+      `${entry} chose ${String(parsed.chosenDirection)}, not one of ${slugs.join(", ")}`,
+    );
+    for (const ref of parsed.refs) {
+      assert.ok(
+        ref.direction === null || slugs.includes(ref.direction),
+        `${entry} has a ref in direction ${String(ref.direction)}, which it does not declare`,
+      );
+    }
+    assert.deepEqual(unresolvedDirectionRefs(parsed), [], `${entry} must resolve every direction ref`);
   }
   assert.ok(checked > 0 || true, `${String(checked)} real manifest(s) checked`);
 });

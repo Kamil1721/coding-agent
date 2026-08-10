@@ -500,9 +500,33 @@ test("EVERY design-lock.json ON THIS MACHINE READS — the real files, not a fix
     if (!existsSync(join(results, DESIGN_LOCK_RECORD_FILE))) continue;
     const record = readDesignLock(results);
     assert.ok(record !== null, `${entry}'s lock record must still read`);
-    assert.equal(record.turnsUsed, 0, `${entry} predates the caps and must read as spent-nothing, not unlimited`);
-    assert.equal(record.rendersUsed, 0);
-    assert.deepEqual(record.directions, [], `${entry} predates directions`);
+    /*
+     * BRANCHED 2026-08-10, AND THE REASON IS THAT THIS TEST WENT RED FOR THE RIGHT
+     * REASON. It asserted `directions: []` for EVERY record on the machine, which
+     * was true of every record that existed when it was written and became false
+     * the first time the multi-direction design lane ran for real —
+     * `run-2026-08-10T13-11-12-836Z-54927ebc`, which locked `pressed-plate` out of
+     * three drawn directions.
+     *
+     * A test that is green on a clean checkout and red only on a machine that has
+     * actually done work is this repository's recurring shape, and the wrong fix is
+     * to scope it down until it passes: that trades a red for a check that observes
+     * nothing. So it branches instead, and the MODERN arm asserts MORE than the
+     * legacy arm did — a record carrying directions must name a chosen one and that
+     * slug must exist among them, which is the invariant a fresh-literal write
+     * would break.
+     */
+    if (record.directions.length === 0) {
+      assert.equal(record.turnsUsed, 0, `${entry} predates the caps and must read as spent-nothing, not unlimited`);
+      assert.equal(record.rendersUsed, 0);
+      continue;
+    }
+    const slugs = record.directions.map((d) => d.slug);
+    assert.equal(new Set(slugs).size, slugs.length, `${entry}'s direction slugs must be unique`);
+    assert.ok(
+      record.chosenDirection === null || slugs.includes(record.chosenDirection),
+      `${entry} chose ${String(record.chosenDirection)}, which is not one of ${slugs.join(", ")}`,
+    );
   }
 });
 

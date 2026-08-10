@@ -4,14 +4,16 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { errorMessage, startSupervisor, stopSupervisor } from "@/lib/api";
 import { formatClock, formatDuration } from "@/lib/format";
-import { useSupervisor } from "@/lib/hooks";
+import { useSupervisor, useSupervisorTickets } from "@/lib/hooks";
 import {
   armSupervisorStrip,
   classifySupervisor,
+  repairCycleSummary,
   repairSummary,
   type ArmReport,
   type SupervisorLiveness,
 } from "@/lib/supervisor";
+import type { CensusReading } from "@/lib/supervisor";
 import type { SupervisorDefect } from "@/lib/api-types";
 import type { Tone } from "@/lib/presentation";
 import { Badge, Button, Dot, cx } from "./ui";
@@ -43,6 +45,15 @@ const LIVENESS_TONE: Readonly<Record<SupervisorLiveness, Tone>> = {
   running: "pass",
   idle: "neutral",
   stuck: "fail",
+  /*
+   * `blocked` SHARES `stuck`'s RED, AND THE SHARING IS THE CORRECT READ RATHER
+   * THAN A SHORTAGE OF TONES. Both mean THE OWNER HAS TO ACT ON THE RUN; they
+   * differ in when — `stuck` is a loop wedged now, `blocked` is a queue that
+   * already ended badly. Amber was the wrong choice and the reason is written on
+   * `SupervisorLiveness`: amber means THIS PAGE CANNOT SEE, and here the page sees
+   * perfectly. The badge carries the word, exactly as it does for the two ambers.
+   */
+  blocked: "fail",
   unreachable: "warn",
   malformed: "warn",
 };
@@ -110,6 +121,31 @@ function defectTitle(defect: SupervisorDefect | null, defectId: string | null): 
   return "no defect record has been written";
 }
 
+/**
+ * THE 60px ANSWER TO "DID THE NIGHT WORK".
+ *
+ * FOUR AVAILABILITIES, FOUR DIFFERENT CELLS, AND NONE OF THEM IS BLANK. A blank
+ * cell reads as *fine* — that is the whole failure this census exists to remove, so
+ * "no census" is a printed word rather than an empty span. The three
+ * not-readable answers say WHICH kind of not-readable, because "no route" and "the
+ * route sent rubbish" ask for different things from the person reading.
+ *
+ * `done/blocked` AND NOT A PERCENTAGE. The owner's question at 7am is a count of
+ * failures, and a percentage over two tickets is a number that hides the two.
+ */
+function censusCell(census: CensusReading): string {
+  if (census.availability === "absent") return "no census";
+  if (census.availability === "unreachable") return "census unread";
+  if (census.availability === "malformed") return "census wrong body";
+  const counts = census.counts;
+  if (counts === null || counts.total === 0) return "no tickets";
+  return `${String(counts.done)} done · ${String(counts.failed)} blocked${
+    counts.backlog + counts.inFlight === 0
+      ? ""
+      : ` · ${String(counts.backlog + counts.inFlight)} open`
+  }`;
+}
+
 function Cell({
   label,
   children,
@@ -132,6 +168,24 @@ function Cell({
 
 export function SupervisorStrip(): ReactNode {
   const { data, error, mutate } = useSupervisor();
+  /*
+   * THE CENSUS IS A SECOND POLL AND ITS FAILURE IS NOT THIS STRIP'S FAILURE.
+   *
+   * `GET /api/supervisor/tickets` has no producer in this build (measured
+   * 2026-08-10), so `censusError` is a 404 on every tick today. That must not turn
+   * the strip amber: the STATE route is fine, and painting a fault over a healthy
+   * supervisor is the preview-card inversion this whole component was rewritten to
+   * stop. `classifySupervisor` keeps the two readings separate — the census only
+   * ever ADDS a verdict it can support — and the census cell says which of its four
+   * answers applies.
+   *
+   * THE BODY IS PASSED RAW. It is typed `unknown` all the way from the hook, so
+   * this component cannot dereference it even by accident; `readCensus` inside the
+   * classifier is the only thing that reads it. That ordering is not a preference,
+   * it is the fix for a crash: see the docblock on `SupervisorReadingInput`, where
+   * the pre-parsed `attempts` input was removed for exactly this reason.
+   */
+  const census = useSupervisorTickets();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<null | "start" | "stop">(null);
   const [controlError, setControlError] = useState<string | null>(null);
@@ -205,6 +259,8 @@ export function SupervisorStrip(): ReactNode {
     // Before the first tick there is no clock, and `receivedAtMs: null` above
     // is what makes ARM 3 fire on the first paint instead of a green bar.
     nowMs: nowMs ?? 0,
+    censusBody: census.data,
+    censusError: census.error ?? null,
   });
 
   /*
@@ -300,6 +356,27 @@ export function SupervisorStrip(): ReactNode {
         >
           {reading.because}
         </span>
+
+        {/*
+          THE OUTCOME CELL — THE ONE THING THE ROW COULD NOT SAY.
+
+          IT IS OUTSIDE THE `snapshot !== null` BLOCK ON PURPOSE. The census is a
+          different route; it can be readable while the state route is amber, and a
+          count that vanished whenever the state read failed would be a second
+          surface with the state route's failure mode.
+
+          NO `title`, AND THE OMISSION IS MEASURED RATHER THAN LAZY.
+          `prose-guard.browser.spec.ts` budgets 40 words per passage and COUNTS
+          `title` attributes summed across the blocks under one parent; this row
+          already carries five. The census's sentence is long — it has to name which
+          of four answers applies — so it belongs in the detail pane, which is a
+          different parent, is reachable from a keyboard and appears on touch. A
+          paragraph in a `title` here would redden a guard on every route in the app
+          and would still be invisible to half the readers.
+        */}
+        <Cell label="outcome">
+          <span data-testid="supervisor-census">{censusCell(reading.census)}</span>
+        </Cell>
 
         {snapshot !== null && (
           <>
@@ -455,8 +532,115 @@ export function SupervisorStrip(): ReactNode {
                   ? ""
                   : ` (${snapshot.lastRepair.filesChanged.join(", ")})`}
               </dd>
+              {/*
+                ITEM C — THE REPAIR CYCLE, WHICH IS NOT THE SAME ROW AS THE LAST
+                PATCH ABOVE IT. `lastRepair` describes an APPLIED patch and is null
+                for three of the four outcomes `decideRepairOutcome` can produce, so
+                "no patch has been applied" is true and useless for a cycle that ran,
+                consulted the ruled-out ledger and refused a proposal on sight. This
+                row is the only place that difference is visible, and it prints WHICH
+                fields the producer did not send rather than a blank.
+              */}
+              <dt className="text-ink-faint">repair cycle</dt>
+              <dd
+                data-testid="supervisor-repair-cycle"
+                data-cycle={repairCycleSummary(snapshot.lastRepairCycle).kind}
+                className="text-ink-dim"
+              >
+                {repairCycleSummary(snapshot.lastRepairCycle).sentence}
+              </dd>
             </dl>
           )}
+
+          {/*
+            ─────────────────────────────────────────────────────────────────────
+            THE CENSUS BLOCK — ITEMS A AND B, AND IT IS OUTSIDE THE `snapshot`
+            GUARD ABOVE FOR THE SAME REASON THE OUTCOME CELL IS.
+            ─────────────────────────────────────────────────────────────────────
+          */}
+          <h3 className="mt-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-ink-dim">
+            ticket census — {reading.census.availability}
+          </h3>
+          <p
+            data-testid="supervisor-census-note"
+            className={cx(
+              "mt-1 text-[11px] leading-snug",
+              reading.census.availability === "readable" ? "text-ink-dim" : "text-warn",
+            )}
+          >
+            {reading.census.note}
+          </p>
+          {reading.census.absentFields.length > 0 && (
+            <p
+              data-testid="supervisor-census-absent"
+              className="mt-1 text-[11px] leading-snug text-warn"
+            >
+              {/* THE CLIENT-SIDE `probe.unsourced`. A column the route sends on no
+                  row is reported as unreported — never as null, and never as a
+                  zero. A count computed from a column that does not exist is the
+                  absence-as-a-value defect with a number in front of it. */}
+              this build&apos;s census does not carry {reading.census.absentFields.join(", ")}, so
+              anything below that would come from those columns is missing rather than empty.
+            </p>
+          )}
+          {reading.census.failedRows.length > 0 && (
+            <ul data-testid="supervisor-census-failed" className="mt-1 space-y-1">
+              {reading.census.failedRows.map((row) => (
+                <li
+                  key={row.ticketKey}
+                  className="rounded-sm border border-fail/40 bg-fail-dim px-2 py-1 text-[11px]"
+                >
+                  <span className="font-mono text-ink-dim">
+                    {row.ticketKey} · {row.state}
+                    {typeof row.lastClass === "string" && row.lastClass.trim() !== ""
+                      ? ` · ${row.lastClass}`
+                      : ""}
+                  </span>
+                  {/*
+                    ITEM B — `supervisor_tickets.next_action`, WHICH UNTIL NOW
+                    EXISTED ONLY IN THE DATABASE.
+
+                    NOT `SupervisorState.nextAction`: that is the SUPERVISOR's next
+                    action and is rendered eleven lines up. This is the column on
+                    this ticket's own row, `TEXT NOT NULL` with no default because
+                    (its schema comment) a ticket that cannot say what to do next is
+                    a dead end filed as a record. A blocked ticket carries
+                    NO_REPAIR_DRIVER plus the sentence that says what to run by hand.
+                  */}
+                  <p className="mt-0.5 text-ink-dim">
+                    {typeof row.nextAction === "string" && row.nextAction.trim() !== ""
+                      ? row.nextAction
+                      : row.nextAction === undefined
+                        ? "the census does not carry next_action for this row, so the sentence that says what to run by hand is still only in supervisor_tickets.next_action."
+                        : "the census carries next_action for this row and it is empty — nothing on this page can say what to run by hand."}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p
+            data-testid="supervisor-census-probe"
+            className="mt-1 font-mono text-[10.5px] text-ink-faint"
+          >
+            {reading.census.probeNote}
+          </p>
+          {reading.census.availability === "readable" &&
+            reading.census.counts !== null &&
+            reading.census.counts.unrecognised.length > 0 && (
+              <p
+                data-testid="supervisor-census-unrecognised"
+                className="mt-1 text-[11px] leading-snug text-warn"
+              >
+                {/* AN UNKNOWN STATE IS COUNTED NOWHERE AND BLOCKS EVERY VERDICT. The
+                    server types `state` as a string so a ninth state cannot break
+                    this client — which means a ninth state will arrive, and folding
+                    it into `done` would report a finished queue built out of a word
+                    this build cannot read. */}
+                {reading.census.counts.unrecognised.join(", ")} — this build does not recognise
+                these ticket states, so they are counted in no bucket and no
+                finished/blocked verdict is claimed while they are present.
+              </p>
+            )}
 
           <h3 className="mt-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-ink-dim">
             authoring attempts — {reading.progress}

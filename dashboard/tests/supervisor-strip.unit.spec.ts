@@ -31,8 +31,13 @@ import {
   STUCK_AFTER_MS,
   armSupervisorStrip,
   attemptProgress,
+  censusCounts,
+  censusIsTerminal,
   classifySupervisor,
+  failedTicketAction,
   probeLiveness,
+  probeVerdict,
+  repairCycleSummary,
   repairSummary,
 } from "../src/lib/supervisor";
 import golden from "./fixtures/supervisor-wire.golden.json";
@@ -101,9 +106,44 @@ function read(
     error: null,
     receivedAtMs: NOW - 2_000,
     nowMs: NOW,
+    /*
+     * NO CENSUS BY DEFAULT, AND THAT IS WHAT MAKES EVERY TEST WRITTEN BEFORE
+     * 2026-08-10 STILL A TEST OF THE SAME THING.
+     *
+     * `GET /api/supervisor/tickets` has no producer, so ARM 6b is gated on a
+     * READABLE census and cannot fire from this default. Every arm above it is
+     * therefore exercised by exactly the inputs it always was; a red test in this
+     * file after the census landed would mean the arm order moved, which is the
+     * signal to want. The census arms are driven explicitly, from `census()` below.
+     */
+    censusBody: null,
+    censusError: null,
     ...over,
   });
 }
+
+/**
+ * A CENSUS BODY, BUILT AS JSON RATHER THAN AS A TYPED VALUE — deliberately.
+ *
+ * `classifySupervisor` takes `censusBody: unknown` because the only honest source
+ * for it is a parsed HTTP body that nothing has checked. A helper returning
+ * `SupervisorTicketCensus` would hand the classifier a value TypeScript has already
+ * vouched for, and every validator test below would be testing a path the real app
+ * never takes. `Record<string, unknown>` rows are what the wire produces, and they
+ * are what lets a test omit a column the way a first version of the route will.
+ */
+function census(rows: readonly Record<string, unknown>[], over: Record<string, unknown> = {}): unknown {
+  return { tickets: rows, ...over };
+}
+
+const DONE_ROW = { ticketKey: "t-done", state: "done" };
+const BLOCKED_ROW = {
+  ticketKey: "t-blocked",
+  state: "blocked",
+  updatedAt: "2026-08-10T02:00:00.000Z",
+  lastClass: "structural",
+  nextAction: "no repair driver is wired; run tools/repair/cycle.mjs against a copy by hand",
+};
 
 /**
  * THE ARGUMENT IS SECONDS AND THE WIRE FIELD IS MILLISECONDS, and the conversion
@@ -698,27 +738,70 @@ test("a wrong-shaped trail is a malformed BODY, not a throw inside the classifie
 /* THE ARM CHECK ITSELF                                                */
 /* ------------------------------------------------------------------ */
 
-test("the start-up arm check passes, and it passes by producing FIVE DIFFERENT answers", () => {
+test("the start-up arm check passes, and it passes by producing SIX DIFFERENT answers", () => {
   const report = armSupervisorStrip();
 
   expect(report.armed, report.line).toBe(true);
   /*
-   * FIVE, AND THE FIFTH LANDED IN THE SAME EDIT AS THE FIFTH STATE. `malformed`
-   * became an always-on liveness on 2026-08-10; an always-on state with no probe
-   * is a check that can only observe success, which is the defect the whole strip
-   * was built against. The count is asserted so that adding a sixth state under a
-   * five-probe arm reddens here.
+   * SIX, AND THE SIXTH LANDED IN THE SAME EDIT AS THE SIXTH STATE — which is the
+   * second time this paragraph has been rewritten for that reason and the reason it
+   * is worth rewriting. `malformed` became an always-on liveness on 2026-08-10 and
+   * this count went from four to five; `blocked` landed later the same day and it
+   * goes from five to six. An always-on state with no probe is a check that can only
+   * observe success, and the count is asserted HERE so that adding a seventh state
+   * under a six-probe arm reddens in this file rather than shipping as a confident
+   * "6 distinct" about a state nothing measures.
    */
-  expect(report.distinct, "the five probes did not resolve to five different states").toBe(5);
+  expect(report.distinct, "the six probes did not resolve to six different states").toBe(6);
   expect(report.probes.filter((probe) => !probe.ok)).toEqual([]);
-  expect(report.probes).toHaveLength(7);
+  expect(report.probes).toHaveLength(11);
 
   // The line is what a human reads in the console at 07:00, so its content is
   // asserted rather than its existence.
   expect(report.line).toContain("ARM CHECK:");
-  expect(report.line).toContain("unreachable · idle · running · stuck · malformed (5 distinct)");
+  expect(report.line).toContain(
+    "unreachable · idle · running · stuck · malformed · blocked (6 distinct)",
+  );
+  /*
+   * THE LINE MUST STATE WHAT IS WIRED. This is the same rule the server's boot line
+   * is held to: a line that went on describing a five-state strip after the sixth
+   * landed would be the honest-absence sentence turning into a lie. These three
+   * clauses are the three distinctions this version can make and the previous one
+   * could not.
+   */
+  expect(report.line).toContain("tells a FINISHED queue from an ALL-BLOCKED one");
+  expect(report.line).toContain("census reader tells absent/unreachable/malformed/readable apart");
+  expect(report.line).toContain("repair cycle tells unreported from null");
   expect(report.line).toContain("escalates a913c871 at attempt 2");
   expect(report.line).toContain("clears a shrinking sequence");
+});
+
+test("the arm check's SIX probes are the liveness probes, and the census probes are not counted among them", () => {
+  /*
+   * THE NEGATIVE HALF OF THE COUNT ITSELF, AND IT CATCHES A REAL WAY TO CHEAT.
+   *
+   * `distinct` is `new Set(probes.slice(0, LIVENESS_PROBES))`, so the number is only
+   * meaningful if the first six probes are the six LIVENESS probes. Append a
+   * seventh liveness probe below the census probes and the slice would silently
+   * measure the census probe's string instead — a six that counts the wrong six.
+   * Asserting the names pins the boundary, which no assertion on the number can.
+   */
+  const report = armSupervisorStrip();
+  expect(report.probes.slice(0, 6).map((probe) => probe.name)).toEqual([
+    "unreachable",
+    "idle",
+    "running",
+    "stuck",
+    "malformed",
+    "blocked",
+  ]);
+  expect(report.probes.slice(6).map((probe) => probe.name)).toEqual([
+    "the three idle endings do not read the same",
+    "the census reader tells its four answers apart",
+    "the repair cycle tells unreported from null from reported",
+    "comparator escalates a913c871 at attempt 2",
+    "comparator clears a shrinking sequence",
+  ]);
 });
 
 test("the arm check FAILS LOUDLY when the classifier is blind — this is the mutation it exists to catch", () => {
@@ -736,7 +819,7 @@ test("the arm check FAILS LOUDLY when the classifier is blind — this is the mu
     ...report,
     probes: report.probes.map((probe) => ({ ...probe, got: "running", ok: probe.expected === "running" })),
   };
-  const distinct = new Set(collapsed.probes.slice(0, 5).map((probe) => probe.got)).size;
+  const distinct = new Set(collapsed.probes.slice(0, 6).map((probe) => probe.got)).size;
 
   expect(distinct).toBe(1);
   expect(collapsed.probes.filter((probe) => !probe.ok).length).toBeGreaterThan(0);
@@ -1142,4 +1225,815 @@ test("a probe whose classifier THROWS is a failed probe, not a dead server rende
   expect(probeLiveness(withRun(20), null, NOW)).toBe("running");
   expect(probeLiveness(state({ desired: "stopped" }), null, NOW)).toBe("idle");
   expect(probeLiveness(null, new Error("connection refused"), NOW)).toBe("unreachable");
+});
+
+/* ------------------------------------------------------------------ */
+/* THE MORNING READOUT — "IT FINISHED" vs "IT ALL DIED"                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE MEASURED GAP THIS BLOCK EXISTS FOR, IN ONE SENTENCE.
+ *
+ * `/api/supervisor` sends `ticket: null` and `queueDepth: 0` both when the loop
+ * finished the night's work and when every ticket terminated at `blocked` — the
+ * server counts only rows in state `queued` (`http.ts:1256`), and `done`,
+ * `blocked` and `abandoned` are all "not queued and not claimed". The strip
+ * rendered `IDLE / idle, queue empty` for both, byte for byte. Eight hours of the
+ * owner's subscription window and a readout that could not tell success from total
+ * failure.
+ *
+ * EVERY TEST BELOW HAS A NEGATIVE HALF, and for these the negative half is not
+ * decoration: the easiest way to "fix" this gap is a branch that reports `blocked`
+ * whenever a census exists, which would paint a healthy finished queue red.
+ */
+
+test("a finished queue, an all-blocked queue and no census are THREE DIFFERENT readings — the gap this round closed", () => {
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+
+  const finished = read(settled, { censusBody: census([DONE_ROW, { ...DONE_ROW, ticketKey: "t-2" }]) });
+  const died = read(settled, { censusBody: census([BLOCKED_ROW, { ...BLOCKED_ROW, ticketKey: "t-b2" }]) });
+  const blind = read(settled);
+
+  // THE POSITIVE HALVES, each naming its own count rather than a mood.
+  expect(finished.liveness).toBe("idle");
+  expect(finished.headline).toBe("queue finished · 2 done");
+  expect(finished.because).toContain("2 of 2");
+
+  expect(died.liveness).toBe("blocked");
+  expect(died.headline).toBe("queue ended · 2 blocked");
+  expect(died.because).toContain("2 of 2 ticket(s) ended blocked or abandoned");
+
+  /*
+   * THE NEGATIVE HALF, AND IT IS THE WHOLE POINT: the three readings must be
+   * MUTUALLY DIFFERENT. A branch that always answered `blocked` when a census
+   * exists would pass the second assertion above and fail here, and so would a
+   * headline that read the same for a finished queue as for one nobody can see.
+   */
+  const verdicts = new Set([
+    `${finished.liveness}·${finished.headline}`,
+    `${died.liveness}·${died.headline}`,
+    `${blind.liveness}·${blind.headline}`,
+  ]);
+  expect(verdicts.size, "two of the three endings render identically").toBe(3);
+
+  // And the no-census reading must not have invented either count.
+  expect(blind.liveness).toBe("idle");
+  expect(blind.headline).toBe("idle, queue empty");
+  expect(blind.census.counts).toBeNull();
+  expect(blind.because).toContain("no ticket census has arrived yet");
+});
+
+test("a MIXED terminal queue counts the failures and does not round them away", () => {
+  const mixed = read(state({ desired: "running", ticket: null, queueDepth: 0 }), {
+    censusBody: census([
+      DONE_ROW,
+      { ...DONE_ROW, ticketKey: "t-d2" },
+      { ...DONE_ROW, ticketKey: "t-d3" },
+      BLOCKED_ROW,
+      { ticketKey: "t-aband", state: "abandoned", updatedAt: "2026-08-10T01:00:00.000Z" },
+    ]),
+  });
+
+  expect(mixed.liveness).toBe("blocked");
+  // `blocked` AND `abandoned` ARE ADDED TOGETHER: a headline reading "1 blocked"
+  // over a queue with one of each would undercount the failure by half.
+  expect(mixed.headline).toBe("queue ended · 2 blocked");
+  expect(mixed.because).toContain("2 of 5");
+  expect(mixed.because).toContain("3 done");
+  // THE NEGATIVE HALF: three successes did not make this a success.
+  expect(mixed.liveness).not.toBe("idle");
+});
+
+test("a queue that is still working is NOT reported as finished, in either direction", () => {
+  const settled = state({ desired: "stopped", ticket: null, queueDepth: 0 });
+
+  // A backlog row: not terminal, so no verdict — and NOT `blocked` either, even
+  // though a blocked row is sitting right beside it.
+  const backlog = read(settled, {
+    censusBody: census([BLOCKED_ROW, { ticketKey: "t-q", state: "queued" }]),
+  });
+  expect(backlog.liveness).toBe("idle");
+  expect(backlog.headline).toBe("stopped, nothing in flight");
+  expect(backlog.census.counts?.backlog).toBe(1);
+
+  // An in-flight row: same refusal. THE DELIBERATE NON-ARM — two routes polled 5 s
+  // and 15 s apart disagree for one tick as a matter of course, so this is reported
+  // as a count and never as a red verdict.
+  const inFlight = read(settled, {
+    censusBody: census([DONE_ROW, { ticketKey: "t-r", state: "running" }]),
+  });
+  expect(inFlight.liveness).toBe("idle");
+  expect(inFlight.headline).toBe("stopped, nothing in flight");
+  expect(inFlight.census.counts?.inFlight).toBe(1);
+
+  // THE POSITIVE CONTROL FOR BOTH: the same census with the open row removed DOES
+  // produce a verdict, so the refusals above are about the open row and not about
+  // the arm being unreachable.
+  const settledRunning = state({ desired: "running", ticket: null, queueDepth: 0 });
+  expect(read(settledRunning, { censusBody: census([BLOCKED_ROW]) }).liveness).toBe("blocked");
+  expect(read(settledRunning, { censusBody: census([DONE_ROW]) }).headline).toBe(
+    "queue finished · 1 done",
+  );
+});
+
+test("an EMPTY census is 'never given anything', not 'finished'", () => {
+  const empty = read(state({ desired: "running", ticket: null, queueDepth: 0 }), {
+    censusBody: census([]),
+  });
+  expect(empty.liveness).toBe("idle");
+  expect(empty.headline).toBe("idle, no tickets filed");
+  expect(empty.because).toContain("has never been given anything");
+  // THE NEGATIVE HALF: zero tickets is not a finished queue and not a failure.
+  expect(empty.headline).not.toContain("finished");
+  expect(empty.liveness).not.toBe("blocked");
+});
+
+test("a ticket state this build does not recognise is counted NOWHERE and blocks every verdict", () => {
+  /*
+   * The server types `state` as a string so a ninth state cannot break this client,
+   * which means a ninth state WILL arrive. Folding it into any bucket would let a
+   * queue full of an unreadable word report "finished, 3 done" — a confident answer
+   * built out of something the build could not read.
+   */
+  const ninth = read(state({ desired: "running", ticket: null, queueDepth: 0 }), {
+    censusBody: census([DONE_ROW, { ticketKey: "t-new", state: "quarantined" }]),
+  });
+  expect(ninth.census.counts?.unrecognised).toEqual(["quarantined"]);
+  expect(ninth.census.counts?.done).toBe(1);
+  expect(ninth.headline).toBe("idle, queue empty");
+  expect(ninth.headline).not.toContain("finished");
+  expect(ninth.census.note).toContain("this build does not recognise");
+
+  // THE NEGATIVE HALF: remove the unknown state and the same census DOES claim it.
+  const known = read(state({ desired: "running", ticket: null, queueDepth: 0 }), {
+    censusBody: census([DONE_ROW]),
+  });
+  expect(known.headline).toBe("queue finished · 1 done");
+});
+
+test("censusCounts buckets the eight states and adds none of them twice", () => {
+  const counts = censusCounts([
+    { ticketKey: "a", state: "queued" },
+    { ticketKey: "b", state: "claimed" },
+    { ticketKey: "c", state: "running" },
+    { ticketKey: "d", state: "repairing" },
+    { ticketKey: "e", state: "waiting" },
+    { ticketKey: "f", state: "done" },
+    { ticketKey: "g", state: "blocked" },
+    { ticketKey: "h", state: "abandoned" },
+  ]);
+  expect(counts).toEqual({
+    total: 8,
+    backlog: 1,
+    inFlight: 4,
+    done: 1,
+    failed: 2,
+    unrecognised: [],
+  });
+  // Every row landed in exactly one bucket — the arithmetic no `toEqual` on
+  // individual fields would catch if two buckets both claimed a state.
+  expect(counts.backlog + counts.inFlight + counts.done + counts.failed).toBe(counts.total);
+  // AND THE NEGATIVE HALF: a blank state is not silently a bucket.
+  const blank = censusCounts([{ ticketKey: "z", state: "  " }]);
+  expect(blank.unrecognised).toEqual(["(blank)"]);
+  expect(blank.done + blank.failed + blank.backlog + blank.inFlight).toBe(0);
+});
+
+test("censusIsTerminal refuses on each of its four disqualifiers, and clears when none applies", () => {
+  const base = { total: 2, backlog: 0, inFlight: 0, done: 2, failed: 0, unrecognised: [] as string[] };
+  expect(censusIsTerminal(base)).toBe(true);
+  expect(censusIsTerminal({ ...base, total: 0, done: 0 })).toBe(false);
+  expect(censusIsTerminal({ ...base, backlog: 1 })).toBe(false);
+  expect(censusIsTerminal({ ...base, inFlight: 1 })).toBe(false);
+  expect(censusIsTerminal({ ...base, unrecognised: ["quarantined"] })).toBe(false);
+});
+
+/* ------------------------------------------------------------------ */
+/* THE CENSUS'S FOUR WAYS OF NOT BEING A CENSUS                        */
+/* ------------------------------------------------------------------ */
+
+test("absent, unreachable and malformed are three DIFFERENT census readings, and none of them invents a count", () => {
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+
+  const absent = read(settled).census;
+  const unreachable = read(settled, { censusError: new Error("404 not found") }).census;
+  const malformed = read(settled, { censusBody: { tickets: "not an array" } }).census;
+  const readable = read(settled, { censusBody: census([DONE_ROW]) }).census;
+
+  expect(absent.availability).toBe("absent");
+  expect(unreachable.availability).toBe("unreachable");
+  expect(malformed.availability).toBe("malformed");
+  expect(readable.availability).toBe("readable");
+
+  // Four DIFFERENT sentences, not four spellings of "no data".
+  expect(new Set([absent.note, unreachable.note, malformed.note, readable.note]).size).toBe(4);
+  expect(unreachable.note).toContain("404 not found");
+  expect(malformed.note).toContain("tickets is a string, not an array");
+  expect(malformed.note).toContain("Waiting will not fix this one");
+
+  /*
+   * THE NEGATIVE HALF THAT MATTERS MOST: only the readable one carries counts. A
+   * reading that answered `counts: {total: 0, …}` for a 404 would let the strip
+   * print "0 blocked" about a route that does not exist — a number with no data
+   * behind it, which is the exact class of defect this whole file is against.
+   */
+  expect(absent.counts).toBeNull();
+  expect(unreachable.counts).toBeNull();
+  expect(malformed.counts).toBeNull();
+  expect(readable.counts?.total).toBe(1);
+  for (const reading of [absent, unreachable, malformed]) {
+    expect(reading.rows).toEqual([]);
+    expect(reading.failedRows).toEqual([]);
+    expect(reading.note.trim()).not.toBe("");
+  }
+});
+
+test("a census whose ROWS are wrong is malformed and NAMES the row and the field", () => {
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+  const cases: readonly { readonly body: unknown; readonly names: string }[] = [
+    { body: { tickets: [{ state: "done" }] }, names: "tickets[0].ticketKey is absent, not a string" },
+    { body: { tickets: [{ ticketKey: "a" }] }, names: "tickets[0].state is absent, not a string" },
+    { body: { tickets: [DONE_ROW, "nope"] }, names: "tickets[1] is a string, not an object" },
+    {
+      body: { tickets: [{ ...DONE_ROW, nextAction: { text: "x" } }] },
+      names: "tickets[0].nextAction is an object, not a string or null",
+    },
+    {
+      body: { tickets: [{ ...DONE_ROW, attemptNo: "two" }] },
+      names: "tickets[0].attemptNo is a string, not a number or null",
+    },
+    { body: { tickets: [DONE_ROW], probe: 7 }, names: "probe is a number rather than an object or null" },
+    {
+      body: { tickets: [DONE_ROW], probe: { armed: "yes" } },
+      names: "probe.armed is a string, not a boolean or null",
+    },
+    {
+      body: { tickets: [DONE_ROW], probe: { at: 1_754_000_000 } },
+      names: "probe.at is a number, not a string or null",
+    },
+    /*
+     * `attachments` IS NESTED AND ITS MEMBERS ARE CHECKED THOUGH NOTHING RENDERS
+     * THEM YET. That is the lesson from `lastDefect`, whose members were validated
+     * before it had a producer precisely because the day a panel `.slice`s one, an
+     * object there is `signature.slice is not a function` out of RootLayout.
+     */
+    {
+      body: { tickets: [{ ...DONE_ROW, attachments: 3 }] },
+      names: "tickets[0].attachments is a number rather than an object or null",
+    },
+    {
+      body: { tickets: [{ ...DONE_ROW, attachments: { manifest: {} } }] },
+      names: "tickets[0].attachments.manifest is an object, not a string or null",
+    },
+    {
+      body: { tickets: [{ ...DONE_ROW, attachments: { carriedIntoRun: "no" } }] },
+      names: "tickets[0].attachments.carriedIntoRun is a string, not a boolean or null",
+    },
+    {
+      body: { tickets: [{ ...DONE_ROW, attachments: { images: "two" } }] },
+      names: "tickets[0].attachments.images is a string, not a number or null",
+    },
+    { body: [DONE_ROW], names: "the body is an array, not an object" },
+    { body: 12, names: "the body is a number, not an object" },
+  ];
+
+  for (const row of cases) {
+    const reading = read(settled, { censusBody: row.body }).census;
+    expect(reading.availability, `${JSON.stringify(row.body)} was not caught`).toBe("malformed");
+    expect(reading.note).toContain(row.names);
+    // The invariant: a body that FAILED cannot reach a consumer.
+    expect(reading.counts).toBeNull();
+    expect(reading.rows).toEqual([]);
+  }
+
+  /*
+   * THE POSITIVE CONTROL FOR THE WHOLE TABLE, and it is the assertion that stops
+   * this validator being the fifteen-field amber all over again: the MINIMAL body a
+   * first version of the route could send — two required fields per row and nothing
+   * else — must be READABLE, and every optional column must be reported as absent
+   * rather than as null.
+   */
+  const minimal = read(settled, { censusBody: census([DONE_ROW, BLOCKED_ROW]) }).census;
+  expect(minimal.availability).toBe("readable");
+  const bare = read(settled, {
+    censusBody: census([{ ticketKey: "a", state: "done" }, { ticketKey: "b", state: "blocked" }]),
+  }).census;
+  expect(bare.availability).toBe("readable");
+  expect(bare.counts?.failed).toBe(1);
+  /*
+   * THE LIST IS `ApiSupervisorTicketRow`'s COLUMNS MINUS THE TWO REQUIRED ONES,
+   * AND ASSERTING IT WHOLE IS WHAT MAKES A MIRROR DRIFT VISIBLE HERE RATHER THAN
+   * ON SCREEN. The first version of this list carried `lastRunId` — a name the wire
+   * has never sent — and was missing five it does; the panel would have printed
+   * "this build's census does not carry lastRunId" for ever, a confident sentence
+   * about a gap that did not exist.
+   */
+  expect(bare.absentFields).toEqual([
+    "title",
+    "modelId",
+    "attemptNo",
+    "maxAttempts",
+    "nextAction",
+    "nextActionAt",
+    "enqueuedAt",
+    "updatedAt",
+    "runId",
+    "currentRunId",
+    "lastClass",
+    "lastDefectId",
+    "patchId",
+    "attachments",
+  ]);
+});
+
+/**
+ * ONE ROW SHAPED EXACTLY LIKE `ApiSupervisorTicketRow`, FIELD FOR FIELD.
+ *
+ * NOT A CONVENIENCE FIXTURE — THE DRIFT DETECTOR. `api-types.ts` records what a
+ * mirror that disagreed with the wire in fifteen fields cost: amber `MALFORMED` on
+ * every route, "nothing crashed, and nothing was readable either", and three green
+ * typecheckers that could not see it because nothing imports both declarations. The
+ * census route landed while this readout was being written, so its shape is
+ * transcribed here from the server's own declaration and asserted to read with ZERO
+ * absent columns. A column the server renames appears in `absentFields` and reddens
+ * the test below; a column this mirror invents does the same.
+ */
+const WIRE_ROW = {
+  ticketKey: "t-b79ff5e2a1b314e4",
+  title: "a portfolio site",
+  state: "blocked",
+  modelId: "claude-opus-4-6",
+  attemptNo: 3,
+  maxAttempts: 3,
+  nextAction: "no repair driver is wired; run tools/repair/cycle.mjs against a copy by hand",
+  nextActionAt: null,
+  runId: "run-2026-08-10T13-11-12-836Z-54927ebc",
+  currentRunId: null,
+  lastClass: "structural",
+  lastDefectId: "a1b2c3d4e5f60718",
+  patchId: null,
+  enqueuedAt: "2026-08-10T00:00:00.000Z",
+  updatedAt: "2026-08-10T06:00:00.000Z",
+  attachments: {
+    manifest: "readable",
+    images: 2,
+    documents: 1,
+    capture: false,
+    motion: false,
+    carriedIntoRun: false,
+  },
+} as const;
+
+const WIRE_PROBE = {
+  ticketsSeen: 1,
+  manifestsUnreadable: 0,
+  attachmentsDropped: 1,
+  armed: true,
+  armNote: "the route distinguished its own outputs",
+  at: "2026-08-10T06:00:01.000Z",
+} as const;
+
+test("the census the ROUTE actually declares reads with zero absent columns — the mirror-drift detector", () => {
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+  const reading = read(settled, {
+    censusBody: { tickets: [WIRE_ROW], probe: WIRE_PROBE },
+  });
+
+  expect(reading.census.availability).toBe("readable");
+  /*
+   * ZERO. A name in this list means the wire dropped a column or this mirror
+   * invented one, and either way the panel would be printing a sentence about a
+   * gap. The empty array is the assertion; a `toHaveLength(0)` would not name the
+   * offender when it fails.
+   */
+  expect(reading.census.absentFields).toEqual([]);
+  expect(reading.census.counts).toEqual({
+    total: 1,
+    backlog: 0,
+    inFlight: 0,
+    done: 0,
+    failed: 1,
+    unrecognised: [],
+  });
+  expect(reading.liveness).toBe("blocked");
+  expect(reading.because).toContain("run tools/repair/cycle.mjs");
+
+  // THE PROBE'S OWN NUMBERS REACH THE PANEL, including the alarm that only fires
+  // when it is non-zero.
+  expect(reading.census.probeNote).toContain("armed=true");
+  expect(reading.census.probeNote).toContain("1 row(s) read");
+  expect(reading.census.probeNote).toContain("2026-08-10T06:00:01.000Z");
+  expect(reading.census.probeNote).toContain("did NOT reach their run");
+  // AND THE NEGATIVE HALF: a zero count is silent rather than printed as an alarm.
+  expect(reading.census.probeNote).not.toContain("would not parse");
+});
+
+test("`absent` and `null` are different answers for a census column, and a column present on SOME rows is not called absent", () => {
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+
+  // KEY MISSING on every row -> reported absent.
+  const missing = read(settled, {
+    censusBody: census([{ ticketKey: "a", state: "done" }]),
+  }).census;
+  expect(missing.absentFields).toContain("lastClass");
+
+  // KEY PRESENT AND null -> NOT absent. The route carries the column; this ticket
+  // has no value. Calling that absent would tell the owner the build cannot report
+  // a field it reports perfectly well.
+  const explicitNull = read(settled, {
+    censusBody: census([{ ticketKey: "a", state: "done", lastClass: null }]),
+  }).census;
+  expect(explicitNull.availability).toBe("readable");
+  expect(explicitNull.absentFields).not.toContain("lastClass");
+
+  // PRESENT ON ONE ROW OF TWO -> the route carries it, so it is not absent.
+  const partial = read(settled, {
+    censusBody: census([
+      { ticketKey: "a", state: "done", lastClass: "structural" },
+      { ticketKey: "b", state: "done" },
+    ]),
+  }).census;
+  expect(partial.absentFields).not.toContain("lastClass");
+});
+
+/* ------------------------------------------------------------------ */
+/* ITEM B — THE SENTENCE THAT SAYS WHAT TO RUN BY HAND                 */
+/* ------------------------------------------------------------------ */
+
+test("a blocked ticket's own next_action reaches the reading — and its absence is named, never blank", () => {
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+
+  const withAction = read(settled, { censusBody: census([BLOCKED_ROW]) });
+  expect(withAction.liveness).toBe("blocked");
+  expect(withAction.because).toContain("run tools/repair/cycle.mjs against a copy by hand");
+  // The failure class rides along, because "what do I run" is easier to act on
+  // when you know what broke.
+  expect(withAction.because).toContain("(structural)");
+
+  /*
+   * THE NEGATIVE HALF, AND IT IS THE ONE THAT KEEPS THIS HONEST WHEN LANE 2 LANDS
+   * A ROUTE WITHOUT THE COLUMN. A blank would read as "there is nothing to do",
+   * which is the opposite of true for a blocked ticket.
+   */
+  const noColumn = read(settled, {
+    censusBody: census([{ ticketKey: "t-b", state: "blocked" }]),
+  });
+  expect(noColumn.liveness).toBe("blocked");
+  expect(noColumn.because).toContain("the census does not carry next_action");
+  expect(noColumn.because).not.toContain("undefined");
+
+  // AND THE THIRD ANSWER: the column IS on the wire and empty for this ticket.
+  // "the route does not report this" and "the route reports it and it is blank"
+  // are different facts about different things.
+  const emptyColumn = read(settled, {
+    censusBody: census([{ ticketKey: "t-b", state: "blocked", nextAction: "" }]),
+  });
+  expect(emptyColumn.because).toContain("carries no next_action text");
+  expect(emptyColumn.because).toContain("the column is on the wire and empty");
+});
+
+test("the newest failed ticket is the one whose sentence is shown, and a row with no clock does not jump the queue", () => {
+  const rows = [
+    { ticketKey: "t-old", state: "blocked", updatedAt: "2026-08-10T01:00:00.000Z", nextAction: "OLD" },
+    { ticketKey: "t-new", state: "blocked", updatedAt: "2026-08-10T05:00:00.000Z", nextAction: "NEW" },
+  ];
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+  const reading = read(settled, { censusBody: census(rows) });
+  expect(reading.census.failedRows.map((row) => row.ticketKey)).toEqual(["t-new", "t-old"]);
+  expect(reading.because).toContain("NEW");
+  expect(reading.because).not.toContain("OLD");
+
+  /*
+   * A ROW WITH NO `updatedAt` SORTS LAST. THE NEGATIVE HALF: if a missing column
+   * sorted first it would decide which failure the owner reads about, and a first
+   * version of the route that omits `updated_at` would silently pick at random.
+   */
+  const withClockless = read(settled, {
+    censusBody: census([{ ticketKey: "t-noclock", state: "blocked", nextAction: "CLOCKLESS" }, ...rows]),
+  });
+  expect(withClockless.census.failedRows.map((row) => row.ticketKey)).toEqual([
+    "t-new",
+    "t-old",
+    "t-noclock",
+  ]);
+  expect(withClockless.because).toContain("NEW");
+});
+
+test("failedTicketAction answers nothing for no rows, rather than a sentence about nothing", () => {
+  expect(failedTicketAction([])).toBe("");
+  expect(failedTicketAction([{ ticketKey: "a", state: "blocked", nextAction: "do X" }])).toContain(
+    "do X",
+  );
+});
+
+/* ------------------------------------------------------------------ */
+/* ITEM C — THE REPAIR CYCLE, AND ITS THREE-WAY ABSENCE                */
+/* ------------------------------------------------------------------ */
+
+test("the repair cycle tells UNREPORTED from an explicit null from a real cycle", () => {
+  const unreported = repairCycleSummary(undefined);
+  const none = repairCycleSummary(null);
+  const refused = repairCycleSummary({
+    signature: "a".repeat(64),
+    outcomeKind: "refused",
+    outcomeCode: "ALREADY_RULED_OUT",
+    verdict: "REFUSED",
+    applied: false,
+    detail: "the ledger already ruled this proposal out.",
+  });
+
+  expect(unreported.kind).toBe("unreported");
+  expect(none.kind).toBe("null");
+  expect(refused.kind).toBe("reported");
+
+  /*
+   * THE THREE SENTENCES MUST DIFFER, and the pair that matters is the first two.
+   * `repairSummary(null)` — the function that shipped before this one — answers "no
+   * patch has been applied" for BOTH, which is how a dashboard tells its owner the
+   * self-repair worked when the self-repair does not exist.
+   */
+  expect(new Set([unreported.sentence, none.sentence, refused.sentence]).size).toBe(3);
+  expect(unreported.sentence).toContain("NOT the same as 'no repair was attempted'");
+  expect(none.sentence).toContain("explicit null, not a missing field");
+  expect(refused.label).toBe("REFUSED");
+  expect(refused.sentence).toContain("ALREADY_RULED_OUT");
+  expect(refused.sentence).toContain("no file was changed");
+
+  // AND THE OLD FUNCTION IS THE CONTROL FOR THE NEW ONE: it cannot see any of this,
+  // which is why the new one exists rather than replacing it.
+  expect(repairSummary(null)).toBe("no patch has been applied");
+});
+
+test("an APPLIED patch with no rollback point is named as an edit, not left blank", () => {
+  const applied = repairCycleSummary({
+    signature: "b".repeat(64),
+    outcomeKind: "applied",
+    verdict: "ACCEPTED",
+    applied: true,
+  });
+  expect(applied.sentence).toContain("A PATCH WAS APPLIED");
+  expect(applied.sentence).toContain("NO ROLLBACK POINT WAS RECORDED");
+  expect(applied.sentence).toContain("an edit, not a repair");
+  // It also names the fields the producer did not send, rather than printing gaps.
+  expect(applied.sentence).toContain("outcomeCode");
+
+  // THE NEGATIVE HALF: with a rollback point that alarm must be GONE, or it is a
+  // sentence that fires on every applied patch and means nothing.
+  const withRollback = repairCycleSummary({
+    signature: "b".repeat(64),
+    outcomeKind: "applied",
+    outcomeCode: "APPLIED",
+    verdict: "ACCEPTED",
+    applied: true,
+    rollbackPoint: "stash@{0}",
+  });
+  expect(withRollback.sentence).toContain("rollback point stash@{0}");
+  expect(withRollback.sentence).not.toContain("NO ROLLBACK POINT");
+  expect(withRollback.sentence).not.toContain("Fields the producer did not send");
+});
+
+test("`applied: false`, `applied: null` and an absent `applied` are three different sentences", () => {
+  const cycle = { signature: "c".repeat(64), verdict: "COULD_NOT_REPRODUCE" };
+  const no = repairCycleSummary({ ...cycle, applied: false });
+  const dunno = repairCycleSummary({ ...cycle, applied: null });
+  const silent = repairCycleSummary(cycle);
+
+  expect(no.sentence).toContain("no file was changed");
+  expect(dunno.sentence).toContain("does not know whether the tree was changed");
+  expect(silent.sentence).toContain("whether the tree was changed is not reported");
+  expect(new Set([no.sentence, dunno.sentence, silent.sentence]).size).toBe(3);
+  /*
+   * A falsy check on `applied` would print "no file was changed" over all three —
+   * a claim about the working tree that two of them do not support.
+   */
+});
+
+/* ------------------------------------------------------------------ */
+/* THE VALIDATION INVARIANT, EXTENDED TO THE FIELDS ADDED TODAY        */
+/* ------------------------------------------------------------------ */
+
+test("an ABSENT `lastRepairCycle` does not make the body malformed — this is the regression that blanked the page twice", () => {
+  /*
+   * THE MOST DANGEROUS THING IN THIS ROUND, WRITTEN AS A TEST.
+   *
+   * `malformedReasons` rejects `absent` wherever the contract says `| null`, and
+   * that rule is right for a field the server always sends. Applying it to a field
+   * with NO PRODUCER would turn today's real body malformed and paint amber
+   * `MALFORMED` on every route in the app — the fifteen-field failure recorded in
+   * `api-types.ts`, whose outcome was "Nothing crashed, and nothing was readable
+   * either". `grep -rn lastRepairCycle dashboard/server/src` was 0 when this landed.
+   */
+  const today = read(state({ desired: "running", ticket: null, queueDepth: 0 }));
+  expect(today.liveness).not.toBe("malformed");
+  expect(today.snapshot).not.toBeNull();
+
+  // Present-and-null is legal too, and is a DIFFERENT sentence from absent.
+  const explicitNull = read(
+    state({ desired: "running", ticket: null, queueDepth: 0, lastRepairCycle: null }),
+  );
+  expect(explicitNull.liveness).not.toBe("malformed");
+  expect(repairCycleSummary(explicitNull.snapshot?.lastRepairCycle).kind).toBe("null");
+  expect(repairCycleSummary(today.snapshot?.lastRepairCycle).kind).toBe("unreported");
+
+  // A REAL VALUE IS LEGAL AND READABLE.
+  const present = read(
+    state({
+      desired: "running",
+      ticket: null,
+      queueDepth: 0,
+      lastRepairCycle: { outcomeCode: "NO_PATCH_AUTHOR", verdict: "NO_PATCH_AUTHOR", applied: false },
+    }),
+  );
+  expect(present.liveness).not.toBe("malformed");
+  expect(repairCycleSummary(present.snapshot?.lastRepairCycle).label).toBe("NO_PATCH_AUTHOR");
+});
+
+test("a WRONG-TYPED `lastRepairCycle` member IS caught, named, and carries no snapshot", () => {
+  /*
+   * The other half of the optional-field rule: not required, but checked if
+   * present. `repairCycleSummary` calls `.trim()` on four of these fields, so a
+   * `rollbackPoint` that arrived as an object is the `signature.slice is not a
+   * function` crash out of RootLayout with a new field name.
+   */
+  const cases: readonly { readonly value: unknown; readonly names: string }[] = [
+    { value: 7, names: "lastRepairCycle is a number rather than an object or null" },
+    { value: { rollbackPoint: {} }, names: "lastRepairCycle.rollbackPoint is an object, not a string or null" },
+    { value: { applied: "yes" }, names: "lastRepairCycle.applied is a string, not a boolean or null" },
+    { value: { verdict: [] }, names: "lastRepairCycle.verdict is an array, not a string or null" },
+    { value: { detail: 3 }, names: "lastRepairCycle.detail is a number, not a string or null" },
+  ];
+  for (const row of cases) {
+    const reading = read(
+      state({ lastRepairCycle: row.value } as unknown as Partial<SupervisorState>),
+    );
+    expect(reading.liveness, `${JSON.stringify(row.value)} was not caught`).toBe("malformed");
+    expect(reading.because).toContain(row.names);
+    // THE INVARIANT: a failing body publishes NO snapshot, so no consumer can
+    // dereference the field that was wrong.
+    expect(reading.snapshot).toBeNull();
+  }
+});
+
+test("a body that clears the census validator cannot make a consumer throw, whatever the consumer reads", () => {
+  /*
+   * The census's half of the invariant `malformedReasons` states for the state
+   * body. The proof method is the same: take a body with every optional column
+   * OMITTED — the shape most likely to make a consumer dereference `undefined` —
+   * and drive the things that actually read it.
+   */
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+  const reading = read(settled, {
+    censusBody: census([
+      { ticketKey: "a", state: "blocked" },
+      { ticketKey: "b", state: "done" },
+      { ticketKey: "c", state: "quarantined" },
+    ]),
+  });
+  const rows = reading.census.rows;
+  expect(() => censusCounts(rows)).not.toThrow();
+  expect(() => failedTicketAction(reading.census.failedRows)).not.toThrow();
+  // The two things a component does with each row: string concatenation and a
+  // `.trim()` on an optional column.
+  expect(() =>
+    rows.map((row) => `${row.ticketKey}·${row.state}·${(row.lastClass ?? "").trim()}`).join(),
+  ).not.toThrow();
+  expect(reading.census.probeNote).toContain("sent NO arm check");
+});
+
+test("the census route's own probe is rendered when it sends one, and its ABSENCE never reads as armed", () => {
+  const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
+
+  const noProbe = read(settled, { censusBody: census([DONE_ROW]) }).census;
+  /*
+   * AN ABSENT PROBE IS DRIFT, NOT A BUILD LIMITATION.
+   * `ApiSupervisorTicketsResponse` has exactly two keys and `probe` is one of them,
+   * so the shipping route always sends it. A sentence that read as normal here
+   * would be the `lastRunId` failure inverted: the panel calmly describing a
+   * dropped field as expected.
+   */
+  expect(noProbe.probeNote).toContain("sent NO arm check");
+  expect(noProbe.probeNote).toContain("a field has been dropped");
+  expect(noProbe.probeNote).not.toContain("armed=true");
+
+  const withProbe = read(settled, {
+    censusBody: census([DONE_ROW], {
+      probe: {
+        armed: false,
+        ticketsSeen: 1,
+        manifestsUnreadable: 2,
+        armNote: "the route could not tell its outputs apart",
+      },
+    }),
+  }).census;
+  expect(withProbe.probeNote).toContain("armed=false");
+  expect(withProbe.probeNote).toContain("could not tell its outputs apart");
+  expect(withProbe.probeNote).toContain("2 ticket manifest(s) would not parse");
+
+  // A probe with SOME fields is reported field by field — "not reported" per field
+  // rather than a blank or an invented default.
+  const partial = read(settled, {
+    censusBody: census([DONE_ROW], { probe: { ticketsSeen: 4 } }),
+  }).census;
+  expect(partial.probeNote).toContain("armed=not reported");
+  expect(partial.probeNote).toContain("4 row(s)");
+  expect(partial.probeNote).toContain("at an unreported time");
+  expect(partial.probeNote).toContain("the route sent no arm note");
+});
+
+test("the census is read on EVERY arm, including the ones that never look at it", () => {
+  /*
+   * The census is a different route from the state, so a 404 on one says nothing
+   * about the other — and a reading whose `census` were only filled on the arm that
+   * uses it would give the panel two meanings for the same empty region.
+   */
+  const body = census([DONE_ROW, BLOCKED_ROW]);
+
+  // Arm 1: nothing was ever read from the STATE route.
+  const unreachable = read(null, { error: new Error("connection refused"), censusBody: body });
+  expect(unreachable.liveness).toBe("unreachable");
+  expect(unreachable.census.counts?.failed).toBe(1);
+
+  // Arm 3b: the state route answered with rubbish.
+  const malformed = read({ nonsense: true } as unknown as SupervisorState, { censusBody: body });
+  expect(malformed.liveness).toBe("malformed");
+  expect(malformed.census.counts?.done).toBe(1);
+
+  // Arm 11: a healthy running run. The census does not override a live verdict.
+  const running = read(withRun(20), { censusBody: body });
+  expect(running.liveness).toBe("running");
+  expect(running.census.counts?.total).toBe(2);
+});
+
+test("probeVerdict reports a THROW as an answer on all three of its fields, not as a dead render", () => {
+  /*
+   * `armSupervisorStrip` runs inside `useState`'s initialiser — in the render body,
+   * ON THE SERVER — where React error boundaries do not catch. The existing test for
+   * `probeLiveness` bought that guarantee with a measured `Timed out waiting
+   * 180000ms from config.webServer`; `probeVerdict` reads `.headline` as well, so it
+   * needs the same guarantee on the same hostile input.
+   */
+  const hostile = {} as unknown as SupervisorState;
+  Object.defineProperty(hostile, "probe", {
+    get() {
+      throw new Error("the body fought back");
+    },
+  });
+  const verdict = probeVerdict(hostile, null, NOW);
+  expect(verdict.liveness).toContain("threw:");
+  expect(verdict.headline).toContain("threw:");
+  expect(verdict.verdict).toContain("the body fought back");
+
+  // THE POSITIVE CONTROL: a normal body produces a normal verdict on all three.
+  const healthy = probeVerdict(withRun(20), null, NOW);
+  expect(healthy.liveness).toBe("running");
+  expect(healthy.verdict).toBe(`running · ${healthy.headline}`);
+});
+
+test("a terminal queue under a DRAINED supervisor still says who stopped it, and a running one does not pad the sentence", () => {
+  /*
+   * WHAT ARM 6b BROKE ON ITS WAY IN, PINNED. The fall-through arm answers a
+   * non-running supervisor with `${changedBy} set it to ${desired}: ${reason}` —
+   * the only place this page says WHO drained the loop. ARM 6b fires regardless of
+   * `desired`, so without the clause below a drained supervisor whose tickets had
+   * all finished read "queue finished · 2 done" with no hint that nothing more will
+   * be claimed, and the owner would wait all morning for a seventh ticket.
+   */
+  const drained = read(
+    state({
+      desired: "stopped",
+      ticket: null,
+      queueDepth: 0,
+      changedBy: "guard",
+      reason: "the nightly budget ran out",
+    }),
+    { censusBody: census([DONE_ROW, { ...DONE_ROW, ticketKey: "t-2" }]) },
+  );
+  expect(drained.liveness).toBe("idle");
+  // The verdict is still the answer to "did it work" —
+  expect(drained.headline).toBe("queue finished · 2 done");
+  // — and the stop is still named.
+  expect(drained.because).toContain("Nothing more will be claimed");
+  expect(drained.because).toContain("guard set the supervisor to stopped");
+  expect(drained.because).toContain("the nightly budget ran out");
+
+  // A DRAINED QUEUE THAT DIED CARRIES BOTH FACTS TOO.
+  const drainedDead = read(
+    state({ desired: "draining", ticket: null, queueDepth: 0, changedBy: "owner", reason: "pressed stop" }),
+    { censusBody: census([BLOCKED_ROW]) },
+  );
+  expect(drainedDead.liveness).toBe("blocked");
+  expect(drainedDead.because).toContain("run tools/repair/cycle.mjs");
+  expect(drainedDead.because).toContain("owner set the supervisor to draining");
+
+  /*
+   * THE NEGATIVE HALF: a RUNNING supervisor must not carry the clause. A sentence
+   * that said "nothing more will be claimed" over a loop that is about to claim the
+   * next ticket is a false statement in the row's most-read position, and it is the
+   * mistake a clause appended unconditionally would make.
+   */
+  const running = read(state({ desired: "running", ticket: null, queueDepth: 0 }), {
+    censusBody: census([DONE_ROW]),
+  });
+  expect(running.because).not.toContain("Nothing more will be claimed");
+  expect(running.because).not.toContain("set the supervisor to");
 });

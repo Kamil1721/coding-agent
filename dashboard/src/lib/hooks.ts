@@ -98,6 +98,47 @@ export function useSupervisor(): SWRResponse<TimedSupervisorState, unknown> {
   );
 }
 
+/**
+ * THE TICKET CENSUS, AND THE BODY IS DELIBERATELY `unknown`.
+ *
+ * WHY IT IS NOT TYPED `SupervisorTicketCensus` HERE. `swrFetcher` casts; it
+ * validates nothing. Declaring the parsed JSON as the census would hand the
+ * component a value whose declared type is a promise no code has kept, and the
+ * component would then dereference `census.tickets.filter` on it. That is exactly
+ * the crash `classifySupervisor` was refactored to close on 2026-08-10 — see the
+ * docblock on `SupervisorReadingInput`, which records why the pre-parsed
+ * `attempts` input was REMOVED: `.map` ran on an unvalidated field inside the
+ * function whose job was to survive an unvalidated body. `unknown` makes the
+ * validator unavoidable.
+ *
+ * 15 s, NOT 5 s, AND THE ASYMMETRY IS ON PURPOSE. `useSupervisor` answers "is it
+ * moving", which goes stale in seconds. This answers "how did the night end",
+ * which changes only when a ticket reaches a terminal state. A third of the poll
+ * rate against a route that reads every row of `supervisor_tickets` is the cheaper
+ * side of a trade with no cost to the reading: the strip's freshness arm ages the
+ * STATE reading, and the census is reported as a count with its own age.
+ *
+ * `keepPreviousData` IS OFF, WHICH IS THE OPPOSITE CHOICE FROM `useSupervisor`
+ * AND IS THE SAFER ONE HERE. There is no stale-clock arm for the census: a kept
+ * body would be aged against nothing and rendered as a current count. A count is
+ * the one thing on this strip that reads as fact — "6 done, 0 blocked" carries no
+ * hint of its own age — so when the read fails the honest output is that the
+ * census could not be read this poll, not last poll's numbers wearing this poll's
+ * confidence.
+ *
+ * `shouldRetryOnError: false` because the expected error today is a 404: the GET
+ * has no producer, and a retry ladder against a route that does not exist is
+ * noise that also delays the honest "this build has no census" sentence.
+ */
+export function useSupervisorTickets(): SWRResponse<unknown, unknown> {
+  return useSWR<unknown>(KEY.supervisorTickets, swrFetcher, {
+    refreshInterval: 15_000,
+    revalidateOnFocus: true,
+    keepPreviousData: false,
+    shouldRetryOnError: false,
+  });
+}
+
 export function useHealth(): SWRResponse<HealthState, unknown> {
   return useSWR<HealthState>(KEY.health, swrFetcher, {
     refreshInterval: 30_000,

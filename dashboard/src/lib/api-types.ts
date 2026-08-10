@@ -2062,6 +2062,21 @@ export interface SupervisorState {
   readonly lastRepair: SupervisorRepair | null;
   /** `supervisor_tickets.patch_id` — durable today where the full repair is not. */
   readonly lastPatchId: string | null;
+  /**
+   * THE LAST REPAIR CYCLE'S DECISION — SEPARATE FROM `lastRepair`, AND IT HAS TO
+   * BE.
+   *
+   * `lastRepair` is `null` whenever no patch was applied, and three of
+   * `decideRepairOutcome`'s four arms apply nothing while still constituting a
+   * complete, correct, ledger-written repair cycle. So a cycle cannot be reported
+   * as a member of `lastRepair`: the field it would hang off is null in exactly
+   * the cases that need reporting. See {@link SupervisorRepairCycle}.
+   *
+   * `?: T | null` because no producer sends it (`grep -rn lastRepairCycle
+   * dashboard/server/src` → 0 on 2026-08-10). Absent, `null` and a value are
+   * three different sentences in the panel.
+   */
+  readonly lastRepairCycle?: SupervisorRepairCycle | null;
   /** Never blank. */
   readonly nextAction: string;
   readonly nextActionAt: string | null;
@@ -2113,4 +2128,257 @@ export interface SupervisorAttemptView {
   readonly n: number;
   readonly at: string;
   readonly problems: readonly string[];
+}
+
+/* ------------------------------------------------------------------ */
+/* THE TICKET CENSUS — `GET /api/supervisor/tickets`                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * WHY THIS ROUTE HAS TO EXIST, IN ONE MEASUREMENT.
+ *
+ * `GET /api/supervisor` sends `ticket` (the ONE claimed ticket, or null) and
+ * `queueDepth`, which `http.ts:1256` computes as
+ * `tickets.filter((t) => t.state === "queued").length`. So when the loop has
+ * finished the night's work, both routes agree: nothing is claimed, nothing is
+ * queued. THE STRIP RENDERS `IDLE / idle, queue empty` — and it renders the
+ * BYTE-IDENTICAL row when every ticket ended `blocked`. The owner comes back
+ * after eight hours to a sentence that cannot tell "it worked" from "it all
+ * died", which is a confident statement the page has no data for: the same class
+ * as the preview card that announced a healthy backend was down.
+ *
+ * The distinction is not derivable from `SupervisorState`. `done`, `blocked` and
+ * `abandoned` are all "not queued and not claimed", and no field on that body
+ * counts them. It needs the rows, so it needs a second route.
+ *
+ * ─── THIS MIRROR IS WRITTEN AGAINST A ROUTE THAT DOES NOT EXIST YET ───
+ *
+ * Measured 2026-08-10: `grep -rn "supervisor/tickets" dashboard/server/src`
+ * finds only `POST /api/supervisor/tickets` (filing) — there is no GET. The
+ * producer is another lane's work, so the ONLY honest way to declare this is a
+ * shape whose absence is a legible state rather than a crash or an invention.
+ * Hence three rules that the rest of the supervisor block does not follow:
+ *
+ *   1. `tickets` IS THE ONLY REQUIRED FIELD, because it is the only one this
+ *      readout cannot substitute for. A body without it is not a census.
+ *   2. A ROW REQUIRES `ticketKey` AND `state` AND NOTHING ELSE. Those two are
+ *      what the count is computed from; every other column of
+ *      `supervisor_tickets` is declared `?: T | null` — see rule 3.
+ *   3. `?: T | null` IS DELIBERATE AND IS THE ONE PLACE THIS FILE BREAKS ITS OWN
+ *      "`T | null`, NEVER `T?`" RULE. That rule exists so that "the supervisor
+ *      says there is no run" cannot collapse into "the field is missing", and it
+ *      is right for a field the server ALWAYS sends. These fields have no server
+ *      at all yet, so there are THREE states, not two: the key is missing (this
+ *      build's route does not carry the column), the key is present and `null`
+ *      (the column is NULL for this ticket), or a value. `validateCensus` in
+ *      `lib/supervisor.ts` distinguishes all three and publishes the missing keys
+ *      in `absentFields`, which the panel renders as "this build does not report
+ *      X" — never as `null`, and never as a zero count.
+ *
+ * WHY NOT REQUIRE THE LOT AND LET IT GO AMBER UNTIL THE PRODUCER LANDS. Because
+ * that is the failure recorded at the top of this block: a mirror that disagreed
+ * with the wire in fifteen fields painted amber `MALFORMED` on every route, and
+ * "nothing crashed, and nothing was readable either". A census route that lands
+ * carrying eight of twelve columns must produce a WORKING count with four named
+ * gaps, not a blank strip.
+ */
+export interface SupervisorTicketRow {
+  /** `supervisor_tickets.ticket_key`. The primary key; never null. */
+  readonly ticketKey: string;
+  /**
+   * `supervisor_tickets.state` — one of
+   * `queued|claimed|running|repairing|waiting|blocked|done|abandoned`.
+   *
+   * TYPED `string`, NOT THE UNION, for the same reason `SupervisorTicket.state`
+   * is: the server types its own as `string` so that a ninth state does not turn
+   * a valid body into a client type error. `censusCounts` in `lib/supervisor.ts`
+   * buckets the eight it knows and counts anything else as `unrecognised`, which
+   * is reported rather than silently dropped into "done".
+   */
+  readonly state: string;
+  readonly title?: string | null;
+  /** `supervisor_tickets.model_id`. */
+  readonly modelId?: string | null;
+  readonly attemptNo?: number | null;
+  readonly maxAttempts?: number | null;
+  /**
+   * `supervisor_tickets.next_action` — THE ONE STRING THAT TELLS THE OWNER WHAT
+   * TO RUN BY HAND, and today it exists only in the database.
+   *
+   * NOT THE SAME FIELD AS `SupervisorState.nextAction`. That one is the
+   * SUPERVISOR's next action, composed per poll by `composeSupervisorState`, and
+   * the strip has rendered it since the first version. This one is the column on
+   * the blocked ticket's own row (`db.ts:889`, `TEXT NOT NULL` with no default —
+   * its schema comment calls that "THE ANTI-SIGNATURE-DEFECT" choice, because a
+   * ticket that cannot say what to do next is a dead end filed as a record). A
+   * blocked ticket carries `NO_REPAIR_DRIVER` plus a sentence, and until this
+   * route exists no screen in the app can show it.
+   */
+  readonly nextAction?: string | null;
+  readonly nextActionAt?: string | null;
+  readonly enqueuedAt?: string | null;
+  readonly updatedAt?: string | null;
+  /**
+   * THE RUN THIS TICKET IS ON, OR THE LAST ONE IT HAD — one field, because the
+   * reader's question is "which run do I open".
+   *
+   * MIRRORED FROM `ApiSupervisorTicketRow`, WHICH REPLACED THIS MIRROR'S FIRST
+   * GUESS. The first version of this file declared `lastRunId`; the wire that
+   * landed sends `runId` and `currentRunId`, and `lastRunId` has never been on it.
+   * Nothing dereferenced the wrong name, so it crashed nothing and was drift all
+   * the same — the exact shape of the fifteen-field failure recorded at the top of
+   * this block, caught this time because the mirror was reconciled against the
+   * server's declaration rather than against the design note.
+   */
+  readonly runId?: string | null;
+  /** Null once the run settles. Kept apart from `runId` so "running now" is decidable. */
+  readonly currentRunId?: string | null;
+  /** `last_class` — the failure class the classifier settled on. */
+  readonly lastClass?: string | null;
+  /** `last_defect_id` — durable today where the full defect record is not. */
+  readonly lastDefectId?: string | null;
+  /** `patch_id` — set when a repair was applied for this ticket. */
+  readonly patchId?: string | null;
+  readonly attachments?: SupervisorTicketAttachments | null;
+}
+
+/**
+ * WHAT ONE TICKET FILED AND WHETHER ITS RUN ACTUALLY GOT IT — mirrored from
+ * `ApiTicketAttachments`.
+ *
+ * `carriedIntoRun` IS THREE-VALUED AND THE THREE VALUES ARE NOT NEGOTIABLE:
+ * `null` means there was nothing to carry (or no run yet), `false` means the
+ * ticket's digests are NOT all in the run's manifest — the attachments were
+ * DROPPED — and `true` means every one arrived. A two-valued field would read
+ * `false` for every attachment-free ticket, which is noise on the one field that
+ * answers the question. This readout does not render it yet; it is declared and
+ * validated so that a body carrying it cannot make a consumer throw the day
+ * something does.
+ */
+export interface SupervisorTicketAttachments {
+  readonly manifest?: string | null;
+  readonly images?: number | null;
+  readonly documents?: number | null;
+  readonly capture?: boolean | null;
+  readonly motion?: boolean | null;
+  readonly carriedIntoRun?: boolean | null;
+}
+
+/**
+ * THE CENSUS ROUTE'S OWN ARM CHECK — mirrored from `ApiSupervisorTicketsProbe`.
+ *
+ * OPTIONAL, WHICH IS ITSELF A REPORTED STATE. When the key is absent the panel
+ * says the census route reports no arm check; it does NOT say the check passed,
+ * and it does not invent `armed: true`. The route that landed always sends one,
+ * so absence here now means DRIFT rather than an early version — and the panel
+ * printing "reports no arm check of its own" over a route that ships one is
+ * exactly the visible failure to want.
+ *
+ * THERE IS NO `wired` AND NO `unsourced`. The first version of this mirror had
+ * both, copied from `SupervisorProbe`, and the wire carries neither. They are
+ * removed rather than left optional: a field nothing sends is drift whether or not
+ * anything dereferences it.
+ */
+export interface SupervisorCensusProbe {
+  readonly ticketsSeen?: number | null;
+  /** Tickets whose `references.json` exists and would not parse. */
+  readonly manifestsUnreadable?: number | null;
+  /** Tickets whose attachments did NOT reach their run — `carriedIntoRun: false`. */
+  readonly attachmentsDropped?: number | null;
+  readonly armed?: boolean | null;
+  readonly armNote?: string | null;
+  /** The server's own clock, so a frozen tab cannot render as a live reading. */
+  readonly at?: string | null;
+}
+
+/**
+ * `GET /api/supervisor/tickets`. Oldest first — `enqueued_at ASC`.
+ *
+ * THE CLOCK IS `probe.at` AND THERE IS NO TOP-LEVEL `at`. The first version of
+ * this mirror declared one; `ApiSupervisorTicketsResponse` has exactly two keys.
+ */
+export interface SupervisorTicketCensus {
+  /**
+   * EVERY TICKET ROW, TERMINAL ONES INCLUDED — which is the whole point.
+   *
+   * A route that returned only the OPEN tickets would answer `[]` for both of the
+   * states this census exists to tell apart. If a producer ever paginates it, the
+   * page that omits terminal rows is not a census and the count it yields is a
+   * lie with a number on it.
+   */
+  readonly tickets: readonly SupervisorTicketRow[];
+  readonly probe?: SupervisorCensusProbe | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* THE REPAIR CYCLE'S OWN FIELDS — additive, absent in this build      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * WHAT A REPAIR CYCLE ACTUALLY DECIDED, ON THE WIRE, WHEN SOMETHING WIRES IT.
+ *
+ * `SupervisorRepair` above carries `{patchId, filesChanged, appliedAt,
+ * rerunPassed}` — four fields that all presuppose A PATCH WAS APPLIED. Measured
+ * 2026-08-10, that presupposition is false for every outcome this repository can
+ * currently produce: `tools/repair/supervisor-cycle.mjs`'s `decideRepairOutcome`
+ * returns `NO_PATCH_AUTHOR` (design §5.3 records that the patch author is
+ * deliberately not built), `NO_SANDBOX` (the prover refuses the working tree) or
+ * `ALREADY_RULED_OUT` (the ledger has seen this proposal fail) — and exactly one
+ * of its four arms, `applied`, produces a patch id.
+ *
+ * So a panel that renders `lastRepair === null ? "no patch has been applied"`
+ * reads IDENTICALLY for "no repair was ever attempted" and "a repair ran, was
+ * REFUSED on sight because the ledger already ruled that proposal out, and wrote
+ * a row saying so". The second is the loop working correctly. Reporting it as
+ * nothing is the absence-as-success defect at the one place the owner would look
+ * to find out whether the machine can fix itself.
+ *
+ * EVERY FIELD HERE IS `?: T | null`, and the reason is rule 3 of the census
+ * block: none of them is on the wire in this build (`composeSupervisorState`
+ * sends `lastRepair: null` and `probe.unsourced` names `lastRepair`). Requiring
+ * them would turn today's real body malformed — the fifteen-field amber again.
+ * `repairCycleSummary` in `lib/supervisor.ts` composes the sentence and names the
+ * fields that were missing, so a half-landed producer reads as a half-landed
+ * producer.
+ *
+ * THE NAMES ARE TAKEN FROM THE PRODUCER, NOT INVENTED HERE. `verdict` is
+ * `cycle.mjs`'s ledger verdict (`ACCEPTED` | `REFUSED` | `COULD_NOT_REPRODUCE` |
+ * `NO_PATCH_AUTHOR`); `outcomeKind` and `outcomeCode` are `decideRepairOutcome`'s
+ * `kind` and `code`. If the producer lands with different spellings, this mirror
+ * is wrong and the panel will say the fields are absent — which is the failure
+ * mode to want, because it is visible.
+ */
+export interface SupervisorRepairCycle {
+  /** The defect signature this cycle was addressed to. */
+  readonly signature?: string | null;
+  /** `applied` | `refused` | `inconclusive` — `decideRepairOutcome().kind`. */
+  readonly outcomeKind?: string | null;
+  /** `NO_PATCH_AUTHOR` | `NO_SANDBOX` | `ALREADY_RULED_OUT` | … */
+  readonly outcomeCode?: string | null;
+  /** The ledger verdict the row was written under, or null when no row was written. */
+  readonly verdict?: string | null;
+  /** The proposal's content fingerprint, or null when there was no proposal. */
+  readonly fingerprint?: string | null;
+  /**
+   * WAS THE TREE CHANGED. `false` IS NOT `null` AND NEITHER IS ABSENT.
+   *
+   * `false` means the cycle ran and applied nothing — the honest answer for three
+   * of the four arms. `null` means the producer sent the field and does not know.
+   * Absent means nothing reports it, and the panel must not print either of the
+   * other two over that.
+   */
+  readonly applied?: boolean | null;
+  /**
+   * WHAT TO RESTORE TO IF THE PATCH HAS TO COME OUT — a commit sha, a stash ref,
+   * or a path to the saved copy.
+   *
+   * THE FIELD THE OWNER NEEDS AND THE ONE MOST LIKELY TO BE MISSING. An applied
+   * patch with no rollback point is not a repair, it is an edit; the panel prints
+   * that judgement in those words rather than leaving the cell blank, because a
+   * blank cell reads as "fine".
+   */
+  readonly rollbackPoint?: string | null;
+  /** The cycle's own sentence, if the producer composes one. */
+  readonly detail?: string | null;
+  readonly at?: string | null;
 }

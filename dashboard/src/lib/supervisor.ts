@@ -31,7 +31,10 @@
 import type {
   SupervisorAttemptView,
   SupervisorRepair,
+  SupervisorRepairCycle,
   SupervisorState,
+  SupervisorTicketCensus,
+  SupervisorTicketRow,
 } from "./api-types";
 
 /* ------------------------------------------------------------------ */
@@ -228,7 +231,46 @@ export function attemptProgress(
  * separates "cannot see" from "wedged"; the word separates the two ways of not
  * seeing.
  */
-export type SupervisorLiveness = "running" | "idle" | "stuck" | "unreachable" | "malformed";
+/**
+ * `blocked` IS THE SIXTH, AND IT IS THE ONE THE OWNER CAME BACK TO AT 7AM AND
+ * COULD NOT SEE (added 2026-08-10).
+ *
+ * THE MEASURED GAP. When the loop finishes the night's work, `ticket` is null and
+ * `queueDepth` is 0. When every ticket dies at `blocked`, `ticket` is null and
+ * `queueDepth` is 0 — `http.ts:1256` counts only rows in state `queued`. Both
+ * rendered `IDLE / idle, queue empty`, byte for byte. Eight hours of the owner's
+ * subscription window, and the readout was identical whether it worked or
+ * everything died. That is not a missing feature, it is a CONFIDENT STATEMENT THE
+ * PAGE HAS NO DATA FOR, the same class as the preview card that announced a
+ * healthy backend was down.
+ *
+ * WHY IT IS A LIVENESS VALUE AND NOT A DIFFERENT HEADLINE UNDER `idle`.
+ * `armSupervisorStrip` proves the strip is not blind by requiring N KNOWN INPUTS
+ * TO PRODUCE N DIFFERENT ANSWERS, and the answers it compares are liveness
+ * strings. A distinction that exists only in prose is a distinction the arm check
+ * cannot measure — which would be this repository's signature defect committed
+ * inside the fix for it. So the failure ending gets its own word, the arm check
+ * counts six, and the collapse of `blocked` onto `idle` makes the arm say BLIND.
+ *
+ * IT IS RED, NOT AMBER, AND THAT IS THE ONE PLACE THIS TYPE'S COLOUR RULE READS
+ * BACKWARDS AT FIRST GLANCE. Amber means THIS PAGE CANNOT SEE. Here the page sees
+ * perfectly and what it sees is that the work failed: the owner has to act, on the
+ * RUN, which is what red has meant since the first version. Painting a legible
+ * failure amber would be the inverse invention — reporting a reading problem over
+ * a real defect.
+ *
+ * WHAT IT DOES NOT CLAIM. `blocked` says the queue reached its end with failures
+ * in it. It says NOTHING about why, and it cannot: the failure class lives on the
+ * ticket row. The sentence carries the blocked ticket's own `next_action`, which
+ * is the string that tells the owner what to run by hand.
+ */
+export type SupervisorLiveness =
+  | "running"
+  | "idle"
+  | "stuck"
+  | "blocked"
+  | "unreachable"
+  | "malformed";
 
 /**
  * HOW LONG A LIVE RUN MAY BE SILENT BEFORE THE STRIP SAYS `stuck`.
@@ -273,6 +315,31 @@ export interface SupervisorReadingInput {
    */
   /** Whatever the fetch threw, or `null`. A non-null error means THIS read failed. */
   readonly error: unknown;
+  /**
+   * `GET /api/supervisor/tickets`, RAW AND UNPARSED — and `unknown` is the whole
+   * safety argument, not laziness about a type.
+   *
+   * The removed `attempts` input above is the precedent: the only honest way for a
+   * component to fill it was `data.body.attempts`, an UNVALIDATED field, and
+   * `attemptProgress` then called `.map` on it INSIDE this function, before the arm
+   * written to catch a wrong-shaped body could answer. A pre-parsed
+   * `SupervisorTicketCensus` handed in from `supervisor-strip.tsx` would rebuild
+   * that path with `censusCounts`'s `for…of` as the throw site. So the body arrives
+   * as it left the socket and {@link readCensus} is the only thing that reads it.
+   *
+   * `undefined` (SWR before the first response) and `null` are both "no census",
+   * and here — unlike everywhere else in this file — they are NOT distinguished:
+   * the distinction would be between two shapes of nothing arriving, and neither
+   * says anything about the queue.
+   */
+  readonly censusBody: unknown;
+  /**
+   * Whatever the census fetch threw. TODAY'S EXPECTED VALUE IS A 404: the GET has
+   * no producer (measured 2026-08-10 — `dashboard/server/src` serves only the
+   * POST), so the reading must degrade to a named absence rather than to an error
+   * banner about a route the owner never asked for.
+   */
+  readonly censusError: unknown;
   /**
    * WHEN THIS CLIENT RECEIVED THE BODY — `null` before the first one lands.
    *
@@ -329,6 +396,18 @@ export interface SupervisorReading {
    * that bought that guarantee.
    */
   readonly snapshot: SupervisorState | null;
+  /**
+   * THE TICKET CENSUS AS READ THIS POLL — ALWAYS PRESENT, NEVER NULL.
+   *
+   * The field is not nullable even when there is no census, and that is a
+   * deliberate departure from `snapshot` above. A nullable field is one every
+   * consumer must branch on and one some consumer will forget; `census.availability`
+   * plus `census.note` is a legible state for all four answers, "nothing arrived"
+   * included. Making it null when the route 404s would leave the panel rendering an
+   * empty region for a missing census — the absence-as-nothing defect that this
+   * whole census exists to remove.
+   */
+  readonly census: CensusReading;
 }
 
 function errorText(error: unknown): string {
@@ -600,6 +679,42 @@ function malformedReasons(snapshot: SupervisorState): string | null {
   }
   checkStringOrNull(wrong, record, "lastPatchId");
 
+  /*
+   * `lastRepairCycle` — CHECKED IF PRESENT, NOT REQUIRED, AND THE ASYMMETRY WITH
+   * EVERY FIELD ABOVE IT IS THE POINT (added 2026-08-10).
+   *
+   * `grep -rn lastRepairCycle dashboard/server/src` → 0. Requiring it would turn
+   * TODAY'S REAL BODY malformed, which is the fifteen-field amber recorded in the
+   * docblock above — "Nothing crashed, and nothing was readable either" — and it
+   * would arrive as a regression in the very pass that added a field to help.
+   * `tests/supervisor-strip.unit.spec.ts`'s golden-body test is the gate that
+   * catches that: if the body `composeSupervisorState` actually produces stops
+   * classifying three ways, this block is wrong.
+   *
+   * WHAT IS STILL ENFORCED. If the key IS there it must be an object or null, and
+   * every member must be its declared type or null — so the invariant survives:
+   * a body that clears this function cannot make a consumer of `reading.snapshot`
+   * throw. `repairCycleSummary` reads eight fields off this object and calls
+   * `.trim()` on four of them; a `rollbackPoint` that arrived as an object would be
+   * the `lastDefectSignature.slice` crash with a new field name.
+   */
+  const cycle = record["lastRepairCycle"];
+  if (!isAbsent(record, "lastRepairCycle") && cycle !== null) {
+    if (!isRecord(cycle)) {
+      wrong.push(`lastRepairCycle is ${typeName(cycle)} rather than an object or null`);
+    } else {
+      checkOptionalString(wrong, cycle, "lastRepairCycle.signature", "signature");
+      checkOptionalString(wrong, cycle, "lastRepairCycle.outcomeKind", "outcomeKind");
+      checkOptionalString(wrong, cycle, "lastRepairCycle.outcomeCode", "outcomeCode");
+      checkOptionalString(wrong, cycle, "lastRepairCycle.verdict", "verdict");
+      checkOptionalString(wrong, cycle, "lastRepairCycle.fingerprint", "fingerprint");
+      checkOptionalBoolean(wrong, cycle, "lastRepairCycle.applied", "applied");
+      checkOptionalString(wrong, cycle, "lastRepairCycle.rollbackPoint", "rollbackPoint");
+      checkOptionalString(wrong, cycle, "lastRepairCycle.detail", "detail");
+      checkOptionalString(wrong, cycle, "lastRepairCycle.at", "at");
+    }
+  }
+
   checkNumber(wrong, record, "queueDepth");
   checkNumber(wrong, record, "queuedRuns");
   checkString(wrong, record, "nextAction");
@@ -643,6 +758,646 @@ function malformedReasons(snapshot: SupervisorState): string | null {
   return wrong.length === 0 ? null : wrong.join("; ");
 }
 
+/* ------------------------------------------------------------------ */
+/* THE OPTIONAL-FIELD CHECKS — `absent` IS A THIRD ANSWER, NOT A NULL   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * IS THE KEY MISSING — as opposed to present and `null`.
+ *
+ * `in` RATHER THAN `=== undefined`, and then `undefined` as well, which is not
+ * belt-and-braces. `{"x": null}` and `{}` are different bodies and this whole
+ * block exists to keep them apart, so `in` is the primitive that answers the
+ * question. The `undefined` clause is for a JavaScript caller — a test literal or
+ * a mirror with `x: undefined` — because `JSON.stringify` DELETES such a key, so
+ * the value a producer would actually put on the wire is absent. Treating it as
+ * present would make a unit fixture disagree with the byte stream it stands for.
+ */
+function isAbsent(record: Record<string, unknown>, key: string): boolean {
+  return !(key in record) || record[key] === undefined;
+}
+
+/**
+ * `T | null` IF THE KEY IS THERE, AND NOTHING AT ALL IF IT IS NOT.
+ *
+ * WHY THESE EXIST BESIDE `checkString` AND DO NOT REPLACE IT. `malformedReasons`
+ * rejects `absent` wherever `SupervisorState` says `| null`, and that is correct
+ * for a field the server has always sent: treating a dropped field as `null` would
+ * report a fact about the supervisor that nothing transmitted. But a field whose
+ * PRODUCER DOES NOT EXIST YET cannot be required, and the reason is measured
+ * rather than aesthetic — a mirror that demanded fifteen fields the wire did not
+ * send painted amber `MALFORMED` on every route in the app, and the note on
+ * `malformedReasons` records the outcome exactly: "Nothing crashed, and nothing was
+ * readable either."
+ *
+ * So an unlanded field is checked IF PRESENT and named as absent otherwise. The
+ * naming is not optional: an absent column that produced no sentence would be
+ * indistinguishable from a column that is there and null, which is the same
+ * absence-as-a-value defect one layer down.
+ */
+function checkOptionalString(
+  wrong: string[],
+  record: Record<string, unknown>,
+  path: string,
+  key = path,
+): void {
+  if (isAbsent(record, key)) return;
+  const value = record[key];
+  if (value !== null && typeof value !== "string") {
+    wrong.push(`${path} is ${typeName(value)}, not a string or null`);
+  }
+}
+
+function checkOptionalNumber(
+  wrong: string[],
+  record: Record<string, unknown>,
+  path: string,
+  key = path,
+): void {
+  if (isAbsent(record, key)) return;
+  const value = record[key];
+  if (value === null) return;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    wrong.push(
+      `${path} is ${
+        typeof value === "number" ? "not a finite number" : `${typeName(value)}, not a number or null`
+      }`,
+    );
+  }
+}
+
+function checkOptionalBoolean(
+  wrong: string[],
+  record: Record<string, unknown>,
+  path: string,
+  key = path,
+): void {
+  if (isAbsent(record, key)) return;
+  const value = record[key];
+  if (value !== null && typeof value !== "boolean") {
+    wrong.push(`${path} is ${typeName(value)}, not a boolean or null`);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* THE TICKET CENSUS — "IT FINISHED" vs "IT ALL DIED"                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE EIGHT STATES, BUCKETED — AND THE NINTH, WHICH IS NOT BUCKETED.
+ *
+ * `queued` is its own bucket rather than part of `inFlight`, because the existing
+ * ARM 6 already owns "running with a backlog and claiming nothing" and reads
+ * `queueDepth` — the SAME rows — for it. Two buckets, two arms, no double count.
+ */
+const BACKLOG_STATES: readonly string[] = ["queued"];
+const IN_FLIGHT_STATES: readonly string[] = ["claimed", "running", "repairing", "waiting"];
+const DONE_STATES: readonly string[] = ["done"];
+const FAILED_STATES: readonly string[] = ["blocked", "abandoned"];
+
+export interface CensusCounts {
+  readonly total: number;
+  /** `queued`. */
+  readonly backlog: number;
+  /** `claimed` | `running` | `repairing` | `waiting`. */
+  readonly inFlight: number;
+  /** `done`. */
+  readonly done: number;
+  /**
+   * `blocked` | `abandoned` — AND THE TWO ARE ADDED TOGETHER ON PURPOSE.
+   *
+   * They differ in who gave up (the loop bounded it, or a human/guard removed it)
+   * and not in what the owner has to do about it: a ticket in either state did not
+   * produce the work he asked for. The panel names them separately; the verdict
+   * counts them together, because a headline that said "3 blocked" over a queue
+   * with 3 blocked and 2 abandoned would undercount the failure.
+   */
+  readonly failed: number;
+  /**
+   * STATES THIS BUILD DOES NOT RECOGNISE, NAMED — AND THEY BLOCK EVERY VERDICT.
+   *
+   * THE POINT OF THE FIELD IS THAT AN UNKNOWN STATE IS NOT `done`. The server
+   * types `state` as `string` so a ninth state cannot break the client, which
+   * means a ninth state WILL arrive here one day. Folding it into any bucket
+   * would let a queue full of a state this build has never heard of report
+   * "finished, 9 done" — a confident answer built out of a word it could not
+   * read. So an unrecognised state is counted nowhere, listed here, and
+   * {@link censusVerdictBlocked} refuses to call the queue terminal while the
+   * list is non-empty.
+   */
+  readonly unrecognised: readonly string[];
+}
+
+export function censusCounts(rows: readonly SupervisorTicketRow[]): CensusCounts {
+  let backlog = 0;
+  let inFlight = 0;
+  let done = 0;
+  let failed = 0;
+  const unrecognised = new Set<string>();
+  for (const row of rows) {
+    const state = row.state.trim();
+    if (BACKLOG_STATES.includes(state)) backlog += 1;
+    else if (IN_FLIGHT_STATES.includes(state)) inFlight += 1;
+    else if (DONE_STATES.includes(state)) done += 1;
+    else if (FAILED_STATES.includes(state)) failed += 1;
+    else unrecognised.add(state === "" ? "(blank)" : state);
+  }
+  return {
+    total: rows.length,
+    backlog,
+    inFlight,
+    done,
+    failed,
+    unrecognised: [...unrecognised].sort(),
+  };
+}
+
+/**
+ * MAY THE STRIP CLAIM THE QUEUE REACHED ITS END.
+ *
+ * Every clause is a way of NOT being able to claim it, which is the same shape as
+ * the classifier's arm order: `terminal` is what is left when nothing disqualifies
+ * it, never something asserted.
+ */
+export function censusIsTerminal(counts: CensusCounts): boolean {
+  return (
+    counts.total > 0 &&
+    counts.backlog === 0 &&
+    counts.inFlight === 0 &&
+    counts.unrecognised.length === 0
+  );
+}
+
+/** Exported only so the docblock above can name it. */
+export const censusVerdictBlocked = censusIsTerminal;
+
+/**
+ * WHY THERE IS NO CENSUS, OR WHAT IT SAYS. Four answers, and the first three are
+ * not interchangeable.
+ *
+ * `absent`      no body and no error — the first paint, or a route that has not
+ *               answered yet. NOT an error and not a fact about the queue.
+ * `unreachable` the read FAILED. Today's expected value: `GET
+ *               /api/supervisor/tickets` does not exist (measured 2026-08-10 —
+ *               only the POST does), so this is a 404 and the panel says the
+ *               build has no census rather than blaming the loop.
+ * `malformed`   something answered and it is not a census. Waiting will not fix
+ *               it; the sentence names the fields, exactly as the state route's
+ *               own `malformed` does.
+ * `readable`    the rows are usable. ONLY THIS VALUE MAY PRODUCE A VERDICT.
+ */
+export type CensusAvailability = "absent" | "unreachable" | "malformed" | "readable";
+
+export interface CensusReading {
+  readonly availability: CensusAvailability;
+  /** Never blank. Why there is no census, or the one line about the one there is. */
+  readonly note: string;
+  /** Non-null ONLY when `availability === "readable"`. */
+  readonly counts: CensusCounts | null;
+  /** The rows, or empty. Every element is validated when non-empty. */
+  readonly rows: readonly SupervisorTicketRow[];
+  /**
+   * OPTIONAL COLUMNS THE ROUTE SENT ON NO ROW AT ALL, NAMED.
+   *
+   * The client-side `probe.unsourced`: the census route may land carrying eight of
+   * twelve columns, and the four it omits must read as *this build does not report
+   * that* rather than as `null` or as an empty cell. A column present on SOME rows
+   * is not listed — the route carries it and the row genuinely has no value.
+   */
+  readonly absentFields: readonly string[];
+  /** `blocked` and `abandoned` rows, newest `updatedAt` first. */
+  readonly failedRows: readonly SupervisorTicketRow[];
+  /**
+   * The census route's own arm note, or a sentence saying it does not report one.
+   *
+   * NEVER BLANK, AND NEVER OPTIMISTIC. An absent probe reads as "this route reports
+   * no arm check" — it does not read as armed, because a route that cannot say
+   * whether it can see its own rows is the state a probe exists to expose.
+   */
+  readonly probeNote: string;
+}
+
+/**
+ * EVERY COLUMN BEYOND THE TWO REQUIRED ONES, IN THE ORDER THE PANEL NAMES THEM —
+ * and this list is the mirror's drift detector, not a wish list.
+ *
+ * RECONCILED AGAINST `ApiSupervisorTicketRow` ON 2026-08-10, AFTER THE ROUTE
+ * LANDED MID-ROUND. The first version of this list carried `lastRunId`, which the
+ * wire has never sent, and was missing `modelId`, `runId`, `currentRunId`,
+ * `enqueuedAt` and `attachments`, which it does. Nothing dereferenced the wrong
+ * name so nothing crashed — and `absentFields` would have printed "this build's
+ * census does not carry lastRunId" for ever, about a column that was never coming.
+ * That is the fifteen-field mirror failure in its quiet form: a panel confidently
+ * naming a gap that does not exist.
+ *
+ * The route that landed sends ALL of these, so `absentFields` is EMPTY against a
+ * healthy server, and a name appearing in it means the wire dropped a column.
+ */
+const ROW_OPTIONAL_FIELDS: readonly string[] = [
+  "title",
+  "modelId",
+  "attemptNo",
+  "maxAttempts",
+  "nextAction",
+  "nextActionAt",
+  "enqueuedAt",
+  "updatedAt",
+  "runId",
+  "currentRunId",
+  "lastClass",
+  "lastDefectId",
+  "patchId",
+  "attachments",
+];
+
+/**
+ * IS THIS BODY A CENSUS — the same contract as {@link malformedReasons} and the
+ * same invariant: a body that clears this cannot make a consumer of
+ * `reading.census.rows` throw, whatever it reads, because every field is the type
+ * the type says it is.
+ *
+ * `tickets` IS THE ONLY REQUIRED KEY, AND A ROW REQUIRES ONLY `ticketKey` AND
+ * `state`. See rule 3 on {@link SupervisorTicketRow}: this mirror is written
+ * against a route that does not exist, so requiring the columns a first version
+ * might omit would turn a working count into a blank panel. The two that ARE
+ * required are the two the count cannot be computed without.
+ *
+ * Returns `null` on a readable body — never `true`, so a caller cannot read a
+ * truthy failure as a pass.
+ */
+function censusProblems(body: unknown): string | null {
+  if (!isRecord(body)) return `the body is ${typeName(body)}, not an object`;
+  const wrong: string[] = [];
+  const tickets = body["tickets"];
+  if (!Array.isArray(tickets)) {
+    wrong.push(`tickets is ${typeName(tickets)}, not an array`);
+  } else {
+    for (const [index, entry] of tickets.entries()) {
+      const at = `tickets[${String(index)}]`;
+      if (!isRecord(entry)) {
+        wrong.push(`${at} is ${typeName(entry)}, not an object`);
+        continue;
+      }
+      checkString(wrong, entry, `${at}.ticketKey`, "ticketKey");
+      checkString(wrong, entry, `${at}.state`, "state");
+      checkOptionalString(wrong, entry, `${at}.title`, "title");
+      checkOptionalString(wrong, entry, `${at}.modelId`, "modelId");
+      checkOptionalNumber(wrong, entry, `${at}.attemptNo`, "attemptNo");
+      checkOptionalNumber(wrong, entry, `${at}.maxAttempts`, "maxAttempts");
+      checkOptionalString(wrong, entry, `${at}.nextAction`, "nextAction");
+      checkOptionalString(wrong, entry, `${at}.nextActionAt`, "nextActionAt");
+      checkOptionalString(wrong, entry, `${at}.enqueuedAt`, "enqueuedAt");
+      checkOptionalString(wrong, entry, `${at}.updatedAt`, "updatedAt");
+      checkOptionalString(wrong, entry, `${at}.runId`, "runId");
+      checkOptionalString(wrong, entry, `${at}.currentRunId`, "currentRunId");
+      checkOptionalString(wrong, entry, `${at}.lastClass`, "lastClass");
+      checkOptionalString(wrong, entry, `${at}.lastDefectId`, "lastDefectId");
+      checkOptionalString(wrong, entry, `${at}.patchId`, "patchId");
+      /*
+       * `attachments` — ITS MEMBERS ARE CHECKED EVEN THOUGH THIS READOUT DOES NOT
+       * RENDER THEM YET, and that is the lesson from `lastDefect`: the day a panel
+       * reads `attachments.manifest` and `.slice`s it, an object there is the
+       * `signature.slice is not a function` crash out of RootLayout with a new
+       * field name. The validator is over the CONTRACT, not over the set of
+       * dereferences a component happens to have today.
+       */
+      const attachments = entry["attachments"];
+      if (!isAbsent(entry, "attachments") && attachments !== null) {
+        if (!isRecord(attachments)) {
+          wrong.push(`${at}.attachments is ${typeName(attachments)} rather than an object or null`);
+        } else {
+          checkOptionalString(wrong, attachments, `${at}.attachments.manifest`, "manifest");
+          checkOptionalNumber(wrong, attachments, `${at}.attachments.images`, "images");
+          checkOptionalNumber(wrong, attachments, `${at}.attachments.documents`, "documents");
+          checkOptionalBoolean(wrong, attachments, `${at}.attachments.capture`, "capture");
+          checkOptionalBoolean(wrong, attachments, `${at}.attachments.motion`, "motion");
+          checkOptionalBoolean(
+            wrong,
+            attachments,
+            `${at}.attachments.carriedIntoRun`,
+            "carriedIntoRun",
+          );
+        }
+      }
+    }
+  }
+
+  const probe = body["probe"];
+  if (!isAbsent(body, "probe") && probe !== null) {
+    if (!isRecord(probe)) {
+      wrong.push(`probe is ${typeName(probe)} rather than an object or null`);
+    } else {
+      checkOptionalNumber(wrong, probe, "probe.ticketsSeen", "ticketsSeen");
+      checkOptionalNumber(wrong, probe, "probe.manifestsUnreadable", "manifestsUnreadable");
+      checkOptionalNumber(wrong, probe, "probe.attachmentsDropped", "attachmentsDropped");
+      checkOptionalBoolean(wrong, probe, "probe.armed", "armed");
+      checkOptionalString(wrong, probe, "probe.armNote", "armNote");
+      checkOptionalString(wrong, probe, "probe.at", "at");
+    }
+  }
+
+  return wrong.length === 0 ? null : wrong.join("; ");
+}
+
+/**
+ * THE CENSUS ROUTE'S ARM CHECK, RENDERED — AND NEVER GUESSED AT.
+ *
+ * `ApiSupervisorTicketsProbe` always ships, so an absent probe means DRIFT, not an
+ * early version, and the sentence for it says the route reports none. It must never
+ * read as armed: a readout whose probe defaulted to healthy is the a913c871 watcher
+ * that "would have printed a healthy seat forever after the seat died".
+ *
+ * `manifestsUnreadable` AND `attachmentsDropped` ARE PRINTED WHEN THEY ARE NON-ZERO
+ * AND SILENT WHEN THEY ARE ZERO — the one place in this file where an absence is
+ * allowed to be silent, because the probe has explicitly reported the number and
+ * zero is the answer. That is different in kind from a field nothing sent.
+ */
+function censusProbeNote(census: SupervisorTicketCensus): string {
+  const probe = census.probe;
+  if (probe === undefined || probe === null) {
+    /*
+     * THIS IS DRIFT, NOT AN EARLY VERSION, AND THE SENTENCE HAS TO SAY SO
+     * (corrected 2026-08-10, same pass as the `lastRunId` fix and for the same
+     * reason). `ApiSupervisorTicketsResponse` has exactly two keys and `probe` is
+     * one of them — the shipping route ALWAYS sends it. An earlier draft of this
+     * sentence read as a benign build limitation, which is the `lastRunId` failure
+     * inverted: a panel calmly describing as normal a field the wire has dropped.
+     */
+    return "the census route sent NO arm check, and `ApiSupervisorTicketsResponse` always carries one — so a field has been dropped between the route and this page. Nothing states whether the route can see the rows it is counting, and the counts above are this page's arithmetic on whatever arrived.";
+  }
+  const number = (value: number | null | undefined): string =>
+    value === undefined || value === null ? "not reported" : String(value);
+  const armed = probe.armed === undefined || probe.armed === null ? "not reported" : String(probe.armed);
+  const note =
+    probe.armNote === undefined || probe.armNote === null || probe.armNote.trim() === ""
+      ? "the route sent no arm note"
+      : probe.armNote;
+  const alarms: string[] = [];
+  if (typeof probe.manifestsUnreadable === "number" && probe.manifestsUnreadable > 0) {
+    alarms.push(`${String(probe.manifestsUnreadable)} ticket manifest(s) would not parse`);
+  }
+  if (typeof probe.attachmentsDropped === "number" && probe.attachmentsDropped > 0) {
+    alarms.push(
+      `${String(probe.attachmentsDropped)} ticket(s) had attachments that did NOT reach their run`,
+    );
+  }
+  return `census probe: armed=${armed}, ${number(probe.ticketsSeen)} row(s) read, composed ${
+    probe.at === undefined || probe.at === null ? "at an unreported time" : probe.at
+  } — ${note}${alarms.length === 0 ? "" : `. ${alarms.join("; ")}.`}`;
+}
+
+/**
+ * THE CENSUS, READ ONCE, BEFORE ANY ARM — the same order and for the same reason
+ * as the state body. See the note on {@link SupervisorReadingInput}: the
+ * pre-parsed `attempts` input was REMOVED from this module because a caller could
+ * only fill it from an unvalidated field, and `.map` then ran on it INSIDE the
+ * function whose job was to survive a wrong-shaped body. A pre-parsed census
+ * handed in from a component would rebuild that path exactly, so the raw body
+ * comes in and the validation happens here.
+ *
+ * THERE IS NO SECOND STALE CLOCK, AND THAT IS A DELIBERATE LIMIT. The state
+ * reading is aged against its own receipt time; the census is not. If the census
+ * read FAILS this poll it is reported as unreachable rather than as last poll's
+ * numbers — `useSupervisorTickets` turns `keepPreviousData` off for that reason —
+ * so the failure mode a second clock would catch (a kept body rendered as
+ * current) cannot arise. What is NOT caught: a census that keeps answering
+ * successfully with rows it read minutes ago. The route would have to send `at`
+ * and something would have to age against it; the field is declared and nothing
+ * ages against it today.
+ */
+function readCensus(body: unknown, error: unknown): CensusReading {
+  const blank = {
+    counts: null,
+    rows: [] as readonly SupervisorTicketRow[],
+    absentFields: [] as readonly string[],
+    failedRows: [] as readonly SupervisorTicketRow[],
+    probeNote: "no census reading, so no census arm check",
+  };
+
+  if (error !== null && error !== undefined) {
+    return {
+      ...blank,
+      availability: "unreachable",
+      note: `GET /api/supervisor/tickets did not answer: ${errorText(
+        error,
+      )}. Until it does, this page cannot tell a queue that finished from a queue that all died — both leave nothing claimed and nothing queued.`,
+    };
+  }
+  if (body === undefined || body === null) {
+    return {
+      ...blank,
+      availability: "absent",
+      note: "no ticket census has arrived yet, so the count of finished and blocked tickets is unknown. This is not a statement that the queue is empty.",
+    };
+  }
+
+  const shape = censusProblems(body);
+  if (shape !== null) {
+    return {
+      ...blank,
+      availability: "malformed",
+      note: `GET /api/supervisor/tickets answered with a body this page cannot read, so there is no census — the queue itself may be fine. Waiting will not fix this one. Fields: ${shape}`,
+    };
+  }
+
+  const census = body as SupervisorTicketCensus;
+  const rows = census.tickets;
+  const counts = censusCounts(rows);
+  const record = body as Record<string, unknown>;
+  const rawRows = (record["tickets"] as readonly Record<string, unknown>[]);
+  const absentFields = ROW_OPTIONAL_FIELDS.filter(
+    (field) => rawRows.length > 0 && rawRows.every((row) => isAbsent(row, field)),
+  );
+  const failedRows = rows
+    .filter((row) => FAILED_STATES.includes(row.state.trim()))
+    /*
+     * NEWEST FIRST, AND A ROW WITH NO `updatedAt` SORTS LAST RATHER THAN FIRST.
+     * The panel shows the first one's `next_action` as the sentence to act on, and
+     * a row whose clock the route did not send has no claim to being the newest —
+     * putting it at the head would let a missing column decide which failure the
+     * owner reads about.
+     */
+    .slice()
+    .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
+
+  return {
+    availability: "readable",
+    note:
+      counts.total === 0
+        ? "the census answered and holds no ticket rows at all."
+        : `${String(counts.total)} ticket row(s): ${String(counts.done)} done, ${String(
+            counts.failed,
+          )} blocked/abandoned, ${String(counts.backlog)} queued, ${String(
+            counts.inFlight,
+          )} in flight${
+            counts.unrecognised.length === 0
+              ? ""
+              : `, and ${String(counts.unrecognised.length)} state(s) this build does not recognise (${counts.unrecognised.join(", ")})`
+          }.`,
+    counts,
+    rows,
+    absentFields,
+    failedRows,
+    probeNote: censusProbeNote(census),
+  };
+}
+
+/**
+ * THE SENTENCE THAT TELLS THE OWNER WHAT TO RUN BY HAND — item B of the brief,
+ * and today it exists only in `supervisor_tickets.next_action`.
+ *
+ * NOT `SupervisorState.nextAction`. That is the SUPERVISOR's next action and the
+ * strip has rendered it since the first version; this is the column on the failed
+ * ticket's own row, which is where `NO_REPAIR_DRIVER` plus its sentence is filed.
+ * The two were one field name apart and rendering the first over the second would
+ * have looked like the feature working.
+ *
+ * WHEN THE COLUMN IS ABSENT IT SAYS SO AND NAMES WHERE THE STRING LIVES. A blank
+ * would read as "there is nothing to do", which is the opposite of true for a
+ * blocked ticket.
+ */
+export function failedTicketAction(rows: readonly SupervisorTicketRow[]): string {
+  if (rows.length === 0) return "";
+  const withAction = rows.find(
+    (row) => typeof row.nextAction === "string" && row.nextAction.trim() !== "",
+  );
+  if (withAction === undefined) {
+    const anyKeyed = rows.some((row) => row.nextAction !== undefined);
+    return anyKeyed
+      ? `${rows[0]?.ticketKey ?? "the newest failed ticket"} carries no next_action text, so nothing on this page can say what to run by hand — the column is on the wire and empty.`
+      : "the census does not carry next_action, so the one sentence that says what to run by hand is still only in supervisor_tickets.next_action.";
+  }
+  const klass =
+    typeof withAction.lastClass === "string" && withAction.lastClass.trim() !== ""
+      ? ` (${withAction.lastClass})`
+      : "";
+  return `${withAction.ticketKey}${klass} says: ${String(withAction.nextAction)}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* THE REPAIR CYCLE — ITEM C, AND ITS THREE-WAY ABSENCE                */
+/* ------------------------------------------------------------------ */
+
+export interface RepairCycleReading {
+  /**
+   * `unreported` the field is not on the wire — NOBODY REPORTS THIS.
+   * `null`       the route sent the field and says no cycle has run.
+   * `reported`   a cycle ran and this is what it decided.
+   *
+   * THE FIRST TWO ARE NOT THE SAME SENTENCE AND MUST NOT BE. "No repair was
+   * attempted" is a fact about the loop; "nothing reports repairs" is a fact about
+   * this build. Printing the first over the second is how a dashboard tells its
+   * owner the self-repair worked when the self-repair does not exist.
+   */
+  readonly kind: "unreported" | "null" | "reported";
+  /** The 60px cell. Short, never blank. */
+  readonly label: string;
+  /** The sentence. Never blank. */
+  readonly sentence: string;
+}
+
+/**
+ * WHAT THE PANEL SAYS ABOUT THE LAST REPAIR CYCLE, IN ONE PLACE — the same rule
+ * `repairSummary` follows and for the same reason: two components composing this
+ * sentence is how they come to disagree about whether the machine fixed itself.
+ *
+ * IT IS A SECOND FUNCTION AND NOT AN EXTENSION OF `repairSummary`, BECAUSE THEY
+ * ANSWER DIFFERENT QUESTIONS. `repairSummary` describes an APPLIED PATCH, and
+ * `lastRepair` is null unless one was applied. Measured 2026-08-10:
+ * `decideRepairOutcome` in `tools/repair/supervisor-cycle.mjs` has four arms and
+ * exactly one of them applies anything — the other three (`NO_PATCH_AUTHOR`,
+ * `NO_SANDBOX`, `ALREADY_RULED_OUT`) are complete, correct, ledger-written repair
+ * cycles that change no file. So `repairSummary(null)` — "no patch has been
+ * applied" — is true and useless for three quarters of the outcome space, and it
+ * reads identically to "no repair was ever attempted".
+ *
+ * AN APPLIED PATCH WITH NO ROLLBACK POINT IS NAMED AS SUCH RATHER THAN LEFT
+ * BLANK. A blank cell reads as "fine"; the owner's exposure in that case is a tree
+ * edited by a machine with nothing recorded to undo it, which is the one fact he
+ * would want in the first clause.
+ */
+export function repairCycleSummary(
+  cycle: SupervisorRepairCycle | null | undefined,
+): RepairCycleReading {
+  if (cycle === undefined) {
+    return {
+      kind: "unreported",
+      label: "not reported",
+      sentence:
+        "nothing in this build reports a repair cycle: lastRepairCycle is not on the wire. That is NOT the same as 'no repair was attempted' — this page cannot tell those two apart, and says so rather than printing 'none'.",
+    };
+  }
+  if (cycle === null) {
+    return {
+      kind: "null",
+      label: "none",
+      sentence:
+        "the route reports this field and says no repair cycle has run. This is an explicit null, not a missing field: something is watching, and it has nothing to report.",
+    };
+  }
+
+  const missing: string[] = [];
+  const value = (name: keyof SupervisorRepairCycle, shown: string | null): string => {
+    if (shown === null) {
+      missing.push(String(name));
+      return "not reported";
+    }
+    return shown;
+  };
+  const signature = value(
+    "signature",
+    typeof cycle.signature === "string" ? cycle.signature : null,
+  );
+  const verdict = value("verdict", typeof cycle.verdict === "string" ? cycle.verdict : null);
+  const code = value(
+    "outcomeCode",
+    typeof cycle.outcomeCode === "string" ? cycle.outcomeCode : null,
+  );
+  const kindWord = value(
+    "outcomeKind",
+    typeof cycle.outcomeKind === "string" ? cycle.outcomeKind : null,
+  );
+
+  /*
+   * THREE ANSWERS FOR `applied`, AND THE THIRD IS THE ONE A `?:` CHECK WOULD EAT.
+   * `false` is the honest answer for three of the four cycle outcomes; `null` is a
+   * producer that sent the field and does not know; absent is nobody reporting. A
+   * falsy test would print "changed nothing" over all three, which is a claim about
+   * the working tree that two of them do not support.
+   */
+  const applied =
+    cycle.applied === undefined
+      ? "whether the tree was changed is not reported"
+      : cycle.applied === null
+        ? "the producer does not know whether the tree was changed"
+        : cycle.applied
+          ? "A PATCH WAS APPLIED to the tree"
+          : "no file was changed";
+
+  const rollback =
+    typeof cycle.rollbackPoint === "string" && cycle.rollbackPoint.trim() !== ""
+      ? `rollback point ${cycle.rollbackPoint}`
+      : cycle.applied === true
+        ? "AND NO ROLLBACK POINT WAS RECORDED — an applied patch with nothing to restore to is an edit, not a repair"
+        : "no rollback point (nothing was applied to roll back)";
+
+  const detail =
+    typeof cycle.detail === "string" && cycle.detail.trim() !== "" ? ` ${cycle.detail.trim()}` : "";
+
+  return {
+    kind: "reported",
+    label:
+      typeof cycle.verdict === "string" && cycle.verdict.trim() !== ""
+        ? cycle.verdict
+        : typeof cycle.outcomeCode === "string" && cycle.outcomeCode.trim() !== ""
+          ? cycle.outcomeCode
+          : "reported",
+    sentence: `repair cycle on defect ${signature}: ${kindWord}/${code}, ledger verdict ${verdict}; ${applied}, ${rollback}.${detail}${
+      missing.length === 0 ? "" : ` Fields the producer did not send: ${missing.join(", ")}.`
+    }`,
+  };
+}
+
 function seconds(ms: number): string {
   if (ms < 90_000) return `${String(Math.max(0, Math.round(ms / 1000)))}s`;
   const minutes = Math.round(ms / 60_000);
@@ -658,7 +1413,7 @@ function seconds(ms: number): string {
 export function classifySupervisor(
   input: SupervisorReadingInput,
 ): SupervisorReading {
-  const { snapshot, error, receivedAtMs, nowMs } = input;
+  const { snapshot, error, receivedAtMs, nowMs, censusBody, censusError } = input;
 
   /*
    * THE SHAPE IS CHECKED ONCE, HERE, BEFORE ANY ARM — AND THAT MOVE CLOSED A
@@ -687,6 +1442,18 @@ export function classifySupervisor(
    * after validation, is what makes the comparator safe to feed from the wire.
    */
   const comparison = attemptProgress(readable?.attempts ?? []);
+  /*
+   * THE CENSUS IS READ HERE TOO, AND IT IS READ ON EVERY ARM INCLUDING THE ONES
+   * THAT NEVER LOOK AT IT.
+   *
+   * A reading whose `census` were only filled on the arm that uses it would give
+   * the panel two different meanings for the same empty region: "no census" on an
+   * unreachable state route and "no census" on a readable one. The census is
+   * INDEPENDENT of the state route — a 404 on one says nothing about the other —
+   * so it is composed unconditionally and published on `base`, and the detail pane
+   * can report its availability even while the strip is amber about the state.
+   */
+  const census = readCensus(censusBody, censusError);
   const base = {
     quietForMs: null,
     progress: comparison.progress,
@@ -694,6 +1461,7 @@ export function classifySupervisor(
     recurringPaths: comparison.recurringPaths,
     stale: false,
     snapshot: readable,
+    census,
   };
 
   /* ARM 1 — nothing was ever read. */
@@ -875,6 +1643,112 @@ export function classifySupervisor(
         )} ticket(s) queued and has claimed none of them. ${snapshot.nextAction}`,
       };
     }
+
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * ARM 6b — DID THE NIGHT WORK, OR DID EVERY TICKET DIE. THE MEASURED GAP.
+     * ─────────────────────────────────────────────────────────────────────────
+     *
+     * Below this point the state route has told us everything it can: nothing is
+     * claimed and nothing is queued. `SupervisorState` HAS NO FIELD THAT SEPARATES
+     * THE TWO ENDINGS — `done`, `blocked` and `abandoned` are all "not queued and
+     * not claimed", and `queueDepth` counts only `queued` (`http.ts:1256`). So
+     * `IDLE / idle, queue empty` was rendered byte-identically for a queue that
+     * finished and a queue where every ticket terminated at `blocked` with
+     * NO_REPAIR_DRIVER. Eight hours of the owner's subscription window, one
+     * sentence, no way to tell.
+     *
+     * EVERY BRANCH HERE IS GATED ON `availability === "readable"`, WHICH IS WHAT
+     * MAKES THIS ADDITIVE RATHER THAN A REWRITE. The census route does not exist
+     * yet, so every input that predates it — including every existing test in
+     * `supervisor-strip.unit.spec.ts` and the golden body the server actually
+     * composes — falls straight through to the sentence below, unchanged. If an ARM
+     * 6 test goes red, something was changed that should not have been.
+     *
+     * WHAT THIS ARM DELIBERATELY REFUSES TO CLAIM, AND WHY THE REFUSAL IS THE
+     * DESIGN. A census that names rows `claimed` or `running` while `/api/supervisor`
+     * claims no ticket looks like a wedged loop, and it is the strongest signal in
+     * this data — but the two routes are polled 5 s and 15 s apart, so ONE tick of
+     * that disagreement is a race, not a fault, and a red strip on it would be the
+     * false alarm this module exists to prevent (see the preview card that announced
+     * a healthy backend was down). So in-flight rows do not produce a verdict; they
+     * only DISQUALIFY the terminal claim, and the count is reported in the panel
+     * with the disagreement stated in words. Catching a genuinely wedged `claimed`
+     * row needs an age on the census, which the route does not send.
+     */
+    if (census.availability === "readable" && census.counts !== null) {
+      const counts = census.counts;
+      /*
+       * WHO STOPPED IT STAYS IN THE SENTENCE, AND THIS CLAUSE IS THE FIX FOR
+       * SOMETHING ARM 6b BROKE ON ITS WAY IN.
+       *
+       * The fall-through below answers a non-running supervisor with
+       * `${changedBy} set it to ${desired}: ${reason}` — the only place the page
+       * says WHO drained the loop and why. ARM 6b fires regardless of `desired`, so
+       * a drained supervisor whose tickets had all finished lost that clause: the
+       * row read "queue finished · 6 done" with no hint that nothing more will be
+       * claimed until somebody presses start. Nothing false was claimed, and the
+       * owner would still have waited all morning for a seventh ticket.
+       */
+      const stopNote =
+        snapshot.desired === "running"
+          ? ""
+          : ` Nothing more will be claimed: ${snapshot.changedBy} set the supervisor to ${snapshot.desired} — ${snapshot.reason}.`;
+      if (censusIsTerminal(counts)) {
+        if (counts.failed > 0) {
+          return {
+            ...base,
+            /*
+             * RED, AND A WORD OF ITS OWN. See `SupervisorLiveness`: the arm check
+             * compares liveness strings, so a distinction that lived only in this
+             * headline would be one the strip could not prove it can still make.
+             */
+            liveness: "blocked",
+            headline: `queue ended · ${String(counts.failed)} blocked`,
+            because: `the queue reached its end and ${String(
+              counts.failed,
+            )} of ${String(counts.total)} ticket(s) ended blocked or abandoned (${String(
+              counts.done,
+            )} done). This is NOT the same as an empty queue. ${failedTicketAction(
+              census.failedRows,
+            )}${stopNote}`,
+          };
+        }
+        return {
+          ...base,
+          liveness: "idle",
+          /*
+           * `idle` WITH A DIFFERENT HEADLINE, AND THE HEADLINE IS WHAT THE ARM
+           * CHECK MEASURES FOR THIS PAIR. "Everything finished" and "nothing was
+           * ever filed" are both genuinely idle — neither is a fault and neither
+           * needs the owner to do anything — so inventing a sixth colour for
+           * success would tell him to act on a machine that behaved. The arm check
+           * compares `liveness + headline` for these two rather than liveness
+           * alone, which is why collapsing them still says BLIND.
+           */
+          headline: `queue finished · ${String(counts.done)} done`,
+          because: `every ticket the loop was given reached done: ${String(
+            counts.done,
+          )} of ${String(counts.total)}. Nothing is queued and nothing is claimed, and this time that is a finished queue rather than an empty one. ${snapshot.nextAction}${stopNote}`,
+        };
+      }
+      if (counts.total === 0) {
+        return {
+          ...base,
+          liveness: "idle",
+          headline: "idle, no tickets filed",
+          because: `the census holds no ticket rows at all, so this queue has not finished — it has never been given anything. ${snapshot.nextAction}${stopNote}`,
+        };
+      }
+      /*
+       * READABLE, NOT TERMINAL, AND NOTHING CLAIMED. Backlog with the supervisor
+       * stopped, in-flight rows the state route does not corroborate, or a state
+       * this build cannot read. No verdict is available and the census's own note
+       * says which of the three it is, so the fall-through below carries it into
+       * the sentence instead of asserting anything.
+       */
+    }
+
     return {
       ...base,
       liveness: "idle",
@@ -884,7 +1758,22 @@ export function classifySupervisor(
           : `${snapshot.desired}, nothing in flight`,
       because:
         snapshot.desired === "running"
-          ? `nothing is queued (${String(snapshot.probe.ticketsSeen)} ticket row(s) read). ${snapshot.nextAction}`
+          ? /*
+             * THE CENSUS CAVEAT IS IN THIS SENTENCE, NOT ONLY IN THE PANEL, AND IT
+             * IS THE HALF OF THE FIX THAT SHIPS TODAY.
+             *
+             * ARM 6b cannot fire without a census route, and there is no census
+             * route yet. So on this build the owner still lands on `idle, queue
+             * empty` after eight hours — and the sentence beside it must not be the
+             * same confident sentence it was, because the confidence is exactly
+             * what has no data behind it. `census.note` names WHICH of the four
+             * answers applies (nothing arrived / the read failed / the body is not
+             * a census / it is readable but not terminal), which is more than "we
+             * do not know" and is composed in one place.
+             */
+            `nothing is queued (${String(
+              snapshot.probe.ticketsSeen,
+            )} ticket row(s) read). ${snapshot.nextAction} ${census.note}`
           : `${snapshot.changedBy} set it to ${snapshot.desired}: ${snapshot.reason}`,
     };
   }
@@ -1108,16 +1997,48 @@ export function probeLiveness(
   snapshot: SupervisorState | null,
   error: unknown,
   nowMs: number,
+  censusBody: unknown = null,
 ): string {
+  return probeVerdict(snapshot, error, nowMs, censusBody).liveness;
+}
+
+/**
+ * THE SAME PROBE, RETURNING THE HEADLINE TOO — and the headline is not decoration
+ * here, it is the only thing that can prove one of the distinctions this strip
+ * makes.
+ *
+ * "The queue finished, six done" and "nothing was ever filed" are BOTH `idle`, on
+ * purpose: neither is a fault, neither asks the owner to do anything, and
+ * inventing a sixth colour for success would tell him to act on a machine that
+ * behaved. But they must not read the same, and the arm check's whole method is
+ * requiring N known inputs to produce N DIFFERENT answers. Comparing livenesses
+ * alone cannot see that pair, so the arm compares `liveness · headline` for it —
+ * which means collapsing the two headlines makes the arm say BLIND, exactly as
+ * collapsing `blocked` onto `idle` does.
+ */
+export function probeVerdict(
+  snapshot: SupervisorState | null,
+  error: unknown,
+  nowMs: number,
+  censusBody: unknown = null,
+): { readonly liveness: string; readonly headline: string; readonly verdict: string } {
   try {
-    return classifySupervisor({
+    const reading = classifySupervisor({
       snapshot,
       error,
       receivedAtMs: nowMs - 1_000,
       nowMs,
-    }).liveness;
+      censusBody,
+      censusError: null,
+    });
+    return {
+      liveness: reading.liveness,
+      headline: reading.headline,
+      verdict: `${reading.liveness} · ${reading.headline}`,
+    };
   } catch (caught) {
-    return `threw: ${caught instanceof Error ? caught.message : String(caught)}`;
+    const threw = `threw: ${caught instanceof Error ? caught.message : String(caught)}`;
+    return { liveness: threw, headline: threw, verdict: threw };
   }
 }
 
@@ -1143,9 +2064,26 @@ export function probeLiveness(
  * control is in the unit spec: make `malformedReasons` return `null` and this
  * probe collapses onto `idle`, `distinct` reads 4, and the arm says BLIND.
  *
- * The sixth and seventh probes are the comparator's two directions. A comparator
- * that always escalates is exactly as useless as one that never does, so the
- * shrinking control is not decoration.
+ * THE SIXTH PROBE IS `blocked` AND IT WAS ADDED FOR THE SAME REASON, ONE ROUND
+ * LATER (2026-08-10, second pass). The five-probe arm printed "5 distinct" and the
+ * count was true; shipping a sixth always-on state under it would have left the
+ * state the owner needs at 7am — the queue that ended with every ticket blocked —
+ * as code nothing measured. Its negative control is the mutation in the unit spec:
+ * make `censusIsTerminal` return false and this probe collapses onto `idle`,
+ * `distinct` reads 5, and the arm says BLIND.
+ *
+ * THREE MORE PROBES MEASURE DISTINCTIONS THAT DO NOT SHOW UP IN A LIVENESS. The
+ * three idle endings ("finished", "never filed", "cannot tell") are compared as
+ * `liveness · headline`, because a distinction that lives only in prose is one the
+ * arm cannot see; the census reader's four availabilities are compared because a
+ * reader that could not tell a 404 from an empty queue would feed the arm above a
+ * confident verdict built on nothing; and the repair cycle's `unreported`/`null`
+ * pair is compared because printing "no repair was attempted" over "nothing
+ * reports repairs" is how a dashboard claims a self-repair it does not have.
+ *
+ * The last two probes are the comparator's two directions. A comparator that
+ * always escalates is exactly as useless as one that never does, so the shrinking
+ * control is not decoration.
  */
 export function armSupervisorStrip(
   nowMs = Date.parse("2026-08-10T00:00:00.000Z"),
@@ -1224,6 +2162,103 @@ export function armSupervisorStrip(
   })();
   check("malformed", "malformed", read(missingProbe, null));
 
+  /*
+   * ─────────────────────────────────────────────────────────────────────────────
+   * THE SIXTH LIVENESS PROBE — `blocked`, AND THE ARM WOULD HAVE BEEN A LIE
+   * WITHOUT IT.
+   * ─────────────────────────────────────────────────────────────────────────────
+   *
+   * The five probes above were shipped as "five distinct states" and the count was
+   * true. Adding a sixth always-on liveness under a five-probe arm is the exact
+   * defect the `malformed` probe's own docblock names one paragraph up: the arm
+   * would print "5 distinct" for ever while the newest state — the one the owner
+   * needs at 7am — was unreachable code nothing measured.
+   *
+   * THE INPUT IS THE STATE THE OWNER ACTUALLY CAME BACK TO: nothing claimed,
+   * nothing queued, and a census in which a ticket ended `blocked`. It must answer
+   * `blocked` and it must NOT answer `idle`; the whole gap this round closed is
+   * those two being byte-identical.
+   */
+  const censusOf = (rows: readonly Record<string, unknown>[]): unknown => ({ tickets: rows });
+  const CENSUS_BLOCKED = censusOf([
+    { ticketKey: "t-arm-1", state: "done" },
+    {
+      ticketKey: "t-arm-2",
+      state: "blocked",
+      updatedAt: "2026-08-10T00:00:00.000Z",
+      nextAction: "no repair driver is wired; run tools/repair/cycle.mjs by hand",
+    },
+  ]);
+  const CENSUS_ALL_DONE = censusOf([
+    { ticketKey: "t-arm-1", state: "done" },
+    { ticketKey: "t-arm-2", state: "done" },
+  ]);
+  const CENSUS_EMPTY = censusOf([]);
+
+  check(
+    "blocked",
+    "blocked",
+    probeLiveness(stubState({}), null, nowMs, CENSUS_BLOCKED),
+  );
+
+  /*
+   * THE HEADLINE PAIRS — THREE ENDINGS THAT ARE NOT ALL DIFFERENT LIVENESSES.
+   *
+   * "the queue finished", "nothing was ever filed" and "nothing is queued and this
+   * page cannot tell which" are all honestly `idle`: none is a fault and none asks
+   * the owner to act, so none may be painted red. That makes them invisible to a
+   * distinctness check on livenesses alone — so this probe compares the full
+   * `liveness · headline` verdict and requires THREE DIFFERENT ones. Collapse any
+   * two of those headlines and this probe reports `2 of 3` and the arm says BLIND,
+   * which is the same guarantee the liveness count gives the other six states.
+   */
+  const finished = probeVerdict(stubState({}), null, nowMs, CENSUS_ALL_DONE).verdict;
+  const neverFiled = probeVerdict(stubState({}), null, nowMs, CENSUS_EMPTY).verdict;
+  const noCensus = probeVerdict(stubState({}), null, nowMs, null).verdict;
+  const idleVerdicts = new Set([finished, neverFiled, noCensus]);
+  check(
+    "the three idle endings do not read the same",
+    "3 of 3 distinct",
+    `${String(idleVerdicts.size)} of 3 distinct`,
+  );
+
+  /*
+   * THE CENSUS READER'S OWN FOUR ANSWERS. `readCensus` decides whether ARM 6b may
+   * speak at all, so a reader that collapsed "the route 404s" onto "the route
+   * answered and the queue is empty" would hand the arm above a confident verdict
+   * built on nothing. Four known inputs, four different availabilities, and the
+   * failure is named rather than counted.
+   */
+  const availabilities = [
+    readCensus(null, null).availability,
+    readCensus(null, new Error("404 not found")).availability,
+    readCensus({ tickets: "not an array" }, null).availability,
+    readCensus(CENSUS_ALL_DONE, null).availability,
+  ];
+  check(
+    "the census reader tells its four answers apart",
+    "absent · unreachable · malformed · readable",
+    availabilities.join(" · "),
+  );
+
+  /*
+   * THE REPAIR CYCLE'S THREE-WAY ABSENCE. `undefined` (nobody reports repairs),
+   * `null` (the route reports and has nothing) and a value are three different
+   * sentences, and the first two are the pair that matters: printing "no repair was
+   * attempted" over "nothing reports repairs" is how a dashboard tells its owner
+   * the self-repair worked when the self-repair does not exist.
+   */
+  const cycleKinds = [
+    repairCycleSummary(undefined).kind,
+    repairCycleSummary(null).kind,
+    repairCycleSummary({ outcomeCode: "NO_PATCH_AUTHOR", applied: false }).kind,
+  ];
+  check(
+    "the repair cycle tells unreported from null from reported",
+    "unreported · null · reported",
+    cycleKinds.join(" · "),
+  );
+
   const oscillation = attemptProgress(A913C871_ATTEMPTS);
   check(
     "comparator escalates a913c871 at attempt 2",
@@ -1243,21 +2278,50 @@ export function armSupervisorStrip(
     `${shrinking.progress}@${String(shrinking.escalatesAtAttempt)}`,
   );
 
-  const livenesses = probes.slice(0, 5).map((probe) => probe.got);
+  /*
+   * SIX, NOT FIVE — AND THE CONSTANT AND THE SLICE MOVE TOGETHER OR THE CHECK
+   * SILENTLY WEAKENS. `slice(0, 6)` has to cover exactly the liveness probes and
+   * `distinct === 6` has to be the count of them; leaving either at 5 while adding
+   * a sixth state is how an arm check keeps printing a pass about a state it no
+   * longer looks at.
+   */
+  const LIVENESS_PROBES = 6;
+  const livenesses = probes.slice(0, LIVENESS_PROBES).map((probe) => probe.got);
   const distinct = new Set(livenesses).size;
   const failures = probes.filter((probe) => !probe.ok);
-  const armed = failures.length === 0 && distinct === 5;
+  const armed = failures.length === 0 && distinct === LIVENESS_PROBES;
 
+  /*
+   * THE LINE SAYS WHAT IS WIRED, NOT WHAT WAS WIRED WHEN IT WAS WRITTEN.
+   *
+   * This is the same rule the SERVER's boot line is being held to this round: it
+   * used to announce "NO REPAIR DRIVER is wired", and when the driver landed that
+   * sentence became a lie in the one place an operator reads for the truth. So the
+   * census clause below is composed from `readCensus`'s ACTUAL answer for the arm's
+   * own fixture rather than from a literal — and the pass branch names the two
+   * distinctions this round added, so a reader can tell a line printed by this
+   * version from one printed by the version that could not see them.
+   *
+   * IT CAN STILL SAY BLIND, WHICH IS THE HALF THAT MATTERS. Every clause of the
+   * pass branch is derived: collapse `blocked` onto `idle` and `distinct` is 5;
+   * collapse two idle headlines and that probe fails; blind `readCensus` and its
+   * probe fails. Any one of them takes the whole line to the failure branch with
+   * the collapsed pair named.
+   */
   const line = armed
-    ? `ARM CHECK: supervisor strip resolves 5 known inputs to ${livenesses.join(
+    ? `ARM CHECK: supervisor strip resolves ${String(LIVENESS_PROBES)} known inputs to ${livenesses.join(
         " · ",
-      )} (${String(distinct)} distinct); comparator escalates a913c871 at attempt ${String(
+      )} (${String(
+        distinct,
+      )} distinct); it tells a FINISHED queue from an ALL-BLOCKED one and from one that was never given anything; the census reader tells absent/unreachable/malformed/readable apart and the repair cycle tells unreported from null; comparator escalates a913c871 at attempt ${String(
         oscillation.escalatesAtAttempt,
       )} and clears a shrinking sequence`
     : `ARM CHECK FAILED — THE SUPERVISOR STRIP IS BLIND: ${
-        distinct === 5
+        distinct === LIVENESS_PROBES
           ? ""
-          : `only ${String(distinct)} of 5 states are distinguishable (${livenesses.join(" · ")}); `
+          : `only ${String(distinct)} of ${String(
+              LIVENESS_PROBES,
+            )} states are distinguishable (${livenesses.join(" · ")}); `
       }${failures
         .map((probe) => `${probe.name} expected ${probe.expected}, got ${probe.got}`)
         .join("; ")}`;

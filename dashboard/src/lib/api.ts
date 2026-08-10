@@ -81,6 +81,16 @@ export const KEY = {
   supervisor: "/api/supervisor",
   supervisorStart: "/api/supervisor/start",
   supervisorStop: "/api/supervisor/stop",
+  /**
+   * THE TICKET CENSUS — every row, terminal ones included.
+   *
+   * GET. THE SAME PATH SERVES A POST THAT FILES A TICKET, and the collision is
+   * worth a line: `http.ts:1277` documents `POST /api/supervisor/tickets` as "the
+   * only way a ticket ever enters the queue". The GET does not exist yet (measured
+   * 2026-08-10), so `useSupervisorTickets` treats a 404 as a REPORTED state rather
+   * than an error to hide — see the census arm in `lib/supervisor.ts`.
+   */
+  supervisorTickets: "/api/supervisor/tickets",
 } as const;
 
 /**
