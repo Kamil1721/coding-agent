@@ -48,7 +48,7 @@ import {
   parseSuiteManifest,
   resolveExecutionPlan,
   triageSuiteFailures,
-} from "./scorer-protocol.js";
+  assertSuiteEnvNamesAgree,} from "./scorer-protocol.js";
 import type {
   ContainerResult,
   CriterionCoverage,
@@ -1382,6 +1382,30 @@ function suiteEnv(origin: string): NodeJS.ProcessEnv {
   const env = artifactEnv(origin);
   env["BAKEOFF_SUITE_DIR"] = CONTAINER_PATHS.suite;
   env["APP_BASE_URL"] = origin;
+  // WHERE THE ARTEFACT IS ON DISK, FOR A SUITE THAT MUST INSPECT IT RATHER THAN
+  // CALL IT. A criterion like "a rejected submission is never written to the
+  // database" cannot be settled over HTTP: the whole point is that nothing was
+  // stored, and only the file shows that.
+  //
+  // ADDED 2026-08-10 BECAUSE ITS ABSENCE COST TWO CRITERIA. Run 54927ebc's
+  // `holdout/contact-storage.test.mjs` resolved
+  // `process.env.APP_ROOT ?? <walk up from cwd for a package.json>`. Nothing set
+  // it, the node pass runs with cwd `/opt/bakeoff-scorer` (SCORER_HOME), and that
+  // directory has its own `package.json` — so the walk stopped inside the
+  // scorer's install and never descended to the artefact. Both T-14 and T-15 died
+  // on their FIRST statement with "no SQLite database holding a contact-message
+  // table was found under /opt/bakeoff-scorer; 0 database file(s) were examined",
+  // before either issued a request. REQ-010 and REQ-011 were published as two
+  // defects in an artefact whose contact handler was never invoked.
+  //
+  // The fallback is not removed from the fixture side and should not be: this
+  // makes the documented name true, rather than making the suite depend on it.
+  env["APP_ROOT"] = CONTAINER_PATHS.artifact;
+  // THE GUARD THAT KEEPS THE VALIDATOR'S ALLOWLIST HONEST. `spec-validate.ts`
+  // exempts exactly `SUITE_ENV_NAMES` from its unstated-env-var rule and cannot
+  // import this module to check (doing so outside the container throws), so the
+  // declaration is asserted against reality here, on the object just built.
+  assertSuiteEnvNamesAgree(Object.keys(env));
   return env;
 }
 

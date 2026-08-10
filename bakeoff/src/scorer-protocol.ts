@@ -376,6 +376,66 @@ export interface ManifestExecution {
  */
 export const STATIC_SERVE_PORT = 3000;
 
+/**
+ * Every environment variable the scorer sets for a held-out test process.
+ *
+ * ONE DECLARATION, TWO READERS, BECAUSE A HAND-COPIED MIRROR ALREADY COST TWO
+ * CRITERIA. `scorer-container.ts#suiteEnv` SETS these; `spec-validate.ts` exempts
+ * exactly these from its unstated-env-var audit rule. For one draft that rule's
+ * allowlist named `APP_ROOT` on the strength of a comment claiming the container
+ * injected it — nothing did, so the allowlist excused the one name in the corpus
+ * that was genuinely broken. Run `54927ebc`'s `holdout/contact-storage.test.mjs`
+ * resolved `process.env.APP_ROOT ?? <walk up from cwd for a package.json>`, the
+ * node pass runs with cwd `/opt/bakeoff-scorer` which has its own
+ * `package.json`, so it never reached `/artifact`. T-14 and T-15 died on their
+ * first statement and REQ-010 / REQ-011 were published as artefact defects.
+ *
+ * IT LIVES HERE, NOT IN `scorer-container.ts`, FOR A MEASURED REASON: importing
+ * that module outside the sealed container throws
+ * (`assertRunningInsideSealedContainer`), so the authoring-time validator cannot
+ * ask it directly. This file is already a shared dependency of both.
+ *
+ * `assertSuiteEnvNamesAgree` is the guard that keeps the declaration honest, in
+ * the same shape as {@link assertSuiteManifestPathAgrees}.
+ */
+export const SUITE_ENV_NAMES: readonly string[] = Object.freeze([
+  // From `artifactEnv`.
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "CI",
+  "npm_config_cache",
+  "npm_config_update_notifier",
+  "npm_config_fund",
+  "npm_config_audit",
+  "XDG_CACHE_HOME",
+  "BAKEOFF_APP_ORIGIN",
+  // Added by `suiteEnv` on top of it.
+  "BAKEOFF_SUITE_DIR",
+  "APP_BASE_URL",
+  "APP_ROOT",
+]);
+
+/**
+ * Throw if the container's actual suite environment has drifted from the
+ * declaration above. Called by `suiteEnv` on the real object it just built, so a
+ * variable added or removed without updating this list fails loudly, in the
+ * container, rather than silently widening the validator's allowlist.
+ */
+export function assertSuiteEnvNamesAgree(actual: readonly string[]): void {
+  const declared = new Set(SUITE_ENV_NAMES);
+  const missing = [...declared].filter((n) => !actual.includes(n));
+  const extra = actual.filter((n) => !declared.has(n));
+  if (missing.length === 0 && extra.length === 0) return;
+  throw new Error(
+    "not implemented: the scorer's suite environment disagrees with SUITE_ENV_NAMES in " +
+      `scorer-protocol.ts — set but undeclared: [${extra.join(", ")}]; declared but unset: ` +
+      `[${missing.join(", ")}]. spec-validate.ts exempts the declared names from its audit rule, so a ` +
+      "name that is declared and unset is a name the audit will excuse and no test can ever read.",
+  );
+}
+
 /** The document the static health gate fetches when the manifest declares none. */
 export const STATIC_ROOT_DOCUMENT = "/";
 
