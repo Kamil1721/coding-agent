@@ -559,3 +559,39 @@ run — no parent argument, no lineage column. Scope: one new `run-seed.ts`, a `
 column, three touched files and a composer change. **Flagged so it is not discovered late:**
 the follow-up publishes to `projects/<slug>-<suffix>`, so the folder the owner has open keeps
 serving the *parent* artefact after a revision lands.
+
+---
+
+## 13. AND I SHIPPED THE SAME DEFECT INTO A TICKET, 90 MINUTES IN
+
+Composing the follow-up run's brief, I reused the owner's original words and deliberately cut
+the dashboard-generated appendix — a motion reading and a planning exchange — because
+resubmitting a system's own output as a fresh brief is feeding it its own tail.
+
+The brief referred to that appendix twice:
+
+```
+line  29  "A reading of a reference page's motion is attached to this ticket. Match it…"
+line 111  "The motion matches the attached reading…"
+```
+
+Nothing was attached. **A forward reference to nothing — the same shape as
+`resumeBuilderPrompt`'s "as described earlier", in the artefact I had just written.** The
+spec seat authors criteria from the ticket alone, so it was on course to freeze a criterion
+no artefact could satisfy and no grader could fairly check: exactly the class of grader
+defect §8 spent its time removing, manufactured fresh.
+
+`run-…-dfd5a050` was cancelled at 93 minutes, mid-audit, and resubmitted as
+`run-…-0629aa6c` with the measured values inlined so the requirement stands on its own.
+Ninety minutes of night is cheaper than a verdict contaminated by an unpassable criterion,
+and the night had hours left.
+
+**The composer now refuses rather than trusting me.** It throws if the motion clause is not
+found verbatim before substituting, and it walks every remaining `attached…` reference,
+throwing on any that does not resolve to something actually in the request. Two attachments
+survive that check — the CV and the design reference — and both are really sent.
+
+**The lesson generalises past this ticket.** Every mechanism in this repo that binds two
+seats to one literal exists because prose drifted from reality. The ticket is prose, it is
+the input every other seat is derived from, and it had no such check at all. A brief that
+promises an attachment should not be submittable without it.
