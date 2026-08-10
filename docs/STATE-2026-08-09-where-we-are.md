@@ -126,6 +126,100 @@ place below.
 > marker (without "(fix pass)" or "(second pass)") is this morning's correction pass and was
 > not touched.
 
+> ### THE STRIP-CRASH / STILL-PARKS ROUND, 2026-08-10 — NEWEST ROUND, AND IT REWRITES §7.2
+>
+> A fourth round ran on 2026-08-10, after the tag: **two lanes (`strip-crash`, `still-parks`), a
+> final gate, a repair pass and a final go/no-go.** It exists because the owner wants to start a
+> run that survives eight hours unattended, and two things blocked it — the dashboard was
+> reported crashed, and the supervisor still parked in ways that need a human.
+>
+> **THE FOUR STAGES DISAGREED WITH EACH OTHER, AND THE ORDER IS THE POINT.** A lane's
+> self-report is a claim; the gate's and the final check's figures are the measured ones.
+>
+> | stage | verdict | what it measured |
+> |---|---|---|
+> | the two lanes | LANDED / one PARTIAL | their own suites. `strip-crash`'s first act was to falsify its own brief: the crash was already gone and the browser project was already **267 passed / 1 skipped**, not 80 failed / 186 passed. |
+> | the final gate | **`gatePassed: false`** | one blocking item, and it was real. Against the **owner's own backend** the strip read amber `MALFORMED` on every route, because the client mirror and the shipped wire disagreed in **fifteen fields**. Three green typecheckers could not see it: `dashboard/src/lib/api-types.ts` declares its own `SupervisorState` and never imports the server's `ApiSupervisorState`. |
+> | the repair pass | closed it, and found three more | rewrote the client mirror onto the wire and **pinned it from both ends** with a generated golden fixture, then closed a second blank-page path, a newly-live rendering path with no probe, and the model-id refusal. |
+> | the final go/no-go | **GO, and it re-measured the gate's blocker as CLOSED** | live `idle` on four routes against a real server, and live **`running`** — green pill, `spec · attempt 1 of 1`, `QUIET 38.8s` — with a real run in flight. |
+>
+> **So the gate's blocking item is STALE, and the owner is reading both reports: it was measured,
+> it was real, and it is fixed.** Read **§7.2** (rewritten from the final go/no-go) before you
+> leave the machine, **§8** for the round, and **§6.14-§6.16** for what is carried forward.
+>
+> **THE MEASURED NUMBERS, which are the ones to commit on — the brief's were wrong in both
+> directions:** bakeoff **164 / 164**; server **1961 tests / 1958 pass / 0 fail / 3 skipped**;
+> client unit **199**; client browser **273 passed / 1 skipped, TWICE CONSECUTIVELY, identical
+> leaf-name sets, 33 spec files**; `tsc --noEmit` **exit 0 with zero diagnostic lines in all
+> three packages**. Baseline chain: **259 (tag) → 271 (gate) → 273 (now), ZERO leaf names
+> removed** anywhere. The re-score reproduces exactly (`heldOutPass=true`, `falseFinish=false`,
+> 21 total / 20 passed / 1 failed, sole failure `REQ-013` QUALITY) under a **re-resolved**
+> `bakeoff-scorer:1` = `sha256:027bc2e2d3d27eeee8d050995995959d834575441a8aaeafe50565a388cfe8a0`.
+> **The brief's `ec79e1efbe81…` is a stale transcription, not a deviation** — that image is now
+> tagged `bakeoff-scorer:pre-repair-2026-08-10`, a fourth rollback rung. **The brief's other
+> baselines were also wrong** (bakeoff 143 → measured 146 at the tag; client unit 168 → 171; and
+> its "one known pre-existing server failure", *"THE OWNER'S OWN runs.db OPENS AND KEEPS ITS
+> RUNS"*, **passes**).
+>
+> **THE HONEST HEADLINE:** the strip can now tell a working loop from a wedged one against the
+> real backend, and a ticket whose failure has no automatic repair reaches a **named terminal
+> state in one tick** instead of parking for ever. **Nothing here has yet run during a real
+> build-to-verdict, and the repair cycle has never fixed a real defect in production** — no
+> driver is wired into `index.ts`, nothing authors a patch, and there is no sandbox. §8.4 and
+> §7.3 are unflinching about which is which.
+>
+> **Marker for this round's edits, and nothing else in this file was altered:**
+> ```
+> grep -c 'strip-crash round\|STRIP-CRASH / STILL-PARKS ROUND\|^## 8\.\|^### 8\.[1-6]\|^#### 6\.1[456]' \
+>   docs/STATE-2026-08-09-where-we-are.md
+> → 29   # this pointer, §6.14-6.16 and their parent heading, the twelve dated blocks and corrected
+> #        rows inside §7.2 and §7.3, §8 and §8.1-8.6, and this line. MEASURED, not predicted: the
+> #        first pattern written here matched 11 of these 29, because the round's name is
+> #        "STRIP-CRASH / STILL-PARKS" and its in-place markers are lower-case. A marker is itself a
+> #        check that can only observe success until you run it.
+> ```
+> **AND THE TWO RECORDED MARKER COUNTS WERE RE-RUN, because a count nobody re-runs is a claim.**
+> This file's own count below is **still 13**: this round's headings match none of that pattern's
+> alternatives and this block avoids its literals, deliberately. **The DESIGN file's count was
+> ALREADY WRONG BEFORE THIS ROUND — recorded as 14 below, measured 15**, so a reader who trusted
+> it would have concluded a block went missing. This round's DESIGN blocks are headed `MEASURED
+> 2026-08-10 (strip-crash round)` / `SUPERSEDED 2026-08-10 (strip-crash round)`, neither of which
+> is one of the five literals that count matches, so **15 is still the number after this round.**
+
+> ### THE NEVER-STOP ROUND, 2026-08-10 — START HERE IF YOU ARE ABOUT TO LEAVE IT RUNNING
+>
+> A third round ran on 2026-08-10 against `docs/DESIGN-self-maintaining-pipeline.md`: five
+> parallel lanes, a verifier, a reviewer and a repair pass. It built the supervisor, the
+> defect record, the free replay harness, the repair-evidence bar and the Tier 3 gate.
+>
+> **Everything it produced is in the new §7, and §7.2 is the thing to read.** §7.2 is the
+> OPERATOR'S PAGE — how to start it, what appears on screen, what STOP does, and **the
+> complete list of ways it can still stop and need you**. If you are about to leave the
+> machine for eight hours, read §7.2 and nothing else.
+>
+> `HEAD` is now **`d32ad85`**, and the repo has its first tag:
+> ```
+> git rev-parse --short HEAD                      → d32ad85
+> git tag -l                                      → gate-verified-2026-08-10
+> git rev-parse gate-verified-2026-08-10^{commit}  → d32ad858…   # ANNOTATED tag: use ^{commit}
+> ```
+> **New marker for this round's edits, and nothing else in this file was altered. The pattern
+> was MEASURED against its own output rather than written and hoped for — §R5 is this
+> document's own precedent for a locator that matches nothing:**
+> ```
+> grep -cn 'NEVER-STOP\|never-stop round\|^#### 6\.[678]\|^## 7\.\|^### 7\.[123]' docs/STATE-2026-08-09-where-we-are.md
+> → 13    # every block this round added: the pointer above, §6's N5/N7 status, §6.0's third
+> #        digest, §6.6, §6.7, §6.8 and their parent heading, §7 and §7.1-7.3, plus this line.
+> ```
+> The DESIGN file's own marker is different, because its edits are dated corrections rather than
+> new sections: `grep -c 'IMPLEMENTED 2026-08-10\|CORRECTED 2026-08-10\|FALSIFIED 2026-08-10\|STATUS
+> 2026-08-10\|ADDED 2026-08-10' docs/DESIGN-self-maintaining-pipeline.md` → **14**.
+> **The honest headline, before anything else in this document is quoted:** the supervisor is
+> now constructed, armed and ticking, the queue can be filled, and the loop survives `kill -9`.
+> **No supervisor-submitted run has ever reached a verdict, no defect record has ever been
+> written for real, and no repair patch has ever been applied to this repository.** §7.3 is
+> unflinching about which is which.
+
 > ### SECOND FIX PASS, 2026-08-09 — three lanes, a verifier, a reviewer, a repair pass and a final gate
 >
 > **This round closed what the first one left open. It did not close everything, and the one
@@ -2857,6 +2951,25 @@ Full evidence with commands in `docs/RUN-a913c871-observations.md`.
 > N9, N11, R4.** The table rows are deliberately
 > left as they were written, defects and all — one of them (N10) is **half wrong** and the
 > refutation is at §6.3. **The scorer image digest moved twice; the chain is at §6.0.**
+>
+> > **UPDATED 2026-08-10 (never-stop round) — TWO MORE ROWS MOVED, and neither by editing
+> > `bakeoff/src`.**
+> > **N5 → the harness half is now LANDED:** `results/authoring-trail.json` is written on BOTH
+> > the success and the failure path, in the `finally` that already existed. On a death it
+> > reports `attemptsAvailable:false` with a sentence beginning `UNAVAILABLE:` naming this exact
+> > hole, rather than writing `attempts: []` — which on a run that made three authoring calls
+> > would be the defect the trail exists to end. **The trail-content half still needs `attempts`
+> > on the thrown `BakeoffError` (digest-moving), and `readAuthoringAttempts` probes for it
+> > STRUCTURALLY so it lights up with no further edit the day that lands.**
+> > **N7 → CLOSED, both fixtures.** The repo now has its **first populated `dataExpectations`**
+> > (`bakeoff/test/tier3-fixtures/persistence/`, one mutation `schema.sql` vs
+> > `schema.sql + insert.sql`, both `kind` branches in one manifest) and a spec-phase-failure
+> > fixture that really enters the production path (`orchestrator.defect-record.test.ts`, driven
+> > by a run that dies in `spec` rather than returning at the reuse branch). The sqlite side runs
+> > LIVE against the exported frozen `tier0.evaluateSqliteExpectation`; the `http` side and the
+> > end-to-end persistence gate need the container and are **registered UNARMED, not omitted**.
+> > **Still NOT TOUCHED: N6, N8, N9, N11, R4.** N3's collect-all is now additionally guarded from
+> > outside the digest by `tools/replay/` — see §7.1-Tier-0.
 
 **THE COST DISCRIMINATOR, MEASURED — and it is the only one that matters for planning.**
 `bakeoff/docker/scorer.Dockerfile:78-79` does `COPY src ./src` then `RUN tsc`, and
@@ -2906,7 +3019,57 @@ standing "run 1 re-scores identically" proof all had to be re-established.
 |---|---|---|
 | **before** | `sha256:b7a9fd0a0f58e4a2f4eef5bebe754d839cb2e6013b386f804841bbe0bf4da8a8` | pre-round. **Tagged `bakeoff-scorer:pre-manifest-shape`** — the only rollback point. |
 | intermediate | `sha256:d74a20aeb6bc27b63d86dbb9f7411248ac7346d3e5cf46297ff8c96eba213afe` | after the four lanes' `bakeoff/src` edits (N1/N3/N4/N10). **UNTAGGED — unreachable by name.** |
-| **now** | `sha256:83b80ef56b67d6e5791f6597d29eefac19191a27d6b15d045fbac2c5b01927f7` | after the repair pass added the single-field `sql` probe to `scorer-protocol.ts`. This is `bakeoff-scorer:1`. |
+| ~~**now**~~ | `sha256:83b80ef56b67d6e5791f6597d29eefac19191a27d6b15d045fbac2c5b01927f7` | after the repair pass added the single-field `sql` probe to `scorer-protocol.ts`. ~~This is `bakeoff-scorer:1`.~~ **Superseded 2026-08-10 — now tagged `bakeoff-scorer:pre-never-stop`, which is a SECOND rollback point and did not exist when the paragraph below was written.** |
+| ~~**now (2026-08-10, never-stop round)**~~ | `sha256:ec79e1efbe81a7b362c0a724fe53793192d023f92aaea1c6c4fc1921f62d5665` | built 2026-08-10 08:43 by the concurrent spec-agent round (authoring-retry history + a per-call timeout bound). ~~This is `bakeoff-scorer:1`.~~ **Superseded by the repair pass below — now tagged `bakeoff-scorer:pre-repair-2026-08-10`, a THIRD rollback point.** |
+| **now (2026-08-10, never-stop REPAIR pass)** | `sha256:027bc2e2d3d27eeee8d050995995959d834575441a8aaeafe50565a388cfe8a0` | built 2026-08-10 11:36 — the SECOND build of this pass. `bakeoff/src` inputs: `spec-agent.ts` (abandon-time ceiling reservation; per-call bound 30 → 60 min; the reservation figure REPORTED and branched, so the message cannot claim a bound that a subscription seat does not have; the corrected spend and marker docblocks; a ref'd deadline timer) and `spec-freeze.ts` (`AuthoringTrailEntry.timedOut?`). **This is `bakeoff-scorer:1`.** The intermediate `sha256:5ffdc20a461c…` (11:24, before the branched sentence) is **UNTAGGED and unreachable by name**; every leg below was re-run against `027bc2e2…` after it, not inherited. |
+
+> **THE FIFTH DIGEST, RE-VERIFIED THE SAME WAY (repair pass, 2026-08-10).** `bakeoff/src`
+> changed, so the standing "run 1 re-scores identically" proof was re-established rather than
+> argued safe. Appendix A's `rescore.mjs`, extracted by fence (100 lines), against
+> `dashboard/runs/run-2026-07-29T23-28-46-665Z-3d4d1ccb/results/run.json`:
+> `heldOutPass=true falseFinish=false agentDeclaredDone=true`,
+> `suiteExecution={"exitCode":1,"durationMs":9155,"testsTotal":21,"testsPassed":20,"testsFailed":1}`,
+> `protectedPathViolations=[]`, sole failure
+> `FAIL QUALITY REQ-013 :: holdout/coglane-presentation.spec.mjs › [REQ-013] T-14 an empty
+> booking submission produces no confirmation`, all 12 `GATE:*` and REQ-001..012/014..016 PASS.
+> Discriminator cleared **in code, not by eye**:
+> `suite.sha256 == run.heldConstants.acceptanceSuiteSha256 = 21c30afddba344780a4e9e2fd77c5c5ecca11043222f6ee41271e28f4dcc2060`,
+> and `gate.scorerImageDigest == sha256:027bc2e2d3d2…`. 13.6 s of container time, zero quota.
+> **The trust chain holds across the fifth digest.** Rollback for this pass alone is
+> `docker tag bakeoff-scorer:pre-repair-2026-08-10 bakeoff-scorer:1`.
+>
+> **ALL THREE LEGS RE-RUN ON `027bc2e2…`, NOT ARGUED SAFE.** The first draft of this entry
+> carried the two other legs as "one digest stale"; they were then executed rather than left
+> as a note, because that is the whole lesson of the previous round's stale-by-one-digest
+> chain.
+>
+> | leg | command | result on `027bc2e2…` |
+> |---|---|---|
+> | **run-1 re-score** | Appendix A's `rescore.mjs`, fence-extracted (100 lines), `--run …3d4d1ccb/results/run.json --image bakeoff-scorer:1` | **identical to the published artefact** — figures above |
+> | **dry run** | `cd bakeoff && node dist/cli.js dry-run --root <scratch> --scorer-image bakeoff-scorer:1` | **24 PASS / 0 FAIL** (counted, twice, on separate roots), all five stages, `DRY RUN COMPLETE`. Includes the gate's own negative control (`the gate PASSES an honest artefact`). |
+> | **calibration** | `cd dashboard/server && npx tsc -p tsconfig.json --outDir dist-record && DASHBOARD_CALIBRATION_ROOT=<scratch> node --test dist-record/calibration.test.js` | **exit 0 — tests 8, pass 8, fail 0**. (`dist-record` removed afterwards; hard rule 5.) |
+>
+> `docker image inspect bakeoff-scorer:1 --format '{{.Id}}'` re-run AFTER every container leg
+> above → `sha256:027bc2e2d3d2…`, unmoved.
+
+> **CORRECTED 2026-08-10 (never-stop round) — THE DIGEST MOVED A THIRD TIME AND THE CHAIN WAS
+> RE-RESOLVED, NEVER TRANSCRIBED.** Both `d74a20ae…` (cited in the design brief) and
+> `83b80ef5…` (cited as "now" above) are superseded. The verifier re-ran Appendix A's
+> `rescore.mjs` against the CURRENT image and got the published artefact back **identically**:
+> `heldOutPass=true falseFinish=false agentDeclaredDone=true`,
+> `suiteExecution={"exitCode":1,"durationMs":8830,"testsTotal":21,"testsPassed":20,"testsFailed":1}`,
+> `protectedPathViolations=[]`, sole failure
+> `FAIL QUALITY REQ-013 :: holdout/coglane-presentation.spec.mjs › [REQ-013] T-14 an empty
+> booking submission produces no confirmation`, all 12 `GATE:*` and REQ-001..012/014..016 PASS.
+> Discriminator cleared **in code, not by eye**:
+> `suite.sha256 == run.heldConstants.acceptanceSuiteSha256 = 21c30afddba344780a4e9e2fd77c5c5ecca11043222f6ee41271e28f4dcc2060`.
+> 12.6 s of container time, zero quota. **The trust chain holds across the third digest.**
+>
+> **TWO TOOLING GOTCHAS THAT COST THE VERIFIER TIME AND WILL COST YOURS.** (1) Appendix A's
+> `rescore.mjs` refuses any `--out` that is not under `/private/tmp/claude-501/` — the
+> `/tmp/...` symlink form dies with *"refusing to write outside the scratchpad"*. (2) The fence
+> extraction below is still the right way in, and it was re-run this round:
+> `awk '/^## APPENDIX A/,0' … | awk '/^```javascript/{f=1;next} /^```/{if(f)exit} f'` → 100 lines.
 
 ```
 docker image inspect bakeoff-scorer:1 --format '{{.Id}}'
@@ -3787,6 +3950,1496 @@ race: two lanes mutating the same tree cannot both trust their reds.
   `dist-*` siblings under `dashboard/server`, 9 under `bakeoff`, and **1 pre-existing `git
   stash` entry that predates this session**. No pass created or removed any of them. Worth
   a sweep when the owner next has the tree to himself.
+
+---
+
+### CARRIED FORWARD BY THE NEVER-STOP ROUND, 2026-08-10 — nothing here was dropped either
+
+#### 6.6 EVERYTHING STILL OPEN, ranked by what blocks an unattended night
+
+| rank | what is open | evidence, re-measured by the recorder | why it is not done |
+|---|---|---|---|
+| **1** | **`repairing` IS A TERMINAL PARK WITH NO PRODUCER — and it is where `a913c871`'s own class lands.** `settle()` sends every zero-bound and every unknown failure class to `state:"repairing"` with `nextAction: "waiting for a repair proposal for this failure class"`. Nothing ever moves a ticket out of it. | `grep -n repairing dashboard/server/src/*.ts` → the type unions (`api-types.ts:2592`, `db.ts:464/536`), the single write (`supervisor.ts:747`), `SUPERVISOR_ACTIVE_STATES` (`http.ts:422`), and tests. **No reader that changes the state.** | The producer is a repair DRIVER, and building one that silently no-ops would be the 22nd catalogued instance. Needs items 2 + 3 below first. |
+| **2** | **NOTHING CALLS `tools/repair`, `tools/tier3` OR `tools/replay`.** **110 tests and 16 arm checks** — re-measured by the recorder, all green, none of them executed by any process, route, test script or CI job. | `grep -rn 'tools/repair\|tools/tier3\|tools/replay' dashboard/server/src dashboard/src bakeoff/src \| wc -l` → **0**; `ls package.json` → *No such file*. | A root `package.json` would introduce a package boundary above `dashboard/`, `dashboard/server/` and `bakeoff/` and change Node's module resolution for every file beneath it — a repo-wide behavioural change made blind, for a convenience script. **REFUSED with that measurement; the commands are listed in §6.8.** |
+| **3** | **`violations` IS ALWAYS `null` AT THE WRITE SITE**, so every defect signature is `sha256("site=<phase>/<status>/<code>\n")` with **zero field paths**, the anti-loop comparator is BLIND in production, and the oscillation that killed `a913c871` is invisible to every automatic reader. | `grep -n "violations" dashboard/server/src/orchestrator.ts` → **`7316: violations: null,`** (one hit). | It is DESIGN §9 step 8 — the digest-moving batch, unpaid. **This one line is the precondition for four other items.** |
+| **4** | **THREE SIGNATURE FORMULAS SHARE ONE ADDRESS SPACE**, so the "already tried and failed" brake can never fire: `ruled-out.mjs#fileFor` reads a path nothing writes. | Computed on one input (`site='spec/failed/suite_not_audited'`, path `dataExpectations[0].id`): `defect-record.ts:112` → `ad220a03e411…`; `tools/repair/signature.mjs` → `cd3e4a3880795d5b…`; `tools/replay/signature.mjs` → `spec/suite.manifest.json#…` (16-hex). **AGREE: false.** The writer also KEEPS array subscripts, so `[3]` buckets apart from `[0]`. | Worthless to unify until a repair driver exists (item 2) and until `violations` is non-null (item 3). **Adopt the reader's index-collapsing formula; add the cross-side test neither lane has.** |
+| **5** | **THE CLIENT HALF OF THE ENQUEUE PATH.** The route exists and is curl-able; the owner cannot file a ticket from the page. | `grep -n supervisor dashboard/src/lib/api.ts` → `supervisor`, `supervisorStart`, `supervisorStop` only. The strip has three buttons: `start`, `stop (drain)`, `detail`. | `dashboard/src/lib/api.ts` was modified in the working tree by another lane, and a strip control is a taste-surface change with no test runnable in a build phase. |
+| **6** | **`createSupervisorSubmit` HAS NEVER EXECUTED AGAINST A REAL `RunStore`, `RunEventBus` OR `Orchestrator`** — only against four fakes whose `createRun` returns `{runId} as unknown as RunRow`. A `NewRun` column mismatch or a `bus.emit` signature drift would compile and pass. | `dashboard/server/src/supervisor-boot.ts`; `find dashboard/runs -name defect.json` → nothing, so no supervisor-created run exists. | It needs a live server, which a build phase may not start. **This is the first thing to exercise.** |
+| **7** | **NO BACKOFF AND NO CEILING.** The claim-step cap makes the submission-throw spin bounded (≤ `maxAttempts` ticks), but each failure costs a real attempt, and there is no per-ticket wall-clock or spend ceiling. | `grep -c "wall\|deadline\|budgetMs" dashboard/server/src/supervisor.ts` → **0**. The only spend brake is `budget_exceeded → owner_action → blocked`. | Timeboxed out. Note the constraint found while measuring: the claim step reads `listSupervisorTickets(['queued'])[0]` with **no time filter**, so `nextActionAt` on a `queued` ticket does not delay a claim — `waiting` + `nextActionAt` is the viable backoff state. |
+| **8** | **THE ORPHAN RUN.** A submission that creates the run row and *then* throws leaves a run named by no ticket, invisible to `#inFlight()` (which walks tickets only) and to `GET /api/supervisor`. | `supervisor.ts:567 #inFlight()` walks tickets only; the submission catch at `:496` leaves `currentRunId` null. | **Reasoned from the code, NOT measured** — nobody confirmed `pump()` picks up such a row, so no quota-loss claim is made. |
+| **9** | **`POST /api/supervisor/abort-now` ANSWERS 501 AND THE STRIP HAS NO ABORT CONTROL.** | `http.ts:1520` → `501 abort_not_wired`; 400 `confirm_required` without `{"confirm":true}`. | It refuses honestly rather than cancelling a run and leaving its ticket `queued`, which would let the next START re-spend on the run the owner just killed. Needs `abortNow(reason)` on the loop. |
+| **10** | **TIER 3 DOES NOT ENFORCE `NO_INDEPENDENT_CHECK` OR `SCOPE_UNIMPLICATED_FILE`**, both of which exist mutation-proved in `tools/repair/evidence.mjs`. | `runGate` calls `validateProposal(proposal, closure)` with **no defect record and no replay result**, so adopting those two codes would refuse every proposal for ever. Written into `tools/tier3/proposal.mjs`'s docblock. | Precondition: make `defect` and `independentCheck` required inputs to `runGate` — which means the gate needs a caller that supplies a real defect record and an executed replay (items 2 + 3). |
+| **11** | **`noOpAblation` IS A STRING NOTHING EXECUTES.** A Tier-2 agent that fabricates it satisfies that proof. | `tools/tier3/gate.mjs:114` — non-empty-string test only. | The three CONTAINER proofs cannot be fabricated this way, which is why they carry the mode gate. The ablation runner is unbuilt. |
+| **12** | **ZERO CONTAINER KNOWN-BAD ARMS.** Five entries and two §6.6 arms are registered UNARMED, so every inside-closure patch parks as SELF-PROPOSE and the sealed grader's negative arm is entirely absent. | The gate prints `17 arm(s) held; 5 UNARMED (kb-rescore-run1-21-20-1, kb-calibration-must-fail-five, kb-fixture-g-container-leg, imp-001-forbidden-persistence, imp-004-contradicted-flow)`. | Needs docker executors (`rescore.mjs` + `probes/calibration-4a.mjs`). **Do NOT flip `armed:true` without an executor** — an armed entry with no `run()` is the 22nd instance. |
+| **13** | **`calibration-4a.mjs`'s JOURNALING IS STILL UNFIXED** — DESIGN §9 step 1, the cheapest item in the whole build order. "Re-run until it goes green" is still frictionless and invisible **in the one probe the gate turns on**. | `probes/README.md` specifies the mechanism; `tools/tier3/trail.mjs` implements it for the gate's own trail and nothing else. | Not in any lane's file list. |
+| **14** | **`humanReviewed` IS `null` ON EVERY TRAIL RECORD AND NOBODY HAS DESIGNED WHO APPROVES OUT OF LOOP.** | `RESEARCH` §5 item 4. 4 records exist in `dashboard/data/tier3/history/` (gitignored, absent from `git status`). | Owner-only decision. Now DESIGN §10.5 item 9. |
+| **15** | **STILL NOT TOUCHED FROM THE `a913c871` TABLE: N6, N8, N9, N11, R4.** Plus **B2** and **B4**, carried since 2026-08-09 for the same reason (they live in `bakeoff/src`). | The table at the head of §6. | Out of scope for a round aimed at not stopping. |
+| **16** | **THE TIER 3 TRAIL LOCATION DEPARTS FROM DESIGN §6.7, DELIBERATELY, AND IS UNRATIFIED.** §6.7's path is inside the FROZEN-DATA prefix, so the gate's own output would invalidate its own integrity check every cycle. | `tools/tier3/trail.mjs:34-38` defaults to `dashboard/data/tier3` (`TIER3_TRAIL_DIR` overrides). That directory is **gitignored**. | The reasoning is right and written in the file; the design still says otherwise, and nobody has said where a gitignored append-only audit trail is backed up. |
+| **17** | **HOUSEKEEPING.** `dashboard/server/dist-repair/` is a private outDir left in place for a Verify phase (gitignored, absent from `git status`); 4 gate trail records were written into `dashboard/data/tier3/history/`. | `ls -d dashboard/server/dist-repair` → exists. | Left deliberately; delete or ignore. Nothing reads either but the targeted `node --test` invocations in §6.8. |
+
+#### 6.7 EVERY HANDOFF FILED BY THE FIVE LANES, AND ITS STATUS AFTER THE REPAIR PASS
+
+**Five of the eighteen were CLOSED by the repair pass. The rest are open, and three of them
+were filed against facts that had already changed by the time the verifier read them.**
+
+| lane → owner | handoff | status 2026-08-10 |
+|---|---|---|
+| supervisor-core → `index.ts` | construct `SupervisorLoop`, call `armCheck()` once at boot and refuse `desired='running'` if blind, 30 s `setInterval(...).unref()` cleared in shutdown, `onRunSettled` | **CLOSED.** `index.ts:37-38, :86-112, :159`, `supervisor-boot.ts`. The arm gate is implemented AND called; a BLIND loop installs no interval, takes no boot tick, and is forced to `stopped` **with the reason written to the row** so `GET /api/supervisor` reports the refusal rather than only stdout. |
+| control-surface → supervisor-core | *"`SupervisorLoop` has NO `tick()` method"* | **STALE WHEN FILED.** `tick()` is at `supervisor.ts:367` and is what the verifier drove. |
+| control-surface → supervisor-core | *"nothing constructs a `SupervisorLoop`; `grep -in supervisor index.ts` → ZERO hits"* | **CLOSED** by the repair pass, as above. |
+| supervisor-core → control-surface | `submitRun` extraction out of `createRun` in `http.ts`, with the two hard requirements (`interactive:false`/`designLock:"auto"` straight through; keep the capture ordering because the outline is folded into `ticket.id`) | **OPEN, and worked around rather than done.** `createSupervisorSubmit` is a SECOND implementation that deliberately does not capture — a capture is a live network read folded into ticket identity, and two attempts at one ticket would mint different ids, find no frozen suite and pay for a second spec phase. **Two implementations of run creation now exist and nothing keeps them in sync.** |
+| control-surface → supervisor-core | `abortNow(reason)` that cancels AND parks the ticket `blocked`, so the 501 can be replaced | **OPEN.** §6.6 item 9. |
+| control-surface → Tier 2 | three wire fields have no producer: `attempts[]`, `lastDefect`, `lastRepair`, named on the wire in `probe.unsourced` with a test asserting the exact array | **OPEN.** The test goes red the moment a name is removed without a producer landing — but a name removed *with* no producer would go green wrongly. |
+| control-ui → server | add `attempts: readonly {n,at,problems}[]` to `ApiSupervisorState` from `results/authoring-trail.json`; the client change is ONE line | **OPEN AND DELIBERATELY DEFERRED.** Inert until §6.6 item 3 lands: on prose-only `problems` the comparator degenerates to always-escalate-at-2, and for an unattended machine a false stop costs the same as a miss. |
+| control-ui → server | `ApiSupervisorState` has no timestamp, so the strip ages readings against its own fetch and cannot catch a server answering instantly with an hour-old body | **OPEN.** One field (`at`), one isolated arm in the classifier. |
+| control-ui → Verify | run `supervisor-strip.browser.spec.ts` (6 tests, unexecuted), `run-layout.browser.spec.ts` (the `scale > 0.7` at 2000×1200 the 30 px strip threatens), `prose-guard.browser.spec.ts`, `rail.browser.spec.ts` | **OPEN.** The verifier aborted the browser suite at 64 of 267 and none of these four had run. |
+| control-ui → a human | four screenshots (`screenshots/supervisor-strip-{running,idle,stuck,unreachable}.png`) must be looked at | **OPEN — never taken.** The spec that writes them never reached a passing state. **No visual claim about the strip is verified.** |
+| replay → whoever owns a `package.json` | four script entries, with the note that `node --test tools/replay/` MODULE_NOT_FOUNDs on Node 25.9 and the glob form works | **REFUSED with a measurement** — §6.6 item 2. Commands in §6.8. |
+| replay → the defect writer | import `defectSignature` from `tools/replay/signature.mjs` rather than reimplementing, or the defect stream and the corpus bucket the same defect two ways | **OPEN, and now three-way** — §6.6 item 4. |
+| replay → `docs/RUN-a913c871-observations.md` | **A CORRECTION TO A DOC THIS ROUND DOES NOT OWN.** That post-mortem's cost model implies the 559,692-byte reference PNG (746,256 base64 chars) reaches every seat call. Counting every image and document block across all three authoring transcripts gives `{('user','document','application/pdf'): 1}` per transcript and **no image block at all** — events 9/15/21/27 are the PLAN seat. **The spec seat was shown the CV and not the reference image**, so a per-authoring-call budget including 560 KB of PNG is over by that much. | **OPEN — filed here because the file is not editable this round.** |
+| replay → CI | `node tools/replay/replay.mjs` exits 1 on any blind arm or any case disagreeing with its record, in ~150 ms with zero model calls. **It is the cheapest possible guard on a `bakeoff/src` prompt edit and should run before any digest-moving change is accepted.** | **OPEN** — no CI file exists. |
+| repair-agent → the defect writer | per-attempt structured paths, or item D is inert | **OPEN** — §6.6 item 3, and asserted rather than assumed by `loop-guard.test.mjs`'s *"THE PRODUCTION SHAPE: a contract-exact `DefectRecord` makes this rule BLIND"*. |
+| repair-agent → Tier 3 | wire the real §6.1 closure list; defaulting it to `[]` makes the check inert | **CLOSED** — now a required argument with a named `NO_FROZEN_CLOSURE` refusal on absent OR empty, in both `evidence.mjs` and at `cycle.mjs` entry, with the negative control being a `scorer.ts` diff with the closure omitted. |
+| repair-agent → the supervisor | production wiring needs a ledger directory and an isolated build root **outside** the repository | **OPEN.** `PRODUCTION_LEDGER_DIR` names `dashboard/data/defects/ruled-out` and nothing creates it. |
+| repair-agent → nobody | **NOT BUILT, named rather than silently omitted: the patch AUTHOR**, and the blind-second-seat overfitting gate (`RESEARCH` R7a) with a recorded known-bad corpus from `a913c871` / `162b186d` / `c228e63b` (R7b). `independentReplay` is the mechanism and is proven working; it has no real corpus, only synthetic sandbox cases. | **OPEN. Building that corpus is the cheapest remaining strengthening of the accept path.** |
+| tier3-gate → Verify | the container legs, and the `--exec=container` mode that does not exist | **OPEN** — §6.6 item 12. |
+
+#### 6.8 WHAT THE REPAIR PASS REFUSED, and the measurement behind each refusal
+
+Three refusals, all recorded rather than quietly skipped. **In each case the reviewer's fix
+as literally written would have made something worse, and the measurement is what shows it.**
+
+1. **"`tools/tier3/proposal.mjs` must call `tools/repair/evidence.mjs#validateProposal` and
+   ADOPT ITS REFUSALS."** Refused as written, **adopted as a named four-code whitelist.**
+   Measurement: `evidence.mjs` unconditionally adds `NO_INDEPENDENT_CHECK` unless
+   `ctx.independentCheck.ran === true` and `SCOPE_UNIMPLICATED_FILE` unless `ctx.defect` names
+   the paths; `runGate` supplies **neither**. Wholesale delegation would refuse **every**
+   proposal for ever, including the honest `a913c871` repair the suite pins as APPLY — the
+   mirror-image bug, and the one direction that *does* stop the pipeline. The four codes that
+   ARE decidable from the proposal alone were adopted, and the two that are not are carried
+   forward with their precondition (§6.6 item 10).
+2. **"Add the `tools/**` commands to whatever the Verify phase runs"** — which requires a root
+   `package.json`. Refused: there is none (`ls package.json` → *No such file*), and creating
+   one introduces a package boundary above three existing packages that changes Node's module
+   resolution for every file beneath it. **The commands, all run green this round, all needing
+   no new package:**
+   ```
+   node --test tools/repair/*.test.mjs        # 72 tests, 8.7 s
+   node --test tools/replay/replay.test.mjs   # 14 tests, 0.2 s  (the DIRECTORY form MODULE_NOT_FOUNDs on Node 25.9)
+   node --test tools/tier3/gate.test.mjs      # 24 tests, 0.8 s
+   node tools/repair/arm.mjs                  # 7/7 arms live, exit 0
+   node tools/replay/replay.mjs --rounds      # 5 cases, 4 arms ARMED, ~150 ms, zero model calls
+   node tools/tier3/gate.mjs --proposal <f>   # 5 arms + 17 known-bad arms
+   ```
+   Where they belong — a Verify runner, a Makefile, or CI — is a pipeline choice, not a build-lane one.
+3. **"Wire `attempts` onto the wire and replace the client constant."** Refused as INERT, not
+   on merit — see §6.7 and §6.6 item 3. The ordering is: structured `violations` first, then
+   the wire field. Wiring it now ships a detector that fires on attempt 2 of every ticket.
+
+---
+
+### THE CONCURRENT CLASSIFIER / SPEC-AGENT ROUND, 2026-08-10 — recorded here because §7's five lanes are not these two
+
+**Two lanes ran in parallel with §7's five, against the same DESIGN document, on a
+disjoint file list: `dashboard/server/src/recovery{,.test}.ts` (lane `classifier`) and
+`bakeoff/src/spec-agent{,.test}.ts` (lane `authoring-loop`).** §7 records the supervisor,
+the defect record, the replay harness and the Tier 3 gate; this block records the failure
+vocabulary those lanes route on, plus the two authoring changes. §7.3 already refers to
+this round twice (*"the concurrent round is splitting the class right now"*, and the two
+renamed `recovery.test.ts` leaves) — this is that round.
+
+**MARKER FOR THIS BLOCK'S EDITS, measured against its own output rather than written and
+hoped for (§R5 is this document's own precedent for a locator that matches nothing):**
+
+```
+grep -cn 'CLASSIFIER / SPEC-AGENT ROUND\|^#### 6\.9\|^#### 6\.1[0-3]' docs/STATE-2026-08-09-where-we-are.md
+→ 7    # this heading, §6.9-6.13, and this line
+```
+
+§7's own marker (`^#### 6\.[678]`, measured at 13) is unaffected: `6.9`–`6.13` do not match
+its character class. Neither count is wrong.
+
+#### 6.9 THE CLASS SPLIT — twelve codes, six classes, and EVERY bound still 0
+
+`classifyPhaseFailure` no longer maps every non-null `bakeoffCode` to `structural` on one
+line. It calls a new exported pure function `classOfBakeoffCode(code)`
+(`dashboard/server/src/recovery.ts`, list constants at `:832-850`).
+
+**THE TABLE IS THE VERIFIER'S, EXERCISED END-TO-END** — a real `BakeoffError` →
+`signalsFor` → `classifyPhaseFailure` → `boundFor` → `planRecovery`, with the twelve codes
+**parsed from `bakeoff/src/contracts.ts:57-69`** (12 confirmed) rather than from
+`recovery.test.ts`'s own copy of them:
+
+| code | class | bound | decision |
+|---|---|---|---|
+| `missing_credential` | `owner_action` | 0 | STOP `class_terminal` |
+| `budget_exceeded` | `owner_action` | 0 | STOP `class_terminal` |
+| `suite_hash_mismatch` | `integrity` | 0 | STOP `class_terminal` |
+| `unknown_model_price` | `accounting` | 0 | STOP `class_terminal` |
+| `unpriced_usage` | `accounting` | 0 | STOP `class_terminal` |
+| `ambiguous_price_window` | `accounting` | 0 | STOP `class_terminal` |
+| `invalid_effort` | `accounting` | 0 | STOP `class_terminal` |
+| `duplicate_usage_row` | `accounting` | 0 | STOP `class_terminal` |
+| `not_implemented` | `harness_defect` | 0 | STOP `class_terminal` |
+| `unknown_config` | `harness_defect` | 0 | STOP `class_terminal` |
+| `suite_not_audited` | `suite_authoring` | 0 | STOP `class_terminal` |
+| `invalid_usage_shape` | `structural` | 0 | STOP `class_terminal` |
+| *`a_code_added_in_2027`* | `structural` | 0 | STOP `class_terminal` — the unknown-code default |
+
+Six distinct classes, six **distinct** terminal sentences, **all bounds 0, every decision a
+stop.** `classOfBakeoffCode(code)` agreed with the class reached through `signalsFor` on all
+13 rows. Re-readable today:
+
+```
+sed -n '/export function boundFor/,/^}/p' dashboard/server/src/recovery.ts | grep -c 'return 0;'   → 6 arms at 0
+grep -n 'AUTO_CONTINUE_MAX\|TRANSIENT_MAX' dashboard/server/src/recovery.ts                        # throttled/interrupted/transient only
+```
+
+**WHAT THE SPLIT BUYS, BOTH HALVES — reading one half gives the wrong verdict.**
+
+- **Nothing retries in-run, and this round did not change that.** `#recoverFrom`
+  (`orchestrator.ts:6801`) still reads `if (klass !== "throttled") return false`, so a
+  `BakeoffError` never reaches `planRecovery` at all — it is classified for the record and
+  the run is failed. Re-grepped by the verifier on the dirty tree *after* a sibling edited
+  that file. **The split is a LABEL and a SENTENCE, not a budget.**
+- **But the names are load-bearing, and Lane A's own handoff understated this.**
+  `supervisor.ts:37` imports `boundFor, isRepairable` from `./recovery.js`; `:732` reads
+  `isRepairable(recoveryClass)` to route `blocked` vs `repairing`, and
+  `orchestrator.ts:7307` writes `repairable` into every defect record from the same
+  predicate. **Net: two of the twelve codes (`missing_credential`, `budget_exceeded`) are
+  refused an automated repair BY NAME; the other ten are handed to a repair proposer that
+  does not exist** (§6.6 items 1 and 2).
+- `isRepairable` (`recovery.ts:289`) is the single answer both consumers read — `intentional`,
+  `owner_action`, `integrity` → false; the rest → true. It exists because the two consumers
+  had disagreed: the defect record derived `repairable` from `boundFor(...) > 0`, which with
+  this round's deliberate all-zero bounds is `false` for **every** `BakeoffError` code, while
+  the supervisor routed the same ticket to `repairing`. **That disagreement reached the
+  owner** and is now pinned from both ends (`supervisor.test.ts` asserts
+  `blocked === !isRepairable(klass)` over all eleven classes; `orchestrator.defect-record.test.ts`
+  asserts the written record agrees with `isRepairable` of its own class).
+
+**WHY NO CLASS GOT A NONZERO BUDGET — three measurements, not caution.** (i) the re-entry
+gate above; (ii) the phase boundary carries nothing — `grep -arn authoringTrail bakeoff/src
+dashboard/server/src` finds one writer for the frozen-suite trail, on the success path
+(`spec-agent.ts:2401`), so a PHASE-level retry re-runs three authoring attempts knowing
+nothing about the three that just failed; (iii) DESIGN §3.5: *"Per-class N shipped WITHOUT
+the fingerprint is strictly worse than today"*, and §3.4's fingerprint gate does not exist.
+**A budget written into `recovery.ts` today would spend nothing, and everything on the day
+`orchestrator.ts:6801` changes.**
+
+**THE MUTATION DISCLOSURE, AND IT IS THE POINT OF THIS ENTRY.** The test named
+*"EVERY BakeoffError code stops, including one this file has never heard of"* **stays GREEN
+under the collapse mutation** (`return classOfBakeoffCode(...)` → `return "structural"`).
+That is arithmetic, not an oversight: every bound is 0, so `0 === 0` whichever class a code
+lands in, and **a bound assertion structurally cannot detect a split whose bounds are all
+equal.** The red therefore comes only from the paired tests that assert the class NAMES and
+the pairwise distinctness of the six sentences (`1 !== 6` on the collapse). Lane A reported
+this rather than presenting the bound test as the proof; the verifier reproduced the collapse
+independently (52 tests / 46 pass / 6 fail, same leaf names) and confirmed the green.
+**Reporting the bound assertions alone would have been instance twenty-two.**
+
+**LANE A'S DISAGREEMENT WITH THE ROUND'S OWN BRIEF — recorded so nobody re-proposes it.**
+The brief named four codes as repairable; three are not.
+
+1. `invalid_usage_shape` stays on the bound-0 **default**. Its throw sites span
+   `mergeSeatUsage was given no rows` (`anthropic-seat.ts:366`), `maxOutputTokens must be a
+   positive integer` (`:605`), `config A has no orchestrator seat` (`dryrun.ts:625`) — all
+   programmer faults — the 2026-08-04 overflow death whose own remediation says regenerating
+   cannot fix it, **and** the one genuinely repairable member, the manifest parser's `fail()`.
+   **From the code alone these are indistinguishable.** Splitting it needs the structured
+   `detail` carrier of DESIGN §3.2, written at the throw site.
+2. `not_implemented` / `unknown_config` are `harness_defect` at 0, per DESIGN §3.3 B3 (Tier 2,
+   offline, *"**0** in-run"*). Nothing a run can do to itself implements a seam.
+3. `invalid_effort` has **zero** `new BakeoffError` sites anywhere:
+   `grep -arn invalid_effort bakeoff/src dashboard/server/src | grep 'new BakeoffError'` →
+   **one hit, and it is `recovery.ts:813`, the docblock recording the absence.** It exists
+   only as an `env.ts:299` blocker `kind`. Classified into `accounting` anyway, deliberately:
+   *a class that exists only once it fires is a class nobody has ever read.*
+
+**CARRIED FORWARD FROM THE SPLIT.** (a) `recovery.test.ts`'s twelve-code list is an
+**unguarded copy** of `contracts.ts:57-69` — `recovery.ts` may not import the harness and
+there is no runtime array of the codes to import, so a thirteenth code will NOT turn it red;
+the cost is a missing name, not a wrong decision (the `a_code_added_in_2027` row pins the
+default), but it drifts silently. This is why the verifier parsed `contracts.ts` instead.
+(b) `boundFor` and `planRecovery` are coupled in a way the compiler cannot enforce: raising
+any of the five new bounds without adding a `planRecovery` arm produces a stop whose sentence
+claims a rate limit that never happened — **measured**, not predicted, under the mutation that
+gave `owner_action` a budget: the owner's SPEND REFUSAL was reported as *"reported as a rate
+limit but arrived with no reading of the refusal itself."* Recorded in both docblocks; a test
+asserting *"a class with a nonzero bound has an arm in `planRecovery`"* would close it and
+does not exist. (c) Five new strings can enter `runs.recovery_class`; the verifier confirmed
+the absence of any consumer rather than relaying it (`grep -arn
+'recoveryClass|recovery_class|owner_action|suite_authoring|harness_defect'` over
+`dashboard/src` → **0**; `backlog.ts`'s `NEXT_ACTION` Record is over `gate-report.ts`'s
+unrelated `FailureClass`). The risk is interpretive: a reader who pattern-matches
+`recovery_class = 'structural'` to mean *"a BakeoffError killed it"* now misses five sixths
+of them. (d) `unclassified` reads `repairable: true` while its own terminal sentence says
+nothing here can say a retry would help — true because `isRepairable`'s contract is to BE the
+supervisor's routing rather than second-guess it; verified inert (nothing branches on the
+field). (e) `recovery.ts:176-177` cites the trail writer at `spec-agent.ts:1614`; it is now
+`:2401`. **The line number is stale, the claim is not** — one writer, success path.
+
+#### 6.10 THE AUTHORING RETRY NOW CARRIES ITS OWN HISTORY — the sentence that made `a913c871` unconvergeable is deleted
+
+**Deleted, verbatim, from `bakeoff/src/spec-agent.ts`:** *"Your previous suite for this
+ticket was rejected by the bad-test audit and has been discarded. … Do not try to patch the
+old one — you no longer have it."* `feedbackTurn` is gone
+(`grep -c feedbackTurn bakeoff/src/spec-agent.ts` → **0**); the sentence survives only inside
+the JSDoc that documents what was replaced, which is why an in-image `grep -ac` for it
+returns 1 and **the naked count misleads** — the Rebuild phase re-ran the greps against a
+comment-stripped copy of the image's own `dist` and got `raw=1 code=0` for all three
+sentences, with `feedbackTurn` at `raw=0`. The stripper returned three distinct verdicts
+(COMMENT-ONLY, LIVE CODE, ABSENT) in one run, so it is not a probe that can only observe one
+outcome.
+
+Three ordered turns replace it, exported so a test can name them:
+
+```
+grep -n 'TURN_MARKER_\w* =' bakeoff/src/spec-agent.ts
+1026: TURN_MARKER_TICKET      = "TURN 1 OF 3 — THE TICKET"
+1027: TURN_MARKER_PRIOR       = "TURN 2 OF 3 — YOUR OWN PREVIOUS EXECUTION MANIFEST"
+1028: TURN_MARKER_CONSTRAINTS = "TURN 3 OF 3 — EVERY CONSTRAINT FROM EVERY ATTEMPT SO FAR"
+```
+
+- **MANIFEST ECHO.** The most recent `suite.manifest.json` any attempt produced, verbatim
+  inside `<<<PREVIOUS_MANIFEST … PREVIOUS_MANIFEST>>>`, attributed by attempt number, with
+  *"EVERY PART OF IT THE CONSTRAINTS BELOW DO NOT NAME WAS ACCEPTED. Keep those parts as they
+  are — re-deriving a field that was already correct is how a field that was already correct
+  gets lost."* When no manifest exists the turn **says so and says why** rather than being
+  omitted.
+- **ACCUMULATION.** `let feedback` (overwritten in three places) became a `const
+  constraints[]` that is only appended to, grouped under `FROM ATTEMPT N:` headings, with
+  *"A defect listed under an early attempt and NOT listed again under a later one was FIXED
+  by that later attempt. Do not undo it."* No dedup across attempts — deliberate, so
+  recurrence is visible.
+- **ATTEMPT 1 IS UNCHANGED BYTE-FOR-BYTE** (single unlabelled ticket turn), so
+  `authoringPromptSha256` on a first-attempt success is identical to before and frozen suites
+  stay comparable.
+- **SCOPE: the manifest only, not the suite.** `a913c871`'s three structured outputs were
+  63,957 / 50,125 / 63,258 bytes against manifests of **1,467 and 1,417 bytes** (~2%) on a
+  call with a 64k output ceiling that already carries an 80,102-byte PDF. Attempt 3's manifest
+  is reported as 1,326 bytes by the lane and is **NOT verified** — it is not in the repo and
+  was not in the two transcripts the verifier searched.
+
+**THE PROOF IS A REPLAY OF `a913c871`'s OWN BYTES, AND THE VERIFIER BUILT ITS OWN.** The
+verifier re-extracted the two manifests from the Claude Code CLI transcripts
+(`cfdffda9…`, `60fcb909…`) by brace-balancing, byte-compared them to the lane's fixtures —
+**1,467 vs 1,467 and 1,417 vs 1,417, IDENTICAL** (both the lane's handoff and its docblock
+report 1,468/1,418; **off by one, a reporting nit, corrected here**) — then drove the real
+exported `generateAuditedSuite` with its own recording caller. **Arm check first:** 3 spec
+calls made, failed with `suite_not_audited`, so the audit really rejected and the
+prompt-building code really ran. Turn counts 1 / 3 / 3; prompt bytes 351 / 5,584 / 7,473.
+
+- attempt 2's prompt contains attempt 1's 1,467 transcript bytes **verbatim** inside the
+  fence; `you no longer have it` **ABSENT**. Attempt 3 holds attempt 2's manifest and **not**
+  attempt 1's.
+- attempt 3 carries `FROM ATTEMPT 1:` items 1-9 **and** `FROM ATTEMPT 2:` items 10-15. A
+  constraint attempt 1 was given, **repaired on attempt 2 and absent from attempt 2's own
+  list**, is present in attempt 3's prompt — so it can only be there by accumulation.
+- attempt 2's prompt names **all six** manifest defects in one pass
+  (`dataExpectations[0].id must be a non-empty string`, `[0].kind must be "sqlite" or "http",
+  got undefined`, `[0].minRows must be a finite number >= 1`, and the same three for `[1]`).
+  `.id must be a non-empty string` appears **twice** in attempt 3's prompt — **the
+  requirement whose violation killed attempt 3 is on the page at the moment it would be
+  violated.**
+
+**THE ANSWER, PLAINLY, AS THE VERIFIER PUT IT:** a seat given the new attempt-3 prompt could
+not lose `id` the way attempt 3 did — not because it is forced to converge, but because
+losing `id` would require deleting a field printed verbatim in its own prompt whose
+requirement is restated in the same prompt. **What attempt 3 lacked is present. Convergence
+is NOT proven and is not claimed** — the only evidence is a replay, not a live seat. The
+verifier's replay carries its own negative control: re-pointed at the mutation build that
+returns `previousManifest: null`, all four manifest claims flip to NO and the prompt bytes
+fall 5,584 → 3,942 and 7,473 → 5,881.
+
+**SEALED BOUNDARY.** Every field of the retry context is either the seat's own prior output
+on the same ticket in the same job, or a harness rejection sentence it already received one
+attempt at a time. The guard test was **narrowed during the repair pass**, on a measurement:
+its bare-word regexes (`/workspace/i`, `/builder/i`, `/\bimplementation\b/i`,
+`/package\.json/`) would have fired on legitimate audit prose — **the audit finding kind is
+literally `leaks_implementation`** — and a guard that reds on a benign word gets deleted.
+Replaced by shapes that cannot come from inside the seal (absolute POSIX roots,
+`node_modules/`, `git diff|log|status|show|apply`, diff hunk headers) **plus a real
+provenance assertion**: every constraint bullet's file-shaped tokens must appear in the
+ticket or in the seat's own responses, and the fenced block must be **byte-equal** to a
+manifest the seat emitted (a re-serialisation is the harness putting words in the seat's
+mouth). Both halves fire independently under mutation — including a path-shapeless foreign
+file name that only provenance can see.
+
+**RISK CARRIED FORWARD: feedback VOLUME goes up again and nothing has measured how a seat
+responds to it.** N3's collect-all already turned one complaint into five; attempt 3 now
+carries all three attempts' complaints plus a ~1.4 KB manifest (~11 KB regeneration prompt
+in the fixture). **The cheapest next measurement is one real run.** Also: `ATTEMPT_1_MANIFEST`
+/ `ATTEMPT_2_MANIFEST` in `spec-agent.test.ts` are the **only copies of `a913c871`'s
+authoring output in version control**; attempt 3's manifest, the prompts and the token counts
+still exist only under `~/.claude/projects/…`, which is not a harness artefact and is not
+backed up.
+
+#### 6.11 A PER-CALL WALL-CLOCK BOUND — 60 MINUTES, NOT 30, AND WHAT IT COSTS
+
+```
+grep -n 'DEFAULT_ATTEMPT_TIMEOUT_MS =\|TIMEOUT_FAILURE_MARKER =' bakeoff/src/spec-agent.ts
+1309: export const DEFAULT_ATTEMPT_TIMEOUT_MS = 60 * 60 * 1000;
+1378: export const TIMEOUT_FAILURE_MARKER = "were abandoned on the per-call wall-clock bound";
+```
+
+**THE LANE SHIPPED 30 MINUTES; THE REPAIR PASS RAISED IT TO 60, AND THE REASON MATTERS MORE
+THAN THE NUMBER.** `a913c871`'s attempts ran **25m23s / 35m25s / 23m43s**. A 30-minute bound
+fires on **attempt 2** — the attempt whose manifest carries `"id": "contact-messages-stored"`,
+i.e. the exact field whose loss defines this round, and the document §6.10's echo feeds
+forward. Under 30 minutes attempt 2 produces nothing, `lastManifest` stays on attempt 1's
+`{entity, source, expectation}` vocabulary (no `id`), and attempt 3 is shown the **worse** of
+the two documents plus *"write less"*. The lane's own docblock had attributed that harm to
+the tighter bound it rejected rather than to the one it shipped. 60 min is derived from the
+measured distribution instead of from `AUTHORING_BUDGET.maxWallClockMs` — a policy **not in
+force in production**, which passes `DASHBOARD_BUDGET` (4 h) — and is 1.7× the slowest
+progressing attempt ever measured here. **Judge the number; do not inherit it.**
+
+- **Per CALL, not per attempt** — the free truncation retry is a second call inside one
+  attempt, and a per-attempt budget would hand it the remainder and silently kill the ladder.
+- **Default-ON**, because `orchestrator.ts` passes nine options to `authorAndFreezeSuite` and
+  would never set an opt-in one (the `onEvent`-with-no-reader failure this file already
+  documents). Env override **`BAKEOFF_SPEC_ATTEMPT_TIMEOUT_MIN`** (minutes; `0` disables;
+  malformed values THROW rather than reverting silently). It is an env var precisely so
+  tightening the bound **does not move the scorer image digest**.
+- **First-class outcome, not a convention.** `GenerateSuiteResult` is a three-way
+  discriminated union, so `wasTruncated(generated.call)` and `generated.call.usage.costUsd`
+  are compile errors on the timeout path. `AuthoringTrailEntry` gained `timedOut?`
+  (`bakeoff/src/spec-freeze.ts`) — it had been reaching AUDIT.json **undeclared**, because
+  `authoringTrail: authored.attempts` is a variable and not a fresh object literal, so no
+  excess-property check ran and every reader of the trail type was blind to abandonment.
+  `readAuthoringAttempts` now puts the abandonment FIRST on the row's problems, using
+  `=== true` and never truthiness, so a pre-2026-08-10 trail claims nothing.
+- **The bound now actually fires.** `timer.unref?.()` was removed: an unref'd deadline timer
+  does not hold the event loop open, so a CLI invocation whose only pending work is a
+  handle-less hung promise — **exactly the hang the bound exists for** — drained and exited 0
+  instead of abandoning. Measured by hand in scratch in both directions before the test was
+  written: ref'd → stdout `ABANDONED`, exit 0; unref'd → **no stdout**, exit 13 *"Detected
+  unsettled top-level await"*. So `assert.notEqual(status, 0)` would have been GREEN on the
+  broken version — the check inverted — and the assertion is on stdout.
+
+**THE SPEND HOLE THE BOUND OPENED, AND THE SENTENCE THAT DENIED IT.** The bound **abandons,
+it does not cancel** (`SeatCallRequest` carries no `AbortSignal`), so attempt N+1 is
+dispatched while attempt N's call is still in flight — the first concurrency this phase has
+ever had. `SpendCeiling.checkBeforeCall` projects from `#spentUsd`, which an abandoned call
+reaches only **if it returns**, and `collectUsage(specCaller, judgeCaller)` runs synchronously
+at the return and at the throw — so a late-returning abandoned call's usage row is **lost,
+not late**, and `callWithDeadline`'s docblock claim that *"its spend is accounted late rather
+than lost"* was **false, not imprecise.** Both halves were fixed: a new
+`reserveAbandonedCall` charges the ceiling the worst case off the abandoned call's **own**
+pre-call decision at the moment of abandonment (found by index, because `PreCallDecision`
+carries no `purpose`), and the false sentence is replaced by the measured one. Arithmetic
+proof in the test: ceiling $2.50, worst case $1.00/call, refusal lands **exactly on dispatch
+3** with `budget_exceeded`; without the reservation all three are authorised for $3.00.
+
+**AND THE HALF THAT CANNOT BE FIXED HERE, refused rather than sold.** On the dashboard's own
+`SubscriptionSeatCaller` the pre-call check is `checkBeforeCall(0, …)` — a subscription call
+has no dollar cost — so **the reservation is $0 and the cost ceiling cannot fire on the only
+path this failure has ever been observed on.** The quota those orphaned `claude-agent-sdk`
+subprocesses consume is **not dollars**, and no `SpendCeiling` reservation can bound it; only
+cancellation can, and that needs an `AbortSignal` on `SeatCallRequest` — a different file.
+The owner-facing failure sentence therefore **branches on the actual figure**, reports it
+(`$X.XXXX across N abandonments`) and makes the zero case the loud one. A mutation that
+restored the unconditional claim goes red.
+
+**HANDOFF NOT TAKEN, and it is the one new failure mode this round introduces.**
+`TIMEOUT_FAILURE_MARKER` has three occurrences repo-wide and **no consumer in
+`dashboard/server/src`** — so an all-timeout authoring phase throws `suite_not_audited`,
+classifies as `suite_authoring`, and the owner-facing sentence pointed him at *"the blocking
+findings on the error"* when `last.findings` is `[]`. **The sentence was fixed** (it now
+points at the channel that is always populated — the thrown message: the last attempt's
+problems, the output-token rung per attempt, and the wall-clock bound in both directions —
+and says explicitly that a blocking finding is not guaranteed). **The class was not built**,
+deliberately: it needs a `message` field on `PhaseFailureSignals` (whose absence is
+deliberate), a duplicated marker in a module that argues for not importing `bakeoff/`, arms
+in `boundFor`/`terminalClassReason`/`isRepairable`, and — for any nonzero bound — a
+`planRecovery` arm plus the §3.4 fingerprint gate. **Filed as DESIGN §3.7 with the marker's
+exact text and *"do not delete the constant to close this."***
+
+#### 6.12 THE DIGEST, THE CALIBRATION AND THE RUN-1 RE-SCORE — cross-reference, not a second record
+
+**§6.0's table is the authority and is already correct for this round.** Do not read this
+round's lane reports for digests: **`newDigest: ec79e1efbe81…` is stale.** It was the image
+at 08:43 (authoring-retry history + the per-call bound) and is now the **rollback tag
+`bakeoff-scorer:pre-repair-2026-08-10`**; the repair pass rebuilt twice more and the live
+image is `027bc2e2…`. Re-measured while writing this block:
+
+```
+docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep -i bakeoff
+bakeoff-scorer:1                      027bc2e2d3d2
+bakeoff-scorer:pre-repair-2026-08-10  ec79e1efbe81
+bakeoff-scorer:pre-never-stop         83b80ef56b67
+bakeoff-scorer:pre-manifest-shape     b7a9fd0a0f58
+```
+
+**FOUR ROLLBACK POINTS NOW EXIST BY NAME, and two intermediate rungs do not:**
+`d74a20aeb6bc…` (which the `gate-verified-2026-08-10` **annotated tag body names as the image
+at that commit** — `docker image inspect d74a20aeb6bc` → *No such image*, confirmed
+independently by the Rebuild phase and the verifier) and `5ffdc20a461c…` (11:24, before the
+branched reservation sentence). **The tag body transcribed the intermediate rung as the final
+one; it also reports bakeoff 143/143 where the archive tree measures 146/146 and client unit
+168/168 where `--list` enumerates 171 leaves.** The rollback digests it records
+(`b7a9fd0a…`) and the run-1 constants (`21c30afd…`, 20/1, REQ-013) do check out, so this is
+transcription drift, not fabrication — **but a recorded rollback pointer that does not resolve
+is precisely the failure this document post-mortems. OWNER ACTION: correct the tag body.**
+
+**Calibration and the run-1 re-score were re-established, not argued safe, and the verifier
+re-ran the re-score itself rather than reading the numbers:** `heldOutPass=true`,
+`falseFinish=false`, `agentDeclaredDone=true`, `21/20/1`, sole failure
+`FAIL QUALITY REQ-013 :: holdout/coglane-presentation.spec.mjs › [REQ-013] T-14 an empty
+booking submission produces no confirmation`, `protectedPathViolations=[]`, 24 criteria PASS,
+both discriminators cleared in code (`suite.sha256 ==
+run.heldConstants.acceptanceSuiteSha256 == 21c30afd…`; `gate.scorerImageDigest ==
+score.scorerImageDigest`). Calibration **8/8 both directions** with the two named leaves
+carrying them (*"no fixture produces a FALSE PASS"* and *"the correct artefact is not failed"*),
+and the third leg — the dry run — was run too rather than claiming an intact chain on two
+thirds of it (24 PASS / 0 FAIL, five stages, the gate resolving the image by content digest).
+
+**THE SCOPE LIMIT ON THAT GREEN, restated because `chainIntact: true` invites over-reading.**
+Every leg printed `PASS BLOCKING GATE:data-present :: NOT APPLICABLE: the frozen suite
+declares no data expectations`. **All three legs graded `dataExpectations: []`.** The chain
+proves the rebuilt scorer grades the OLD, EMPTY shape identically. It proves **nothing** about
+the populated shape N1 makes the spec seat emit — which is exactly the shape §6.10's replay
+now shows the seat being told to produce. **§6.2's standing limit — *"no run has produced a
+valid manifest, because no run has been made"* — is unchanged by this round.** (The lane's
+rebuild report cites this as *"§6.4's standing limit"*; §6.4 is REFUSED THIS ROUND. The
+limit is §6.2's closing paragraph.)
+
+#### 6.13 WHAT THIS ROUND DOES NOT MAKE TRUE
+
+**THE ROUND'S OWN PAIRING CLAUSE WAS ASSESSED AND DID NOT BIND.** The brief said a nonzero
+budget without an informed retry buys identical failures, so Fix A and Fix B ship together or
+neither ships. **Lane A shipped no nonzero budget** — all six classes exercised at 0 — so
+there was nothing for Fix B to be paired *with*, and both stand on independent
+mutation-proven evidence. The one blocking red in the tree (**80 failed browser tests**, 77
+carrying `Cannot read properties of undefined (reading 'wired')` at
+`supervisor-strip.tsx:205` → `app-shell.tsx:244` → `RootLayout`, so every page rendered
+blank) was in files in **neither lane's list**, and reverting either lane would not have
+cleared a single one of them. It was fixed at the root — a malformed 200 now yields
+`snapshot: null` rather than a type lie on a field declared `SupervisorState | null`.
+
+**WHAT THIS ROUND ADDS:** a failure vocabulary, one routing predicate two consumers agree on,
+an authoring retry that can see its own previous manifest and every constraint so far, and a
+wall-clock bound on a call that could previously hang for ever. **WHAT IT DOES NOT ADD:
+any retry, and any repair.**
+
+- **NOTHING RE-ENTERS A NON-THROTTLED PHASE.** `orchestrator.ts:6801`. Unchanged by this
+  round, re-grepped on the dirty tree.
+- **THE REPAIR AGENT DOES NOT EXIST**, and the patch AUTHOR is named as unbuilt rather than
+  silently omitted (§6.7). `repairing` — where `a913c871`'s own class now lands — is a
+  **terminal park with one writer and no reader that moves a ticket out of it** (§6.6 item 1).
+- **THE SUPERVISOR IS BUILT AND UNWIRED.** §7 records it constructed, armed and ticking, and
+  §7.3 is the honest half: `grep -rn 'tools/repair\|tools/tier3\|tools/replay' dashboard/server/src
+  dashboard/src bakeoff/src | wc -l` → **0**; no supervisor-submitted run has ever reached a
+  verdict; no defect record has ever been written for real; no repair patch has ever been
+  applied to this repository.
+- **TIER 3 IS A LIBRARY WITH AN UNARMED NEGATIVE ARM.** 17 arms held, **0 container arms
+  executed**, so every inside-closure diff parks SELF-PROPOSE and the gate's refusal of a
+  real grader softening was correct **for the wrong reason** (§7.3 item 2).
+- **AND THE ROUND'S OWN HEADLINE FIX IS INVISIBLE TO THAT GATE.** Fix B is an authoring-prompt
+  change inside `bakeoff/src`; S3–S8 grade frozen artefacts against frozen suites and the spec
+  seat never runs, so the sealed gate observed nothing about it (DESIGN §6.5, §10.1, and §6.0
+  of that document).
+
+**SUITE FIGURES — ATTRIBUTED, NOT RECONCILED.** The verifier measured, and carries its own
+caveat that **a third lane was editing throughout** (its own three server runs read 1927 →
+1935 → 1938): bakeoff **160/160** (baseline 146/146, zero leaf names dropped); server final
+clean run **1938 / 1935 pass / 0 fail / 3 skip, exit 0**; client unit **190**; `tsc --noEmit`
+**exit 0 with zero output lines in all three packages**, with `bakeoff/dist` verified current
+before trusting the server result. Two server leaf names were dropped — both
+`recovery.test.ts` **renames with verified same-file replacements**, both red under the
+collapse mutation.
+
+**THE BROWSER SUITE — READ THE CAVEAT BEFORE THE NUMBERS.** **§7.3 states that no browser spec
+in ITS round was executed by any lane, the verifier or the repair pass**, and **this recorder
+did not run the suite either.** Different actors are reporting different things, and nobody
+reconciled them. Against that: the verifier measured **80 failed / 186 passed / 1 skipped**
+(267), and the repair pass reports **267 passed / 1 skipped** after the root fix, with wall
+clock 39.1 min → 2.4 min because 77 tests had been burning their timeouts. **Re-measure before
+quoting any of it. No green browser suite is claimed as a property of this round.**
+
+---
+
+### CARRIED FORWARD BY THE STRIP-CRASH / STILL-PARKS ROUND, 2026-08-10 — nothing here was dropped either
+
+#### 6.14 §6.6's SEVENTEEN OPEN ITEMS, RE-MEASURED — FOUR MOVED, THIRTEEN DID NOT, FIVE ARE NEW
+
+**Movement is stated against §6.6's own numbering so the two lists can be read against each other.
+Everything below was re-measured on this tree, not carried from a report.**
+
+| §6.6 item | movement |
+|---|---|
+| **1** `repairing` is a terminal park with no producer | **CLOSED as a park.** Six named outcomes, five terminal; measured live (§8.3). **The stop remains** — with no driver, every structural failure ends at `blocked` in one tick. |
+| **2** nothing calls `tools/repair` / `tools/tier3` / `tools/replay` | **HALF CLOSED.** The seam and the CLI exist (`tools/repair/supervisor-cycle.mjs`, `createRepairDriver`, `createDefectSignatureReader`, each arm-checked); `index.ts` still passes no `repair` dep. Still no root `package.json`, still refused for the same measured reason. |
+| **3** `violations` is always `null` at the write site | **UNMOVED, and now with a measured refutation of the cheap fix** (§8.3, last row). Still the precondition for four other items. |
+| **4** three signature formulas share one address space | **UNMOVED.** The new CLI writes and reads ledger rows keyed by the production record's own `signature`, so its `ALREADY_RULED_OUT` brake demonstrably fires **within itself** — and a row written by `tools/repair/cycle.mjs`, which keys on `computeSignature`, will not be found by it. **Two ledgers that look like one.** |
+| **5** the client half of the enqueue path | **UNMOVED.** Still curl-only. |
+| **6** `createSupervisorSubmit` has never run against a real store | **CLOSED** (§7.2-D stop 4). |
+| **7** no backoff, no per-ticket wall clock | **HALF CLOSED, for repairing tickets only.** `SUPERVISOR_REPAIR_DEADLINE_MS` is the first wall-clock bound in this file; the submission path still has none. |
+| **8** the orphan run | **UNMOVED, still reasoned rather than measured.** |
+| **9** `abort-now` answers 501 | **UNMOVED.** |
+| **10** Tier 3 does not enforce two available codes | **UNMOVED.** |
+| **11** `noOpAblation` is a string nothing executes | **UNMOVED.** |
+| **12** zero container known-bad arms | **UNMOVED.** |
+| **13** `calibration-4a.mjs` journaling | **UNMOVED.** |
+| **14** `humanReviewed` is `null` on every record | **UNMOVED — owner-only.** |
+| **15** N6, N8, N9, N11, R4, B2, B4 | **UNMOVED.** |
+| **16** the Tier 3 trail location departs from DESIGN §6.7 | **UNMOVED — still unratified.** |
+| **17** housekeeping | **GREW, and every new artefact is gitignored:** private outDirs `dashboard/server/dist-still-parks/`, `dist-strip-crash/`, `dist-gate/` (the last deleted), `dashboard/screenshots/strip-1440-*.png`, and everything under the round's scratchpad. `dashboard/.next-gate` / `.next-final` and `test-results` were deleted. **The owner's `dashboard/data/runs.db` sha256 is unchanged (`ae47de75…`) and `dashboard/runs` still holds exactly 5 runs** — every server boot in this round ran against an APFS clone. **AND ONE THING NEITHER `git status --short` NOR `git diff --stat` SHOWS, so it is recorded here before the commit rather than discovered after it: there is ONE stash entry, and it PREDATES this round by a week** — `git stash list --date=iso --format='%gd %ci %s'` → `2026-08-03 08:31:43 +0200  On main: half-finished design-directions work from the stopped workflow wf_4b991b7c (recoverable, not expected to be needed)`. **No round since has stashed anything**; the check is written out because "the tree is untouched" is not a claim `git status` alone can support. |
+
+**FIVE NEW OPEN ITEMS, ranked by what they cost tonight.**
+
+1. **NO REPAIR DRIVER IS WIRED — ~4 lines in `index.ts`.** Pass `repair: createRepairDriver({…})`
+   and `defectSignatureOf: createDefectSignatureReader(runsDir)` into the `new SupervisorLoop({…})`
+   at `:86`. Absence measured: **0 grep hits**. Until then the boot arm check says so out loud, and
+   the behaviour is bounded rather than broken.
+2. **THE MORNING READOUT CANNOT DISTINGUISH A FINISHED QUEUE FROM AN ALL-BLOCKED ONE**, and
+   `GET /api/supervisor/tickets` is a measured **404** (§7.2-D stop 17). **Instance twenty-four.**
+3. **THE CLASSIFIER STILL AGES READINGS AGAINST THIS CLIENT'S CLOCK**, not against the wire's `at`
+   — which is now on the wire, declared, validated and rendered. Deferred deliberately in a repair
+   pass, with the reason written into the type: ageing against `at` catches a stale-computation
+   server and makes two machines' clock skew a new false alarm.
+4. **`dashboard/tests/fixtures/` STILL SERVES NO `/api/supervisor`.** On 31 of 33 spec files the
+   strip only ever reaches `unreachable`, so the live wire shape is exercised only through the
+   golden via `page.route`. **This is where a future mirror drift would be caught even without the
+   golden**, and it was deliberately not bet on this round: a shared fixture route flips the strip's
+   prose on every route and puts the green browser suite in front of `prose-guard`'s 40-word budget,
+   `panel-copy`, `pages-prose` and `readout-copy`. **The next structural improvement.**
+5. **NO SANDBOX, so `tools/repair/prover.mjs` IS UNREACHABLE FROM THE SUPERVISOR.** Nothing makes an
+   isolated copy of the repo; a `git worktree`-based sandbox factory is the missing piece and is
+   named in the CLI's docblock. This is why a hand-authored diff returns `NO_SANDBOX` rather than
+   being graded.
+
+**AND ONE COSMETIC ITEM, left alone deliberately rather than fixed with an untested edit in a repair
+pass:** on a database that has never been started the server sends `changedAt: ""`, and
+`formatClock("")` returns `""`, so the detail pane reads *"stopped since  (boot) — the supervisor has
+never been started on this database"* — a blank gap where a time goes, with the truth in the sentence
+beside it. Non-crashing, fresh-DB only.
+
+#### 6.15 EVERY HANDOFF FILED BY THIS ROUND, WITH ITS OWNER
+
+**Consolidated from the two lanes' fourteen handoffs and the repair pass's eight carried-forward
+items, deduplicated against §6.14 so nothing appears twice. Each row names the file that has to
+change and the measurement behind it.** **Four of the fourteen are NOT here because they are
+CLOSED** — the lanes' four "wire detail" handoffs (`lastRepair` nullable, the ticket's missing
+`currentRunId`, `attempts` being on the wire after all, and the server's `at` stamp) were all
+answered by the mirror rewrite; they are recorded as closed in §8.2, and the one residual — that
+nothing AGES against `at` — is §6.14 item 3.
+
+| filed by → owner | handoff |
+|---|---|
+| `still-parks` → `index.ts` | the ~4-line repair-driver wiring. §6.14 item 1. |
+| `still-parks` → `bakeoff/src/spec-validate.ts:1331-1336` **(digest-moving; forbidden this round)** | `blocking("other", null, …)` drops `problem.field`. Needs a `field` slot on `AuditFinding` (`contracts.ts:308`) **plus** this call site — **and that is only half:** the manifest DOCUMENT is not on disk at defect time (`spec-agent.ts`'s `lastManifest` is in-memory; `grep -n 'writeFileSync\|mkdirSync' bakeoff/src/spec-agent.ts` → **0 hits**) and the thrown `BakeoffError` carries no attempts, so the paths must travel on the error or on the authoring trail as well. `tools/repair/manifest-paths.mjs#attemptsFromManifests` is the derivation to call once they do; it is landed and arm-checked. |
+| `still-parks` → the defect writer | **three signature formulas must converge on the reader's index-collapsing one** before the cycle and the supervisor can share a ledger. §6.14 item 4. |
+| `still-parks` → whoever owns the sandbox | a `git worktree` sandbox factory. §6.14 item 5. |
+| `strip-crash` → `dashboard/src/lib/api.ts` | a 200 whose body is literal `null` or is not JSON **cannot be told apart from an empty body**, because `request()` swallows the `JSON.parse` failure and returns null. Both render *"this page has never had a reading from it"* — legible and non-throwing (asserted), imprecise about what happened. The fix is a fetcher that keeps the raw body; **not taken, because it changes the error path of every other panel for one sentence.** |
+| `strip-crash` → `dashboard/tests/supervisor-strip.browser.spec.ts:526` | the pre-existing run-detail test still uses `getByRole("link", { name: "Runs" })`, **proved to resolve TWO elements** once the home page's *"all runs"* link loads — a strict-mode failure that reads exactly like the blank page under test. **It is passing today on timing alone.** New tests use `{ exact: true }`. |
+| `strip-crash` → whoever owns lint | `npx eslint src tests` reports **11-13 errors** in `src/app/runs/[runId]/page.tsx`, `src/components/canvas/orchestration-canvas.tsx` and `src/components/ui.tsx` (`react-hooks/purity`, `react-hooks/refs`, `no-img-element`). Out of lane, untouched; the round's own six files lint clean. |
+| repair pass → the owner, **before committing** | **`dashboard/server/src/models.ts` is now modified (+54)** — `ModelCatalog.enumerated()` and a named `CATALOG_FALLBACK_MODEL_ID`, forced by the live-CLI finding. **The diff is 19 files, not the 18 the round started with**, and two more tracked files got **docstring-only** corrections whose claims had gone false (`src/lib/api.ts` on the command response shape; `src/lib/hooks.ts` on whether the wire carries a server stamp). **Review those four deliberately.** |
+| repair pass → the owner, **before committing** | **run `git diff dashboard/tsconfig.json`.** §7.2-D stop 19. |
+| repair pass → whoever regenerates the golden | the exact command, and the ordering that gives the pin its value. §7.3's falsified bullet. |
+| repair pass → Tier 2 | the route still has **no producer** for `attempts`, `lastDefect` or `lastRepair`; `probe.unsourced` names all three on every poll and **the client now reads that list**. Arm 7 is armed, rendered and browser-tested and still cannot fire on live data. |
+
+#### 6.16 WHAT THIS ROUND REFUSED, AND THE MEASUREMENT BEHIND EACH REFUSAL
+
+**Four refusals. In each case the fix as literally briefed would have made something worse, and the
+measurement is what shows it.**
+
+1. **"Fix the crash at `supervisor-strip.tsx:205`."** Refused as **already fixed** — and the round
+   did not stop there. The line is historical; the browser suite was **267 green before any edit**.
+   What was left of the class — the arm ordering, the residual unguarded fields, the SSR-reachable
+   arm — was found, fixed and mutation-proved instead (§8.1). **A round that had trusted its brief
+   would have "fixed" a fixed line and shipped three live crash paths.**
+2. **"Populate `violations` by consuming what `bakeoff/src` already emits."** Refused **on the
+   measured chain**: the only structured field path is dropped at `spec-validate.ts:1331-1336`, and
+   the surviving copy lives in prose that `signature.mjs:81` explicitly bans regexing. Also refused:
+   wrapping the spec seat caller to recover the manifest — `attemptPaths` returns null for any
+   attempt without structure, null means BLIND, and BLIND escalates, so a
+   `[structured, BLIND, structured]` sequence would **escalate at attempt 2 on every ticket with one
+   bad attempt.** That is the false stop DESIGN §7.6.2 names — **instance twenty-three while fixing
+   twenty-two.**
+3. **"The exhaustive validator is too strict; loosen it."** Refused for `absent`, and the half that
+   was true is now **asserted** rather than argued (§8.2, last paragraph). The steady state is no
+   longer amber because the mirror matches the wire — **not because the validator was relaxed.**
+4. **"`next build` rewrites a tracked file — fix it."** Refused as **not this repo's code**. Recorded
+   as an owner-facing trap with the one-line check instead (§7.2-A, §7.2-D stop 19).
+
+---
+
+## 7. THE NEVER-STOP ROUND — BUILT AND MEASURED 2026-08-10
+
+Five parallel lanes against `docs/DESIGN-self-maintaining-pipeline.md`, then a verifier, a
+reviewer and a repair pass. **The verifier's numbers are measured; a lane's own figure is
+labelled as the lane's claim; anything the recorder re-measured says so.**
+
+**THE GATE DID NOT PASS.** `gatePassed: false`, and the reason was a real product defect the
+repair pass then fixed — see §7.3.
+
+### 7.1 WHAT WAS BUILT, PER TIER, WITH THE TEST AND THE ARM CHECK THAT COVERS EACH
+
+#### TIER 0 — the free instrument nobody asked for, and the best value in the round
+
+**`tools/replay/` — stored artefacts × candidate checker, ~150 ms, zero model calls.**
+`checker.mjs` imports the LIVE built validator at runtime (never vendored — *"a vendored
+checker becomes a fossil that tests history"*) and runs a manifest through BOTH
+`parseSuiteManifest` (the fail-fast sentence the container actually saw) and
+`collectManifestProblems` (the whole survey). **The gap between them is the measurement that
+explains the death.**
+
+- **THE FIXTURES ARE NOW IN THE REPO.** `a913c871`'s three real manifests and prompts existed
+  only in a reapable CLI session directory. `extract-fixtures.mjs` walks the three transcripts
+  (`cfdffda9`, `60fcb909`, `e327a0fb`), and `--check` re-extracts into memory and diffs against
+  disk. **Re-measured by the recorder:** `node tools/replay/extract-fixtures.mjs --check` →
+  `all 9 fixture file(s) match the CLI transcripts byte for byte`, exit 0;
+  `git check-ignore -v` over all nine → exit 1, no output; `git add -An tools/` → 42 files.
+  The owner's real CV PDF is NOT copied — only `{mediaType, base64Chars, sha256OfBase64}`.
+  **THE EXTRACTION IS SELF-CONFIRMING:** the three shapes it produced are the ones the
+  post-mortem's own table records — attempt1 `{entity, source, expectation}`, attempt2
+  `{id, description, entity, minRowCount, readBack}`, attempt3
+  `{kind, method, path, expectStatus, description}` — the `id → kind → id` oscillation,
+  recovered by a different reader on a different day.
+- **ARM CHECKS — four, printed before any case runs, each printing its measurement:** corpus
+  size (`0` is a hard failure); `checker is not blind` (known-good → ACCEPTED, known-bad with
+  `minRows` dropped → REJECTED **naming the field**); fixture integrity (3 sha256s recorded at
+  extraction time); fixtures are distinct (three copies of one manifest reads as BLIND). Any
+  blind arm forces exit 1 with `REFUSING TO REPORT A PASS: an arm check is blind, so this run
+  measured nothing.`
+- **THE CORPUS HAS TWO MUST-ACCEPT CASES, and that is why it is not instance twenty-two.** One
+  reads `MANIFEST_DATA_EXPECTATION_EXAMPLES` out of the BUILT spec-agent and parses it with the
+  real validator — **N1's root cause turned into a standing check**, so a prompt documenting a
+  shape the validator rejects is red the same second. Deleting both must-accept cases produced
+  `✖ … the corpus MUST contain at least one must-accept case or it passes on a
+  reject-everything checker`.
+- **VERIFIER-MEASURED, RUN FOR REAL:** `node tools/replay/replay.mjs --rounds` → exit 0,
+  `5 case(s); 0 failing/unarmed; 0 blind arm(s). PASS`. All three historical rejections
+  reproduce against the current validator naming the same fields; rounds-to-accept
+  collect-all **2/2/1, reproducing the post-mortem exactly**. The must-accept prompt case still
+  accepts **across a spec-agent rebuild** (`dist/spec-agent.js` moved from `9a2d0986…` to
+  `93c5b1e0…` under the concurrent round).
+- **`seat-replay.mjs` is PARTIAL and deliberately spends nothing.** `--spend` refuses with
+  exit 2, naming what is missing (the CV attachment, and a dispatcher living in another lane's
+  packages). It prints the price it would pay, measured not estimated: **~181,862 output tokens
+  and ~23m43s** for attempt 3, against the 1h26m54s / ~628,441 tokens the real run cost to
+  reach phase two of ten. Its own arm check is the thing that killed the run:
+  `mentions "minRows": YES` — or, on a regression, `NO — this is the a913c871 root cause`.
+
+#### TIER 1 — never park, and record what happened
+
+- **NEVER PARK, enforced at the submission boundary, not watched for.**
+  `assertNeverParks(spec)` throws on `designLock !== "auto"` or `interactive !== false`, and
+  both parks are made **unreachable** rather than defaulted (`planPolicy(false)` → `"skip"`, so
+  there is no plan-seat question to park on; `designLockPolicy("auto", …)` → `"auto"` before
+  `interactive` is consulted). **Two-armed test**, so a guard that refuses everything fails the
+  same test as one that refuses nothing. Mutation: disabling the `designLock` guard →
+  `✖ a submission that could park is refused at the boundary, not watched for …
+  Missing expected exception.`
+- **THE DEFECT RECORD** (`defect-record.ts` + `#writeDefectRecord` off `#finish`) → both
+  `runs/<runId>/results/defect.json` and the append-only `data/defects/<signature>.jsonl`.
+  3 integration tests driven by a run that **really dies in `spec`** — not a pre-frozen fixture,
+  which is the trap `orchestrator.spec-spend.test.ts` documents. **Its own arm is the
+  `unavailable[]` list:** a record that knows nothing says so in the file and in the run's log
+  line, so a defect channel that has gone blind cannot present as a clean row of zeroes.
+  Mutations: deleting the call (`✖ the terminal transition must write …/defect.json`), forcing
+  `violationsAvailable:true` (`true !== false`), `appendFileSync → writeFileSync` (`1 !== 2`).
+- **`results/authoring-trail.json` ON BOTH PATHS** — the fix for N5's harness half. Three
+  sources tried in order and never a fourth: the thrown error probed **structurally** for an
+  `attempts` array (never the message), the frozen `AUDIT.json`, then `attemptsAvailable:false`
+  with an `UNAVAILABLE:` sentence. **The RED was `a913c871`'s exact state:**
+  `AssertionError: the spec phase must leave a trail even when it dies: …/results/authoring-trail.json`.
+
+#### TIER 1.5 — the supervisor, and it is now actually running
+
+- **`supervisor.ts` — three tables, typed accessors, and a tick loop that takes every decision
+  from the tables on the tick that makes it.** 22 tests. **VERIFIER-MEASURED IN ISOLATION over
+  a FILE-BACKED sqlite db:** a fresh db answers
+  `{"desired":"stopped","changedBy":"boot","reason":"the supervisor has never been started on
+  this database"}` — an unwired supervisor is an answer, not an error; a submission that throws
+  logs *"submission of t-verify-1 threw and the ticket went back to the queue"* and
+  **CONTINUES**; and **a real `kill -9` from inside `submit` after the claim**, followed by a NEW
+  loop over the SAME db file, read `stuck-orphan-claim` BEFORE any tick — *"ticket t-verify-1 is
+  claimed but names no run — the submission was lost between the claim and the run row"* — then
+  requeued and submitted **exactly once**.
+- **ARM CHECK:** `SupervisorLoop.armCheck()` feeds `classifySupervisorHealth` three snapshots
+  whose answers are known in the source and requires three **distinct, correctly-matched**
+  verdicts, because `return "idle"` gets one of three right:
+  `ARM CHECK: supervisor discriminator returns 3 distinct verdict(s) on 3 known inputs; 0
+  misread` / `sees N ticket(s) — queued A, in flight B, waiting C; desired='…'` /
+  `armed — idle and stuck are distinguishable`. **It is now CALLED at boot** (`index.ts:159`),
+  which it was not when the lane filed it.
+- **THE ATTEMPT CAP MOVED TO THE CLAIM STEP** (`:455`) and a failed submission now counts as an
+  attempt (`:518`). Before that, a deterministically throwing `submit` re-claimed every 30 s
+  **for ever** while reporting progress. Two tests, each with a negative half.
+- **`GET /api/supervisor`** reads the **same** `deps.store` the loop decides from, so a panel
+  that says "idle" and a loop that is stuck cannot disagree. `composeSupervisorState()` is pure
+  so the boot arm check can drive it with known answers. **ARM ONE** requires three different
+  bodies with the `probe` block STRIPPED (probe counters differ even when everything the owner
+  reads has collapsed); **ARM TWO** prints measured live values and `loop=wired` vs
+  `loop=NOT WIRED — nothing will claim a ticket and START will refuse`. Blindness travels on the
+  wire as `probe.armed:false`. The sharpest mutation in the round: deleting the `rate_limit`
+  skip from the quiet clock →
+  `AssertionError: this run has produced nothing but telemetry since it started 90 minutes ago,
+  so the clock must read ~5,400,000 ms, not ~0 (read 3)`.
+- **START / STOP / ABORT-NOW.** STOP writes `draining` and **cancels nothing**; the four measured
+  reasons are at the route (`cancel()` → a terminal status → `resume()` refuses → the classifier
+  answers `intentional` → `boundFor('intentional')` is 0, so abort-now converts a resumable run
+  into an unresumable one and throws the workspace away). START nudges one tick; **a GET never
+  ticks** — mutation `AssertionError: two polls, no extra ticks 3 !== 1`. All three POSTs carry
+  the cross-origin refusal with an absent `Origin` allowed. Mutation on STOP: making it also
+  cancel produced `AssertionError: STOP must not cancel anything + [ 'run-1' ] - []` **while the
+  desired-state assertion still PASSED** — that is the arm that tells drain from abort.
+- **`POST /api/supervisor/tickets`** — added by the repair pass, and without it the whole thing
+  is inert: `enqueueSupervisorTicket` previously had callers only in two test files. Branched
+  **before** the command dispatch, deliberately: a command that cannot be carried out answers
+  503, but a FILING is a durable row claimed by the next boot's first tick. The key is minted
+  server-side from the brief digest, which makes the duplicate case decidable (409, and a retried
+  POST is idempotent). Validation reuses `briefHasContent`, **not** `.trim()` — a brief of
+  zero-width characters trims non-empty and renders empty on the queue that spends money.
+  **`modelId` is NOT validated against the live catalog, deliberately:** the catalog is a live
+  probe of two CLIs, and a ticket filed at 2am against a lapsed provider should still be filed.
+  **Its test is the end-to-end arm nothing else in the round has:** file a ticket over the wire,
+  then `await loop.tick()` with a recording submit, and assert the submit was called. Mutation
+  (route answers but files nothing) → `0 !== 1`.
+- **THE BOOT SEQUENCE** (`supervisor-boot.ts`): `armCheck()` runs FIRST; a BLIND loop gets **no
+  interval, no boot tick, and `desired` forced to `stopped` with the reason on the row**, so the
+  refusal is readable on the wire and not only in stdout. Tick rejections — sync and async — are
+  absorbed and named, because an unhandled rejection from a 30 s interval kills the process.
+  Mutation A (delete the boot call) → `AssertionError: startSupervisor is never called, so there
+  is no interval and no arm gate`; mutation B (neuter the arm gate) → `AssertionError: … the
+  interval was installed for a blind discriminator`.
+
+#### TIER 2 — the repair machinery, and the bar it must clear
+
+- **`tools/repair/` — 72 tests across 7 files, `node tools/repair/arm.mjs` → 7/7 arms live** (both
+  re-measured by the recorder, exit 0).
+  The signature is structural (index-collapsed, sorted, prose never an input, and `attemptPaths()`
+  returns `null` rather than regexing a field name out of prose). The evidence bar has **15 named
+  refusal codes** and the tests assert the **exact code set with `deepEqual`**, so one over-broad
+  predicate cannot mask five others. The prover runs everything through `spawnSync`; a transcript
+  is the process's own bytes framed by the command line and `# exit code: N`, and the mutant is
+  `git apply -R` of the patch so **the agent cannot choose its own exam**. The ruled-out ledger
+  writes a row on EVERY verdict, because *a refusal with no row is indistinguishable from a
+  refusal that never ran*.
+- **THE ARM CHECK IS ITSELF FALSIFIABLE — 8 injected blindings**, each a component blinded the
+  way it would really go blind: a signature that never moves, a comparator that never escalates,
+  a comparator that ALWAYS escalates, a bar that accepts everything, a bar that refuses
+  everything, a prover that reports success without executing, an isolation guard that accepts
+  the repo, a ledger that writes nothing. **And it caught a real defect before any test did:**
+  `ARM CHECK FAILED: cycle-end-to-end — a provable repair was not accepted end to end:
+  [{"code":"NO_INDEPENDENT_CHECK"…}]`, exit 1 — the prover leaves the patch applied, so
+  `independentReplay`'s own apply failed and reported `ran:false`.
+- **THE STRONGEST SINGLE AUDIT RESULT IN THE ROUND.** The verifier re-applied the ledger no-op
+  mutation and the **start-up arm check caught it loudly and by name**, which is what hard rule 4
+  exists for: `ARM CHECK FAILED: ledger-writes — a refusal wrote no row: a refusal nobody can
+  read is a refusal that never ran` / `ARM CHECK FAILED: cycle-end-to-end — the could-not-reproduce
+  outcome left no row` / `ARM CHECK: REPAIR AGENT IS BLIND — ledger-writes, cycle-end-to-end`.
+- **RUN ON `a913c871`'s REAL DEFECT DATA:** `VERDICT: ACCEPTED`, `prove outcome: PROVEN`, all
+  three transcripts present **with exit-code trailers** (`redBefore` 73 chars, `greenAfter` 76,
+  `mutationRed` 73), `filesChanged: ['src/prompt.mjs']`, `touchesFrozenClosure: false`. **The
+  patch was NOT applied** — everything ran in a scratch sandbox, and the prover refuses the
+  working tree (arm-checked both ways).
+
+#### TIER 3 — the gate
+
+- **THE FROZEN CLOSURE IS COMPUTED, NOT HAND-LISTED.** A transitive local-import walk of the four
+  verdict-producing entry points → 11 files, exactly the design's list, plus the 7 FROZEN-CONTROLS
+  files derived the same way. `CLOSURE_FLOOR` is a **membership** floor, not a count: a missing
+  member fails (that is the softening direction), an added member is logged and does not fail
+  (monotone ratchet, `RESEARCH` R13). Mutation (stop enqueueing transitive imports) →
+  `AssertionError: the derived closure lost config.ts, contracts.ts, hash.ts, redact.ts,
+  scorer-protocol.ts, spec-freeze.ts, spec-types.ts. Losing spec-freeze.ts makes "which half is
+  held out" editable without touching a scorer file.`
+- **FROZEN IS ENFORCED, TAMPER-EVIDENT, AND SAYS SO:** a sha256 manifest of **223 frozen paths**
+  written OUTSIDE the tree, an isolated copy the gate runs from, split verification (isolated code
+  vs in-place data, each mismatch labelled), per-module dist freshness driving arms to UNARMED
+  rather than to a silent pass. **ABSENT is a mismatch, never a skip** — mutation:
+  `AssertionError: a deleted frozen file was read as intact.`
+- **FIVE ARM CHECKS, all five exercised while the answer is known** (A1 plants exactly one byte and
+  requires exactly one mismatch on exactly that path, then restores and requires silence; A4 fails
+  if the three routes are not all DISTINCT). `runArmChecks` asserts `armed === 5` **as well as**
+  `blind === 0`, because `blind.length === 0` is green on an empty arm list. Blinding the trail
+  reddened 5 tests **including A5** — that coupling is what makes "re-run until green" detectable.
+- **VERIFIER-MEASURED, THREE PROPOSALS, THREE VERDICTS:** a real grader softening → SELF-PROPOSE,
+  `applyToken: null`; a diff against the impossible-ticket anchor → REFUSED (*"the admission
+  predicate is the objective function and is not self-editable at any tier"*); an editable-only
+  diff with full evidence → **APPLY**, token minted. **So it is not wired shut** — and read §7.3
+  for what that APPLY actually proved.
+
+### 7.2 THE OPERATOR'S PAGE — READ THIS BEFORE YOU LEAVE IT FOR EIGHT HOURS
+
+> **REWRITTEN 2026-08-10 (strip-crash round) FROM THE FINAL GO/NO-GO, not from a lane's claim.**
+> Every state, sentence, refusal and terminal transition below was driven against a real server
+> booted on an **APFS clone of the owner's home** (`dashboard/data/runs.db` sha256 still
+> `ae47de75…`, `dashboard/runs` still 5 runs) and read in a real browser at 1440×900, with the
+> screenshots opened and looked at. **What changed since the version this replaces:** there are
+> now **five** named strip states, not four (`malformed` is its own word); there is an error
+> boundary under the strip; the ticket route refuses a bad model id at filing instead of at
+> submit; `repairing` is **no longer a park** — the old stop 1 text is stale and is corrected in
+> place below; and there is a new subsection **C2** that says what the night actually looks like,
+> which is the most useful thing this round measured and was absent from the page entirely.
+
+#### A. HOW YOU START IT
+
+Everything in §4's RUN RECIPE still applies — **three builds first**, and verify them by
+CONTENT, not mtime. **Then run one command the recipe does not have**, because `next build`
+silently appends `.next/types/**/*.ts` and `.next/dev/types/**/*.ts` to the tracked
+`dashboard/tsconfig.json`'s `include` and prints only *"include was updated to add…"*:
+
+```
+git diff dashboard/tsconfig.json     # must be EMPTY before you commit anything
+```
+
+Measured twice this round (once under `next build`, once under `next dev`), restored from
+`git show HEAD:dashboard/tsconfig.json` both times. With `.next` unset the added globs look
+plausible enough to survive review. Then:
+
+```
+# 1. the API. Binds 127.0.0.1:4176 (DEFAULT_PORT, dashboard-url.ts:33). Leave it running.
+cd dashboard/server && npm run start
+
+# 2. the page. 127.0.0.1:4319 (dashboard/package.json:8). /api/* is rewritten to 4176
+#    unconditionally, so nothing needs configuring.
+cd dashboard && npm run start
+```
+
+**WATCH THE SERVER'S FIRST FIVE LINES. This is the arm check, and it is the only moment you
+can tell a working supervisor from a blind one:**
+
+```
+ARM CHECK: supervisor discriminator returns 3 distinct verdict(s) on 3 known inputs; 0 misread
+ARM CHECK: supervisor sees N ticket(s) — queued A, in flight B, waiting C; desired='…'
+ARM CHECK: armed — idle and stuck are distinguishable. …
+ARM CHECK: repair router returns 7 distinct code(s) and 7 distinct sentence(s) on 7 known inputs; 0 misread
+ARM CHECK: NO REPAIR DRIVER is wired. Every ticket that reaches 'repairing' terminates at
+           'blocked' with NO_REPAIR_DRIVER and the loop carries on to the next ticket.
+ARM CHECK: supervisor route reads desired='…' since …, N ticket(s), 0 queued, active=…, loop=wired
+ARM CHECK: supervisor loop armed; ticking every 30s, desired reads '…'
+```
+
+**The two repair lines are new this round and the second one is not a failure** — the loop still
+ticks with no driver wired, which was verified live rather than reasoned (`index.ts:86` passes
+`store`, `submit` and `resume`, and `grep -an 'repair\|defectSignatureOf' index.ts` → **0 hits**).
+**But a repair-router sentence collision now refuses the WHOLE boot**, not just the repair step,
+because `armCheck().armed` includes it. That is the fail-safe direction and it is deliberate.
+
+**If instead you see `ARM CHECK FAILED: the supervisor is BLIND and was NOT started`, stop.**
+No interval was installed, no tick was taken, and `desired` was forced to `stopped` with the
+reason written to the database — so `GET /api/supervisor` will tell you the same thing. **Do
+not press start; the button will refuse.** `loop=NOT WIRED` in line 4 means the same class of
+problem one layer up.
+
+**THEN FILE A TICKET. This is the step with no button** (§6.6 item 5), so it is curl:
+
+```
+curl -sS -X POST http://127.0.0.1:4176/api/supervisor/tickets \
+  -H 'content-type: application/json' \
+  -d '{"ticketText":"<your brief, exactly as you would type it into the page>",
+       "modelId":"<an id from GET /api/models>",
+       "maxAttempts":3}'
+```
+
+`201` returns `{ticketKey, title, state, maxAttempts, nextAction, queuedTickets, desired}`.
+**Every refusal was exercised against the live route this round, not read off the code:**
+
+```
+{"modelId":"no-such-model"}  → 400 invalid_model      "no-such-model is not in the catalog, so this
+                                                       ticket could never be submitted" / "GET /api/models
+                                                       lists every id that can actually run. Nothing was queued."
+{"ticketText":"   "}         → 400 invalid_ticket
+{"maxAttempts":99}           → 400 invalid_body
+the same brief, twice        → 409 ticket_already_queued  "this exact brief is already filed as t-…"
+{"modelId":"haiku"}          → 201
+```
+
+**`400 invalid_model` is new this round and it used to be a lie.** §7.2 has promised it since it
+was written; `http.ts` only checked for a non-empty string, so `no-such-model` was **queued with
+a 201** and the typo cost one full attempt and a terminal `blocked` ticket two ticks later. The
+check is now at filing time (`http.ts:1387`) and it is deliberately **three-armed, not two**: an
+id that IS in the catalog is filed whatever `available` says (auth can come back before the loop
+claims it); an absent id is refused when the catalog **enumerated**; an absent id is **filed**
+when the catalog could not enumerate, because losing a brief to a failed probe is the worse
+error. The naive one-armed version was falsified by the live CLI inside the hour — this machine's
+`GET /api/models` answers `['default','opus[1m]','claude-fable-5[1m]','sonnet','haiku']`, so a
+**healthy** catalog contains a model whose id is literally `default`.
+
+The key is minted from the brief's digest, so **the same brief is the same ticket** and a retried
+POST cannot file the work twice. `maxAttempts` is the ceiling on how many RUNS this one brief may
+cost; absent means 3.
+
+**WRITE THE BRIEF LIKE IT IS THE ONLY INPUT.** A supervisor submission SKIPS the plan phase by
+construction — that is how the plan-seat park is made unreachable rather than defaulted — so the
+acceptance criteria come from the raw ticket text alone. This is the same decision recorded for
+B3 on 2026-08-09, now enforced in code.
+
+```
+curl -sS -X POST http://127.0.0.1:4176/api/supervisor/start     # then go to bed
+```
+
+`start` returns the whole state plus `changed` and `note`, is idempotent, and reports
+`changed:false` with a sentence rather than flashing a change that did not happen. It writes
+`desired='running'` and nudges exactly one tick so you do not wait out the 30 s interval.
+
+#### B. WHAT YOU SEE
+
+**A 30 px strip across the top of every route**, always mounted, polling `/api/supervisor` every
+5 s. Left to right: a state pill, one sentence, the ticket and `attempt N of M`, the quiet clock,
+the defect signature, the last repair, both queue depths, and `start` / `stop (drain)` / `detail`.
+
+**FIVE STATES — five WORDS, five SENTENCES, and deliberately only FOUR COLOURS.** All of them
+are machine-distinguishable via `data-liveness` / `data-stale` / `data-armed`, and all five were
+photographed at 1440×900 and looked at:
+
+| pill | colour | it means | the sentence you get |
+|---|---|---|---|
+| `running` | green | **what is LEFT when nothing else fires** — never asserted | `<phase> · attempt N of M` |
+| `idle` | grey | nothing queued, nothing in flight | **two sentences, and the second one is the morning readout:** `stopped, nothing in flight` (never started, with *"boot set it to stopped: the supervisor has never been started on this database"*) · **`idle, queue empty`** — which is what you see after a successful night **AND** after a night of blocked tickets. That string is stop 17 and §8.6. |
+| `stuck` | **red** | one of the arms fired — **the loop is wedged and you must act on the RUN** | `running, claiming nothing` · `looping, not converging` · `claimed, no run` · `no progress clock` · `silent too long` · `supervisor arm check failed` |
+| `unreachable` | amber | the route did not answer, or the last answer is now history | `GET /api/supervisor did not answer: …` · `the reading below is Ns old and is history, not state` |
+| **`malformed`** | amber | **the route answered 200 with a body this page cannot read** | *"…so nothing here is state — the supervisor itself may be fine. Check what is serving `/api/supervisor`: an old build, a proxy or a test fixture answers exactly like this."* then the failing fields, last |
+| red banner across the strip | red | **the classifier itself is blind** — **not a pill and not a sixth state; it REPLACES the row** | `ARM CHECK FAILED, THE SUPERVISOR STRIP IS BLIND: …` |
+
+**AMBER AND RED MEAN DIFFERENT THINGS, AND `malformed` IS AMBER ON PURPOSE.** Amber = *this page
+cannot see*. Red = *the loop is wedged, act on the run*. A malformed body says nothing whatever
+about the run, so painting it red would be yesterday's preview-card lie again — the word carries
+the difference and the sentence carries the action. There is a test asserting the fifth colour is
+**missing**, that `malformed`'s colour equals `unreachable`'s and differs from `stuck`'s, and that
+all five words and all five sentences are distinct. **`malformed` renders NO data cells**, because
+the reading carries no snapshot; `unreachable` keeps the last cells beside it, as history, by
+design.
+
+**THE ARM LINE NOW READS `5 distinct`, not 4** (`unreachable · idle · running · stuck ·
+malformed`), and it is rendered in the detail pane **pass or fail** — *a report that only appears
+when it failed is a report nobody has ever seen working*. `stuck` after silence fires at
+**40 minutes**, and that threshold is **calibrated on one run** (`a913c871`'s largest real
+inter-event gap was 25.2 min, and `DEFAULT_SILENCE_WARN_MIN = 90` never fired). The quiet clock
+**skips `rate_limit` frames**, which is the whole reason `a913c871` looked alive.
+
+**A SIXTH THING ON THE ROW, AND YOU WILL ONLY EVER SEE IT IF SOMETHING BREAKS: `PANEL FAILED`.**
+The strip is now wrapped in `RenderGuard` (`dashboard/src/components/render-guard.tsx`) — the
+**first error boundary this application has ever had**; `grep` confirms `src/` had zero before.
+It wraps `<SupervisorStrip />` and **nothing else** on purpose: wrapping `{children}` would
+swallow page-level throws that other specs provoke and that Next's dev overlay reports, and a
+boundary that hides a bug is worse than a blank page. A throw inside the strip therefore costs
+**30 px of header, not the application**, and the row prints the real error plus: *"Nothing on
+this row is a reading. The rest of the page is unaffected; reload, and if it returns, the fault is
+in this panel and not in the run."* **Its limit, stated rather than assumed:** client boundaries
+do not catch server-render throws, so the strip's own start-up arm check — which runs in the
+render body — is the one place a throw still blanks the page, and that is why each of its probes
+now catches and reports `threw: <message>` as a FAILED probe instead of propagating.
+
+**AND ONE HONEST BLANK IN AMBER, in the detail pane** — now driven by the wire's own
+`probe.unsourced` rather than by a client constant, so it disappears by itself the day a producer
+lands: *"the supervisor does not report the authoring trail yet…"*. There are **two** such
+sentences, because they are two different facts: `unsourced` naming `attempts` → *"does not report
+the authoring trail yet"*; sourced and empty → *"an empty list, not a missing one"*. Believe them.
+§8.4.
+
+#### C. WHAT STOP DOES
+
+**`stop (drain)` MEANS DRAIN. It cancels nothing.**
+
+- It writes `desired='draining'`. The run in flight **keeps running to its verdict**; when
+  nothing is in flight the state becomes `stopped`.
+- **It does not touch `pump()`**, so a run you submitted from the page yourself still starts.
+  That is why the strip shows TWO queue numbers: `queueDepth` is the supervisor's backlog,
+  `queuedRuns` is `runs.status='queued'`.
+- **There is deliberately no "kill it now" button.** `POST /api/supervisor/abort-now` exists and
+  answers **501**, because cancelling a run writes a terminal status, a terminal row refuses
+  `resume()`, the classifier then answers `intentional`, and `boundFor('intentional')` is **0** —
+  so abort-now converts a resumable run into an unresumable one and throws the workspace away.
+  **To stop right now anyway:** `POST /api/runs/:id/cancel` and accept that cost. The ticket will
+  be inconsistent until someone looks.
+
+> **NOT EXERCISED, 2026-08-10 (strip-crash round).** Everything in C is still code plus unit
+> tests. `start`, filing, claiming, submitting, a real run row, `kill -9` recovery and two
+> terminal settles were all driven for real this round; **`stop (drain)` was not.** A cancel WAS
+> observed end to end and behaved as this section says (`supervisor_log` seq 5 `settled / run
+> …36f87c2b was cancelled`, ticket → `blocked` with *"nothing: a human cancelled this run"*), so
+> the cancel half of the reasoning is measured; the drain half is not.
+
+#### C2. WHAT TONIGHT ACTUALLY LOOKS LIKE — MEASURED ON A LIVE LOOP, NOT REASONED FROM THE DESIGN
+
+**This subsection is new, and it is the answer to the question the rest of the page does not
+answer: what will have happened by morning.** It was driven on a real loop against the clone.
+
+1. **You file the ticket by curl** (still no button — stop 3) and it is **claimed on the next
+   tick**, ≤ 30 s. Watched: `supervisor_log` seq 2 `claimed` → 3 `claimed` → 4 `submitted /
+   attempt 1 of 1`, then a real run row in `phase=spec, status=running` driven by a real
+   Agent-SDK child. **That is stop 4 exercised on this tree** — no `NewRun` column mismatch, no
+   `bus.emit` drift.
+2. **The spec phase is BOUNDED:** 3 authoring attempts, each abandoned on a 60-minute per-call
+   wall clock (§6.11), so the run resolves one way or the other inside roughly **three hours**.
+3. **If the spec phase fails again — the class that killed `a913c871`, and 3 of the 5 runs on this
+   machine died in `spec` — NOTHING AUTOMATIC REPAIRS IT.** `boundFor("structural")` is **0**, so
+   the failure is not retried and `maxAttempts` is never spent again. `settle()` writes `repairing`
+   with a 30-minute deadline for exactly **one visible tick**, and the next tick terminates it.
+   Measured by inserting a `repairing` ticket and pressing start: one tick later the row read
+   `state=blocked`, `next_action="nothing automatic: no repair driver is wired into this
+   supervisor, so no proposal for defect sig-spec-oscillation (class 'structural') can ever be
+   produced. Run tools/repair/cycle.mjs by hand and re-enqueue the ticket."`
+4. **THEREFORE THE REALISTIC NIGHT IS ONE ATTEMPT, NOT EIGHT HOURS OF ITERATION.** Within ~1-3
+   hours the ticket is either `done` (the gate scores it; run 1 proves that path reproduces) or
+   `blocked` with a named sentence — and then the loop ticks every 30 s over an empty queue until
+   morning. **Rate limits are the exception that does keep working:** `throttled`, `interrupted`
+   and `transient` have non-zero bounds and prefer `resume()` over a fresh spec phase.
+5. **AND THE MORNING READOUT IS THE WEAK POINT.** With everything terminated the strip reads
+   `IDLE / idle, queue empty` — **byte-identical to the readout for a queue that finished
+   successfully** — and `GET /api/supervisor/tickets` is a **measured 404** (only `POST` exists),
+   so the blocked ticket's sentence lives **only** in `supervisor_tickets.next_action`,
+   `supervisor_log` and the server's stdout. **What to do at breakfast:** look at `/runs` for the
+   run's own verdict (that page does show `failed`/`passed`), then read the ticket sentence out of
+   the database:
+   ```
+   sqlite3 dashboard/data/runs.db \
+     "select ticket_key, state, attempt_no, max_attempts, next_action from supervisor_tickets;"
+   sqlite3 dashboard/data/runs.db \
+     "select seq, at, ticket_key, run_id, decision, reason from supervisor_log order by seq;"
+   ```
+   (There is **no `supervisor_decisions` table** — the audit trail is `supervisor_log`.)
+
+**Nothing spins, nothing double-spends, no owner byte is at risk, and nothing restarts the node
+process if it dies.**
+
+#### D. THE COMPLETE LIST OF WAYS IT CAN STILL STOP AND NEED YOU
+
+**Reconciled against the tree as it stands, 2026-08-10, after the repair pass. Four of the
+reviewer's thirteen stops were closed and are recorded as closed rather than quietly dropped;
+three new ones the repair pass created or left are added.**
+
+> **RE-RECONCILED 2026-08-10 (strip-crash round), and the corrections are in the rows themselves.**
+> **Stop 1 is no longer a park** — the single most important change on this page. **Stop 4 is now
+> exercised.** **Stop 5's own example (a bad model id) is refused before it costs anything.**
+> **Stop 15 is half-changed** — the detector is armed, rendered and browser-tested, and still
+> cannot fire on live data. **Three stops are added (17-19), and two of them are about the morning
+> rather than the night.** Stale line citations from the previous round are corrected here as
+> well: `supervisor.ts:455`/`:518` are **actually 926 / 989**, and `supervisor-strip.tsx:205` is
+> **historical** — the guarded read is now ~226 and the shape gate sits above every arm.
+
+| # | it stops when | why, with the evidence |
+|---|---|---|
+| **1** | ~~**A STRUCTURAL FAILURE HAPPENS** … the ticket settles to `repairing` … **and nothing ever moves it out.**~~ **CORRECTED 2026-08-10 (strip-crash round): `repairing` IS NO LONGER A PARK, AND IT IS STILL A STOP.** A repair step now runs inside `tick()` and routes every repairing ticket to **one of six named outcomes, five of them terminal** — `REPAIR_DEADLINE_EXCEEDED`, `NO_REPAIR_DRIVER`, `REPAIR_CYCLES_EXHAUSTED`, `REPAIR_APPLIED`, `REPAIR_REFUSED`, `REPAIR_INCONCLUSIVE`, plus the one non-terminal `REPAIR_DEFERRED`. With no driver wired — today's state — the ticket reaches `blocked` **on the next tick** with a sentence naming the signature and the class, and the loop moves on. **It still needs you in the morning; it no longer reads like progress and no longer waits for ever.** | Measured live, not reasoned: a `repairing` ticket inserted, start pressed, one tick later `state=blocked`. The router is `routeRepairOutcome()`; deadline is checked FIRST so no queue can starve a ticket into permanence; `SUPERVISOR_REPAIR_DEADLINE_MS` = 30 min, `SUPERVISOR_REPAIR_MAX_PER_SIGNATURE` = 2 counted in a NEW `supervisor_tickets.repair_counts` column (never `attempt_no` — DESIGN §7.6 forbids mixing counters). **The old sentence *"waiting for a repair proposal for this failure class"* is gone from the product; wherever this document still quotes it, that quotation is history.** |
+| **2** | **A REPAIR IS NEEDED AT ALL — still true, and now for a smaller reason.** The seam is built: `createRepairDriver` + `createDefectSignatureReader` exist in `supervisor-boot.ts`, `tools/repair/supervisor-cycle.mjs` exists with its own `--armcheck`, and the loop calls a `repair?` dep when it is given one. **`index.ts` does not give it one.** ~4 lines. | `grep -an 'repair\|defectSignatureOf\|createRepairDriver' dashboard/server/src/index.ts` → **0 hits**; `new SupervisorLoop({` is at `:86`. And even wired, the cycle answers `NO_PATCH_AUTHOR` (nothing authors a patch) or `NO_SANDBOX` (the prover correctly refuses the working tree and nothing makes an isolated copy). |
+| **3** | **A TICKET NEEDS FILING AND YOU ARE NOT AT A TERMINAL.** There is no button and no client API function; the queue can only be filled by curl. | `api.ts` declares `supervisor`, `supervisorStart`, `supervisorStop` and nothing else. |
+| ~~**4**~~ | ~~**THE FIRST SUPERVISOR SUBMISSION HITS A SHAPE MISMATCH.**~~ **CLOSED 2026-08-10 (strip-crash round) — EXERCISED, AND CLEAN.** A real ticket was filed, claimed in the nudged tick, `submitted / attempt 1 of 1` written to `supervisor_log`, and a real run row (`run-2026-08-10T11-19-00-192Z-36f87c2b`) created and driven to `phase=spec, status=running` by the real orchestrator with a real Agent-SDK subprocess. **No `NewRun` column mismatch, no `bus.emit` drift.** Repeated in the final check with a second run. | The stop that used to say *"exercise it once before you rely on it"* has been exercised twice, on two different days' binaries. **Crash recovery too, with a real `kill -9` mid-`spec`:** the restarted binary resumed **from the DB** — `attemptNo` stayed 1, the quiet clock reset when the resumed seat wrote an event, and process accounting showed exactly ONE Agent-SDK child. |
+| **5** | **A SUBMISSION FAILS DETERMINISTICALLY** (missing directory, full disk, an auth failure). It is BOUNDED — the claim step reads the cap before spending and the throw path counts the attempt — but there is **no backoff**, so the ticket burns all `maxAttempts` in `maxAttempts` ticks (~90 s at the default 3) and lands `blocked`. You come back to a blocked ticket, not a spinning one. **The example this row used to lead with — a bad model id — no longer reaches here: it is refused at filing with `400 invalid_model`.** | `supervisor.ts:926` (the cap read, before the spend) and `:989` (the throw path counting an attempt) — **the previously published `:455`/`:518` are wrong and both were re-measured.** Both are mutation-proved, and the cap mutation reddens THREE tests, not one. |
+| **6** | **A TICKET EXHAUSTS `maxAttempts`.** `blocked` is terminal by design and no ticket is ever returned to `queued` from it. | §7.1. This is a correct stop, and it is the one you want. |
+| **7** | **A CLASS THAT MUST ALWAYS STOP FIRES:** `budget_exceeded` and `missing_credential` → `owner_action`; anything touching integrity. | Named separately in `settle()` as owner-only → `blocked`. DESIGN §3.6. |
+| **8** | **A RUN KEEPS LANDING NON-TERMINAL** (`rate_limited` / `awaiting_input`) past its attempts. The ticket parks `waiting` with a `next_action_at` instant and polls — it never holds a timer — but each wake that must re-submit spends an attempt, and the cap now catches it at the claim step. | §7.1. There is **no per-ticket wall-clock or spend ceiling at all** (`grep -c "wall\|deadline\|budgetMs"` → **0**). |
+| **9** | **A SUBMISSION CREATES THE RUN ROW AND THEN THROWS.** The run is named by no ticket, invisible to `#inFlight()` and to the strip, and the next tick submits a second run. **Reasoned from the code, not measured.** | `supervisor.ts:567`, catch at `:496`. §6.6 item 8. |
+| **10** | **A REPAIR CYCLE REFUSES AND SOMETHING RETRIES IT** — closed for the tree-state half, still open for the caller. `cycle.mjs:143` now reverts on every non-ACCEPTED exit, so the old trap (second attempt reports `COULD_NOT_REPRODUCE`, a clean plausible wrong answer) is gone. **ACCEPTED deliberately KEEPS the patch applied**, because that root is the artefact the gate reads — so a caller that reuses an ACCEPTED root will misread it. | Verifier-measured before the fix: cycle 1 REFUSED → `node check.mjs` exits 0 → cycle 2 `COULD_NOT_REPRODUCE`. |
+| **11** | **THE REPAIR AGENT ASKS "HAVE I ALREADY TRIED THIS?"** The answer is always "no": the ruled-out ledger is addressed by a digest the defect writer does not produce, and the writer hashes **no field paths at all** today. The same failed patch can be re-proposed until the cap. | §6.6 items 3 and 4. |
+| **12** | **AN INSIDE-CLOSURE PATCH IS PROPOSED.** Zero container arms execute, so 4/4 proofs is unreachable and every such patch parks as SELF-PROPOSE. **Correct behaviour** — and it means grader-adjacent repairs always wait for you. | `17 arm(s) held; 5 UNARMED`. |
+| **13** | **A PATCH LEGITIMATELY NEEDS A HUMAN.** Every trail record carries `humanReviewed: null` and nobody has designed who mints an out-of-loop approval token while you are asleep. | `RESEARCH` §5 item 4; DESIGN §10.5 item 9. |
+| **14** | **YOU WANT TO KILL A RUN WITHOUT LOSING THE QUEUE.** abort-now answers 501 and the strip has no abort control; the options are drain (wait) or cancel the run directly and leave the ticket inconsistent. | `http.ts:1520`. |
+| **15** | **THE PIPELINE FAILS IN A WAY WITH NO STRUCTURED DETAIL** — which is all of them today. `violations` is still `null` at the write site, so the signature carries zero field paths and nothing writes the authoring trail. **HALF-CHANGED 2026-08-10 (strip-crash round):** the client no longer hardcodes the blank. It reads the wire's `probe.unsourced`, renders the real `snapshot.attempts` when they arrive, and the whole `stuck / looping, not converging` path — the ONLY arm that catches `a913c871` — is now **armed, rendered and browser-tested against that run's three real rejection sets**, with a healthy 15 s quiet clock so it cannot pass via the 40-minute ceiling. **It still cannot fire on live data**, because nothing produces the trail. The day a producer lands, the name leaves `unsourced`, the list renders, and **no client code changes.** | `orchestrator.ts:7316` (`violations: null`, one hit). `ATTEMPTS_NOT_ON_THE_WIRE` survives only inside a docblock at `supervisor-strip.tsx:74` recording that it used to be a value. **And it was measured that wiring the trail on PROSE-ONLY `problems` would be worse than the gap:** on `a913c871`'s own data that shape gives `blind:true, arm:BLIND, escalateAtAttempt:2` — a false stop on attempt 2 of every ticket. |
+| **16** | **THE PROCESS ITSELF DIES.** There is no launchd plist and no crash-loop brake (DESIGN §9 step 15, not built). The loop survives its own restart — **verified with a real `kill -9`, twice now** — but nothing restarts the process. | §7.1, §6.6. |
+| **17** | **THE MORNING READOUT CANNOT TELL "THE QUEUE FINISHED" FROM "THE QUEUE IS ALL BLOCKED".** Both read `IDLE / idle, queue empty`. The terminal reason exists only in `supervisor_tickets.next_action`, `supervisor_log` and stdout — **`GET /api/supervisor/tickets` is a measured 404** (only `POST` is routed). **This is the house defect in display form: five livenesses, and none of them is "the queue is exhausted with blocked tickets".** | C2 item 5 has the two SQL queries. A sixth liveness, or a `blockedTickets` count on the wire, is the fix; neither is built. |
+| **18** | **A REPAIRING TICKET NEVER GETS A CYCLE ON A BUSY NIGHT.** The repair step runs at most one cycle per repairing ticket per tick and **declines entirely while a run is in flight** — never patch a tree under a live build. On a permanently busy queue the ticket therefore reaches its 30-minute deadline with `REPAIR_DEADLINE_EXCEEDED` **without a cycle ever running**. The sentence says so. | Designed trade. The deadline is the number to raise once a sandbox exists — not before, or a ticket waits longer for the same nothing. |
+| **19** | **`next build` REWRITES A TRACKED FILE UNDER YOU.** It appends `.next/types/**/*.ts` globs to `dashboard/tsconfig.json`'s `include` and prints only *"include was updated to add…"*. Not a run-stopper; a **commit**-stopper, and it is why §7.2-A now opens with a `git diff`. | Observed twice this round, restored byte-exactly from `git show HEAD:dashboard/tsconfig.json` both times. Next's own behaviour; nothing in this repo calls it. |
+
+**CLOSED SINCE THE REVIEWER WROTE THEIR LIST, and recorded so the fix is not re-reported as a
+gap:** *"the supervisor is never constructed"* (now `index.ts:159`, arm-gated); *"there is no way
+to file a ticket"* (now `POST /api/supervisor/tickets`, though still curl-only — stop 3);
+*"a throwing submit spins for ever"* and *"`#wake` exceeds `maxAttempts` without bound"* (claim-step
+cap); *"a REFUSED cycle leaves the patch applied"* (`cycle.mjs:143`); *"a 200 with the wrong body
+blanks the whole page"* (shape arm at `supervisor.ts:296`/`:421` — ~~**closed at unit level
+only**~~ **now closed at BROWSER level with an error boundary behind it, twice re-measured
+live — §8.1**).
+
+> **AND TWO MORE CLOSED 2026-08-10 (strip-crash round), recorded here so they are not
+> re-reported as gaps:** *"the first supervisor submission may hit a shape mismatch"* (stop 4,
+> exercised twice against a real orchestrator) and *"`POST /api/supervisor/tickets` accepts a
+> model id that cannot run"* (never on the reviewer's list — found by the gate, fixed in the
+> repair pass, verified live).
+
+### 7.3 WHAT IS STILL NOT BUILT, OR NOT PROVEN — UNFLINCHING
+
+> **RE-MEASURED 2026-08-10 (strip-crash round). Six of this section's claims moved; the three
+> answers below did NOT, and that is the important half.** What moved: **the browser suite has now
+> been run** (273 passed / 1 skipped, twice, identical leaf sets, 33 files) so *"no browser spec in
+> this round was ever executed, by any lane"* is history; **screenshots were taken AND looked at**
+> with the Read tool, so *"no visual claim about the strip is verified"* is history — and looking
+> at them found a copy defect no textContent assertion could see; **the client-unit baseline diff
+> was measured** (199, zero removals); **the suite figures are all superseded** — see the pointer
+> at the head of this file, and treat every count in the bullets below as pre-repair; **the
+> `a913c871` detector is no longer fed a client constant** (stop 15); and **`probe.unsourced` now
+> has a consumer**. What did NOT move: **no supervisor-submitted run has ever reached a verdict**,
+> **no defect record has ever been written by a real failing run**, and **no patch has ever been
+> applied to this repository.** §8.4 is this round's own version of the three answers.
+
+**The three questions asked directly, each with its measurement:**
+
+1. **HAS THE REPAIR AGENT EVER PRODUCED AN ACCEPTED PATCH?** **Yes — and not in production.**
+   `VERDICT: ACCEPTED`, `prove outcome: PROVEN`, three verbatim transcripts with exit-code
+   trailers. But there was **no real defect record to hand it** — `find dashboard/runs -name
+   defect.json` → nothing, `ls -d dashboard/data/defects` → *No such file or directory* — so the
+   record was hand-built from the run's `runs.db` row plus the three extracted manifests, the
+   defect was reproduced in a scratch sandbox, and **the patch was never applied to this
+   repository.** The patch AUTHOR does not exist; the candidate diff was an input.
+2. **HAS THE TIER 3 GATE EVER REFUSED A REAL ONE?** **It refused a real grader softening —
+   `bakeoff/src/scorer-container.ts` with `const suiteGreen = true` and a full evidence bundle —
+   and it refused it for the wrong reason.** The printed reason was *"3 of 4 required proofs are
+   not satisfied"*: inside-closure plus UNARMED container legs. **There is no softening
+   detector.** What is proven is *"nothing inside the closure can reach APPLY today"*, a
+   mechanical property, correct and vacuous as a detector. The mechanism that would actually
+   catch it — the 5 `MUST_FAIL` calibration fixtures going green under the softened scorer — has
+   **0 executed container arms**. When someone writes those executors, **re-run this test**; do
+   not let today's correct verdict be cited as evidence the detector works.
+   **And the accept path was worse than the refuse path.** A proposal whose entire evidence
+   bundle was `{redBefore:"x", greenAfter:"x", mutationRed:"x", noOpAblation:"x"}` returned
+   `VERDICT APPLY` with a real token, because the OUTSIDE-CLOSURE branch returned APPLY before
+   `proofs` was consulted and the only bar was a non-empty-string check — **while
+   `RED_EQUALS_GREEN`, `EVIDENCE_EXIT_CODES_INCONSISTENT` and `SCOPE_UNIMPLICATED_FILE` already
+   existed, mutation-proved, twelve directories away, with zero cross-imports.** That door is
+   the only one authorising writes to the package containing the orchestrator, the recovery
+   classifier and the gate's own caller. **Fixed** (`proposal.mjs:29` + the ablation requirement),
+   pinned by a test whose input is that exact proposal — **but two of the six available checks
+   are still unenforced at Tier 3** and `noOpAblation` remains a string nothing executes.
+3. **HAS ANY OF THIS RUN DURING AN ACTUAL BUILD-TO-VERDICT?** **No. Not once.** Zero defect
+   records on disk, zero authoring trails on disk, zero real supervisor submissions, zero
+   patches applied. `createSupervisorSubmit` has never touched a real `RunStore`. The gate's
+   4 trail records and the repair agent's ACCEPTED proposal are the only artefacts this round
+   produced, and both came from hand-driven harnesses.
+
+**AND THE COMPONENT-BY-COMPONENT HONESTY:**
+
+- **THE `a913c871` DETECTOR IS DORMANT ON LIVE DATA.** The comparator is built, armed and
+  mutation-proved in both directions, and is fed `ATTEMPTS_NOT_ON_THE_WIRE = []`. It is a one-field
+  server change **that is inert until `violations` is non-null**.
+  > **HALF-CORRECTED 2026-08-10 (strip-crash round).** The constant is gone: the strip reads
+  > `snapshot.attempts` and takes its honest blank from `probe.unsourced`, and the whole `stuck /
+  > looping, not converging` rendering path is now exercised in a real browser on that run's three
+  > real rejection sets. **Still dormant on LIVE data** — nothing writes the trail. The comparator
+  > itself was additionally proved against the run's three REAL manifests (attempt 1→2 is a genuine
+  > SHRINK that must NOT escalate; attempt 3 brings `dataExpectations[].id` back and escalates with
+  > arm `OSCILLATION`), with the SHRINK arm holding green under the mutation that killed the
+  > OSCILLATION arm — so the two halves are independent rather than one lucky assertion.
+- **THE 40-MINUTE THRESHOLD IS CALIBRATED ON ONE RUN.** Nothing establishes that a healthy build
+  phase never exceeds 40 minutes of quiet. A false `stuck` costs a trip to the machine, which is
+  cheap, and costs the indicator its credibility, which is not.
+- ~~**THE BROWSER SUITE IS INCOMPLETE AND ITS FAILURE COUNT IS A FLOOR.**~~ **SUPERSEDED
+  2026-08-10 (strip-crash round): the project was run to completion four times across the round
+  and never failed once — 267 (untouched tree, **the lane's own figure**) → 271 (gate) → 273
+  (final check, twice consecutively, identical leaf-name sets, 33 spec files, 2.4 m). The ten catch-all
+  `page.route("**/api/**")` files pass because the component now SURVIVES their bodies, which was
+  the brief's actual constraint. `Cannot read properties of undefined (reading 'wired')` appears
+  nowhere in either final transcript.** The paragraph below is kept for the record of what was
+  believed:
+  **64 of 267 tests: 40 passed, 24 FAILED**, all 24 in the 10 of 32 spec files that install a
+  catch-all `page.route("**/api/**")` fulfilling any unmatched path with a 200 — which is what
+  found the blank-page defect. The shape arm is proved at **unit level only** — the repair pass's
+  own figure, client unit 189 → 190 with zero regressions in the existing 18 arm tests, **not**
+  independently re-measured because that project binds 4322. **No browser spec in this round was
+  ever executed, by any lane, the verifier or the repair pass.** `run-layout`'s
+  `scale > 0.7` at 2000×1200 — the assertion the 30 px strip actually threatens — and
+  `prose-guard`'s 40-word budget were both satisfied **by reading, not by running**.
+- ~~**NO SCREENSHOT WAS TAKEN OR VIEWED.**~~ **SUPERSEDED 2026-08-10 (strip-crash round): shots were
+  taken at 1440×900 and OPENED WITH THE READ TOOL at all three stages of the round** — the five
+  states, the guard fallback, four malformed-wire cases, and the live pages against a real backend
+  (the round's own report lists the files). **Looking at them found a defect
+  every existing test was blind to**, because they all read `textContent`: the malformed row led with
+  its field list, so truncation ate both clauses the owner can act on. The sentence was reordered so
+  the action comes first and the field list last.
+- ~~**THE CLIENT-UNIT BASELINE DIFF IS UNMEASURED**~~ — **MEASURED 2026-08-10 (strip-crash round):
+  171 at the tag → 199 now, zero leaf names removed.**
+- **SUITE NUMBERS, ATTRIBUTED AND PRE-REPAIR.** The verifier measured: bakeoff **160/160** (baseline
+  146/146, zero leaf names dropped, +14 from the concurrent round); server **1927 tests / 1923 pass /
+  1 fail / 3 skip**; client unit **189**; browser aborted. `tsc --noEmit` **exit 0, zero output
+  lines, in all three packages** — the client mirror typechecks clean against the server, which is
+  the check Playwright's transpile-only loader cannot substitute for. **The sole server failure was
+  `db.test.js` *"THE OWNER'S OWN runs.db OPENS AND KEEPS ITS RUNS"*, PROVEN pre-existing** by
+  building the tree from `git archive gate-verified-2026-08-10` in scratch against the same live
+  database and getting the byte-identical assertion; **the repair pass then fixed the fixture** —
+  `recoveryClass` is now asserted null-or-a-non-blank-word (deliberately NOT against a whitelist,
+  because `runs.recovery_class` is read with `strOrNull` and the concurrent round is splitting the
+  class right now) and `listAttempts` is asserted numbered `1..n` with no gaps. **So the server
+  count has moved since the verifier measured it; re-measure before quoting.**
+- **TWO SERVER LEAF NAMES WERE DROPPED, both benign renames** by the concurrent recovery split
+  (`recovery.test.ts:233`, `:318`), where `budget_exceeded` was reclassified structural →
+  `owner_action` and the ordering property was retained AND strengthened. Flagged only so a future
+  leaf-name diff against the tag does not re-raise it.
+- **THREE LANE SELF-REPORTS WERE STALE AND MUST NOT BE CARRIED FORWARD:** *"supervisor.ts does not
+  typecheck (TS7027/TS18048)"* — both fixed, compiles clean; *"http.ts:992 carries a literal
+  `@@COMPOSER@@` marker"* — `grep -an "@@COMPOSER@@" dashboard/server/src/http.ts` returns nothing;
+  *"`SupervisorLoop` has no `tick()`"* — it is at `supervisor.ts:367`.
+- **THE MUTATION AUDIT REPRODUCED SIX OF SIX**, one per lane plus the TypeScript target, each
+  restored and verified by `shasum -a 256 -c`. **The restore proof matters:** `git diff` is
+  worthless as a restore check for most of these targets, because `tools/**` and `supervisor.ts`
+  are **untracked** — a diff would show nothing whether or not the file was restored, which is a
+  check that can only observe success.
+- **`#lastSignals` / `#lastAuthoringError` ARE IN-MEMORY MAPS** cleared only in
+  `#writeDefectRecord`'s `finally`. A run that is rate-limited and never reaches `#finish` leaks an
+  entry per park on a long-lived process — bounded by the single active slot, but worth a line here
+  rather than a discovery later.
+- **THE DEFECT SIGNATURE IS COARSE, AND IT IS STABLE.** With no structured violations, every failure
+  sharing a `phase/status/bakeoffCode` triple collapses into one shard. Stable is what the anti-loop
+  rule needs; low-resolution means a fingerprint rule built on it **today** would over-group. The
+  record says so in `unavailable[]`.
+- **THE FIXTURES' PROVABILITY HAS A CLOCK ON IT.** `extract-fixtures.mjs --check` passes today
+  because the three CLI transcripts still exist. When that session directory is reaped the committed
+  fixtures become the only copy and `--check` becomes an error rather than a verification. **The
+  fixtures themselves are durable; the re-derivation is not.**
+- **A LOADER BEHAVIOUR WORTH KNOWING BEFORE ANYONE EDITS `corpus.json`:** renaming a case's `id`
+  disables nothing, because `from: "literal-known-good"` and `from: "shipped-prompt"` resolve their
+  manifest from the source kind, not the id. The first attempt at that mutation SURVIVED for exactly
+  that reason.
+- **`bakeoff/dist` IS A SINGLE POINT OF SILENT FAILURE FOR EVERY ARMED TIER 3 ARM.** Freshness is
+  per-module and drives arms to UNARMED rather than to a silent pass, but a concurrent rebuild
+  between the freshness read and the import is not covered; the recorded dist sha256 in the trail is
+  the only after-the-fact evidence.
+- **`MUTATION_SURVIVED` IS ONLY REACHABLE WHEN THE CHECK IS STATEFUL OR NONDETERMINISTIC.** With an
+  exact apply/revert the mutant restores the pre-state, which was RED by construction — so in the
+  common case that arm can only pass. `UNPROVEN_HUNKS` is the arm doing real work on multi-hunk
+  diffs. **Do not read a clean `MUTATION_SURVIVED` record as strong evidence.**
+- **SCOPE ENFORCEMENT IS PARTLY AGENT-SERVICEABLE.** `implicatedFiles` scrapes path-like tokens out
+  of the `redBefore` transcript, so an agent that writes its own reproduction test can implicate any
+  file by naming it in a failure message. The structured fields (`defect.artefacts`,
+  `defect.candidatePaths`) are the trustworthy half.
+- **`git apply` IS THE PATCH ENGINE AND ONLY IN-PLACE HUNKS ARE TESTED.** A patch adding, deleting or
+  renaming a file is untested; `splitHunks()` throws on anything that is not `git diff`/`diff -u`
+  output rather than guessing. **And there is no timeout above the 120 s per-command default** — a
+  hanging reproduction command stalls the cycle (`RESEARCH` R3 argues for a per-stage wall-clock bound).
+- **SWR's `keepPreviousData` IS LOAD-BEARING AND SILENT.** The whole `unreachable` + `stale` behaviour
+  depends on `data` surviving a failed poll while `error` is set. Turning it off degrades the strip to
+  blanking (the safe direction); turning `shouldRetryOnError` back on hides a dead backend behind the
+  retry ladder. Both are one-word edits in `hooks.ts` with no test pinning them.
+- **`supervisorQuietMs` READS ALL OF THE CURRENT RUN'S EVENTS ON EVERY POLL.** At 1,816 events across
+  5 runs that is nothing; a 12-hour run polled every 5 s is an O(events) scan per poll. The cheap fix
+  is a `lastNonTelemetryEventAt(runId)` reader in `db.ts`.
+- **`probe.unsourced` IS A HAND-MAINTAINED ARRAY.** A test asserts its exact contents, so a producer
+  landing without the name being removed goes red — but a name removed without a producer landing
+  would go green wrongly. **It now has a CONSUMER too (2026-08-10, strip-crash round): the strip's
+  honest blank is chosen from this list rather than from a client constant, which is what makes the
+  detector light up with no client edit — and raises the cost of a name removed carelessly from
+  "one wrong test" to "one wrong sentence on the operator's screen".**
+- **SWR's `keepPreviousData` HAS A SECOND CONSEQUENCE NOBODY HAD FOLLOWED (found 2026-08-10,
+  strip-crash round).** Because a failed poll keeps the last body, the shape check had to move
+  ABOVE every arm: it used to live inside the `probe.wired` arm, below the error and stale arms,
+  both of which keep the body and publish it on `reading.snapshot` — so **a malformed 200 followed
+  by one dropped poll returned `unreachable` WITH the malformed body attached, and the component
+  threw on it.** That is a second blank-`RootLayout` path inside the fix for the first. §8.1.
+- **THE SERVER'S CONTRACT FILE IS NOW DOWNSTREAM OF A CLIENT FILE IN PROVENANCE**, because the wire
+  shape was converged onto a mirror another lane had already shipped. It remains authoritative in
+  fact, and ~~`cd dashboard && npx tsc --noEmit` is the **only** thing that catches a divergence~~ —
+  the browser suite will not.
+  > **FALSIFIED 2026-08-10 (strip-crash round), and this is the sentence that cost the round its
+  > gate.** `tsc` catches **nothing** here: `dashboard/src/lib/api-types.ts` declares its OWN
+  > `SupervisorState` and never imports `ApiSupervisorState`, so the two declarations never meet
+  > under any typechecker. Three green `tsc --noEmit` runs sat over a wire contract that disagreed
+  > in **fifteen fields**. What catches it now is `dashboard/tests/fixtures/supervisor-wire.golden.json`
+  > — GENERATED by running the server's own `composeSupervisorState`, and asserted **from both
+  > ends**: `dashboard/server/src/supervisor-route.test.ts` deep-equals the composer against it, so
+  > SERVER drift reddens there, and `dashboard/tests/supervisor-strip.unit.spec.ts` classifies it
+  > and diffs its key set against the mirror, so CLIENT drift reddens here. **Regenerate, never
+  > hand-edit:** `cd dashboard/server && npm run build --silent && node
+  > ../tests/fixtures/supervisor-wire.golden.mjs > ../tests/fixtures/supervisor-wire.golden.json`.
+  > If the server test reddens, regenerate — then the client test tells you whether the mirror has
+  > caught up. **That ordering is the whole value of the pin, and a hand-edited golden destroys it.**
+
+---
+
+## 8. THE STRIP-CRASH / STILL-PARKS ROUND — MEASURED 2026-08-10, AFTER THE TAG
+
+Two lanes on a disjoint file list, a final gate, a repair pass and a final go/no-go. §7 built the
+supervisor; this round made its instrument readable and stopped its parks. **Nothing was committed:
+`HEAD` is still `d32ad858…`, `gate-verified-2026-08-10` still resolves to `50a99fdf…`, `git status
+--short` is the same **36** lines it was at session start, and `git diff --stat` is 19 files /
+6,745 insertions / 63 deletions.**
+
+### 8.1 THE CRASH — INSTANCE TWENTY-TWO, HOW IT SHIPPED, AND THE THREE MORE THAT WERE STILL THERE
+
+**THE REPORTED CRASH DID NOT REPRODUCE, AND THE FIRST ACT OF THE ROUND WAS TO MEASURE THAT.** The
+brief described 80 FAILED / 186 passed with 77 copies of `Uncaught TypeError: Cannot read properties
+of undefined (reading 'wired')` out of `RootLayout`. On the untouched tree the browser project was
+**267 passed / 1 skipped, exit 0** — an earlier pass had already added the shape arm, so the
+malformed body could not reach the component. **That 267 is the LANE's figure and no other stage
+could take it**, because the tree had already changed by the time the gate ran; what the gate and
+the final check independently confirmed is the part that matters — **no tree that can be built
+produces 80 failed / 186 passed**, and `Cannot read properties of undefined (reading 'wired')`
+appears in neither final transcript. The crash CLASS was real; the numbers were
+history.
+
+**THE ROOT CAUSE IS WORTH MORE THAN THE CRASH: A THREE-STATE ARM CHECK THAT WAS ONLY GIVEN TWO ARMS.**
+The design specified an instrument that can say *unreachable*, *reachable and readable*, and
+*reachable but malformed*. The component shipped with an arm for the first, an arm for the second and
+**no arm for the third** — so a 200 whose body was not a `SupervisorState` reached
+`snapshot.probe.wired`, threw out of `RootLayout`, and blanked **every route**: no strip, no canvas,
+no error text, nothing to read at 3am. **This is instance twenty-two of this repository's signature
+defect, and the aggravating fact is that it was introduced by the same session that catalogued the
+first twenty-one.** Cataloguing the defect does not immunise you against it; only a probe per state
+does.
+
+**FOUR THINGS LANDED, AND EACH ONE ANSWERS A DIFFERENT PROMISE.**
+
+1. **THE STATE IS NAMED.** `SupervisorLiveness` gains `malformed`, so *"the route did not answer"*
+   and *"the route answered with something else"* stop sharing one badge word. Amber, shared with
+   `unreachable` on purpose (§7.2-B).
+2. **THE VALIDATION IS EXHAUSTIVE, AND IT IS A PROMISE ABOUT DATA.** `malformedReasons`
+   (`dashboard/src/lib/supervisor.ts:470` — **not the `:445` a previous report published**) checks
+   **every declared field** across `SupervisorState`, `SupervisorTicket`, `SupervisorRepair` and
+   `SupervisorProbe`, with `absent` distinguished from `null` per api-types' own `T | null, never
+   T?` rule, and with `runStatus` / `phase` / `ticket.state` **deliberately NOT narrowed to their
+   unions** — a healthy server that grows a tenth phase must not be reported unreadable. The
+   invariant is now statable: *a body that clears this function cannot make any consumer of
+   `reading.snapshot` throw.* **Behaviour change recorded rather than hidden:** `probe: {}` used to
+   render *"no supervisor wired"* — a claim about the supervisor invented from an absent field — and
+   now reads `malformed`, which is a claim about the body.
+3. **`RenderGuard` IS A PROMISE ABOUT CODE**, and choosing only one of the two promises is how both
+   blank pages happened. No amount of data validation covers a field the contract grows and nobody
+   validates, an `Intl` option a future browser rejects, or tomorrow's edit to this component.
+   `grep` confirmed `dashboard/src/` had **zero** error boundaries before this one; it still has
+   exactly one, and it wraps the strip and nothing else. §7.2-B has the fallback copy and the SSR
+   limit.
+4. **THE ARM CHECK GREW A FIFTH PROBE FOR THE FIFTH STATE.** Shipping `malformed` under a
+   four-probe arm would have been instance twenty-three by construction: the line would print
+   *"4 distinct"* for ever while the newest state was unreachable code. `armSupervisorStrip` now
+   pushes **five** inputs with five known answers through the real classifier and requires
+   `distinct === 5`.
+
+**AND THREE MORE CRASH PATHS WERE FOUND THAT THE BRIEF DID NOT NAME. Two of them were inside the
+fix.**
+
+- **A NATURAL RED on the tree that had already been declared fixed.** Serving
+  `{...RUNNING(), lastDefectSignature: {signature:"a1b2…"}}` produced `Uncaught TypeError:
+  signature.slice is not a function at shortSignature (supervisor-strip.tsx:74) … at RootLayout` and
+  the strip element was gone — **the same blank page as the `probe.wired` crash, one field to the
+  left.** No mutation was needed to see it; the five fields the arms happened to read were not the
+  nineteen fields the component dereferences.
+- **THE ARM ORDERING** — the shape check lived inside the `probe.wired` arm, below the error and
+  stale arms, which keep the previous body. One malformed 200 plus one dropped poll returned
+  `unreachable` **with the malformed body published on `reading.snapshot`**, and the component threw
+  on it. The shape is now checked **once, above every arm** (`readable = shape === null ? snapshot :
+  null`), which is what makes the invariant true for all five livenesses rather than for one.
+- **THE ARM CHECK ITSELF COULD BLANK THE PAGE, AND `RenderGuard` CANNOT SAVE IT.** It runs inside a
+  `useState` initialiser — i.e. **in the render body, on the server** — and React error boundaries
+  do not catch server-render throws. Under one mutation that is exactly what happened: the arm threw
+  during SSR and the whole suite died on `Timed out waiting 180000ms from config.webServer`, **a
+  message naming neither the strip nor the field.** Each probe now catches and answers `threw:
+  <message>`, which matches no expected value, so the probe FAILS and the strip renders the BLIND
+  alarm naming the input. **The structural fact stands for every future always-on component: an arm
+  check in a render body is outside the boundary.**
+
+### 8.2 THE ROUND'S REAL BLOCKER — THE INSTRUMENT WAS BLIND AGAINST THE OWNER'S OWN BACKEND
+
+**Measured by the gate, at runtime, against a real server — not inferred.** With the browser suite
+green and every state photographed, the strip read **amber `MALFORMED` on `/`, `/runs`, `/projects`
+and a run page against the real backend**, naming eight fields. `data-liveness="malformed"`,
+`data-stale="true"`, page intact, zero `pageerror`. **The page was fine. The instrument was blind.**
+
+**Why nothing could see it.** The client mirror and the shipped wire disagreed in **fifteen fields**
+— mirror-only: `since`, `runId`, `runStatus`, `phase`, `lastDefectSignature`, `queuedTickets`,
+`quietForSeconds`; wire-only: `changedAt`, `at`, `run`, `attempts`, `lastDefect`, `lastDefectId`,
+`lastPatchId`, `queueDepth`; plus `lastRepair` NULL on a healthy run against a non-nullable mirror
+type. Three typecheckers were green because the two declarations never meet (§7.3, falsified
+bullet), and **no test in either suite could see it because `dashboard/tests/fixtures/` serves no
+`/api/supervisor` at all** — every spec reaches `unreachable`, never `malformed`.
+
+**The consequence, stated the way it matters:** if the loop wedged at 3am the strip would not have
+said `STUCK`. It would have said `MALFORMED` — exactly what it says when nothing is wrong. **An
+owner who learns to read amber as background noise also misses amber `UNREACHABLE`.**
+
+**CLOSED IN THE REPAIR PASS, AND RE-MEASURED BY THE FINAL CHECK.** The mirror was rewritten onto the
+wire field for field, followed through the validator, the classifier arms, `stubState` and the
+strip's cells, and **pinned from both ends by a generated golden fixture** (§7.3). The final check
+then booted the real server on a clone and drove the real client: live **`idle`** on four routes
+(*"stopped, nothing in flight"* / *"boot set it to stopped: the supervisor has never been started on
+this database"*), and — the thing the gate said was impossible — live **`running`** with a real run
+in flight: `RUNNING / spec · attempt 1 of 1`, `TICKET t-f53cb8b5427dca44 · 1/1`, `QUIET 38.8s`.
+**Amber is gone.** The browser spec case whose own docblock read *"THE DAY SOMEBODY ALIGNS THE TWO,
+THIS CASE FLIPS"* was flipped rather than deleted.
+
+**ONE MAJOR FINDING WAS HALF FALSE AND IS NOW ASSERTED RATHER THAN ARGUED.** The gate warned that an
+exhaustive validator makes the strip stricter than the server, so *any* field the server adds flips
+a healthy supervisor to amber. **Measured false for ADDED fields** — `malformedReasons` inspects only
+the keys the contract declares, and a test adds a scalar, an object, an array and a nested `probe`
+field to the golden body and requires `running`/`idle`. **True, and deliberately kept, for a field
+the server DROPS, renames, or leaves `undefined` for `JSON.stringify` to delete** — that arrives
+absent, and accepting absent where the contract says `| null` would re-create the exact blindness
+the arm exists for. *"The supervisor says there is no run"* and *"the field is missing"* are
+different facts.
+
+### 8.3 EACH PARKING GAP — CLOSED, OR NOT, WITH THE MECHANISM
+
+| gap | status | what is actually true now |
+|---|---|---|
+| **THE SPIN** — a submit that throws deterministically re-claims every 30 s for ever | **CLOSED, and it was closed BEFORE this round; verified, not re-fixed** | `supervisor.ts:989` counts the attempt on the throw path, `:926` reads the cap at claim time, `blocked` (never `queued`) is the terminal. Proved load-bearing by mutation rather than trusted: reverting the increment reddens *"a submit that ALWAYS throws reaches blocked in bounded ticks"* with `a failed submission did not count as an attempt / 0 !== 1`. |
+| **THE CAP BYPASS via `#wake`** | **CLOSED — the guard existed, the PROOF did not** | The two pre-existing cap tests built the post-wake row by calling `updateSupervisorTicket({state:'queued', attemptNo:1})` **directly**, so they proved the guard handles that row and nothing about whether `#wake` produces it. A new test drives the real documented loop end to end — submit → `rate_limited` → `waiting` → clock advanced past the wake instant → `#wake` re-queues → … → `blocked` — and asserts every run stays non-terminal so `settle()` provably never ran. **The seam is measured, not asserted: under `attemptNo: 0` in the wake branch, BOTH pre-existing cap tests stay GREEN and only the new one reddens.** |
+| **`repairing` IS A DEAD END** — the most likely way the night ended | **CLOSED as a park, STILL A STOP** | Verified dead first (`settle()` was the only producer; `#tickOnce` step 1 listed only `claimed`/`running`/`waiting`; zero references to `tools/repair` from the server). Now: a pure `routeRepairOutcome()` with **six named outcomes, five terminal**; the repair step sits **before** the in-flight early return (a repairing ticket has a null `currentRunId`, so `#inFlight()` cannot see it and a later placement would starve it) and reads a list snapshotted **before** reconcile, so `repairing` stays observable for one tick; an absent `repair?` dep is a **named terminal outcome, not a wait**; bounds are 30 min per ticket and 2 cycles per signature counted in a new `repair_counts` column with an additive, DROP-COLUMN-tested migration; `settle()` now also stamps `last_defect_id`, **a column that previously had no writer at all**. |
+| **THE SIGNATURE IS BLIND** — `violations: null`, so the anti-loop comparator has no field paths | **PARTIAL, and the unlanded half is a HANDOFF because the brief's premise does not hold** | The brief said the paths "exist upstream". Measured chain: `scorer-protocol.ts:762`'s `ManifestProblem` **does** carry `field`, but `spec-validate.ts:1331-1336` calls `blocking("other", null, …message :: remediation)` and **drops it**; `contracts.ts:308`'s `AuditFinding` has no field slot; `BakeoffError` carries no attempts. **The only surviving copy of the path is inside prose, and `signature.mjs:81` explicitly bans regexing it out.** So it cannot be done by consuming what `bakeoff/src` emits — which is forbidden to edit this round anyway. **Landed instead, the half that is real:** `tools/repair/manifest-paths.mjs` derives field paths the honest way, from a manifest DOCUMENT through the **live sealed parser** loaded off disk (never vendored), dropping document-level labels because a constant present in every set makes the OSCILLATION and NON_MONOTONE arms unreachable — plus the proof on `a913c871`'s three real manifests (§7.3's corrected detector bullet). |
+| **`POST /api/supervisor/tickets` ACCEPTS A MODEL ID THAT CANNOT RUN** — found by the gate, not by a lane | **CLOSED** | §7.2-A. Three-armed on purpose, and the naive version was falsified by the live CLI within the hour. |
+
+**AND THE PARK THAT IS NOT CLOSED, because closing it needs a decision nobody has made:** a
+repairing ticket still gets **no cycle at all** while a run is in flight, and terminates at its
+deadline (§7.2-D stop 18).
+
+### 8.4 WHAT IS STILL NOT PROVEN — THE TWO SENTENCES THAT MATTER MOST
+
+1. **NOTHING HERE HAS RUN DURING A REAL BUILD-TO-VERDICT. Not once.** The strongest thing this round
+   can say is that a real ticket was filed, claimed, submitted, and reached `phase=spec` with a real
+   Agent-SDK subprocess — and was then cancelled. **Whether the spec phase now CONVERGES is
+   unmeasured, and it is the failure mode that killed three of the five runs on this machine.** Every
+   claim about the manifest-shape and authoring-retry fixes still rests on tests and fixtures.
+2. **THE REPAIR CYCLE HAS NEVER FIXED A REAL DEFECT IN PRODUCTION**, and there are three independent
+   reasons, each of which alone is sufficient: **no driver is wired** into `index.ts` (~4 lines);
+   **nothing authors a patch** (DESIGN §5.3 — the candidate diff is an INPUT); and **there is no
+   sandbox**, so `tools/repair/prover.mjs`, which correctly refuses the working tree, is unreachable
+   from the supervisor and a hand-written diff returns `NO_SANDBOX`. The cycle's honest answer today
+   is `NO_PATCH_AUTHOR`, which the loop turns into `blocked` with that sentence — **an honest
+   inconclusive, never a park.**
+**Those two are the whole of it, and they are deliberately not padded** — everything else in this
+round is either measured or is a named gap with a sentence, and putting a display gap third would
+dilute the two the owner has to read. The display gap is real and is recorded twice, as §7.2-D stop
+17 and as §8.6's instance twenty-four: **the morning readout cannot distinguish success from
+exhaustion.** The instrument this round exists to sharpen is sharp about the run and blunt about the
+queue.
+
+**And three smaller things that are also not proven, stated so they are not read as proven:**
+`stop (drain)` was not exercised live this round; **ageing against the wire's own `at` stamp is
+declared, validated and rendered but NOT used by the classifier**, which still measures freshness
+from when this client received the body (so a route answering instantly with an hour-old computation
+still reads live — deliberately deferred, because ageing against `at` makes clock skew between two
+machines a new false alarm); and the **40-minute** `stuck` threshold is still calibrated on one run.
+
+### 8.5 THE MUTATION LEDGER — ATTRIBUTED PER MUTATION, BECAUSE "EVERY FIX WAS MUTATION-PROVED" IS A ROUND-LEVEL CLAIM
+
+**The gate independently reproduced six of six** mutations it selected, each restored **byte-exactly
+and proved so by sha256** — and the proof method matters: `git diff` is worthless for most of these
+targets, because `dashboard/src/lib/supervisor.ts`, `render-guard.tsx`, `supervisor.ts` and
+`tools/**` are **untracked**, so a diff shows nothing whether or not the file was restored.
+
+| mutation | who reproduced it | the RED |
+|---|---|---|
+| the throw path stops counting an attempt (`supervisor.ts:989`) | **gate, independently** | `a failed submission did not count as an attempt / 0 !== 1`; 29 pass / 1 fail |
+| the claim-time cap becomes `if (false)` (`:926`) | **gate, independently** | **THREE** tests red, not the one the lane reported, including *"a ticket at its cap was submitted anyway — this is the spend the cap exists to stop"* |
+| `RenderGuard` loses `static getDerivedStateFromError` | **gate, independently** | the guard **named its own blindness first**: `ARM CHECK FAILED — THE RENDER GUARD CANNOT CATCH: … so React will not route a throw to it`, then both guard tests |
+| the exhaustive validator returns `null` | **gate, independently** | six unit tests, and the arm printing `ARM CHECK FAILED — THE SUPERVISOR STRIP IS BLIND: malformed expected malformed, got threw: Cannot read properties of undefined (reading 'wired')` — **the brief's original crash message, produced on demand** |
+| the loop-guard `OSCILLATION` arm deleted | **gate, independently** | the real oscillation stops escalating **while the SHRINK negative control stays green** |
+| the arm between a malformed body and a blank `RootLayout` (`snapshot: readable` → `snapshot`) | **final check, independently** | exactly one test: `arm 2 published a body no consumer can dereference — this is the blank RootLayout`, `Expected: null / Received: {…}` |
+| M1, M3-M5, M7 (unguarded read restored; validator asking a stale field name; the naive model-id guard; the dead attempts constant put back) | **the repair pass's own claims, RELAYED** | each carries a verbatim RED in its report; **none was re-run by the gate or the final check** |
+
+**One mutation SURVIVED and it is recorded as data, not as a pass:** a first attempt at collapsing
+two repair-router sentences copied a sentence but dropped its last clause, and the arm check —
+which compares sentences for **equality** — correctly, and uselessly, stayed armed. **It catches a
+copied sentence, not a nearly-copied one**, and that limit is now in the function's docblock.
+
+### 8.6 THE INSTANCE COUNT — TWENTY-TWO CLOSED, TWENTY-THREE CLOSED, TWENTY-FOUR OPEN
+
+The count is kept honestly because it is the only thing that has ever predicted this repository's
+next defect.
+
+- **TWENTY-TWO — CLOSED.** The three-state arm check with two arms (§8.1). Closed by a named state,
+  an exhaustive validator, an error boundary and a fifth probe.
+- **TWENTY-THREE — CLOSED IN THE SAME PASS THAT CREATED IT.** Reading the trail off
+  `probe.unsourced` made the `<ol data-testid="supervisor-attempts">` branch, `formatClock`, the
+  `key` prop and the *"rejected, fixed, rejected again"* highlight **reachable from live data for
+  the first time — and nothing had ever rendered them.** A newly live rendering path with no probe
+  is the defect. Closed by a browser test that serves the run's three real rejection sets with a
+  **healthy 15 s quiet clock** so it cannot pass through the 40-minute ceiling, asserting the
+  oscillating heading, three attempt `<li>` **as direct children** (a bare `li` locator resolves six,
+  because problems nest — it would have passed for the wrong reason), and zero `pageerror`.
+- **TWENTY-FOUR — OPEN.** `IDLE / idle, queue empty` for both a finished queue and a queue of
+  blocked tickets (§7.2-D stop 17, §8.4 item 3). **A display that cannot distinguish success from
+  exhaustion is the same defect wearing different clothes**, and it is the one the owner meets at
+  breakfast rather than at 3am.
 
 ---
 

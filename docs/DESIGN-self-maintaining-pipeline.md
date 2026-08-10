@@ -25,6 +25,35 @@ did not re-measure, it says so.
 > exists. Every line number below is from that tree and will drift; re-grep before
 > implementing.
 
+> ### CORRECTED 2026-08-10 (LATER THE SAME DAY) — THE TREE MOVED AGAIN, AND THIS DOCUMENT WAS PARTLY BUILT
+>
+> Five of this design's sections were implemented in a build round on 2026-08-10 by five
+> parallel lanes, a verifier, a reviewer and a repair pass. **HEAD is now `d32ad85`, and
+> the repo has exactly one tag.**
+>
+> ```
+> git rev-parse --short HEAD                                → d32ad85
+> git tag -l                                                → gate-verified-2026-08-10
+> git rev-parse gate-verified-2026-08-10^{commit}            → d32ad858fc8bdcbf84e9731f993fa902b041d913
+> ```
+>
+> Two consequences for reading the rest of this file:
+>
+> 1. **§9's STEP 0 is FALSIFIED.** It says *"the repo has zero git tags, so there is nothing
+>    to seed that pointer with"* and *"nothing in §6 can be built until that round lands and
+>    is tagged."* The round landed and was tagged; steps 8–15 are unblocked by the design's
+>    own rule. Corrected in place at §9.
+> 2. **The line numbers in §§3–8 are from the pre-round tree and have drifted by hundreds of
+>    lines in `orchestrator.ts` and `http.ts`.** Every dated `IMPLEMENTED 2026-08-10` block
+>    below carries re-measured anchors; anywhere else, re-grep.
+>
+> Where the implementation departs from what is proposed here, the departure is recorded at
+> the section it touches — §3.4 (a fourth comparator arm the design does not have), §5.1
+> (the shipped record is not this shape), §6.7 (the trail is written somewhere else, on
+> purpose), §7.3 (the loop grew an attempt cap the design's step list omits), §7.6.2 (three
+> of the seven fields have no producer). The full build report, the operator's page and the
+> unflinching not-proven list are `STATE-2026-08-09-where-we-are.md` §7.
+
 ---
 
 ## 1. THE ASK, AND WHAT IT MEANS TECHNICALLY
@@ -303,6 +332,38 @@ a fixture feeding it `a913c871`'s three real manifests and asserting it escalate
 attempt 2, **and** by a fixture feeding a shrinking sequence and asserting it does *not*
 escalate. A comparator that always escalates is as useless as one that never does.
 
+> ### IMPLEMENTED 2026-08-10 — WITH A FOURTH ARM THIS SECTION DOES NOT HAVE, AND IT IS THE ONE THAT FIRES
+>
+> `tools/repair/loop-guard.mjs` (+ `loop-guard.test.mjs`, 9 tests). **The three arms above
+> cannot fire on `a913c871`'s 1→2 transition** (`{id}` → `{kind}` is not identical, not yet
+> an oscillation, not a shrink), so a §3.4-only comparator escalates at attempt **3** —
+> 87 minutes too late. A fourth arm, **NON_MONOTONE** (the reported set is DISJOINT from the
+> previous one), fires at attempt 2. Licensed by `RESEARCH` R4. Mutation-proved by the lane:
+> disabling it produced `✖ a913c871 escalates at attempt 2 … 3 !== 2`; making SHRINK escalate
+> produced `✖ NEGATIVE CONTROL: a shrinking sequence does NOT escalate`. A fifth outcome,
+> **BLIND**, fires when an attempt carries only prose — the guard refuses to regex a field
+> name out of a message, which is the mechanism this repo banned on 2026-08-04.
+>
+> **AND IT IS BLIND ON THE PRODUCTION RECORD SHAPE — CONFIRMED LIVE, NOT INFERRED.** The
+> shipped writer's `DefectAttempt.problems` is `readonly string[]` of prose and `violations`
+> lives only at the record's top level, so driving `runRepairCycle` with a contract-exact
+> record built from `a913c871`'s real data printed
+> `ANTI-LOOP: escalating at attempt 2 (BLIND) — an attempt carries no structured violation
+> paths, so the comparator cannot see repetition; refusing to guess from prose`. It gives the
+> right answer on `a913c871` **for the wrong reason** and would escalate a healthy
+> CONVERGING sequence identically. The SHRINK negative control — the only thing that makes
+> this a discriminator rather than an alarm — **can never fire in production** until the
+> writer carries per-attempt structured paths. Root cause is one line:
+> `dashboard/server/src/orchestrator.ts:7316` passes `violations: null`.
+>
+> **UNRESOLVED DESIGN-vs-RESEARCH CONFLICT, recorded rather than litigated.** This section
+> says a strictly SHRINKING set means the channel is working, so spend another attempt;
+> `RESEARCH` R5 says a subset carries no new information, so stop and escalate. A strict
+> shrink IS a subset. The implementation follows §3.4 (shrink → continue), because R5's rule
+> makes the comparator escalate on every sequence and makes §3.4's own mandatory negative
+> control unbuildable. **If R5 wins, the negative control must be replaced by something else
+> or the comparator is "always escalate" with extra steps.** Owner decision.
+
 ### 3.5 The budgets
 
 `recovery.ts:98-118` already argued the failure to fear: *not* three throttles, but a run
@@ -333,6 +394,32 @@ tokens for one dead run. **The fingerprint rule is the brake, not the number: wi
 `a913c871` costs 2 calls instead of 8. Per-class N shipped WITHOUT the fingerprint is
 strictly worse than today.**
 
+> **WHAT SHIPPED, AND THE TABLE ABOVE IS NOT IT — RATIFIED 2026-08-10.** Left in place because
+> it is the argument, and the argument was followed; only the numbers differ. **The split
+> landed with ALL SIX bounds at 0** — no class received a nonzero budget, and the row this
+> table prices at 2 (`structural::schema`, shipped as `suite_authoring`) is 0. **The split
+> delivers a LABEL (`runs.recovery_class`) and a SENTENCE, not a budget.** Three measurements,
+> obeying this section's own closing rule rather than overruling it:
+> 1. **Nothing re-enters a non-throttled class today.** `#recoverFrom` (`orchestrator.ts:6801`)
+>    reads `if (klass !== "throttled") return false`, so a `BakeoffError` never reaches
+>    `planRecovery` at all. A budget here would spend nothing today and everything the day that
+>    line changes.
+> 2. **The phase boundary carries nothing.** One writer for the frozen-suite `authoringTrail`,
+>    on the success path (`spec-agent.ts:2401`), so a PHASE-level retry re-runs three authoring
+>    attempts knowing nothing about the three that just failed. The 2026-08-10 authoring fix
+>    makes attempts informed of each other **inside** one phase; it carries nothing across the
+>    boundary.
+> 3. **§3.4's fingerprint does not exist**, and this section's own rule is *"per-class N shipped
+>    WITHOUT the fingerprint is strictly worse than today."*
+>
+> **THE SHIPPED NAMES ALSO DIFFER FROM THIS TABLE'S**, so grep for the real ones:
+> `owner_action` (= `::resource`, and it absorbs `budget_exceeded` + `missing_credential`),
+> `integrity`, `accounting`, `harness_defect` (= `::harness`), `suite_authoring`
+> (= `::schema`/`::quality`), and `structural` retained as the default that catches
+> `invalid_usage_shape` **and every unknown code**. `::protocol` was not created.
+> `AUTO_CONTINUE_MAX` is untouched at 3. Per-code table and the three codes this design's own
+> §3.3 mapping got wrong: `STATE` §6.9.
+
 Two corrections independent of the taxonomy:
 
 - **The truncation rung should be per-attempt.** `truncationRetried` at `spec-agent.ts:1300`
@@ -359,6 +446,63 @@ Four. Distinguish *stops the run* (common, fine) from *requires the owner* (this
 `design-lock.ts:48-51`, and the fallback is honest about applying no judgement). Ticket
 ambiguity (that is B2, and it is model-assisted). `unclassified` — it stops the *run* at
 bound 0 and goes to a Tier-2 repair agent; the owner sees a patch, not a prompt.
+
+---
+
+### 3.7 DEFERRED, NAMED, AND NOT DROPPED — the abandoned-call class (`ADDED 2026-08-10`)
+
+**An exported discriminator with no reader is a check that can never fire, so it is filed
+here with its consumer, its blocker and its cost rather than left to be rediscovered.**
+
+**What exists.** `bakeoff/src/spec-agent.ts` exports
+
+```
+export const TIMEOUT_FAILURE_MARKER = "were abandoned on the per-call wall-clock bound";
+```
+
+and `describeAttemptTimeouts` emits it — in the POSITIVE sentence only, asserted in both
+directions — into the `suite_not_audited` message, which lands verbatim in
+`runs.failure_reason`. `grep -arn TIMEOUT_FAILURE_MARKER bakeoff/src dashboard/server/src`
+→ **three hits: the definition, the emitter, and `spec-agent.test.ts`. No consumer in
+`dashboard/server/src`.**
+
+**What that costs today.** An authoring phase every attempt of which was abandoned throws
+`suite_not_audited` → `classOfBakeoffCode` → `suite_authoring` → the owner is shown that
+class's `terminalClassReason`. That sentence used to end *"Read the blocking findings on the
+error — they name the fields"*, and for an abandoned phase `last.findings` is `[]`: no suite
+was authored, so nothing was audited. **The owner-facing sentence is the entire product of
+the 2026-08-10 split, and the one new failure mode the round introduced was being handed a
+sentence describing something that did not happen.** That half is FIXED — the sentence now
+points at the thrown message (always populated: last attempt's problems, the output-token
+rung per attempt, and the wall-clock bound in both directions) and says explicitly that a
+blocking finding is not guaranteed. `recovery.test.ts` pins it, including the negative half.
+
+**What is deferred: the class itself.** An abandoned call is the ONE case in this taxonomy
+where re-running the same phase unchanged is reasonable — nothing about the ticket or the
+suite was established, and a larger `BAKEOFF_SPEC_ATTEMPT_TIMEOUT_MIN` is a real
+difference between attempt N and N+1. It is not built in this pass because it is five
+changes, not one:
+
+1. **`PhaseFailureSignals` carries no message field.** `classifyPhaseFailure` sees
+   `aborted`, `interrupted`, `bakeoffCode`, `seatKind`, `refusal` — and nothing else. It
+   cannot see this string without a new signal on the struct and a new read in
+   `signalsFor`, whose signature is consumed across the server package.
+2. **`recovery.ts` deliberately does not import `bakeoff/`** (`signalsFor`'s docblock:
+   *"a pure policy file that drags in the harness is a policy file that cannot be tested
+   without building the harness"*). So the marker would have to be duplicated here and
+   pinned to the original by a cross-package equality test.
+3. A new `FailureClass` needs a `boundFor` arm, a `terminalClassReason` arm, an
+   `isRepairable` arm, and a row in every test that enumerates the union.
+4. A **non-zero** bound needs an arm in `planRecovery` as well, or the class falls through
+   into `planThrottledWait` and stops with `no_refusal` — telling the owner his abandoned
+   call "was reported as a rate limit but arrived with no reading of the refusal itself".
+   That is measured output, not a prediction (see `boundFor`'s fourth note).
+5. And a bounded re-entry needs the fingerprint gate of §3.4, or it is the blind re-roll
+   §3.5 prices at ~3.7 h and ~1.7M output tokens for one dead run.
+
+**Do not delete the constant to close this.** The emitted sentence is the only channel that
+carries the fact at all, and `runs.failure_reason` is a channel with a proven reader — run
+`a913c871`'s post-mortem quoted the whole of that column.
 
 ---
 
@@ -479,6 +623,42 @@ interface DefectRecord {
 `reachesFrozen` is computed **before** the repair agent is spawned. A defect whose only
 plausible repair is inside the closure never gets an agent; it gets an owner notification.
 
+> ### IMPLEMENTED 2026-08-10 — THE SHIPPED RECORD IS NOT THIS SHAPE, AND IT HAS NEVER WRITTEN ONE FOR REAL
+>
+> `dashboard/server/src/defect-record.ts` + `#writeDefectRecord` hanging off `#finish` in
+> `orchestrator.ts` (the single funnel every terminal status passes through), written to BOTH
+> `runs/<runId>/results/defect.json` and the append-only, content-addressed
+> `data/defects/<signature>.jsonl`. 3 integration tests
+> (`orchestrator.defect-record.test.ts`) driven by a run that really dies in `spec`.
+>
+> **Differences from the interface above, each deliberate:** no `fingerprintHistory` (the
+> shard IS the history — one line per occurrence, so "has this signature happened before" is
+> a file read); no `defectId` (content-addressed by `signature` instead); `detail` is
+> `violations: null` plus a `violationsAvailable:false` flag and an `unavailable[]` list of
+> sentences naming what is unknown and why — **absence is not emptiness**, because `[]` would
+> read as "the classifier looked and found none". `failureClass` and `repairable` are READ
+> from `recovery.ts` (`boundFor(...) > 0`), never restated.
+>
+> **NOT PROVEN: it has never written a real record.**
+> `find dashboard/runs -name defect.json -o -name authoring-trail.json` → nothing;
+> `ls -d dashboard/data/defects` → *No such file or directory*. Every claim about this channel
+> rests on its tests. The first real record is also the first moment the signature
+> disagreement below becomes a lost lookup rather than a note.
+>
+> **THREE SIGNATURE FORMULAS SHARE ONE ADDRESS SPACE — measured on one input, not reasoned.**
+> With `site='spec/failed/suite_not_audited'` and path `dataExpectations[0].id`:
+> `defect-record.ts:112` → `ad220a03e411…`; `tools/repair/signature.mjs#computeSignature` →
+> `cd3e4a3880795d5b…` (with `bakeoffCode`) / `138acb9c810e276e…` (without);
+> `tools/replay/signature.mjs` is a third format entirely (16-hex `site#digest`, e.g.
+> `spec/suite.manifest.json#176d75d025b304fd`). **AGREE: false.** Both the defect shard and
+> the repair agent's ruled-out ledger are content-addressed BY that digest, so
+> `tools/repair/ruled-out.mjs#fileFor` reads a path nothing writes, `ruledOutFingerprints()`
+> returns `[]` for ever, and the "already tried and failed" brake can never fire. Worse: the
+> writer KEEPS array subscripts, so the same defect at `[3]` buckets apart from `[0]` and
+> `a913c871`'s own oscillation would shard three ways. **Adopt the reader's index-collapsing
+> formula in all three sites**, and add the cross-side test neither lane has (production
+> writer → `openLedger().fileFor()` → same file).
+
 ### 5.2 The repair loop
 
 ```
@@ -494,6 +674,41 @@ plausible repair is inside the closure never gets an agent; it gets an owner not
 6. FULL GATE  §6.3, run from the isolated copy.
 7. QUEUE      patch + evidence bundle → the supervisor's patch hook.
 ```
+
+> ### MEASURED 2026-08-10 (strip-crash round) — STEP 0 EXISTS NOW, AND STEPS 3-7 STILL CANNOT RUN
+>
+> **The hole this list did not have a step for was step 0: who calls it.** `repairing` was a
+> terminal park — `settle()` was its only producer and nothing ever moved a ticket out — so this
+> whole loop had no entry point from the running system. **It has one now.** `tick()` gained a
+> repair step, placed **before** the in-flight early return (a repairing ticket has a null
+> `currentRunId`, so `#inFlight()` cannot see it and a later placement starves it), reading a list
+> snapshotted **before** reconcile so `repairing` stays an observable state for one tick. It routes
+> through a pure `routeRepairOutcome()` with **six named outcomes, five terminal**:
+> `REPAIR_DEADLINE_EXCEEDED`, `NO_REPAIR_DRIVER`, `REPAIR_CYCLES_EXHAUSTED`, `REPAIR_APPLIED`,
+> `REPAIR_REFUSED`, `REPAIR_INCONCLUSIVE`, plus the one non-terminal `REPAIR_DEFERRED`. **The arm
+> ORDER is the policy:** the deadline is checked first, so no queue can starve a ticket into
+> permanence. Bounds: 30 minutes per ticket, 2 cycles per signature, counted in a new
+> `supervisor_tickets.repair_counts` column — **never in `attempt_no`, never in `class_counts`**, per
+> §7.6's counter rule.
+>
+> **AN ABSENT DRIVER IS A NAMED TERMINAL OUTCOME, NOT A WAIT** — that is the whole difference
+> between this and the park it replaces, and it is why the honest state of the system is legible:
+> the boot arm check prints `NO REPAIR DRIVER is wired. Every ticket that reaches 'repairing'
+> terminates at 'blocked' with NO_REPAIR_DRIVER and the loop carries on to the next ticket.`
+>
+> **AND STEPS 3-7 STILL CANNOT RUN, for three independent reasons, each sufficient on its own:**
+> `index.ts` passes no `repair` dep (~4 lines, 0 grep hits); **step 4 has no author** (§5.3's dated
+> block — the diff is an INPUT); and **step 2's isolated copy does not exist**, so `prover.mjs`,
+> which correctly refuses the working tree, is unreachable and a hand-authored diff at
+> `dashboard/data/repair-proposals/<signature>.diff` returns `NO_SANDBOX`. The cycle's answer today
+> is `NO_PATCH_AUTHOR` — an honest `inconclusive` that the loop turns into `blocked` with that
+> sentence. **A `git worktree`-based sandbox factory is the missing piece.**
+>
+> **ONE COST OF THE DESIGN, RECORDED RATHER THAN DISCOVERED LATER:** the step declines entirely
+> while a run is in flight (never patch a tree under a live build), so on a permanently busy queue
+> a repairing ticket gets **no cycle at all** and terminates at its deadline. The sentence says so.
+> Raise the deadline once a sandbox exists — not before, or the ticket waits longer for the same
+> nothing.
 
 ### 5.3 THE EVIDENCE BAR — a fix with no verbatim RED is unlanded
 
@@ -518,6 +733,62 @@ the bar is mechanical, not editorial:
 degrade mutation testing into code review. The repair agent and its verifier must both
 have Bash, or the mutation proof is a claim.
 
+> ### MEASURED 2026-08-10 (strip-crash round) — THE BAR APPLIES TO THIS PROJECT'S OWN ROUNDS, AND IT WAS APPLIED PER MUTATION
+>
+> **"The round was mutation-proved" is a round-level claim and this bar does not accept it.** In the
+> strip-crash / still-parks round eleven mutations were reported; **six were independently reproduced
+> by the gate** with byte-exact restoration proved by **sha256** — not by `git diff`, which is
+> worthless here because most of the mutated files are UNTRACKED, so a diff shows nothing whether or
+> not the file was restored — **one more was independently reproduced by the final check**, and the
+> remaining **four are the repair pass's own claims, relayed**. STATE §8.5 is the per-mutation ledger.
+> **Record which is which, or the strongest sentence in a report is the one nobody checked.**
+>
+> **AND A MUTATION SURVIVED, which this bar says is DATA:** a first attempt at collapsing two
+> repair-router sentences copied a sentence but dropped its last clause, and the arm check — which
+> compares sentences for **equality** — correctly, and uselessly, stayed armed. It catches a copied
+> sentence, not a nearly-copied one. That limit now lives in the function's docblock rather than in
+> a reviewer's memory.
+
+> ### IMPLEMENTED 2026-08-10 — THE BAR IS REAL, THE PROVER EXECUTES, AND THE PATCH AUTHOR IS NOT BUILT
+>
+> `tools/repair/` — `evidence.mjs` (15 named refusal codes; the tests assert the EXACT code
+> set with `deepEqual`, so one over-broad predicate cannot mask five others), `prover.mjs`
+> (reproduce-first → GREEN → RED under a mechanically derived `git apply -R` of the fix hunk
+> → per-hunk revert naming unproven scaffolding; everything through `spawnSync`, and a
+> transcript is the process's own bytes framed by the command line and `# exit code: N`),
+> `cycle.mjs`, `ruled-out.mjs`, `loop-guard.mjs`, `signature.mjs`, `arm.mjs`. **72 tests across
+> seven files** (re-measured 2026-08-10 by the recorder — the lane reported 70 before the repair
+> pass added two); `node tools/repair/arm.mjs` → 7/7 arms live, exit 0.
+>
+> **THREE CHECKS THE DESIGN DOES NOT NAME, AND THEY ARE THE LOAD-BEARING ONES.**
+> `RED_EQUALS_GREEN` and `MUTATION_RED_EQUALS_GREEN` catch transcripts that observed nothing;
+> `EVIDENCE_EXIT_CODES_INCONSISTENT` catches a "RED" that exited 0 or a transcript with no
+> exit-code trailer, which makes the prover **the only legal producer** of the three strings.
+> Without that last one, "three verbatim transcripts" is satisfiable with three string
+> literals — measured, see §6.3's dated block.
+>
+> **PROVEN ON `a913c871`'s REAL DEFECT DATA:** `VERDICT: ACCEPTED`, `prove outcome: PROVEN`,
+> all three transcripts present with exit-code trailers, `filesChanged: ['src/prompt.mjs']`.
+> **NOT a real end-to-end:** there was no real defect record to hand it (none exists on
+> disk), so the record was hand-built from the run's `runs.db` row plus the three extracted
+> manifests, and everything ran in an isolated scratch sandbox — the prover REFUSES to
+> operate on the working tree and is arm-checked both ways
+> (`ARM CHECK: sandbox-refusal — refuses /Users/…/coding-agent and accepts an isolated copy`).
+>
+> **THE PATCH AUTHOR IS NOT BUILT, and that is named rather than omitted.** `runRepairCycle`
+> takes the candidate diff as an INPUT; everything in `tools/repair` is the bar it must clear.
+> A component that both writes the patch and grades it is the shape this repo keeps catching
+> itself in. Wiring an authoring seat needs the §6.2 L1 write allowlist enforced by the
+> spawning harness, not by a prompt.
+>
+> **`ctx.frozenClosure` WAS OFF BY DEFAULT AND IS NOW REQUIRED.** `evidence.mjs` read
+> `ctx.frozenClosure ?? []`, so a caller that omitted the closure got a check that refused
+> nothing and reported a clean ACCEPT — this section's own "absence is treated exactly like
+> failure" rule, inverted. Now a named `NO_FROZEN_CLOSURE` refusal on absent OR empty, in
+> both `evidence.mjs` and at `cycle.mjs` ENTRY (before the prover spends three runs), with a
+> negative control whose input is a `bakeoff/src/scorer.ts` diff with the closure omitted.
+> The list itself comes from `tools/tier3/closure.mjs#frozenClosure`, which computes it.
+
 ### 5.4 What Tier 2 does with the classes it owns
 
 - **B3 harness_defect / B11 unclassified** — the evidence channel. A record a human can
@@ -534,6 +805,109 @@ have Bash, or the mutation proof is a claim.
 
 The owner has decided this is autonomous, including `bakeoff/src`. Not re-litigated. This
 section is the detection behind it.
+
+### 6.0 THE DECISION, AND THE POLICY THAT IMPLEMENTS IT — RATIFIED 2026-08-10
+
+*(New section. **Marker for this block: `RATIFIED 2026-08-10`, deliberately NOT one of the five
+literals `STATE`'s pointer counts** — so that recorded figure does not move under me. Its last
+digit is bracketed below **so the quotation does not match itself**; writing it out plainly the
+first time inflated the count by 2, which is this document's own lesson about a locator measured
+against its own output:*
+
+```
+grep -c 'IMPLEMENTED 2026-08-1[0]\|CORRECTED 2026-08-1[0]\|FALSIFIED 2026-08-1[0]\|STATUS 2026-08-1[0]\|ADDED 2026-08-1[0]' \
+  docs/DESIGN-self-maintaining-pipeline.md   → 15
+grep -c 'RATIFIED 2026-08-1[0]' docs/DESIGN-self-maintaining-pipeline.md   → 4   # this round
+```
+
+*The second count is **4 hits = 3 substantive blocks (§6.0, the §3.5 budget correction, the
+§6.3 rollback correction) plus this note**, so a reader greping 4 does not go hunting for a
+fourth. The first is **15, where `STATE`'s pointer records 14** — the two figures disagree and
+**this recorder did not establish which edit accounts for it**; the plausible reading is a
+dated block landing after that pointer was written, but that history was not measured. Neither
+figure is mine.)*
+
+**THE DECISION.** Tier 3 is **autonomous, including `bakeoff/src`.** The owner has decided
+it; §6.1-§6.7 are the detection, not a re-litigation.
+
+**THE MECHANISM IS A MECHANICAL PROOF, NOT A HUMAN TOKEN — and the reason is a measurement
+theorem, not a preference.** `RESEARCH` §5 item 2 (arXiv:2607.18966v1, 2026-07-21): *a
+grader-pleasing system and a working one are indistinguishable wherever the grader is right*,
+therefore **"every measurement drawn only from normal runs is incapable of detecting
+weakening."** A human eye on a diff, or a human token gating an apply, is not a measurement at
+all — it is a slower version of the same blind instrument, and it is unavailable at 3am, which
+is the hour this pipeline exists for. So the authority to apply is a token **minted from
+evidence drawn from outside normal runs**: `mintApplyToken` digests
+`(frozen-manifest digest ‖ diff digest ‖ the verdicts)`, and `decideApply` refuses a token
+minted over a different diff **and a missing one identically** — so *"the caller skipped the
+gate"* is indistinguishable from *"the gate refused"*, which is the correct fail-safe
+direction (§6.2 L4).
+
+**THE POLICY, FOUR CLAUSES. Each carries where it is implemented and what is MEASURED about
+it today** — a policy stated as operative over an unarmed mechanism is the failure this
+document exists to post-mortem.
+
+1. **A diff wholly OUTSIDE the frozen closure self-applies behind the normal gate.** No extra
+   ceremony: the ordinary suites, `tsc`, and the evidence bar of §5.3. Implemented as the
+   OUTSIDE-CLOSURE branch of `tools/tier3/gate.mjs`. **MEASURED:** the accept direction works
+   (an editable-only diff with full evidence → `VERDICT APPLY`, token minted) — **and this
+   branch was the round's worst defect before it was fixed.** It returned APPLY on
+   `{redBefore:"x", greenAfter:"x", mutationRed:"x", noOpAblation:"x"}` because it answered
+   before `proofs` was consulted and its only bar was a non-empty-string check. **That door is
+   the only one authorising writes to the package containing the orchestrator, the recovery
+   classifier and the gate's own caller.** Now behind `validateProposal`'s four
+   proposal-decidable refusals plus the ablation requirement; **two of the six available
+   checks remain unenforced** (§10.5 item 10, `STATE` §6.6 item 10).
+2. **A diff INSIDE the closure must additionally hold ALL FOUR named proofs, or roll back
+   automatically.** Implemented as `proofsFor` (`tools/tier3/gate.mjs:72`), ids verbatim:
+   `impossible-set-failing`, `known-bad-set-failing`, `rescore-run1-21-20-1` (21/20/1 with the
+   sole REQ-013 QUALITY failure), `no-op-ablation-failing`. The first three are **mode-gated to
+   `container`** — including the re-score row, filtered by mode *before* id, because reading it
+   by id alone would let a host-import row of the same id satisfy the proof, *"the one path by
+   which host evidence could still reach APPLY."* Rollback is §6.3 S11, and **a rollback that is
+   not re-verified against the same 21/20/1 is a check that can only observe success.**
+   **MEASURED, AND THIS IS THE OPERATIVE TRUTH: 17 arms held, ZERO container arms executed.**
+   `proofsFor` therefore cannot reach 4/4 for any diff, so **today every inside-closure diff
+   parks SELF-PROPOSE.** The gate's refusal of a real grader softening
+   (`scorer-container.ts` with `const suiteGreen = true` and a full evidence bundle) was
+   correct **for the wrong reason** — inside-closure plus unarmed legs. **There is no softening
+   detector.** The mechanism that would be one is the five `MUST_FAIL` calibration fixtures
+   going green under the softened scorer; that set has no executor. **When someone writes them,
+   re-run that test; do not cite today's correct verdict as evidence the detector works.**
+   And `no-op-ablation-failing` is `mode: "evidence"` — **a string nothing executes**, so a
+   Tier-2 agent that fabricates it satisfies that proof. The three container proofs cannot be
+   fabricated this way, which is exactly why they carry the mode gate.
+3. **INCONCLUSIVE is not FAILED: it degrades to self-proposing, LOUDLY, with Tiers 1 and 2
+   still running** — *"the patch parks; Tiers 1 and 2 keep running"* (`gate.mjs:245`). **The
+   pipeline never stops on an unarmed instrument.** An executor that throws or returns no
+   boolean is INCONCLUSIVE, **never "no failure found"**, and container legs are **REGISTERED
+   as UNARMED rather than omitted** — omitting them is what makes a gate lie. `aggregateKnownBad`
+   checks the **floor first**, because an emptied registry has no deviations: the exact mutation
+   `calibration/fixtures.ts:33-38` records as having left the gate green at 7/7.
+4. **A diff touching the admission gate or the impossible-ticket set is REFUSED, NEVER
+   QUEUED — at any tier, including this one.** `ADMISSION_PREFIXES` covers
+   `bakeoff/test/tier3-fixtures/impossible/`; a diff against `imp-001` →
+   `VERDICT REFUSED: the diff touches the admission set`, mutation-proved by dropping the
+   admission branch. **The warrant is the same theorem as the mechanism** (`RESEARCH` R10): the
+   corpus admission predicate becomes the objective function, so a movable anchor is not an
+   anchor, and it cannot be self-editable at any tier. This is the one clause that is a
+   **refusal rather than a park** — there is no evidence bundle that earns it.
+
+**THE RESIDUAL RISK, IN THE SAME BREATH, BECAUSE IT IS NOT A FOOTNOTE.** All four proofs
+detect **a grader that got WEAKER**. None of them detects **a prompt or a criterion generator
+that made authoring EASIER**, and **that second one has no known solution** — not here, and
+not in the literature (§10.1, §10.2, `RESEARCH` §5 item 3: sealed-suite gating is *"a
+reasonable engineering response with no published evidence behind it"*). S3-S8 grade **frozen
+artefacts against frozen suites**; the spec seat never runs. Concretely, and it is this
+round's own headline: **the authoring-retry fix of 2026-08-10 — the manifest echo and the
+accumulated constraint set, `STATE` §6.10 — is a prompt change inside `bakeoff/src`, and the
+sealed gate observed nothing whatsoever about it.** The sharpest standing instance remains
+`bakeoff/src/spec-validate.ts`: EDITABLE, and it **is** the bad-test audit. Softening it moves
+no `heldOutPass` on any frozen artefact; it changes which suites get frozen next — weaker
+criteria, authored honestly, passing honestly. The only instrument is the 4B authoring proxy
+(§6.5), it is noisy on correctness (7/7, 5/7, 5/7 across three committed runs), and it is the
+most expensive step in the loop. **A patch inside the authoring closure that makes the next
+suite weaker is, today, indistinguishable from one that makes the next suite better.**
 
 ### 6.1 The partition, derived by import closure
 
@@ -654,6 +1028,23 @@ Two corrections to the brief first.
   disk. The rollback record must carry the source sha (or a scratchpad bundle of the
   pre-patch editable set), or a rolled-back image runs against rolled-forward source.
 
+> **BOTH BULLETS ABOVE ARE OVERTAKEN — RATIFIED 2026-08-10, and S2/S11 depend on the
+> difference.** Left in place because they were true when written. Re-measured:
+> ```
+> docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep -i bakeoff
+> bakeoff-scorer:1  027bc2e2d3d2 | pre-repair-2026-08-10 ec79e1efbe81
+> pre-never-stop    83b80ef56b67 | pre-manifest-shape    b7a9fd0a0f58
+> pre-specmode      fae56a4e1374 | pre-readmech          c98bad3a762b | pre-lane4 bcd017714ba7
+> git tag -l → gate-verified-2026-08-10        # ANNOTATED: resolve with ^{commit}
+> ```
+> `pre-manifest-shape` **does** exist (`b7a9fd0a…`) and there is now **one** git tag, so S2's
+> two-part rollback identity is constructible for the first time. **The failure mode did not go
+> away, it moved into the tag body:** `gate-verified-2026-08-10` names `d74a20aeb6bc…` as the
+> image at that commit and `docker image inspect d74a20aeb6bc` → **`No such image`** — it
+> transcribed an untagged intermediate rung as the final one. Two rungs are unreachable by name
+> (`d74a20ae…`, `5ffdc20a…`). **A recorded rollback pointer that does not resolve is exactly what
+> §6.3 S2 exists to prevent.** Full chain and the owner action: `STATE` §6.0 and §6.12.
+
 ```
 S0.  ARM CHECK (§6.6). Refuse to proceed if the gate cannot be shown to fail.
 S1.  Verify frozen.manifest. Mismatch → REFUSE, alarm, stop.
@@ -702,6 +1093,68 @@ S12. On full pass: emit the apply token (L4), append to the trail (§6.7), apply
 run records `totalWallClockMs: 32304` at concurrency 3). S8 is ~12.7 s of container time
 and zero quota. **S3+S6+S8 is cheap enough to run per-patch. S10 is not** — §6.5.
 
+> ### IMPLEMENTED 2026-08-10 — THE ROUTER AND THE TOKEN ARE BUILT; S3–S10 ARE NOT
+>
+> `tools/tier3/gate.mjs` is a library + CLI (`node tools/tier3/gate.mjs --proposal <file>`)
+> with four exits, ordered: admission REFUSED → blind arm REFUSE-BLIND → frozen mismatch
+> REFUSE → proposal refusals REFUSED → known-bad REFUSE/INCONCLUSIVE → OUTSIDE-CLOSURE APPLY
+> → INSIDE-CLOSURE requires all four named proofs. `mintApplyToken` digests
+> (frozen-manifest digest ‖ diff digest ‖ verdicts), and `decideApply` refuses a token minted
+> over a different diff **and a missing one identically**. With no proposal the CLI answers
+> `VERDICT REFUSED: … no proposal supplied` — absence is failure, not a default. **Nothing in
+> the lane writes to the working tree**; S11's rollback, S3's rebuild and S6's container legs
+> are not built.
+>
+> **VERIFIED BOTH DIRECTIONS, because a gate that only refuses is as useless as one that never
+> does.** (A) a real grader softening — `bakeoff/src/scorer-container.ts`, replacing
+> `ranPasses.every(pass => pass.exitCode === 0 || excused(pass))` with `const suiteGreen = true`,
+> full evidence → `VERDICT SELF-PROPOSE`, `applyToken: null`. (B) moving the anchor —
+> a diff against `imp-001` → `VERDICT REFUSED: the diff touches the admission set`. (C) the
+> accept direction — an editable-only diff with full evidence → `VERDICT APPLY`, token minted.
+>
+> **THE NUANCE THAT MUST NOT BE SMOOTHED OVER: (A) was NOT refused for BEING a softening.
+> There is no softening detector.** It parked because it is inside the frozen closure AND the
+> container legs are UNARMED, so `proofsFor` (which counts ONLY container-mode evidence for
+> the three artefact-grading proofs) can never reach 4/4. What is proven is *"nothing inside
+> the closure can reach APPLY today"*, **not** *"grader softening is refused"*. The mechanism
+> that would actually catch a softened `scorer-container.ts` is the container known-bad set —
+> the 5 `MUST_FAIL` calibration fixtures would go green under it — and that set has **0
+> executed container arms**. When someone writes those executors, re-run (A); do not let
+> today's correct verdict be cited as evidence the detector works.
+>
+> ### AND THE ACCEPT PATH GRADED A PATCH ON THREE STRINGS THE PROPOSER WROTE — FOUND, THEN FIXED
+>
+> A proposal whose diff touched `dashboard/server/src/orchestrator.ts` and whose entire
+> evidence bundle was `{redBefore:"x", greenAfter:"x", mutationRed:"x", noOpAblation:"x"}`
+> returned `VERDICT APPLY` with a real `applyToken` and `humanReviewed: null`. Mechanism:
+> the OUTSIDE-CLOSURE branch returned APPLY **before `proofs` was consulted at all**, and the
+> only bar on it was a `nonEmptyString` check — while `RED_EQUALS_GREEN`,
+> `EVIDENCE_EXIT_CODES_INCONSISTENT` and `SCOPE_UNIMPLICATED_FILE` already existed,
+> mutation-proved, in `tools/repair/evidence.mjs`, with **zero cross-imports** between the two
+> directories. **That door is the only one that authorises writing to the editable package
+> where the orchestrator, the recovery classifier and the gate's own caller live.**
+>
+> **FIXED 2026-08-10:** `tools/tier3/proposal.mjs:29` now imports
+> `tools/repair/evidence.mjs#validateProposal` and adopts a **named whitelist** of the four
+> refusals decidable from the proposal alone — `RED_EQUALS_GREEN`,
+> `MUTATION_RED_EQUALS_GREEN`, `EVIDENCE_EXIT_CODES_INCONSISTENT`, `DIFF_UNPARSEABLE` — and the
+> OUTSIDE-CLOSURE branch now requires the no-op-ablation proof and returns SELF-PROPOSE
+> without it. Pinned by a test whose input is that exact `"x"/"x"/"x"` proposal, with a
+> negative half where the same diff carrying prover-shaped transcripts is NOT refused.
+> **Wholesale delegation was REFUSED on measurement:** `evidence.mjs` unconditionally adds
+> `NO_INDEPENDENT_CHECK` and `SCOPE_UNIMPLICATED_FILE` unless `ctx.independentCheck.ran` and
+> `ctx.defect` are supplied, and `runGate` supplies neither — adopting every code would make
+> **every** proposal refuse for ever, which is the mirror-image bug and the one direction that
+> does stop the pipeline. **Those two codes are therefore still UNENFORCED at Tier 3**, with
+> the precondition written into `proposal.mjs`'s docblock: make `defect` and `independentCheck`
+> required inputs to `runGate`, which means the gate needs a caller that supplies a real defect
+> record and an executed replay. Carried forward.
+>
+> **AND `noOpAblation` IS A STRING NOTHING EXECUTES.** `proofsFor` requires it non-empty;
+> no code in the lane runs an ablation, so a Tier-2 agent that fabricates that string
+> satisfies the proof. The three CONTAINER proofs cannot be fabricated this way, which is
+> exactly why they are the ones with the mode gate.
+
 ### 6.4 The known-bad set. This is the part the whole design turns on
 
 S8 proves the grader still passes good work. **Nothing in S3–S8 proves it still FAILS bad
@@ -745,6 +1198,55 @@ for a different reason → REFUSE.
 | H | `hollow-section` — the standing proof the visual gate's calibration is not vacuous | **EXISTS, UNWIRED.** Assert `expectedWithoutVisualGate` so it is a live row rather than a comment. |
 
 **Land G and F before arming Tier 3.**
+
+> ### IMPLEMENTED 2026-08-10 — 22 REGISTERED, 17 ARMED, 5 UNARMED, AND ZERO CONTAINER ARMS
+>
+> `tools/tier3/known-bad.mjs`. **Armed arms execute REAL frozen code** imported from an
+> isolated copy of `bakeoff/dist`: `scorer.stageArtifact` (forbidden-prefix plant AND control
+> **E**, a byte-identical copy of a frozen suite file at the innocuous path
+> `src/stolen-suite.mjs` → `protectedPathViolations`), `tier0.evaluateSqliteExpectation`
+> (Fixture **G**, both sides), `scorer-protocol.collectManifestProblems` (`a913c871`'s real
+> attempt-1 and attempt-3 shapes), `contracts.computeHeldOutPass` (empty gate never passes;
+> one violation is an instant fail; an honest artefact still passes).
+>
+> **`aggregateKnownBad` checks the FLOOR FIRST**, because an emptied registry has no
+> deviations — the exact mutation `calibration/fixtures.ts:33-38` records as having left the
+> gate green at 7/7. Mutation-proved: deleting the floor produced
+> `✖ an emptied known-bad registry REFUSES rather than reporting no failures … actual: 'PASS'`.
+> An executor that throws or returns no boolean is **INCONCLUSIVE**, never "no failure found".
+> Container legs are **REGISTERED as UNARMED, not omitted** — omitting them is what makes a
+> gate lie — and UNARMED degrades any proof that depends on it to INCONCLUSIVE.
+>
+> **G IS BUILT AND IS THE FIRST POPULATED `dataExpectations` IN THIS REPOSITORY**, as one
+> mutation rather than two directories: `bakeoff/test/tier3-fixtures/persistence/schema.sql`
+> (table exists, zero rows — so it fails for the RIGHT reason, not "database missing") vs
+> `schema.sql + insert.sql`, plus `server.mjs.template` with one `__PERSIST_HUNK__` and a
+> `suite.manifest.json` carrying BOTH a `sqlite` and an `http` expectation, accepted by the
+> real `parseSuiteManifest`/`collectManifestProblems` with `[]` problems. The sqlite side runs
+> LIVE against the exported frozen `tier0.evaluateSqliteExpectation`: hollow →
+> `observed 0 row(s), required >= 1` unsatisfied; restored → `observed 1 row(s)` satisfied.
+> **The `http` leg and the end-to-end persistence gate need the container and are UNARMED.**
+>
+> **The impossible-ticket set** is 4 anchors on disk
+> (`bakeoff/test/tier3-fixtures/impossible/`), 2 armed (`imp-002` a table no artefact has,
+> `imp-003` `minRows 9999`) and 2 UNARMED — and the 2 UNARMED are the only real
+> ImpossibleBench-shaped ones (spec forbids persistence vs sealed suite requires a row; spec
+> says single page vs suite requires `/checkout/step-2`). The armed pair contradicts the
+> ARTEFACT, not the spec, and says so in its own files. The directory is in
+> `ADMISSION_PREFIXES`, so **any diff touching it is REFUSED at any tier** (`RESEARCH` R10 — a
+> movable anchor is not an anchor); mutation-proved by dropping the admission branch.
+>
+> **THE HONEST CEILING: 17 arms held, 0 container arms executed.** A host import proves the
+> function on disk still rejects bad input; it does not prove the SEALED scorer still fails
+> bad work. The aggregator refuses to let host evidence satisfy a closure proof, so this is
+> honest rather than dangerous — but the gate's negative arm for the sealed grader is
+> **unarmed**, and says so in every trail record.
+>
+> **CARRY-FORWARD FINDING, cheap and easy to repeat:** `bakeoff/src/scorer.ts:494` reads
+> `suiteFileDigests` as **digest→path**. The first exfiltration fixture built it path→digest
+> and the arm found no violation — it reported DEVIATED rather than passing, which is the
+> negative arm working, but anyone building that map the intuitive way gets a suite-integrity
+> check that can never fire.
 
 ### 6.5 WHAT THE GATE CANNOT CATCH — stated as construction, not as oversight
 
@@ -832,6 +1334,29 @@ stop.** The dashboard shows a red autonomy banner naming the failing arm. This s
 the owner's constraint: the system degrades from self-applying to self-proposing, and says
 so.
 
+> ### IMPLEMENTED 2026-08-10 — FIVE ARMS LIVE, TWO REGISTERED UNARMED
+>
+> `tools/tier3/armcheck.mjs`. Each arm is exercised while the answer is known, and each prints
+> its MEASUREMENT rather than its conclusion:
+>
+> ```
+> ARM CHECK A1 frozen-manifest: mismatch detected on 1 planted byte (must be 1); clean before true, clean after restore true — OK
+> ARM CHECK A2 manifest-reject: 5/5 rejected naming their field, 1/1 valid accepted (must be 5/5 and 1/1) — OK
+> ARM CHECK A3 data-expectation: hollow satisfied=false (must be false), restored satisfied=true (must be true) — OK
+> ARM CHECK A4 classifier: scorer.ts→INSIDE-CLOSURE impossible-set→REFUSED bakeoff/test→OUTSIDE-CLOSURE — OK
+> ARM CHECK A5 trail-append: 1 write accepted, 1 overwrite refused on 1 attempt (must be >=1) — OK
+> ARM CHECK A6 rescore: UNARMED — needs the sealed image
+> ARM CHECK A7 calibration: UNARMED — needs ~32 s of container time
+> ```
+>
+> `runArmChecks` asserts `armed === 5` **as well as** `blind === 0`, because `blind.length === 0`
+> is green on an empty arm list. A4 fails if the three routes are not all DISTINCT — the arm
+> that catches a router stuck on one answer. Blinding A1 or A3 independently drove the gate's
+> own verdict to `REFUSE-BLIND`, and neutering the blind-arm branch produced
+> `✖ a blind gate applied a patch. actual: 'APPLY', expected: 'REFUSE-BLIND'`. **The fail-closed
+> behaviour this section specifies is implemented and mutation-proved; the red autonomy banner
+> is not built** (the gate is a CLI with no dashboard surface).
+
 ### 6.7 The audit trail
 
 **Reuse, don't invent.** `dashboard/server/probes/README.md` already specifies the shape and
@@ -877,6 +1402,34 @@ humanReviewed  null | { by, at, verdict }    ← starts null, only a human sets 
 
 `humanReviewed` exists so that *"has anyone ever looked at this?"* is a field and not a
 memory.
+
+> ### IMPLEMENTED 2026-08-10 — AND THE LOCATION THIS SECTION SPECIFIES IS DELIBERATELY NOT USED
+>
+> `tools/tier3/trail.mjs`: immutable `history/<stamp>-<change>.json`, append-only
+> `index.jsonl`, `latest.json` pointer, `humanReviewed: null`, `unreviewed()` answering
+> *"has anyone ever looked at this?"* from the index. `appendTrail` **refuses** (returns
+> `{ok:false, reason}`, does not throw) if the history record already exists — the mechanism
+> `probes/README.md` specifies and which this section measures as MISSING in
+> `calibration-4a.mjs`. Mutation-proved: deleting the `existsSync` refusal reddened 5 tests
+> including arm A5, i.e. blinding the trail also takes the arm down, which is the coupling that
+> makes *"re-run until green"* detectable.
+>
+> **CORRECTION TO THIS SECTION, and it needs the owner to ratify one of the two.** §6.7 puts
+> the trail at `dashboard/server/probes/results/tier3/`, which is **inside the FROZEN-DATA
+> prefix `dashboard/server/probes/results/`**. Writing there means the gate's own output moves
+> the frozen manifest on every cycle, so the gate's integrity check would invalidate itself.
+> The implementation therefore defaults to `dashboard/data/tier3/` (`TIER3_TRAIL_DIR`
+> overrides), documented in `trail.mjs`. **That directory is gitignored** — 4 records exist
+> there today from the verification runs and `git status --short` shows none of them. So the
+> append-only audit trail the gate depends on is invisible to git and nobody has said where it
+> is backed up. **Ratify one:** amend this section to the implemented location, or move
+> FROZEN-DATA's boundary.
+>
+> **Two fields the shipped record adds:** every known-bad result carries its `mode`
+> (`host-import` vs `container`), and the evidence bundle is filed under `negativeControl`
+> rather than a name implying correctness (`RESEARCH` W5 — it is a vacuity control, never a
+> correctness proof). `rollback.imageTag` is `null` with the reason stated, because the lane
+> built no image.
 
 ---
 
@@ -986,6 +1539,65 @@ flight" is *any run named by a `current_run_id` whose status is non-terminal* �
 `activeRunId` — because a rate-limited run is parked with no active slot and the supervisor
 must not claim a second ticket on top of it.
 
+> ### IMPLEMENTED 2026-08-10 — WITH A CAP THIS STEP LIST OMITS, AND THE OMISSION WAS A SPIN
+>
+> `dashboard/server/src/supervisor.ts` (`SupervisorLoop`, re-entrancy-guarded `tick()` at
+> `:367`), the three tables + typed accessors in `db.ts`, 22 tests in `supervisor.test.ts`.
+> `settle()` reads the retry budget from `recovery.ts#boundFor` rather than restating it, and
+> an unknown class (`boundFor` has no default arm) is treated as no-retry;
+> `next_action TEXT NOT NULL` with no default is the schema-level rule that a ticket cannot be
+> filed mute. **Crash recovery was verified with a real `kill -9`**, not read: SIGKILL from
+> inside `submit` after the claim, then a NEW loop over the SAME db file → `desired='running'`
+> survived, health BEFORE any tick read `stuck-orphan-claim` with
+> *"ticket t-verify-1 is claimed but names no run — the submission was lost between the claim
+> and the run row"*, and the next tick requeued and submitted exactly once.
+>
+> **THE STEP LIST ABOVE HAS NO ATTEMPT CAP IN STEP 4, AND THAT WAS A REAL DEFECT.** The cap
+> lived only in `settle()`, which runs only when a run reaches a TERMINAL status. Two paths
+> walked past it: (a) the submission-throw catch returned the ticket to `queued` **without
+> incrementing `attemptNo`**, so a deterministically throwing `submit` (bad model id, missing
+> directory, full disk) re-claimed every 30 s **for ever** — no increment, no backoff, no cap,
+> while reporting progress; (b) step 2's wake re-queues a non-resumable run for a fresh
+> submission, and a ticket whose runs keep landing non-terminal could exceed `maxAttempts`
+> without bound. **FIXED:** step 4 now reads `attemptNo >= maxAttempts` **before** submitting
+> and settles the ticket to `blocked` (never `queued` — §7.6's one rule) at ~~`supervisor.ts:455`~~
+> **`:926`**, which closes the wake path too because a woken ticket arrives at that same line; and the
+> throw path now counts the attempt at ~~`:518`~~ **`:989`**, so the spin is bounded by `maxAttempts`
+> ticks. Two tests, each with a negative half (a ticket one attempt below the cap IS submitted).
+>
+> > **RE-MEASURED 2026-08-10 (strip-crash round) — two corrections and one addition.**
+> > **(a) THE LINE NUMBERS ABOVE WERE WRONG** and were being reused by later reports: the cap read is
+> > at **926** and the throw-path increment at **989**. Struck through rather than silently swapped,
+> > because a stale citation that looks precise costs more than an absent one.
+> > **(b) THE WAKE PATH WAS PROVED BY A TEST THAT COULD NOT SEE IT.** Both pre-existing cap tests
+> > built the post-wake row by calling `updateSupervisorTicket({state:'queued', attemptNo:1})`
+> > **directly**, so they proved the guard handles that row and **nothing** about whether `#wake`
+> > produces it. Under a mutation that makes the wake branch forget the attempts already spent
+> > (`attemptNo: 0`), **both of them stay GREEN.** A new test drives the real documented loop end to
+> > end — submit → `rate_limited` → `waiting` → clock past the wake instant → `#wake` re-queues → … →
+> > `blocked` — and asserts every run in the sequence is still non-terminal, so `settle()`, the cap's
+> > old sole reader, provably never runs. **The guard was right; the proof was pointed at a hand-built
+> > row.**
+> > **(c) THE STEP LIST NOW HAS A REPAIR STEP**, between reconcile/wake and step 3's early return.
+> > §5.2's dated block is the mechanism, and the placement is load-bearing for the reason given there.
+>
+> **STILL MISSING, and it is not pretended otherwise:** exponential backoff on consecutive
+> submission failures, and any per-ticket wall-clock or spend ceiling
+> (`grep -c "wall\|deadline\|budgetMs" dashboard/server/src/supervisor.ts` → **0**). The only
+> spend brake is `budget_exceeded → owner_action → blocked`, which depends on the provider
+> reporting it. Note the constraint found while measuring: the claim step reads
+> `listSupervisorTickets(['queued'])[0]` with **no time filter**, so `nextActionAt` on a
+> `queued` ticket does not delay a claim — `waiting` + `nextActionAt` is the viable backoff
+> state.
+>
+> **AND ONE ORPHAN THE RECONCILE CANNOT SEE (reasoned from the code, not measured):** a
+> submission that creates the run row and *then* throws leaves the ticket `queued` with
+> `currentRunId` still null, while `#inFlight()` (`:567`) decides in-flight purely by walking
+> TICKETS and reading the run each one names. A run row named by no ticket is therefore
+> invisible to the claim guard and to `GET /api/supervisor`, and the next tick submits a
+> second run. Fix is either minting and persisting the run id as `submitRun`'s first act, or
+> reconciling by scanning `runs` for non-terminal supervisor-owned rows named by no ticket.
+
 ### 7.4 Submission, and the never-park policy
 
 **Submission goes through `createRun`'s logic, not around it.** That is where ticket
@@ -1024,6 +1636,28 @@ for three and a half days LOOKS like the twelve-hour death of 2026-07-30 from ou
 answered by the surface in §7.6 showing the wake instant, not by shortening the wait.
 PROPOSED, not measured: the wait path has never executed (every refusal recorded on this
 machine is `seven_day` with `limited:false`).
+
+> ### MEASURED 2026-08-10 (strip-crash round) — A FIFTH PARK THIS TABLE DOES NOT LIST: ILLEGAL INPUT ACCEPTED AT THE DOOR
+>
+> The never-park policy was written about what a RUN does. It said nothing about what the QUEUE
+> accepts, and that was a park: **`POST /api/supervisor/tickets` answered `201` for
+> `{"modelId":"no-such-model"}`.** The catalog check existed, at SUBMIT time — so the typo cost one
+> full attempt and a terminal `blocked` ticket two ticks later (`supervisor_log`: *"the submission
+> threw and the ticket was returned to the queue: no-such-model is not in the catalog"*). Bounded,
+> ~10 s, no orphan run row, no spin — **and a brief filed at midnight that never runs, discovered in
+> the morning.** Fixed at filing time: **`400 invalid_model`**, live-verified.
+>
+> **THE GUARD IS THREE-ARMED ON PURPOSE, AND THE TWO-ARMED VERSION WAS FALSIFIED BY THE LIVE CLI
+> INSIDE THE HOUR.** An id that IS in the catalog is filed whatever `available` says (auth can come
+> back before the loop claims it); an absent id is refused **when the catalog enumerated**; an absent
+> id is **FILED when the catalog could not enumerate**, because *losing a brief to a failed probe is
+> the worse error* — which is this section's own never-park reasoning applied to the door. The first
+> version inferred the degraded state from the absence of a fallback row's id, and this machine's
+> `GET /api/models` answers `['default','opus[1m]','claude-fable-5[1m]','sonnet','haiku']`: **a
+> healthy catalog contains a model whose id is literally `default`**, so a healthy catalog read as
+> degraded, the live server still answered 201, and the unit test was green against a fixture that
+> had no such row. **The catalog now reports what only it knows (`ModelCatalog.enumerated()`) and the
+> fixture carries the real CLI's row, so the test can fail the way production did.**
 
 ### 7.5 START and STOP semantics — STOP means DRAIN
 
@@ -1084,6 +1718,29 @@ fresh spec phase — which is right, because the defect was in authoring.
 stay that way.** `recovery.ts:112-118` is explicit that mixing counters is how a bound stops
 working. Two questions, two numbers.
 
+> ### SUPERSEDED 2026-08-10 (strip-crash round) — THE `repairing` ROWS NOW HAVE AN EXIT, AND A THIRD COUNTER
+>
+> **Both `repairing` rows in the table above were, as shipped, a park:** `settle()` was the only
+> producer and nothing read the state back. A repair step in `tick()` now routes every repairing
+> ticket to one of six named outcomes, five terminal, bounded by a 30-minute per-ticket deadline and
+> 2 cycles per signature — **§5.2's dated block is the mechanism.** With no driver wired, which is
+> today's state, the row's real behaviour is: `failed, structural` → `repairing` for exactly one
+> visible tick → **`blocked` with `NO_REPAIR_DRIVER` and a sentence naming the signature and the
+> class.** Measured live, not reasoned.
+>
+> **AND THIS SECTION'S COUNTER RULE FORCED A THIRD COLUMN.** The per-signature cycle bound could not
+> live in `attempt_no` (a repair is not an attempt) and could not live in `class_counts` (a different
+> question), so it is a new `supervisor_tickets.repair_counts`, with an additive migration and a
+> DROP-COLUMN test because the owner's `runs.db` already has that table without the column. **Three
+> questions, three numbers — and two JSON blobs on one row is now a convention that will rot if a
+> fourth arrives; if per-class budgets ever get a real reader, both should become a table.**
+>
+> **ONE CONSEQUENCE THAT WILL READ ODDLY AND IS DELIBERATE:** an applied patch on a ticket already at
+> `maxAttempts` is re-queued and then immediately blocked by the claim guard, so `patch_id` is set on
+> a ticket that never re-ran — **a patch with no run behind it.** Letting a repair mint an extra
+> attempt is exactly the counter-mixing this section forbids, so the odd-looking row is the correct
+> one; it is now documented in the router rather than discovered on the strip.
+
 #### 7.6.1 A ticket may not be marked `done` by a run whose grader moved
 
 On every settle, record `runs.suite_sha256` and the scorer image digest (from
@@ -1119,6 +1776,100 @@ one non-empty by construction:
 eventsSeen }` and the panel renders **three visually distinct states** — stopped with
 tickets queued, stopped with an empty queue, endpoint unreachable. A test asserts all three
 differ. A status panel whose failure mode is "shows nothing" is the signature defect.
+
+> ### IMPLEMENTED 2026-08-10 — FOUR OF THE SEVEN FIELDS ARE LIVE, THREE HAVE NO PRODUCER, AND THE a913c871 DETECTOR IS DORMANT
+>
+> `GET /api/supervisor` (`http.ts`, `api-types.ts`, `supervisor-route.test.ts`) reads
+> `supervisor_state` and `supervisor_tickets` through the SAME `deps.store` that
+> `SupervisorLoop.snapshot()` decides from, so a panel that says "idle" and a loop that is
+> stuck **cannot disagree — there is no second copy of the answer to drift**.
+> `composeSupervisorState()` is a pure function over a gathered input so the boot arm check can
+> drive it with known answers. Two queue numbers, not one: `queueDepth` is the supervisor's
+> backlog and `queuedRuns` is `runs.status='queued'`, because STOP does not touch `pump()`.
+> Field 7's rate-limit filter is implemented (`supervisorQuietMs` skips `rate_limit` frames) and
+> is the sharpest mutation proof in the round:
+> `AssertionError: this run has produced nothing but telemetry since it started 90 minutes ago,
+> so the clock must read ~5,400,000 ms, not ~0 (read 3)`.
+>
+> **THREE FIELDS ARE EMITTED AS `[]`/`null` AND NAMED ON THE WIRE IN `probe.unsourced`:**
+> `attempts[]`, `lastDefect`, `lastRepair`. They were deliberately NOT synthesised from
+> `run_attempts` — field 4 above exists precisely because that table files `a913c871`'s failed
+> attempt as `end_class=completed`. Naming them on the wire is what makes an empty attempts list
+> read as *nobody writes one yet* rather than *nothing happened*. The durable half ships as the
+> server-only `lastDefectId`/`lastPatchId` read from `supervisor_tickets`.
+>
+> **CONSEQUENCE, and it is the single most important gap in the surface:** the strip's
+> `attemptProgress` comparator — 11 liveness arms, the oscillation detector, mutation-proved
+> both directions — is fed a named constant `ATTEMPTS_NOT_ON_THE_WIRE = []`
+> (`supervisor-strip.tsx:71`, consumed `:164`), so it returns `unknown` with
+> `escalatesAtAttempt: null` and **can never fire**. The only `stuck` arm reachable from a
+> spec-phase loop is a 40-minute quiet wall — and `a913c871` emitted attempt boundaries every
+> ~25 min, each resetting the quiet clock. **If that failure recurred tonight the strip would
+> show a calm `running` for the full 87 minutes, exactly as before.** It is a one-field server
+> change (`attempts: readonly {n, at, problems}[]` sourced from `results/authoring-trail.json`)
+> **and it is inert until the writer carries STRUCTURED per-attempt paths** — see §3.4's dated
+> block. Wiring it on prose-only `problems` would put a detector on the wire that escalates on
+> attempt 2 of every ticket, and for an unattended machine a false stop costs the same as a miss.
+>
+> **A FOURTH STATE THE SURFACE MUST RENDER, learned the hard way:** `probe.wired:false` — the
+> GET answers **200**, not 503, precisely so *"no supervisor behind the button"* cannot look like
+> *"the dashboard is down"*. And an eleven-arm ladder that can observe no-answer, failed-answer
+> and stale-answer **could not observe a MALFORMED answer**: a 200 carrying a body that is not a
+> `SupervisorState` made `classifySupervisor` throw `Cannot read properties of undefined
+> (reading 'wired')` out of `RootLayout`, blanking the whole page. Fixed by a shape-validating
+> arm above it (`supervisor.ts:296 malformedReasons`, `:421`) that names every failing field.
+> **The eighth field this section should have specified is "the body is not the contract".**
+>
+> > ### MEASURED 2026-08-10 (strip-crash round) — THAT WAS ONE ARM OF A THREE-STATE CHECK, AND THE SURFACE WAS STILL BLIND FOR A DIFFERENT REASON
+> >
+> > **FIVE THINGS THIS SECTION NOW HAS TO SAY, and the first two are the same lesson twice.**
+> >
+> > **1. A NAMED STATE, NOT A REUSED ONE.** The fix above answered *"the body is not the contract"*
+> > with `unreachable`'s badge word, so *"the route did not answer"* and *"the route answered with
+> > something else"* shared one word and one sentence. `SupervisorLiveness` now carries
+> > **`malformed`**: amber, deliberately the SAME colour as `unreachable` (amber = *this page cannot
+> > see*; red = *the loop is wedged, act on the run*) and a **different word and a different
+> > sentence**. Painting it red would be the preview-card lie again. Five words, five sentences,
+> > **four** colours — and a test asserts the fifth colour is absent.
+> >
+> > **2. THE ARM CHECK MUST GROW WITH THE STATE, OR THE STATE IS UNREACHABLE CODE.** Shipping a fifth
+> > liveness under a four-probe arm would have printed *"4 distinct"* for ever while the newest state
+> > was dead. The arm now pushes **five** inputs with five known answers through the real classifier
+> > and requires `distinct === 5`. **The general rule this section should have carried from the start:
+> > a surface's arm check has one probe per state it claims to distinguish, and adding a state without
+> > adding a probe is this repository's signature defect wearing a feature's clothes.**
+> >
+> > **3. VALIDATION IS A PROMISE ABOUT DATA; A BOUNDARY IS A PROMISE ABOUT CODE. This section needs
+> > both and specified neither.** Exhaustive validation makes *"a body that clears it cannot make any
+> > consumer throw"* true, and covers none of: a field the contract grows and nobody validates, an
+> > `Intl` option a future browser rejects, tomorrow's edit to the component. The strip is now wrapped
+> > in the application's **first error boundary**, which wraps the strip **and nothing else** — a
+> > boundary around `{children}` would swallow page-level throws the dev overlay reports, and a
+> > boundary that hides a bug is worse than a blank page. **Its limit belongs in the design rather
+> > than in a lane's memory: client boundaries do not catch server-render throws, so an arm check that
+> > runs in a render body — a `useState` initialiser, module scope, anything not in an effect — sits
+> > OUTSIDE the boundary, and a throw there is a blank page nothing can save.** Each probe therefore
+> > catches and answers `threw: <message>`, which matches no expected value, so the probe fails loudly
+> > instead of killing the render.
+> >
+> > **4. AND THE SURFACE WAS STILL BLIND, FOR A REASON NO ARM COULD SEE.** Against the OWNER'S OWN
+> > BACKEND the strip read amber `MALFORMED` on every route, because the client mirror and the shipped
+> > wire disagreed in **fifteen fields**. The two declarations never meet under any typechecker
+> > (`dashboard/src/lib/api-types.ts` declares its own `SupervisorState` and never imports
+> > `ApiSupervisorState`), and **no test could see it because `dashboard/tests/fixtures/` serves no
+> > `/api/supervisor` at all** — every spec reaches `unreachable`, never `malformed`. **So the
+> > instrument built to tell a working loop from a wedged one showed the same amber for both, and
+> > would have done so all night.** Closed by rewriting the mirror onto the wire and pinning it with a
+> > golden fixture GENERATED by running the server's own `composeSupervisorState`, asserted **from
+> > both ends**: server drift reddens in `supervisor-route.test.ts`, client drift reddens in the
+> > strip's unit spec. **The design rule this yields: a mirrored contract needs a fixture generated by
+> > the producer, because "both sides typecheck" is not a statement about the wire.**
+> >
+> > **5. THE SIXTH STATE THIS SECTION STILL DOES NOT SPECIFY.** `idle` covers *"the queue finished"*
+> > and *"the queue is exhausted with blocked tickets"* with one word and one sentence, and
+> > `GET /api/supervisor/tickets` is a measured **404** — so a terminal ticket's reason lives only in
+> > `supervisor_tickets.next_action`, `supervisor_log` and stdout. **Same defect as items 1 and 2, one
+> > layer up, and it is the one the owner meets at breakfast rather than at 3am.**
 
 ### 7.7 Crash recovery, and the localhost exception costed
 
@@ -1459,6 +2210,14 @@ recalibration + one re-score of run 1**. `grep -c "COPY test" …` → **0**, so
 >
 > **Nothing in §6 can be built until that round lands and is tagged.** Steps 1-7 below do
 > not depend on it; steps 8-15 do. Carried into §10.5 as owner-only decision 0.
+>
+> > **FALSIFIED 2026-08-10 (later the same day). THE ROUND LANDED AND WAS TAGGED.**
+> > `git rev-parse --short HEAD` → `d32ad85`; `git tag -l` → `gate-verified-2026-08-10`;
+> > `git rev-parse gate-verified-2026-08-10^{commit}` → `d32ad858…` = HEAD. **Steps 8–15 are
+> > unblocked by this document's own rule** and owner-only decision 0 is discharged.
+> > **The gotcha, because it will otherwise read as a moved tag:** it is an ANNOTATED tag
+> > (object `50a99fdf…`), so resolve it with `^{commit}` — `git rev-parse
+> > gate-verified-2026-08-10` alone returns the tag object, not the commit.
 
 | # | step | why here | digest? |
 |---|---|---|---|
@@ -1481,6 +2240,33 @@ recalibration + one re-score of run 1**. `grep -c "COPY test" …` → **0**, so
 **Steps 1–7 ship a system that never parks, re-runs itself, drains on STOP and reports in
 one sentence — with no repair pipeline and no self-application at all.** That is the
 cheapest useful stopping point and it is a real one.
+
+> ### STATUS 2026-08-10 — THE ORDER WAS NOT FOLLOWED, AND ONE STEP WAS BUILT BEFORE ITS PRECONDITIONS
+>
+> Five lanes ran in parallel rather than in this order. Per-step, measured:
+>
+> | # | status 2026-08-10 |
+> |---|---|
+> | 1 | **NOT DONE.** `calibration-4a.mjs`'s journaling is untouched. The gate's own trail (§6.7) got the mechanism instead, so *"re-run until green"* is still frictionless in `calibration-4a.mjs` specifically. |
+> | 2 | **LANDED.** `results/authoring-trail.json` on BOTH paths, in the existing `finally`. On the failure path it can only report `attemptsAvailable:false` with an `UNAVAILABLE:` sentence — which is the honest answer and is asserted, so the day §8.0a lands the test goes red deliberately and somebody has to look. **Never written for real** (no file exists under `dashboard/runs`). |
+> | 3 | **LANDED for the sqlite kind, UNARMED for `http` and end-to-end.** §6.4's dated block. |
+> | 4 | **LANDED as a host-import arm** (`kb-exfil-byte-identical-copy`), not on `rescore.mjs`. |
+> | 5 | **NOT DONE.** The corpus was not frozen or extended in `scorer-protocol.test.ts`. What exists instead is `tools/replay/` — a free, zero-quota, ~150 ms regression corpus over `a913c871`'s three real manifests **plus two must-accept cases**, one of which reads `MANIFEST_DATA_EXPECTATION_EXAMPLES` out of the BUILT spec-agent and parses it with the real validator, so a prompt that documents a shape the validator rejects goes red the same second. That is the standing guard this step wanted, outside the digest. |
+> | 6 | **LANDED, never fired.** §5.1's dated block. |
+> | 7 | **LANDED, including the wiring the step list implies and the lane could not reach**: `index.ts:86-112` constructs the loop, `:159` arms and starts it, a 30 s `setInterval(...).unref()` cleared in shutdown, `onRunSettled` wired through a late-bound holder. **Plus one route the design never specified and without which the whole thing is inert: `POST /api/supervisor/tickets`** (`http.ts:1277`) — `enqueueSupervisorTicket` previously had callers only in two test files, so the queue could never be non-empty and START answered its own message. `submitRun` was NOT extracted; `createSupervisorSubmit` (`supervisor-boot.ts`) is a second implementation, and it has **never executed against a real `RunStore`/`Orchestrator`**. |
+> | 8 | **NOT DONE.** The whole digest-moving batch is unpaid, which is why (a) `violations` is `null`, (b) `attempts` is not on the thrown error, (c)–(f) untouched. **This is the single unpaid step most other gaps trace back to.** |
+> | 9 | **PARTIAL.** The comparator is built and mutation-proved (§3.4) and **BLIND on the production record shape**, because it needs step 8(a). |
+> | 10 | **PARTIAL.** The evidence bar and the prover are built and proved (§5.3); the patch AUTHOR is not, and nothing calls the cycle. |
+> | 11–12 | **NOT DONE.** `gradeFixture`'s suite parameter and the corpus harvest/select/evict were not started. |
+> | 13 | **BUILT, OUT OF ORDER, AND ITS PRECONDITIONS ARE ONLY HALF MET.** This step says *"last, and only after 3, 4 and 5"*; 5 was never done and 3 is armed for one of its two kinds. The consequence is exactly what the step warns about — **the gate's value is entirely in its failing arm, and its failing arm is entirely host-import** (17 arms held, 0 container arms executed). |
+> | 14–15 | **NOT DONE.** No `PromotedFixture`, no launchd plist, no crash-loop brake. |
+>
+> **What steps 1–7 were supposed to buy — "a system that never parks, re-runs itself, drains
+> on STOP and reports in one sentence" — is now MOSTLY TRUE and NOT YET PROVEN.** The never-park
+> guard is enforced at the submission boundary (`assertNeverParks`, both parks made unreachable
+> rather than defaulted), STOP drains and cancels nothing, the loop survives `kill -9`. What has
+> never happened is one real supervisor-submitted run reaching a verdict. See
+> `STATE-2026-08-09-where-we-are.md` §7 for the operator's page and the complete stop list.
 
 ---
 
@@ -1571,3 +2357,31 @@ Named plainly, because the owner has decided and should hold the accurate versio
 6. **Whether ABORT NOW exists on the dashboard at all**, given that its only effect is to
    convert a resumable run into an unresumable one. The argument for it is a runaway build;
    there is no measured instance of one on this machine.
+
+> ### ADDED 2026-08-10 — FOUR NEW OWNER-ONLY DECISIONS, AND ONE DISCHARGED
+>
+> **Decision 0 is DISCHARGED** — the round landed and `gate-verified-2026-08-10` exists (§9).
+> **Decision 6 is now half-answered by construction:** `POST /api/supervisor/abort-now` exists
+> and answers **501 `abort_not_wired`** (`http.ts:1520`), plus 400 `confirm_required` without
+> `{"confirm":true}`; the strip has START and STOP (drain) only. It refuses honestly rather than
+> cancelling a run and leaving its ticket `queued`, which would let the next START re-spend on
+> the run the owner just killed. Four new ones:
+>
+> 7. **§3.4 vs `RESEARCH` R5 on a shrinking violation set** — continue (§3.4, implemented) or
+>    escalate (R5). A strict shrink is a subset, so R5's rule makes the comparator escalate on
+>    every sequence and makes §3.4's own mandatory negative control unbuildable. Someone has to
+>    pick, or the comparator is "always escalate" with extra steps.
+> 8. **§6.7's trail location.** The implementation deliberately writes outside the location this
+>    document specifies, because §6.7's path is inside FROZEN-DATA and the gate would invalidate
+>    its own integrity check every cycle. Ratify the implemented location, or move the boundary —
+>    and say where a gitignored append-only audit trail is backed up.
+> 9. **Who mints an out-of-loop approval token while the owner is asleep.** `RESEARCH` §5 item 4,
+>    still open and now load-bearing: every trail record carries `humanReviewed: null`, and every
+>    inside-closure patch parks as SELF-PROPOSE. There is no path from "the machine found a real
+>    repair to a frozen file at 3am" to "it is applied by breakfast", and there should not be one
+>    until this is answered.
+> 10. **Whether a repair driver may run at all before the container known-bad arms exist.**
+>     Today nothing calls `tools/repair` or `tools/tier3`
+>     (`grep -rn 'tools/repair\|tools/tier3\|tools/replay' dashboard/server/src dashboard/src
+>     bakeoff/src | wc -l` → **0**). Wiring one turns the gate's host-import-only negative arm
+>     into the thing standing between an agent and the editable package.
