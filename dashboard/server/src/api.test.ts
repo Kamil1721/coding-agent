@@ -40,6 +40,7 @@ import { GateProbe } from "./health-gate.js";
 import { LOOPBACK_HOST, createDashboardServer, designLockInteractive } from "./http.js";
 import type { RunController } from "./http.js";
 import { CODEX_DEFAULT_MODEL_ID, ModelCatalog } from "./models.js";
+import { planPolicy } from "./plan-record.js";
 import type { DashboardPaths } from "./paths.js";
 import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
 
@@ -1267,13 +1268,64 @@ test("designLockInteractive is §17.3 rule 2's missing definition", () => {
   // unit, and it is kept separate because the two failures are different: a
   // wrong rule here, a dropped field there.
   assert.equal(designLockInteractive("ask", undefined), true, "an explicit designLock is a deliberate caller");
-  assert.equal(designLockInteractive("auto", undefined), true);
+  // `"auto"` IS THE ONE EXPLICIT VALUE THAT IS NOT A DELIBERATE HUMAN. Changed
+  // on 2026-08-09 from `true`; see the composed test below for why.
+  assert.equal(designLockInteractive("auto", undefined), false);
   assert.equal(designLockInteractive(null, undefined), false, "curl sends no Referer and asks for nothing");
   assert.equal(designLockInteractive(undefined, undefined), false);
   assert.equal(designLockInteractive(null, "http://127.0.0.1:4319/runs/run-1"), true);
   assert.equal(designLockInteractive(null, "http://localhost:4176/"), true);
   assert.equal(designLockInteractive(null, "https://evil.example.com/"), false);
   assert.equal(designLockInteractive(null, "not a url"), false, "an unparseable Referer is not a dashboard");
+});
+
+test("THE UNATTENDED SUBMISSION: picking the radio labelled auto SKIPS the plan dialogue", () => {
+  /*
+   * THE DEFECT THIS CLOSES. `page.tsx:365` ALWAYS sends `designLock`, and its
+   * two choices are "Ask me which to build" (`"ask"`) and "Let ui-designer pick"
+   * (`"auto"`). The second one is the only thing on the screen that says "do not
+   * ask me anything" — and until 2026-08-09 it produced `interactive = true`,
+   * exactly like the first one, because `designLockInteractive` folded both
+   * explicit values into "a deliberate caller".
+   *
+   * WHAT THAT COST, AND WHAT IT DID NOT. It did NOT park the design lock:
+   * `designLockPolicy` compares `requested === "auto"` BEFORE it consults
+   * `interactive` (design-lock.ts:48-51), so the mockup choice auto-selected
+   * correctly — the second assertion below is that control, and it passed before
+   * this change too. What it cost was the PLAN phase: `planPolicy(true)` is
+   * `"ask"`, so the plan seat ran, spent the owner's quota composing questions,
+   * and parked for up to `DEFAULT_PLAN_TIMEOUT_MIN` = 20 minutes waiting for an
+   * answer from a room with nobody in it — then graded the run against criteria
+   * shaped by questions nothing answered.
+   *
+   * THE THREE ARMS ARE THE TEST, not the first one. "auto" must skip, "ask" must
+   * still ask (the radio has to keep working), and a dashboard submission that
+   * states NOTHING must still ask — that last one is what stops this fix from
+   * being "the Referer rule was deleted", which would silently un-ask every
+   * dashboard run.
+   */
+  const fromDashboard = "http://127.0.0.1:4319/";
+
+  assert.equal(
+    planPolicy(designLockInteractive("auto", fromDashboard)),
+    "skip",
+    'the radio labelled "Let ui-designer pick" still runs a plan dialogue nobody can answer',
+  );
+  assert.equal(
+    designLockPolicy("auto", designLockInteractive("auto", fromDashboard)),
+    "auto",
+    "the mockup choice must still auto-select — this arm is the control and was never broken",
+  );
+  assert.equal(
+    planPolicy(designLockInteractive("ask", fromDashboard)),
+    "ask",
+    'the radio labelled "Ask me which to build" stopped asking',
+  );
+  assert.equal(
+    planPolicy(designLockInteractive(null, fromDashboard)),
+    "ask",
+    "a dashboard submission that states no policy is still a human at a keyboard",
+  );
 });
 
 test("POST /api/runs PERSISTS the lock policy, and the two request shapes resolve DIFFERENTLY", async () => {
@@ -1324,9 +1376,19 @@ test("POST /api/runs PERSISTS the lock policy, and the two request shapes resolv
     assert.equal(harness.store.getRun(pageRunId)?.interactive, true);
     assert.equal(policyOf(pageRunId), "ask");
 
-    // (4) THE FIELD WINS OVER THE HEADER. An explicit `auto` from the dashboard
-    // page is a person choosing not to be asked, and it must not be upgraded to
-    // `ask` by the `Referer` that request also carries.
+    // (4) THE FIELD WINS OVER THE HEADER, AND IT WINS FOR THE PLAN PHASE TOO.
+    // An explicit `auto` from the dashboard page is a person choosing not to be
+    // asked, and it must not be upgraded to `ask` by the `Referer` that request
+    // also carries.
+    //
+    // THE `interactive` EXPECTATION FLIPPED ON 2026-08-09, from `true` with the
+    // note "it is interactive — it simply asked for auto". That reading was
+    // right about the caller and wrong about the consequence: `interactive` is
+    // read by `planPolicy` as well as by `designLockPolicy`, and while the lock
+    // honoured the stated `auto`, the plan phase saw `true` and ran a question
+    // dialogue at an empty chair. The `planPolicy` line below is why this arm
+    // exists now — the `designLockPolicy` assertion alone passed before the fix
+    // and would pass again if it regressed.
     const explicitAuto = await postJson(harness, "/api/runs", {
       ticketText: "a status page",
       modelId: MODEL,
@@ -1335,8 +1397,22 @@ test("POST /api/runs PERSISTS the lock policy, and the two request shapes resolv
     assert.equal(explicitAuto.status, 201);
     const autoRunId = (explicitAuto.body as CreateRunResponse).runId;
     assert.equal(harness.store.getRun(autoRunId)?.designLock, "auto");
-    assert.equal(harness.store.getRun(autoRunId)?.interactive, true, "it is interactive — it simply asked for auto");
+    assert.equal(
+      harness.store.getRun(autoRunId)?.interactive,
+      false,
+      "a stated `auto` is an opt-out from being asked, and the Referer must not undo it",
+    );
     assert.equal(policyOf(autoRunId), "auto", "a stated policy is not overridden by the header");
+    assert.equal(
+      planPolicy(harness.store.getRun(autoRunId)?.interactive ?? true),
+      "skip",
+      "the plan seat still runs a dialogue for a run whose owner asked not to be asked",
+    );
+    // AND THE OTHER THREE SHAPES STILL ASK OR STILL SKIP AS THEY DID. Without
+    // these, "auto skips" could be satisfied by a rule that skips everything.
+    assert.equal(planPolicy(harness.store.getRun(asked)?.interactive ?? false), "ask");
+    assert.equal(planPolicy(harness.store.getRun(pageRunId)?.interactive ?? false), "ask");
+    assert.equal(planPolicy(harness.store.getRun(cron)?.interactive ?? true), "skip");
   } finally {
     await harness.close();
   }

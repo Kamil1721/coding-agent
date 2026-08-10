@@ -230,6 +230,51 @@ export const RECOVERY_MAX_AUTO_WAIT_MS = 12 * 60 * 60 * 1_000;
 export const RECOVERY_MAX_WAIT_ENV = "DASHBOARD_RECOVERY_MAX_WAIT_MIN";
 
 /**
+ * How long to hold a refusal that named NO reset instant. CHOSEN, NOT MEASURED.
+ *
+ * ─── WHAT USED TO HAPPEN HERE, AND WHY IT WAS WRONG ───
+ *
+ * Until 2026-08-09 this arm returned `stop` with code `no_retry_after` and the
+ * sentence *"A countdown from a number nobody reported is an invention."* The
+ * principle was right and the consequence was not, because of what sat on the
+ * other end of it: `subscription-caller.ts`'s CLI-throw path hardcoded
+ * `retryAfterSec: null` for EVERY refusal it saw, so this arm was not the rare
+ * case — it was the only case a prose refusal could reach. An unattended run
+ * that met a rate limit parked until a human pressed Resume, and raising
+ * {@link RECOVERY_MAX_AUTO_WAIT_MS} did not help, because this arm returns
+ * before the ceiling is ever consulted.
+ *
+ * ─── FIVE HOURS, AND WHERE THE NUMBER COMES FROM ───
+ *
+ * It is not a measurement and must not be quoted as one: no refusal has ever
+ * been recorded on this machine (`rate_limited = 0` on all four rows of
+ * `runs.db`; the 51.7-120.0 h figures in the run table are `seven_day` WINDOW
+ * HORIZONS from routine telemetry, not refusal waits). What it is referenced to
+ * is the subscription's own remediation text, which names the two things that
+ * refuse: *"The 5-hour rolling window or the weekly cap is exhausted"*
+ * (`subscription-caller.ts`). Five hours is the full length of the shorter of
+ * those two, so a wait of that length clears a rolling window completely
+ * whenever the refusal came from one — and this arm cannot tell which it came
+ * from, because the sentence that carried the refusal did not say.
+ *
+ * ─── WHY THIS IS SAFE TO GET WRONG ───
+ *
+ * Both directions are bounded and cheap. Too short (it was the weekly cap): the
+ * continuation is refused again and lands back here, at a cost of one of
+ * {@link AUTO_CONTINUE_MAX}'s three continuations, after which the run parks
+ * exactly as it does today. Too long (the window was five minutes): five hours
+ * still resolves inside one night, which is the standard
+ * {@link RECOVERY_MAX_AUTO_WAIT_MS} is set against. Neither outcome is worse
+ * than parking on the first refusal, which is what happened before.
+ *
+ * IT IS STILL SUBJECT TO EVERY CEILING BELOW IT. The elapsed-time subtraction,
+ * the 32-bit timer guard and {@link RECOVERY_MAX_AUTO_WAIT_MS} all apply, and
+ * the reason string SAYS the length was chosen rather than reported — so a
+ * parked or armed run never presents this number as something the provider said.
+ */
+export const REFUSAL_BLIND_WAIT_MS = 5 * 60 * 60 * 1_000;
+
+/**
  * Read the unattended ceiling from the environment.
  *
  * UNPARSEABLE IS THE DEFAULT, NOT AN ERROR, and not "no ceiling". A typo in a
@@ -778,7 +823,12 @@ export type RecoveryStopCode =
   | "disabled" // the flag is off
   | "cap_reached" // autoContinueCount >= bound
   | "no_refusal" // classified throttled with no refusal evidence attached
-  | "no_retry_after" // the provider named no reset instant
+  // `no_retry_after` WAS HERE AND WAS REMOVED ON 2026-08-09, deliberately and
+  // not by tidying. A refusal that names no reset instant no longer stops; it
+  // is held for {@link REFUSAL_BLIND_WAIT_MS}, a bounded and explicitly CHOSEN
+  // length, and then continues. Leaving the member behind would have left a
+  // code nothing can produce, which reads to the next person like an arm they
+  // have not tested rather than an arm that no longer exists.
   | "retry_after_not_future" // it named one that had already passed
   | "no_refusal_instant" // nothing recorded WHEN the refusal happened
   | "unreadable_now" // the caller's own clock did not parse as an instant
@@ -912,18 +962,18 @@ function planThrottledWait(klass: FailureClass, input: RecoveryInput): RecoveryD
     };
   }
 
-  if (refusal.retryAfterSec === null) {
-    return {
-      kind: "stop",
-      klass,
-      code: "no_retry_after",
-      reason:
-        "the provider reported no reset instant with this refusal, so nothing here knows when the window " +
-        "reopens. A countdown from a number nobody reported is an invention, so no timer is armed and a " +
-        "human has to resume this run.",
-    };
-  }
-  if (!Number.isFinite(refusal.retryAfterSec) || refusal.retryAfterSec <= 0) {
+  // THE PROVIDER NAMED NOTHING — held for a CHOSEN length rather than parked.
+  // See {@link REFUSAL_BLIND_WAIT_MS} for the whole argument, including why the
+  // old `no_retry_after` stop was right in principle and wrong in consequence.
+  // The flag travels into every reason below so no sentence this arm produces
+  // can present the length as something the provider reported.
+  const blind = refusal.retryAfterSec === null;
+  const reportedSec = blind ? REFUSAL_BLIND_WAIT_MS / 1000 : refusal.retryAfterSec;
+  const source = blind
+    ? "a chosen length — the provider named no reset instant, and this is the full five-hour rolling " +
+      "window its own remediation names, not a measurement"
+    : "the length the provider itself reported";
+  if (!Number.isFinite(reportedSec) || reportedSec <= 0) {
     // `claude-common.ts:214` produces 0 via `Math.max(0, …)` when the provider
     // refused a call while naming a reset instant already in the past: a refusal
     // with no wait attached, which answered immediately walks straight back into
@@ -958,14 +1008,14 @@ function planThrottledWait(klass: FailureClass, input: RecoveryInput): RecoveryD
   // `planRateLimitResume` floor theirs: a clock that moved backwards must not
   // lengthen the wait beyond what was reported.
   const elapsed = Math.max(0, at - refusedAt);
-  const delayMs = refusal.retryAfterSec * 1000 - elapsed;
+  const delayMs = reportedSec * 1000 - elapsed;
 
   if (delayMs <= 0) {
     return {
       kind: "continue",
       klass,
       reason:
-        `the ${refusal.kind ?? "rate limit"} window the provider reported has already elapsed, so the run ` +
+        `the ${refusal.kind ?? "rate limit"} wait — ${source} — has already elapsed, so the run ` +
         `continues now. Whether it actually reopened is unknowable from here — the next call is the only ` +
         `evidence — and a refusal simply parks it again.`,
     };
@@ -995,10 +1045,11 @@ function planThrottledWait(klass: FailureClass, input: RecoveryInput): RecoveryD
       klass,
       code: "wait_too_long",
       reason:
-        `the provider reported a ${refusal.kind ?? "rate limit"} window that reopens in ` +
-        `${humanWait(delayMs)}${wouldResumeAt === null ? "" : ` — at ${wouldResumeAt}`}, longer than the ` +
-        `${humanWait(input.maxWaitMs)} this server will wait unattended. The run is kept and resumes the ` +
-        `moment you press Resume; raise ${RECOVERY_MAX_WAIT_ENV} (minutes) to let it wait by itself.`,
+        `the ${refusal.kind ?? "rate limit"} window reopens in ` +
+        `${humanWait(delayMs)}${wouldResumeAt === null ? "" : ` — at ${wouldResumeAt}`} (${source}), longer ` +
+        `than the ${humanWait(input.maxWaitMs)} this server will wait unattended. The run is kept and ` +
+        `resumes the moment you press Resume; raise ${RECOVERY_MAX_WAIT_ENV} (minutes) to let it wait by ` +
+        `itself.`,
     };
   }
 
@@ -1011,8 +1062,8 @@ function planThrottledWait(klass: FailureClass, input: RecoveryInput): RecoveryD
     firesAt,
     reason:
       `the provider refused with a ${refusal.kind ?? "rate limit"} window reopening in ` +
-      `${humanWait(delayMs)}, at ${firesAt}; the run is parked and continues itself then. Nothing is lost ` +
-      `in the meantime and Resume still works.`,
+      `${humanWait(delayMs)}, at ${firesAt} (${source}); the run is parked and continues itself then. ` +
+      `Nothing is lost in the meantime and Resume still works.`,
   };
 }
 

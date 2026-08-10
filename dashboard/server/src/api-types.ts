@@ -1466,6 +1466,35 @@ export type SseEvent =
       readonly type: "rate_limit";
       readonly limited: boolean;
       readonly retryAfterSec: number | null;
+      /**
+       * Which seat the provider was answering, or `null` when the emitting call
+       * site could not say.
+       *
+       * ADDED BECAUSE THE ROWS WERE ANONYMOUS AND THAT COST A POST-MORTEM.
+       * `run-2026-08-09T21-04-00-713Z-a913c871` spent 84m31s in the `spec` phase
+       * and the events table acquired SIX rows for it, all of this type. Two
+       * different seats ran in that window — the spec seat writing drafts and the
+       * audit seat refusing them — and the record could not say which of them each
+       * frame belonged to, so the one channel that was firing could not even mark
+       * the boundary between them. The seat boundaries in that run's post-mortem
+       * had to be recovered from the Claude Code CLI's own session transcripts,
+       * outside this product.
+       *
+       * NULLABLE RATHER THAN REQUIRED, AND THAT IS THE HONEST SHAPE. Several
+       * emitters (the plan seat's caller, the build and fix drivers) reach
+       * `#noteRateLimit` from places where the role is genuinely not one of
+       * {@link ApiSpendSeat}'s five — `plan` is not a member of that union at all.
+       * A required field would force those sites to name a seat they do not have,
+       * which is a label invented to satisfy a type. `null` says "unattributed",
+       * which is true, and every stored row from before this field also reads
+       * `null` on the way back out rather than acquiring an attribution nobody
+       * recorded.
+       *
+       * IT IS NOT A SPEND FIGURE AND MUST NOT BECOME ONE. This says who was
+       * talking when the provider reported a window; what that seat cost is
+       * `seat_spend`, written by `#recordSpend`, in tokens and never in money.
+       */
+      readonly seat: ApiSpendSeat | null;
     }
   /**
    * The run wrote its verdict. Emitted once, immediately BEFORE the terminal

@@ -61,6 +61,7 @@ import {
   RECOVERY_ENABLED_ENV,
   RECOVERY_MAX_AUTO_WAIT_MS,
   RECOVERY_TIMER_MAX_DELAY_MS,
+  REFUSAL_BLIND_WAIT_MS,
   planRecovery,
 } from "./recovery.js";
 import { ensureDirs, resolvePaths } from "./paths.js";
@@ -144,17 +145,28 @@ test("only an explicit opt-in value turns it on; anything else is off", () => {
   assert.equal(rateLimitAutoResume({}), false, "an absent variable is off");
 });
 
-test("A NULL retryAfterSec ARMS NOTHING — the whole error-text path", () => {
-  // The provider reports `resetsAt` on the structured path and nothing at all on
-  // the error-text path, where `retryAfterSec` stays null (claude-common.ts). A
-  // countdown from a number nobody reported is exactly the invention this repo
-  // refuses, so this must be `disabled` — and it must be disabled FOR THAT
-  // REASON, not because the flag happened to be off.
+test("A NULL retryAfterSec IS HELD FOR A BOUNDED CHOSEN LENGTH — the whole error-text path", () => {
+  // WHAT THIS TEST SAID UNTIL 2026-08-09, and why it changed. It asserted
+  // `stop`, on the grounds that "a countdown from a number nobody reported is
+  // exactly the invention this repo refuses". The reasoning was sound and its
+  // consequence was not: the error-text path was the ONLY path a refusal could
+  // take on this machine (`subscription-caller.ts` hardcoded
+  // `retryAfterSec: null` for every one), so this arm parked every unattended
+  // run that met a rate limit, and no ceiling could be raised past it because
+  // it returned before the ceiling was read.
+  //
+  // The invention is still refused, in the only sense that matters: the length
+  // is declared a CHOICE in the reason the owner reads, and it is bounded by
+  // `REFUSAL_BLIND_WAIT_MS` — not read off the row's routine telemetry, which
+  // is the substitution `RefusalEvidence` exists to prevent.
   const decision = plan({ retryAfterSec: null });
-  assert.equal(decision.kind, "stop");
-  const reason = decision.kind === "stop" ? decision.reason : "";
-  assert.match(reason, /no reset instant/i);
-  assert.doesNotMatch(reason, new RegExp(RECOVERY_ENABLED_ENV), "enabled was true; this is not the off path");
+  assert.equal(decision.kind, "wait", "a refusal with no instant must no longer sit until a human arrives");
+  // Refused 20 minutes before `now`, so what remains is the chosen length minus
+  // those 20 minutes — the same elapsed subtraction a reported window gets.
+  assert.equal(decision.kind === "wait" ? decision.delayMs : -1, REFUSAL_BLIND_WAIT_MS - 20 * 60_000);
+  assert.match(decision.reason, /chosen length/i, "the owner must not read this number as a measurement");
+  assert.match(decision.reason, /named no reset instant/i);
+  assert.doesNotMatch(decision.reason, new RegExp(RECOVERY_ENABLED_ENV), "enabled was true; not the off path");
 });
 
 test("a reported reset that is not in the future arms nothing either", () => {
@@ -439,22 +451,58 @@ test("BOOT, AUTO-RESUME ON, WINDOW STILL OPEN: nothing is resumed and the deadli
   }
 });
 
-test("BOOT, AUTO-RESUME ON, NO REPORTED RESET: the run stays parked and the log says so", async () => {
+test("BOOT, AUTO-RESUME ON, NO REPORTED RESET, LONG PAST: the chosen hold has elapsed and the run continues", async () => {
   const h = harness({ [RATE_LIMIT_AUTO_RESUME_ENV]: "1" });
   try {
-    // The error-text path: refused long ago, with no `resetsAt` anywhere.
+    // The error-text path: refused ten hours ago, with no `resetsAt` anywhere.
+    // Until 2026-08-09 this row sat `rate_limited` for ever — the run the owner
+    // started on a Friday, found parked on Saturday, having burned the window.
+    // Ten hours is past the five-hour chosen hold, so the boot sweep continues
+    // it. Whether the window really reopened is unknowable from here; the next
+    // call is the only evidence, and a refusal simply parks it again.
     seedRateLimited(h.store, "run-unknown", { minutesAgo: 600, retryAfterSec: null });
     await h.orchestrator.shutdown();
 
     h.orchestrator.reconcileOnBoot();
 
     const row = h.store.getRun("run-unknown");
-    assert.equal(row?.status, "rate_limited", "a null retryAfterSec must not become a countdown from zero");
-    assert.equal(row?.resumeCount, 0);
+    assert.equal(row?.status, "queued", "a refusal with no instant is no longer a run that waits for a human");
+    assert.equal(row?.resumeCount, 1, "an automatic resume is a resume, and it counts against the cap");
     assert.ok(
-      logsOf(h.store, "run-unknown").some((text) => /no automatic resume is armed.*no reset instant/is.test(text)),
-      "disabled WITH A REASON, on the run's own stream",
+      logsOf(h.store, "run-unknown").some((text) => /resuming automatically/i.test(text)),
+      "an unattended state change the owner did not make has to explain itself on the run's own log",
     );
+    assert.ok(
+      logsOf(h.store, "run-unknown").some((text) => /chosen length/i.test(text)),
+      "and it has to say the length it waited was chosen here, not reported by the provider",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("BOOT, AUTO-RESUME ON, NO REPORTED RESET, RECENT: the hold is armed, NOT served immediately", async () => {
+  // THE NEGATIVE CONTROL FOR THE TEST ABOVE, and the one the old `stop` arm made
+  // unnecessary. Without it, "no reported reset" is satisfied by an
+  // implementation that resumes every such run the moment it boots — a
+  // countdown from zero, which is the invention the old arm was written to
+  // refuse and which this change must not reintroduce.
+  const h = harness({ [RATE_LIMIT_AUTO_RESUME_ENV]: "1" });
+  try {
+    seedRateLimited(h.store, "run-recent", { minutesAgo: 60, retryAfterSec: null });
+    const before = h.store.getRun("run-recent")?.rateLimitedAt ?? null;
+    await h.orchestrator.shutdown();
+
+    h.orchestrator.reconcileOnBoot();
+
+    const row = h.store.getRun("run-recent");
+    assert.equal(row?.status, "rate_limited", "four of the five chosen hours are still to run");
+    assert.equal(row?.resumeCount, 0);
+    assert.equal(row?.rateLimitedAt, before, "the refusal instant is not rewritten, or a restart loop renews it");
+    const armed = logsOf(h.store, "run-recent").filter((text) => /automatic resume armed/i.test(text));
+    assert.equal(armed.length, 1, "exactly one arm per boot, announced with the instant it fires");
+    assert.match(String(armed[0]), /restarts itself in 240 min/, "the remainder of the hold, not the whole of it");
+    assert.match(String(armed[0]), /chosen length/i, "and the length is declared a choice, not a measurement");
   } finally {
     await h.cleanup();
   }

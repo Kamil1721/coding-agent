@@ -287,6 +287,66 @@ export function isOutputOverflowFrame(message: SDKMessage): boolean {
   return (message as { error?: unknown }).error === SDK_OVERFLOW_ERROR;
 }
 
+/**
+ * The shapes a reset instant arrives in when the refusal comes back as PROSE.
+ *
+ * ─── WHY THERE IS A TEXT PARSER HERE AT ALL ───
+ *
+ * A refusal has two routes into this file. The good one is the SDK's structured
+ * `rate_limit_info` frame, read by `rateLimitFrom` and carrying a real reset
+ * instant. The other is a THROW: the CLI reports the refusal on a result frame
+ * with `is_error`, the SDK's reader re-throws it as a plain `Error`, and by the
+ * time it reaches `#asCallError` there is no structured field left on it — only
+ * the sentence. That path wrote `retryAfterSec: null` unconditionally until
+ * 2026-08-09, so a refusal arriving this way could never arm a wait: `recovery.ts`
+ * stopped on `no_retry_after` and the run sat until a human pressed Resume,
+ * however short the window actually was.
+ *
+ * ─── THE PATTERNS ARE FROM THE BINARY, NOT FROM IMAGINATION ───
+ *
+ * No refusal has EVER been recorded on this machine (`rate_limited = 0` on all
+ * four rows in `runs.db`), so there is no observed sample to fit. Inventing
+ * shapes would be worse than nothing, so these come from the templates present
+ * in the CLI the seat actually runs
+ * (`node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`, grepped
+ * 2026-08-09): `Retry after {retry_after}s.` and `Retry-After: ${e.retryAfter}`,
+ * plus the `retry_after` JSON key an API error body carries. `try again in a
+ * moment` is also in that binary and names no number, which is exactly the case
+ * the fallback in `recovery.ts` exists for.
+ *
+ * NOTHING HERE INVENTS A NUMBER. A text with no reset in it returns `null`, and
+ * `null` still means "the provider named no instant".
+ */
+const RETRY_AFTER_PATTERNS: readonly { readonly re: RegExp; readonly unitSeconds: number }[] = [
+  // `Retry-After: 60`, `retry_after: 60`, `"retry_after":60` — the header and
+  // the JSON key, both in seconds.
+  { re: /retry[-_ ]?after"?\s*[:=]\s*"?(\d+(?:\.\d+)?)/i, unitSeconds: 1 },
+  // `Retry after 60s.`
+  { re: /retry\s+after\s+(\d+(?:\.\d+)?)\s*s\b/i, unitSeconds: 1 },
+  { re: /try again in (\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b/i, unitSeconds: 1 },
+  { re: /try again in (\d+(?:\.\d+)?)\s*(?:minutes?|mins?|m)\b/i, unitSeconds: 60 },
+  { re: /try again in (\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b/i, unitSeconds: 3600 },
+];
+
+/**
+ * Seconds until the window reopens, as the provider itself stated them in the
+ * text — or `null` when it stated nothing.
+ *
+ * ROUNDED UP, NEVER DOWN. A wait one second short of the window re-enters the
+ * same refusal and spends one of the three bounded continuations to learn
+ * nothing. `Math.ceil` on a fractional reading is the cheap side of that.
+ */
+export function parseRetryAfterSeconds(text: string): number | null {
+  for (const { re, unitSeconds } of RETRY_AFTER_PATTERNS) {
+    const match = re.exec(text);
+    if (match === null) continue;
+    const raw = Number(match[1]);
+    if (!Number.isFinite(raw) || raw <= 0) continue;
+    return Math.ceil(raw * unitSeconds);
+  }
+  return null;
+}
+
 /* -------------------------------------------------------------------------
  * Progress: the only liveness signal a seat with no tools has
  *
@@ -2120,7 +2180,25 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
     if (error instanceof BakeoffError || error instanceof SeatCallError) return error;
     const message = error instanceof Error ? error.message : String(error);
     const rateLimited = /rate.?limit|429|usage limit/i.test(message);
-    if (rateLimited) this.#noteRateLimit({ limited: true, retryAfterSec: null, kind: null, utilization: null });
+    if (rateLimited) {
+      // THE RESET INSTANT, IF THE PROVIDER NAMED ONE — see
+      // {@link parseRetryAfterSeconds}. This was hardcoded `null` until
+      // 2026-08-09, which meant a refusal arriving as prose could never arm a
+      // wait even when the sentence carrying it said exactly how long to wait:
+      // `recovery.ts` stopped on `no_retry_after` and the run parked for a
+      // human. `null` is still what a sentence with no number in it produces,
+      // and `recovery.ts` now holds a bounded, labelled wait for that case
+      // rather than parking — the number is not invented here.
+      this.#noteRateLimit({
+        limited: true,
+        retryAfterSec: parseRetryAfterSeconds(message),
+        // NOT GUESSED. Which window refused is not derivable from the sentence,
+        // and `five_hour` vs `seven_day` is the difference between a wait this
+        // server holds and one it refuses to hold unattended.
+        kind: null,
+        utilization: null,
+      });
+    }
     return new SeatCallError(
       `the ${this.seat.role} seat (${this.seat.modelId}) call "${purpose}" failed: ${redactText(message).text}`,
       null,

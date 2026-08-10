@@ -132,6 +132,7 @@ import {
   PLAN_RECORD_UNREADABLE_FILE,
   planRemainingMs,
   readPlanRecord,
+  unaskedPlanState,
   writePlanRecord,
 } from "./plan-record.js";
 import { closureFor } from "./plan-dialogue.js";
@@ -926,6 +927,21 @@ test("a brief cannot be amended once the suite is frozen, or once the run is ter
  * ---------------------------------------------------------------------- */
 
 /**
+ * The runs that existed before the plan phase did, by id.
+ *
+ * A CLOSED SET, AND THAT IS WHY IT CAN BE A LITERAL. "Predates the plan phase"
+ * is a fact about the past: these three are the only runs the owner's database
+ * held when the phase shipped, and no run created afterwards can join them. A
+ * date cutoff or a "has no plan.json today" filter would both quietly re-admit
+ * every future run and put this file back where it was.
+ */
+const PRE_PLAN_PHASE_RUN_IDS: readonly string[] = [
+  "run-2026-07-29T23-28-46-665Z-3d4d1ccb",
+  "run-2026-07-30T13-31-38-076Z-c228e63b",
+  "run-2026-07-30T20-16-40-242Z-052c6e02",
+];
+
+/**
  * MUTATION (both tests): remove `"spec"` from `PHASES`. The real rows and the
  * synthetic one both throw `phase "spec" is not one of …` out of `toRunRow`.
  * Watched red, restored.
@@ -983,15 +999,71 @@ test("the three runs already on disk still read, still render, and still name th
         `${String(rows.length)} historical run(s) read back; phases ${[...new Set(rows.map((r) => r.phase))].join("/")}; ` +
           `${String(found)} still name a frozen suite on disk`,
       );
-      // AND NONE OF THEM ACQUIRED A PLAN RECORD. A phase that back-filled state
-      // onto finished runs would be rewriting history.
-      for (const row of rows) {
+      // AND THE RUNS THAT PREDATE THIS PHASE DID NOT ACQUIRE A PLAN RECORD. A
+      // phase that back-filled state onto finished runs would be rewriting
+      // history.
+      //
+      // SCOPED TO THREE NAMED IDS, AND THE SCOPE IS THE FIX. This loop used to
+      // run over EVERY row, which was true when it was written and became false
+      // the first time the owner started a run after the plan phase shipped:
+      // run 4 parks for questions, writes a real `plan.json`, and the assertion
+      // failed on it. Worse than an ordinary red — the early return above makes
+      // this test green on a clean checkout, so it failed only on the machine
+      // that has something to check, i.e. the owner's. Every future run adds
+      // another one, so it could never recover.
+      //
+      // A NEW RUN IS NOT A REGRESSION; A BACK-FILL ONTO AN OLD ONE IS. Only
+      // these three runs existed before the phase, no fourth can ever join them,
+      // and the claim about them is permanent.
+      const preserved = rows.filter((row) => PRE_PLAN_PHASE_RUN_IDS.includes(row.runId));
+      // NOT VACUOUS BY CONSTRUCTION. A filter that matches nothing turns the loop
+      // below into a no-op that passes having looked at nothing, which is the
+      // failure mode this whole edit exists to remove. If the three named runs
+      // are gone from this machine, this test has no subject and must say so out
+      // loud rather than report a green.
+      assert.ok(
+        preserved.length > 0,
+        `none of the three pre-plan-phase runs is in this database, so the claim below has no subject. ` +
+          `Rows present: ${rows.map((row) => row.runId).join(", ") || "(none)"}`,
+      );
+      for (const row of preserved) {
         assert.equal(
           readPlanRecord(join(process.cwd(), "..", "runs", row.runId, "results")),
           null,
           `${row.runId} predates the plan phase and must stay that way`,
         );
       }
+      // THE NEGATIVE CONTROL, AND IT IS THE POINT OF THE EDIT. `null` above is
+      // only evidence if a non-null was reachable. `readPlanRecord` returns null
+      // for a directory that does not exist, for a directory with no `plan.json`
+      // and for one it cannot parse — so a probe pointed at the wrong path, or a
+      // reader broken outright, is indistinguishable from the clean history this
+      // asserts. Write one record and read it back through the SAME call, from a
+      // path built the SAME way, before believing the nulls.
+      const controlRoot = mkdtempSync(join(tmpdir(), "dash-planprobe-"));
+      try {
+        const controlRunId = "run-0000-00-00T00-00-00-000Z-control";
+        const controlResults = join(controlRoot, controlRunId, "results");
+        mkdirSync(controlResults, { recursive: true });
+        writePlanRecord(controlResults, {
+          awaiting: true,
+          parkedAt: new Date().toISOString(),
+          folded: false,
+          state: unaskedPlanState(new Date().toISOString(), "negative control for the historical read"),
+        });
+        assert.notEqual(
+          readPlanRecord(join(controlRoot, controlRunId, "results")),
+          null,
+          "readPlanRecord returned null for a directory a record was just written into, so every " +
+            "null above is the probe failing rather than the history being clean",
+        );
+      } finally {
+        rmSync(controlRoot, { recursive: true, force: true });
+      }
+      t.diagnostic(
+        `${String(preserved.length)}/${String(PRE_PLAN_PHASE_RUN_IDS.length)} pre-plan-phase run(s) checked for a ` +
+          `back-filled plan record; ${String(rows.length - preserved.length)} later run(s) are exempt by design`,
+      );
     } finally {
       store.close();
     }

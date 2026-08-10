@@ -608,15 +608,49 @@ function ensureStage(state: GraphState, id: GraphStageId): GraphState {
  * stage, which is not the same as the stage failing, and on a run that is over
  * `pending` would read as "still to come".
  */
-function unresolveStages(state: GraphState, ids: readonly GraphStageId[]): GraphState {
+function unresolveStages(state: GraphState, ids: readonly GraphStageId[], detail?: string): GraphState {
   let next = state;
   for (const id of ids) {
     const stage = stageOf(next, id);
     if (stage === undefined || stage.state !== "running") continue;
-    next = putStage(next, { ...stage, state: "unresolved" });
+    next = putStage(next, {
+      ...stage,
+      state: "unresolved",
+      ...(detail === undefined ? {} : { detail }),
+    });
   }
   return next;
 }
+
+/**
+ * What a stage still reading `running` says after the run FAILED.
+ *
+ * ─── THE COPY WAS FALSE ON EXACTLY THE RUNS THAT NEEDED IT ───
+ *
+ * `unresolved` keeps its name, because `failed` would be a claim no message made:
+ * nothing said THIS stage broke, only that the run stopped. But the detail line
+ * was the stage's last `running` sentence, and the client's static tooltip for
+ * `unresolved` reads *"The run moved on while this was still working, and never
+ * said how it ended. Not a failure. Nobody was watching by then."*
+ *
+ * On `run-2026-08-09T21-04-00-713Z-a913c871` the stage still reading `running`
+ * when the run died was AUTHOR — "Writing the tests" — and the run died BECAUSE
+ * authoring could not produce a suite the audit would accept. So the display told
+ * the owner "not a failure, nobody was watching" about the precise thing that had
+ * just failed, with the reason recorded three rows later on the same stream.
+ *
+ * WHAT THIS SENTENCE MAY AND MAY NOT SAY. It may say the run ended in failure
+ * while this stage was open, and where the reason is — both are facts the
+ * terminal event itself carries. It may NOT say this stage caused it: a run can
+ * fail elsewhere while a stage is legitimately mid-flight, and naming a culprit
+ * the stream never named is the same defect in the other direction.
+ *
+ * ONLY `failed` GETS IT. A cancel is the owner's own doing and the old wording is
+ * true of it; a pass with a stage left open is a genuine "nobody was watching".
+ */
+const STAGE_STOPPED_BY_FAILURE =
+  "The run failed while this was still working. Nothing said this step was the cause — the failure " +
+  "and its reason are on the run's own log, at the end.";
 
 /**
  * The spec phase's four stages, unless the suite was reused.
@@ -1005,7 +1039,13 @@ export function foldGraph(
       // THE SAME RULE FOR THE LANE. A stage still reading `running` on a run that
       // has stopped did not continue; leaving a pulsing card on a dead run is the
       // lie this display exists to remove, and `failed` is a claim nothing made.
-      const settled = unresolveStages(touched ? { ...state, nodes } : state, STAGE_ORDER);
+      // The STATE is the same on all three terminals; only the sentence differs,
+      // and only for `failed` — see {@link STAGE_STOPPED_BY_FAILURE}.
+      const settled = unresolveStages(
+        touched ? { ...state, nodes } : state,
+        STAGE_ORDER,
+        ...(event.status === "failed" ? ([STAGE_STOPPED_BY_FAILURE] as const) : ([] as const)),
+      );
       return touched || settled !== state ? settled : state;
     }
 

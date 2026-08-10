@@ -39,6 +39,7 @@ import {
   RECOVERY_MAX_AUTO_WAIT_MS,
   RECOVERY_MAX_WAIT_ENV,
   RECOVERY_TIMER_MAX_DELAY_MS,
+  REFUSAL_BLIND_WAIT_MS,
   TRANSIENT_BACKOFF_MS,
   TRANSIENT_MAX,
   autoRecoverEnabled,
@@ -520,14 +521,64 @@ test("a typo in the OFF switch leaves recovery RUNNING, which is the deliberate 
  * 5. THE WAIT — derived from the reported window, never invented, never zero
  * ====================================================================== */
 
-test("THE WAIT IS HONOURED: a missing retry-after refuses, it does not continue immediately", () => {
-  // The dangerous substitution: treat "the provider said nothing" as "wait
-  // nothing". A continuation with no wait attached walks straight back into the
-  // same refusal, three times, in under a second.
-  const d = decide({ signals: { ...NO_SIGNALS, refusal: refusal({ retryAfterSec: null }) } });
+/*
+ * ─── A MISSING RETRY-AFTER: WHAT THIS USED TO ASSERT, AND WHY IT CHANGED ───
+ *
+ * Until 2026-08-09 the test here asserted `stop` with code `no_retry_after` and
+ * matched the sentence "a countdown from a number nobody reported is an
+ * invention". The principle it defended is intact and is still defended below —
+ * a wait of ZERO is still refused, and the length is still never presented as
+ * something the provider said. What changed is the consequence. The only
+ * producer of a refusal on this machine, `subscription-caller.ts`'s CLI-throw
+ * path, hardcoded `retryAfterSec: null` for EVERY refusal, so this was not the
+ * rare arm — it was the only arm a prose refusal could reach, and it parked
+ * every unattended run that met a rate limit until a human pressed Resume.
+ * Raising `DASHBOARD_RECOVERY_MAX_WAIT_MIN` did not help, because this arm
+ * returned before the ceiling was consulted.
+ */
+
+test("THE WAIT IS HONOURED: a missing retry-after is HELD for a bounded, chosen length — never zero", () => {
+  const d = decide({ signals: { ...NO_SIGNALS, seatKind: "throttled", refusal: refusal({ retryAfterSec: null }) } });
+  assert.equal(d.kind, "wait", "a refusal that named no instant must no longer park the run for a human");
+  // THE LENGTH, MINUS WHAT HAS ALREADY ELAPSED. `NOW` is 20 minutes after
+  // `REFUSED_AT`, so a five-hour hold has 4h40m left — the same elapsed
+  // subtraction a reported window gets, and the reason it cannot restart the
+  // whole wait on every boot.
+  assert.equal(d.kind === "wait" ? d.delayMs : -1, REFUSAL_BLIND_WAIT_MS - 20 * 60_000);
+  assert.ok((d.kind === "wait" ? d.delayMs : 0) > 0, "a continuation with no wait re-enters the same refusal");
+});
+
+test("and the held length is declared a CHOICE, not something the provider reported", () => {
+  // The half of the old assertion that still has to hold. A parked or armed run
+  // must never present this number as a measurement — no refusal has ever been
+  // recorded on this machine and there is nothing to measure it against.
+  const d = decide({ signals: { ...NO_SIGNALS, seatKind: "throttled", refusal: refusal({ retryAfterSec: null }) } });
+  assert.match(reasonOf(d), /chosen length/i);
+  assert.match(reasonOf(d), /named no reset instant/i);
+  assert.doesNotMatch(reasonOf(d), /the length the provider itself reported/i);
+});
+
+test("NEGATIVE CONTROL: a refusal that DID name an instant is still held for THAT length, not the chosen one", () => {
+  // Without this, the arm above is satisfied by a module that ignores the
+  // provider entirely and holds five hours for everything.
+  const d = decide();
+  assert.equal(d.kind, "wait");
+  assert.equal(d.kind === "wait" ? d.delayMs : -1, HALF_HOUR_SEC * 1000 - 20 * 60_000);
+  assert.match(reasonOf(d), /the length the provider itself reported/i);
+  assert.doesNotMatch(reasonOf(d), /chosen length/i);
+});
+
+test("the blind hold is still subject to the unattended ceiling — it is not a bypass", () => {
+  // Every ceiling below the substitution still applies. A ceiling of one minute
+  // refuses the five-hour hold exactly as it refuses a five-hour window the
+  // provider reported.
+  const d = decide({
+    signals: { ...NO_SIGNALS, seatKind: "throttled", refusal: refusal({ retryAfterSec: null }) },
+    maxWaitMs: 60_000,
+  });
   assert.equal(d.kind, "stop");
-  assert.equal(d.kind === "stop" ? d.code : "", "no_retry_after");
-  assert.match(reasonOf(d), /countdown from a number nobody reported is an invention/i);
+  assert.equal(d.kind === "stop" ? d.code : "", "wait_too_long");
+  assert.match(reasonOf(d), /chosen length/i, "even the refusal has to say the length was chosen");
 });
 
 test("THE WAIT IS HONOURED: a retry-after of 0 or a nonsense one refuses", () => {
@@ -652,7 +703,32 @@ test("THE 32-BIT CEILING refuses before the unattended one, because firing immed
   assert.match(reasonOf(d), /fires\s+IMMEDIATELY/i);
 });
 
+test("the chosen hold for a refusal that named nothing is FIVE HOURS, written out as a literal", () => {
+  // A LITERAL, NOT AN EXPRESSION OVER THE CONSTANT. Every other assertion about
+  // this hold computes its expectation from `REFUSAL_BLIND_WAIT_MS` itself, so
+  // changing the constant moves the test with it and only the one hard-coded
+  // arm ("in 240 min", 60 minutes into a five-hour hold) notices. This is the
+  // second anchor: five hours is the FULL length of the shorter of the two
+  // windows the subscription's own remediation names, and shortening it silently
+  // would send a run back into a window that has not rolled.
+  assert.equal(REFUSAL_BLIND_WAIT_MS, 5 * 60 * 60 * 1_000);
+  assert.ok(
+    REFUSAL_BLIND_WAIT_MS < RECOVERY_MAX_AUTO_WAIT_MS,
+    "a hold longer than the unattended ceiling could never be served, only refused",
+  );
+});
+
 test("the ceiling default is twelve hours, and an unreadable override is the default rather than no ceiling", () => {
+  // UNCHANGED ON 2026-08-09, DELIBERATELY, AND THE REASON IS A MEASUREMENT. The
+  // 51.7-120.0 h figures on this machine's four run rows are `seven_day` WINDOW
+  // HORIZONS from routine telemetry (`rate_limited = 0` and `rate_limited_at`
+  // empty on every one of them), not refusal waits, so they are not evidence
+  // that the ceiling is too low. And the leg that actually parked runs for ever
+  // was never the ceiling: it was `retryAfterSec === null` returning before the
+  // ceiling was read. That leg is now a five-hour hold, comfortably inside this
+  // twelve, so the ceiling is no longer the binding constraint on the case A1 is
+  // about. Twelve hours still resolves inside one night, which is the standard it
+  // was set against.
   assert.equal(RECOVERY_MAX_AUTO_WAIT_MS, 12 * 60 * 60 * 1_000);
   assert.equal(recoveryMaxWaitMs({}), RECOVERY_MAX_AUTO_WAIT_MS);
   for (const value of ["", " ", "soon", "0", "-5", "NaN"]) {

@@ -74,6 +74,10 @@ import {
   readFrozenSuite,
   resolveHarnessIdentity,
 } from "bakeoff/dist/spec-agent.js";
+import {
+  CLI_DEFAULT_MAX_OUTPUT_TOKENS,
+  MAX_STREAMABLE_OUTPUT_TOKENS,
+} from "bakeoff/dist/spec-types.js";
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
 import {
   ADVERSARY_AGENT,
@@ -143,7 +147,12 @@ import {
   writeDesignManifest,
 } from "./design-manifest.js";
 import type { DesignManifest } from "./design-manifest.js";
-import { classifyDesignLane, designLaneFailureMessage, writeDesignLaneRecord } from "./design-outcome.js";
+import {
+  DESIGN_IMAGE_MODEL,
+  classifyDesignLane,
+  designLaneFailureMessage,
+  writeDesignLaneRecord,
+} from "./design-outcome.js";
 import {
   DESIGN_DIRECTION_CHOICE_FILE,
   MAX_DESIGN_LOCK_TURNS,
@@ -166,10 +175,13 @@ import { maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
 import type { GateFixLoopResult, StopReason } from "./gate-fix-loop.js";
 import type {
   ApiCriterion,
+  ApiMeteredSpend,
   ApiPhase,
   ApiProvider,
   ApiRunSilence,
   ApiRunStatus,
+  ApiSpendSeat,
+  ApiTokens,
   GraphSseEvent,
 } from "./api-types.js";
 import { appendContextEvent } from "./build-context.js";
@@ -238,7 +250,13 @@ import {
   seatDocumentsFor,
   seatImagesFor,
 } from "./subscription-caller.js";
-import type { SeatDocument, SeatImage, SeatImagePlan, SeatProgress } from "./subscription-caller.js";
+import type {
+  SeatDocument,
+  SeatImage,
+  SeatImagePlan,
+  SeatProgress,
+  SeatSessionFactory,
+} from "./subscription-caller.js";
 import { extractorIsUsable, probeDocumentCapability } from "./document-capability.js";
 import { routeFor } from "./document-intake.js";
 import { ticketFromStoredReferences } from "./ticket.js";
@@ -252,6 +270,7 @@ import {
   ticketProse,
 } from "./ticket-refs.js";
 import type { ReferenceManifest } from "./ticket-refs.js";
+import { captureTargetIn } from "./site-capture.js";
 import { classifySurface } from "./surface.js";
 import { answeredInOwnerWords, foldPlanIntoBrief, stripPlanBlock } from "./plan-brief.js";
 import { PlanDriver, questionText } from "./plan-dialogue.js";
@@ -298,15 +317,143 @@ export const DASHBOARD_BUDGET: BudgetPolicy = Object.freeze({
 export const SPEC_MODEL_ENV = "DASHBOARD_SPEC_MODEL";
 
 /**
+ * What each model will actually accept for `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
+ *
+ * READ OUT OF THE CLI THE SEAT ACTUALLY RUNS, NOT OUT OF A DOC OR A COMMENT.
+ * `subscription-caller.ts` sets no `pathToClaudeCodeExecutable`, so the binary
+ * in play is the SDK's own — `node_modules/@anthropic-ai/claude-agent-sdk-<plat>/claude`
+ * at SDK 0.3.220 — and this table is its `max_output_tokens.upper` registry,
+ * transcribed on 2026-08-09. The relevant function reads:
+ *
+ *   function UNe(e,t,r,n){ … if(o>n){let i={effective:n,status:"capped",
+ *     message:`Capped from ${o} to ${n}`}; w(`${e} ${i.message}`); return i}
+ *     return{effective:o,status:"valid"}}
+ *
+ * THE CLI CAPS, IT NEVER REJECTS, and it announces the cap only on a `[DEBUG]`
+ * line nothing in this harness reads. That is why "set 128000 and see whether
+ * the call errors" is a check that can only observe success, and why the
+ * ceiling has to be known here rather than discovered at the model.
+ *
+ * MEASURED, NOT ASSUMED. With `CLAUDE_CODE_MAX_OUTPUT_TOKENS=2000000` the
+ * CLI logged `Capped from 2000000 to 128000` on the seat's own `source=sdk`
+ * dispatch under `claude-opus-5[1m]`; with `128000` it logged nothing on that
+ * dispatch, i.e. accepted it. The same probe caught the failure this table
+ * exists to prevent, live: on a Haiku-4.5 dispatch, `Capped from 128000 to
+ * 64000` — 128,000 requested, 64,000 delivered, call still `subtype=success`.
+ *
+ * NOT A PRICE LIST AND NOT A CONTEXT WINDOW. It is one number per model: the
+ * largest single response the CLI will ask the API for.
+ */
+const MODEL_OUTPUT_CEILINGS: ReadonlyMap<string, number> = new Map([
+  ["claude-3-5-haiku", 8_192],
+  ["claude-haiku-4-5", 64_000],
+  ["claude-3-7-sonnet", 64_000],
+  ["claude-sonnet-4-0", 64_000],
+  ["claude-sonnet-4-5", 64_000],
+  ["claude-sonnet-4-6", 128_000],
+  ["claude-sonnet-5", 128_000],
+  ["claude-opus-4-0", 32_000],
+  ["claude-opus-4-1", 32_000],
+  ["claude-opus-4-5", 64_000],
+  ["claude-opus-4-6", 128_000],
+  ["claude-opus-4-7", 128_000],
+  ["claude-opus-4-8", 128_000],
+  ["claude-opus-5", 128_000],
+  ["claude-fable-5", 128_000],
+  ["claude-mythos-5", 128_000],
+]);
+
+/**
+ * Strip the CLI's context-window suffix before the registry lookup.
+ *
+ * `claude-opus-5[1m]` is `claude-opus-5` asked for with a 1M context window;
+ * the CLI canonicalises the suffix away before it looks the ceiling up, so a
+ * table keyed on the bare id must do the same or every suffixed id reads as an
+ * unknown model. The suffix selects the INPUT window and says nothing about
+ * output, which is what this table holds.
+ */
+function canonicalModelId(modelId: string): string {
+  return modelId.trim().replace(/\[[^\]]*\]$/, "");
+}
+
+/**
+ * The largest single response this model will produce, or `null` when the id
+ * is not one this table knows.
+ *
+ * NULL IS NOT "FINE". An id nobody has measured — including the literal
+ * `"default"`, which the CLI resolves at RUNTIME to whichever model it
+ * currently recommends — is an id whose ceiling could be 32,000. Callers must
+ * treat `null` as unsafe, not as unconstrained; {@link specModelCeilingWarning}
+ * does.
+ */
+export function outputCeilingFor(modelId: string): number | null {
+  return MODEL_OUTPUT_CEILINGS.get(canonicalModelId(modelId)) ?? null;
+}
+
+/**
+ * The sentence to put in the run log when this model cannot deliver the rung
+ * the spec seat is going to ask for — or `null` when it can.
+ *
+ * The rung is {@link MAX_STREAMABLE_OUTPUT_TOKENS}, `bakeoff/spec-types.ts`'s
+ * 128,000, which `spec-agent` climbs to after a truncation. Below it the climb
+ * is a no-op: the CLI silently hands the model its own lower ceiling and the
+ * authoring call dies exactly the way
+ * `run-2026-08-04T11-08-10-487Z-162b186d` died — "Claude's response exceeded
+ * the 64000 output token maximum" — 49 minutes of quota after it started.
+ */
+export function specModelCeilingWarning(modelId: string, rung: number = MAX_STREAMABLE_OUTPUT_TOKENS): string | null {
+  const ceiling = outputCeilingFor(modelId);
+  if (ceiling === null) {
+    return (
+      `the spec/judge seat is pinned to "${modelId}", whose output ceiling is not known here. The ` +
+      `${String(rung)}-token retry rung cannot be relied on: the Claude CLI CAPS a request above a ` +
+      `model's ceiling silently and the authoring call then fails at whatever number it actually got.`
+    );
+  }
+  if (ceiling < rung) {
+    return (
+      `the spec/judge seat is pinned to "${modelId}", which caps output at ${String(ceiling)} tokens — ` +
+      `below the ${String(rung)}-token rung the spec agent retries at. That retry is a no-op on this ` +
+      `model and a long authoring turn will die the way run-…162b186d died.`
+    );
+  }
+  return null;
+}
+
+/**
  * Default spec/judge model.
  *
- * "default" is a real id in the Claude CLI's own model list (verified: it
- * resolves to claude-opus-5[1m] on this machine) and means "the model the CLI
- * recommends". doc 03 section 7.4 wants the spec seat at Opus-class `xhigh`,
- * which is what that resolves to here; pinning a literal wire id that the CLI
- * might not accept would trade a true statement for a brittle one.
+ * PINNED TO A LITERAL ON 2026-08-09, having been `"default"` until then. The
+ * old reasoning was: *""default" is a real id in the Claude CLI's own model
+ * list (verified: it resolves to claude-opus-5[1m] on this machine) and means
+ * "the model the CLI recommends" … pinning a literal wire id that the CLI might
+ * not accept would trade a true statement for a brittle one."*
+ *
+ * THE RESOLUTION WAS RIGHT AND IS PRESERVED — this literal is byte-identical to
+ * what `"default"` resolved to when it was measured, so the behavioural delta of
+ * this change is zero. What was wrong was the word "verified" doing the work of
+ * a guarantee. `"default"` is resolved by the CLI AT RUNTIME, from a list that
+ * moves with every SDK bump, and four ids currently in that list cap below
+ * {@link MAX_STREAMABLE_OUTPUT_TOKENS}: `claude-haiku-4-5`, `claude-sonnet-4-5`
+ * and `claude-opus-4-5` at 64,000, `claude-opus-4-1` at 32,000. The CLI does not
+ * refuse a request above a model's ceiling; it CAPS it and says so on a debug
+ * line nothing here reads. So the failure mode of a bad resolution is not an
+ * error — it is 49 minutes of quota followed by run-…162b186d's death sentence.
+ *
+ * AND THE UNATTENDED PATH MUST NOT DEPEND ON A SHELL VARIABLE. `DASHBOARD_SPEC_MODEL`
+ * exists and works, but `ls -a dashboard/.env*` matches nothing, so "the owner
+ * remembers to export it" was the entire mechanism. A literal here is a
+ * mechanism.
+ *
+ * THE SUFFIX IS NOT DECORATION. `[1m]` asks for the 1M-token context window,
+ * which is what `"default"` was already resolving to and what a ticket carrying
+ * an 80 KB PDF on every spec call needs. It does not change the OUTPUT ceiling —
+ * see {@link canonicalModelId}.
+ *
+ * IF THIS ID IS EVER RETIRED, `DASHBOARD_SPEC_MODEL` is the escape hatch: SET it
+ * to a live id (not unset it — unsetting now lands back here).
  */
-export const DEFAULT_SPEC_MODEL = "default";
+export const DEFAULT_SPEC_MODEL = "claude-opus-5[1m]";
 
 export interface OrchestratorDeps {
   readonly store: RunStore;
@@ -332,6 +479,27 @@ export interface OrchestratorDeps {
    * from the build it is fixing.
    */
   readonly makeBuilder?: (provider: ApiProvider) => SubscriptionBuilder;
+  /**
+   * How the SPEC and AUDIT seats reach a model. Defaulted to the SDK's own
+   * `query`, which is the only thing production ever uses.
+   *
+   * IT EXISTS BECAUSE THE MOST EXPENSIVE DEFECT THIS FILE HAS SHIPPED LIVED ON
+   * THE PATH NO TEST COULD DRIVE. `#specPhase` constructs both callers inline, so
+   * every question about what happens when authoring FAILS — is the spend
+   * recorded, is the ladder visible, does the heartbeat stop — was answerable only
+   * by spending the owner's subscription for an hour and watching it die. It was
+   * not answered, and `seat_spend` held zero rows for five runs and 87 minutes of
+   * quota because of it. `B5`'s ledger fixture could not see it either: that test
+   * pre-seals the suite, so `#specPhase` returns at the reuse branch before a
+   * caller is ever constructed.
+   *
+   * THE SEAM IS THE SDK CALL AND NOTHING ABOVE IT. Everything else on the failing
+   * path is real — the real `SubscriptionSeatCaller`, the real shared ceiling, the
+   * real `authorAndFreezeSuite`, the real audit, the real error. That is the same
+   * bargain `spec-ladder-e2e.test.ts` strikes, and it is the narrowest seam that
+   * makes the failure path reachable at all.
+   */
+  readonly seatQuery?: SeatSessionFactory;
   /**
    * How the DESIGN preflight probes the machine, and whether a directory is
    * writable. Defaulted to the real ones (`execCommandRunner`, `canWriteDir`).
@@ -1879,6 +2047,7 @@ export class Orchestrator {
           "against a suite authored for a different set of references.",
       );
     }
+    this.#reportNoCapture(runId, row0.ticketText, manifest);
     const log = new BuildLog(runPaths.buildLog);
 
     store.updateRun(runId, {
@@ -1913,6 +2082,17 @@ export class Orchestrator {
     this.#armSilenceWatch(runId);
 
     try {
+      // ---- PREFLIGHT: the model every seat in this run will run on -----
+      //
+      // FIRST, AND BEFORE ANY QUOTA. A seat model whose MEASURED output ceiling
+      // is below the rung `spec-agent` climbs to kills the run an hour in — that
+      // is run-…162b186d, 49 minutes spent — and the CLI gives no error to catch,
+      // because it CAPS silently. The only place it can be caught is here,
+      // against the id. This throws on that case (`#usableSpecModel`), so the
+      // refusal costs the owner nothing; an id the table does not know proceeds
+      // with a loud line instead.
+      this.#reportSpecModel(runId);
+
       // ---- PHASE 0: the questions, BEFORE anything is frozen -----------
       //
       // FIRST, AND THERE IS ONLY ONE ANSWER TO WHERE IT GOES. The suite is
@@ -2015,14 +2195,180 @@ export class Orchestrator {
 
       const selfReport = readSelfReport(runPaths.workspace);
       const declaredDone = selfReport !== null && selfReport.status === "done";
+      /*
+       * DID THE BUILDER WRITE A REPORT AT ALL — A SEPARATE, WEAKER QUESTION FROM
+       * `declaredDone`, AND THE GATE GUARD BELOW TURNS ON THIS ONE.
+       *
+       * `readSelfReport` returns `null` for a file that is absent, a file that
+       * will not parse, AND a file whose `status` is not one of its three known
+       * words. Those are one value and two different facts, and the difference is
+       * measured, not hypothetical: `…052c6e02` wrote a 7,930-byte report saying
+       * `"status": "complete"` — a word the prompt does not offer and the reader
+       * does not accept — so the run recorded "the builder wrote no self-report"
+       * about a builder that had written a long one. Of the two runs on this
+       * machine that reached the end of a build, ONE used a word the reader
+       * knows. A gate guard keyed on `declaredDone` would therefore have refused
+       * to score roughly half the runs that got that far, including runs whose
+       * artefact was finished and correct — a worse failure than the one it is
+       * there to prevent, because the owner would not even learn the tree was
+       * scoreable.
+       *
+       * `existsSync` IS THE HONEST PREDICATE FOR "the writer got to the end".
+       * `agentDeclaredDone` is unchanged and still means `status === "done"` —
+       * `falseFinish` is derived from it and `run.json` carries it into the
+       * scorer, so it must keep meaning exactly what it meant.
+       */
+      const selfReportWritten = existsSync(join(runPaths.workspace, WORKSPACE.selfReport));
       store.updateRun(runId, { agentDeclaredDone: declaredDone });
       this.#emitLog(
         runId,
         "info",
         selfReport === null
-          ? "the builder wrote no self-report; recorded as not-declared-done"
+          ? selfReportWritten
+            ? "the builder's self-report could not be read (absent status, or not JSON); recorded as " +
+              "not-declared-done. The file is on disk, so the builder did reach the end of its turn."
+            : "the builder wrote no self-report; recorded as not-declared-done"
           : `builder self-report: ${selfReport.status} — ${truncate(selfReport.reason, 200)}`,
       );
+
+      /*
+       * ─── THE GATE DOES NOT OPEN ON A BUILD THAT NEVER SAID IT WAS FINISHED ───
+       *
+       * THE RUN THIS EXISTS FOR. `run-2026-07-30T20-16-40-242Z-052c6e02` reached
+       * this line with `agentDeclaredDone: false`, was scored anyway, and
+       * published a confident 13-point "DID NOT PASS" with three BLOCKING
+       * findings. That verdict cannot be reproduced: re-scoring the same run's
+       * workspace today passes GATE:boot and goes 28/28 green, and the two files
+       * (1,123,061 bytes) that were staged on 2026-07-31 are not in the tree any
+       * more. The published record and today's bytes cannot both be describing
+       * the same artefact, and there is no surviving file list to reconcile them.
+       * The build was still moving when the gate read it.
+       *
+       * WHY THIS CHECK AND NOT A QUIESCENCE WALK. An mtime settle is the
+       * thorough answer and it is deliberately NOT attempted here — note also
+       * that it could not have caught 052c6e02, whose change was a DELETION, and
+       * deletions leave surviving mtimes intact. What this checks is cheaper and
+       * strictly earlier: whether the builder reached the end of its turn at all.
+       * A writer that never got as far as its own report is a writer that was
+       * still writing.
+       *
+       * IT KEYS ON `selfReportWritten`, NOT ON `declaredDone`, AND THAT
+       * DISTINCTION IS THE WHOLE SAFETY OF THIS GUARD. The first draft used
+       * `declaredDone` and would have refused to score roughly half the runs
+       * that reach this line — see the block above `selfReportWritten` for the
+       * measurement. Three situations produce `declaredDone === false` and only
+       * one of them is this defect:
+       *
+       *   no file at all      the writer was killed, or never got there. REFUSED.
+       *   `blocked`/`incomplete`  the builder stopped ON PURPOSE and said so.
+       *                       SCORED — the tree has stopped moving, which is what
+       *                       this guard is actually about, and the gate result is
+       *                       information the owner asked for. `falseFinish` stays
+       *                       false, correctly: it did not claim to be done.
+       *   a status the reader does not know   `…052c6e02` wrote `"complete"`.
+       *                       SCORED, for the same reason: a builder that wrote a
+       *                       7,930-byte report reached the end of its turn,
+       *                       whatever word it chose.
+       *
+       * WHY IT REFUSES THE GATE RATHER THAN THE VERDICT. Two reasons, and the
+       * second is money. A gate attempt is a container run and each fix round
+       * after it resumes the builder for roughly the cost of a build
+       * (`gate-fix-loop.ts` DEFAULT_TIME_BUDGET_MS), so scoring first and
+       * withholding the verdict afterwards spends up to three builds to arrive
+       * at no verdict. And the harm in B1 was not only the published sentence —
+       * it was that the gate READ a moving tree, which is what made the score
+       * unreproducible.
+       *
+       * THERE IS NO PATH TO THE GATE THAT DOES NOT PASS HERE. `#execute` is
+       * re-entered on every auto-continuation, the workspace is re-read from
+       * disk each time, and `#gateFixLoop` has exactly ONE call site, the line
+       * below this block. That is a structural property, not a flag, and it is
+       * the reason this one check is enough.
+       *
+       * WHAT IT IS NOT is an auto-continue guard, and an earlier draft of this
+       * block said it was. CORRECTED 2026-08-09 — the correction matters because
+       * the deleted sentence was the whole justification for denying a verdict.
+       * It claimed the case caught here is "the run killed mid-build, which is
+       * the shape an auto-continued run ends in when it runs out of
+       * continuations". THAT SHAPE CANNOT REACH THIS LINE. Traced:
+       *
+       *   a build torn down by the signal sets `outcome.cancelled`, `#buildPhase`
+       *   returns `{ kind: "cancelled" }` (:3892), and `#execute` handles it at
+       *   :2129 with `#aborted` — resumable, and BEFORE this guard.
+       *   a refusal returns at :2147, also before this guard.
+       *
+       * SO THE ONLY SHAPE THAT ARRIVES HERE IS A BUILDER THAT RETURNED. Turn or
+       * budget exhaustion (`DEFAULT_MAX_TURNS = 400`), or a subprocess that died
+       * without a signal — and in either case the build has STOPPED, which is
+       * the opposite of the "still being written" hazard this block argues from
+       * two paragraphs up. Read the trade on that, because that is the trade: a
+       * builder that ran out of turns without writing its report gets no verdict.
+       * It is a weaker reason than a moving tree, and it is deliberately still
+       * taken, on the ground that a builder that never reached the end of its own
+       * turn never told anyone the artefact was in a state worth scoring — but
+       * whoever revisits this should revisit it against THAT case and not against
+       * the one the deleted sentence described.
+       *
+       * WHAT IT IS NOT. It is not a judgement about the work: `heldOutPass`
+       * stays NULL and the run gets the no-verdict page (`run-report.ts`
+       * `renderNoVerdict`), the same outcome a run that stopped before the gate
+       * has always had — "a gate that could not run is not a gate that said no".
+       * Inventing a failing verdict here would be the exact inversion B1 is
+       * about, pointed the other way.
+       *
+       * WHAT IT DOES NOT COVER, SAID PLAINLY — AND IT IS MOST OF THE PROBLEM. A
+       * builder that writes its report and keeps working still reaches the gate
+       * on a moving tree: 052c6e02's own `self-report.json` is stamped 10:14 and
+       * its `server.mjs` 10:16:27, so file-present does NOT establish quiescence
+       * and this guard would not have refused that run either. What it refuses
+       * is the strictly narrower case where nothing was ever written by a builder
+       * that RETURNED — see the reachability note below, which is the only shape
+       * that gets this far. The mtime settle is carried forward.
+       */
+      if (!selfReportWritten) {
+        this.#emitLog(
+          runId,
+          "warn",
+          "the sealed gate was NOT run: the builder never wrote its self-report, so it did not reach the " +
+            "end of its own turn and the tree it would have scored may still have been being written. " +
+            "Scoring it would publish a verdict about a moving artefact — which is what happened to " +
+            "run-…052c6e02, whose published verdict cannot be reproduced. This run is finished and cannot " +
+            "be resumed — the tree it built is still on disk in its workspace. Read the build log for why " +
+            "the builder stopped, then start a new run from the same ticket.",
+        );
+        this.#recordUnmeasuredBacklog(
+          runId,
+          // THE COARSE HEADING IS ONE WORD WRONG AND IS LEFT WRONG ON PURPOSE.
+          // `StopReason` is a five-member vocabulary that `backlog.ts` keys a
+          // TOTAL record off, so adding a member is a compile error in a file
+          // this change does not own. `cancelled` is the member already used for
+          // "something other than the loop's own outcome stopped this run"
+          // (`gate-fix-loop.ts` records that it covers the owner AND a rate
+          // limit); the sentence below carries the truth, under the backlog's
+          // own "Why nothing was measured" heading.
+          "cancelled",
+          "the builder never wrote a self-report, so it did not reach the end of its own turn, the sealed " +
+            "gate was not run, and nothing below is evidence about the artefact",
+        );
+        log.close();
+        this.#setPhase(runId, "done");
+        this.#finish(runId, "failed", {
+          endedAt: new Date().toISOString(),
+          // NULL, NOT FALSE. `run-report.ts` branches on whether the gate
+          // produced criterion results; a `false` here would render this as a
+          // run the suite failed, which is a claim nothing measured.
+          heldOutPass: null,
+          // A FALSE FINISH IS "DECLARED DONE AND NOT GREEN". This run declared
+          // nothing, so it is not one, and recording `false` would be as much of
+          // an invention as recording `true`.
+          falseFinish: null,
+          failureReason:
+            "the builder never wrote its self-report, so the sealed gate was not opened on a tree that " +
+            "nothing had finished writing",
+          queuePosition: null,
+        });
+        return;
+      }
 
       // ---- PHASE 3: the sealed gate, then the bounded fix loop ---------
       this.#setPhase(runId, "gate");
@@ -2498,7 +2844,7 @@ export class Orchestrator {
         report: () => undefined,
       };
     }
-    const caller = new SubscriptionSeatCaller(this.#seat(SPEC_SEAT), {
+    const caller = new SubscriptionSeatCaller(this.#seat(runId, SPEC_SEAT), {
       budget: DASHBOARD_BUDGET,
       cwd: this.#deps.paths.home,
       env: this.#deps.env,
@@ -2586,6 +2932,59 @@ export class Orchestrator {
     writePlanRecord(runPaths.results, record);
   }
 
+  /**
+   * The sentence that says a reference page was never going to be read.
+   *
+   * ─── TWO READERS AND NO WRITER, FOR THE WHOLE LIFE OF THE FEATURE ───
+   *
+   * `graph.ts:455` and `dashboard/src/lib/spec-pipeline.ts:123` both match
+   * `/no reference capture/i` and settle the CAPTURE stage to `skipped`. Nothing
+   * in this repository has ever emitted it. So on every run whose ticket names no
+   * page — which is most of them — the canvas showed **"Reading the reference
+   * page — Waiting to see whether your ticket named a page"** forever, next to a
+   * LATER stage already reading `WORKING`. The owner found it on screen during
+   * `a913c871`; no test could, because the string existed only in the readers and
+   * in test fixtures that supplied it themselves. Folding that run's 56 stored
+   * events through the real reducer afterwards left `capture` at `pending` even
+   * after the run had died.
+   *
+   * ─── WHY THE GUARD IS THE TICKET TEXT AND NOT ONLY THE MANIFEST ───
+   *
+   * `references.json` records `capture: null` for BOTH "no page was named" and "a
+   * page was named and the fetch failed", and the second is not a skip: the run
+   * IS less well specified than the owner asked for, and saying "No URL in the
+   * ticket" over it would be the display asserting something false. So the
+   * positive fact — the ticket text names no capture target — has to be checked
+   * too, and it is checked with the same function the intake used
+   * (`captureTargetIn`), against the text as submitted, which is the text the
+   * intake read.
+   *
+   * ONE CASE REMAINS UNCOVERED AND IT IS NAMED RATHER THAN ROUNDED AWAY. A
+   * request may carry an explicit `captureUrl` in its BODY
+   * (`http.ts#requestedCaptureTarget`), which is not in the ticket text; if that
+   * capture then fails, this guard sees no target and no artefact and says "no
+   * reference capture", which would be wrong. Nothing the orchestrator can read
+   * distinguishes it — the manifest has no field for an attempted-and-failed
+   * capture, and the only record is a `warn` row `graph.ts` does not fold. Closing
+   * it properly means either a `capture` field that records the attempt (intake,
+   * another lane) or a stage state for "was tried and failed", which does not
+   * exist in {@link GraphStageState} and whose copy lives in the client. Filed,
+   * not silently absorbed.
+   */
+  #reportNoCapture(runId: string, ticketText: string, manifest: ReferenceManifest | null): void {
+    if (manifest?.capture != null) return;
+    if (captureTargetIn(ticketText).kind !== "none") return;
+    // WORD-IDENTICAL TO BOTH READERS, and that is the whole contract of this
+    // line. `graph.test.ts` folds this exact string through the real reducer
+    // rather than through a copy of the regex.
+    this.#emitLog(
+      runId,
+      "info",
+      "no reference capture for this ticket: it names no page to copy, so nothing was fetched and " +
+        "the acceptance suite is written from your words alone.",
+    );
+  }
+
   /* ---- phase 1: spec ------------------------------------------------- */
 
   async #specPhase(runId: string, ticket: Ticket, signal: AbortSignal): Promise<AcceptanceSuite> {
@@ -2642,17 +3041,39 @@ export class Orchestrator {
      */
     const documents = await this.#seatDocuments(runId);
 
-    const specSeat = this.#seat(SPEC_SEAT);
-    const judgeSeat = this.#seat(JUDGE_SEAT);
+    const specSeat = this.#seat(runId, SPEC_SEAT);
+    const judgeSeat = this.#seat(runId, JUDGE_SEAT);
     const abortController = childAbort(signal);
     const cwd = this.#deps.paths.home;
 
+    /*
+     * THE LADDER, MADE VISIBLE, WITH NO EDIT TO `bakeoff`.
+     *
+     * `onEvent` is honoured ONLY by a caller that builds its own ceiling
+     * (`anthropic-seat.ts`: `options.ceiling ?? new SpendCeiling(budget, {onEvent})`),
+     * so it goes on the SPEC caller and nowhere else. That is not a limitation
+     * here — the judge caller is handed this very ceiling four lines down and
+     * `authorAndFreezeSuite` is handed it too, so this one sink sees every
+     * dispatch of the whole authoring job, author and audit alike. Wiring it to
+     * both would have been silently ignored on the second one.
+     */
+    let seatCall = 0;
     const specCaller = new SubscriptionSeatCaller(specSeat, {
       budget: DASHBOARD_BUDGET,
       cwd,
       env: this.#deps.env,
       abortController,
-      onRateLimit: (state) => this.#noteRateLimit(runId, state),
+      onRateLimit: (state) => this.#noteRateLimit(runId, state, "spec"),
+      onEvent: (event) => {
+        // `precall_check` IS THE START OF A CALL AND `usage_recorded` IS ITS END.
+        // The start is the one worth a row: it is what tells a watching owner that
+        // a THIRD draft has begun, at the moment he can still decide not to pay
+        // for it. A refused check is not a dispatch and is already loud (the
+        // ceiling throws), so it is not counted.
+        if (event.kind !== "precall_check" || !event.decision.allowed) return;
+        seatCall += 1;
+        this.#emitLog(runId, "info", authoringLadderLine(seatCall, event.purpose));
+      },
       // THE ONE THE OWNER COMPLAINED ABOUT. `run-2026-08-04T11-08-10-487Z-162b186d`
       // spent 51 minutes here and the whole run recorded 61 events, none of them
       // from this seat. It has `tools: []`, so there is no tool call for anything
@@ -2662,6 +3083,7 @@ export class Orchestrator {
       // and every regeneration after it. An empty list is the pre-document
       // path, byte for byte; see `seatPrompt`.
       documents,
+      ...(this.#deps.seatQuery === undefined ? {} : { startQuery: this.#deps.seatQuery }),
     });
     const judgeCaller = new SubscriptionSeatCaller(judgeSeat, {
       budget: DASHBOARD_BUDGET,
@@ -2672,7 +3094,7 @@ export class Orchestrator {
       cwd,
       env: this.#deps.env,
       abortController,
-      onRateLimit: (state) => this.#noteRateLimit(runId, state),
+      onRateLimit: (state) => this.#noteRateLimit(runId, state, "audit"),
       // THE AUDIT SEAT IS THE SECOND SILENT ONE AND IT IS NOT CHEAP. It reads the
       // whole draft suite adversarially, and until this line the run said nothing
       // between "authoring the held-out acceptance suite" and "audit seat — …".
@@ -2684,6 +3106,7 @@ export class Orchestrator {
       // What that buys in quota it gives up in coverage: a criterion the spec
       // seat mis-derived from page 4 of the owner's scope is not something the
       // auditor can catch, because the auditor never sees page 4.
+      ...(this.#deps.seatQuery === undefined ? {} : { startQuery: this.#deps.seatQuery }),
     });
 
     if (documents.length > 0) {
@@ -2695,23 +3118,87 @@ export class Orchestrator {
       );
     }
 
-    const { suiteSha256 } = await authorAndFreezeSuite(ticket, {
-      acceptanceRoot,
-      specSeat,
-      judgeSeat,
-      specCaller,
-      judgeCaller,
-      ceiling: specCaller.ceiling,
-      budget: DASHBOARD_BUDGET,
-      harness: resolveHarnessIdentity(cwd),
-      makeReadOnly: true,
-      overwrite: false,
-    });
+    /*
+     * ─── THE LEDGER IS WRITTEN IN A `finally`, AND THE RUN THAT PAID FOR THAT
+     *     RULE IS NAMED HERE ───
+     *
+     * `run-2026-08-09T21-04-00-713Z-a913c871` spent 87 minutes and ≈628,441
+     * output tokens in this phase and recorded ZERO rows on `seat_spend` — as
+     * did every other run that has ever executed on this machine. The cause was
+     * not the ledger and not the merge: `authorAndFreezeSuite` threw, and the
+     * four lines that record what the throw cost sat BELOW the `await` with no
+     * `finally` under them. The empirical fingerprint was the missing
+     * `spec seat —` row, which is emitted six lines above the ledger write and
+     * was likewise absent for the whole run.
+     *
+     * A FAILED PHASE IS THE PHASE WHOSE COST MATTERS MOST. Three authoring
+     * attempts that get rejected cost the same quota as three that succeed, and
+     * the owner is deciding whether to run again. "We do not know what the last
+     * failure cost" is the answer this `finally` removes.
+     *
+     * `assertUnused()` STAYS OUTSIDE IT, DELIBERATELY. It throws when a caller
+     * finished holding an unconsumed result; called while the stack is already
+     * unwinding from a real failure it would REPLACE that failure with a guard
+     * complaint, and the owner would be handed the wrong cause. Its only job is
+     * to catch a leak on the path that otherwise looks clean, so the success
+     * path is the only path it belongs on.
+     *
+     * NOTHING HERE INVENTS A PRICE. `#recordSpend` writes tokens and call counts
+     * and `costUsd: null`, which is a system-wide invariant (see its docblock);
+     * a `finally` changes WHEN it is called and not WHAT it records. And it
+     * no-ops on `callCount <= 0`, so an authoring death before the first
+     * dispatch — or an audit seat that was never reached, which is what
+     * a913c871 looks like — still writes nothing rather than a row of zeroes.
+     *
+     * ─── WHY THE FAILURE PATH DOES NOT REUSE THE `spec seat — …` SENTENCE ───
+     *
+     * `graph.ts` folds that exact prose: `SPEC_TOKENS = /^spec seat —/i` settles
+     * the AUTHOR stage to `done`. Moving the sentence verbatim into the `finally`
+     * — which is what the fix was filed as — would make a run that never authored
+     * anything render "Writing the tests — done", which is this repository's
+     * signature defect (a display reporting work it never observed) introduced by
+     * the fix for another one. So the numbers are the same on both paths and the
+     * WORDS are not: the success path keeps the two folding sentences byte for
+     * byte, and the failure path carries one lane-neutral row that says the phase
+     * stopped and what it cost. {@link specPhaseCostLine} builds it and
+     * `orchestrator.spec-spend.test.ts` asserts it is inert against the real fold.
+     */
+    let suiteSha256: string | null = null;
+    const heartbeat = this.#armHeartbeat(runId, "writing and checking the acceptance tests");
+    try {
+      ({ suiteSha256 } = await authorAndFreezeSuite(ticket, {
+        acceptanceRoot,
+        specSeat,
+        judgeSeat,
+        specCaller,
+        judgeCaller,
+        ceiling: specCaller.ceiling,
+        budget: DASHBOARD_BUDGET,
+        harness: resolveHarnessIdentity(cwd),
+        makeReadOnly: true,
+        overwrite: false,
+      }));
+    } finally {
+      // FIRST IN THE `finally`, BEFORE ANYTHING THAT CAN THROW. A heartbeat that
+      // outlives its call is a display reporting work nobody is doing, and
+      // `#recordSpend` below reaches SQLite.
+      heartbeat();
+      if (suiteSha256 === null) {
+        this.#emitLog(runId, "info", specPhaseCostLine(specCaller.tokens, judgeCaller.tokens));
+      } else {
+        this.#emitLog(runId, "info", `spec seat — ${describeTokens(specCaller.tokens)}`);
+        this.#emitLog(runId, "info", `audit seat — ${describeTokens(judgeCaller.tokens)}`);
+      }
+      // ONTO THE LEDGER, not only into the sentence above. `SubscriptionSeatCaller`
+      // totals are already cumulative across that seat's own calls
+      // (subscription-caller.ts), which is exactly why both are logged once and
+      // recorded once, here.
+      this.#recordSpend(runId, "spec", specSeat.modelId, specCaller.tokens);
+      this.#recordSpend(runId, "audit", judgeSeat.modelId, judgeCaller.tokens);
+    }
 
     specCaller.assertUnused();
     judgeCaller.assertUnused();
-    this.#emitLog(runId, "info", `spec seat — ${describeTokens(specCaller.tokens)}`);
-    this.#emitLog(runId, "info", `audit seat — ${describeTokens(judgeCaller.tokens)}`);
     if (specCaller.documentPlan.notes.length > 0) {
       // THE REPEAT COST, AS A MEASUREMENT. `describeTokens` above already says
       // what the seat spent; this says how much of it was the same attachment
@@ -3175,8 +3662,8 @@ export class Orchestrator {
         env: this.#deps.env,
         home: this.#deps.env["HOME"] ?? "",
       });
-      const { prompt: videoPrompt } = designSegment
-        ? { prompt: "" }
+      const { prompt: videoPrompt, record: videoSpend } = designSegment
+        ? { prompt: "", record: null }
         : await runVideoLane({
             workspace: runPaths.workspace,
             recordPath: runPaths.videoRecord,
@@ -3206,6 +3693,21 @@ export class Orchestrator {
             },
             fileExists: (path) => existsSync(path),
           });
+
+      // THE VIDEO LANE'S METERED SPEND, ONTO THE LEDGER. `legsAttempted`
+      // INCLUDING failures, and `meteredSeconds` — which `video-legs.ts` is
+      // careful to call a FLOOR on what was billed, not a bill. `null` here is
+      // the "already spent this run, nothing new" arm, which must not be
+      // recorded twice. NO PRICE: there is no Veo rate table in this program
+      // and a made-up one is a fabricated bill.
+      if (videoSpend !== null) {
+        this.#recordMetered(runId, {
+          kind: "video",
+          model: videoSpend.model,
+          calls: videoSpend.legsAttempted,
+          deliveredSecondsFloor: videoSpend.meteredSeconds,
+        });
+      }
 
       /* ---- THE OWNER'S MID-FLIGHT MESSAGES, DRAINED AT THIS BOUNDARY ------
        *
@@ -3577,6 +4079,11 @@ export class Orchestrator {
       if (outcome.tokens.callCount > 0) {
         store.updateRun(runId, { tokens: mergeTokenTotals(carried, toApiTokens(outcome.tokens)) });
         this.#emitLog(runId, "info", `builder — ${describeTokens(outcome.tokens)}`);
+        // ONCE PER SEGMENT, FROM THE RETURNED OUTCOME. The build is two
+        // `builder.build()` calls against one session, and `recordSeatSpend`
+        // ADDS, so both segments land on the one `builder` row rather than the
+        // second replacing the first.
+        this.#recordSpend(runId, "builder", row.modelId, outcome.tokens);
       } else if (tokens.callCount > 0) {
         this.#emitLog(runId, "info", `builder — ${describeTokens(tokens)}`);
       }
@@ -3632,6 +4139,19 @@ export class Orchestrator {
        * stage and does survive.
        */
       writeDesignLaneRecord(runPaths.results, record);
+      // THE IMAGE LANE'S METERED SPEND, ONTO THE LEDGER, from the same counter
+      // `classifyDesignLane` grades against. Per SEGMENT, and `recordMeteredSpend`
+      // ADDS, so a canvass followed by an expansion lands as one `image` row
+      // holding both — which the record file above deliberately does NOT, because
+      // it is overwritten per stage (see its comment). Calls, never seconds: an
+      // image call is not a duration, and `db.ts` keeps that NULL rather than
+      // reporting "zero seconds of video" for a run that generated none.
+      this.#recordMetered(runId, {
+        kind: "image",
+        model: DESIGN_IMAGE_MODEL,
+        calls: imageCalls,
+        deliveredSecondsFloor: null,
+      });
       // THE TRAP. A DESIGN lane that produced zero images must never look
       // successful, so this is an error-level line and a `failureReason` rather
       // than an absence of PNGs nobody counted.
@@ -4938,12 +5458,24 @@ export class Orchestrator {
       effort: entry.effort,
       resumeSessionId: row.builderSessionId,
       signal,
-      sink: this.#sink(runId, log),
+      // WHAT THE ROW ALREADY HELD, CAPTURED BEFORE THIS ROUND WRITES TO IT —
+      // the same capture `#buildPhase` makes at `const carried = row.tokens`
+      // and for the identical reason, which this call site did not make until
+      // 2026-08-09. `BuildEventSink.tokens` fires repeatedly with a total that
+      // is cumulative WITHIN the call, and the sink here ASSIGNED it, so the
+      // first token event of the first fix round overwrote everything the spec
+      // seat, the design segment and the build segment had accumulated. A run's
+      // reported spend went DOWN the moment it started fixing.
+      sink: this.#sink(runId, log, row.tokens),
       env: this.#deps.env,
     });
 
     if (outcome.sessionId !== null) this.#deps.store.updateRun(runId, { builderSessionId: outcome.sessionId });
     if (outcome.tokens.callCount > 0) this.#emitLog(runId, "info", `${task.agent} — ${describeTokens(outcome.tokens)}`);
+    // ONCE PER ROUND, FROM THE RETURNED OUTCOME, and the loop runs a round per
+    // gate attempt — so three rounds ADD onto one `fix` row rather than the
+    // third describing itself as the whole of the fixing.
+    this.#recordSpend(runId, "fix", row.modelId, outcome.tokens);
     if (outcome.failure !== null) {
       this.#emitLog(runId, "warn", `the ${task.agent} fix round did not complete cleanly: ${outcome.failure}`);
     }
@@ -4958,14 +5490,26 @@ export class Orchestrator {
    * context events (they are sampled at lane boundaries in a build, and a fix
    * round is one lane). Everything the UI already renders — logs, tools, tokens,
    * the canvas graph — still flows.
+   *
+   * `carried` IS NOT OPTIONAL AND IT IS THE WHOLE OF THE 2026-08-09 REPAIR.
+   * This sink ASSIGNED the token total onto the run row, and the total it is
+   * handed is cumulative only WITHIN the call (`claude-builder.ts` builds it
+   * with `addTokens(running, …)`). So a run that had spent 500,000 tokens
+   * through the spec, design and build phases reported the fix round's own few
+   * thousand from its first token event onward — the run's headline spend went
+   * DOWN when it started fixing, which is the exact defect `db.ts`
+   * `recordSeatSpend` describes ("a design segment that spent 1000 followed by
+   * a build segment reporting 10 left the run claiming 10"), reproduced one
+   * level up.
    */
-  #sink(runId: string, log: BuildLog): BuildEventSink {
+  #sink(runId: string, log: BuildLog, carried: ApiTokens | null): BuildEventSink {
     return {
       log: (level, text) => this.#emitLog(runId, level, text),
       tool: (name, summary) => this.#emit(runId, { type: "tool", name, summary }),
       tokens: (totals) => {
-        this.#deps.store.updateRun(runId, { tokens: toApiTokens(totals) });
-        this.#emit(runId, { type: "tokens", ...toApiTokens(totals) });
+        const merged = mergeTokenTotals(carried, toApiTokens(totals));
+        this.#deps.store.updateRun(runId, { tokens: merged });
+        this.#emit(runId, { type: "tokens", ...merged });
       },
       rateLimit: (state) => this.#noteRateLimit(runId, state),
       session: (id) => {
@@ -5299,12 +5843,13 @@ export class Orchestrator {
     }
 
     const diff = await workspaceDiff(runPaths.workspace);
+    const judgeSeat = this.#seat(runId, JUDGE_SEAT);
     const report = await judgeArtifact({
       ticket,
       criteria: suite.criteria,
       diff,
       evidence: renderEvidence(container),
-      seat: this.#seat(JUDGE_SEAT),
+      seat: judgeSeat,
       budget: DASHBOARD_BUDGET,
       cwd: this.#deps.paths.home,
       env: this.#deps.env,
@@ -5314,6 +5859,11 @@ export class Orchestrator {
     if (report.tokens !== null && report.tokens.callCount > 0) {
       this.#emitLog(runId, "info", `judge — ${describeTokens(report.tokens)}`);
     }
+    // ABOVE THE `report.ran` GUARD BELOW, DELIBERATELY. A judge that ran and
+    // then returned `unavailable` still spent what it spent, and a ledger that
+    // only records the seats whose answers were usable is a ledger that
+    // understates exactly the runs the owner most wants the cost of.
+    this.#recordSpend(runId, "judge", judgeSeat.modelId, report.tokens);
     if (!report.ran || report.verdict === "unavailable") {
       this.#emitLog(runId, "warn", `code-reading judge: ${report.summary}`);
       return;
@@ -5690,12 +6240,302 @@ export class Orchestrator {
     }
   }
 
-  #seat(base: AnthropicSeat): AnthropicSeat {
+  /**
+   * The one place the seat model is decided: the override when it is set, the
+   * pin otherwise. Every seat in the run — plan, spec, audit, judge — is built
+   * from this string, and nothing else is allowed to spell the fallback.
+   */
+  #specModelId(): string {
     const model = (this.#deps.env[SPEC_MODEL_ENV] ?? "").trim();
-    return { ...base, modelId: model.length > 0 ? model : DEFAULT_SPEC_MODEL };
+    return model.length > 0 ? model : DEFAULT_SPEC_MODEL;
   }
 
-  #noteRateLimit(runId: string, state: RateLimitState): void {
+  /**
+   * The seat model, or a throw when it is one this process has MEASURED to cap
+   * below the budget the seats START on.
+   *
+   * ─── WHY THIS EXISTS, AND WHY IT REFUSES RATHER THAN WARNS ───
+   *
+   * {@link specModelCeilingWarning} landed on 2026-08-09 with seven tests and
+   * NO production call site, so `DASHBOARD_SPEC_MODEL=claude-haiku-4-5` was
+   * applied here without anything consulting the ceiling table — the guard for
+   * run-…162b186d's death was installed with its wire cut. A warning would not
+   * have closed it either: these runs are UNATTENDED and take 2-12 hours, so a
+   * line nobody is present to read buys nothing against 49 minutes of quota and
+   * a dead run. On a ceiling below what the FIRST call asks for, the outcome is
+   * not in doubt, so the run stops here at zero spend instead.
+   *
+   * ─── THE THRESHOLD IS THE START RUNG, NOT THE RECOVERY RUNG — 2026-08-09 ───
+   *
+   * THIS IS A CORRECTION, and the version it replaces was
+   * `ceiling < MAX_STREAMABLE_OUTPUT_TOKENS` — 128,000. That number is not what
+   * any seat asks for. It is the rung `spec-agent` climbs to AFTER a truncation,
+   * on a retry its own docblock says does NOT consume an attempt. What the seats
+   * actually request on their first call is:
+   *
+   *   plan seat    PLAN_SEAT_MAX_OUTPUT_TOKENS   16,000  (`plan-seat.ts`)
+   *   judge seat   JUDGE_MAX_OUTPUT_TOKENS       32,000  (`judge.ts`)
+   *   spec/audit   DEFAULT_MAX_OUTPUT_TOKENS     64,000  (= CLI_DEFAULT_MAX_OUTPUT_TOKENS)
+   *
+   * So on a model measured at 64,000 — `claude-sonnet-4-5`, `claude-opus-4-5`,
+   * `claude-haiku-4-5` and five more of the sixteen ids in the table — three of
+   * the four seats are unaffected and the fourth runs at exactly its ceiling,
+   * which the CLI does not cap. What is lost is the truncation-recovery rung and
+   * nothing else. Refusing there converted a DEGRADATION into a hard outage: half
+   * the table became unusable as a seat model, and the owner whose Opus quota was
+   * exhausted could not fall back to Sonnet at all — the escape hatch
+   * {@link DEFAULT_SPEC_MODEL}'s docblock names is `DASHBOARD_SPEC_MODEL`, and
+   * the refusal was on the value of that very variable.
+   *
+   * THE STARTING BUDGET IS IMPORTED, NOT RETYPED. `CLI_DEFAULT_MAX_OUTPUT_TOKENS`
+   * is the largest of the three, so a ceiling at or above it serves every seat's
+   * first call; a ceiling below it cannot serve the spec seat's, and on
+   * `claude-opus-4-1` (32,000) or `claude-3-5-haiku` (8,192) the authoring turn
+   * dies the way run-…162b186d died.
+   *
+   * ─── THE FOUR CASES ───
+   *
+   *  · KNOWN and >= the retry rung → proceed, quietly. `#reportSpecModel` names
+   *    the model and the ceiling once per run, so the trace of a run that later
+   *    dies on an output maximum says what it was running on.
+   *  · KNOWN, >= the start budget, < the retry rung → PROCEED, loudly. The run
+   *    is entirely normal until a suite truncates; if one does, the free retry
+   *    is a no-op and the run dies there. That is a real loss and the log says
+   *    so, but it is not worth refusing four hours of work the owner asked for.
+   *  · KNOWN and < the start budget → REFUSE. Measured; the FIRST authoring call
+   *    is capped below what it asked for and the turn dies at whatever number it
+   *    really got, after spending the time to get there.
+   *  · UNKNOWN id → PROCEED, loudly (see {@link #reportSpecModel}). Refusing
+   *    here would disable the escape hatch, because a model shipped after this
+   *    table was written is unknown BY DEFINITION, which is exactly when the
+   *    hatch is needed. An unknown id is also a deliberate act by the owner; a
+   *    measured 32,000 is a fact about the model.
+   *
+   * IT THROWS RATHER THAN RETURNING A DISCRIMINANT because `#start`'s catch is
+   * the seam every phase failure converges on: the throw is recorded as the
+   * run's `failureReason`, classified `unclassified` by
+   * {@link classifyPhaseFailure} (no refusal is carried — `#execute` clears
+   * `#lastRefusal` before phase 0), and so is NOT auto-continued into a loop
+   * that would refuse identically forever.
+   */
+  #usableSpecModel(runId: string): string {
+    const modelId = this.#specModelId();
+    const ceiling = outputCeilingFor(modelId);
+    if (ceiling !== null && ceiling < CLI_DEFAULT_MAX_OUTPUT_TOKENS) {
+      /*
+       * THE WARNING IS ASKED ABOUT THE RETRY RUNG, NOT ABOUT THE THRESHOLD THAT
+       * SELECTED THIS BRANCH, and the difference is not pedantry.
+       * `specModelCeilingWarning`'s prose is written about the rung it is given:
+       * "below the N-token rung the spec agent retries at. That retry is a no-op
+       * on this model." Handed 64,000 it would say the spec agent retries at
+       * 64,000 and that the retry is a no-op — two sentences that are false of
+       * every model. Handed the default 128,000 both are TRUE of anything that
+       * reaches this branch, since a ceiling under 64,000 is also under 128,000.
+       * The extra clause below is what states the reason for the REFUSAL, which
+       * is the first call rather than the retry.
+       */
+      const detail =
+        `refusing to run: ${specModelCeilingWarning(modelId) ?? ""} And it is worse than a lost retry: ` +
+        `that ceiling is below the ${String(CLI_DEFAULT_MAX_OUTPUT_TOKENS)} tokens the spec seat asks ` +
+        `for on its FIRST call, so the authoring turn cannot complete. Nothing has been spent. Unset ` +
+        `${SPEC_MODEL_ENV} to fall back to the pinned ${DEFAULT_SPEC_MODEL}, or set it to a model whose ` +
+        `output ceiling is at least ${String(CLI_DEFAULT_MAX_OUTPUT_TOKENS)} tokens.`;
+      this.#emitLog(runId, "error", detail);
+      throw new Error(detail);
+    }
+    return modelId;
+  }
+
+  /**
+   * Say which model this run's seats will run on, once, before any of them is
+   * built — and refuse the run here if that model cannot deliver the budget the
+   * seats START on.
+   *
+   * WHY A PREFLIGHT WHEN {@link #seat} ALREADY CHECKS. Because `#seat` is called
+   * WHERE THE SEAT IS NEEDED, and on a run that reuses a frozen suite the first
+   * of those is `#judgePhase` — after the build. Failing a run whose artefact is
+   * already built and gated, because of a variable that was wrong before it
+   * started, would destroy work over a configuration error. Called from the top
+   * of `#execute`, the refusal lands before phase 0 on every path.
+   *
+   * The `#seat` check stays: it is the chokepoint a fifth seat added later
+   * cannot get past, and it cannot be skipped by a caller that forgets this one.
+   */
+  #reportSpecModel(runId: string): void {
+    const modelId = this.#usableSpecModel(runId);
+    const ceiling = outputCeilingFor(modelId);
+    if (ceiling === null) {
+      this.#emitLog(
+        runId,
+        "warn",
+        `${specModelCeilingWarning(modelId) ?? ""} The run is PROCEEDING because an id this table does ` +
+          `not know is how a model newer than the table looks, and refusing it would close the only ` +
+          `escape hatch there is. If the spec seat dies on an output maximum, this line is why.`,
+      );
+      return;
+    }
+    /*
+     * THE MIDDLE CASE — measured, good enough to start, short of the recovery
+     * rung. Added 2026-08-09 with the threshold split in `#usableSpecModel`.
+     *
+     * This is where `claude-sonnet-4-5`, `claude-opus-4-5` and `claude-haiku-4-5`
+     * land, and it used to be a refusal. The run proceeds and behaves normally;
+     * what it has lost is that `spec-agent`'s free truncation retry — the one
+     * that raises the budget to 128,000 and does not consume an attempt — is a
+     * no-op here, because the CLI silently caps the request back to this model's
+     * own ceiling. So a suite that truncates once dies instead of recovering.
+     *
+     * IT IS A `warn` AND NOT AN `info` because it changes what an operator should
+     * expect from a failure they may later read, and it is not an `error` because
+     * nothing has gone wrong: this is the line that makes a deliberate fallback
+     * to Sonnet possible while the owner's Opus quota is drained, which the
+     * previous refusal made impossible.
+     */
+    if (ceiling < MAX_STREAMABLE_OUTPUT_TOKENS) {
+      this.#emitLog(
+        runId,
+        "warn",
+        `every seat runs on ${modelId} (measured output ceiling ${String(ceiling)} tokens). That serves ` +
+          `every seat's first call — the largest asks for ${String(CLI_DEFAULT_MAX_OUTPUT_TOKENS)} — but ` +
+          `it is below the ${String(MAX_STREAMABLE_OUTPUT_TOKENS)}-token rung the spec agent retries a ` +
+          `TRUNCATED suite at, so that free retry is a no-op on this model and a truncation will end the ` +
+          `run instead of recovering. The run is PROCEEDING; if it dies on an output maximum, this line ` +
+          `is why.`,
+      );
+      return;
+    }
+    this.#emitLog(
+      runId,
+      "info",
+      `every seat runs on ${modelId} (measured output ceiling ${String(ceiling)} tokens, at or above the ` +
+        `${String(MAX_STREAMABLE_OUTPUT_TOKENS)}-token rung the spec agent retries at)`,
+    );
+  }
+
+  /**
+   * Every seat in this run, built here and nowhere else — plan, spec, audit and
+   * judge, all four on {@link #usableSpecModel}'s one id. `runId` is a parameter
+   * only so the refusal can reach the run's own log; nothing else uses it.
+   */
+  #seat(runId: string, base: AnthropicSeat): AnthropicSeat {
+    return { ...base, modelId: this.#usableSpecModel(runId) };
+  }
+
+  /**
+   * One seat's completed contribution, onto the run's spend ledger.
+   *
+   * ─── THE DEFECT THIS CLOSES ───
+   *
+   * `db.ts#recordSeatSpend`, `db.ts#recordMeteredSpend`, the `seat_spend` and
+   * `metered_spend` tables, the `spend.md` renderer and the client's mirror all
+   * landed on 2026-07-30 and had ZERO production callers until this method.
+   * `seat_spend` and `metered_spend` held 0 rows across all four runs on disk,
+   * and the one measurement that exists says what that cost: a live run spent
+   * 525,471 output tokens across four seats and its row reported 88,529 — the
+   * builder's — because the run row holds ONE total and every seat overwrote it.
+   * The other 436,942 went to a `describeTokens` log line and nowhere else.
+   *
+   * ─── WHERE IT IS CALLED FROM, AND WHY THOSE PLACES EXACTLY ───
+   *
+   * `db.ts#recordSeatSpend`'s docblock names the legal sources and this method
+   * obeys it literally: `caller.tokens` after `assertUnused()` for the `spec`
+   * and `audit` seats, `outcome.tokens` after `builder.build()` RETURNS for
+   * `builder` and `fix`, and `report.tokens` for the `judge`. It is called from
+   * the five `describeTokens` sites that already had these numbers in hand and
+   * threw them away.
+   *
+   * NEVER FROM A `BuildEventSink.tokens` CALLBACK, and that prohibition is the
+   * dangerous half. That callback fires repeatedly with a total that is already
+   * cumulative within the call, so ADDING from it records T1 + (T1+T2) +
+   * (T1+T2+T3) and inflates the run by a multiple — the mirror image of the
+   * defect the table closes, and the harder one to notice, because that number
+   * only ever looks too big.
+   *
+   * ─── WHAT IT DOES NOT RECORD ───
+   *
+   * MONEY. `costUsd` is `null` by deliberate, documented invariant: a
+   * subscription call has no per-token price and there is no price table here.
+   * Nothing in this method touches a dollar figure and nothing may be added
+   * that does. It records tokens and call counts, which is what was actually
+   * spent and what quota planning needs.
+   *
+   * A ZERO CONTRIBUTION IS SKIPPED rather than written as a row of zeroes.
+   * `db.ts#listSeatSpend` documents "empty means NOTHING RECORDED", and a seat
+   * that made no call is not the same fact as a seat that made a call costing
+   * nothing.
+   *
+   * IT MUST NOT TAKE A RUN DOWN. This is the record of the run, not the run —
+   * the same rule the environment record and the backlog follow. A failure here
+   * is a warning on the run's own stream, which is itself a record.
+   */
+  #recordSpend(runId: string, seat: ApiSpendSeat, modelId: string, totals: TokenTotals | null): void {
+    if (totals === null || totals.callCount <= 0) return;
+    try {
+      this.#deps.store.recordSeatSpend(runId, { seat, modelId, totals });
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the ${seat} seat's spend could not be recorded: ${describeError(error)}`);
+    }
+  }
+
+  /**
+   * One metered image/video contribution, onto the same ledger.
+   *
+   * SAME STORY AS {@link #recordSpend}, DIFFERENT UNITS — and the same
+   * zero-caller history: `db.ts#recordMeteredSpend` and the `metered_spend`
+   * table shipped 2026-07-30 and held 0 rows for every run on disk. A design
+   * lane's own spend is not tokens; it is generation calls and, for video,
+   * seconds delivered. Neither is money and neither may become money here.
+   *
+   * ZERO CALLS IS NOT RECORDED. A run with no design lane must not acquire an
+   * `image` row of 0 — `db.ts#listMeteredSpend`'s "empty means NOTHING
+   * RECORDED" is the reading, and "the lane ran and generated nothing" is
+   * already carried, loudly, by `designLaneFailureMessage`.
+   */
+  #recordMetered(runId: string, entry: ApiMeteredSpend): void {
+    if (entry.calls <= 0) return;
+    try {
+      this.#deps.store.recordMeteredSpend(runId, entry);
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the ${entry.kind} lane's spend could not be recorded: ${describeError(error)}`);
+    }
+  }
+
+  /**
+   * A pulse for as long as one call is in flight. Returns its own disarm.
+   *
+   * ARMED BEFORE THE AWAIT AND CLEARED IN A `finally` — the shape is the whole
+   * point and is argued in {@link seatHeartbeatLine}. The disarm is idempotent
+   * (`clearInterval` on a cleared handle is a no-op) so a caller may disarm on
+   * more than one path without a guard.
+   *
+   * `unref()` SO THE PULSE CANNOT KEEP A PROCESS ALIVE. A `setInterval` is a
+   * live handle to Node's event loop; a bug that lost the disarm would turn a
+   * missing `clearInterval` into a server that will not shut down, which is a
+   * worse failure than the silence this closes. Unref'd, the worst case is a
+   * timer that stops being serviced at exit.
+   */
+  #armHeartbeat(runId: string, label: string): () => void {
+    const every = seatHeartbeatIntervalMs(this.#deps.env);
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      this.#emitLog(runId, "info", seatHeartbeatLine(label, Date.now() - startedAt));
+    }, every);
+    timer.unref();
+    return () => {
+      clearInterval(timer);
+    };
+  }
+
+  /**
+   * @param seat which seat the provider was answering, or null when the call
+   * site cannot say. IT IS ON THE WIRE BECAUSE THE ROWS WERE OTHERWISE ANONYMOUS:
+   * run `a913c871` recorded seven `rate_limit` frames across an 84-minute phase
+   * that ran two different seats, and nothing in the record said which seat each
+   * belonged to — so the one instrument that fired during the black box could not
+   * even mark the boundary between authoring and auditing. The closures already
+   * knew; this stops throwing it away one line later.
+   */
+  #noteRateLimit(runId: string, state: RateLimitState, seat: ApiSpendSeat | null = null): void {
     this.#deps.store.updateRun(runId, {
       rateLimited: state.limited,
       rateLimitRetryAfterSec: state.retryAfterSec,
@@ -5710,6 +6550,7 @@ export class Orchestrator {
       type: "rate_limit",
       limited: state.limited,
       retryAfterSec: state.retryAfterSec,
+      seat,
     });
     if (state.limited) {
       // THE ONE WRITER OF `#lastRefusal`, GATED ON `limited` — read that map's
@@ -5998,10 +6839,16 @@ export class Orchestrator {
     this.#emitLog(
       runId,
       "info",
+      // THE SENTENCE NO LONGER CLAIMS THE INSTANT CAME FROM THE PROVIDER. It
+      // read "That instant is the provider's own reported reset" until
+      // 2026-08-09, which was true of every wait this code could then arm.
+      // `recovery.ts` now also arms a wait for a refusal that reported NO
+      // instant, and `decision.reason` is where that is said — so this line
+      // stops asserting a provenance it does not know and leaves the claim to
+      // the one place that does.
       `automatic resume armed: this run restarts itself in ` +
         `${String(Math.round(decision.delayMs / 60_000))} min (${decision.firesAt}). ${decision.reason} ` +
-        `That instant is the provider's own reported reset, not a verified one; a refusal on the way back ` +
-        `parks the run again.`,
+        `Nothing here verified that the window reopened; a refusal on the way back parks the run again.`,
     );
     const timer = setTimeout(() => {
       this.#rateLimitTimers.delete(runId);
@@ -6506,6 +7353,150 @@ export function seatProgressLine(label: string, progress: SeatProgress): string 
   if (excerpt.length === 0) return head;
   const full = `${head}: “${excerpt}”`;
   return laneNeutralLogText(full) ? full : head;
+}
+
+/* ---- the spec phase's own three rows -------------------------------- */
+
+/**
+ * What the spec phase cost when it produced NO suite.
+ *
+ * THE FAILURE PATH'S ONLY COST ROW, AND IT IS DELIBERATELY NOT THE SUCCESS
+ * PATH'S. See the `finally` in `#specPhase`: `spec seat — …` and `audit seat — …`
+ * are folded by `graph.ts` into "the author stage finished" and "the audit stage
+ * finished", so reusing them here would draw a completed pipeline over a phase
+ * that died. Both seats' numbers are still reported, in one row, in words the
+ * lane does not recognise.
+ *
+ * ONE ROW RATHER THAN TWO because there is one fact: the phase stopped, and this
+ * is what it took to get nowhere. `describeTokens` renders `0 call(s)` happily,
+ * so a death before the first dispatch reads as exactly that rather than being
+ * silently dropped — which is the difference between "we did not pay" and "we
+ * did not look".
+ */
+export function specPhaseCostLine(spec: TokenTotals, audit: TokenTotals): string {
+  return (
+    "the spec phase stopped without a sealed acceptance suite, and it was not free — " +
+    `writing: ${describeTokens(spec)}; checking: ${describeTokens(audit)}`
+  );
+}
+
+/**
+ * How long between heartbeats while a seat call is in flight.
+ *
+ * SIXTY SECONDS, and the number is chosen against a measured silence rather than
+ * a taste. Run `a913c871` sat in `spec` for 84m31s and emitted six rows, all
+ * `rate_limit` telemetry; the owner could not tell a working seat from a hung one
+ * and killed it an hour after the evidence to kill it existed. At this interval
+ * that phase would have produced ~84 rows — enough to be a pulse and few enough
+ * that the events table grows by a rounding error against a build's 32,000.
+ */
+export const SEAT_HEARTBEAT_INTERVAL_MS = 60_000;
+
+/** Override {@link SEAT_HEARTBEAT_INTERVAL_MS}. Milliseconds. A TEST SEAM. */
+export const SEAT_HEARTBEAT_INTERVAL_ENV = "DASHBOARD_SEAT_HEARTBEAT_MS";
+
+/** Same shape as {@link silenceWarnMin}: a bad value is the default, not a throw. */
+export function seatHeartbeatIntervalMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number.parseInt((env[SEAT_HEARTBEAT_INTERVAL_ENV] ?? "").trim(), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : SEAT_HEARTBEAT_INTERVAL_MS;
+}
+
+/**
+ * The heartbeat row.
+ *
+ * ─── WHY THIS EXISTS WHEN `seatProgressLine` ALREADY DOES ───
+ *
+ * They watch different things and only one of them has ever fired. The progress
+ * row is DELTA-DRIVEN: `SeatProgressCoalescer.push(delta)` returns early on an
+ * empty delta and `subscription-caller.ts` contains no timer at all, so the row
+ * exists only while the model is emitting text that reaches this process.
+ * Measured 2026-08-10 across the whole database: **0 rows** matching
+ * `%still working%` in 1,816 events over 5 runs, including a plan call that ran
+ * 72.75 s for 5,046 output tokens. Whatever suppresses the deltas, a channel
+ * that has never carried a row is not a liveness channel.
+ *
+ * THIS ONE DEPENDS ON THE CALL BEING IN FLIGHT AND ON NOTHING ELSE. It is a
+ * `setInterval` armed by the orchestrator before the await and cleared in a
+ * `finally`, so its failure mode is "the run stopped" rather than "the model went
+ * quiet" — which is the whole distinction the owner sat through 84 minutes unable
+ * to make.
+ *
+ * IT CLAIMS ONLY WHAT A TIMER CAN KNOW. "This phase started N ago and has not
+ * returned" is a fact about this process. It does not say the seat is healthy, it
+ * does not say the model is writing, and it must never grow a sentence that does.
+ *
+ * LANE-NEUTRAL BY CONSTRUCTION AND BY TEST. The words deliberately avoid every
+ * phrase `graph.ts` folds — three of those patterns are unanchored, and a
+ * liveness row that flipped the author stage to `done` would be a display
+ * reporting work it never observed. `orchestrator.spec-spend.test.ts` folds the
+ * REAL output of this function against the REAL reducer.
+ *
+ * THE FILE NAME ABOVE WAS WRONG UNTIL 2026-08-10 and said
+ * `orchestrator.heartbeat.test.ts`, which does not exist and never did. A
+ * pointer to an absent test is the cheapest way there is to make a later reader
+ * believe a check exists when it does not — here the check is real, it simply
+ * lives under another name. If these assertions move again, move this line with
+ * them rather than leaving a name to be grepped for in vain.
+ */
+export function seatHeartbeatLine(label: string, elapsedMs: number): string {
+  return (
+    `${label} has been running for ${describeElapsed(elapsedMs)} and has not come back yet. ` +
+    "This row is a clock in the run service, not a report from the model: it says the call is " +
+    "still open, and nothing about whether it is making progress."
+  );
+}
+
+/**
+ * One row per seat call the authoring job dispatches, off the shared ceiling.
+ *
+ * ─── THE LADDER RUN `a913c871` CLIMBED IN THE DARK ───
+ *
+ * Three authoring attempts, each rejected by the bad-test audit on one field of
+ * the suite manifest, over 84 minutes. Every one of those boundaries left the
+ * product NO artefact: `attempts[]` reaches disk only through `freezeSuite`'s
+ * `authoringTrail`, which is called on success, and the thrown error carries the
+ * last attempt's problems as prose. The boundaries in the post-mortem were
+ * recovered from the Claude Code CLI's own session transcripts — keyed by the
+ * seat's working directory and tied to the run by grepping the ticket id. That is
+ * forensics outside the product.
+ *
+ * ─── WHY THE PURPOSE STRING IS THE RIGHT SOURCE, AND WHAT IT COSTS ───
+ *
+ * `spec-agent.ts` labels every ceiling check `suite-authoring <ticketId> attempt
+ * N` (`:918`) or `suite-audit <ticketId>` (`:1019`), and the ceiling emits a
+ * `precall_check` carrying it before each dispatch. So the attempt ordinal is
+ * ALREADY on this side of the package boundary and needs no `bakeoff` edit — which
+ * matters, because any `bakeoff/src` edit moves the sealed scorer's image digest
+ * and this one must not.
+ *
+ * WHAT IT CANNOT SAY, STATED RATHER THAN IMPLIED: it does not carry WHY the
+ * previous attempt was rejected. The findings live in `AuthoringAttempt` inside
+ * `bakeoff` and reach this process only on the success path. So attempt 2
+ * beginning is proof attempt 1 was refused and is silent on the reason; the row
+ * says that in those words instead of inventing a cause. Attaching the trail to
+ * the error is the digest-moving half and is filed as a handoff.
+ *
+ * A REPEATED ORDINAL IS A RETRY, NOT A DOUBLE COUNT. The 64k→128k truncation
+ * ladder re-dispatches inside the same attempt with the same purpose, so two rows
+ * can read "attempt 1". The call ordinal leads the row for exactly that reason.
+ */
+export function authoringLadderLine(call: number, purpose: string): string {
+  const audit = /^suite-audit\b/i.test(purpose);
+  const attempt = /\battempt (\d+)\b/i.exec(purpose);
+  if (audit) {
+    return (
+      `seat call ${String(call)} of this phase: the draft suite is going to the bad-test check. ` +
+      "A refusal here sends the whole draft back to be rewritten from scratch."
+    );
+  }
+  if (attempt === null || attempt[1] === "1") {
+    return `seat call ${String(call)} of this phase: a first draft of the test suite is being written.`;
+  }
+  return (
+    `seat call ${String(call)} of this phase: draft ${attempt[1]} of the test suite is being written, ` +
+    `so draft ${String(Number(attempt[1]) - 1)} was refused. The reason is not carried on this row — ` +
+    "the refusal findings stay inside the authoring library until a suite is sealed."
+  );
 }
 
 /**

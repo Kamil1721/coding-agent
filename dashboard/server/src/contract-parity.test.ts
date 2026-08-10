@@ -1349,22 +1349,30 @@ test("CONTRACT: the client's canvas fields carry the server's types, kind and st
   );
 });
 
+// THE `todo` OPTION IS GONE, AND ITS REMOVAL IS THE FIX. This is the one place
+// the optional `stages` field can be dropped without a compile error:
+// `use-run-graph.ts` rebuilds the SNAPSHOT field by field, and the snapshot is the
+// only thing a FINISHED run ever gets — the socket is never opened for one
+// (`use-run-stream.ts:820-822`). So the lane would fold correctly on the server,
+// serialise correctly, arrive correctly, and be discarded one line before it
+// reached the canvas, on exactly the runs the owner opens after the fact.
+//
+// WHY IT WAS MARKED, AND WHY THAT EXPIRED. The mark was a handoff: `use-run-graph.ts`
+// belonged to another wave, and a red suite blocks every agent in this tree. The
+// handoff was honoured — `dashboard/src/lib/use-run-graph.ts` now reads
+// `stages: data.stages ?? [],` inside the snapshot dispatch — but the option was
+// left behind. node's runner counts a `todo` under `ℹ todo`, separately from pass
+// and fail, so from the moment the blocker shipped this check COULD NOT FAIL THE
+// SUITE. It guarded nothing while reading as though it did, which is the exact
+// shape of defect this file exists to catch. Removed 2026-08-09; the suite now
+// reports `todo 0` for this file, which is the observable proof.
+//
+// PROVEN ABLE TO GO RED, 2026-08-09: the client tree was copied to a scratch
+// directory with the `stages:` line deleted and CLIENT_GRAPH_HOOK pointed at the
+// copy — the assertion below fired with its own message. The source file was never
+// written to; other agents are in this tree.
 test(
   "CONTRACT: the browser's snapshot carries the pre-build lane",
-  // MARKED `todo`, AND THE MARK IS THE HANDOFF. This is the one place the optional
-  // `stages` field can be dropped without a compile error: `use-run-graph.ts`
-  // rebuilds the SNAPSHOT field by field, and the snapshot is the only thing a
-  // FINISHED run ever gets — the socket is never opened for one
-  // (`use-run-stream.ts:820-822`). So the lane would fold correctly on the server,
-  // serialise correctly, arrive correctly, and be discarded one line before it
-  // reached the canvas, on exactly the runs the owner opens after the fact.
-  //
-  // It is not fixed here because `use-run-graph.ts` belongs to the wave that
-  // renders this, and a red suite blocks every agent working in this tree. It is
-  // not deleted either: an unwatched hole is how the last four of these shipped.
-  // Whoever adds `stages: data.stages ?? []` at that line deletes this option and
-  // the test starts guarding it.
-  { todo: "wave 4 owns use-run-graph.ts; flip the field to required in the same commit" },
   () => {
     const snapshot = region(
       readClient(CLIENT_GRAPH_HOOK),

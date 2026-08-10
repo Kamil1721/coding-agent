@@ -21,13 +21,22 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { BAKEOFF_SCHEMA_VERSION } from "bakeoff/dist/contracts.js";
-import type { AcceptanceSuite } from "bakeoff/dist/contracts.js";
+import type { AcceptanceGate, AcceptanceSuite } from "bakeoff/dist/contracts.js";
 import { JUDGE_SEAT, SPEC_SEAT } from "bakeoff/dist/config.js";
 import { acceptanceSuiteDigest, sha256Hex } from "bakeoff/dist/hash.js";
 import { freezeSuite, verifySuiteIntact } from "bakeoff/dist/spec-freeze.js";
+import { WORKSPACE } from "bakeoff/dist/runner.js";
 import { criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
 import type { SuiteDraft } from "bakeoff/dist/spec-types.js";
-import type { ApiErrorResponse, ApiScreenshot, ApiTokens, GraphSseEvent, RunDetail } from "./api-types.js";
+import type {
+  ApiErrorResponse,
+  ApiScreenshot,
+  ApiSeatSpend,
+  ApiTokens,
+  GraphSseEvent,
+  RunDetail,
+} from "./api-types.js";
+import { GATE_MAX_ATTEMPTS_ENV } from "./gate-fix-loop.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { MOTION_BAR_ENV, buildOptions } from "./builders/claude-builder.js";
@@ -590,6 +599,34 @@ interface FakeBuilderOptions {
   readonly limitCalls?: readonly number[];
   /** Seconds until the reported window reopens. Small, so a test can wait it out. */
   readonly limitRetryAfterSec?: number;
+  /**
+   * WRITE NO `.bakeoff/self-report.json` — the builder that never says it
+   * finished.
+   *
+   * Default `false`, which means this fixture WRITES one, with
+   * `status: "done"`. It did not until 2026-08-09, and the omission was not
+   * neutral: `build-prompt.ts` instructs every real builder to write that file
+   * ("When you are finished, or if you cannot finish, write …"), the one passing
+   * run on disk has `agent_declared_done = 1`, and a fixture that never wrote it
+   * meant every orchestrator test drove the NOT-DECLARED-DONE path while
+   * appearing to drive a normal build. That is precisely why nothing noticed
+   * that the gate opened on a run which had declared nothing.
+   *
+   * Set it to drive the arm the guard refuses.
+   */
+  readonly declaresDone?: boolean;
+  /**
+   * WRITE A SELF-REPORT THE READER CANNOT PARSE — `…052c6e02`'s actual file.
+   *
+   * That run wrote 7,930 bytes with `"status": "complete"`, a word the build
+   * prompt does not offer and `readSelfReport` does not accept, so it reads back
+   * as `null` — indistinguishable from no file at all. Of the two runs on this
+   * machine that reached the end of a build, ONE used a word the reader knows.
+   * A gate guard keyed on `declaredDone` would therefore refuse to score half of
+   * them, so the discrimination between "no file" and "an unreadable file" has
+   * to be a fixture arm, not an argument.
+   */
+  readonly selfReportStatus?: string;
 }
 
 class FakeBuilder implements SubscriptionBuilder {
@@ -645,6 +682,22 @@ class FakeBuilder implements SubscriptionBuilder {
     });
 
     const design = request.prompt.startsWith("DESIGN LANE — art direction");
+    // THE SELF-REPORT, ON THE BUILD SEGMENT, THE WAY THE PROMPT ASKS FOR IT.
+    // Not on the DESIGN segment: `build-prompt.ts` asks for it at the end of the
+    // build, and writing it in the design lane would declare a run done before
+    // the thing being declared exists.
+    if (!design && this.#options.declaresDone !== false) {
+      const reportPath = join(this.#options.workspace(), WORKSPACE.selfReport);
+      mkdirSync(dirname(reportPath), { recursive: true });
+      writeFileSync(
+        reportPath,
+        JSON.stringify({
+          status: this.#options.selfReportStatus ?? "done",
+          reason: "the fake builder finished its segment",
+        }),
+        "utf8",
+      );
+    }
     if (design) {
       const emptyRefs = this.#options.emptyRefs;
       if (emptyRefs !== undefined) this.#runEmptyRefsSegment(request, emptyRefs);
@@ -4648,5 +4701,740 @@ test("visualGateInputFor: the fence root, the capture directory, and blank captu
     assert.deepEqual(visualGateInputFor("run-x", paths, runPaths, null).captures, [], "and no container is no captures");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * 5b — THE GATE DOES NOT OPEN ON A BUILD THAT NEVER SAID IT WAS FINISHED
+ *
+ * `run-2026-07-30T20-16-40-242Z-052c6e02` reached the gate with
+ * `agent_declared_done = 0`, was scored, and published a 13-point "DID NOT
+ * PASS" with three BLOCKING findings. That verdict cannot be reproduced:
+ * re-scoring the same workspace today passes GATE:boot and goes 28/28 green,
+ * and 2 files / 1,123,061 bytes that were staged on 2026-07-31 are not in the
+ * tree any more. It is the one unreproducible published verdict this project
+ * has produced, and nothing on the gate path checked that the tree had stopped
+ * moving.
+ *
+ * WHY BOTH ARMS ARE HERE. A test that only drives the refusal is satisfied by
+ * an orchestrator that never gates anything — which is this repository's
+ * signature defect, a check that can only observe one outcome. So the SAME
+ * fixture, the SAME injected gate and the SAME assertions run twice, differing
+ * in one boolean: whether the fake builder writes `.bakeoff/self-report.json`.
+ * The gate is counted, not inferred.
+ * ---------------------------------------------------------------------- */
+
+interface QuiescenceRun {
+  readonly gateCalls: number;
+  /**
+   * What `Orchestrator.resume` answered for this run once it had stopped, or
+   * `null` if it was never asked because the run had not reached a terminal
+   * status. This is the field that keeps the refusal's remediation sentence
+   * honest — see the test that reads it.
+   */
+  readonly resumeAccepted: boolean | null;
+  readonly status: string;
+  readonly heldOutPass: boolean | null;
+  readonly falseFinish: boolean | null;
+  readonly failureReason: string | null;
+  readonly log: string;
+  readonly verdict: string;
+}
+
+/**
+ * One run to a stop, with a gate that WOULD score it green.
+ *
+ * The injected gate is deliberately generous: `heldOutPass: true`, no
+ * violations, no infrastructure errors. If the guard is absent, the run does
+ * not merely reach the gate — it publishes a PASS about a tree nothing declared
+ * finished, which is the same defect as 052c6e02's published FAIL, in the
+ * direction that is harder to notice.
+ */
+async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): Promise<QuiescenceRun> {
+  const dir = mkdtempSync(join(tmpdir(), "dash-quiesce-"));
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  const paths = resolvePaths({ DASHBOARD_HOME: dir });
+  ensureDirs(paths);
+  const store = RunStore.open(paths.database);
+  const bus = new RunEventBus(store);
+  const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
+  const catalog = new FakeCatalog(auth, {}, async () => []);
+  const preview = new PreviewHost();
+  const runId = "run-quiesce";
+  const ticketText = "Build a portfolio site. No design lane.";
+  const ticket = ticketFromText(ticketText);
+  const builder = new FakeBuilder({
+    workspace: () => runPathsFor(paths, runId).workspace,
+    pngCount: 0,
+    segmentTokens: [],
+    writeManifest: false,
+    animateRefs: false,
+    declaresDone,
+    ...(selfReportStatus === undefined ? {} : { selfReportStatus }),
+  });
+
+  let gateCalls = 0;
+  const orchestrator = new Orchestrator({
+    store,
+    bus,
+    paths,
+    catalog,
+    auth,
+    preview,
+    env: { HOME: home },
+    makeBuilder: () => builder,
+    designRun: async () => ({ code: 0, stderr: "" }),
+    designCanWrite: () => true,
+    makeGate: async () => ({
+      scorerImageDigest: "sha256:" + "b".repeat(64),
+      score: async (run, suite) => {
+        gateCalls += 1;
+        return {
+          schemaVersion: BAKEOFF_SCHEMA_VERSION,
+          runId: run.runId,
+          ticketId: run.ticketId,
+          acceptanceSuiteSha256: suite.sha256,
+          heldOutPass: true,
+          criteriaResults: suite.criteria.map((criterion) => ({
+            criterionId: criterion.id,
+            passed: true,
+            tier: criterion.tier,
+            detail: "the injected gate says yes to everything",
+            evidenceRefs: [],
+          })),
+          falseFinish: false,
+          agentDeclaredDone: run.agentDeclaredDone,
+          scoredAt: new Date().toISOString(),
+          scorerImageDigest: "sha256:" + "b".repeat(64),
+          suiteExecution: {
+            exitCode: 0,
+            durationMs: 1,
+            testsTotal: 2,
+            testsPassed: 2,
+            testsFailed: 0,
+            stdoutPath: null,
+            stderrPath: null,
+            reportProblem: null,
+          },
+          protectedPathViolations: [],
+          harnessErrors: [],
+        } as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>;
+      },
+    }),
+  });
+
+  freezeFor(ticketText, paths.acceptance);
+  store.createRun({
+    runId,
+    ticketId: ticket.id,
+    ticketTitle: "Portfolio",
+    ticketText,
+    ticketSha256: ticket.sha256,
+    modelId: "default",
+    provider: "anthropic",
+    deploy: false,
+    startedAt: new Date().toISOString(),
+    queuePosition: 1,
+    designLock: null,
+    interactive: false,
+  });
+
+  try {
+    orchestrator.pump();
+    for (const deadline = Date.now() + 30_000; ; ) {
+      const row = store.getRun(runId);
+      if (row !== null && (isTerminal(row.status) || row.status === "awaiting_input")) break;
+      if (Date.now() > deadline) throw new Error(`the run never settled (${store.getRun(runId)?.status ?? "gone"})`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const row = store.getRun(runId);
+    const verdictPath = join(runPathsFor(paths, runId).results, "verdict.md");
+    // WHETHER THE SERVER WOULD ACCEPT THE REMEDIATION ITS OWN LOG NAMES.
+    // Asked here, inside the harness, because `resume` needs the live
+    // orchestrator and the `finally` below shuts it down. Guarded on
+    // `isTerminal` so that an arm which PARKED is not silently re-executed by
+    // the act of measuring it — none of the three arms park today, and this
+    // keeps that from becoming a trap if one ever does.
+    const resumeAccepted = row !== null && isTerminal(row.status) ? orchestrator.resume(runId) : null;
+    return {
+      gateCalls,
+      resumeAccepted,
+      status: row?.status ?? "gone",
+      heldOutPass: row?.heldOutPass ?? null,
+      falseFinish: row?.falseFinish ?? null,
+      failureReason: row?.failureReason ?? null,
+      log: store
+        .eventsSince(runId, 0)
+        .map((entry) => (entry.event.type === "log" ? entry.event.text : ""))
+        .join(" | "),
+      verdict: existsSync(verdictPath) ? readFileSync(verdictPath, "utf8") : "",
+    };
+  } finally {
+    await orchestrator.shutdown();
+    store.close();
+    removeDesignTree(dir);
+  }
+}
+
+test("5b: a builder that never wrote a self-report is NOT scored, and no verdict is published", async () => {
+  const run = await quiescenceRun(false);
+
+  assert.equal(
+    run.gateCalls,
+    0,
+    "the sealed gate was opened on a tree nothing had declared finished — this is 052c6e02, and the " +
+      "score it produces cannot be reproduced",
+  );
+  assert.equal(run.heldOutPass, null, "a gate that never ran must never be indistinguishable from one that passed");
+  assert.equal(run.falseFinish, null, "a false finish is `declared done AND not green`; this run declared nothing");
+  assert.match(String(run.failureReason), /never wrote its self-report/i);
+  assert.match(run.log, /the sealed gate was NOT run/i, "an unattended run has to say why it stopped short");
+  // THE EXISTING HONEST OUTCOME, NOT A NEW ONE. `run-report.ts` renders this
+  // page for every run that stopped before the gate produced a result.
+  assert.match(run.verdict, /NO VERDICT/i);
+  assert.match(run.verdict, /This run ended before the sealed gate produced a result/);
+  assert.doesNotMatch(run.verdict, /DID NOT PASS/, "inventing a failing verdict is B1 pointed the other way");
+});
+
+test("5b: a self-report the reader CANNOT PARSE still reaches the gate — 052c6e02's real file", async () => {
+  /*
+   * THE ARM THE FIRST DRAFT OF THIS GUARD GOT WRONG, AND THE BASE RATE THAT
+   * CONDEMNS IT.
+   *
+   * `readSelfReport` returns `null` for an absent file, for a file that will not
+   * parse, AND for a file whose `status` is a word it does not know. Keying the
+   * gate guard on `declaredDone` therefore refuses all three. `…052c6e02` wrote
+   * 7,930 bytes with `"status": "complete"` — not one of `done` / `blocked` /
+   * `incomplete` — so it reads back as `null`, and of the TWO runs on this
+   * machine that reached the end of a build, exactly one used a word the reader
+   * knows. On that base rate a `declaredDone` guard would deny a verdict to
+   * about half of the owner's 2-12 h unattended runs, including runs whose
+   * artefact was finished. That is a worse failure than the one 5b prevents,
+   * because the owner cannot even see that the tree was scoreable.
+   *
+   * A builder that wrote a report reached the end of its turn, whatever word it
+   * chose. That is what the guard tests, and this is the control that pins it.
+   */
+  const run = await quiescenceRun(true, "complete");
+
+  assert.equal(run.gateCalls, 1, "a builder that wrote a report reached the end of its turn and must be scored");
+  assert.equal(run.heldOutPass, true, "and the gate's answer must reach the row");
+  assert.doesNotMatch(run.log, /the sealed gate was NOT run/i);
+  // AND THE OTHER FIELD IS UNMOVED. `agentDeclaredDone` still means
+  // `status === "done"` exactly — `falseFinish` is derived from it and
+  // `run.json` carries it into the scorer, so a weaker gate predicate must not
+  // leak into it.
+  assert.match(run.log, /self-report could not be read/i, "the run says the file was there and unreadable");
+});
+
+test("5b: the refusal names a remediation THE SERVER WILL ACCEPT — the log sentence is the only instruction", async () => {
+  /*
+   * THE DEFECT THIS CLOSES. The refusal used to end "Resume this run to let the
+   * builder carry on, or read the build log for why it stopped." The same block
+   * calls `#finish(runId, "failed", …)`; `db.ts:497` makes `failed` terminal;
+   * `Orchestrator.resume` refuses a terminal row on its FIRST line, which
+   * `http.ts` turns into `409 not_resumable`. So the one sentence an unattended
+   * owner gets at hour 11 instructed him to press a button that answers 409.
+   *
+   * WHY THIS IS A TEXT FIX AND NOT A STATE FIX. Making the sentence true the
+   * other way — parking instead of finishing — changes `isTerminal` on a path
+   * that has never run unattended, on the run the owner is about to pay 2-12
+   * hours of quota for. That is carried forward deliberately. What is fixed here
+   * is the lie.
+   *
+   * IT ASSERTS BOTH HALVES, WHICH IS THE POINT. Asserting only "the sentence
+   * changed" would go green on any rewording, including a second wrong one; and
+   * asserting only "resume is refused" would go green today and stay green if
+   * the text regressed. The pair pins the sentence TO the state, so whichever of
+   * the two moves next, this fails.
+   */
+  const run = await quiescenceRun(false);
+
+  // 1. THE STATE. This is what the server does, measured, not read off db.ts.
+  assert.equal(run.status, "failed");
+  assert.equal(
+    run.resumeAccepted,
+    false,
+    "resume() accepted this run — if that is now true the sentence below should go back to saying so",
+  );
+
+  // 2. THE SENTENCE. It must not name the refused remedy...
+  const refusal = run.log
+    .split(" | ")
+    .find((line) => /the sealed gate was NOT run/i.test(line));
+  assert.ok(refusal !== undefined, "the refusal must be on the run's own stream at all");
+  assert.doesNotMatch(
+    refusal,
+    /resume this run/i,
+    "the log tells the owner to resume a run the server answers 409 to",
+  );
+  // ...and it must name one that works. A new run over the same ticket is
+  // always accepted (`POST /api/runs` does not consult the old row), and the
+  // workspace is left on disk by this path — nothing in the guard removes it —
+  // so "the tree it built is still on disk" is a checkable claim, not a comfort.
+  assert.match(refusal, /start a new run/i, "the refusal names no action the owner can actually take");
+  assert.match(refusal, /still on disk/i, "the owner is not told his work survived");
+});
+
+test("5b NEGATIVE CONTROL: the same run WITH a self-report is scored and does publish a verdict", async () => {
+  // Without this, the assertions above are satisfied by an orchestrator that
+  // never gates at all — which would pass a test and fail the product.
+  const run = await quiescenceRun(true);
+
+  assert.equal(run.gateCalls, 1, "a build that declared itself done must still reach the sealed gate");
+  assert.equal(run.heldOutPass, true, "and the gate's answer must still reach the row");
+  assert.equal(run.status, "passed");
+  assert.doesNotMatch(run.log, /the sealed gate was NOT run/i);
+});
+
+/* -------------------------------------------------------------------------
+ * B5 — WHAT A RUN SPENDS, AND THE DIRECTION IT MOVES IN
+ *
+ * TWO DEFECTS THAT HAPPEN TO SIT NEXT TO EACH OTHER.
+ *
+ * 1. THE MERGE. `#sink` — the fix round's event sink — ASSIGNED the token total
+ *    onto the run row. The total it is handed is cumulative only WITHIN the
+ *    call, so the first token event of the first fix round overwrote everything
+ *    the spec, design and build phases had accumulated: a run's reported spend
+ *    went DOWN the moment it started fixing. `#buildPhase` captured `carried`
+ *    before its segment and merged; this one did not.
+ *
+ * 2. THE LEDGER. `db.ts#recordSeatSpend` and `#recordMeteredSpend` landed on
+ *    2026-07-30 with the tables, the `spend.md` renderer and the client mirror,
+ *    and had ZERO production callers. `seat_spend` and `metered_spend` hold 0
+ *    rows across all four runs on disk. The measured cost: one live run spent
+ *    525,471 output tokens across four seats and reported 88,529 — the
+ *    builder's — because the run row holds one total and every seat overwrote
+ *    it. The other 436,942 went to a log line.
+ *
+ * THE NUMBERS ARE CHOSEN SO THE DIRECTION IS UNAMBIGUOUS. The build segment
+ * reports 500,000 input tokens and the fix round reports 7. Under assignment the
+ * run ends at 7; under a merge it ends at 500,007. There is no arrangement of
+ * those two figures that both hypotheses produce.
+ *
+ * NO MONEY IS ASSERTED ANYWHERE HERE. `costUsd: null` is a deliberate invariant
+ * — there is no price table for a subscription call and inventing one is
+ * forbidden — so the ledger is checked in tokens and call counts only.
+ * ---------------------------------------------------------------------- */
+
+interface SpendRun {
+  readonly rowTokens: ApiTokens | null;
+  readonly seats: readonly ApiSeatSpend[];
+  readonly fixRounds: number;
+}
+
+/** One run that gates RED once, fixes once, and stops. */
+async function spendRun(): Promise<SpendRun> {
+  const dir = mkdtempSync(join(tmpdir(), "dash-spend-"));
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  const paths = resolvePaths({ DASHBOARD_HOME: dir });
+  ensureDirs(paths);
+  const store = RunStore.open(paths.database);
+  const bus = new RunEventBus(store);
+  const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
+  const catalog = new FakeCatalog(auth, {}, async () => []);
+  const preview = new PreviewHost();
+  const runId = "run-spend";
+  // A CLI TICKET, SO THERE IS EXACTLY ONE BUILD SEGMENT. `designSurfaceGate`
+  // runs the DESIGN lane for every `web-ui` ticket, and a two-segment build
+  // puts two contributions on the `builder` row — correct behaviour, and it
+  // would make the arithmetic below ambiguous about which seat added what. One
+  // segment, one fix round, two distinguishable numbers. (Measured: with the
+  // web-ui ticket this fixture started on, `seat_spend` came back as a single
+  // `builder` row of 500,007 with `callCount: 2` and no `fix` row at all,
+  // because the fix round had not run — `DASHBOARD_GATE_MAX_ATTEMPTS=1` means
+  // one gate attempt and no fixing. Both faults were in the fixture.)
+  const ticketText = "Build a command line tool that prints a report to stdout.";
+  const ticket = ticketFromText(ticketText);
+  const builder = new FakeBuilder({
+    workspace: () => runPathsFor(paths, runId).workspace,
+    pngCount: 0,
+    // Call 0 is the BUILD segment; call 1 is the fix round. 500,000 then 7.
+    segmentTokens: [500_000, 7],
+    writeManifest: false,
+    animateRefs: false,
+  });
+
+  // THE GATE'S RED IS ON DISK, NOT IN THE INJECTED RECORD. `#gatePhase` reads
+  // the container result the scorer wrote (`#readContainerResult`) and the loop
+  // triages off THAT, so a failing `ScoreRecord` alone would gate green and
+  // never run a fix round. `GATE:build` classifies `build`, which routes to
+  // `debugger` — an agent in every shortlist, so the fix is permitted.
+  const live = liveResultPath(paths, runId);
+  mkdirSync(dirname(live), { recursive: true });
+  writeFileSync(
+    live,
+    JSON.stringify(
+      containerFixture({
+        ticketId: ticket.id,
+        tier0: [tier0Fixture({ id: "GATE:build", outcome: "fail", detail: "error TS2345: nope", exitCode: 1 })],
+      }),
+    ),
+    "utf8",
+  );
+
+  const orchestrator = new Orchestrator({
+    store,
+    bus,
+    paths,
+    catalog,
+    auth,
+    preview,
+    env: { HOME: home, [GATE_MAX_ATTEMPTS_ENV]: "2" },
+    makeBuilder: () => builder,
+    designRun: async () => ({ code: 0, stderr: "" }),
+    designCanWrite: () => true,
+    makeGate: async () => ({
+      scorerImageDigest: "sha256:" + "c".repeat(64),
+      score: async (run, suite) =>
+        ({
+          schemaVersion: BAKEOFF_SCHEMA_VERSION,
+          runId: run.runId,
+          ticketId: run.ticketId,
+          acceptanceSuiteSha256: suite.sha256,
+          heldOutPass: false,
+          criteriaResults: suite.criteria.map((criterion) => ({
+            criterionId: criterion.id,
+            passed: false,
+            tier: criterion.tier,
+            detail: "the injected gate says no",
+            evidenceRefs: [],
+          })),
+          falseFinish: true,
+          agentDeclaredDone: run.agentDeclaredDone,
+          scoredAt: new Date().toISOString(),
+          scorerImageDigest: "sha256:" + "c".repeat(64),
+          suiteExecution: {
+            exitCode: 1,
+            durationMs: 1,
+            testsTotal: 2,
+            testsPassed: 1,
+            testsFailed: 1,
+            stdoutPath: null,
+            stderrPath: null,
+            reportProblem: null,
+          },
+          protectedPathViolations: [],
+          harnessErrors: [],
+        }) as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>,
+    }),
+  });
+
+  freezeFor(ticketText, paths.acceptance);
+  store.createRun({
+    runId,
+    ticketId: ticket.id,
+    ticketTitle: "Portfolio",
+    ticketText,
+    ticketSha256: ticket.sha256,
+    modelId: "default",
+    provider: "anthropic",
+    deploy: false,
+    startedAt: new Date().toISOString(),
+    queuePosition: 1,
+    designLock: null,
+    interactive: false,
+  });
+
+  try {
+    orchestrator.pump();
+    for (const deadline = Date.now() + 30_000; ; ) {
+      const row = store.getRun(runId);
+      if (row !== null && (isTerminal(row.status) || row.status === "awaiting_input")) break;
+      if (Date.now() > deadline) throw new Error(`the run never settled (${store.getRun(runId)?.status ?? "gone"})`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return {
+      rowTokens: store.getRun(runId)?.tokens ?? null,
+      seats: store.listSeatSpend(runId),
+      // Call 0 is the build segment; anything after it is a fix round.
+      fixRounds: builder.calls.length - 1,
+    };
+  } finally {
+    await orchestrator.shutdown();
+    store.close();
+    removeDesignTree(dir);
+  }
+}
+
+test("B5: a fix round ADDS to the run's tokens — it does not replace them", async () => {
+  const run = await spendRun();
+
+  assert.equal(run.fixRounds, 1, "the fixture must actually reach a fix round, or this measures nothing");
+  assert.notEqual(run.rowTokens, null);
+  assert.equal(
+    run.rowTokens?.inputTokens,
+    500_007,
+    "the run's reported spend went DOWN when it started fixing: the fix round's sink ASSIGNED its own " +
+      "within-call total over everything the build had accumulated",
+  );
+});
+
+test("B5: every seat that spent something has a row on the ledger, in tokens and never in money", async () => {
+  const run = await spendRun();
+  const seatOf = (seat: string): ApiSeatSpend | undefined => run.seats.find((row) => row.seat === seat);
+
+  assert.ok(run.seats.length > 0, "seat_spend has held 0 rows for every run ever made on this machine");
+  assert.equal(seatOf("builder")?.tokens.inputTokens, 500_000, "the builder segment's own contribution");
+  assert.equal(seatOf("builder")?.callCount, 1);
+  assert.equal(seatOf("fix")?.tokens.inputTokens, 7, "and the fix round's, attributed separately rather than summed");
+  assert.equal(seatOf("fix")?.callCount, 1);
+  // ATTRIBUTION IS THE POINT. One number for the run is what the row already
+  // held; the ledger exists so "which seat spent it" is answerable.
+  assert.notEqual(seatOf("builder")?.tokens.inputTokens, seatOf("fix")?.tokens.inputTokens);
+  for (const row of run.seats) {
+    assert.equal(row.provider, "anthropic");
+    assert.ok(!Object.hasOwn(row as object, "costUsd"), "a subscription call has no price and none may be invented");
+  }
+});
+
+test("B5: the ledger ADDS across rounds rather than overwriting — the defect it exists to close", async () => {
+  // `recordSeatSpend` is `ON CONFLICT DO UPDATE SET x = x + excluded.x`. Two
+  // contributions from the same seat on the same model must land on ONE row
+  // holding their sum, or the ledger reproduces one level down the exact defect
+  // the run row had.
+  const dir = mkdtempSync(join(tmpdir(), "dash-ledger-"));
+  const paths = resolvePaths({ DASHBOARD_HOME: dir });
+  ensureDirs(paths);
+  const store = RunStore.open(paths.database);
+  try {
+    for (const inputTokens of [1_000, 10]) {
+      store.recordSeatSpend("run-add", {
+        seat: "builder",
+        modelId: "claude-opus-5[1m]",
+        totals: { ...zeroTokens("anthropic"), inputTokens, callCount: 1 },
+      });
+    }
+    const rows = store.listSeatSpend("run-add");
+    assert.equal(rows.length, 1, "one seat on one model is one row");
+    assert.equal(rows[0]?.tokens.inputTokens, 1_010, "1000 then 10 must be 1010, not 10");
+    assert.equal(rows[0]?.callCount, 2);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("B5: the DESIGN lane's image generations reach the metered ledger, in calls and never in money", async () => {
+  // METERED SPEND IS THE OTHER ZERO-CALLER WRITER. `recordMeteredSpend` and the
+  // `metered_spend` table shipped 2026-07-30 with the `spend.md` renderer and
+  // held 0 rows for every run on disk. The design lane's own spend is not
+  // tokens — it is generation calls — and `imageCalls` was already counted here
+  // for `classifyDesignLane` and then dropped.
+  const h = await designRun({ designLock: "auto", pngCount: 4 });
+  try {
+    const metered = h.store.listMeteredSpend(h.runId);
+    const image = metered.find((row) => row.kind === "image");
+    assert.notEqual(image, undefined, "metered_spend has held 0 rows for every run ever made on this machine");
+    assert.ok((image?.calls ?? 0) > 0, "the lane generated stills; the ledger says how many calls it took");
+    assert.equal(
+      image?.deliveredSecondsFloor,
+      null,
+      "an image call is not a duration, and `0` would report zero seconds of video for a run with no video",
+    );
+    assert.ok(
+      !Object.hasOwn(image as object, "costUsd"),
+      "there is no image price table in this program and a made-up rate is a fabricated bill",
+    );
+    // AND THE VIDEO ROW MUST NOT EXIST. No `gemini-video.sh` ran here, so a
+    // `video` row would be a measurement of something that never happened —
+    // the same defect as an `image` row of 0.
+    assert.equal(metered.find((row) => row.kind === "video"), undefined);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * THE CEILING GUARD, THROUGH A RUN — `specModelCeilingWarning` had seven tests
+ * and no caller.
+ *
+ * `orchestrator.spec-model.test.ts` proves the FUNCTION answers correctly for a
+ * 32k model, a 64k model, an unknown id and a 128k model. It could prove all of
+ * that with the function wired to nothing, which is what it was: `#seat` applied
+ * `DASHBOARD_SPEC_MODEL` verbatim and never asked the table. These three tests
+ * are the ones that go red when the wire is cut, and they are driven through a
+ * real `Orchestrator` from `designRun` — the env variable in, the run's own
+ * status and log out. No seat call is made on any of them: the suite is
+ * hand-frozen, `planPolicy` skips a non-interactive plan seat, and `AuthProbe`
+ * points at absent binaries so the judge never starts.
+ * ---------------------------------------------------------------------- */
+
+test("a run whose seat model MEASURES below the START budget is refused BEFORE anything is spent", async () => {
+  /*
+   * RE-POINTED AND RENAMED 2026-08-09, and the reason is the whole of the
+   * threshold correction in `#usableSpecModel`.
+   *
+   * IT USED TO DRIVE `claude-haiku-4-5` (64,000) AND ASSERT A REFUSAL. That is
+   * the case the guard got wrong: 64,000 is the RECOVERY rung's shortfall, not
+   * the operating one. The spec seat's first call asks for
+   * `CLI_DEFAULT_MAX_OUTPUT_TOKENS` (64,000), the plan seat for 16,000 and the
+   * judge for 32,000, so a 64,000 model serves every one of them and loses only
+   * `spec-agent`'s free truncation retry. Refusing it made eight of the sixteen
+   * ids in `MODEL_OUTPUT_CEILINGS` unusable — Sonnet 4.5, Opus 4.5 and Haiku 4.5
+   * among them — and closed the one fallback available to an owner whose Opus
+   * quota is spent. That case is now the test directly below, which asserts it
+   * BUILDS and warns.
+   *
+   * `claude-opus-4-1` (32,000) IS THE SUBJECT NOW, and it is a genuine refusal:
+   * 32,000 is below what the spec seat asks for on its FIRST call, so the
+   * authoring turn is capped before it starts and dies at whatever it really
+   * got — which is how run-…162b186d died, 49 minutes of quota in.
+   */
+  const h = await designRun({ env: { DASHBOARD_SPEC_MODEL: "claude-opus-4-1" } });
+  try {
+    assert.equal(h.status(), "failed", `the run proceeded on a 32k model: ${h.status()}`);
+    assert.equal(
+      h.builderCalls.length,
+      0,
+      "the refusal must land before the builder starts — a run stopped after the build has already spent " +
+        "the hours the guard exists to save",
+    );
+    const reason = h.store.getRun(h.runId)?.failureReason ?? "";
+    assert.match(reason, /32000/, `the failure names the ceiling it measured: ${reason}`);
+    assert.match(reason, /DASHBOARD_SPEC_MODEL/, "and names the variable to change");
+    /*
+     * AND IT NAMES THE RIGHT REASON. `specModelCeilingWarning` is prose about
+     * the RETRY rung; the refusal is about the FIRST call. The composed line has
+     * to carry both without contradicting itself — an earlier draft handed the
+     * warning a 64,000 rung and produced "below the 64000-token rung the spec
+     * agent retries at", which is false of every model in the table.
+     */
+    assert.match(reason, /FIRST call/, `the refusal says what is actually refused: ${reason}`);
+    assert.match(
+      reason,
+      /128000-token rung the spec agent retries at/,
+      `and the retry rung is named at its real value, not at the refusal threshold: ${reason}`,
+    );
+    assert.doesNotMatch(
+      reason,
+      /64000-token rung/,
+      `the retry rung is 128,000 — a line that calls 64,000 "the rung the spec agent retries at" is ` +
+        `false: ${reason}`,
+    );
+    // NOT PARKED AND NOT AUTO-CONTINUED. A misconfigured model refuses
+    // identically on every retry, so a `throttled` classification here would be
+    // an infinite loop of instant failures.
+    assert.notEqual(h.store.getRun(h.runId)?.recoveryClass, "throttled");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a 64k model BUILDS and warns — it loses the retry rung, not the run", async () => {
+  /*
+   * THE CASE THE GUARD USED TO GET WRONG, and the one the reviewer caught:
+   * "Lane S's own tests only exercise 64k-refused and 128k-accepted, never 'a
+   * 64k model that would have authored its suite fine'." This is that test.
+   *
+   * `claude-haiku-4-5` is the exact id the 2026-08-09 probe caught being capped
+   * from 128,000 to 64,000 with `subtype=success`. What that probe measured is
+   * real and is why the warning exists — but it is a fact about a request for
+   * 128,000, which only the truncation retry makes. The first call asks for
+   * 64,000 and gets 64,000.
+   *
+   * BOTH HALVES ARE ASSERTED, because either alone is satisfiable by a defect:
+   * "it built" alone is satisfied by a guard that was deleted, and "it warned"
+   * alone is satisfied by a guard that warns and then refuses anyway.
+   */
+  const h = await designRun({
+    designLock: "auto",
+    env: { DASHBOARD_SPEC_MODEL: "claude-haiku-4-5" },
+  });
+  try {
+    // `builderCalls`, not the status: this harness has no docker, so every run
+    // it drives ends `failed` at the gate whatever the model was.
+    assert.ok(
+      h.builderCalls.length > 0,
+      "a model that serves every seat's first call was refused anyway — the threshold is back on the " +
+        "recovery rung, and half the ceiling table is unusable again",
+    );
+    assert.doesNotMatch(
+      h.store.getRun(h.runId)?.failureReason ?? "",
+      /refusing to run/,
+      "a 64,000 model must not be refused: it is short of the retry rung, not of the operating budget",
+    );
+    const line = runLog(h).find(
+      (text) => text.includes("claude-haiku-4-5") && text.includes("64000"),
+    );
+    assert.ok(
+      line !== undefined,
+      `the run must say what it gave up by running here: ${JSON.stringify(runLog(h).slice(0, 4))}`,
+    );
+    // The SUBSTANCE of the line, not merely its existence: it has to name the
+    // rung that is lost, or it is indistinguishable from the quiet `info` line
+    // a fully-capable model gets.
+    assert.match(
+      line,
+      /128000/,
+      `the warning names the rung the truncation retry cannot reach: ${line}`,
+    );
+    assert.match(line, /PROCEEDING/, `and says the run is going ahead regardless: ${line}`);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("NEGATIVE CONTROL: the same run on the pinned model builds, and says which model it is on", async () => {
+  /*
+   * Without this, the test above is satisfied by an orchestrator that refuses
+   * every run — including the one the owner actually launches.
+   *
+   * AND THE CONTROL IS "DID IT BUILD", NOT "DID IT PASS". Every run in this
+   * harness ends `failed`: there is no PATH, so the sealed gate cannot find
+   * docker and stops on infra. Asserting a non-`failed` status here would be a
+   * control that fails for a reason that has nothing to do with the model —
+   * which is what the first draft of this test did. `builderCalls` is the
+   * measurement that separates the two: a refused run has none.
+   */
+  const h = await designRun({ designLock: "auto" });
+  try {
+    assert.ok(h.builderCalls.length > 0, "the run never reached the builder");
+    assert.doesNotMatch(
+      h.store.getRun(h.runId)?.failureReason ?? "",
+      /refusing to run/,
+      "the pinned model was refused by its own guard",
+    );
+    assert.ok(
+      runLog(h).some((text) => text.includes("claude-opus-5[1m]") && text.includes("128000")),
+      `the run records the model its seats run on and the ceiling that was checked: ${JSON.stringify(
+        runLog(h).slice(0, 4),
+      )}`,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("an UNKNOWN model id PROCEEDS, loudly — the escape hatch stays open", async () => {
+  /*
+   * THE THIRD CASE, AND IT IS NOT THE SECOND. A measured 64,000 is a fact about
+   * a model; an id the table does not know is how a model NEWER than the table
+   * looks, and `DEFAULT_SPEC_MODEL`'s docblock names `DASHBOARD_SPEC_MODEL` as
+   * the escape hatch for exactly that day ("IF THIS ID IS EVER RETIRED … SET it
+   * to a live id"). Refusing unknown ids would close the hatch precisely when it
+   * is needed, so this one proceeds — and says so, because if the spec seat then
+   * dies on an output maximum this line is the explanation.
+   */
+  const h = await designRun({ designLock: "auto", env: { DASHBOARD_SPEC_MODEL: "claude-opus-9-unreleased" } });
+  try {
+    // `builderCalls`, not the status, for the reason the negative control above
+    // spells out: this harness has no docker, so every run it drives ends
+    // `failed` at the gate whatever the model was.
+    assert.ok(h.builderCalls.length > 0, "an unknown id is a deliberate override, not a measured failure");
+    assert.ok(
+      runLog(h).some((text) => text.includes("claude-opus-9-unreleased") && /not known here/.test(text)),
+      `an unmeasured model must not pass in silence: ${JSON.stringify(runLog(h).slice(0, 4))}`,
+    );
+    // AND IT MUST NOT BE FILED UNDER THE MEASURED CASE. The two are distinct
+    // outcomes; a warning that read "refusing to run" here would be a lie.
+    assert.ok(
+      !runLog(h).some((text) => text.includes("refusing to run")),
+      "the unknown case proceeds, so nothing may claim the run was refused",
+    );
+  } finally {
+    await h.cleanup();
   }
 });
