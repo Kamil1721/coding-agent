@@ -41,7 +41,7 @@ import { redactText } from "./redact.js";
 // The scorer's own manifest parser, used as the authoring-time validator. One
 // definition of the manifest shape, checked in both places, so a suite cannot
 // be frozen in a form the sealed container will later refuse.
-import { collectManifestProblems } from "./scorer-protocol.js";
+import { SUITE_ENV_NAMES, collectManifestProblems } from "./scorer-protocol.js";
 import type { ManifestProblem } from "./scorer-protocol.js";
 import {
   MAX_CRITERIA,
@@ -1629,6 +1629,8 @@ export function deterministicAudit(
 
   findings.push(...proseLengthFloorFindings(draft, options.ticketBrief));
   findings.push(...numericAssertionDriftFindings(draft));
+  findings.push(...unstatedEnvContractFindings(draft, options.ticketBrief));
+  findings.push(...shapeHeuristicProbeFindings(draft));
 
   /* ---- syntax ------------------------------------------------------- */
 
@@ -1645,6 +1647,259 @@ export function deterministicAudit(
     }
   }
 
+  return findings;
+}
+
+/* -------------------------------------------------------------------------
+ * RULE 4 — a held-out criterion that turns on an environment variable name the
+ *          ticket never states.
+ *
+ * THE RUN THIS EXISTS FOR. `54927ebc`, 2026-08-10: 7 of 7 FUNCTIONAL criteria
+ * failed together, every one of them a criterion that reads a message back. One
+ * cause. The ticket required a bearer token from "an environment variable" and
+ * never named it. The suite is authored from the ticket ALONE, before any code
+ * exists, so it had to invent a name; the builder had to invent one too; nothing
+ * in the pipeline made the two agree. One 401 failed every read-back criterion
+ * at once, and the verdict read as seven separate defects in the artefact.
+ *
+ * WHY IT IS THE CLASS FIX AND NOT THE INSTANCE FIX. Publishing the suite's
+ * literals to the builder repairs the tickets we have already seen. This refuses
+ * to FREEZE a criterion that cannot be graded fairly, whatever the literal is —
+ * so the run fails at the audit, in seconds, naming the ambiguity, instead of
+ * after 3 h 18 m as a false verdict about the artefact.
+ *
+ * WHY IT LIVES HERE AND NOT IN `freezeSuite`. `FreezeSuiteInput` carries no
+ * ticket brief, only a digest of it, so freeze time is structurally incapable of
+ * asking "did the owner state this?". It needs no new refusal site: a finding
+ * with `mustRegenerate` already clears `auditPassed` (spec-agent.ts) and
+ * `freezeSuite` already refuses on it via `assertSuiteUsable`, kind-agnostically.
+ *
+ * IT FIRES ON A REAL, ALREADY-PAID-FOR DEFECT. Over every frozen suite on disk
+ * the `process.env` reads are `APP_BASE_URL` (17) and `APP_ROOT` (2). The first
+ * is genuinely harness-supplied and is exempt. The second is not supplied by
+ * anything — see the note on `HARNESS_ENV_NAMES` — and those two reads are
+ * exactly the two tests that failed unconditionally on run `54927ebc`, costing
+ * REQ-010 and REQ-011. So the honest fire rate is one suite in three, and the
+ * one it fires on is the one that was mis-graded.
+ *
+ * ADVISORY ON PURPOSE, FOR NOW. It refuses nothing yet: three suites is not a
+ * false-positive measurement, and this module's policy is to land advisory,
+ * measure the real rate, then promote. Promotion is one word: `advisory` ->
+ * `blocking`. Note that promoting it would have turned a 3 h 18 m run that
+ * produced two wrong criteria into an authoring-time refusal in seconds.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Names the HARNESS supplies, so the ticket cannot be expected to state them.
+ *
+ * NOT A CONVENIENCE LIST. Every entry is a name some part of this system sets or
+ * documents, which is what makes it fair to exempt: the builder learns these from
+ * the prompt or the container, not from the ticket. A name that is merely
+ * *common* does not belong here — that is how an allowlist quietly becomes the
+ * reason the rule never fires.
+ */
+/**
+ * Names this rule must NOT fire on, and the two reasons a name may be here.
+ *
+ * THE CONTAINER-SUPPLIED HALF IS NOT LISTED — IT IS DERIVED, and that is the
+ * whole point. For one draft this set contained `APP_ROOT`, on the strength of a
+ * comment asserting `scorer-container.ts` injected it. Nothing did. So the
+ * allowlist excused the single name in the entire corpus that was actually
+ * broken: run `54927ebc`'s `holdout/contact-storage.test.mjs` resolved
+ * `process.env.APP_ROOT ?? <walk up from cwd for a package.json>`, the node pass
+ * runs with cwd `/opt/bakeoff-scorer` which has its own `package.json`, so the
+ * walk stopped inside the scorer's install and never reached `/artifact`. T-14
+ * and T-15 died on their first statement and REQ-010 and REQ-011 were published
+ * as artefact defects. A hand-copied mirror of the container's env is the same
+ * "two sides must agree on a literal" defect this rule exists to catch, one level
+ * up — so it is asked, not copied.
+ *
+ * (`APP_ROOT` IS now supplied, as of the same session: `suiteEnv` sets it to
+ * `CONTAINER_PATHS.artifact`. It is exempt again because it became TRUE, not
+ * because it was re-listed.)
+ */
+function harnessEnvNames(): ReadonlySet<string> {
+  return new Set([
+    // Asked of the real container builder, never transcribed.
+    ...SUITE_ENV_NAMES,
+    // Stated to the builder in the harness-environment section of its prompt, so
+    // the two sides can agree on it even though the container does not set it.
+    "PORT",
+    // Set by the platform for any Node process, in or out of this harness.
+    "NODE_ENV",
+    "TMPDIR",
+  ]);
+}
+
+const HARNESS_ENV_NAMES: ReadonlySet<string> = harnessEnvNames();
+
+/**
+ * Does `text` state `token`, allowing for how a person writes a variable name in
+ * prose? `BEARER_TOKEN` is stated by "BEARER_TOKEN", "bearer token" and
+ * "bearer-token" alike.
+ *
+ * The string analogue of {@link statesNumber}, and deliberately GENEROUS in the
+ * direction that keeps the rule quiet: a false negative here fires a finding on a
+ * ticket that did state the name, which costs an authoring round. A false
+ * positive stays silent on a ticket that did not, which costs what `54927ebc`
+ * cost. Erring toward "stated" is the cheaper mistake while the rule is advisory,
+ * and must be revisited if it is ever promoted to blocking.
+ */
+export function statesToken(text: string, token: string): boolean {
+  const parts = token.split(/[_-]+/).filter((p) => p.length > 0);
+  if (parts.length === 0) return false;
+  const pattern = parts.map((p) => escapeRegExp(p)).join("[\\s_-]*");
+  return new RegExp(`\\b${pattern}\\b`, "i").test(text);
+}
+
+/** `process.env.NAME` and `process.env["NAME"]`, capturing the NAME. */
+const ENV_NAME_PATTERN = /\bprocess\s*\.\s*env\s*(?:\.\s*([A-Za-z_$][\w$]*)|\[\s*(['"`])([^'"`]*)\2\s*\])/g;
+
+/** Every environment variable name `source` reads, in order of appearance. */
+function envNamesRead(source: string): readonly string[] {
+  const pattern = new RegExp(ENV_NAME_PATTERN.source, ENV_NAME_PATTERN.flags);
+  const names: string[] = [];
+  let match: RegExpExecArray | null = pattern.exec(source);
+  while (match !== null) {
+    const name = match[1] ?? match[3];
+    if (name !== undefined && name.length > 0) names.push(name);
+    match = pattern.exec(source);
+  }
+  return names;
+}
+
+/**
+ * Findings for held-out criteria that turn on an unstated environment variable.
+ *
+ * HELD-OUT ONLY, AND THAT IS THE WHOLE JUSTIFICATION FOR THE ASYMMETRY. The
+ * visible half is COPIED INTO THE BUILDER'S WORKSPACE (`materialiseVisibleSubset`
+ * takes exactly `visibility === "visible"`), so a name that appears there has
+ * been published to the builder and the two sides can agree by reading. A name
+ * that appears only in the held-out half has been published to nobody, and the
+ * builder is being graded on guessing it.
+ *
+ * IT DOES NOT GO QUIET WHEN THE BRIEF IS MISSING. `ticketBrief` is optional on
+ * `DeterministicAuditOptions`, and a rule whose comparand is absent could return
+ * `[]` and look like a pass. That is the exact defect this tree keeps shipping,
+ * so an absent brief emits its own finding saying the rule could not run.
+ */
+export function unstatedEnvContractFindings(
+  draft: SuiteDraft,
+  ticketBrief?: string,
+): readonly AuditFinding[] {
+  const holdout = draft.files.filter((f) => f.visibility === "holdout");
+
+  // Names the builder CAN see, because the visible half is copied to it.
+  const published = new Set<string>();
+  for (const file of draft.files) {
+    if (file.visibility !== "holdout") for (const name of envNamesRead(file.source)) published.add(name);
+  }
+
+  // name -> the criteria whose evidence reads it.
+  const readers = new Map<string, Set<string>>();
+  for (const file of holdout) {
+    for (const name of envNamesRead(file.source)) {
+      if (HARNESS_ENV_NAMES.has(name) || published.has(name)) continue;
+      const owners = readers.get(name) ?? new Set<string>();
+      for (const id of file.criterionIds) owners.add(id);
+      readers.set(name, owners);
+    }
+  }
+
+  if (readers.size === 0) return [];
+
+  if (ticketBrief === undefined || ticketBrief.trim().length === 0) {
+    return [
+      advisory(
+        "ambiguous",
+        null,
+        `the held-out half reads ${String(readers.size)} environment variable(s) — ` +
+          `${[...readers.keys()].map((n) => safe(n)).join(", ")} — and no ticket brief was supplied ` +
+          "to this audit, so it could not check whether the owner named them. This rule did NOT run; " +
+          "treat its silence as unknown, not as a pass.",
+      ),
+    ];
+  }
+
+  const findings: AuditFinding[] = [];
+  for (const [name, owners] of readers) {
+    if (statesToken(ticketBrief, name)) continue;
+    const ids = [...owners].sort();
+    findings.push(
+      advisory(
+        "ambiguous",
+        ids.length === 1 ? (ids[0] ?? null) : null,
+        `the held-out half grades against the environment variable ${safe(name)}, which the ticket ` +
+          `never names${ids.length === 0 ? "" : ` (criteria: ${ids.map((i) => safe(i)).join(", ")})`}. ` +
+          "The suite is authored from the ticket alone and the builder is prompted from the ticket " +
+          "alone, so both must invent this name independently and nothing makes them agree. When they " +
+          "differ, every criterion that reads through this variable fails together, and the verdict " +
+          "reports one ambiguity as many defects in the artefact. Either the ticket must name it, or " +
+          "the suite must accept whatever the builder chose.",
+      ),
+    );
+  }
+  return findings;
+}
+
+/* -------------------------------------------------------------------------
+ * RULE 5 — a probe that locates its subject by DOM SHAPE, then reports the
+ *          measurement it never took.
+ *
+ * THE TWO CRITERIA THIS COST, ON THE SAME RUN. `54927ebc`'s
+ * `holdout/motion-a11y.spec.mjs` looks for each project title with
+ * `el.children.length === 0 && el.textContent.includes(title)` — a "leaf
+ * element" heuristic — and on NOT FOUND pushes the title into an array called
+ * `faded`, which is then asserted empty with the message *"these project cards
+ * are hidden or faded when reduced motion is set"*. The artefact renders every
+ * card at opacity 1. What it also renders, inside each heading, is the
+ * hand-inked SVG underline THE TICKET ASKED FOR — so the heading has an element
+ * child, no leaf matches, and four of six titles are reported as faded without
+ * opacity ever being read. REQ-016 fails on the same heuristic in the same file.
+ *
+ * IT IS THE SIGNATURE DEFECT WITH THE SIGN FLIPPED. The catalogued version is a
+ * probe that can only observe success. This is a probe that can only observe
+ * failure: `<h2><span>Teewise</span><svg/></h2>` passes and
+ * `<h2>Teewise<svg/></h2>` fails, and the criterion mentions neither. A correct
+ * artefact cannot make it green except by accident of nesting.
+ *
+ * WHAT IT DOES NOT CLAIM. `children.length === 0` is not wrong everywhere — it is
+ * wrong as the LOCATOR for a subject whose property you are about to assert,
+ * because "no element matched" and "the property is bad" then become the same
+ * outcome. The rule is therefore scoped to held-out browser tests, where a
+ * false fire is invisible to the builder and lands as a defect in its verdict.
+ * ---------------------------------------------------------------------- */
+
+/** `children.length === 0`, `childElementCount === 0`, and the `!x.children.length` spelling. */
+const LEAF_HEURISTIC_PATTERN =
+  /(?:\.children\s*\.\s*length\s*===?\s*0|\.childElementCount\s*===?\s*0|!\s*[A-Za-z_$][\w$]*\s*\.\s*children\s*\.\s*length)/;
+
+/**
+ * Findings for held-out browser probes that select an element by leaf-shape.
+ *
+ * HELD-OUT AND PLAYWRIGHT ONLY. In the visible half the builder can read the
+ * heuristic and satisfy it, so it is a stated contract rather than a trap; in a
+ * `node-test` file there is no DOM and the pattern means something else.
+ */
+export function shapeHeuristicProbeFindings(draft: SuiteDraft): readonly AuditFinding[] {
+  const findings: AuditFinding[] = [];
+  for (const file of draft.files) {
+    if (file.visibility !== "holdout" || file.runner !== "playwright") continue;
+    if (!LEAF_HEURISTIC_PATTERN.test(maskComments(file.source))) continue;
+    const ids = [...file.criterionIds].sort();
+    findings.push(
+      advisory(
+        "mis_specified",
+        ids.length === 1 ? (ids[0] ?? null) : null,
+        `held-out browser test "${safe(file.path)}" locates an element by requiring it to have NO ` +
+          `element children${ids.length === 0 ? "" : ` (criteria: ${ids.map((i) => safe(i)).join(", ")})`}. ` +
+          "A subject found this way is lost the moment the artefact nests anything inside it — an icon, " +
+          "an underline, a <span> — and the probe then reports the property it was going to measure as " +
+          "failed, having never measured it. Locate by text or role and assert the property separately, " +
+          "so 'not found' and 'measured bad' stay distinguishable.",
+      ),
+    );
+  }
   return findings;
 }
 

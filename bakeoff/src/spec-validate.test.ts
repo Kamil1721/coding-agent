@@ -37,7 +37,11 @@ import {
   deterministicAudit,
   numericAssertionDriftFindings,
   proseLengthFloorFindings,
+  shapeHeuristicProbeFindings,
+  statesToken,
+  unstatedEnvContractFindings,
 } from "./spec-validate.js";
+import { SUITE_ENV_NAMES } from "./scorer-protocol.js";
 import type { DraftCriterion, DraftTestFile, SuiteDraft } from "./spec-types.js";
 
 /* -------------------------------------------------------------------------
@@ -782,4 +786,263 @@ test("a manifest that is not JSON is still one finding, because it has one cause
   );
   assert.equal(findings.length, 1, findings.map((f) => f.detail).join("\n"));
   assert.match(findings[0]?.detail ?? "", /JSON/);
+});
+
+/* -------------------------------------------------------------------------
+ * RULE 4 — a held-out criterion turning on an env var the ticket never names
+ *
+ * THE RUN: `54927ebc`. The ticket asked for a bearer token from "an environment
+ * variable" and never named it. The suite invented one, the builder invented
+ * another, and all 7 FUNCTIONAL criteria — every one that reads a message back —
+ * failed together on a single 401. The verdict reported one ambiguity as seven
+ * defects in the artefact.
+ * ---------------------------------------------------------------------- */
+
+/** The ticket as the owner actually wrote it: names the concept, not the name. */
+const UNDER_SPECIFIED_BRIEF =
+  "Build a small message board with a JSON API. Writes must be authorised with a bearer " +
+  "token read from an environment variable. Reads are public.";
+
+/** holdout/auth.test.mjs — grades against a name the ticket never states. */
+const HOLDOUT_TOKEN_AUTH = [
+  'import { test } from "node:test";',
+  'import assert from "node:assert/strict";',
+  "",
+  'const BASE = process.env.APP_BASE_URL ?? "http://127.0.0.1:3000";',
+  'const TOKEN = process.env.API_TOKEN;',
+  "",
+  'test("[REQ-003] T-3 a write with the bearer token is accepted", async () => {',
+  '  const res = await fetch(BASE + "/messages", {',
+  '    method: "POST",',
+  '    headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },',
+  '    body: JSON.stringify({ body: "hello" }),',
+  "  });",
+  "  assert.equal(res.status, 201);",
+  "});",
+].join("\n");
+
+const TOKEN_FILES = [
+  {
+    path: "holdout/auth.test.mjs",
+    source: HOLDOUT_TOKEN_AUTH,
+    testIds: ["T-3"],
+    criterionIds: ["REQ-003"],
+  },
+];
+const TOKEN_CRITERIA = [
+  criterion("REQ-003", "An authorised write shall be accepted.", ["T-3"]),
+];
+
+test("rule 4 FIRES on the real defect: the suite grades against API_TOKEN, the ticket names no variable", () => {
+  const draft = draftOf(TOKEN_CRITERIA, TOKEN_FILES);
+  const findings = unstatedEnvContractFindings(draft, UNDER_SPECIFIED_BRIEF);
+  assert.equal(findings.length, 1, findings.map((f) => f.detail).join("\n"));
+  assert.equal(findings[0]?.criterionId, "REQ-003");
+  assert.match(findings[0]?.detail ?? "", /API_TOKEN/);
+});
+
+test("NEGATIVE CONTROL A: the same suite is SILENT once the ticket names the variable", () => {
+  // Only the BRIEF changes. If this still fires, the rule is not comparing
+  // against the ticket at all — it is just reporting every env read.
+  const named = `${UNDER_SPECIFIED_BRIEF} The variable is called API_TOKEN.`;
+  assert.deepEqual(unstatedEnvContractFindings(draftOf(TOKEN_CRITERIA, TOKEN_FILES), named), []);
+});
+
+test("NEGATIVE CONTROL B: prose spelling counts — 'api token' states API_TOKEN", () => {
+  const prose = "Build a message board. Writes are authorised with an api token from the environment.";
+  assert.deepEqual(unstatedEnvContractFindings(draftOf(TOKEN_CRITERIA, TOKEN_FILES), prose), []);
+  assert.ok(statesToken("send a BEARER_TOKEN header", "BEARER_TOKEN"));
+  assert.ok(statesToken("send a bearer token header", "BEARER_TOKEN"));
+  assert.ok(statesToken("send a bearer-token header", "BEARER_TOKEN"));
+  assert.ok(!statesToken("send a token header", "BEARER_TOKEN"), "a partial match must not count");
+});
+
+test("NEGATIVE CONTROL C: a genuinely harness-supplied variable never fires, or every suite is destroyed", () => {
+  // MEASURED: over every frozen suite on disk the env reads are APP_BASE_URL (17)
+  // and APP_ROOT (2). Without an exemption for the supplied ones, a blocking
+  // version of this rule throws away every suite it ever sees. Note the firing
+  // fixture above ALSO reads APP_BASE_URL and produced exactly one finding — so
+  // this exemption is already load-bearing in the positive case.
+  const harnessOnly = HOLDOUT_TOKEN_AUTH.replace("process.env.API_TOKEN", "process.env.BAKEOFF_SUITE_DIR");
+  assert.ok(!harnessOnly.includes("API_TOKEN"), "the control did not remove the unstated name");
+  const draft = draftOf(TOKEN_CRITERIA, [{ ...TOKEN_FILES[0]!, source: harnessOnly }]);
+  assert.deepEqual(unstatedEnvContractFindings(draft, UNDER_SPECIFIED_BRIEF), []);
+});
+
+test("THE ALLOWLIST IS ASKED OF THE CONTAINER, NOT COPIED — and APP_ROOT is really set", () => {
+  /*
+   * THE DEFECT THIS PINS, WHICH ALREADY COST TWO CRITERIA. For one draft the
+   * allowlist contained APP_ROOT because a comment said the container injected
+   * it. Nothing did. Run 54927ebc's holdout/contact-storage.test.mjs resolved
+   * `process.env.APP_ROOT ?? <walk up from cwd for a package.json>`, the node
+   * pass runs with cwd /opt/bakeoff-scorer which has its own package.json, so it
+   * never reached /artifact. T-14 and T-15 died on their first statement and
+   * REQ-010/REQ-011 were published as artefact defects.
+   *
+   * Both ends are now checked. If `suiteEnv` ever stops setting APP_ROOT, the
+   * first assertion fails. If someone re-adds a name to the allowlist by hand
+   * without the container setting it, the rule simply keeps firing on it — which
+   * is the safe direction, and the reason the container half is derived.
+   */
+  assert.ok(
+    SUITE_ENV_NAMES.includes("APP_ROOT"),
+    "suiteEnv must set APP_ROOT, or a suite that inspects the artefact on disk searches the scorer's own install",
+  );
+  assert.ok(SUITE_ENV_NAMES.includes("APP_BASE_URL"), "and the origin the suite talks to");
+
+  // The exemption is now TRUE, so the rule is silent on it — the opposite of the
+  // draft behaviour, and correct for the opposite reason.
+  const usesAppRoot = HOLDOUT_TOKEN_AUTH.replace("process.env.API_TOKEN", "process.env.APP_ROOT");
+  const draft = draftOf(TOKEN_CRITERIA, [{ ...TOKEN_FILES[0]!, source: usesAppRoot }]);
+  assert.deepEqual(unstatedEnvContractFindings(draft, UNDER_SPECIFIED_BRIEF), []);
+});
+
+test("A NAME THE CONTAINER DOES NOT SET IS NEVER EXEMPT, however harness-shaped it looks", () => {
+  // The arm that survives the fix above. `BAKEOFF_ARTIFACT_ROOT` reads exactly
+  // like a harness variable and is set by nothing; a suite depending on it is
+  // unrunnable in precisely the way APP_ROOT was.
+  assert.ok(!SUITE_ENV_NAMES.includes("BAKEOFF_ARTIFACT_ROOT"), "the control must name an UNSET variable");
+  const invented = HOLDOUT_TOKEN_AUTH.replace("process.env.API_TOKEN", "process.env.BAKEOFF_ARTIFACT_ROOT");
+  const draft = draftOf(TOKEN_CRITERIA, [{ ...TOKEN_FILES[0]!, source: invented }]);
+  const findings = unstatedEnvContractFindings(draft, UNDER_SPECIFIED_BRIEF);
+  assert.equal(findings.length, 1, "a harness-shaped name nothing supplies must still fire");
+  assert.match(findings[0]?.detail ?? "", /BAKEOFF_ARTIFACT_ROOT/);
+});
+
+test("NEGATIVE CONTROL D: a name the VISIBLE half publishes is silent — the builder can read it", () => {
+  // The visible half is copied into the builder's workspace by
+  // `materialiseVisibleSubset`, so a name that appears there has been published
+  // and the two sides can agree. This is the whole justification for scanning
+  // only the held-out half, so it is asserted rather than assumed.
+  const draft = draftOf(TOKEN_CRITERIA, [
+    ...TOKEN_FILES,
+    {
+      path: "visible/auth.test.mjs",
+      source: 'const TOKEN = process.env.API_TOKEN;\ntest("[REQ-003] T-9 ok", () => {});',
+      testIds: ["T-9"],
+      criterionIds: ["REQ-003"],
+    },
+  ]);
+  assert.deepEqual(unstatedEnvContractFindings(draft, UNDER_SPECIFIED_BRIEF), []);
+});
+
+test("NO BRIEF IS 'DID NOT RUN', NOT 'PASSED' — the rule refuses to disarm silently", () => {
+  // A rule that returns [] when its comparand is missing is indistinguishable
+  // from a clean suite. That is the signature defect this whole module documents.
+  const draft = draftOf(TOKEN_CRITERIA, TOKEN_FILES);
+  const findings = unstatedEnvContractFindings(draft);
+  assert.equal(findings.length, 1, "an absent brief must announce itself");
+  assert.match(findings[0]?.detail ?? "", /did NOT run/i);
+  assert.match(findings[0]?.detail ?? "", /API_TOKEN/);
+  assert.deepEqual(unstatedEnvContractFindings(draft, "   "), findings, "whitespace is not a brief");
+});
+
+test("rule 4 is ADVISORY for now, and refuses nothing until it is promoted", () => {
+  const findings = unstatedEnvContractFindings(draftOf(TOKEN_CRITERIA, TOKEN_FILES), UNDER_SPECIFIED_BRIEF);
+  assert.equal(findings[0]?.mustRegenerate, false);
+  assert.equal(blockingFindingSummary(findings).length, 0);
+});
+
+test("rule 4 is WIRED — deterministicAudit emits it, not just the exported function", () => {
+  // The gap that makes a rule look landed while doing nothing: written, tested
+  // directly, never pushed from the audit that actually runs.
+  const draft = draftOf(TOKEN_CRITERIA, TOKEN_FILES);
+  const wired = deterministicAudit(draft, { syntaxCheck: false, ticketBrief: UNDER_SPECIFIED_BRIEF }).filter(
+    (f) => f.detail.includes("API_TOKEN"),
+  );
+  assert.equal(wired.length, 1, "the audit did not surface rule 3");
+});
+
+/* -------------------------------------------------------------------------
+ * RULE 5 — a probe that finds its subject by DOM shape, then reports a
+ * measurement it never took. REQ-016 and REQ-022 on run 54927ebc.
+ * ---------------------------------------------------------------------- */
+
+/** holdout/motion-a11y.spec.mjs, condensed to the mechanism, verbatim in shape. */
+const HOLDOUT_LEAF_PROBE = [
+  'import { test, expect } from "@playwright/test";',
+  "",
+  'test("[REQ-022] T-37 with reduced motion every card is fully opaque", async ({ page }) => {',
+  '  await page.goto(process.env.APP_BASE_URL ?? "http://127.0.0.1:3000");',
+  "  const faded = await page.evaluate((titles) => {",
+  "    const leafFor = (t) => {",
+  '      const nodes = document.querySelectorAll("h1,h2,h3,a,p,span,li,div");',
+  "      for (const el of nodes) {",
+  "        if (el.children.length === 0 && (el.textContent || '').toLowerCase().includes(t.toLowerCase())) return el;",
+  "      }",
+  "      return null;",
+  "    };",
+  "    const out = [];",
+  "    for (const t of titles) {",
+  "      const el = leafFor(t);",
+  "      if (!el) { out.push(t); continue; }",
+  "      if (parseFloat(getComputedStyle(el).opacity) < 0.9) out.push(t);",
+  "    }",
+  "    return out;",
+  '  }, ["Teewise", "Kori"]);',
+  '  expect(faded, "these project cards are hidden or faded when reduced motion is set").toEqual([]);',
+  "});",
+].join("\n");
+
+const LEAF_CRITERIA = [criterion("REQ-022", "Under reduced motion every card renders at full opacity.", ["T-37"])];
+
+test("rule 5 FIRES on the leaf-element locator that cost REQ-016 and REQ-022", () => {
+  const draft = draftOf(LEAF_CRITERIA, [
+    { path: "holdout/motion-a11y.spec.mjs", source: HOLDOUT_LEAF_PROBE, testIds: ["T-37"], criterionIds: ["REQ-022"] },
+  ]);
+  const findings = shapeHeuristicProbeFindings(draft);
+  assert.equal(findings.length, 1, findings.map((f) => f.detail).join("\n"));
+  assert.equal(findings[0]?.criterionId, "REQ-022");
+  assert.match(findings[0]?.detail ?? "", /NO element children/);
+  assert.equal(findings[0]?.mustRegenerate, false, "advisory until the fire rate is measured");
+});
+
+test("NEGATIVE CONTROL A: the SAME probe locating by text instead of shape is SILENT", () => {
+  // Only the locator changes. The evaluate block, the opacity read, the message
+  // and the assertion are byte-identical. If this still fires, the rule is a bare
+  // "is a playwright holdout" scan.
+  const byText = HOLDOUT_LEAF_PROBE.replace(
+    "if (el.children.length === 0 && (el.textContent || '').toLowerCase().includes(t.toLowerCase())) return el;",
+    "if ((el.textContent || '').toLowerCase().includes(t.toLowerCase())) return el;",
+  );
+  assert.ok(!byText.includes("children.length"), "the control did not remove the heuristic");
+  const draft = draftOf(LEAF_CRITERIA, [
+    { path: "holdout/motion-a11y.spec.mjs", source: byText, testIds: ["T-37"], criterionIds: ["REQ-022"] },
+  ]);
+  assert.deepEqual(shapeHeuristicProbeFindings(draft), []);
+});
+
+test("NEGATIVE CONTROL B: the same heuristic in the VISIBLE half is SILENT — the builder can read it", () => {
+  const draft = draftOf(LEAF_CRITERIA, [
+    { path: "visible/motion.spec.mjs", source: HOLDOUT_LEAF_PROBE, testIds: ["T-37"], criterionIds: ["REQ-022"] },
+  ]);
+  assert.deepEqual(shapeHeuristicProbeFindings(draft), []);
+});
+
+test("NEGATIVE CONTROL C: a node-test holdout is SILENT — there is no DOM to be wrong about", () => {
+  const draft = draftOf(LEAF_CRITERIA, [
+    { path: "holdout/api.test.mjs", source: HOLDOUT_LEAF_PROBE, testIds: ["T-37"], criterionIds: ["REQ-022"] },
+  ]);
+  assert.deepEqual(shapeHeuristicProbeFindings(draft), []);
+});
+
+test("NEGATIVE CONTROL D: the heuristic in a COMMENT does not count", () => {
+  const commented = HOLDOUT_LEAF_PROBE.replace(
+    "if (el.children.length === 0 &&",
+    "// historical: el.children.length === 0\n      if (",
+  );
+  const draft = draftOf(LEAF_CRITERIA, [
+    { path: "holdout/motion-a11y.spec.mjs", source: commented, testIds: ["T-37"], criterionIds: ["REQ-022"] },
+  ]);
+  assert.deepEqual(shapeHeuristicProbeFindings(draft), []);
+});
+
+test("rule 5 is WIRED into deterministicAudit", () => {
+  const draft = draftOf(LEAF_CRITERIA, [
+    { path: "holdout/motion-a11y.spec.mjs", source: HOLDOUT_LEAF_PROBE, testIds: ["T-37"], criterionIds: ["REQ-022"] },
+  ]);
+  const wired = deterministicAudit(draft, { syntaxCheck: false, ticketBrief: TICKET_BRIEF }).filter((f) =>
+    f.detail.includes("NO element children"),
+  );
+  assert.equal(wired.length, 1, "the audit did not surface rule 5");
 });
