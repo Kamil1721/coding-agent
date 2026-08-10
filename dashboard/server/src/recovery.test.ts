@@ -44,6 +44,7 @@ import {
   TRANSIENT_MAX,
   autoRecoverEnabled,
   boundFor,
+  classOfBakeoffCode,
   classifyPhaseFailure,
   interruptedSignals,
   mayAutoContinue,
@@ -52,7 +53,13 @@ import {
   signalsFor,
   throttleHintFromMessage,
 } from "./recovery.js";
-import type { PhaseFailureSignals, RecoveryDecision, RecoveryInput, RefusalEvidence } from "./recovery.js";
+import type {
+  FailureClass,
+  PhaseFailureSignals,
+  RecoveryDecision,
+  RecoveryInput,
+  RefusalEvidence,
+} from "./recovery.js";
 
 /* =========================================================================
  * 0. Fixtures — all instants literal, all numbers measured where they can be
@@ -174,22 +181,153 @@ test("structural: a BakeoffError is classified structural and is NOT retried at 
   assert.equal(d.kind, "stop");
   assert.equal(d.kind === "stop" ? d.code : "", "class_terminal");
   assert.equal(boundFor("structural"), 0);
+
+  // AND IT SURVIVED THE 2026-08-10 SPLIT UNNAMED, deliberately. The commissioning
+  // brief proposed `invalid_usage_shape` as repairable; its throw sites say
+  // otherwise — this death, `mergeSeatUsage was given no rows`
+  // (anthropic-seat.ts:366), `maxOutputTokens must be a positive integer` (:605)
+  // and the manifest parser's `fail()` (scorer-protocol.ts:509) are one code.
+  // Telling them apart needs a structured `detail` at the throw site; until then
+  // the code keeps the default class, and this line is what says so.
+  assert.equal(classOfBakeoffCode("invalid_usage_shape"), "structural");
 });
 
-test("structural: EVERY BakeoffError code stops, including one this file has never heard of", () => {
-  // The bound is on the error TYPE, not on a list of codes. A list would drop a
-  // code added later and the run would start retrying it unattended.
-  for (const code of ["suite_not_audited", "suite_hash_mismatch", "missing_credential", "a_code_added_in_2027"]) {
-    const err = Object.assign(new Error(code), { name: "BakeoffError", code, remediation: "x" });
-    assert.equal(classifyPhaseFailure(signalsFor(err, null, null)), "structural", code);
+/**
+ * THE WHOLE UNION, CODE BY CODE, PLUS ONE CODE THAT DOES NOT EXIST.
+ *
+ * The twelve are `BakeoffErrorCode` (`bakeoff/src/contracts.ts:57-69`), copied
+ * rather than imported — `recovery.ts` may not depend on the harness and neither
+ * may its test's expectations, and there is no runtime array of the codes to
+ * import even if it could. THE COPY IS THEREFORE UNGUARDED: a thirteenth code
+ * added over there does not turn this red. That is exactly why the last row
+ * exists and why the bound assertion below is written over `classifyPhaseFailure`
+ * rather than over a list — an unknown code is REQUIRED to land on `structural`
+ * and to bound 0, so the unguarded copy cannot cost anything but a name.
+ */
+const BAKEOFF_CODE_CLASSES: readonly (readonly [string, FailureClass])[] = [
+  ["missing_credential", "owner_action"],
+  ["budget_exceeded", "owner_action"],
+  ["suite_hash_mismatch", "integrity"],
+  ["unknown_model_price", "accounting"],
+  ["unpriced_usage", "accounting"],
+  ["ambiguous_price_window", "accounting"],
+  ["invalid_effort", "accounting"],
+  ["duplicate_usage_row", "accounting"],
+  ["not_implemented", "harness_defect"],
+  ["unknown_config", "harness_defect"],
+  ["suite_not_audited", "suite_authoring"],
+  // NOT REPAIRABLE AND DELIBERATELY UNNAMED. One code, four programmer faults, a
+  // ceiling death and one real schema defect: `mergeSeatUsage was given no rows`
+  // (anthropic-seat.ts:366) and the manifest parser's `fail()`
+  // (scorer-protocol.ts:509) arrive here identical.
+  ["invalid_usage_shape", "structural"],
+  // The unknown code. Its row is the reason the copy above is allowed to be a copy.
+  ["a_code_added_in_2027", "structural"],
+];
+
+function bakeoffSignals(code: string): PhaseFailureSignals {
+  const err = Object.assign(new Error(code), { name: "BakeoffError", code, remediation: "x" });
+  return signalsFor(err, null, null);
+}
+
+test("EVERY BakeoffError code stops, including one this file has never heard of", () => {
+  // THE NEGATIVE CONTROL FOR THE 2026-08-10 SPLIT, and the assertion that has to
+  // survive it: naming a code cannot buy it a retry. Every class the classifier
+  // can reach from a code is bound 0, so this goes red the moment anybody gives
+  // one of them a budget — including the one class that is repairable in
+  // principle. It is written over the classifier rather than over `boundFor` so
+  // that a code re-routed into a class with a budget is caught too.
+  for (const [code] of BAKEOFF_CODE_CLASSES) {
+    const klass = classifyPhaseFailure(bakeoffSignals(code));
+    assert.equal(boundFor(klass), 0, `${code} classified ${klass}, which has a NON-ZERO bound`);
+    const d = decide({ signals: bakeoffSignals(code) });
+    assert.equal(d.kind, "stop", code);
+    assert.equal(d.kind === "stop" ? d.code : "", "class_terminal", code);
   }
 });
 
-test("structural beats throttled: a BakeoffError thrown near a rate limit is still futile", () => {
+test("the twelve codes are told apart: each lands in the class its throw site means", () => {
+  // The other half of the pair. The test above says none of them retries; this
+  // one says they are not all one word — collapse the split back to a single
+  // `return "structural"` and every named row here goes red while the bounds
+  // above stay perfectly, uselessly green.
+  for (const [code, expected] of BAKEOFF_CODE_CLASSES) {
+    assert.equal(classifyPhaseFailure(bakeoffSignals(code)), expected, code);
+  }
+  const named = new Set(BAKEOFF_CODE_CLASSES.map(([, klass]) => klass));
+  assert.equal(named.size, 6, "the split produced six distinct classes, five of them named");
+});
+
+test("the five named classes each say something DIFFERENT, or the split bought nothing", () => {
+  // Bound 0 for all of them means the ONLY thing the split delivers is the
+  // sentence on the run's log. Identical sentences would make it a rename.
+  const reasons = new Map<FailureClass, string>();
+  for (const [code, klass] of BAKEOFF_CODE_CLASSES) {
+    const d = decide({ signals: bakeoffSignals(code) });
+    assert.equal(d.kind, "stop", code);
+    if (d.kind !== "stop") continue;
+    const seen = reasons.get(klass);
+    // Same class, same sentence — the reason is a function of the class alone.
+    if (seen !== undefined) assert.equal(d.reason, seen, code);
+    reasons.set(klass, d.reason);
+  }
+  assert.equal(new Set(reasons.values()).size, reasons.size, "two classes stop with the same sentence");
+
+  // And each sentence names the thing that class is about, so an owner reading
+  // one line knows whose move it is.
+  assert.match(reasons.get("owner_action") ?? "", /needs YOU|authorisation|credential/);
+  assert.match(reasons.get("integrity") ?? "", /digest|re-freeze|softening/i);
+  assert.match(reasons.get("accounting") ?? "", /price|ledger/i);
+  assert.match(reasons.get("harness_defect") ?? "", /not implemented|seam/i);
+  assert.match(reasons.get("suite_authoring") ?? "", /bad-test audit|blocking findings/i);
+  assert.match(reasons.get("structural") ?? "", /declared unrecoverable/i);
+});
+
+test("owner_action: a spend refusal is NOT a repairable defect, and must never become one", () => {
+  // THE CONTROL THE SPLIT EXISTS FOR. Before 2026-08-10 this failure and a
+  // schema defect the validator could describe were the same class with the same
+  // bound. They are now two classes — and the one the owner has to clear is the
+  // one that must stay at 0 whatever happens to the other.
+  for (const code of ["budget_exceeded", "missing_credential"]) {
+    const klass = classifyPhaseFailure(bakeoffSignals(code));
+    assert.equal(klass, "owner_action", code);
+    assert.equal(boundFor(klass), 0, `${code} must never be retried on the owner's behalf`);
+    assert.notEqual(klass, "suite_authoring");
+  }
+  assert.equal(boundFor("owner_action"), 0);
+});
+
+test("integrity: a suite-hash mismatch stops, and says why re-freezing is not recovery", () => {
+  const klass = classifyPhaseFailure(bakeoffSignals("suite_hash_mismatch"));
+  assert.equal(klass, "integrity");
+  assert.equal(boundFor(klass), 0);
+  const d = decide({ signals: bakeoffSignals("suite_hash_mismatch") });
+  assert.match(reasonOf(d), /softening the grader/i);
+});
+
+test("suite_authoring: the one repairable-in-principle class still bounds 0, and says why", () => {
+  // If this ever becomes non-zero without a carrier across the phase boundary
+  // and a fingerprint gate, the run re-rolls three authoring attempts that know
+  // nothing about the three that just failed. See boundFor's docblock.
+  const klass = classifyPhaseFailure(bakeoffSignals("suite_not_audited"));
+  assert.equal(klass, "suite_authoring");
+  assert.equal(boundFor(klass), 0);
+  assert.match(reasonOf(decide({ signals: bakeoffSignals("suite_not_audited") })), /only written when authoring/i);
+});
+
+test("a named subclass still beats throttled: a BakeoffError near a rate limit is not a wait", () => {
+  // The ordering the split was not allowed to disturb. `budget_exceeded` is
+  // `owner_action` now rather than `structural`, and it must STILL be checked
+  // before the refusal evidence — otherwise a spend refusal that happened to
+  // land near a rate limit arms a multi-hour timer.
   const err = Object.assign(new Error("boom"), { name: "BakeoffError", code: "budget_exceeded", remediation: "x" });
   const signals = signalsFor(err, null, refusal());
-  assert.equal(classifyPhaseFailure(signals), "structural");
-  assert.equal(decide({ signals }).kind, "stop");
+  const klass = classifyPhaseFailure(signals);
+  assert.equal(klass, "owner_action");
+  assert.notEqual(klass, "throttled");
+  const d = decide({ signals });
+  assert.equal(d.kind, "stop");
+  assert.equal(d.kind === "stop" ? d.code : "", "class_terminal");
 });
 
 test("structural: a seat `protocol` failure is structural, not transient", () => {
@@ -757,4 +895,78 @@ test("the prose hint matches what the seat layer needs it to, and NOTHING else",
   );
   assert.equal(throttleHintFromMessage("Claude Code process aborted by user"), false);
   assert.equal(throttleHintFromMessage("the claude CLI subprocess failed"), false);
+});
+
+/**
+ * THE `suite_authoring` SENTENCE MUST NOT SEND AN OWNER TO A LIST THAT IS EMPTY.
+ *
+ * WHAT IT USED TO SAY, AND WHY THAT WAS WRONG (found by review, 2026-08-10). The
+ * sentence ended *"Read the blocking findings on the error — they name the
+ * fields."* Two ordinary failures reach this class with NO findings at all:
+ *
+ *   · an attempt whose response never parsed — `attempts[].findings` is `[]` and
+ *     the problems are about the RESPONSE, which `remediationForFailedAuthoring`
+ *     already says in as many words;
+ *   · new in this round, an authoring phase every attempt of which was ABANDONED on
+ *     the per-call wall-clock bound. No suite was ever authored, so nothing was
+ *     ever audited. `bakeoff` emits `TIMEOUT_FAILURE_MARKER` for exactly this case
+ *     and NOTHING HERE READS IT (see the deferred item in
+ *     `docs/DESIGN-self-maintaining-pipeline.md` §3.7), so such a run arrives as
+ *     plain `suite_not_audited` and gets this class's sentence verbatim.
+ *
+ * The owner-facing sentence is the entire product of the 2026-08-10 split, and the
+ * one new failure mode the round introduces was being handed a sentence describing
+ * something that did not happen. So the sentence now names the channel that is
+ * ALWAYS populated — the thrown message, which carries the last attempt's problems,
+ * the output-token rung per attempt, and the wall-clock bound in both directions —
+ * and says out loud that a finding is not guaranteed.
+ */
+test("suite_authoring does not promise audit findings, and names what the error always carries", () => {
+  const reason = reasonOf(decide({ signals: bakeoffSignals("suite_not_audited") }));
+
+  assert.doesNotMatch(
+    reason,
+    /Read the blocking findings on the error/i,
+    "the sentence sends the owner to `last.findings`, which is `[]` for a response that never parsed " +
+      "and for a phase whose every attempt was abandoned on the wall-clock bound",
+  );
+  assert.match(
+    reason,
+    /Read the error itself/i,
+    "the sentence does not point at the channel that is always populated",
+  );
+  assert.match(
+    reason,
+    /wall-clock bound/i,
+    "an abandoned-call failure lands in this class and the sentence never mentions the bound, so an " +
+      "owner reading it cannot tell a cut-off phase from a rejected suite",
+  );
+  assert.match(
+    reason,
+    /does NOT always name a blocking audit finding/i,
+    "the sentence still implies a finding exists",
+  );
+
+  /*
+   * THE NEGATIVE HALF — the sentence must not have been hollowed out into
+   * generalities. It still has to name this class's own mechanism (the audit it
+   * failed, and why re-entering the phase is futile), or the split is a rename.
+   */
+  assert.match(reason, /bad-test audit/i, "the sentence no longer names the audit it failed");
+  assert.match(
+    reason,
+    /only written when authoring SUCCEEDS/i,
+    "the sentence no longer says WHY a phase-level retry would know nothing — which is the reason the " +
+      "bound is 0 and the thing a reader has to be able to check",
+  );
+  // And it is still distinct from every other class's sentence. The codes are the
+  // ones `BAKEOFF_CODE_CLASSES` maps to those classes; a shared sentence here
+  // would mean the split delivered a rename.
+  for (const other of ["not_implemented", "unknown_model_price", "suite_hash_mismatch"]) {
+    assert.notEqual(
+      reason,
+      reasonOf(decide({ signals: bakeoffSignals(other) })),
+      `suite_authoring and ${other}'s class stop with the same sentence`,
+    );
+  }
 });

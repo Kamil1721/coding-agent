@@ -68,7 +68,19 @@
  *    "regenerating cannot fix it — there is no higher max_tokens to retry at").
  *    Bound 0 is what keeps the phase level from re-spending what the call level
  *    already spent; the two levels never attempt the same thing, so there is no
- *    shared counter and no "retries 9 times, reports 3".
+ *    shared counter and no "retries 9 times, reports 3". IT IS ALSO THE DEFAULT
+ *    FOR EVERY `BakeoffError` CODE THE FIVE CLASSES BELOW DO NOT NAME, which is
+ *    what keeps a code added in 2027 stopping — see {@link classOfBakeoffCode}.
+ *  - `owner_action`, `integrity`, `accounting`, `harness_defect`,
+ *    `suite_authoring` — FIVE NAMED SUBCLASSES OF `structural`, ADDED 2026-08-10,
+ *    ALL STILL BOUND 0. They exist because one class with one bound could not
+ *    say which of five completely different things had gone wrong: a spend
+ *    refusal only the owner can authorise, a frozen-suite digest mismatch, a
+ *    price-table hole, an unimplemented seam and a suite that failed its own
+ *    audit all ended a run with the same word and the same sentence. What
+ *    changes is the LABEL and the SENTENCE, which is the whole of what this
+ *    round earns; see {@link boundFor} for why not one of them earns a budget
+ *    yet, and {@link classOfBakeoffCode} for the mapping and its evidence.
  *  - `throttled` — the provider refused; time is the only fix. Bound
  *    {@link AUTO_CONTINUE_MAX}, plus a wait ceiling (§{@link RECOVERY_MAX_AUTO_WAIT_MS}).
  *  - `transient` — a fault a byte-identical retry could survive. Reached from a
@@ -84,6 +96,11 @@ export type FailureClass =
   | "intentional"
   | "interrupted"
   | "structural"
+  | "owner_action"
+  | "integrity"
+  | "accounting"
+  | "harness_defect"
+  | "suite_authoring"
   | "throttled"
   | "transient"
   | "unclassified";
@@ -138,12 +155,75 @@ export const TRANSIENT_MAX = 2;
  * cannot help. `structural` means the layer that still had the evidence declared
  * the retry futile; `intentional` means a human said stop; `unclassified` means
  * nobody here knows what happened, which is the case that must never loop.
+ *
+ * ─── WHY THE 2026-08-10 SPLIT SHIPPED WITH NO NEW BUDGET, WHICH IS THE HALF OF
+ *     IT MOST LIKELY TO BE READ AS AN OVERSIGHT ───
+ *
+ * The five subclasses below were split out so that a repairable defect would
+ * stop being answered like a spend refusal. The obvious next move is to give the
+ * repairable ones a budget. THREE MEASUREMENTS SAY NOT YET, and each of them is
+ * a thing that has to be built somewhere that is not this file:
+ *
+ *  1. NOTHING RE-ENTERS A NON-THROTTLED CLASS TODAY. `#recoverFrom`
+ *     (orchestrator.ts:6665) reads `if (klass !== "throttled") return false`, so
+ *     a `BakeoffError` never reaches {@link planRecovery} at all — it is
+ *     classified for the record and the run is failed. A budget written here
+ *     would spend nothing today and everything the day that line changes, and
+ *     by then nobody remembers it was provisional.
+ *  2. A PHASE-LEVEL RETRY OF AUTHORING WOULD BE A BLIND RE-ROLL. The spec
+ *     phase's own attempt loop is `DEFAULT_MAX_AUTHORING_ATTEMPTS = 3`
+ *     (spec-types.ts:312), and the attempt trail reaches disk ONLY through
+ *     `freezeSuite`'s `authoringTrail`, which is written at spec-agent.ts:1614
+ *     on the SUCCESS path (`grep -arn authoringTrail bakeoff/src` → one writer).
+ *     So re-entering the phase re-runs the same three attempts knowing nothing
+ *     about the three that just failed. Making the attempts inside one phase
+ *     informed of each other — the other half of this round — does not carry
+ *     anything ACROSS the phase boundary, and a re-roll of a loop that already
+ *     converged on failure is the exact futility `structural` was named for.
+ *  3. THE ANTI-LOOP PRIMITIVE IS A FINGERPRINT, NOT A COUNT, and it does not
+ *     exist. `DESIGN-self-maintaining-pipeline.md` §3.4 measured this on run
+ *     `a913c871`: three attempts, the budget never exceeded, and attempt 3
+ *     OSCILLATED BACK to a defect attempt 2 had fixed. §3.5 prices the
+ *     alternative — a schema budget of 2 without the fingerprint gate is 8 spec
+ *     seat calls, ~3.7 h and ~1.7M output tokens for one dead run — and states
+ *     the conclusion this function is obeying: *"Per-class N shipped WITHOUT the
+ *     fingerprint is strictly worse than today."*
+ *
+ * WHAT WOULD EARN A NONZERO BOUND, so the next person changes the right thing:
+ * a re-entry path for the class (1), a carrier that survives the phase boundary
+ * so the retry differs (2), and the fingerprint comparator with both of its
+ * controls (3). Until all three exist the honest number is 0, and a docblock
+ * promising otherwise would be the optimism this repository keeps mistaking for
+ * a feature.
+ *
+ * AND A FOURTH THING, LEARNED FROM MUTATING THIS FUNCTION RATHER THAN FROM
+ * READING IT: raising any bound here without adding an arm to
+ * {@link planRecovery} produces NONSENSE, not a retry. That function's tail
+ * comment reads "Only `throttled` remains: every other class either has bound 0
+ * (refused above) or returned already", so a class given a budget falls straight
+ * through into `planThrottledWait` and stops with `no_refusal` — telling the
+ * owner his spend refusal "was reported as a rate limit but arrived with no
+ * reading of the refusal itself". That is the observed output of setting
+ * `owner_action` to 3, not a prediction. The bound and the arm are one change.
  */
 export function boundFor(klass: FailureClass): number {
   switch (klass) {
     case "intentional":
       return 0;
     case "structural":
+      return 0;
+    // The five subclasses of `structural`. Same number, different sentences —
+    // see {@link terminalClassReason} — and each one is a separate line here so
+    // that raising one of them is a visible edit rather than a widened case.
+    case "owner_action":
+      return 0;
+    case "integrity":
+      return 0;
+    case "accounting":
+      return 0;
+    case "harness_defect":
+      return 0;
+    case "suite_authoring":
       return 0;
     case "unclassified":
       return 0;
@@ -153,6 +233,74 @@ export function boundFor(klass: FailureClass): number {
       return AUTO_CONTINUE_MAX;
     case "transient":
       return TRANSIENT_MAX;
+  }
+}
+
+/**
+ * MAY AN AUTOMATED AGENT PROPOSE A REPAIR FOR THIS CLASS? A DIFFERENT QUESTION
+ * FROM {@link boundFor}, AND THE TWO WERE BEING CONFUSED IN PRODUCTION.
+ *
+ * ─── THE DEFECT THIS FUNCTION EXISTS TO END (found 2026-08-10 by review) ───
+ *
+ * `orchestrator.ts`'s `#writeDefectRecord` derived the defect record's
+ * `repairable` field as `boundFor(failureClass) > 0`. Every class
+ * {@link classOfBakeoffCode} can return is bound 0, so `repairable` was provably
+ * `false` for all twelve `BakeoffError` codes — written into every defect record
+ * and exposed through the API. Meanwhile `supervisor.ts` routed `accounting`,
+ * `harness_defect`, `suite_authoring` and `structural` to the ticket state
+ * `repairing`, whose own sentence is "waiting for a repair proposal for this
+ * failure class". So the fingerprint record for a `suite_authoring` failure said
+ * repairable=false while the strip above it said the system was repairing it, and
+ * BOTH were shown to the owner.
+ *
+ * `boundFor(...) > 0` IS A RETRY-BUDGET PREDICATE. It answers "may this run
+ * re-enter the same phase by itself", which with this round's deliberate all-zero
+ * bounds can only ever answer `false` for the classes the round created. That is
+ * not the same question as "is this the kind of failure a repair agent may look
+ * at", and reading one as the other is how a record and a panel came to disagree.
+ *
+ * ─── WHAT IT RETURNS, AND WHY IT IS EXACTLY THE SUPERVISOR'S OWN PREDICATE ───
+ *
+ * `intentional`, `owner_action` and `integrity` are `false`; everything else is
+ * `true`. That is not a fresh judgement — it is the predicate `supervisor.ts`
+ * ALREADY computed by hand before routing to `blocked`, lifted into the file that
+ * owns the taxonomy so there is one answer instead of two. The supervisor now
+ * calls this instead of re-listing the classes, and `#writeDefectRecord` calls
+ * the same function, so the record and the panel cannot drift.
+ *
+ *   · `intentional` — a human stopped this run. Nothing may propose a patch for a
+ *     decision a person took.
+ *   · `owner_action` — money and secrets. No agent may approve a spend or invent
+ *     a credential (DESIGN §3.6 items 2 and 3).
+ *   · `integrity` — the frozen suite's digest moved. The cheapest "repair" is
+ *     re-freezing, which is grader-softening wearing the word autonomy.
+ *
+ * THE ONE RESIDUE, NAMED RATHER THAN ARGUED AWAY. `unclassified` lands on `true`,
+ * and {@link terminalClassReason} tells the owner "nothing here recognises this
+ * failure, so nothing here can say a retry would help". Those read as opposites.
+ * It is `true` because the supervisor routes `unclassified` to `repairing` today,
+ * and this function's contract is to BE that routing rather than to second-guess
+ * it — an offline agent reading the full recorded description is exactly the
+ * consumer the `unclassified` channel was built for. If that is wrong, the
+ * supervisor's arm is what changes, and this function follows it; what must never
+ * happen again is the two of them answering differently. `recovery.test.ts` pins
+ * the agreement over EVERY class, not over the four that prompted the fix.
+ */
+export function isRepairable(klass: FailureClass): boolean {
+  switch (klass) {
+    case "intentional":
+    case "owner_action":
+    case "integrity":
+      return false;
+    case "structural":
+    case "accounting":
+    case "harness_defect":
+    case "suite_authoring":
+    case "unclassified":
+    case "throttled":
+    case "interrupted":
+    case "transient":
+      return true;
   }
 }
 
@@ -397,11 +545,29 @@ export interface PhaseFailureSignals {
    */
   readonly interrupted: boolean;
   /**
-   * `error.code` when the throw was a `BakeoffError`, else null. ANY non-null
-   * value is `structural`; this is not matched against a list of codes. A list
-   * would silently drop a code added later, and the point of the harness's error
-   * type is that it only exists for failures it has already declared clean and
-   * unrecoverable.
+   * `error.code` when the throw was a `BakeoffError`, else null. It is matched
+   * against a list of codes as of 2026-08-10, and the list can only make a
+   * failure MORE specific, never more recoverable.
+   *
+   * THIS DOCBLOCK USED TO READ *"ANY non-null value is `structural`; this is not
+   * matched against a list of codes. A list would silently drop a code added
+   * later"* — and that fear was the right fear. A list that decides WHETHER TO
+   * RETRY drops an unknown code into whichever arm it falls through to, and the
+   * arm a code falls through to is the one nobody chose for it.
+   *
+   * THE LIST IS BUILT SO THAT THE FEAR CANNOT COME TRUE, and that is a property
+   * of {@link classOfBakeoffCode} rather than of anybody's care: its default is
+   * `structural`, every class it can return is bound 0, and an unrecognised code
+   * therefore behaves EXACTLY as it did before the split — recorded, stopped,
+   * never retried. `a_code_added_in_2027` is in the test for that reason. What
+   * the list buys is not a decision, it is a NAME: the run's record and the
+   * sentence the owner reads now distinguish a spend refusal from a digest
+   * mismatch from a suite that failed its own audit.
+   *
+   * STILL STRUCTURED, STILL NEVER PROSE. The discrimination is on
+   * `BakeoffErrorCode` (contracts.ts:57-69), a twelve-member union written at
+   * the throw site — not on the message, which this type does not carry and
+   * never will.
    */
   readonly bakeoffCode: string | null;
   /**
@@ -597,6 +763,93 @@ function isSeatFailureKind(value: unknown): value is SeatFailureKind {
  * ====================================================================== */
 
 /**
+ * Which subclass of `structural` a `BakeoffError` code names. THE DEFAULT IS
+ * `structural`, WHICH IS THE SAFETY PROPERTY AND NOT A FALLTHROUGH.
+ *
+ * Read the direction of this function before reading the lists. It cannot make
+ * anything recoverable: every class it returns is bound 0 in {@link boundFor},
+ * so what a code gets by being named here is a different SENTENCE and a
+ * different `recovery_class` on its run, and a code that is NOT named here gets
+ * precisely the behaviour it had before the split existed. That is what lets a
+ * list live in a file whose own docblock spent a paragraph explaining why a list
+ * was dangerous.
+ *
+ * ─── THE MAPPING, AND THE THREE PLACES IT REFUSES THE OBVIOUS ANSWER ───
+ *
+ * The brief that commissioned the split proposed four codes as "repairable,
+ * deserves a real budget". Read against their throw sites, three of them are
+ * not, and this function says so:
+ *
+ *  · `invalid_usage_shape` IS NOT REPAIRABLE AND IS NOT NAMED HERE. It is the
+ *    most overloaded code in the union: `mergeSeatUsage was given no rows`
+ *    (anthropic-seat.ts:366), `maxOutputTokens must be a positive integer`
+ *    (:605), `a seat call needs at least one user turn` (:613), `config A has no
+ *    orchestrator seat` (dryrun.ts:625) — programmer faults, every one — beside
+ *    the 2026-08-04 overflow death whose own remediation reads "regenerating
+ *    cannot fix it", AND the one genuinely repairable member, the manifest
+ *    parser's `fail()` at scorer-protocol.ts:509. FROM THE CODE ALONE THOSE ARE
+ *    INDISTINGUISHABLE. Naming the code repairable would authorise re-entering a
+ *    50-minute phase because a helper was called with an empty array. Splitting
+ *    it needs the structured `detail` carrier of DESIGN §3.2, written at the
+ *    throw site; until that exists the code keeps the default and keeps stopping.
+ *  · `not_implemented` and `unknown_config` are `harness_defect`, NOT
+ *    repairable-in-run. Nothing a run can do to itself implements a seam
+ *    (`notImplemented()`, contracts.ts:93) or invents a config name. DESIGN §3.3
+ *    B3 files both as Tier 2 — an offline repair agent — with "**0** in-run",
+ *    and this agrees with it.
+ *  · `suite_not_audited` is `suite_authoring`, which is the one class that is
+ *    repairable IN PRINCIPLE — the validator owns the schema and the audit's
+ *    findings are already on the wire. Its bound is nonetheless 0 today, for the
+ *    three reasons set out in {@link boundFor}, of which the load-bearing one is
+ *    that a phase-level retry would carry nothing across the boundary.
+ *
+ * The remaining three lists are the ones the brief and DESIGN §3.3 agree on:
+ * `owner_action` (B5 resource) because only the owner can authorise a spend or
+ * supply a credential; `integrity` (B6) because the cheapest repair for a digest
+ * mismatch is re-freezing, which is grader-softening dressed as autonomy; and
+ * `accounting` (B4) because a price-table hole is a table row, written offline.
+ *
+ * THE ACCOUNTING FAMILY IS ALSO UNREACHABLE ON THIS DEPLOYMENT, measured rather
+ * than assumed: `invalid_effort` has NO `new BakeoffError` site anywhere
+ * (`grep -arn` over `bakeoff/src` and `dashboard/server/src` finds it only as an
+ * `env.ts` blocker `kind`), and the other four are thrown only by the price-table
+ * functions `resolvePrice`/`priceVendorUsage`/`assertNoDuplicateUsageRows`
+ * (contracts.ts) and `adapters.ts:311`, none of which the dashboard server calls
+ * (`grep -arn` for all four names over `dashboard/server/src`, excluding tests →
+ * no hits). They are classified anyway: a class that exists only when it fires
+ * is a class nobody has ever read.
+ */
+export function classOfBakeoffCode(code: string): FailureClass {
+  if (OWNER_ACTION_CODES.includes(code)) return "owner_action";
+  if (INTEGRITY_CODES.includes(code)) return "integrity";
+  if (ACCOUNTING_CODES.includes(code)) return "accounting";
+  if (HARNESS_DEFECT_CODES.includes(code)) return "harness_defect";
+  if (SUITE_AUTHORING_CODES.includes(code)) return "suite_authoring";
+  return "structural";
+}
+
+/** Only the owner clears these: money and secrets. DESIGN §3.6 items 2 and 3. */
+const OWNER_ACTION_CODES: readonly string[] = ["missing_credential", "budget_exceeded"];
+
+/** The frozen grader disagreed with itself. DESIGN §3.3 B6, and it is FROZEN. */
+const INTEGRITY_CODES: readonly string[] = ["suite_hash_mismatch"];
+
+/** A price table or a usage ledger, repaired offline. DESIGN §3.3 B4. */
+const ACCOUNTING_CODES: readonly string[] = [
+  "unknown_model_price",
+  "unpriced_usage",
+  "ambiguous_price_window",
+  "invalid_effort",
+  "duplicate_usage_row",
+];
+
+/** A seam this program has not written. DESIGN §3.3 B3, Tier 2, 0 in-run. */
+const HARNESS_DEFECT_CODES: readonly string[] = ["not_implemented", "unknown_config"];
+
+/** The suite could not be authored past its own audit. DESIGN §3.3 B1/B2. */
+const SUITE_AUTHORING_CODES: readonly string[] = ["suite_not_audited"];
+
+/**
  * Which class of failure this was. Order is load-bearing; see
  * {@link FailureClass}.
  *
@@ -627,8 +880,11 @@ export function classifyPhaseFailure(s: PhaseFailureSignals): FailureClass {
   // 3. STRUCTURAL BEFORE THROTTLED. A `BakeoffError` thrown while the run
   //    happened to be near a rate limit is still futile to retry, and this
   //    ordering is what stops the phase level from re-spending a ladder the call
-  //    level already exhausted and declared dead.
-  if (s.bakeoffCode !== null) return "structural";
+  //    level already exhausted and declared dead. THE ORDERING IS UNCHANGED BY
+  //    THE 2026-08-10 SPLIT: every class {@link classOfBakeoffCode} can return
+  //    is bound 0, so a named subclass still beats `throttled` and still spends
+  //    nothing. What moved is the name, not the position and not the budget.
+  if (s.bakeoffCode !== null) return classOfBakeoffCode(s.bakeoffCode);
   if (s.seatKind === "protocol") return "structural";
 
   // 4. THROTTLED, on this call's own evidence.
@@ -732,6 +988,74 @@ function terminalClassReason(klass: FailureClass): string {
         "the failure is one the layer that saw it declared unrecoverable, so an identical retry cannot " +
         "succeed. Re-running it would spend the same time and end the same way. Read the remediation on " +
         "the error and change something first."
+      );
+    /*
+     * THE FIVE SENTENCES BELOW ARE THE PRODUCT OF THE 2026-08-10 SPLIT. The
+     * bounds are all 0 and all identical to the one above, so if these read the
+     * same as each other the split bought nothing: the run's log would still
+     * tell an owner whose card was declined to "read the remediation and change
+     * something first". Each names WHO can clear it and WHAT the next move is,
+     * and `recovery.test.ts` asserts they are distinct from one another rather
+     * than merely present.
+     */
+    case "owner_action":
+      return (
+        "this one needs YOU, and no amount of waiting or retrying substitutes: the run stopped on a spend " +
+        "authorisation or a missing credential. Nothing here can approve money or invent a secret. Clear " +
+        "it — the error's remediation names which — and press Resume. A credential goes into the env file " +
+        "or the secret store, never into a chat."
+      );
+    case "integrity":
+      return (
+        "the frozen acceptance suite no longer matches the digest it was sealed with, so the grader and " +
+        "the thing being graded have drifted apart. THIS IS NOT AUTO-REPAIRED ON PURPOSE: the cheapest " +
+        "repair is to re-freeze, which would make every future verdict agree with whatever the tree " +
+        "happens to say — softening the grader and calling it recovery. A human decides what moved."
+      );
+    case "accounting":
+      return (
+        "the cost ledger could not price or record this run's usage — a missing price window, an unpriced " +
+        "row, or a duplicate. Retrying re-runs the work and meets the same gap, because the gap is in a " +
+        "table rather than in the run. The repair is a price-table row or a dedupe key, written offline, " +
+        "and then the run resumes."
+      );
+    case "harness_defect":
+      return (
+        "the run reached a seam this program has not implemented, or named a configuration it does not " +
+        "know. Nothing a run can do to itself writes the missing code or invents the config, so this " +
+        "stops rather than spending an identical attempt. It is a defect to fix in the harness, and the " +
+        "error's own remediation names the seam."
+      );
+    /*
+     * THIS SENTENCE USED TO PROMISE FINDINGS THAT MAY NOT EXIST, corrected
+     * 2026-08-10. It ended "Read the blocking findings on the error — they name
+     * the fields", and there are two ordinary failures for which the finding list
+     * is EMPTY: an attempt whose response never parsed, and — new this round — an
+     * authoring phase every attempt of which was ABANDONED on the per-call
+     * wall-clock bound, where no suite was ever authored and so nothing was ever
+     * audited. Sending an owner to read a list that is `[]` is the same defect
+     * class the split exists to end, so the sentence now names the channel that
+     * is always populated instead of the one that sometimes is: the thrown
+     * `suite_not_audited` message carries the last attempt's problems, the
+     * output-token rung each attempt ran on, and — in both directions — whether
+     * any attempt was abandoned on the wall-clock bound.
+     *
+     * WHAT IT STILL DOES NOT DO: give an abandoned run its own class and its own
+     * sentence. `bakeoff`'s `TIMEOUT_FAILURE_MARKER` is the discriminator for
+     * that and NOTHING READS IT YET; the deferred item, its blocker
+     * (`PhaseFailureSignals` carries no message) and its consumer are named in
+     * `docs/DESIGN-self-maintaining-pipeline.md` §3.7.
+     */
+    case "suite_authoring":
+      return (
+        "the acceptance suite could not be authored past its own bad-test audit within the attempts the " +
+        "spec phase allows. THIS IS THE ONE CLASS HERE THAT IS REPAIRABLE IN PRINCIPLE, and it still " +
+        "stops: re-entering the phase would re-run the same attempts knowing nothing about the ones that " +
+        "just failed, because the attempt trail is only written when authoring SUCCEEDS. Read the error " +
+        "itself before spending another phase — it names the last attempt's problems, the output-token " +
+        "rung every attempt ran on, and whether any attempt was abandoned on the per-call wall-clock " +
+        "bound. It does NOT always name a blocking audit finding: a response that never parsed, and an " +
+        "attempt the harness cut off, produce no findings at all."
       );
     case "unclassified":
       return (
@@ -930,6 +1254,17 @@ export function planRecovery(input: RecoveryInput): RecoveryDecision {
 
   // Only `throttled` remains: every other class either has bound 0 (refused
   // above) or returned already.
+  //
+  // THAT SENTENCE IS TRUE AND IT IS FRAGILE, AND THE FIVE CLASSES ADDED ON
+  // 2026-08-10 ARE WHERE IT WILL BREAK. `owner_action`, `integrity`,
+  // `accounting`, `harness_defect` and `suite_authoring` reach this line only
+  // because {@link boundFor} returns 0 for all of them. Give ANY of them a
+  // budget and it falls through to `planThrottledWait`, which finds no refusal
+  // and stops with `no_refusal` — telling the owner that his spend refusal "was
+  // reported as a rate limit but arrived with no reading of the refusal itself".
+  // That is the MEASURED output of setting `owner_action` to 3 while proving
+  // this file's tests, not a prediction. Whoever raises a bound adds the arm
+  // here in the same change; the bound alone produces nonsense, not a retry.
   return planThrottledWait(klass, input);
 }
 

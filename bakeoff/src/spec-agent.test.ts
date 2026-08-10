@@ -10,6 +10,15 @@
  * finding and `alwaysRunJudge` is not set (`spec-agent.ts` —
  * `deterministicBlocks && ... !== true`).
  *
+ * PARTS 4 AND 5 ADD A THIRD ROUTE, and it is worth naming because it is the one
+ * that lets the REGENERATION LOOP be tested at all: `AnthropicSeatCaller` is
+ * subclassable, so a caller that records its request and replays a scripted
+ * response body drives the real `generateAuditedSuite`, the real
+ * `parseSuiteDraft`, the real deterministic audit and the real
+ * `parseSuiteManifest` across three attempts without a network or a token. The
+ * base constructor still resolves a credential BY NAME, so the environment
+ * carries a sentinel that is not a key and cannot be one.
+ *
  * ------------------------------------------------------------------------
  * PART 1 — THE MANIFEST-MODE RULE (`CHOOSE ONE OF TWO MODES`)
  * ------------------------------------------------------------------------
@@ -155,16 +164,36 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Ticket } from "./contracts.js";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { AnthropicSeat, Ticket } from "./contracts.js";
+import { BakeoffError } from "./contracts.js";
 import { ticketDigest } from "./hash.js";
 import {
+  ATTEMPT_TIMEOUT_ENV_NAME,
   AUTHORING_SYSTEM_PROMPT,
+  DEFAULT_ATTEMPT_TIMEOUT_MS,
   MANIFEST_DATA_EXPECTATION_EXAMPLES,
+  TIMEOUT_FAILURE_MARKER,
+  TURN_MARKER_CONSTRAINTS,
+  TURN_MARKER_PRIOR,
+  TURN_MARKER_TICKET,
   auditSuite,
+  generateAuditedSuite,
   remediationForFailedAuthoring,
+  resolveAttemptTimeoutMs,
 } from "./spec-agent.js";
 import type { AuditFinding } from "./contracts.js";
-import { STATIC_SERVE_PORT, parseSuiteManifest } from "./scorer-protocol.js";
+import { AnthropicSeatCaller } from "./anthropic-seat.js";
+import type { SeatCallRequest, SeatCallResult } from "./anthropic-seat.js";
+import { JUDGE_SEAT, SPEC_SEAT } from "./config.js";
+import {
+  STATIC_SERVE_PORT,
+  SUITE_MANIFEST_FILENAME,
+  parseSuiteManifest,
+} from "./scorer-protocol.js";
+import { AUTHORING_BUDGET, DEFAULT_MAX_AUTHORING_ATTEMPTS } from "./spec-types.js";
 import type { SuiteDraft } from "./spec-types.js";
 
 /* -------------------------------------------------------------------------
@@ -861,5 +890,1222 @@ test("the uniqueness rule the prompt states is enforced across the list", () => 
     () => parseSuiteManifest(manifestWith([one, two])),
     /duplicate dataExpectations id/,
     "two entries may share an id, but the prompt tells the seat they may not",
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * PART 4 — THE REGENERATION PROMPT, REPLAYED FROM RUN a913c871's OWN BYTES
+ * ---------------------------------------------------------------------- */
+
+/**
+ * WHAT IS REAL HERE AND WHAT IS CONSTRUCTED. Say it once, plainly, because a
+ * fixture that is described as "the real run" and is not is worse than an
+ * obviously synthetic one.
+ *
+ * REAL, BYTE FOR BYTE: {@link ATTEMPT_1_MANIFEST} and {@link ATTEMPT_2_MANIFEST}
+ * are the `suite.manifest.json` entries the spec seat actually emitted on run
+ * `run-2026-08-09T21-04-00-713Z-a913c871`, lifted out of the Claude Code CLI's
+ * own session transcripts (`~/.claude/projects/…-dashboard/`, sessions
+ * `cfdffda9…` 21:06:30→21:31:52 and `60fcb909…` 21:31:54→22:07:19), located by
+ * the `StructuredOutput` tool_use input carrying `path: "suite.manifest.json"`.
+ * `docs/RUN-a913c871-observations.md` names those transcripts; they still
+ * existed on 2026-08-10 and this fixture is the only copy of them inside the
+ * repository. Attempt 1's entries are `{entity, source, expectation}` and
+ * attempt 2's are `{id, description, entity, minRowCount, readBack}` — the
+ * exact "added `id`, still no `kind`, still no `minRows`" shapes the
+ * post-mortem tabulated.
+ *
+ * CONSTRUCTED: the criteria and the two test files. The real suites were
+ * 63,957 and 50,125 bytes of structured output across seven test files; what
+ * they need to do here is reach the audit carrying ONE defect that is fixed
+ * between attempts, and a compact pair does that without pretending to be a
+ * portfolio suite.
+ *
+ * WHY THE FIXTURE MUST PARSE, AND THIS IS THE TRAP THIS FILE WALKED INTO ONCE
+ * ALREADY. `spec-agent-ladder.test.ts` scripts every response as unparseable,
+ * which is right for measuring a call sequence and fatal here: an unparseable
+ * response yields NO `SuiteDraft`, so there is no manifest to echo and the
+ * production line that echoes it never executes. A test built on that fixture
+ * would assert on a prompt assembled by code that never ran. Every response
+ * below is JSON that `parseSuiteDraft` accepts and whose manifest
+ * `parseSuiteManifest` rejects — which is precisely what the real run did.
+ * `assertReachedTheAudit` below refuses to let that silently regress.
+ *
+ * ------------------------------------------------------------------------
+ * NEGATIVE CONTROLS — mutations applied to PRODUCTION code in `spec-agent.ts`,
+ * each run, each WATCHED RED, each restored (2026-08-10). The first two ARE the
+ * pre-2026-08-10 behaviour, so they double as the before-state:
+ *
+ *   mutation                                        test that went red
+ *   E  `retryContext()` returns                     "attempt 2 is shown attempt
+ *      `previousManifest: null` (the seat is         1's own manifest, verbatim"
+ *      told nothing it wrote)                       + "attempt 3 is shown
+ *                                                    attempt 2's manifest, not
+ *                                                    attempt 1's"
+ *   F  `recordConstraints` empties `constraints`    "attempt 3 still carries the
+ *      before pushing — i.e. the old                 constraint attempt 1 was
+ *      `feedback = <newest>` assignment              given"
+ *   G  the three regeneration turns emitted in      "the regeneration turns
+ *      the order constraints → prior → ticket        arrive in an order the seat
+ *                                                    can resolve"
+ *   K  `priorAttemptTurn` sends a CHARACTER         same two as E
+ *      COUNT instead of the manifest bytes
+ *
+ * G IS THE CONTROL ON THE OTHER CONTROLS. E and F both stay GREEN under G:
+ * every substring they look for is still somewhere in the prompt, just in an
+ * order that makes "which document is the ticket and which is my last answer?"
+ * a guess. Presence assertions cannot see ordering, so ordering is asserted
+ * separately.
+ *
+ * K IS THE CONTROL ON "VERBATIM". A recap that described the manifest instead
+ * of quoting it would satisfy every "the prompt mentions the previous attempt"
+ * assertion and would reproduce the original defect exactly: what run
+ * `a913c871`'s seat lost was the document, not the knowledge that a document
+ * had existed.
+ *
+ * PART 5's mutations are listed in its own section header.
+ */
+
+/** Run `a913c871` attempt 1's manifest. Real bytes. No `id`, no `kind`, no `minRows`. */
+const ATTEMPT_1_MANIFEST = `{
+  "manifestVersion": 1,
+  "ticketId": "t-b79ff5e2a1b314e4",
+  "target": "web",
+  "execution": {
+    "install": null,
+    "build": null,
+    "typecheck": null,
+    "lint": null,
+    "start": "npm start",
+    "port": 3000,
+    "healthPath": "/api/health",
+    "bootTimeoutMs": null,
+    "commandTimeoutMs": null
+  },
+  "sourceDirs": ["."],
+  "uiFlows": [
+    { "id": "home", "path": "/", "description": "hero with name, role, one line, and the six-project selected-work strip", "waitForSelector": null },
+    { "id": "work", "path": "/work", "description": "six CV project cards, each with its own illustration", "waitForSelector": null },
+    { "id": "about", "path": "/about", "description": "career narrative, roles with dates, and the skills list", "waitForSelector": null },
+    { "id": "contact", "path": "/contact", "description": "contact form posting to /api/contact and rendering the server response", "waitForSelector": null }
+  ],
+  "dataExpectations": [
+    { "entity": "contact_message", "source": "POST /api/contact", "expectation": "every accepted submission is written to the SQLite file with name, email, message and a timestamp, survives a restart, and is only readable through GET /api/messages with the correct bearer token" },
+    { "entity": "project", "source": "GET /api/projects", "expectation": "at least six project rows seeded into SQLite on first boot covering Teewise, Trade Assistant, JobSilver, Kori, Parts Agent and CrewFlow" }
+  ]
+}`;
+
+/** Run `a913c871` attempt 2's manifest. Real bytes. `id` added; still no `kind`, no `minRows`. */
+const ATTEMPT_2_MANIFEST = `{
+  "manifestVersion": 1,
+  "ticketId": "t-b79ff5e2a1b314e4",
+  "target": "web",
+  "execution": {
+    "install": null,
+    "build": null,
+    "typecheck": null,
+    "lint": null,
+    "start": "npm start",
+    "port": 3000,
+    "healthPath": "/api/health",
+    "bootTimeoutMs": null,
+    "commandTimeoutMs": null
+  },
+  "sourceDirs": ["."],
+  "uiFlows": [
+    { "id": "home", "path": "/", "description": "Hero with name, role and the selected-work strip", "waitForSelector": null },
+    { "id": "work", "path": "/work", "description": "Project cards drawn from the CV", "waitForSelector": null },
+    { "id": "about", "path": "/about", "description": "Career narrative, roles with dates and the skills list", "waitForSelector": null },
+    { "id": "contact", "path": "/contact", "description": "Contact form posting to /api/contact", "waitForSelector": null }
+  ],
+  "dataExpectations": [
+    {
+      "id": "contact-messages-stored",
+      "description": "Accepted contact submissions are stored in SQLite with a timestamp and survive a restart",
+      "entity": "messages",
+      "minRowCount": 1,
+      "readBack": "GET /api/messages with the configured bearer token"
+    },
+    {
+      "id": "projects-seeded",
+      "description": "The six CV projects are seeded into SQLite on first boot and served from there",
+      "entity": "projects",
+      "minRowCount": 6,
+      "readBack": "GET /api/projects"
+    }
+  ]
+}`;
+
+/**
+ * Not a credential and not shaped like one. The base caller resolves the seat's
+ * key BY NAME at construction and refuses to build without it; nothing here
+ * reaches a network, and the value must not match `PLACEHOLDER_RE` in `env.ts`.
+ */
+const SENTINEL = ["BAKEOFF", "TEST", "NO", "API", "KEY"].join("-");
+
+const REPLAY_BRIEF =
+  "Build a portfolio site whose contact form stores each submission in SQLite, whose /api/messages " +
+  "endpoint reads them back behind a bearer token, and whose /api/projects list is served from the " +
+  "same database.";
+
+/**
+ * The id is run `a913c871`'s real re-minted ticket id, so it matches the
+ * `ticketId` inside both real manifests. The brief is not the real 190-line
+ * one: `assertTicketUnedited` checks only that the brief matches its own
+ * digest, and a 190-line brief in a fixture is 190 lines nobody reads.
+ */
+const REPLAY_TICKET: Ticket = Object.freeze({
+  id: "t-b79ff5e2a1b314e4",
+  brief: REPLAY_BRIEF,
+  sha256: ticketDigest(REPLAY_BRIEF),
+  tier: "hard",
+  title: "a913c871 replay",
+});
+
+/** A credential-shaped literal — the defect attempt 1 was told about and attempt 2 repeated. */
+const LEAKY_SOURCE =
+  'const AUTHORIZATION_HEADER = "Bearer sk-live-AbCdEf0123456789AbCdEf0123456789";\n' +
+  'test("[REQ-001] T-1 messages are readable with the token", async () => {\n' +
+  '  const r = await fetch("http://127.0.0.1:3000/api/messages", { headers: { authorization: AUTHORIZATION_HEADER } });\n' +
+  "  if (r.status !== 200) throw new Error(String(r.status));\n" +
+  "});\n";
+
+/** The same test with the leak repaired. Everything else about it is identical. */
+const CLEAN_SOURCE =
+  'const TOKEN_FIXTURE = "not-a-real-token";\n' +
+  'test("[REQ-001] T-1 messages are readable with the token", async () => {\n' +
+  '  const r = await fetch("http://127.0.0.1:3000/api/messages", { headers: { authorization: "Bearer " + TOKEN_FIXTURE } });\n' +
+  "  if (r.status !== 200) throw new Error(String(r.status));\n" +
+  "});\n";
+
+const REPLAY_HOLDOUT_SOURCE =
+  'test("[REQ-001] T-2 a submission survives a restart", async () => {\n' +
+  '  const r = await fetch("http://127.0.0.1:3000/api/contact", { method: "POST" });\n' +
+  "  if (r.status !== 201) throw new Error(String(r.status));\n" +
+  "});\n";
+
+/** One scripted authoring response: a suite that parses, carrying the given manifest. */
+function replayResponse(manifest: string, visibleSource: string): string {
+  return JSON.stringify({
+    criteria: [
+      {
+        id: "REQ-001",
+        statement:
+          "When a visitor submits the contact form, the system shall store the submission in SQLite.",
+        evidenceRequired: "holdout test T-2 PASS and data expectation contact-messages-stored met",
+        tier: "BLOCKING",
+        holdoutTestIds: ["T-2"],
+        visibleTestIds: ["T-1"],
+        evidenceArtifacts: [],
+      },
+      {
+        id: "REQ-002",
+        statement: "The system shall serve the project list from the database.",
+        evidenceRequired: "holdout test T-2 PASS",
+        tier: "FUNCTIONAL",
+        holdoutTestIds: ["T-2"],
+        visibleTestIds: ["T-1"],
+        evidenceArtifacts: [],
+      },
+    ],
+    testFiles: [
+      {
+        path: "holdout/contact-api.test.mjs",
+        visibility: "holdout",
+        runner: "node-test",
+        description: "held-out contact API checks",
+        testIds: ["T-2"],
+        criterionIds: ["REQ-001", "REQ-002"],
+        source: REPLAY_HOLDOUT_SOURCE,
+      },
+      {
+        path: "visible/contact-api.test.mjs",
+        visibility: "visible",
+        runner: "node-test",
+        description: "visible twin",
+        testIds: ["T-1"],
+        criterionIds: ["REQ-001", "REQ-002"],
+        source: visibleSource,
+      },
+      {
+        path: "suite.manifest.json",
+        visibility: "visible",
+        runner: "node-test",
+        description: "the scorer's execution manifest",
+        testIds: [],
+        criterionIds: [],
+        source: manifest,
+      },
+    ],
+  });
+}
+
+/** Records every request and replays a scripted response body. */
+class ReplayCaller extends AnthropicSeatCaller {
+  readonly requests: SeatCallRequest[] = [];
+  readonly #script: readonly string[];
+
+  constructor(seat: AnthropicSeat, script: readonly string[]) {
+    super(seat, { budget: AUTHORING_BUDGET, env: { [seat.envKeyName]: SENTINEL } });
+    this.#script = script;
+  }
+
+  override async call(request: SeatCallRequest): Promise<SeatCallResult> {
+    this.requests.push(request);
+    return {
+      text: this.#script[this.requests.length - 1] ?? "",
+      stopReason: "end_turn",
+      usage: { costUsd: 0 },
+    } as unknown as SeatCallResult;
+  }
+}
+
+interface Replay {
+  readonly spec: ReplayCaller;
+  readonly error: BakeoffError;
+}
+
+/**
+ * Three attempts: attempt 1 leaks a credential-shaped literal AND carries the
+ * real broken manifest; attempt 2 REPAIRS the leak and carries the real
+ * partially-repaired manifest; attempt 3 repeats attempt 2. That is the shape
+ * the accumulation claim needs — a defect that exists on attempt 1 and not on
+ * attempt 2, so "attempt 3 still knows about it" cannot be satisfied by simply
+ * forwarding the newest list.
+ */
+async function replayRun(): Promise<Replay> {
+  const spec = new ReplayCaller(SPEC_SEAT, [
+    replayResponse(ATTEMPT_1_MANIFEST, LEAKY_SOURCE),
+    replayResponse(ATTEMPT_2_MANIFEST, CLEAN_SOURCE),
+    replayResponse(ATTEMPT_2_MANIFEST, CLEAN_SOURCE),
+  ]);
+  const judge = new ReplayCaller(JUDGE_SEAT, []);
+  try {
+    await generateAuditedSuite(REPLAY_TICKET, {
+      specCaller: spec,
+      judgeCaller: judge,
+      // `node --check` would spawn a child process per file for sources whose
+      // syntax is not what is under test here.
+      syntaxCheck: false,
+    });
+  } catch (error) {
+    assert.ok(error instanceof BakeoffError, `expected a BakeoffError, got ${String(error)}`);
+    return { spec, error };
+  }
+  throw new Error("the replay was expected to fail: every scripted manifest is unscorable");
+}
+
+/**
+ * THE ARM CHECK. Every assertion below is about the CONTENT of a regeneration
+ * prompt, and a regeneration prompt only exists if the audit actually rejected
+ * something. If the fixture ever stops parsing — a renamed tier, a stricter
+ * validator, a typo — the run fails at `parseSuiteDraft` instead, the manifest
+ * echo is never reached, and the tests would go on asserting about a code path
+ * that did not execute. `docs/RUN-a913c871-observations.md` catalogues twenty
+ * checks that could only observe success; this file is not adding one.
+ */
+function assertReachedTheAudit(replay: Replay): void {
+  assert.equal(
+    replay.spec.requests.length,
+    3,
+    "the replay must make three authoring calls; fewer means an attempt died before the audit",
+  );
+  assert.match(
+    replay.error.message,
+    /is not executable by the sealed scorer/,
+    "the fixture no longer reaches the MANIFEST audit — it is failing earlier (probably " +
+      "parseSuiteDraft), so nothing below is measuring the regeneration prompt",
+  );
+  assert.doesNotMatch(
+    replay.error.message,
+    /response\.(criteria|testFiles)/,
+    "the fixture stopped parsing: `parseSuiteDraft` problems are in the failure, which means the " +
+      "draft never became a draft and there was never a manifest to echo",
+  );
+}
+
+const turnsOf = (replay: Replay, attempt: number): readonly string[] => {
+  const request = replay.spec.requests[attempt - 1];
+  assert.ok(request !== undefined, `no request recorded for attempt ${String(attempt)}`);
+  return request.userTurns;
+};
+
+const promptOf = (replay: Replay, attempt: number): string => turnsOf(replay, attempt).join("\n");
+
+/**
+ * ATTEMPT 1 IS UNTOUCHED, AND THE REASON IS THE FREEZE DIGEST.
+ * `authoringPromptSha256` is recorded on every frozen suite. A ticket whose
+ * first attempt succeeds must produce the same digest it produced before
+ * 2026-08-10, or suites frozen either side of this change stop being
+ * comparable — and comparability of the frozen suite is held-constant variable
+ * 5. Asserted as an exact equality against the turn built from the ticket, not
+ * as "one turn": a turn that gained a marker would still be one turn.
+ */
+test("attempt 1's prompt is exactly the ticket turn, unchanged and unlabelled", async () => {
+  const replay = await replayRun();
+  assertReachedTheAudit(replay);
+
+  assert.deepEqual(turnsOf(replay, 1), [
+    `TICKET ${REPLAY_TICKET.id}\n\nThe ticket text follows between the markers, verbatim. ` +
+      `Everything you need is in it.\n\n<<<TICKET_BRIEF\n${REPLAY_TICKET.brief}\nTICKET_BRIEF>>>`,
+  ]);
+});
+
+/**
+ * THE HEADLINE. Run `a913c871`'s attempt 2 was told *"your previous suite …
+ * has been discarded … you no longer have it"* and given one complaint. It
+ * added `id` and rewrote everything else. This asserts the bytes it should have
+ * been holding are in the prompt.
+ *
+ * VERBATIM, NOT PARAPHRASED: the assertion is `includes(ATTEMPT_1_MANIFEST)` on
+ * the whole 1,468-byte document. A summary, a field list or a re-serialisation
+ * would all pass a "mentions dataExpectations" test and would all reintroduce
+ * the defect, because what the seat lost was the exact document.
+ */
+test("attempt 2 is shown attempt 1's own manifest, verbatim", async () => {
+  const replay = await replayRun();
+  assertReachedTheAudit(replay);
+  const prompt = promptOf(replay, 2);
+
+  assert.ok(
+    prompt.includes(ATTEMPT_1_MANIFEST),
+    "attempt 2's prompt does not contain attempt 1's manifest. This is the exact defect that made " +
+      "run a913c871 unconvergeable: the seat was told its previous suite had been discarded and " +
+      "was handed one field name to fix on a document it could no longer see.",
+  );
+  assert.match(
+    prompt,
+    /YOUR OWN output from an earlier attempt/,
+    "the manifest is in the prompt but not identified as the seat's own prior output",
+  );
+  assert.doesNotMatch(
+    prompt,
+    /you no longer have it/,
+    "the sentence that caused the defect is still in the regeneration prompt",
+  );
+});
+
+/**
+ * THE OTHER HALF, AND IT IS NOT THE SAME CLAIM. A retry could echo the previous
+ * manifest and still forward only the newest complaint list; attempt 3 would
+ * then be holding attempt 2's document with attempt 2's complaints and no
+ * memory of what attempt 1 was told. Measured on the real run: attempt 1 was
+ * told about a credential-shaped literal, attempt 2 never saw that sentence
+ * again, and attempt 3 was told about the SAME defect in two files.
+ *
+ * The fixture repairs the leak on attempt 2 deliberately, so the complaint is
+ * absent from attempt 2's own findings. Finding it in attempt 3's prompt is
+ * therefore only possible by accumulation.
+ */
+test("attempt 3 still carries the constraint attempt 1 was given", async () => {
+  const replay = await replayRun();
+  assertReachedTheAudit(replay);
+
+  const second = promptOf(replay, 2);
+  const third = promptOf(replay, 3);
+
+  assert.match(second, /credential-shaped literal/, "attempt 1's leak was never reported at all");
+  // THE CONTROL ON THE CLAIM: the leak really is gone from attempt 2's suite,
+  // so its reappearance in attempt 3's prompt cannot be the newest list.
+  assert.ok(
+    !replay.spec.requests[2]?.userTurns.some((t) => t.includes(CLEAN_SOURCE)),
+    "the fixture is not doing what the docblock says it does",
+  );
+  assert.match(
+    third,
+    /credential-shaped literal/,
+    "attempt 3 was not told about the defect attempt 1 was told about. The accumulated constraint " +
+      "set is not accumulating — this is `feedback = <newest>` again, and it is why attempt 3 of " +
+      "run a913c871 threw away the `id` it had already got right.",
+  );
+  assert.match(
+    third,
+    /FROM ATTEMPT 1:/,
+    "the constraints are not attributed to the attempt that earned them",
+  );
+  assert.match(third, /FROM ATTEMPT 2:/, "attempt 2's own constraints are missing from attempt 3");
+});
+
+/**
+ * THE MANIFEST SHOWN IS THE LATEST ONE THAT EXISTS, not the first one ever
+ * seen. A recap that pinned attempt 1's document would hand attempt 3 a
+ * manifest two revisions stale and tell it to keep the parts that were
+ * accepted — advice about a document it had already replaced.
+ */
+test("attempt 3 is shown attempt 2's manifest, not attempt 1's", async () => {
+  const replay = await replayRun();
+  assertReachedTheAudit(replay);
+  const third = promptOf(replay, 3);
+
+  assert.ok(third.includes(ATTEMPT_2_MANIFEST), "attempt 3 is not holding attempt 2's manifest");
+  assert.ok(
+    !third.includes(ATTEMPT_1_MANIFEST),
+    "attempt 3 is holding attempt 1's manifest as well — two conflicting documents, and the seat " +
+      "has no way to know which one it is being asked to repair",
+  );
+  assert.match(third, /Attempt 2 emitted this as/, "the manifest is not attributed to an attempt");
+});
+
+/**
+ * ORDERING, ASSERTED SEPARATELY FROM PRESENCE. Mutation G — emitting the same
+ * three turns back to front — leaves every assertion above GREEN. A seat that
+ * reads its complaints before it has seen the document they are about, and the
+ * document before the ticket, is being asked to resolve the references
+ * backwards.
+ */
+test("the regeneration turns arrive in an order the seat can resolve", async () => {
+  const replay = await replayRun();
+  assertReachedTheAudit(replay);
+  const turns = turnsOf(replay, 2);
+
+  assert.equal(turns.length, 3, "a regeneration is three turns: ticket, prior attempt, constraints");
+  assert.ok(turns[0]?.startsWith(TURN_MARKER_TICKET), "turn 1 is not labelled as the ticket");
+  assert.ok(turns[1]?.startsWith(TURN_MARKER_PRIOR), "turn 2 is not labelled as the prior attempt");
+  assert.ok(
+    turns[2]?.startsWith(TURN_MARKER_CONSTRAINTS),
+    "turn 3 is not labelled as the constraint set",
+  );
+
+  const flat = turns.join("\n");
+  assert.ok(
+    flat.indexOf(TURN_MARKER_TICKET) <
+      flat.indexOf(TURN_MARKER_PRIOR) &&
+      flat.indexOf(TURN_MARKER_PRIOR) < flat.indexOf(TURN_MARKER_CONSTRAINTS),
+    "the markers are present but out of order, so which document is which is a guess",
+  );
+});
+
+/**
+ * THE BOUNDARY, ASSERTED RATHER THAN ARGUED. {@link AuthoringRetryContext}'s
+ * docblock claims this change hands the seat nothing but its own prior output
+ * and the harness's own rejections. A docblock is not a check. Everything in
+ * every regeneration turn must be traceable to the ticket, the seat's own
+ * scripted response, or an audit sentence — so a future edit that folds in a
+ * workspace path, a builder log or a file read goes red here.
+ */
+/*
+ * NARROWED 2026-08-10, AND THE REASON IS THAT A GUARD WHICH REDDENS ON A BENIGN
+ * WORD BECOMES A DELETED GUARD.
+ *
+ * The first version of this test forbade /workspace/i, /builder/i and
+ * /\bimplementation\b/i anywhere in the prompt. Those are ORDINARY WORDS in the
+ * vocabulary this prompt legitimately carries: the audit finding kind is literally
+ * `leaks_implementation`, `recovery.ts`'s own sentences use "builder", and any
+ * judge-seat prose about a suite that describes an implementation would trip it.
+ * The property being guarded is real — every constraint originates in
+ * `stopReasonProblem`, `redactText` of the seat's own JSON, `blockingFindingSummary`
+ * or `attemptTimeoutProblem` — but a check whose first failure is a false alarm
+ * gets read as a flake and then removed, and the seal loses its only assertion.
+ *
+ * So the word list is replaced by two things that cannot come from inside the seal:
+ *
+ *   SHAPES, not words — an absolute path, a `node_modules/` segment, a git command,
+ *   a unified-diff hunk header. None of those can be produced by the ticket, by the
+ *   seat's own JSON, or by the validator's sentences.
+ *
+ *   PROVENANCE, which is the assertion the word list was standing in for — every
+ *   numbered constraint's file references and the whole of the echoed prior
+ *   manifest must be traceable to bytes THE SEAT ITSELF EMITTED (its scripted
+ *   responses) or to the ticket. That is checkable here because the replay knows
+ *   exactly what the seat said.
+ */
+test("a regeneration prompt carries nothing the seat could not already see", async () => {
+  const replay = await replayRun();
+  assertReachedTheAudit(replay);
+
+  /*
+   * THE CORPUS IS WHAT IS INSIDE THE SEAL: the ticket as the harness serialises
+   * it, plus every byte the seat itself produced. Anything in a regeneration turn
+   * that names a file not in here came from somewhere the spec seat may not see.
+   */
+  const inTheSeal = [
+    JSON.stringify(REPLAY_TICKET),
+    replayResponse(ATTEMPT_1_MANIFEST, LEAKY_SOURCE),
+    replayResponse(ATTEMPT_2_MANIFEST, CLEAN_SOURCE),
+  ].join("\n");
+
+  for (const attempt of [2, 3]) {
+    const prompt = promptOf(replay, attempt);
+
+    for (const forbidden of [
+      // An absolute POSIX path. Nothing inside the seal has a filesystem root.
+      /(?:^|[\s"'(])\/(?:Users|home|var|tmp|private|opt|etc)\//,
+      /node_modules\//,
+      /\bgit (?:diff|log|status|show|apply)\b/i,
+      // A unified-diff hunk header, i.e. a patch pasted into the prompt.
+      /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m,
+      /^(?:\+\+\+|---) [ab]\//m,
+    ]) {
+      assert.doesNotMatch(
+        prompt,
+        forbidden,
+        `attempt ${String(attempt)}'s prompt matches ${String(forbidden)}. The spec seat is sealed ` +
+          "(tools: [], no history, no workspace) and that seal is what makes held_out_pass mean " +
+          "anything. Its own previous manifest is inside the seal; anything from the build is not.",
+      );
+    }
+
+    /*
+     * PROVENANCE 1 — EVERY NUMBERED CONSTRAINT'S FILE REFERENCES. The constraint
+     * bullets are the only free-form text in this turn, and a leak would arrive
+     * naming a file: a builder log path, a source file from the workspace, a
+     * `package.json`. Each token that looks like a file must be one the seat
+     * itself wrote, or the manifest filename the harness owns.
+     */
+    const bullets = [...prompt.matchAll(/^\s+\d+\. (.*)$/gm)].map((m) => m[1] ?? "");
+    assert.ok(
+      bullets.length > 0,
+      `attempt ${String(attempt)} carries no numbered constraints, so this test is asserting ` +
+        "provenance over an empty list — vacuously true and worth nothing",
+    );
+    for (const bullet of bullets) {
+      for (const token of bullet.match(/[A-Za-z0-9_./-]+\.(?:mjs|cjs|js|ts|tsx|json)\b/g) ?? []) {
+        assert.ok(
+          inTheSeal.includes(token) || token === SUITE_MANIFEST_FILENAME,
+          `a constraint shown to attempt ${String(attempt)} names "${token}", which appears nowhere ` +
+            "in the ticket or in the seat's own responses. A constraint may only be built from what " +
+            "the seat emitted and what the harness measured about it; a file name from anywhere else " +
+            "is the seal leaking. Bullet: " + bullet,
+        );
+      }
+    }
+
+    /*
+     * PROVENANCE 2 — THE ECHOED DOCUMENT IS THE SEAT'S OWN, WHOLE, AND ALONE.
+     * The prior-attempt turn fences the manifest with `<<<PREVIOUS_MANIFEST`. What
+     * is between the fences must be byte-equal to a manifest the seat emitted —
+     * not a re-serialisation, not a merge, and not a second document beside it.
+     */
+    const fenced = /<<<PREVIOUS_MANIFEST\n([\s\S]*?)\nPREVIOUS_MANIFEST>>>/.exec(prompt);
+    assert.ok(fenced !== null, `attempt ${String(attempt)} echoes no fenced previous manifest`);
+    const echoed = fenced?.[1] ?? "";
+    assert.ok(
+      echoed === ATTEMPT_1_MANIFEST || echoed === ATTEMPT_2_MANIFEST,
+      `attempt ${String(attempt)}'s echoed manifest is not byte-equal to anything the seat emitted. ` +
+        "A re-serialised or merged document is the harness putting words in the seat's mouth, and the " +
+        "field it silently normalises is the field the next attempt will lose.",
+    );
+    assert.equal(
+      (prompt.match(/<<<PREVIOUS_MANIFEST/g) ?? []).length,
+      1,
+      `attempt ${String(attempt)} carries more than one fenced document, so which one it is being ` +
+        "asked to repair is a guess",
+    );
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * PART 5 — THE PER-CALL WALL-CLOCK BOUND
+ * ---------------------------------------------------------------------- */
+
+/**
+ * WHAT WENT WRONG, MEASURED. Run `a913c871`'s three authoring attempts ran
+ * 25m23s, 35m25s and 23m43s with no wall-clock bound of any kind. 84 minutes 31
+ * seconds passed between the phase starting and the run dying, and the events
+ * table acquired six rows in that window, all `rate_limit` telemetry. Nothing
+ * in the harness could distinguish a call that was thinking from a call that
+ * was never coming back.
+ *
+ * WHY THE BOUND IS PER CALL AND NOT PER ATTEMPT. The free truncation retry
+ * dispatches a second call inside the same attempt. A per-attempt budget would
+ * hand that retry whatever was left — so an attempt that burned 29 of its 30
+ * minutes and then truncated would get a one-minute retry and lose the ladder
+ * silently, on the mechanism the previous round made visible.
+ *
+ * THE STUB NEVER RESOLVES, DELIBERATELY. It returns `new Promise(() => {})`
+ * with no timer and no handle, so it holds nothing open and cannot itself end
+ * the test. Before the bound existed these tests did not fail — they HUNG, and
+ * `node --test` cancelled them on its own timeout. That is the watched red.
+ *
+ * NEGATIVE CONTROLS for part 5 — production mutations in `spec-agent.ts`, each
+ * run, each WATCHED RED, each restored (2026-08-10):
+ *
+ *   mutation                                        result
+ *   H  `callWithDeadline` returns `work`            both hang tests CANCELLED
+ *      unconditionally — the pre-2026-08-10          at 20,000 ms ("tests 28,
+ *      state, no bound at all                        pass 26, fail 0,
+ *                                                    cancelled 2", exit 1)
+ *   J  `describeAttemptTimeouts` can never          "the failure names the
+ *      report a hit                                  bound, which attempts hit
+ *                                                    it, and that they were not
+ *                                                    cancelled"
+ *   L  the no-hit sentence reduced to the bound     "a run where nothing timed
+ *      alone                                         out says so"
+ *   M  the resolver reads `options.env ?? {}`       "the override is read from
+ *      instead of `?? process.env`                   the real process
+ *                                                    environment"
+ *   N  a timed-out attempt records no              "the attempt after a timeout
+ *      constraint — the outcome exists but the      is told it timed out, and
+ *      ladder cannot act on it                      told to write less"
+ *   O  the NO-timeout sentence rewritten to        "a run where nothing timed
+ *      contain `TIMEOUT_FAILURE_MARKER`             out says so"
+ *
+ * O IS THE CONTROL ON THE HANDOFF. `TIMEOUT_FAILURE_MARKER` is the substring
+ * `recovery.ts` is meant to key on to tell an abandoned call apart from an
+ * audited-and-rejected suite. If the negative sentence also contained it, every
+ * non-timeout failure would classify as a timeout — the signature defect,
+ * arriving from the classifier's side. The exclusion is asserted, not assumed.
+ *
+ * J AND L ARE THE SAME LINE FROM OPPOSITE SIDES, and both are needed: J proves
+ * the positive report can fail, L proves the NEGATIVE report can. A wall-clock
+ * line that only speaks when it fires is indistinguishable from one that is
+ * disabled, which is the reading run `a913c871` had to reconstruct by hand for
+ * the truncation ladder.
+ *
+ * M IS THE ONE THAT DECIDES WHETHER ANY OF THIS REACHES PRODUCTION. Everything
+ * else here can be green while the only channel the orchestrator has — the
+ * environment — is unwired.
+ */
+/** Never resolves, never rejects, holds nothing open. */
+const HANG = null;
+
+class HangingCaller extends AnthropicSeatCaller {
+  readonly requests: SeatCallRequest[] = [];
+  readonly #script: readonly (string | null)[];
+
+  constructor(seat: AnthropicSeat, script: readonly (string | null)[]) {
+    super(seat, { budget: AUTHORING_BUDGET, env: { [seat.envKeyName]: SENTINEL } });
+    this.#script = script;
+  }
+
+  get calls(): number {
+    return this.requests.length;
+  }
+
+  override async call(request: SeatCallRequest): Promise<SeatCallResult> {
+    this.requests.push(request);
+    const scripted = this.#script[this.requests.length - 1] ?? HANG;
+    if (scripted === HANG) return new Promise<SeatCallResult>(() => undefined);
+    return { text: scripted, stopReason: "end_turn", usage: { costUsd: 0 } } as unknown as SeatCallResult;
+  }
+}
+
+async function runAgainstAHang(
+  options: {
+    readonly attemptTimeoutMs?: number;
+    readonly env?: NodeJS.ProcessEnv;
+  },
+  script: readonly (string | null)[] = [],
+): Promise<{ readonly spec: HangingCaller; readonly error: BakeoffError }> {
+  const spec = new HangingCaller(SPEC_SEAT, script);
+  const judge = new ReplayCaller(JUDGE_SEAT, []);
+  try {
+    await generateAuditedSuite(REPLAY_TICKET, {
+      specCaller: spec,
+      judgeCaller: judge,
+      syntaxCheck: false,
+      ...options,
+    });
+  } catch (error) {
+    assert.ok(error instanceof BakeoffError, `expected a BakeoffError, got ${String(error)}`);
+    return { spec, error };
+  }
+  throw new Error("a run whose every call hangs cannot succeed");
+}
+
+test(
+  "an authoring call that never returns is abandoned on the bound, and the ladder keeps going",
+  { timeout: 20_000 },
+  async () => {
+    const { spec, error } = await runAgainstAHang({ attemptTimeoutMs: 150 });
+
+    assert.equal(
+      spec.calls,
+      DEFAULT_MAX_AUTHORING_ATTEMPTS,
+      "a timeout must consume exactly one attempt and let the next one start. Fewer calls means " +
+        "the timeout aborted the loop; more means it bought a free retry it is not entitled to.",
+    );
+    assert.equal(error.code, "suite_not_audited");
+  },
+);
+
+/**
+ * A TIMEOUT IS NOT A TRUNCATION, AND THE LADDER MUST NOT TREAT IT AS ONE.
+ * Raising `max_tokens` for a call that never came back buys a longer call. The
+ * assertion above (exactly `DEFAULT_MAX_AUTHORING_ATTEMPTS` calls) is what
+ * makes this checkable: a truncation would have produced attempts + 1.
+ */
+test("the failure names the bound, which attempts hit it, and that they were not cancelled", { timeout: 20_000 }, async () => {
+  const { error } = await runAgainstAHang({ attemptTimeoutMs: 150 });
+
+  assert.ok(
+    error.message.includes(`Attempt(s) 1, 2, 3 ${TIMEOUT_FAILURE_MARKER}`),
+    "the failure does not say which attempts were abandoned, so runs.failure_reason cannot tell a " +
+      "harness-cut call apart from a suite the audit rejected",
+  );
+  assert.match(
+    error.message,
+    /NOT cancelled/,
+    "the failure claims the calls were stopped. They were abandoned: SeatCallRequest carries no " +
+      "AbortSignal and the seat subprocess keeps running.",
+  );
+  assert.doesNotMatch(
+    error.message,
+    /No attempt was abandoned/,
+    "a run whose attempts all timed out must not carry the sentence saying none did",
+  );
+});
+
+/**
+ * WHAT THE RETRY DOES DIFFERENTLY AFTER A TIMEOUT, ASSERTED AT THE PROMPT.
+ * "First-class outcome the ladder can act on" is only worth the phrase if the
+ * NEXT attempt is told something it would not otherwise have been told. A
+ * timeout produces no suite, so there is nothing for the audit to complain
+ * about; without this the next attempt would receive an empty constraint set
+ * and a silent absence where its own previous manifest should be, and would
+ * behave exactly like a first attempt that had already burned half an hour.
+ */
+test("the attempt after a timeout is told it timed out, and told to write less", { timeout: 20_000 }, async () => {
+  const { spec } = await runAgainstAHang({ attemptTimeoutMs: 150 }, [
+    HANG,
+    replayResponse(ATTEMPT_2_MANIFEST, CLEAN_SOURCE),
+    replayResponse(ATTEMPT_2_MANIFEST, CLEAN_SOURCE),
+  ]);
+
+  const second = spec.requests[1]?.userTurns.join("\n") ?? "";
+  assert.match(second, /FROM ATTEMPT 1:/, "the timeout did not become a constraint the next attempt sees");
+  assert.match(
+    second,
+    /did not return within 0 minute\(s\) and was abandoned/,
+    "the next attempt is not told that the previous call was abandoned rather than answered",
+  );
+  assert.match(
+    second,
+    /Emit a SMALLER suite/,
+    "the next attempt is told what happened and not what to do differently, which buys another " +
+      "identical timeout at the same price",
+  );
+  assert.match(
+    second,
+    /THERE IS NO MANIFEST TO SHOW YOU/,
+    "a timed-out attempt produced no manifest, and the absence must be stated rather than left " +
+      "as a missing turn the seat reads as 'you have no previous attempt'",
+  );
+
+  const third = spec.requests[2]?.userTurns.join("\n") ?? "";
+  assert.ok(
+    third.includes(ATTEMPT_2_MANIFEST),
+    "attempt 3 must be holding attempt 2's manifest: the run recovered from the timeout and the " +
+      "recap has to recover with it",
+  );
+  assert.match(third, /FROM ATTEMPT 1:/, "the timeout constraint was dropped once a suite arrived");
+});
+
+/**
+ * THE NEGATIVE DIRECTION, AND IT IS THE HALF THAT KEEPS THE OTHER HALF HONEST.
+ * A bound that reports only when it fires cannot be told apart from a bound
+ * that is disabled or absent. Run `a913c871`'s post-mortem needed an argument
+ * from the shape of an unrelated error message to establish that the truncation
+ * ladder had NOT fired; this sentence is that argument, pre-written.
+ */
+test("a run where nothing timed out says so, and names the bound in force", async () => {
+  const replay = await replayRun();
+  assertReachedTheAudit(replay);
+
+  assert.match(
+    replay.error.message,
+    /Per-call wall-clock bound: 60 minute\(s\)\. No attempt was abandoned on the per-call wall-clock bound/,
+    "a run where the bound never fired must say both what the bound was and that it did not fire",
+  );
+  // THE NUMBER IS READ FROM THE CONSTANT AS WELL AS MATCHED AS TEXT, so a change
+  // to the default cannot leave this file asserting a bound that is not in force.
+  assert.match(
+    replay.error.message,
+    new RegExp(`Per-call wall-clock bound: ${String(DEFAULT_ATTEMPT_TIMEOUT_MS / 60_000)} minute\\(s\\)`),
+    "the reported bound is not the default this build ships",
+  );
+
+  // THE DISCRIMINATOR MUST NOT FIRE HERE. `recovery.ts` keys on
+  // TIMEOUT_FAILURE_MARKER to tell an abandoned call apart from an audited and
+  // rejected suite. If the marker were a substring the NEGATIVE sentence also
+  // contains, every non-timeout failure would classify as a timeout — a check
+  // that can only observe success, arriving from the classifier's side.
+  assert.ok(
+    !replay.error.message.includes(TIMEOUT_FAILURE_MARKER),
+    `the timeout discriminator "${TIMEOUT_FAILURE_MARKER}" appears in the failure message of a run ` +
+      "where nothing timed out, so no caller can use it to discriminate anything",
+  );
+});
+
+/**
+ * THE ENV OVERRIDE IS THE ONLY CHANNEL PRODUCTION HAS. `orchestrator.ts` passes
+ * nine options to `authorAndFreezeSuite` and `attemptTimeoutMs` is not one of
+ * them, so an opt-in option would be an option nobody sets — the failure mode
+ * this file already documents about `onEvent`. The bound is default-on and the
+ * environment moves it.
+ */
+test("the environment can tighten, loosen and disable the bound", async () => {
+  assert.equal(resolveAttemptTimeoutMs({ env: {} }), DEFAULT_ATTEMPT_TIMEOUT_MS);
+  assert.equal(
+    resolveAttemptTimeoutMs({ env: { [ATTEMPT_TIMEOUT_ENV_NAME]: "5" } }),
+    5 * 60 * 1000,
+    "minutes, to match BAKEOFF_SCORER_TIMEOUT_MIN — the only other timeout this repo exports",
+  );
+  assert.equal(
+    resolveAttemptTimeoutMs({ env: { [ATTEMPT_TIMEOUT_ENV_NAME]: "0" } }),
+    Number.POSITIVE_INFINITY,
+    "0 must disable the bound rather than mean an instant timeout",
+  );
+  assert.equal(
+    resolveAttemptTimeoutMs({ attemptTimeoutMs: 1234, env: { [ATTEMPT_TIMEOUT_ENV_NAME]: "5" } }),
+    1234,
+    "an explicit option outranks the environment",
+  );
+});
+
+/**
+ * `process.env`, NOT ONLY AN INJECTED `env` BAG — and this is the assertion
+ * that decides whether the override exists in production at all.
+ * `orchestrator.ts` passes no `env` to `authorAndFreezeSuite`, so if the
+ * resolver fell back to `{}` instead of `process.env` every test above would
+ * stay green and the owner's `BAKEOFF_SPEC_ATTEMPT_TIMEOUT_MIN=…` would do
+ * nothing. Written and restored around the read, because a test that leaks an
+ * env var into the rest of the file is a test that breaks a sibling.
+ */
+test("the override is read from the real process environment, which is what production has", () => {
+  const before = process.env[ATTEMPT_TIMEOUT_ENV_NAME];
+  try {
+    process.env[ATTEMPT_TIMEOUT_ENV_NAME] = "7";
+    assert.equal(
+      resolveAttemptTimeoutMs({}),
+      7 * 60 * 1000,
+      "the resolver does not read process.env, so no production caller can move this bound",
+    );
+  } finally {
+    if (before === undefined) delete process.env[ATTEMPT_TIMEOUT_ENV_NAME];
+    else process.env[ATTEMPT_TIMEOUT_ENV_NAME] = before;
+  }
+  assert.equal(resolveAttemptTimeoutMs({}), DEFAULT_ATTEMPT_TIMEOUT_MS, "the test leaked its env var");
+});
+
+/**
+ * A MALFORMED OVERRIDE THROWS RATHER THAN FALLING BACK. A safety bound that
+ * silently ignores what the operator typed is a bound he believes he changed
+ * and did not — the same class of defect as a probe that can only observe
+ * success, arriving from the configuration side.
+ */
+test("a malformed bound is refused, not quietly replaced by the default", () => {
+  for (const bad of ["abc", "-1", "ten"]) {
+    assert.throws(
+      () => resolveAttemptTimeoutMs({ env: { [ATTEMPT_TIMEOUT_ENV_NAME]: bad } }),
+      /is not a number of minutes/,
+      `${ATTEMPT_TIMEOUT_ENV_NAME}=${bad} was accepted`,
+    );
+  }
+  assert.throws(() => resolveAttemptTimeoutMs({ attemptTimeoutMs: -5 }), /must be a finite number/);
+});
+
+/**
+ * THE BOUND DOES NOT COST THE SEAT ITS ANSWER. A race that resolved to the
+ * timeout sentinel while the call was already settling would turn every slow
+ * success into a failure. Asserted with a bound long enough that the scripted
+ * response always wins, and against the same replay fixture the rest of this
+ * file uses, so it exercises the real `Promise.race`.
+ */
+test("a call that returns inside the bound is unaffected by it", async () => {
+  const spec = new ReplayCaller(SPEC_SEAT, [replayResponse(ATTEMPT_2_MANIFEST, CLEAN_SOURCE)]);
+  const judge = new ReplayCaller(JUDGE_SEAT, []);
+  await assert.rejects(
+    generateAuditedSuite(REPLAY_TICKET, {
+      specCaller: spec,
+      judgeCaller: judge,
+      syntaxCheck: false,
+      maxAttempts: 1,
+      attemptTimeoutMs: 10_000,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof BakeoffError);
+      assert.match(
+        error.message,
+        /is not executable by the sealed scorer/,
+        "the call was cut short by the bound instead of being audited",
+      );
+      return true;
+    },
+  );
+  assert.equal(spec.requests.length, 1);
+});
+
+/* -------------------------------------------------------------------------
+ * PART 5b — WHAT AN ABANDONED CALL COSTS, AND WHAT STILL BOUNDS IT
+ * ---------------------------------------------------------------------- */
+
+/**
+ * THE HOLE THIS PART CLOSES, AND IT WAS A REVIEW FINDING RATHER THAN A HUNCH.
+ *
+ * `callWithDeadline` ABANDONS; it does not cancel. So attempt N+1 is dispatched
+ * while attempt N's call is still in flight — the first concurrency this phase has
+ * ever had — and `SpendCeiling.checkBeforeCall` projects from `#spentUsd`, which an
+ * abandoned call only reaches (`ceiling.record`, anthropic-seat.ts:673) IF IT
+ * RETURNS. Attempts 2 and 3 were therefore authorised against a spend figure that
+ * omitted every in-flight call, so the hard ceiling could be exceeded by up to
+ * (attempts - 1) x worstCaseNextCallUsd with `allowed: true` on every decision row.
+ *
+ * `HangingCaller` ABOVE CANNOT SEE THIS AND THAT IS WHY THIS CLASS EXISTS. It
+ * overrides `call()` and never touches the ceiling, so no pre-call decision is ever
+ * pushed and the reservation has nothing to read. This caller reproduces the REAL
+ * ordering — `checkBeforeCall`, `assertAllowed`, then dispatch — and then hangs.
+ *
+ * WHAT THE ARITHMETIC PROVES, so the assertion is not "a number went up":
+ * ceiling $2.50, worst case $1.00 a call.
+ *   attempt 1: projected 0.00 + 1.00 <= 2.50  allowed  -> abandoned, 1.00 reserved
+ *   attempt 2: projected 1.00 + 1.00 <= 2.50  allowed  -> abandoned, 1.00 reserved
+ *   attempt 3: projected 2.00 + 1.00 >  2.50  REFUSED  -> budget_exceeded
+ * Without the reservation `#spentUsd` stays 0.00, all three are allowed, and the
+ * phase ends `suite_not_audited` having authorised $3.00 against a $2.50 ceiling.
+ * The two outcomes are different ERROR CODES, not different log lines.
+ */
+const RESERVE_WORST_CASE_USD = 1;
+
+class CeilingHonouringHangingCaller extends AnthropicSeatCaller {
+  readonly requests: SeatCallRequest[] = [];
+
+  constructor(seat: AnthropicSeat, budget: typeof AUTHORING_BUDGET) {
+    super(seat, { budget, env: { [seat.envKeyName]: SENTINEL } });
+  }
+
+  get calls(): number {
+    return this.requests.length;
+  }
+
+  override async call(request: SeatCallRequest): Promise<SeatCallResult> {
+    this.requests.push(request);
+    // THE ORDER IS THE PRODUCTION ORDER (anthropic-seat.ts:639-640): estimate,
+    // check, assert, THEN dispatch. The reservation finds this decision by index,
+    // so a stub that skipped the check would make it unfindable.
+    const decision = this.ceiling.checkBeforeCall(RESERVE_WORST_CASE_USD, request.purpose);
+    this.ceiling.assertAllowed(decision, request.purpose);
+    return new Promise<SeatCallResult>(() => undefined);
+  }
+}
+
+function tightBudget(maxCostUsd: number): typeof AUTHORING_BUDGET {
+  return Object.freeze({ ...AUTHORING_BUDGET, maxCostUsd, maxCampaignCostUsd: 175 });
+}
+
+async function runAgainstAHangHonouringTheCeiling(
+  maxCostUsd: number,
+): Promise<{ readonly spec: CeilingHonouringHangingCaller; readonly error: BakeoffError }> {
+  const budget = tightBudget(maxCostUsd);
+  const spec = new CeilingHonouringHangingCaller(SPEC_SEAT, budget);
+  const judge = new ReplayCaller(JUDGE_SEAT, []);
+  try {
+    await generateAuditedSuite(REPLAY_TICKET, {
+      specCaller: spec,
+      judgeCaller: judge,
+      syntaxCheck: false,
+      attemptTimeoutMs: 150,
+    });
+  } catch (error) {
+    assert.ok(error instanceof BakeoffError, `expected a BakeoffError, got ${String(error)}`);
+    return { spec, error };
+  }
+  throw new Error("a run whose every call hangs cannot succeed");
+}
+
+test(
+  "an abandoned call is charged to the ceiling at once, so the next attempt is projected over it",
+  { timeout: 20_000 },
+  async () => {
+    const { spec, error } = await runAgainstAHangHonouringTheCeiling(2.5);
+
+    assert.equal(
+      error.code,
+      "budget_exceeded",
+      "the third attempt was authorised against a ceiling that two abandoned calls had already " +
+        "committed. This is the whole finding: an abandoned call that never returns never reaches " +
+        `ceiling.record, so without a reservation the projection is blind to it. Message: ${error.message}`,
+    );
+    assert.equal(
+      spec.calls,
+      3,
+      "the refusal must land ON the third dispatch — earlier means the reservation over-charged, " +
+        "later means it never charged",
+    );
+    assert.equal(
+      spec.ceiling.spentUsd,
+      2 * RESERVE_WORST_CASE_USD,
+      "the amount charged is not the worst case the call's OWN pre-call decision computed. A guessed " +
+        "figure here would be a second answer to a question the ceiling already answered.",
+    );
+    assert.match(
+      error.message,
+      /hard ceiling reached/,
+      "the refusal does not read as a budget boundary, so an owner cannot tell it from a model failure",
+    );
+  },
+);
+
+/**
+ * THE NEGATIVE CONTROL, AND WITHOUT IT THE TEST ABOVE PASSES AGAINST A CEILING
+ * THAT REFUSES EVERYTHING. A reservation that charged the ceiling on every call —
+ * or a ceiling misconfigured tight — would produce `budget_exceeded` no matter what
+ * the bound did. With headroom the same three abandonments must run to the end of
+ * the ladder and fail as a suite that was never authored.
+ */
+test(
+  "with headroom the same three abandonments are NOT refused — the reservation bounds, it does not block",
+  { timeout: 20_000 },
+  async () => {
+    const { spec, error } = await runAgainstAHangHonouringTheCeiling(25);
+
+    assert.equal(
+      error.code,
+      "suite_not_audited",
+      `three abandoned calls inside the ceiling must exhaust the ATTEMPTS, not the budget: ${error.message}`,
+    );
+    assert.equal(spec.calls, DEFAULT_MAX_AUTHORING_ATTEMPTS);
+    assert.equal(
+      spec.ceiling.spentUsd,
+      DEFAULT_MAX_AUTHORING_ATTEMPTS * RESERVE_WORST_CASE_USD,
+      "every abandoned call must be reserved, not just the ones near the ceiling",
+    );
+    assert.ok(
+      error.message.includes(TIMEOUT_FAILURE_MARKER),
+      "the failure does not name the abandonment, so the reservation is invisible to a reader",
+    );
+    assert.match(
+      error.message,
+      /charged the WORST CASE for each of them/,
+      "the failure message does not say the ceiling was charged, so the run record still implies the " +
+        "spend of an abandoned call is simply lost",
+    );
+    /*
+     * THE FIGURE, NOT JUST THE CLAIM. A sentence that says "the ceiling was
+     * charged" without the amount cannot be checked by the person reading
+     * `runs.failure_reason`, and — the reason this assertion exists — the FIRST
+     * version of that sentence asserted the charge UNCONDITIONALLY, which is false
+     * on the subscription path where every reservation is $0. Three abandonments at
+     * $1.0000 of worst case each is $3.0000.
+     */
+    assert.match(
+      error.message,
+      /\$3\.0000 in total across 3 abandonment\(s\)/,
+      `the failure message does not report what was actually reserved: ${error.message}`,
+    );
+    assert.doesNotMatch(
+      error.message,
+      /NOTHING was charged to the spend ceiling/,
+      "a run that DID reserve money is carrying the zero-reservation sentence",
+    );
+  },
+);
+
+/**
+ * A SUBSCRIPTION CALL RESERVES NOTHING, WHICH IS THE DASHBOARD'S OWN PATH.
+ * `SubscriptionSeatCaller` calls `checkBeforeCall(0, …)` because a subscription
+ * call has no dollar cost. A reservation of 0 must be recorded as nothing at all —
+ * charging a floor of "some" against a ceiling that cannot fire would put a
+ * fabricated number into `spentUsd`, which is reported.
+ */
+class ZeroWorstCaseCaller extends CeilingHonouringHangingCaller {
+  override async call(request: SeatCallRequest): Promise<SeatCallResult> {
+    this.requests.push(request);
+    const decision = this.ceiling.checkBeforeCall(0, request.purpose);
+    this.ceiling.assertAllowed(decision, request.purpose);
+    return new Promise<SeatCallResult>(() => undefined);
+  }
+}
+
+test("a worst case of zero reserves nothing at all", { timeout: 20_000 }, async () => {
+  const spec = new ZeroWorstCaseCaller(SPEC_SEAT, tightBudget(2.5));
+  const judge = new ReplayCaller(JUDGE_SEAT, []);
+  await assert.rejects(
+    generateAuditedSuite(REPLAY_TICKET, {
+      specCaller: spec,
+      judgeCaller: judge,
+      syntaxCheck: false,
+      attemptTimeoutMs: 150,
+    }),
+    (error: unknown) => error instanceof BakeoffError && error.code === "suite_not_audited",
+  );
+  assert.equal(spec.ceiling.spentUsd, 0, "a zero worst case was turned into a non-zero charge");
+  assert.equal(spec.calls, DEFAULT_MAX_AUTHORING_ATTEMPTS);
+
+  /*
+   * AND THE FAILURE MESSAGE SAYS SO, LOUDLY — this is the half a review caught.
+   * The sentence that reaches `runs.failure_reason` used to claim, on every path,
+   * that "the dollar ceiling still bounds this phase". On the dashboard's own seat
+   * that is FALSE: `SubscriptionSeatCaller` calls `checkBeforeCall(0, …)`, nothing
+   * is reserved, and the cost ceiling cannot fire at all. A reassuring sentence
+   * beside a mechanism that does not do what it says is the exact defect this pass
+   * is repairing, so the zero case is asserted as text, not only as a number.
+   */
+  const zeroError = await generateAuditedSuite(REPLAY_TICKET, {
+    specCaller: new ZeroWorstCaseCaller(SPEC_SEAT, tightBudget(2.5)),
+    judgeCaller: new ReplayCaller(JUDGE_SEAT, []),
+    syntaxCheck: false,
+    attemptTimeoutMs: 150,
+  }).then(
+    () => {
+      throw new Error("a run whose every call hangs cannot succeed");
+    },
+    (error: unknown) => error as BakeoffError,
+  );
+  assert.match(
+    zeroError.message,
+    /NOTHING was charged to the spend ceiling for them/,
+    `a phase whose reservations were all $0 still claims the ceiling bounded it: ${zeroError.message}`,
+  );
+  assert.match(
+    zeroError.message,
+    /SUBSCRIPTION seat/,
+    "the message does not say WHY the reservation was zero, so a reader cannot tell a subscription " +
+      "seat from a broken reservation",
+  );
+  assert.doesNotMatch(
+    zeroError.message,
+    /the dollar ceiling still bounds this phase/,
+    "the run record tells the owner his spend was bounded on the one path where it was not",
+  );
+});
+
+/**
+ * THE DEADLINE TIMER IS REF'D, PROVEN IN A PROCESS WHOSE ONLY PENDING WORK IS THE
+ * HANG — WHICH IS THE ONLY PLACE THE DIFFERENCE IS OBSERVABLE.
+ *
+ * `callWithDeadline` used to `timer.unref()`, justified as letting `node --test`
+ * exit. An unref'd timer does not hold the event loop open, so the bound only fires
+ * while something ELSE keeps the loop alive. In the dashboard server a listening
+ * socket does — which is why every in-process test above stayed green either way.
+ * In a CLI invocation (`bakeoff/src/cli.ts`) whose only pending work is a
+ * handle-less hung promise, node drains and exits BEFORE the deadline: the exact
+ * shape of hang the bound exists for, silently unbounded.
+ *
+ * SO THE ASSERTION IS ON STDOUT, NOT ON THE EXIT CODE, and that is measured rather
+ * than assumed. Both directions were run by hand before this test was written:
+ *
+ *   ref'd    -> stdout "ABANDONED", exit 0
+ *   unref'd  -> NO stdout, exit 13 ("Detected unsettled top-level await")
+ *
+ * An `assert.notEqual(code, 0)` would therefore have been GREEN on the broken
+ * version and RED on the fixed one — the check inverted. The exit code is asserted
+ * too, as the second half of the same measurement, but the stdout line is the
+ * discriminator.
+ */
+test("the deadline timer holds the event loop open, so a bare hung process still abandons", async () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const specAgent = pathToFileURL(join(here, "spec-agent.js")).href;
+  const source =
+    `const { callWithDeadline } = await import(${JSON.stringify(specAgent)});\n` +
+    "const outcome = await callWithDeadline(new Promise(() => {}), 200);\n" +
+    'console.log(typeof outcome === "symbol" ? "ABANDONED" : "RETURNED");\n';
+
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", source], {
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+
+  assert.equal(
+    child.stdout.trim(),
+    "ABANDONED",
+    "a process whose ONLY pending work is a hung authoring call exited without abandoning it. The " +
+      "deadline timer is unref'd, so the bound is not a bound — it fires only if something else " +
+      `happens to keep the loop alive. stderr: ${child.stderr.trim()}`,
+  );
+  assert.equal(
+    child.status,
+    0,
+    `the child did not exit cleanly after abandoning. stderr: ${child.stderr.trim()}`,
   );
 });

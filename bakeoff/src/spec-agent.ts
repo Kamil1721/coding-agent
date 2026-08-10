@@ -100,7 +100,7 @@ import { freezeSuite, resolveHarnessIdentity, readFrozenSuite, suiteRootFor } fr
 // serves a static artefact on. Imported rather than retyped: a suite authored
 // against one port and executed on another fails every test for a reason that
 // appears in neither the suite nor the manifest.
-import { STATIC_SERVE_PORT } from "./scorer-protocol.js";
+import { STATIC_SERVE_PORT, SUITE_MANIFEST_FILENAME } from "./scorer-protocol.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -654,6 +654,21 @@ export interface SpecAgentOptions {
   readonly maxOutputTokens?: number;
   /** Regeneration cap. Default 3. Fail clean rather than loop forever. */
   readonly maxAttempts?: number;
+  /**
+   * Wall-clock bound for ONE authoring call, in milliseconds. `0` disables it.
+   *
+   * PER CALL, NOT PER ATTEMPT, and the distinction is load-bearing: the free
+   * truncation retry dispatches a SECOND call inside the same attempt. A
+   * per-attempt bound would hand that retry whatever was left of the budget,
+   * so an attempt that spent 29 of its 30 minutes and then truncated would get
+   * a one-minute retry and lose the ladder — silently, on the exact mechanism
+   * the previous round made visible.
+   *
+   * Defaults to {@link DEFAULT_ATTEMPT_TIMEOUT_MS}, overridable by
+   * {@link ATTEMPT_TIMEOUT_ENV_NAME}. Nothing in production sets this field;
+   * it exists for tests and for a caller that knows better than the env.
+   */
+  readonly attemptTimeoutMs?: number;
   readonly env?: NodeJS.ProcessEnv;
   readonly harness?: HarnessIdentity;
   /** Run `node --check` over every authored file. Default true. */
@@ -671,7 +686,16 @@ export interface SpecAgentOptions {
   readonly now?: () => Date;
 }
 
-/** The spec seat's output for one attempt. */
+/**
+ * The spec seat's output for one attempt.
+ *
+ * THREE VARIANTS, AND THE THIRD IS WHY THIS IS A DISCRIMINATED UNION RATHER
+ * THAN `call: SeatCallResult | null`. A call that never came back has no
+ * `SeatCallResult` at all — no stop reason, no usage row, no `endedAt`. Every
+ * reader of a failed attempt (`wasTruncated`, the attempt ledger's
+ * `usage.costUsd`) dereferences `call`, so the timeout has to be a shape the
+ * compiler forces those readers to handle rather than a null they can forget.
+ */
 export type GenerateSuiteResult =
   | {
       readonly ok: true;
@@ -681,9 +705,35 @@ export type GenerateSuiteResult =
     }
   | {
       readonly ok: false;
+      readonly timedOut: false;
       readonly problems: readonly string[];
       readonly call: SeatCallResult;
       readonly promptSha256: string;
+    }
+  | {
+      /**
+       * The call did not return inside the per-call wall-clock bound and was
+       * ABANDONED. See {@link callWithDeadline} for what "abandoned" costs.
+       */
+      readonly ok: false;
+      readonly timedOut: true;
+      readonly problems: readonly string[];
+      readonly call: null;
+      readonly timeoutMs: number;
+      readonly promptSha256: string;
+      /**
+       * Dollars {@link reserveAbandonedCall} charged the shared ceiling for THIS
+       * abandonment — the worst case off the call's own pre-call decision.
+       *
+       * IT IS REPORTED BECAUSE IT IS OFTEN ZERO, and a message that claimed the
+       * ceiling had been charged when it had not would be exactly the reassuring
+       * sentence this round exists to delete. `SubscriptionSeatCaller` — the
+       * dashboard's own seat, and the only path on which this failure has been
+       * observed — calls `checkBeforeCall(0, …)`, so on that path this is 0 and the
+       * dollar ceiling cannot bound the phase at all. {@link describeAttemptTimeouts}
+       * branches on the total and says which of the two happened.
+       */
+      readonly reservedUsd: number;
     };
 
 /** The combined audit for one candidate suite. */
@@ -722,7 +772,101 @@ export interface AuthoringAttempt {
   readonly maxOutputTokens: number;
   /** True when this attempt's response came back cut off and was retried free. */
   readonly truncationRetried: boolean;
+  /**
+   * True when this attempt was abandoned on the per-call wall-clock bound
+   * rather than answered.
+   *
+   * A SEPARATE FIELD RATHER THAN A STRING IN `problems`, because the ladder
+   * branches on it and the failure message counts it. Run `a913c871`'s three
+   * attempts ran 25m23s, 35m25s and 23m43s with no bound at all, and the record
+   * could only say so because a `ps` sampler outside the product happened to be
+   * running. `costUsd` is 0 on a timed-out attempt and that is a floor, not a
+   * measurement: see {@link callWithDeadline}.
+   */
+  readonly timedOut: boolean;
 }
+
+/**
+ * One blocking problem the seat was told about, and the attempt it was told on.
+ *
+ * THE ATTEMPT ORDINAL IS THE POINT. Run `a913c871`'s attempt 2 was told about a
+ * credential-shaped literal, fixed nothing about it, and attempt 3 was told
+ * about the SAME defect in two files — because each turn arrived with no
+ * history and read as "your shape is wrong, try another one". A constraint that
+ * says which attempt named it is a constraint the seat can see it has already
+ * failed once.
+ */
+export interface AuthoringConstraint {
+  readonly attempt: number;
+  readonly problem: string;
+}
+
+/** The manifest an earlier attempt actually emitted, kept verbatim. */
+export interface PriorManifest {
+  readonly attempt: number;
+  /** The exact bytes of that attempt's `suite.manifest.json` entry. */
+  readonly source: string;
+}
+
+/**
+ * What a regeneration is told about the attempts before it.
+ *
+ * THIS DOES NOT WIDEN THE SEALED BOUNDARY, AND THE ARGUMENT IS THE WHOLE REASON
+ * THE TYPE IS DOCUMENTED HERE RATHER THAN AT ITS USE SITE.
+ *
+ * The spec seat is deliberately non-agentic: `tools: []`, no conversation
+ * history, no workspace access. That is what makes `held_out_pass` mean
+ * anything — an agentic spec seat could read the implementation and author a
+ * suite the build already passes, which is the co-primary metric grading
+ * itself. Every field on this object is one of exactly two things:
+ *
+ *   1. THE SEAT'S OWN PRIOR OUTPUT ({@link previousManifest}) — bytes this same
+ *      seat emitted, from this same ticket, on an earlier call in this same
+ *      authoring job. Returning a model its own last answer is not new
+ *      information about the world; it is the history a conversational caller
+ *      would have had for free and this one throws away.
+ *   2. THE HARNESS'S OWN REJECTIONS ({@link constraints}) — sentences produced
+ *      by `deterministicAudit`, `parseSuiteManifest` and the judge seat, all of
+ *      which already reached the seat one attempt at a time. Accumulating them
+ *      changes WHEN the seat sees a sentence, not WHETHER it may.
+ *
+ * Nothing here can carry builder output, workspace contents, implementation
+ * source, or any file: `previousManifest.source` is copied out of the draft the
+ * seat itself returned, and `constraints` are strings the audit built. There is
+ * no path from a build artefact into either field, and the freeze digest is
+ * unaffected because none of this reaches {@link AcceptanceSuite}.
+ *
+ * WHAT WAS DELIBERATELY LEFT OUT, AND THE NUMBERS BEHIND IT. The whole previous
+ * suite would also be the seat's own output and would also be inside the
+ * boundary. It is left out on cost, not on principle: run `a913c871`'s three
+ * structured outputs were 63,957 / 50,125 / 63,258 bytes, and every call
+ * already carries an 80,102-byte CV document and a 559,692-byte reference image
+ * (746,256 base64 characters) against a 64,000-token OUTPUT ceiling. The
+ * manifest entries were 1,468 / 1,418 / 1,326 bytes — around 2% of the suite —
+ * and the manifest is what killed that run. Constraints carry the rest of the
+ * signal at a few hundred bytes each.
+ */
+export interface AuthoringRetryContext {
+  /** Every blocking problem named on any earlier attempt, oldest first. */
+  readonly constraints: readonly AuthoringConstraint[];
+  /** The most recent manifest any earlier attempt emitted, or null. */
+  readonly previousManifest: PriorManifest | null;
+  /**
+   * One sentence saying why there is no manifest to show. Null when there is
+   * one. NEVER null-and-silent: a regeneration that is shown nothing must be
+   * told that it is being shown nothing, or it reads the absence as "you had no
+   * previous attempt" and starts from scratch — which is the behaviour this
+   * whole type exists to stop.
+   */
+  readonly noManifestReason: string | null;
+}
+
+/** The first attempt: nothing has happened yet, so nothing is carried. */
+const NO_RETRY_CONTEXT: AuthoringRetryContext = Object.freeze({
+  constraints: Object.freeze([]) as readonly AuthoringConstraint[],
+  previousManifest: null,
+  noManifestReason: null,
+});
 
 /** Everything the freezer needs, plus the audit trail. */
 export interface AuthoredSuite {
@@ -854,13 +998,134 @@ function ticketTurn(ticket: Ticket): string {
   return `TICKET ${ticket.id}\n\nThe ticket text follows between the markers, verbatim. Everything you need is in it.\n\n<<<TICKET_BRIEF\n${ticket.brief}\nTICKET_BRIEF>>>`;
 }
 
-function feedbackTurn(problems: readonly string[]): string {
+/**
+ * The manifest bytes out of a draft, or null when the draft has no manifest.
+ *
+ * MATCHED ON `SUITE_MANIFEST_FILENAME`, IMPORTED RATHER THAN RETYPED. The
+ * sealed scorer finds the manifest by that exact name (`scorer-protocol.ts`);
+ * a literal here that drifted from it would silently show the seat nothing
+ * while every test that looks for "a manifest turn" stayed green.
+ */
+function manifestSourceOf(draft: SuiteDraft): string | null {
+  for (const file of draft.files) {
+    if (file.path === SUITE_MANIFEST_FILENAME) return file.source;
+  }
+  return null;
+}
+
+/**
+ * The markers that make the turn ordering unambiguous.
+ *
+ * EXPORTED BECAUSE THE TESTS ASSERT ON THEIR ORDER, NOT ONLY THEIR PRESENCE. A
+ * prompt that contains the previous manifest and the constraints in an order
+ * the seat cannot resolve — manifest after the complaints about it, say, or
+ * either one before the ticket — is a prompt where "which document am I being
+ * asked to fix?" is a guess. Run `a913c871`'s attempt 3 answered that guess by
+ * replacing its whole vocabulary for the third time.
+ */
+export const TURN_MARKER_TICKET = "TURN 1 OF 3 — THE TICKET";
+export const TURN_MARKER_PRIOR = "TURN 2 OF 3 — YOUR OWN PREVIOUS EXECUTION MANIFEST";
+export const TURN_MARKER_CONSTRAINTS = "TURN 3 OF 3 — EVERY CONSTRAINT FROM EVERY ATTEMPT SO FAR";
+
+/**
+ * Give the seat back the manifest it last emitted.
+ *
+ * WHAT THIS REPLACES, VERBATIM: *"Your previous suite for this ticket was
+ * rejected by the bad-test audit and has been discarded. Write a NEW suite for
+ * the same ticket that does not repeat these defects. Do not try to patch the
+ * old one — you no longer have it."*
+ *
+ * MEASURED CONSEQUENCE OF THAT SENTENCE (run `a913c871`, 2026-08-09, recovered
+ * from the CLI session transcripts because the harness persisted nothing):
+ * attempt 1 emitted `{entity, source, expectation}` and was told
+ * `dataExpectations[0].id must be a non-empty string`; attempt 2 emitted
+ * `{id, description, entity, minRowCount, readBack}` — it added `id` — and was
+ * told `dataExpectations[0].kind must be "sqlite" or "http"`; attempt 3 emitted
+ * `{kind, method, path, expectStatus, description}`. It added `kind` and LOST
+ * the `id` it had already got right. A model accumulating fields does not do
+ * that. A model that has been told its previous answer no longer exists does
+ * exactly that.
+ *
+ * See {@link AuthoringRetryContext} for why handing the seat its own bytes back
+ * does not make this seat agentic.
+ */
+function priorAttemptTurn(prior: PriorManifest | null, noManifestReason: string | null): string {
+  const head =
+    `${TURN_MARKER_PRIOR}\n\n` +
+    "This is YOUR OWN output from an earlier attempt on THIS ticket, given back to you. Nobody " +
+    "else wrote any of it — it is the document you emitted and the audit rejected. You still have " +
+    "it. Fix it.\n\n";
+
+  if (prior === null) {
+    return (
+      head +
+      "THERE IS NO MANIFEST TO SHOW YOU. " +
+      (noManifestReason ?? "No earlier attempt produced a readable manifest.") +
+      "\nWrite the manifest from the shape documented in the system prompt.\n"
+    );
+  }
+
   return (
-    "Your previous suite for this ticket was rejected by the bad-test audit and has been discarded. " +
-    "Write a NEW suite for the same ticket that does not repeat these defects. Do not try to patch " +
-    "the old one — you no longer have it.\n\n" +
-    problems.map((p, i) => `${String(i + 1)}. ${p}`).join("\n")
+    head +
+    `Attempt ${String(prior.attempt)} emitted this as "suite.manifest.json":\n\n` +
+    "<<<PREVIOUS_MANIFEST\n" +
+    prior.source +
+    "\nPREVIOUS_MANIFEST>>>\n\n" +
+    "EVERY PART OF IT THE CONSTRAINTS BELOW DO NOT NAME WAS ACCEPTED. Keep those parts as they " +
+    "are — re-deriving a field that was already correct is how a field that was already correct " +
+    "gets lost. Change only what the constraints name.\n"
   );
+}
+
+/**
+ * Every blocking problem from every attempt so far, oldest first.
+ *
+ * WHY ACCUMULATED AND NOT JUST THE NEWEST. The newest-only channel is what
+ * shipped, and it has a measured failure beyond the manifest: run `a913c871`'s
+ * attempt 1 was told *"visible/api-core.test.mjs contains credential-shaped
+ * literal(s): AUTHORIZATION_HEADER x1"*, and attempt 2 — which never saw that
+ * sentence again — reproduced the SAME defect in two files, so attempt 3 was
+ * told about it twice. That recurrence is independent of the manifest echo and
+ * is why both halves of this change ship together.
+ *
+ * THE "NOT REPEATED MEANS FIXED" SENTENCE IS LOAD-BEARING and is stated rather
+ * than left to inference: `deterministicAudit` surveys the whole suite on every
+ * attempt, so a defect named on attempt 1 and absent from attempt 2's list was
+ * genuinely fixed by attempt 2. Without that sentence the accumulated list
+ * reads as an ever-growing indictment and the seat cannot tell which items are
+ * still true of the document in turn 2.
+ */
+function accumulatedConstraintsTurn(constraints: readonly AuthoringConstraint[]): string {
+  const byAttempt = new Map<number, string[]>();
+  for (const c of constraints) {
+    const bucket = byAttempt.get(c.attempt);
+    if (bucket === undefined) byAttempt.set(c.attempt, [c.problem]);
+    else bucket.push(c.problem);
+  }
+
+  const lines: string[] = [
+    `${TURN_MARKER_CONSTRAINTS}\n`,
+    "These are CUMULATIVE. Every rejection this ticket has produced is listed, oldest first, with " +
+      "the attempt that earned it. The suite you are about to write must violate NONE of them — " +
+      "including the ones from attempts before the last, which you have already been told about " +
+      "once and which are the ones most often reintroduced.",
+    "",
+    "A defect listed under an early attempt and NOT listed again under a later one was FIXED by " +
+      "that later attempt. Do not undo it. The audit surveys the whole suite every time, so an " +
+      "item that stopped appearing stopped being true.",
+    "",
+  ];
+
+  let n = 0;
+  for (const [attempt, problems] of [...byAttempt.entries()].sort((a, b) => a[0] - b[0])) {
+    lines.push(`FROM ATTEMPT ${String(attempt)}:`);
+    for (const problem of problems) {
+      n += 1;
+      lines.push(`  ${String(n)}. ${problem}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
 }
 
 function promptDigest(system: string, userTurns: readonly string[]): string {
@@ -982,6 +1247,327 @@ function newCeiling(options: SpecAgentOptions): SpendCeiling {
 }
 
 /* -------------------------------------------------------------------------
+ * 5b. The per-call wall-clock bound
+ * ---------------------------------------------------------------------- */
+
+/**
+ * How long ONE authoring call may run before it is abandoned.
+ *
+ * ─── CORRECTED 2026-08-10, FROM 30 MINUTES TO 60, ON A REVIEW THAT MEASURED THE
+ *     SHIPPED NUMBER AGAINST THE RUN IT WAS DERIVED FROM ───
+ *
+ * THE FIRST DERIVATION WAS UNSOUND AND IS RECORDED HERE RATHER THAN DELETED. It
+ * read: 30 minutes is `AUTHORING_BUDGET.maxWallClockMs`, "the wall clock this
+ * harness already declares for the WHOLE authoring job", so "it is the one bound
+ * that is derived rather than invented". Two things are wrong with that. First,
+ * the SAME docblock then said production passes `DASHBOARD_BUDGET` (four hours),
+ * so the bound was derived from a policy THAT IS NOT IN FORCE on the only path
+ * this failure has ever been observed on. Second, and worse: 30 minutes sits
+ * INSIDE the measured range of attempts that were progressing.
+ *
+ * THE MEASURED DISTRIBUTION, WHICH IS NOW WHAT THE NUMBER IS DERIVED FROM. Run
+ * `a913c871`'s three authoring attempts ran **25m23s, 35m25s and 23m43s**
+ * (measured from the CLI session transcripts, independently corroborated by a
+ * `ps` sampler that agreed at both handovers to within two seconds). All three
+ * were progressing; none was hung. The slowest PROGRESSING attempt observed on
+ * this machine is therefore 35m25s, and any bound below that cuts work that was
+ * going to arrive.
+ *
+ * WHAT THE PREVIOUS DEFAULT WOULD HAVE DONE, WHICH IS THE HALF THE FIRST
+ * DOCBLOCK ATTRIBUTED TO THE OPTION IT REJECTED RATHER THAN TO THE ONE IT
+ * SHIPPED. 30 minutes fires on attempt 2 — and attempt 2 is the attempt whose
+ * manifest carries `"id": "contact-messages-stored"`, i.e. THE EXACT FIELD whose
+ * loss defines this round's motivating defect and which the authoring-retry
+ * carrier exists to echo forward. Under a 30-minute bound attempt 2 produces no
+ * manifest at all, `lastManifest` stays on attempt 1's `{entity, source,
+ * expectation}`, and attempt 3 is shown the WORSE of the two documents plus
+ * "Emit a SMALLER suite". The old docblock said a tighter bound was rejected
+ * because it would "convert a run that died holding an almost-correct manifest
+ * into a run that died holding nothing"; 30 minutes did that to the
+ * almost-correct manifest, and the docblock did not say so.
+ *
+ * WHY 60 AND NOT 45. 45 minutes is only 1.27x the slowest progressing attempt
+ * ever measured here, at n = 3. 60 is 1.7x, and the asymmetry of the two errors
+ * is what settles it: cutting a progressing attempt destroys the only artefact
+ * the run had, while detecting a HANG at 60 minutes instead of 45 costs fifteen
+ * minutes against a wait that is otherwise unbounded — run `a913c871` sat 84m31s
+ * in this phase with no bound at all. The bound is for hangs, not for slow
+ * successes.
+ *
+ * THE COST OF 60, STATED. Three abandoned attempts is 180 minutes of wall clock.
+ * The spec phase's `SpendCeiling` is constructed per phase (orchestrator.ts's
+ * `#specPhase`) with `DASHBOARD_BUDGET.maxWallClockMs` = 4 h, and
+ * `checkBeforeCall` refuses once that is elapsed — so 180 minutes still clears
+ * the phase's own wall clock, but with 60 minutes of headroom rather than 150.
+ * A fourth abandonment would not be dispatched; there are only three attempts.
+ *
+ * {@link ATTEMPT_TIMEOUT_ENV_NAME} exists so the owner can tighten or disable
+ * this without a code change and without moving the scorer image digest — this
+ * constant lives in `bakeoff/src`, which the scorer image recompiles, and the
+ * env var does not.
+ */
+export const DEFAULT_ATTEMPT_TIMEOUT_MS = 60 * 60 * 1000;
+
+/**
+ * Env override for {@link DEFAULT_ATTEMPT_TIMEOUT_MS}, in MINUTES.
+ *
+ * MINUTES, NOT MILLISECONDS, to match `BAKEOFF_SCORER_TIMEOUT_MIN` — the only
+ * other timeout this repository exposes to the environment (`gate.ts`).
+ *
+ * IT MUST BE AN ENV VAR AND NOT ONLY AN OPTION. The production caller is
+ * `orchestrator.ts` → {@link authorAndFreezeSuite} → {@link generateAuditedSuite},
+ * and it passes nine options, none of which is this one. This file already
+ * carries a docblock about the last thing that was wired as an option nobody
+ * sets: *"no production caller passes `onEvent` to this function, so the
+ * emitter would have had no reader."* So the bound is DEFAULT-ON and the env
+ * raises, lowers or disables it; the env is never what turns it on.
+ *
+ * `0` disables the bound. Anything else must parse as a finite number greater
+ * than zero — a malformed override THROWS rather than falling back to the
+ * default, because a silently ignored safety bound is a bound that reads as
+ * enforcement and is not.
+ */
+export const ATTEMPT_TIMEOUT_ENV_NAME = "BAKEOFF_SPEC_ATTEMPT_TIMEOUT_MIN";
+
+/**
+ * THE INTENDED HANDOFF TO THE RECOVERY CLASSIFIER. Import this; do not retype it.
+ *
+ * ─── IT HAS NO CONSUMER YET, AND SAYING SO IS THE POINT (2026-08-10) ───
+ *
+ * `grep -arn TIMEOUT_FAILURE_MARKER bakeoff/src dashboard/server/src` → three
+ * hits: this definition, {@link describeAttemptTimeouts} which emits it, and
+ * `spec-agent.test.ts`. **Nothing in `dashboard/server/src` reads it.** So today
+ * an all-timeout authoring phase throws `suite_not_audited`,
+ * `classOfBakeoffCode` maps that to `suite_authoring`, and the owner is shown
+ * that class's sentence — which is why the sentence in `recovery.ts` was
+ * rewritten in the same pass to stop promising audit findings that an abandoned
+ * run does not have.
+ *
+ * An exported discriminator with no reader is a check that can never fire, which
+ * is this repository's signature defect. It is kept, rather than deleted, because
+ * the emitted text is the only channel that carries the fact at all
+ * (`runs.failure_reason` holds it verbatim) — and the missing consumer is filed
+ * as a named deferred item in `docs/DESIGN-self-maintaining-pipeline.md` §3.7
+ * together with the reason it was not built in this pass: `PhaseFailureSignals`
+ * carries no message field, so `classifyPhaseFailure` cannot see this string
+ * without a new signal, a new `FailureClass`, a bound, a `terminalClassReason`
+ * arm and a re-entry arm in `planRecovery`. Do not read the paragraph below as a
+ * description of live behaviour; it is the contract for whoever wires it.
+ *
+ * A timeout does NOT get a new `BakeoffError` code — the codes live in
+ * `contracts.ts`, and `recovery.ts` maps any non-null `bakeoffCode` to the
+ * `structural` class whose retry bound is 0, so a new code would arrive in the
+ * same bucket as everything else. The discriminator is therefore this substring
+ * of the `suite_not_audited` message, which lands verbatim in
+ * `runs.failure_reason` (run `a913c871`'s post-mortem quoted the whole of that
+ * column, which is how this channel is known to have a reader).
+ *
+ * IT MUST NOT APPEAR IN THE NEGATIVE SENTENCE, and that is the whole reason it
+ * is a named constant rather than the obvious phrase. The no-timeout branch of
+ * {@link describeAttemptTimeouts} says "No attempt was abandoned on the
+ * per-call wall-clock bound"; a classifier keying on a substring the negative
+ * sentence also contains would report a timeout on every run that did not have
+ * one. `spec-agent.test.ts` asserts the exclusion in both directions.
+ *
+ * WHAT IT MEANS FOR A CALLER: the call was cut off by the harness and produced
+ * nothing, so nothing about the ticket or the suite has been established.
+ * That is a different thing from a suite that was authored and rejected, and
+ * it is the one case where re-running the same phase unchanged is reasonable —
+ * possibly at a larger `BAKEOFF_SPEC_ATTEMPT_TIMEOUT_MIN`.
+ */
+export const TIMEOUT_FAILURE_MARKER = "were abandoned on the per-call wall-clock bound";
+
+/**
+ * The bound in force for this call: option, then environment, then default.
+ *
+ * Returns `Infinity` when the bound is disabled, so callers never branch on a
+ * sentinel of their own invention.
+ */
+export function resolveAttemptTimeoutMs(options: SpecAgentOptions): number {
+  if (options.attemptTimeoutMs !== undefined) {
+    if (!Number.isFinite(options.attemptTimeoutMs) || options.attemptTimeoutMs < 0) {
+      throw new BakeoffError(
+        "invalid_usage_shape",
+        `attemptTimeoutMs must be a finite number >= 0, got ${String(options.attemptTimeoutMs)}`,
+        "Pass a positive number of milliseconds, or 0 to disable the per-call wall-clock bound.",
+      );
+    }
+    return options.attemptTimeoutMs === 0 ? Number.POSITIVE_INFINITY : options.attemptTimeoutMs;
+  }
+
+  const raw = (options.env ?? process.env)[ATTEMPT_TIMEOUT_ENV_NAME];
+  if (raw === undefined || raw.trim().length === 0) return DEFAULT_ATTEMPT_TIMEOUT_MS;
+
+  const minutes = Number(raw.trim());
+  if (!Number.isFinite(minutes) || minutes < 0) {
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `${ATTEMPT_TIMEOUT_ENV_NAME} is ${JSON.stringify(raw)}, which is not a number of minutes >= 0`,
+      `Set ${ATTEMPT_TIMEOUT_ENV_NAME} to a positive number of minutes, or to 0 to disable the ` +
+        "per-call wall-clock bound. It is NOT ignored when malformed: a safety bound that silently " +
+        "falls back to its default is a bound the operator believes he changed and did not.",
+    );
+  }
+  return minutes === 0 ? Number.POSITIVE_INFINITY : minutes * 60 * 1000;
+}
+
+/** The sentinel {@link callWithDeadline} resolves to when the bound wins. */
+const DEADLINE_EXCEEDED: unique symbol = Symbol("spec-agent.deadline-exceeded");
+
+/**
+ * Race a seat call against a wall clock.
+ *
+ * THIS ABANDONS, IT DOES NOT CANCEL, AND THAT IS A REAL COST — stated here
+ * rather than discovered later. `SeatCallRequest` carries no `AbortSignal`
+ * (`anthropic-seat.ts`), and on the subscription path a call is a spawned
+ * `claude-agent-sdk` subprocess (run `a913c871`'s pids 29197 / 44002 / 59039).
+ * When the bound wins:
+ *
+ *   - the subprocess KEEPS RUNNING and keeps consuming the owner's quota, which
+ *     NOTHING in this file can bound: quota is not dollars and the ceiling is
+ *     denominated in dollars;
+ *   - the next attempt is dispatched CONCURRENTLY with it — the first
+ *     concurrency this phase has ever had;
+ *   - {@link reserveAbandonedCall} charges the shared {@link SpendCeiling} the
+ *     WORST CASE for the abandoned call at the moment it is abandoned, so the
+ *     next `checkBeforeCall` projects over money that may already be spent.
+ *
+ * ─── WHAT THE SPEND ACCOUNTING DOES AND DOES NOT DO, CORRECTED 2026-08-10 ───
+ *
+ * This docblock previously said: *"if the abandoned call ever returns, it still
+ * updates the shared `SpendCeiling`, so its spend is accounted late rather than
+ * lost."* **That is false for the ordinary case, not merely imprecise.** A call
+ * that returns after the phase has ended reaches `ceiling.record(...)` only if it
+ * returns at all, and `collectUsage(specCaller, judgeCaller)` runs SYNCHRONOUSLY
+ * at the success return and at the throw — so a late-returning abandoned call's
+ * `VendorUsage` row never enters `usage` or `totalCostUsd`. Its spend is LOST to
+ * the run record, not accounted late.
+ *
+ * Three honest statements replace the one false one:
+ *
+ *   1. THE CEILING IS BOUNDED AGAIN, by reservation rather than by measurement.
+ *      Without it, `checkBeforeCall` projected from a `#spentUsd` that omitted
+ *      every in-flight abandoned call, so the hard ceiling could be exceeded by
+ *      up to (attempts - 1) x worstCaseNextCallUsd with `allowed: true` on every
+ *      decision row.
+ *   2. THE RESERVATION IS AN OVER-ESTIMATE AND IS NOT REFUNDED. It is
+ *      `worstCaseCallCostUsd` off the call's own pre-call decision — computed
+ *      from a `countTokens` estimate and full `max_tokens` — and if the abandoned
+ *      call later returns, its actual cost is recorded ON TOP. Over-charging is
+ *      the conservative direction (the failure it buys is a clean
+ *      `budget_exceeded` with a reason, instead of a silent overspend), and a
+ *      refund needs a `reserve()`/`settle()` pair on `SpendCeiling` in
+ *      `anthropic-seat.ts`. That is carried, not done here.
+ *   3. ON THE DASHBOARD'S OWN PATH THE RESERVATION IS 0 AND CHANGES NOTHING.
+ *      `SubscriptionSeatCaller` calls `checkBeforeCall(0, …)` because a
+ *      subscription call has no dollar cost, so its cost ceiling cannot fire
+ *      with or without this — which is pre-existing and documented on that
+ *      class. What remains live there is `maxWallClockMs` and the provider's
+ *      rate limit. The unbounded thing on that path is QUOTA, and the only fix
+ *      for quota is cancellation.
+ *
+ * The alternative — no bound — is what run `a913c871` had, and a hung call
+ * there is indistinguishable from a slow one for as long as the phase lasts.
+ * A bound that abandons is strictly better than no bound and strictly worse
+ * than cancellation; cancellation needs an `AbortSignal` on `SeatCallRequest`,
+ * which is a different file and a different lane.
+ *
+ * The rejection handler is attached unconditionally so an abandoned call that
+ * later throws cannot surface as an unhandled rejection and kill the process.
+ *
+ * THE TIMER IS REF'D, AND IT USED TO BE `unref()`d "so `node --test` can exit".
+ * That was a test-ergonomics reason applied to a production safety bound, and it
+ * made the bound conditional on something ELSE keeping the event loop alive. In
+ * the dashboard server a listening socket does; in a CLI invocation
+ * (`bakeoff/src/cli.ts`) whose only pending work is a handle-less hung promise —
+ * exactly the shape of hang this bound exists for, and exactly the shape the
+ * tests model with `new Promise(() => {})` — node drained the loop and exited
+ * BEFORE the deadline, so the abandonment never happened and nothing was
+ * reported. The timer is cleared in the `finally` on both paths, so a ref'd timer
+ * cannot hold a suite open once the race settles.
+ *
+ * Exported for the subprocess test that proves the ref: see `spec-agent.test.ts`.
+ */
+export async function callWithDeadline(
+  work: Promise<SeatCallResult>,
+  timeoutMs: number,
+): Promise<SeatCallResult | typeof DEADLINE_EXCEEDED> {
+  if (!Number.isFinite(timeoutMs)) return work;
+
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<typeof DEADLINE_EXCEEDED>((resolve) => {
+    timer = setTimeout(() => {
+      resolve(DEADLINE_EXCEEDED);
+    }, timeoutMs);
+  });
+
+  try {
+    const winner = await Promise.race([work, deadline]);
+    if (winner === DEADLINE_EXCEEDED) {
+      // The abandoned call is still in flight. Swallow its eventual rejection
+      // so it cannot take the process down half an hour from now.
+      work.catch(() => undefined);
+    }
+    return winner;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * Charge the ceiling the worst case for a call that was abandoned, and return
+ * what was charged.
+ *
+ * WHY THIS EXISTS: `checkBeforeCall` projects from `#spentUsd`, and an abandoned
+ * call reaches `ceiling.record(...)` only IF it returns (anthropic-seat.ts:673).
+ * So without this, attempts 2 and 3 are authorised against a spend figure that
+ * omits every call still in flight, and the hard ceiling is not a ceiling once
+ * anything has been abandoned. See {@link callWithDeadline} for the full
+ * accounting and for what this does NOT fix.
+ *
+ * THE DECISION IS FOUND BY INDEX, NOT BY CLOCK OR BY PURPOSE, and that is
+ * load-bearing. `PreCallDecision` carries no `purpose`, so it cannot be matched
+ * by name; and its `checkedAt` comes from the ceiling's injectable `#nowMs`,
+ * which in a test does not order against `Date.now()` at all. `checkBeforeCall`
+ * runs SYNCHRONOUSLY inside `call()` before anything is dispatched, so the first
+ * decision pushed after a length snapshot taken immediately before `call()` is
+ * provably this call's.
+ *
+ * IT RECORDS NOTHING WHEN THERE IS NOTHING TO RECORD — a caller that never
+ * reached `checkBeforeCall` (a stub, or a call that threw before the check)
+ * leaves the length unchanged, and a worst case of 0 is the subscription path.
+ * Charging a number nobody computed would be worse than charging nothing.
+ */
+function reserveAbandonedCall(
+  ceiling: SpendCeiling,
+  decisionsBefore: number,
+  purpose: string,
+): number {
+  const decision = ceiling.decisions[decisionsBefore];
+  if (decision === undefined) return 0;
+  const worstCase = decision.worstCaseNextCallUsd;
+  if (!Number.isFinite(worstCase) || worstCase <= 0) return 0;
+  ceiling.record(
+    worstCase,
+    `${purpose} — ABANDONED on the per-call wall-clock bound; worst case RESERVED because the call ` +
+      "may still be running and its actual cost cannot be known without cancellation",
+  );
+  return worstCase;
+}
+
+/** What the seat is told, and what the failure says, about an abandoned call. */
+function attemptTimeoutProblem(timeoutMs: number): string {
+  const minutes = Math.round(timeoutMs / 60_000);
+  return (
+    `the authoring call did not return within ${String(minutes)} minute(s) and was abandoned before ` +
+    "it produced anything. Nothing about the suite was audited, because no suite arrived. Emit a " +
+    "SMALLER suite next time — fewer test files, each denser — so the response completes inside the " +
+    `bound. Raise or disable the bound with ${ATTEMPT_TIMEOUT_ENV_NAME} if the ticket genuinely ` +
+    "needs longer."
+  );
+}
+
+/* -------------------------------------------------------------------------
  * 6. generateSuite — one authoring call
  * ---------------------------------------------------------------------- */
 
@@ -989,9 +1575,16 @@ function newCeiling(options: SpecAgentOptions): SpendCeiling {
  * Invoke the spec seat once and parse its suite.
  *
  * The seat receives the frozen authoring system prompt, the ticket brief
- * verbatim, and — on a regeneration — the blocking findings from the discarded
- * attempt. It receives nothing else: no implementation, no builder output, no
- * previous suite, no conversation history.
+ * verbatim, and — on a regeneration — its OWN previous manifest plus every
+ * constraint every attempt has earned ({@link AuthoringRetryContext}, whose
+ * docblock states why that does not make this seat agentic). It receives
+ * nothing else: no implementation, no builder output, no workspace, no
+ * conversation history.
+ *
+ * ATTEMPT 1'S TURNS ARE BYTE-IDENTICAL TO THE PRE-2026-08-10 PROMPT, and that
+ * is deliberate: `promptSha256` is recorded on the frozen suite, so a ticket
+ * whose first attempt succeeds keeps the digest it had, and suites frozen
+ * before and after this change stay comparable.
  *
  * Returns a discriminated result rather than throwing on a malformed response:
  * a bad response is an EXPECTED outcome that {@link generateAuditedSuite}
@@ -1001,33 +1594,68 @@ function newCeiling(options: SpecAgentOptions): SpendCeiling {
 export async function generateSuite(
   ticket: Ticket,
   options: SpecAgentOptions = {},
-  feedback: readonly string[] = [],
+  retry: AuthoringRetryContext = NO_RETRY_CONTEXT,
   attempt = 1,
 ): Promise<GenerateSuiteResult> {
   assertTicketUnedited(ticket);
   const ceiling = newCeiling(options);
   const caller = callerFor(options.specSeat ?? SPEC_SEAT, "spec", options, ceiling);
 
-  const userTurns = feedback.length === 0 ? [ticketTurn(ticket)] : [ticketTurn(ticket), feedbackTurn(feedback)];
+  const regenerating = retry.constraints.length > 0 || retry.previousManifest !== null;
+  const userTurns = regenerating
+    ? [
+        `${TURN_MARKER_TICKET}\n\n${ticketTurn(ticket)}`,
+        priorAttemptTurn(retry.previousManifest, retry.noManifestReason),
+        accumulatedConstraintsTurn(retry.constraints),
+      ]
+    : [ticketTurn(ticket)];
   const promptSha256 = promptDigest(AUTHORING_SYSTEM_PROMPT, userTurns);
 
-  const call = await caller.call({
-    system: AUTHORING_SYSTEM_PROMPT,
-    userTurns,
-    maxOutputTokens: options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    jsonSchema: (options.structuredOutput ?? true) ? AUTHORING_JSON_SCHEMA : null,
-    purpose: `suite-authoring ${ticket.id} attempt ${String(attempt)}`,
-  });
+  const timeoutMs = resolveAttemptTimeoutMs(options);
+  const purpose = `suite-authoring ${ticket.id} attempt ${String(attempt)}`;
+  /*
+   * SNAPSHOT BEFORE DISPATCH. `checkBeforeCall` runs synchronously inside
+   * `caller.call(...)`, so this length is the index at which THIS call's pre-call
+   * decision lands — the only way {@link reserveAbandonedCall} can charge the
+   * ceiling the worst case that was actually computed for the call it abandoned.
+   * Read on `caller.ceiling`, not on the local `ceiling`: a supplied
+   * `options.specCaller` brings its own (see {@link callerFor}).
+   */
+  const decisionsBefore = caller.ceiling.decisions.length;
+  const outcome = await callWithDeadline(
+    caller.call({
+      system: AUTHORING_SYSTEM_PROMPT,
+      userTurns,
+      maxOutputTokens: options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      jsonSchema: (options.structuredOutput ?? true) ? AUTHORING_JSON_SCHEMA : null,
+      purpose,
+    }),
+    timeoutMs,
+  );
+
+  if (outcome === DEADLINE_EXCEEDED) {
+    return {
+      ok: false,
+      timedOut: true,
+      timeoutMs,
+      problems: [attemptTimeoutProblem(timeoutMs)],
+      call: null,
+      promptSha256,
+      reservedUsd: reserveAbandonedCall(caller.ceiling, decisionsBefore, purpose),
+    };
+  }
+  const call = outcome;
 
   const stopProblem = stopReasonProblem(call);
   if (stopProblem !== null) {
-    return { ok: false, problems: [stopProblem], call, promptSha256 };
+    return { ok: false, timedOut: false, problems: [stopProblem], call, promptSha256 };
   }
 
   const json = extractJsonObject(call.text);
   if (json === null) {
     return {
       ok: false,
+      timedOut: false,
       problems: ["the response contained no JSON object"],
       call,
       promptSha256,
@@ -1039,6 +1667,7 @@ export async function generateSuite(
   } catch (error) {
     return {
       ok: false,
+      timedOut: false,
       problems: [
         `the response was not valid JSON: ${redactText(error instanceof Error ? error.message : String(error)).text}`,
       ],
@@ -1049,7 +1678,7 @@ export async function generateSuite(
 
   const result = parseSuiteDraft(parsed, ticket);
   if (!result.ok) {
-    return { ok: false, problems: result.problems, call, promptSha256 };
+    return { ok: false, timedOut: false, problems: result.problems, call, promptSha256 };
   }
   return { ok: true, draft: result.draft, call, promptSha256 };
 }
@@ -1258,8 +1887,46 @@ export async function generateAuditedSuite(
   const sharedOptions: SpecAgentOptions = { ...options, ceiling, specCaller, judgeCaller };
 
   const attempts: AuthoringAttempt[] = [];
-  let feedback: readonly string[] = [];
+  /**
+   * THE ACCUMULATOR, AND IT REPLACES A VARIABLE THAT WAS OVERWRITTEN.
+   *
+   * Until 2026-08-10 this was `let feedback: readonly string[] = []` and every
+   * branch below ASSIGNED to it, so attempt 3 was shown attempt 2's complaints
+   * and nothing else. `constraints` is appended to and never replaced; the
+   * attempt ordinal travels with each problem so
+   * {@link accumulatedConstraintsTurn} can group them.
+   */
+  const constraints: AuthoringConstraint[] = [];
+  /**
+   * THE MOST RECENT MANIFEST THAT EXISTS, WHICH IS NOT ALWAYS THE LAST
+   * ATTEMPT'S. An attempt that timed out, truncated or returned unparseable
+   * text produced no manifest at all; carrying the last one that DID exist is
+   * strictly better than carrying nothing, and the turn names the attempt it
+   * came from so the seat is never misled about which document it is holding.
+   */
+  let lastManifest: PriorManifest | null = null;
+  let noManifestReason: string | null = null;
   let outputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  /**
+   * Dollars reserved on the shared ceiling for calls this phase ABANDONED.
+   *
+   * A phase-level accumulator rather than a field on each attempt row: see
+   * {@link describeAttemptTimeouts}'s `reserved` parameter for why a worst case
+   * must not be persisted next to a measured `costUsd`. It exists so the failure
+   * message can say what was charged INSTEAD OF ASSERTING THAT SOMETHING WAS — on
+   * a subscription seat every reservation is $0 and the dollar ceiling bounds
+   * nothing, which the sentence now states rather than papering over.
+   */
+  let reservedUsd = 0;
+
+  const recordConstraints = (attemptNo: number, problems: readonly string[]): void => {
+    for (const problem of problems) constraints.push({ attempt: attemptNo, problem });
+  };
+  const retryContext = (): AuthoringRetryContext => ({
+    constraints,
+    previousManifest: lastManifest,
+    noManifestReason: lastManifest === null ? noManifestReason : null,
+  });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const generatedAt = now().toISOString();
@@ -1301,7 +1968,7 @@ export async function generateAuditedSuite(
     let generated = await generateSuite(
       ticket,
       { ...sharedOptions, maxOutputTokens: outputTokens },
-      feedback,
+      retryContext(),
       attempt,
     );
 
@@ -1319,20 +1986,31 @@ export async function generateAuditedSuite(
     // `MAX_STREAMABLE_OUTPUT_TOKENS`, so the guard below was false on the very
     // first attempt and this branch had never run. It now starts at the CLI's
     // own default and climbs. See the docblock on `DEFAULT_MAX_OUTPUT_TOKENS`.
-    if (!generated.ok && wasTruncated(generated.call) && !truncationRetried) {
+    //
+    // A TIMED-OUT CALL IS NOT A TRUNCATED ONE and must not enter this branch:
+    // it has no `SeatCallResult` to read a stop reason from, and raising
+    // `max_tokens` for a call that never came back would buy a longer call.
+    // The type makes that a compile error rather than a convention —
+    // `generated.call` is `null` on the timeout variant.
+    if (!generated.ok && !generated.timedOut && wasTruncated(generated.call) && !truncationRetried) {
       truncationRetried = true;
       if (outputTokens < MAX_STREAMABLE_OUTPUT_TOKENS) {
         outputTokens = MAX_STREAMABLE_OUTPUT_TOKENS;
         generated = await generateSuite(
           ticket,
           { ...sharedOptions, maxOutputTokens: outputTokens },
-          feedback,
+          retryContext(),
           attempt,
         );
       }
     }
 
-    if (!generated.ok && wasTruncated(generated.call) && outputTokens >= MAX_STREAMABLE_OUTPUT_TOKENS) {
+    if (
+      !generated.ok &&
+      !generated.timedOut &&
+      wasTruncated(generated.call) &&
+      outputTokens >= MAX_STREAMABLE_OUTPUT_TOKENS
+    ) {
       throw new BakeoffError(
         "invalid_usage_shape",
         `the acceptance suite for ticket ${ticket.id} did not fit in a single response at the ` +
@@ -1354,11 +2032,29 @@ export async function generateAuditedSuite(
         findings: [],
         judgeRan: false,
         accepted: false,
-        costUsd: generated.call.usage.costUsd,
+        // 0 ON A TIMEOUT IS A FLOOR, NOT A MEASUREMENT, AND IT IS NOT WHAT THE
+        // CEILING WAS CHARGED. This row can only carry a MEASURED cost, and the
+        // abandoned call's actual cost is unknowable without cancellation: if it
+        // returns after the phase ended, `collectUsage` has already run and its
+        // usage row is lost. What bounds the spend is the worst-case reservation
+        // {@link reserveAbandonedCall} puts on the shared ceiling at the moment
+        // of the abandonment — deliberately NOT copied here, because a worst case
+        // written into a column named `costUsd` would be read as a measurement.
+        costUsd: generated.timedOut ? 0 : generated.call.usage.costUsd,
         maxOutputTokens: outputTokens,
         truncationRetried,
+        timedOut: generated.timedOut,
       });
-      feedback = generated.problems;
+      if (generated.timedOut) reservedUsd += generated.reservedUsd;
+      recordConstraints(attempt, generated.problems);
+      // NOTHING ARRIVED, SO THERE IS NO NEW MANIFEST — and the next attempt is
+      // told that in as many words rather than being handed a silent absence.
+      // `lastManifest` is deliberately NOT cleared: an earlier attempt's
+      // manifest is the best document the seat can be shown, and the turn names
+      // which attempt it came from.
+      noManifestReason =
+        `Attempt ${String(attempt)} produced no readable suite (${generated.problems[0] ?? "unknown reason"}), ` +
+        "so there is no manifest from it to show you.";
       continue;
     }
 
@@ -1380,10 +2076,19 @@ export async function generateAuditedSuite(
         generated.call.usage.costUsd + (audit.judgeCall === null ? 0 : audit.judgeCall.usage.costUsd),
       maxOutputTokens: outputTokens,
       truncationRetried,
+      timedOut: false,
     });
 
     if (audit.mustRegenerate) {
-      feedback = blockingFindingSummary(audit.findings);
+      recordConstraints(attempt, blockingFindingSummary(audit.findings));
+      const manifest = manifestSourceOf(generated.draft);
+      if (manifest === null) {
+        noManifestReason =
+          `Attempt ${String(attempt)} emitted no "${SUITE_MANIFEST_FILENAME}" entry at all.`;
+      } else {
+        lastManifest = { attempt, source: manifest };
+        noManifestReason = null;
+      }
       continue;
     }
 
@@ -1423,8 +2128,90 @@ export async function generateAuditedSuite(
     `could not author an acceptance suite for ticket ${ticket.id} that passes the bad-test audit in ` +
       `${String(maxAttempts)} attempt(s). Last attempt's blocking problems:\n` +
       reasons.map((r) => `  - ${r}`).join("\n") +
-      `\n${describeOutputCeilings(attempts)}`,
+      `\n${describeOutputCeilings(attempts)}` +
+      `\n${describeAttemptTimeouts(attempts, resolveAttemptTimeoutMs(options), reservedUsd)}`,
     remediationForFailedAuthoring(last?.findings ?? []),
+  );
+}
+
+/**
+ * Which attempts were abandoned on the wall clock, and — when none were — that
+ * none were.
+ *
+ * BOTH DIRECTIONS, FOR THE REASON {@link describeOutputCeilings} GIVES AND THE
+ * REASON THIS FILE KEEPS RELEARNING. A bound that reports only when it fires is
+ * a check that can only observe success: a reader of a failed run cannot tell
+ * "the bound was in force and nothing hit it" from "the bound was disabled" or
+ * "the bound is not wired at all". Run `a913c871` spent an argument from the
+ * shape of an unrelated error message establishing exactly that kind of
+ * negative about the truncation ladder.
+ *
+ * THIS SENTENCE IS THE INTENDED HANDOFF TO THE RECOVERY CLASSIFIER.
+ * `runs.failure_reason` carries it verbatim, and a classifier would key on
+ * {@link TIMEOUT_FAILURE_MARKER} to tell an abandoned call — which is worth
+ * retrying, possibly at a larger bound — apart from a suite that was audited and
+ * rejected, which is not.
+ *
+ * THE LINK IS THE CONSTANT, NOT A COPY OF ITS TEXT, and that is a correction:
+ * this docblock used to name the literal `hit the per-call wall-clock bound`,
+ * which is emitted NOWHERE — `grep -arn` found it only on that line, ten lines
+ * above the real constant. A classifier author who followed the instruction would
+ * have shipped a match that can never fire: the signature defect of this
+ * repository, written into the guidance instead of the code. See
+ * {@link TIMEOUT_FAILURE_MARKER} for the fact that nothing consumes it yet.
+ */
+function describeAttemptTimeouts(
+  attempts: readonly AuthoringAttempt[],
+  timeoutMs: number,
+  /**
+   * Total dollars reserved on the ceiling for the abandoned calls of THIS phase.
+   *
+   * A PARAMETER RATHER THAN A FIELD ON `AuthoringAttempt`, deliberately. The trail
+   * is persisted into `AUDIT.json` and read back by `readAuthoringAttempts`, and a
+   * WORST CASE sitting in a per-attempt record beside `costUsd` is a figure a
+   * reader will eventually add up as if it were spend. It is a property of the
+   * phase's ceiling, not of the attempt, and it lives only in the sentence.
+   */
+  reserved: number,
+): string {
+  const bound = Number.isFinite(timeoutMs)
+    ? `${String(Math.round(timeoutMs / 60_000))} minute(s)`
+    : "DISABLED";
+  const hit = attempts.filter((a) => a.timedOut).map((a) => String(a.attempt));
+  if (hit.length === 0) {
+    return (
+      `Per-call wall-clock bound: ${bound}. No attempt was abandoned on the per-call wall-clock ` +
+      "bound — every call this run made came back on its own, so the failure above is what the " +
+      "seat produced and not what the harness cut short."
+    );
+  }
+  /*
+   * THE RESERVATION SENTENCE IS BRANCHED ON THE ACTUAL FIGURE, and the reason is a
+   * review finding against the FIRST version of it (2026-08-10). That version read
+   * "The spend ceiling was charged the WORST CASE for each of them … so the dollar
+   * ceiling still bounds this phase" UNCONDITIONALLY — and on the dashboard's own
+   * seat (`SubscriptionSeatCaller`, `checkBeforeCall(0, …)`) the reservation is
+   * ZERO and the dollar ceiling bounds nothing. That is the same defect this pass
+   * is repairing — a reassuring sentence beside a mechanism that did not do what it
+   * said — arriving on `runs.failure_reason`, which is the one channel with a
+   * proven reader. The number is now reported, and the zero case is the LOUD one.
+   */
+  const spend =
+    reserved > 0
+      ? `The spend ceiling was charged the WORST CASE for each of them at the moment it was ` +
+        `abandoned — $${reserved.toFixed(4)} in total across ${String(hit.length)} abandonment(s) — so ` +
+        `the dollar ceiling still bounds this phase.`
+      : `NOTHING was charged to the spend ceiling for them: the worst case computed for each ` +
+        `abandoned call was $0.00, which is what a SUBSCRIPTION seat reports (its calls have no ` +
+        `dollar cost), so the dollar ceiling did not bound this phase and could not have. The only ` +
+        `live boundaries on that path are the phase wall clock and the provider's rate limit.`;
+  return (
+    `Per-call wall-clock bound: ${bound}. Attempt(s) ${hit.join(", ")} ${TIMEOUT_FAILURE_MARKER}, ` +
+    `producing nothing. Those calls were NOT cancelled — the seat subprocess kept running — so ` +
+    `their spend is unmeasured here and their attempt rows record costUsd 0. ${spend} The provider ` +
+    `QUOTA those calls kept consuming is not bounded by anything in this harness, because quota is ` +
+    `not dollars and only cancellation would stop it. Raise or disable the bound with ` +
+    `${ATTEMPT_TIMEOUT_ENV_NAME} if the ticket needs longer than that.`
   );
 }
 

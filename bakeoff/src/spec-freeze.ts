@@ -181,6 +181,25 @@ export interface AuthoringTrailEntry {
    */
   readonly maxOutputTokens?: number;
   readonly truncationRetried?: boolean;
+  /**
+   * True when this attempt was ABANDONED on the per-call wall-clock bound rather
+   * than answered. Optional for the same reason as the two above: trails frozen
+   * before 2026-08-10 do not carry it, and a reader must not mistake absent for
+   * `false` — "no attempt timed out" and "this build did not record timeouts" are
+   * different facts about a run.
+   *
+   * WHY IT HAD TO BE DECLARED HERE AND WAS NOT. `spec-agent.ts` passes
+   * `authoringTrail: authored.attempts`, and because that is a variable rather
+   * than a fresh object literal, TypeScript's excess-property check does not run
+   * — so the field reached the persisted `AUDIT.json` while being invisible to
+   * every reader of this type, `readAuthoringAttempts` (defect-record.ts)
+   * included. The defect record for the one failure mode the 2026-08-10 round
+   * ADDS therefore could not say that an attempt had been abandoned.
+   *
+   * Not a digest risk: the trail lives in `AUDIT.json`, outside the hashed
+   * manifest, so `suite_hash_mismatch` is not reachable from this field.
+   */
+  readonly timedOut?: boolean;
 }
 
 export interface FreezeSuiteInput {
