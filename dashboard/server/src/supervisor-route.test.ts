@@ -26,13 +26,19 @@
  */
 
 import { strict as assert } from "node:assert";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
-import type { ApiSupervisorCommandResponse, ApiSupervisorState } from "./api-types.js";
+import type {
+  ApiSupervisorCommandResponse,
+  ApiSupervisorState,
+  ApiSupervisorTicketFiled,
+  ApiSupervisorTicketsResponse,
+} from "./api-types.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
@@ -44,12 +50,25 @@ import {
   armSupervisorRoute,
   composeSupervisorState,
   createDashboardServer,
+  ticketAttachmentRoot,
 } from "./http.js";
 import type { RunController, SupervisorComposerInput, SupervisorController } from "./http.js";
 import { CATALOG_FALLBACK_MODEL_ID, CODEX_DEFAULT_MODEL_ID, ModelCatalog } from "./models.js";
 import type { DashboardPaths } from "./paths.js";
 import { SupervisorLoop } from "./supervisor.js";
 import { ensureDirs, resolvePaths } from "./paths.js";
+import {
+  CAPTURE_BLOCK_BEGIN,
+  documentDirFor,
+  manifestDocuments,
+  manifestMotion,
+  readReferenceManifest,
+  referenceDirFor,
+  writeReferenceManifest,
+} from "./ticket-refs.js";
+import { ticketWithReferences } from "./ticket.js";
+import type { SiteCapture } from "./site-capture.js";
+import type { MotionReading } from "./motion-types.js";
 
 const NO_MODELS: readonly ModelInfo[] = [];
 
@@ -64,6 +83,8 @@ interface Harness {
   readonly store: RunStore;
   readonly paths: DashboardPaths;
   readonly calls: SupervisorCalls;
+  /** Which URLs the two capture seams were asked for. Empty is an assertion. */
+  readonly captures: CaptureCalls;
   close(): Promise<void>;
 }
 
@@ -72,7 +93,31 @@ interface Harness {
  * surface has to be able to show, and the one a 503 on the GET would have
  * hidden behind "the dashboard is down".
  */
-async function startHarness(wired: boolean): Promise<Harness> {
+/**
+ * The two capture seams, stubbed by default so no routing test can launch a
+ * browser.
+ *
+ * THE DEFAULT IS A REFUSAL WITH A COUNTER, NOT AN ABSENT SEAM. `POST
+ * /api/supervisor/tickets` now scans the brief for a URL exactly as `POST
+ * /api/runs` does, so a test brief that happens to name a page would launch real
+ * chromium against the real network from a routing test. Counting the calls also
+ * gives the capture tests below their negative control: a brief with no URL must
+ * leave `sites` at zero, which is the arm a "did it capture" assertion cannot
+ * provide.
+ */
+interface CaptureCalls {
+  readonly sites: string[];
+  readonly motions: string[];
+}
+
+interface HarnessOptions {
+  /** Return a capture for this URL, or `null` to refuse it. */
+  readonly capture?: (url: string) => SiteCapture | null;
+  /** Return a reading for this URL, or `null` to refuse it. */
+  readonly motion?: (url: string) => MotionReading | null;
+}
+
+async function startHarness(wired: boolean, options: HarnessOptions = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "dash-supervisor-"));
   const paths = resolvePaths({ DASHBOARD_HOME: dir });
   ensureDirs(paths);
@@ -102,6 +147,7 @@ async function startHarness(wired: boolean): Promise<Harness> {
     },
   };
 
+  const captures: CaptureCalls = { sites: [], motions: [] };
   const server = createDashboardServer({
     store,
     bus,
@@ -111,6 +157,21 @@ async function startHarness(wired: boolean): Promise<Harness> {
     paths,
     // Never spawn docker from a routing test; see `api.test.ts`.
     gate: new GateProbe({ paths, makeGate: () => Promise.reject(new Error("no docker in a routing test")) }),
+    // NEVER THE REAL BROWSER. See {@link CaptureCalls}.
+    captureSite: (o) => {
+      captures.sites.push(o.url);
+      const capture = options.capture?.(o.url) ?? null;
+      return Promise.resolve(
+        capture === null ? { ok: false, reason: "no capture stub in this test" } : { ok: true, capture },
+      );
+    },
+    captureMotion: (o) => {
+      captures.motions.push(o.url);
+      const reading = options.motion?.(o.url) ?? null;
+      return Promise.resolve(
+        reading === null ? { ok: false, reason: "no motion stub in this test" } : { ok: true, reading },
+      );
+    },
     // `exactOptionalPropertyTypes` is on, so the unwired server OMITS the key
     // rather than passing `undefined` — which is also production's shape.
     ...(wired ? { supervisor } : {}),
@@ -123,6 +184,7 @@ async function startHarness(wired: boolean): Promise<Harness> {
     store,
     paths,
     calls,
+    captures,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
@@ -866,6 +928,11 @@ async function startCatalogHarness(enumerates: boolean): Promise<Harness> {
     auth,
     paths,
     gate: new GateProbe({ paths, makeGate: () => Promise.reject(new Error("no docker in a routing test")) }),
+    // NEVER THE REAL BROWSER, for the same reason as the default harness: the
+    // ticket route scans the brief for a URL, and these briefs are about model
+    // ids rather than pages, so the seams exist only to make that unmissable.
+    captureSite: () => Promise.resolve({ ok: false, reason: "no browser in a catalog test" }),
+    captureMotion: () => Promise.resolve({ ok: false, reason: "no browser in a catalog test" }),
     supervisor: {
       tick: () => {
         calls.ticks += 1;
@@ -879,6 +946,7 @@ async function startCatalogHarness(enumerates: boolean): Promise<Harness> {
     store,
     paths,
     calls,
+    captures: { sites: [], motions: [] },
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
@@ -1004,6 +1072,599 @@ test("with a catalog that could not enumerate, the SAME ids are filed rather tha
       [CATALOG_FALLBACK_MODEL_ID],
       "the catalog was not in the fallback state, so this test proves nothing",
     );
+  } finally {
+    await h.close();
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* THE QUEUE READOUT AND THE ATTACHMENTS — lane `ticket-intake`         */
+/* ------------------------------------------------------------------ */
+
+/** A base64 image data URL of `bytes` identical bytes. `api-references.test.ts`'s shape. */
+function pngDataUrl(bytes: number, seed: string): string {
+  return `data:image/png;base64,${Buffer.alloc(bytes, seed.charCodeAt(0)).toString("base64")}`;
+}
+
+/** A base64 PDF data URL. The owner's real ticket carries one of these. */
+function pdfDataUrl(bytes: number, seed: string): string {
+  return `data:application/pdf;base64,${Buffer.alloc(bytes, seed.charCodeAt(0)).toString("base64")}`;
+}
+
+function sha256Of(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function fileTicket(base: string, body: unknown): Promise<Response> {
+  return fetch(`${base}/api/supervisor/tickets`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function readQueue(base: string): Promise<ApiSupervisorTicketsResponse> {
+  const answer = await fetch(`${base}/api/supervisor/tickets`);
+  assert.equal(answer.status, 200, `GET /api/supervisor/tickets answered ${String(answer.status)}`);
+  return (await answer.json()) as ApiSupervisorTicketsResponse;
+}
+
+/**
+ * `GET /api/supervisor/tickets` — THE MORNING READOUT, WHICH WAS A MEASURED 404.
+ *
+ * WHAT WAS BROKEN. `GET /api/supervisor` reports the ACTIVE ticket only, so a
+ * ticket that terminated at `blocked` overnight existed for the owner only in
+ * `supervisor_tickets.next_action` and in the server's stdout — the morning
+ * readout required opening runs.db in a SQL client. Eight unattended hours
+ * produce a LIST.
+ *
+ * THE EMPTY ARM IS THE ONE THAT MATTERS. A queue readout's failure mode is
+ * rendering nothing, so "no tickets" and "the reader is blind" must not produce
+ * the same body: `probe.ticketsSeen` is asserted on both a populated and an
+ * empty store.
+ */
+test("GET /api/supervisor/tickets lists every ticket, its state, its attempts and its sentence", async () => {
+  const h = await startHarness(true);
+  try {
+    const empty = await readQueue(h.base);
+    assert.deepEqual(empty.tickets, [], "an empty store did not answer an empty list");
+    assert.equal(empty.probe.ticketsSeen, 0);
+    assert.equal(empty.probe.armed, true, "the route reported itself blind on an empty store");
+
+    h.store.enqueueSupervisorTicket({
+      ticketKey: "t-blocked",
+      ticketText: "# A blocked one\n\nBuild it.",
+      modelId: "haiku",
+      // A SECOND, DIFFERENT VALUE FOR EVERY FIELD BELOW. `seedActiveTicket` files
+      // `opus[1m]` at attempt 2 of the default 3 with a different heading, so each
+      // per-field assertion has two arms and a hardcoded constant cannot pass —
+      // this test was one-armed on five fields when it was first written.
+      maxAttempts: 5,
+      nextAction: "nothing — the gate could not be reached and no repair driver is wired",
+    });
+    h.store.updateSupervisorTicket("t-blocked", {
+      state: "blocked",
+      attemptNo: 3,
+      lastRunId: "run-old",
+      lastClass: "structural",
+      lastDefectId: "abc123ef",
+      nextAction: "nothing — the gate could not be reached and no repair driver is wired",
+    });
+    seedRun(h.store, "run-live", "2026-08-10T04:00:00.000Z");
+    seedActiveTicket(h.store, "run-live");
+
+    const queue = await readQueue(h.base);
+    assert.equal(queue.probe.ticketsSeen, 2, "the readout did not see both tickets");
+    assert.deepEqual(
+      queue.tickets.map((row) => row.ticketKey),
+      ["t-blocked", "t-portfolio"],
+      "the readout is not in enqueued order",
+    );
+
+    const blocked = queue.tickets[0];
+    assert.equal(blocked?.state, "blocked");
+    assert.equal(blocked?.attemptNo, 3);
+    assert.equal(blocked?.maxAttempts, 5);
+    assert.equal(
+      blocked?.nextAction,
+      "nothing — the gate could not be reached and no repair driver is wired",
+      "the blocked ticket's whole explanation is missing from the readout",
+    );
+    // THE RUN IT HAD, on a ticket that is no longer running. Without this the
+    // owner cannot open the run whose failure the sentence describes.
+    assert.equal(blocked?.runId, "run-old");
+    assert.equal(blocked?.currentRunId, null, "a blocked ticket must not claim a current run");
+    assert.equal(blocked?.lastDefectId, "abc123ef");
+    assert.equal(blocked?.modelId, "haiku");
+    assert.equal(blocked?.title, "A blocked one", "the title is not read from the brief");
+
+    /*
+     * THE SECOND ARM OF EVERY FIELD ABOVE. Each of these differs from the blocked
+     * row's value, so a row assembled from constants — the failure mode of a
+     * readout, and the one this repository has catalogued twenty-two times — cannot
+     * satisfy both halves.
+     */
+    const running = queue.tickets[1];
+    assert.equal(running?.state, "running");
+    assert.equal(running?.attemptNo, 2, "attempt counts are not read per ticket");
+    assert.equal(running?.maxAttempts, 3, "maxAttempts is not read per ticket");
+    assert.equal(running?.modelId, "opus[1m]", "the model id is not read per ticket");
+    assert.equal(running?.title, "The portfolio site", "the title is not read per ticket");
+    assert.equal(running?.lastDefectId, null, "a ticket with no recorded defect carries one anyway");
+    assert.equal(running?.currentRunId, "run-live");
+    assert.equal(running?.runId, "run-live");
+    assert.notEqual(running?.nextAction.trim(), "");
+    assert.notEqual(running?.nextAction, blocked?.nextAction, "both rows carry one sentence");
+  } finally {
+    await h.close();
+  }
+});
+
+/**
+ * THE OWNER'S REAL TICKET — A BRIEF THAT SAYS "CONTENT COMES FROM THE ATTACHED
+ * CV", PLUS THE CV.
+ *
+ * MEASURED BEFORE THIS ROUND: the route accepted `ticketText` and `modelId` and
+ * nothing else, so the only way to file that ticket WITH its attachments was
+ * `POST /api/runs`, which bypasses the supervisor entirely. Tonight's run was
+ * submitted that way.
+ *
+ * THE ENVELOPE IS HALF THE FIX AND IT HAS NO OTHER TEST. `readBody`'s default cap
+ * is 1 MiB; the image below is 1 MB of bytes, ~1.37 MB as base64, so a route that
+ * kept the default envelope refuses this request before any decoder runs — and
+ * the refusal would quote per-image limits no request could reach, which is the
+ * exact defect `MAX_ATTACHMENT_BODY_BYTES` was declared to end.
+ *
+ * THE COUNTS ARE READ BACK OFF THE DISK, NOT ECHOED. The response's `attachments`
+ * block comes from re-reading the manifest that was just written, so a filing
+ * whose bytes did not land cannot answer with the request's own numbers.
+ */
+test("a ticket carries reference images and documents, and the bytes are durable", async () => {
+  const h = await startHarness(true);
+  try {
+    const imageBytes = Buffer.alloc(1024 * 1024, "i".charCodeAt(0));
+    const docBytes = Buffer.alloc(80 * 1024, "d".charCodeAt(0));
+    const answer = await fileTicket(h.base, {
+      ticketText: "a one-page CV site. Content comes from the attached CV; match the reference image.",
+      modelId: "opus[1m]",
+      references: [`data:image/png;base64,${imageBytes.toString("base64")}`],
+      documents: [`data:application/pdf;base64,${docBytes.toString("base64")}`],
+    });
+    assert.equal(answer.status, 201, `filing with attachments answered ${String(answer.status)}`);
+    const filed = (await answer.json()) as ApiSupervisorTicketFiled;
+    assert.deepEqual(
+      filed.attachments,
+      { manifest: "read", images: 1, documents: 1, capture: false, motion: false, carriedIntoRun: null },
+      "the 201 does not report what was kept",
+    );
+
+    // THE BYTES, ON DISK, UNDER THE TICKET'S OWN KEY — not under a run id, because
+    // no run exists until the loop claims this ticket.
+    const ticketRoot = ticketAttachmentRoot(h.paths.runs);
+    const image = join(referenceDirFor(ticketRoot, filed.ticketKey), "reference-1.png");
+    const document = join(documentDirFor(ticketRoot, filed.ticketKey), "document-1.pdf");
+    assert.equal(existsSync(image), true, `no image at ${image}`);
+    assert.equal(existsSync(document), true, `no document at ${document}`);
+    assert.equal(readFileSync(image).byteLength, imageBytes.byteLength, "the image was truncated");
+    assert.equal(readFileSync(document).byteLength, docBytes.byteLength, "the document was truncated");
+
+    // AND THE MANIFEST, which is what a submission has to read to re-attach them.
+    const manifest = readReferenceManifest(referenceDirFor(ticketRoot, filed.ticketKey));
+    assert.notEqual(manifest, null, "no manifest was written, so nothing downstream can find the CV");
+    assert.deepEqual(
+      manifest?.images.map((entry) => entry.sha256),
+      [sha256Of(imageBytes)],
+      "the manifest does not digest the image that was sent",
+    );
+    assert.deepEqual(
+      manifestDocuments(manifest).map((entry) => [entry.sha256, entry.mediaType]),
+      [[sha256Of(docBytes), "application/pdf"]],
+      "the manifest does not digest the document that was sent",
+    );
+
+    // The readout agrees with the filing. One derivation, two routes.
+    const queue = await readQueue(h.base);
+    assert.deepEqual(queue.tickets[0]?.attachments, filed.attachments);
+  } finally {
+    await h.close();
+  }
+});
+
+/**
+ * WHAT AN ATTACHMENT MEANS FOR THE TICKET KEY — DECIDED, AND BOTH DIRECTIONS
+ * PINNED.
+ *
+ * THE DECISION: the key covers the brief AND the bytes the owner attached. The
+ * same brief with a DIFFERENT CV is a DIFFERENT ticket, because the artefact is
+ * built from the CV's contents and graded against criteria written from them —
+ * two such tickets are two pieces of work, and answering 409 to the second would
+ * silently discard the corrected CV. The same brief with the SAME bytes is still
+ * ONE ticket, so a retried POST after a dropped connection is still a decidable
+ * 409 rather than a second night's spend.
+ *
+ * THE DERIVATION IS `referenceIdentityMaterial`, WHICH IS WHY THE TEXT-ONLY KEY
+ * DID NOT MOVE. That function is documented byte-identical to the brief for
+ * empty lists, so every ticket filed before this round hashes to the same key it
+ * always did — asserted below against a hardcoded golden rather than against the
+ * implementation, in the `ticket-refs.test.ts` idiom.
+ *
+ * NEITHER `captureUrl` NOR `motionUrl` IS IN THE KEY, and that is deliberate: a
+ * key that folded a live page reading would move whenever the page did, so a
+ * double-submitted form would file two tickets. The key is a function of what the
+ * OWNER supplied.
+ */
+test("the ticket key covers the attached bytes: the same brief with a different CV is a different ticket", async () => {
+  const h = await startHarness(true);
+  try {
+    const brief = "a one-page CV site. Content comes from the attached CV.";
+
+    // THE GOLDEN: no attachments, and the key is the plain brief digest this route
+    // has always minted. A derivation change that moved this orphans every ticket
+    // already filed.
+    const plain = (await (await fileTicket(h.base, { ticketText: "build it", modelId: "opus[1m]" })).json()) as ApiSupervisorTicketFiled;
+    assert.equal(
+      plain.ticketKey,
+      `t-${createHash("sha256").update("build it", "utf8").digest("hex").slice(0, 16)}`,
+      "the text-only ticket key moved, which orphans every ticket already filed",
+    );
+
+    const first = await fileTicket(h.base, {
+      ticketText: brief,
+      modelId: "opus[1m]",
+      documents: [pdfDataUrl(2048, "a")],
+    });
+    assert.equal(first.status, 201);
+    const one = (await first.json()) as ApiSupervisorTicketFiled;
+
+    // SAME BYTES, SAME TICKET. The retried POST.
+    const retried = await fileTicket(h.base, {
+      ticketText: brief,
+      modelId: "opus[1m]",
+      documents: [pdfDataUrl(2048, "a")],
+    });
+    assert.equal(retried.status, 409, `a byte-identical re-POST answered ${String(retried.status)}`);
+    assert.equal(((await retried.json()) as { error?: string }).error, "ticket_already_queued");
+
+    // DIFFERENT BYTES, DIFFERENT TICKET.
+    const second = await fileTicket(h.base, {
+      ticketText: brief,
+      modelId: "opus[1m]",
+      documents: [pdfDataUrl(2048, "b")],
+    });
+    assert.equal(second.status, 201, "the same brief with a different CV was refused as a duplicate");
+    const two = (await second.json()) as ApiSupervisorTicketFiled;
+    assert.notEqual(two.ticketKey, one.ticketKey, "two different CVs minted one key");
+    assert.equal(h.store.listSupervisorTickets().length, 3, "the queue does not hold the three distinct tickets");
+
+    // AND THE TWO KEYS DIFFER FROM THE TEXT-ONLY ONE, so the digests are really in
+    // the material rather than the two tickets differing by luck.
+    const textOnly = `t-${createHash("sha256").update(brief, "utf8").digest("hex").slice(0, 16)}`;
+    assert.notEqual(one.ticketKey, textOnly, "the attachment digests are not in the key");
+  } finally {
+    await h.close();
+  }
+});
+
+/**
+ * THE REFUSALS — THE SAME CODES `POST /api/runs` ANSWERS, AND NOTHING IS LEFT
+ * BEHIND.
+ *
+ * `readReferenceImages` and `readReferenceDocuments` are REUSED rather than
+ * restated, so these assertions are on the codes and sentences those functions
+ * own. A second copy of the caps in this route is how the ticket form and the
+ * chat box end up disagreeing about what a document is.
+ *
+ * THE ROW AND THE DIRECTORY ARE BOTH ASSERTED ABSENT. A refusal that had already
+ * written bytes would leave an orphan directory under a key nothing will ever
+ * claim, and a refusal that had already inserted the row would file a ticket
+ * whose attachments were rejected.
+ */
+test("attachment refusals answer the same codes as POST /api/runs, and write nothing", async () => {
+  const h = await startHarness(true);
+  try {
+    const cases: readonly { readonly body: Record<string, unknown>; readonly code: string }[] = [
+      { body: { references: Array.from({ length: 7 }, (_, i) => pngDataUrl(16, String(i))) }, code: "too_many_images" },
+      { body: { references: ["not a data url"] }, code: "invalid_image" },
+      { body: { references: "one image, honest" }, code: "invalid_body" },
+      { body: { documents: Array.from({ length: 5 }, (_, i) => pdfDataUrl(16, String(i))) }, code: "too_many_documents" },
+      { body: { documents: [`data:application/x-msdownload;base64,${Buffer.from("MZ").toString("base64")}`] }, code: "invalid_document" },
+      { body: { documents: { one: "document" } }, code: "invalid_body" },
+      { body: { captureUrl: 7 }, code: "invalid_body" },
+      { body: { motionUrl: ["https://example.com/"] }, code: "invalid_body" },
+    ];
+    for (const [index, { body, code }] of cases.entries()) {
+      const answer = await fileTicket(h.base, {
+        ticketText: `refusal case ${String(index)}`,
+        modelId: "opus[1m]",
+        ...body,
+      });
+      assert.equal(answer.status, 400, `${JSON.stringify(body).slice(0, 60)} answered ${String(answer.status)}`);
+      const problem = (await answer.json()) as { error?: string; message?: string };
+      assert.equal(problem.error, code, `${JSON.stringify(body).slice(0, 60)} answered ${String(problem.error)}`);
+      assert.notEqual(problem.message?.trim(), "", "a refusal with no sentence");
+    }
+    assert.deepEqual(h.store.listSupervisorTickets(), [], "a refused filing wrote a row");
+    assert.equal(
+      existsSync(ticketAttachmentRoot(h.paths.runs)),
+      false,
+      "a refused filing left a ticket directory behind",
+    );
+
+    // NEGATIVE HALF: the same route, with attachments inside every cap, files.
+    const good = await fileTicket(h.base, {
+      ticketText: "the positive control",
+      modelId: "opus[1m]",
+      references: [pngDataUrl(64, "p")],
+      documents: [pdfDataUrl(64, "q")],
+    });
+    assert.equal(good.status, 201, "the refusals above are the route being broken, not the input");
+    assert.equal(h.store.listSupervisorTickets().length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+/**
+ * DID THE CV REACH THE RUN? — THE THREE-VALUED PROBE, AND THE BLIND MANIFEST.
+ *
+ * THIS IS THE FIELD THE OWNER'S QUESTION MAPS ONTO. Measured 2026-08-10:
+ * `createSupervisorSubmit` calls `ticketWithReferences` with `images: []` and
+ * `documents: []`, so a ticket carrying a CV is submitted as prose alone. The
+ * readout compares the ticket's manifest digests against the RUN's, so it reports
+ * that drop today and will report `true` the day the submission path carries them
+ * — with nothing here edited.
+ *
+ * FOUR STATES, AND TWO OF THEM ARE THE CONTROLS a one-armed version would miss:
+ * a ticket with nothing to carry must read `null` rather than `false`, and a
+ * manifest that EXISTS AND WILL NOT PARSE must read `unreadable` rather than
+ * zero attachments — `readReferenceManifest` flattens those two and this readout
+ * is the one place that must not.
+ */
+test("the readout says whether a ticket's attachments reached its run, and when it cannot tell", async () => {
+  const h = await startHarness(true);
+  try {
+    const docBytes = Buffer.alloc(4096, "c".charCodeAt(0));
+    const filed = (await (
+      await fileTicket(h.base, {
+        ticketText: "a CV site from the attached CV",
+        modelId: "opus[1m]",
+        documents: [`data:application/pdf;base64,${docBytes.toString("base64")}`],
+      })
+    ).json()) as ApiSupervisorTicketFiled;
+
+    // STATE ONE: attachments, no run yet. NOT `false` — nothing has had the chance
+    // to drop them.
+    const before = await readQueue(h.base);
+    assert.equal(before.tickets[0]?.attachments.carriedIntoRun, null, "a ticket with no run claimed a verdict");
+    assert.equal(before.probe.attachmentsDropped, 0);
+
+    // STATE TWO: a run exists and its manifest does NOT list the digest — DROPPED.
+    // This is what `createSupervisorSubmit` produces today.
+    seedRun(h.store, "run-without-the-cv", "2026-08-10T05:00:00.000Z");
+    h.store.updateSupervisorTicket(filed.ticketKey, { state: "running", currentRunId: "run-without-the-cv" });
+    const dropped = await readQueue(h.base);
+    assert.equal(
+      dropped.tickets[0]?.attachments.carriedIntoRun,
+      false,
+      "the readout cannot see that the run was submitted without the CV",
+    );
+    assert.equal(dropped.probe.attachmentsDropped, 1);
+
+    /*
+     * STATE TWO AND A HALF, AND IT IS THE ARM A MUTATION FOUND MISSING. The run
+     * now HAS a manifest and it lists a DIFFERENT document. Without this case the
+     * `false` above is produced by "the run has no manifest at all", so a probe
+     * that skipped the digest comparison entirely and answered `true` whenever a
+     * manifest existed passed every other assertion here — measured, 2026-08-10.
+     */
+    const runRefs = referenceDirFor(h.paths.runs, "run-without-the-cv");
+    mkdirSync(runRefs, { recursive: true });
+    writeReferenceManifest(runRefs, {
+      images: [],
+      capture: null,
+      documents: [
+        {
+          path: join(runRefs, "..", "documents", "someone-elses.pdf"),
+          sha256: sha256Of(Buffer.alloc(4096, "z".charCodeAt(0))),
+          bytes: 4096,
+          mediaType: "application/pdf",
+        },
+      ],
+      motion: null,
+    });
+    const wrongFile = await readQueue(h.base);
+    assert.equal(
+      wrongFile.tickets[0]?.attachments.carriedIntoRun,
+      false,
+      "a run carrying a DIFFERENT document read as carrying the ticket's CV",
+    );
+
+    // STATE THREE: the run's manifest carries the same digest — CARRIED. The
+    // positive control, and the shape the submission path has to produce.
+    writeReferenceManifest(runRefs, {
+      images: [],
+      capture: null,
+      documents: [
+        {
+          path: join(runRefs, "..", "documents", "document-1.pdf"),
+          sha256: sha256Of(docBytes),
+          bytes: docBytes.byteLength,
+          mediaType: "application/pdf",
+        },
+      ],
+      motion: null,
+    });
+    const carried = await readQueue(h.base);
+    assert.equal(carried.tickets[0]?.attachments.carriedIntoRun, true, "a run carrying the digest still read as dropped");
+    assert.equal(carried.probe.attachmentsDropped, 0);
+
+    // STATE FOUR: the TICKET's manifest exists and will not parse. `unreadable`,
+    // never "no attachments" — the distinction the manifest reader flattens.
+    const ticketRefs = referenceDirFor(ticketAttachmentRoot(h.paths.runs), filed.ticketKey);
+    writeFileSync(join(ticketRefs, "references.json"), "{ this is not json", "utf8");
+    const blind = await readQueue(h.base);
+    assert.equal(blind.tickets[0]?.attachments.manifest, "unreadable", "a corrupt manifest read as no attachments");
+    assert.equal(blind.tickets[0]?.attachments.documents, 0);
+    assert.equal(blind.tickets[0]?.attachments.carriedIntoRun, null, "an unreadable manifest cannot judge the run");
+    assert.equal(blind.probe.manifestsUnreadable, 1);
+
+    // AND THE CONTROL FOR THAT CONTROL: a ticket that attached nothing reads
+    // `none`, not `unreadable`, and its verdict is `null` rather than `false`.
+    const bare = (await (await fileTicket(h.base, { ticketText: "no attachments here", modelId: "opus[1m]" })).json()) as ApiSupervisorTicketFiled;
+    const both = await readQueue(h.base);
+    const bareRow = both.tickets.find((row) => row.ticketKey === bare.ticketKey);
+    assert.equal(bareRow?.attachments.manifest, "none");
+    assert.equal(bareRow?.attachments.carriedIntoRun, null, "a ticket with nothing to carry read as dropped");
+    assert.equal(both.probe.manifestsUnreadable, 1, "the bare ticket was counted as unreadable");
+  } finally {
+    await h.close();
+  }
+});
+
+/**
+ * `captureUrl` AND `motionUrl` — READ ONCE, AT FILING TIME, AND FROZEN.
+ *
+ * WHY AT FILING TIME AND NOT AT SUBMISSION. `supervisor-boot.ts` states the
+ * constraint: a capture is a live network read, so two attempts at the same
+ * ticket would fold two different outlines into the brief, mint two different
+ * ticket ids, find no frozen acceptance suite and pay for a second spec phase.
+ * Its docblock's own remedy is "a supervisor ticket that needs a captured page
+ * must carry the outline in its text" — which is what this route now does: the
+ * reading is composed into `ticket_text` ONCE, so every attempt submits the same
+ * bytes.
+ *
+ * THE IDEMPOTENCE ASSERTION IS THE LOAD-BEARING ONE. `createSupervisorSubmit`
+ * re-composes the stored text through `ticketWithReferences` with a null capture;
+ * `composeBrief` returns the prose unchanged in that case, so re-composition must
+ * be a no-op. If it ever double-wraps, every supervisor retry mints a new id.
+ *
+ * THREE ARMS ON THE SCAN: an explicit `captureUrl`, a URL found in the brief, and
+ * the `null` opt-out on the SAME brief. The stub counts calls, so "nothing was
+ * captured" is provable rather than assumed.
+ */
+test("a captured page and a motion reading are frozen into the ticket at filing time", async () => {
+  const h = await startHarness(true, {
+    capture: (url) => ({
+      url,
+      capturedAt: "2026-08-10T06:00:00.000Z",
+      shots: [],
+      outline: { url, title: "Kamil Borzecki", headings: [{ level: 1, text: "Selected work" }], links: ["About"], palette: ["#101010"] },
+    }),
+    motion: (url) => ({ url, capturedAt: "2026-08-10T06:00:00.000Z", observations: [], libraries: ["framer-motion"], respectsReducedMotion: true }),
+  });
+  try {
+    const filed = (await (
+      await fileTicket(h.base, {
+        ticketText: "copy this portfolio",
+        modelId: "opus[1m]",
+        captureUrl: "https://example.com/",
+        motionUrl: "https://example.com/motion",
+      })
+    ).json()) as ApiSupervisorTicketFiled;
+    assert.deepEqual(h.captures.sites, ["https://example.com/"], "the capture seam was not asked for the named page");
+    assert.deepEqual(h.captures.motions, ["https://example.com/motion"]);
+    assert.equal(filed.attachments.capture, true);
+    // A READING WITH NO ENTRIES IS STILL A READING — `null` means no page was
+    // read, an empty spec means nothing moved. The two must not collapse.
+    assert.equal(filed.attachments.motion, true, "a motion reading with no entries was dropped");
+
+    const stored = h.store.getSupervisorTicket(filed.ticketKey);
+    assert.notEqual(stored, null);
+    assert.match(
+      stored?.ticketText ?? "",
+      new RegExp(CAPTURE_BLOCK_BEGIN.replace(/[-]/g, "\\$&")),
+      "the page reading is not in the text the loop will submit",
+    );
+    assert.match(stored?.ticketText ?? "", /Selected work/, "the outline's heading did not reach the brief");
+
+    // THE IDEMPOTENCE OF THE RE-COMPOSITION — what keeps every retry on one id.
+    const submitted = ticketWithReferences({ prose: stored?.ticketText ?? "", images: [], documents: [], capture: null, motion: null });
+    assert.equal(submitted.brief, stored?.ticketText, "re-composing the stored brief changed it, so every retry mints a new id");
+    assert.equal(
+      ticketWithReferences({ prose: stored?.ticketText ?? "", images: [], documents: [], capture: null, motion: null }).id,
+      submitted.id,
+      "the id is not stable across two submissions of one ticket",
+    );
+
+    // The manifest holds the reading, so a submission can re-attach it.
+    const manifest = readReferenceManifest(referenceDirFor(ticketAttachmentRoot(h.paths.runs), filed.ticketKey));
+    assert.equal(manifest?.capture?.url, "https://example.com/");
+    assert.equal(manifestMotion(manifest)?.url, "https://example.com/motion");
+
+    // ARM TWO: a URL in the BRIEF is scanned for, exactly as POST /api/runs does.
+    const scanned = (await (
+      await fileTicket(h.base, { ticketText: "make a copy of https://example.com/scanned please", modelId: "opus[1m]" })
+    ).json()) as ApiSupervisorTicketFiled;
+    assert.deepEqual(h.captures.sites, ["https://example.com/", "https://example.com/scanned"]);
+    assert.equal(scanned.attachments.capture, true);
+
+    // ARM THREE: `captureUrl: null` on a brief that names a page suppresses the
+    // scan entirely, and NOTHING is captured. Without this arm the two above are
+    // satisfied by a route that captures unconditionally.
+    const optedOut = (await (
+      await fileTicket(h.base, {
+        ticketText: "do NOT read https://example.com/opted-out, just build from the brief",
+        modelId: "opus[1m]",
+        captureUrl: null,
+      })
+    ).json()) as ApiSupervisorTicketFiled;
+    assert.equal(h.captures.sites.length, 2, "the opt-out still opened the page");
+    assert.equal(optedOut.attachments.capture, false);
+    assert.equal(optedOut.attachments.motion, false, "a ticket that named no motion reference got one");
+  } finally {
+    await h.close();
+  }
+});
+
+/**
+ * THE THIRD ARM OF THE BOOT ARM CHECK: DOES THE TICKET KEY SEE ATTACHMENTS?
+ *
+ * WHY AN ARM AND NOT ONLY A TEST. The key derivation's failure mode is silent and
+ * expensive: a key that ignored the attachment digests would answer 409 to the
+ * owner's corrected CV — a REFUSAL that looks exactly like the duplicate guard
+ * working — and every "does it 201" test in this file would stay green. The arm
+ * drives the derivation with and without a digest and reports whether the two
+ * answers differ, in the idiom of the composer arm above.
+ *
+ * IT MUST BE ABLE TO SAY BLIND. Asserted by the mutation recorded in this round's
+ * report: dropping the digests from the material collapses the two keys to one
+ * and the boot line reads `BLIND: the ticket key ignores attachments`.
+ */
+test("the boot arm check measures the ticket key against attachments and the ticket manifests", async () => {
+  const h = await startHarness(true);
+  try {
+    await fileTicket(h.base, {
+      ticketText: "a ticket with a manifest",
+      modelId: "opus[1m]",
+      documents: [pdfDataUrl(512, "m")],
+    });
+    const lines: string[] = [];
+    const armed = armSupervisorRoute(h.store, undefined, (line) => lines.push(line), h.paths);
+    const keyLine = lines.find((line) => line.includes("ticket key"));
+    assert.notEqual(keyLine, undefined, `no arm check line named the ticket key: ${lines.join(" | ")}`);
+    assert.match(String(keyLine), /folds attachments/, `the key arm reported blind: ${String(keyLine)}`);
+    assert.doesNotMatch(String(keyLine), /BLIND/);
+    assert.equal(armed.armed, true);
+
+    // AND IT READS THE REAL DIRECTORY, so a boot on a tree whose manifests are
+    // corrupt says so rather than reporting a healthy queue.
+    const intake = lines.find((line) => line.includes("ticket intake"));
+    assert.match(String(intake), /1 ticket\(s\) with attachments, 0 unreadable/, `the intake arm did not measure: ${String(intake)}`);
+
+    /*
+     * AND THE BLIND ARM REACHES THE WIRE — the arm that could not look must not be
+     * indistinguishable from the arm that looked and found nothing wrong.
+     *
+     * MEASURED: dropping `deps.paths` at the one call site in
+     * `createDashboardServer` failed NO test, because this test calls the function
+     * directly. Both halves are asserted: with no paths the note says so, and the
+     * running server's own `probe.armNote` does not.
+     */
+    const blind = armSupervisorRoute(h.store, undefined, (line) => lines.push(line));
+    assert.match(blind.armNote, /ticket intake BLIND: no runs root was passed/, `a blind arm four is invisible: ${blind.armNote}`);
+    const wire = await readQueue(h.base);
+    assert.doesNotMatch(wire.probe.armNote, /BLIND/, `the running server's arm four never looked: ${wire.probe.armNote}`);
+    assert.equal(wire.probe.armed, true);
   } finally {
     await h.close();
   }
