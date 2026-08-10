@@ -19,6 +19,7 @@
  * start.
  */
 
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { AuthProbe } from "./auth.js";
@@ -35,7 +36,14 @@ import { DASHBOARD_ENV, ensureDirs, resolvePaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { ProjectRunner } from "./project-runner.js";
 import { SupervisorLoop } from "./supervisor.js";
-import { createSupervisorSubmit, startSupervisor } from "./supervisor-boot.js";
+import {
+  armRepairDriver,
+  createCycleRunner,
+  createDefectSignatureReader,
+  createRepairDriver,
+  createSupervisorSubmit,
+  startSupervisor,
+} from "./supervisor-boot.js";
 
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const paths = resolvePaths(env);
@@ -83,6 +91,58 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       });
     },
   });
+  /*
+   * ─── THE REPAIR DRIVER, AND THE ARM CHECK THAT DECIDES WHETHER TO WIRE IT ────
+   *
+   * MEASURED 2026-08-10, from this process's own boot line: "NO REPAIR DRIVER is
+   * wired. Every ticket that reaches 'repairing' terminates at 'blocked' with
+   * NO_REPAIR_DRIVER and the loop carries on to the next ticket." `tools/repair`
+   * (16 files) and `tools/tier3` (9 files) existed, were green, and no process
+   * invoked either. A structural failure was classified correctly, filed with a
+   * sentence and terminated in one tick — bounded and named, and never repaired.
+   * This block is that gap.
+   *
+   * THE ARM CHECK RUNS BEFORE THE LOOP IS CONSTRUCTED, AND ITS ANSWER DECIDES
+   * WHETHER `repair` IS PASSED AT ALL. A driver that cannot tell an applied patch
+   * from a refused one would terminate tickets with confident wrong sentences and,
+   * worse, could read an ungraded patch as one the gate approved. So: measure
+   * first, wire second, and if it is blind pass `repairArm` WITHOUT `repair` — the
+   * loop then prints the third of its three sentences ("a driver EXISTS and was
+   * NOT wired"), which is a different fact from "nobody wired one".
+   *
+   * IT DOES NOT MAKE THE SUPERVISOR REFUSE TO TICK, deliberately. `startSupervisor`
+   * forces `desired='stopped'` when the HEALTH DISCRIMINATOR is blind, because a
+   * loop that cannot tell an idle queue from a lost submission must not spend
+   * quota. A blind repair driver is a smaller fault: without it every repairing
+   * ticket lands `blocked` with a named reason and the queue keeps moving. Stopping
+   * the whole queue over it would trade a lost repair for a lost night.
+   */
+  const repairDriverDeps = {
+    // `paths.home` is `dashboard/`; its parent is the repository root, which is
+    // where `tools/` and the git tree a patch applies to both live.
+    cyclePath: join(paths.home, "..", "tools", "repair", "supervisor-cycle.mjs"),
+    runsDir: paths.runs,
+    ledgerDir: join(paths.data, "defects", "ruled-out"),
+    proposalsDir: join(paths.data, "repair-proposals"),
+    rollbackDir: join(paths.data, "repair-rollback"),
+    run: createCycleRunner(),
+    log: (line: string) => { process.stdout.write(`  ${line}\n`); },
+  };
+  /*
+   * THE ARM PROBE GETS A SHORT CLOCK OF ITS OWN, AND THIS `await` IS WHY.
+   *
+   * It sits above `server.listen`, so anything that hangs here means the dashboard
+   * never binds and the owner sees a dead port instead of a named failure. The
+   * probe spawns `--armcheck`, which does a `git init`, a commit and a patch round
+   * trip: measured at ~400 ms, and a wedged `git` would otherwise sit on the
+   * driver's ten-MINUTE budget. Thirty seconds is 75x the measurement and short
+   * enough that a hang is a refusal to wire the driver rather than a dashboard
+   * that never starts. The ten minutes stays where it belongs — on real cycles,
+   * which run on the tick and not in the boot path.
+   */
+  const repairArm = await armRepairDriver({ ...repairDriverDeps, run: createCycleRunner(30_000) });
+  for (const line of repairArm.lines) process.stdout.write(`  ${line}\n`);
+
   const supervisorLoop = new SupervisorLoop({
     store,
     submit: createSupervisorSubmit({ store, bus, catalog, orchestrator }),
@@ -90,6 +150,24 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     // re-submitted, which is the difference between waiting out a limit and
     // paying for a second spec phase.
     resume: (runId) => orchestrator.resume(runId),
+    /*
+     * SPREAD, NOT `repair: armed ? driver : undefined`. `SupervisorDeps.repair` is
+     * optional under `exactOptionalPropertyTypes`, and an explicit `undefined`
+     * would not be the same thing as an absent key — the loop's `driverWired`
+     * reading is `repair !== undefined`, so both work here, but the arm check's
+     * three-state reading depends on the two fields being independently present.
+     */
+    ...(repairArm.armed ? { repair: createRepairDriver(repairDriverDeps) } : {}),
+    repairArm,
+    /*
+     * WITHOUT THIS, `settle()` WRITES `lastDefectId: null` AND THE WHOLE
+     * PER-SIGNATURE BOUND KEYS ON `class:<class>` INSTEAD. That is not a cosmetic
+     * downgrade: `supervisor-cycle.mjs` looks for the candidate diff at
+     * `<signature>.diff` and the ruled-out ledger is content-addressed by the same
+     * digest, so an unwired reader means every defect shares one budget and no
+     * proposal can ever be found or ruled out.
+     */
+    defectSignatureOf: createDefectSignatureReader(paths.runs),
   });
   supervisorHolder.loop = supervisorLoop;
   // ONE INSTANCE, SHARED WITH THE SERVER. It holds the running children, so the

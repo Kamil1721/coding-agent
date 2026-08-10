@@ -86,6 +86,30 @@ export interface SupervisorDeps {
    */
   readonly repair?: (request: SupervisorRepairRequest) => Promise<SupervisorRepairOutcome>;
   /**
+   * WHAT THE BOOT ARM CHECK MEASURED ABOUT THE DRIVER, OR ABSENT.
+   *
+   * Separate from `repair` on purpose, and the reason is the one line this whole
+   * round turns on. Until now `armCheck()` printed "a repair driver is wired" on
+   * the strength of `repair !== undefined` plus two constants read out of this
+   * build — a boot line reporting a healthy component it had not observed, which
+   * is strictly worse than the honest absence it replaced.
+   *
+   * THREE STATES, NOT TWO, AND THAT IS WHY THIS FIELD EXISTS INDEPENDENTLY OF
+   * `repair`:
+   *
+   *   `repairArm` absent                nobody tried to wire a driver.
+   *   present and `armed`               a driver was measured and wired.
+   *   present and NOT `armed`           a driver exists, was measured, could not
+   *                                     tell its own outcomes apart, and was
+   *                                     DELIBERATELY NOT WIRED.
+   *
+   * Without the third reading, refusing to wire a blind driver is indistinguishable
+   * from never having one — so the safest action the boot sequence can take would
+   * look, on the strip and in the log, exactly like the bug it is protecting
+   * against. See {@link SupervisorLoop.armCheck}, which prints all three.
+   */
+  readonly repairArm?: { readonly armed: boolean; readonly wrong: readonly string[]; readonly probes: number };
+  /**
    * The defect signature of a finished run, read from whatever wrote the record.
    *
    * Injected because `defect.json` is written by `orchestrator.ts` under
@@ -761,20 +785,67 @@ export class SupervisorLoop {
         : `ARM CHECK: BLIND — the repair router cannot tell its own outcomes apart ` +
           `(${repair.wrong.join("; ") || "codes or sentences collapsed"}). A ticket in 'repairing' may never leave it.`,
       /*
-       * AND A SEPARATE, LOUDER FACT: whether a driver exists at all. This is NOT
-       * blindness — the router terminates such a ticket at `blocked` with
-       * `NO_REPAIR_DRIVER`, which is honest and bounded — but an owner who left a
-       * run overnight expecting self-repair has to be able to read that no repair
-       * can happen, in one line, at boot, rather than infer it from a queue that
-       * emptied itself into `blocked`.
+       * AND A SEPARATE, LOUDER FACT: WHAT IS ACTUALLY WIRED, AS MEASURED.
+       *
+       * THIS LINE USED TO BE A GUESS AND THAT WAS THE DEFECT. It read
+       * `repair !== undefined` and then recited `SUPERVISOR_REPAIR_MAX_PER_SIGNATURE`
+       * and the deadline out of this build — two constants, not two observations. A
+       * boot line that reports a healthy driver it has not driven is worse than the
+       * honest absence it replaces, because the absence at least stopped the owner
+       * from leaving the machine alone for eight hours.
+       *
+       * SO IT NOW REPORTS `repairArm`, WHICH IS A MEASUREMENT: `armRepairDriver`
+       * feeds the real driver eight known cycle answers and requires eight distinct
+       * verdicts with exactly one `applied`, then spawns
+       * `tools/repair/supervisor-cycle.mjs --armcheck`, which drives nine routing
+       * inputs and the Tier 3 gate seam's eight verdict records. Three states, three
+       * sentences — and the BLIND one names the driver that exists and was refused,
+       * which no earlier version of this line could say at all.
        */
-      this.#deps.repair === undefined
-        ? `ARM CHECK: NO REPAIR DRIVER is wired. Every ticket that reaches 'repairing' terminates at 'blocked' with ` +
-          `NO_REPAIR_DRIVER and the loop carries on to the next ticket. ${String(repairingNow)} ticket(s) are repairing now.`
-        : `ARM CHECK: a repair driver is wired; a repairing ticket gets at most ` +
-          `${String(SUPERVISOR_REPAIR_MAX_PER_SIGNATURE)} cycle(s) per defect signature and leaves 'repairing' within ` +
-          `${String(Math.round(SUPERVISOR_REPAIR_DEADLINE_MS / 60_000))} minutes either way. ` +
-          `${String(repairingNow)} ticket(s) are repairing now.`,
+      this.#deps.repairArm === undefined
+        ? `ARM CHECK: NO REPAIR DRIVER is wired${this.#deps.repair === undefined ? "" : " (a `repair` dep was passed with no arm result, which is itself unmeasured)"}. ` +
+          `Every ticket that reaches 'repairing' terminates at 'blocked' with NO_REPAIR_DRIVER and the loop carries ` +
+          `on to the next ticket. ${String(repairingNow)} ticket(s) are repairing now.`
+        : this.#deps.repairArm.armed && this.#deps.repair !== undefined
+          ? /*
+             * TWO CLAUSES, TWO LABELS, BECAUSE ONLY ONE OF THEM WAS MEASURED.
+             *
+             * This sentence used to run the measurement straight into
+             * `SUPERVISOR_REPAIR_MAX_PER_SIGNATURE` and the deadline — two constants
+             * read out of this build — under the headline word MEASURED. That is the
+             * same "two constants, not two observations" the docblock above condemns,
+             * wearing the label the docblock earned. Nothing at boot watches either
+             * bound fire (the router's REPAIR_CYCLES_EXHAUSTED and
+             * REPAIR_DEADLINE_EXCEEDED probes prove the ROUTER reads them, not that a
+             * real ticket has ever hit one), so they are labelled CONFIGURED and the
+             * word MEASURED is left standing over only the eight driven answers.
+             */
+            `ARM CHECK: a repair driver is wired AND MEASURED — it told ${String(this.#deps.repairArm.probes)} known ` +
+            `cycle answers apart, 0 misread, and only a gate-authorised patch with a rollback point reads as applied. ` +
+            `CONFIGURED, NOT OBSERVED: at most ${String(SUPERVISOR_REPAIR_MAX_PER_SIGNATURE)} cycle(s) per defect ` +
+            `signature and a ${String(Math.round(SUPERVISOR_REPAIR_DEADLINE_MS / 60_000))}-minute bound on 'repairing' ` +
+            `are constants read out of this build — nothing here has watched either one fire. ` +
+            `${String(repairingNow)} ticket(s) are repairing now.`
+          : this.#deps.repairArm.armed
+            ? /*
+               * THE FOURTH STATE: ARMED AND NOT PASSED. This is a WIRING bug, not a
+               * blind driver, and it used to print the blind driver's sentence —
+               * "could not be shown to tell its own outcomes apart (no reason was
+               * recorded, which is itself the fault)" — about a driver that had just
+               * been measured and passed. Fail-safe direction, wrong explanation, and
+               * the wrong explanation sends the owner to debug the driver instead of
+               * the two lines in `index.ts` that construct it.
+               */
+              `ARM CHECK: BLIND BY WIRING — a repair driver was MEASURED ARMED (${String(this.#deps.repairArm.probes)} known ` +
+              `cycle answers told apart, 0 misread) AND THEN NOT PASSED to the loop. Nothing is wrong with the driver; the ` +
+              `construction site did not hand it over, so every 'repairing' ticket still terminates at 'blocked' with ` +
+              `NO_REPAIR_DRIVER. Look at the \`repair\` dep in index.ts, not at tools/repair. ` +
+              `${String(repairingNow)} ticket(s) are repairing now.`
+            : `ARM CHECK: BLIND — a repair driver EXISTS and was NOT wired, because it could not be shown to tell its ` +
+            `own outcomes apart (${this.#deps.repairArm.wrong.join("; ") || "no reason was recorded, which is itself the fault"}). ` +
+            `Every 'repairing' ticket terminates at 'blocked' with NO_REPAIR_DRIVER. This is the fail-safe direction ` +
+            `and it is NOT the same as having no driver: fix the driver, do not read this as an idle machine. ` +
+            `${String(repairingNow)} ticket(s) are repairing now.`,
       armed
         ? `ARM CHECK: armed — idle and stuck are distinguishable. ${classifySupervisorHealth(live).line}`
         : `ARM CHECK: BLIND — the supervisor cannot tell an idle queue from a lost submission ` +

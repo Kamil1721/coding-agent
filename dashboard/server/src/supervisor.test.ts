@@ -768,7 +768,12 @@ test("a ticket ALREADY at its cap is never claimed at all — the guard is befor
 /** Drive one ticket to a `repairing` row the way a real structural failure does. */
 async function driveToRepairing(
   store: RunStore,
-  deps: { readonly repair?: SupervisorDeps["repair"]; readonly defectSignatureOf?: (runId: string) => string | null; readonly now?: () => Date } = {},
+  deps: {
+    readonly repair?: SupervisorDeps["repair"];
+    readonly repairArm?: SupervisorDeps["repairArm"];
+    readonly defectSignatureOf?: (runId: string) => string | null;
+    readonly now?: () => Date;
+  } = {},
   ticketKey = "k1",
   runId = "run-1",
 ): Promise<{ readonly loop: SupervisorLoop; readonly submitted: string[] }> {
@@ -788,6 +793,7 @@ async function driveToRepairing(
     // `...deps` would pass `repair: undefined`, which is a DIFFERENT thing from
     // an absent `repair` and would make the unwired arm untestable.
     ...(deps.repair === undefined ? {} : { repair: deps.repair }),
+    ...(deps.repairArm === undefined ? {} : { repairArm: deps.repairArm }),
     ...(deps.defectSignatureOf === undefined ? {} : { defectSignatureOf: deps.defectSignatureOf }),
     ...(deps.now === undefined ? {} : { now: deps.now }),
   });
@@ -1026,16 +1032,142 @@ test("the arm check drives the repair router itself, and says so when no driver 
       `an unwired supervisor did not say so at boot: ${unwired.join(" | ")}`,
     );
 
+    /*
+     * ─── THREE STATES, THREE SENTENCES, AND THE THIRD IS THE ROUND'S POINT ─────
+     *
+     * The old line read `repair !== undefined` and then recited two constants out
+     * of this build. It could say "wired" about a driver it had never driven, and
+     * it could not say "a driver exists and we refused to wire it" at all — so the
+     * safest thing the boot sequence can do looked identical to the bug.
+     *
+     * `repairArm` is what the boot arm check MEASURED, and it is a separate dep
+     * from `repair` precisely so these three readings are distinguishable.
+     */
     const wired: string[] = [];
     new SupervisorLoop({
       store,
       submit: () => Promise.reject(new Error("unused")),
       repair: () => Promise.resolve({ kind: "inconclusive", code: "X", detail: "y" }),
+      repairArm: { armed: true, wrong: [], probes: 8 },
       log: (l) => wired.push(l),
     }).armCheck();
-    assert.ok(wired.some((l) => l.includes("a repair driver is wired")), `a wired supervisor did not say so: ${wired.join(" | ")}`);
-    // The two boots must not read the same, or the line carries no information.
+    assert.ok(
+      wired.some((l) => l.includes("a repair driver is wired AND MEASURED")),
+      `a measured, wired supervisor did not say so: ${wired.join(" | ")}`,
+    );
+    // The MEASUREMENT is in the line, not just the word "wired": a boot line that
+    // reports a healthy driver it cannot see is worse than the honest absence.
+    assert.ok(wired.some((l) => /8 known\s*cycle answers apart, 0 misread/.test(l)), `the line names no measurement: ${wired.join(" | ")}`);
+
+    /*
+     * THE BLIND DRIVER: it EXISTS, it was measured, it could not tell its own
+     * outcomes apart, and it was therefore NOT wired (`repair` absent, `repairArm`
+     * present and unarmed). This must not read like the unwired boot above.
+     */
+    const blind: string[] = [];
+    new SupervisorLoop({
+      store,
+      submit: () => Promise.reject(new Error("unused")),
+      repairArm: { armed: false, wrong: ["GATE_APPLY read as GATE_REFUSE"], probes: 8 },
+      log: (l) => blind.push(l),
+    }).armCheck();
+    assert.ok(blind.some((l) => l.includes("a repair driver EXISTS and was NOT wired")), `a refused driver was not named: ${blind.join(" | ")}`);
+    assert.ok(blind.some((l) => l.includes("GATE_APPLY read as GATE_REFUSE")), `the refusal names no reason: ${blind.join(" | ")}`);
+
+    /*
+     * ─── THE FOURTH STATE: ARMED, AND NOT PASSED ───────────────────────────────
+     *
+     * The branch condition is `repairArm.armed && repair !== undefined`, so a driver
+     * that was MEASURED ARMED and then not handed over — a wiring bug in `index.ts`,
+     * not a fault in `tools/repair` — used to fall through and print the blind
+     * driver's sentence: "could not be shown to tell its own outcomes apart (no
+     * reason was recorded, which is itself the fault)". Fail-safe direction, wrong
+     * explanation, and the wrong explanation sends the owner to debug the wrong
+     * component for an hour.
+     */
+    const unpassed: string[] = [];
+    new SupervisorLoop({
+      store,
+      submit: () => Promise.reject(new Error("unused")),
+      repairArm: { armed: true, wrong: [], probes: 8 },
+      log: (l) => unpassed.push(l),
+    }).armCheck();
+    assert.ok(unpassed.some((l) => l.includes("BLIND BY WIRING")), `an armed-but-unpassed driver was not named: ${unpassed.join(" | ")}`);
+    assert.ok(
+      unpassed.some((l) => /Nothing is wrong with the driver/.test(l)),
+      `the line blames the driver for a wiring fault: ${unpassed.join(" | ")}`,
+    );
+    assert.ok(
+      !unpassed.some((l) => /could not be shown to tell its own outcomes apart/.test(l)),
+      `an ARMED driver was described as blind: ${unpassed.join(" | ")}`,
+    );
+
+    /*
+     * AND THE TWO BOUNDS ARE NOT CLAIMED AS MEASUREMENTS. The wired sentence recites
+     * SUPERVISOR_REPAIR_MAX_PER_SIGNATURE and the deadline; both are constants read
+     * out of this build, and nothing at boot has watched either fire. Under a
+     * headline that says MEASURED that is the direction rule 4 calls worse than an
+     * honest absence, so they must appear under their own label.
+     */
+    const wiredLine = wired.find((l) => l.includes("a repair driver is wired AND MEASURED")) ?? "";
+    assert.match(wiredLine, /CONFIGURED, NOT OBSERVED/, `the two bounds are recited under the word MEASURED: ${wiredLine}`);
+    assert.match(wiredLine, /nothing here has watched either one fire/, wiredLine);
+
+    // ALL FOUR BOOTS MUST READ DIFFERENTLY, or the line carries no information —
+    // and the pair that matters most is `unwired` vs `blind`, which every earlier
+    // version of this line collapsed into one sentence.
     assert.notDeepEqual(unwired, wired);
+    assert.notDeepEqual(unwired, blind);
+    assert.notDeepEqual(wired, blind);
+    assert.notDeepEqual(unpassed, blind);
+    assert.notDeepEqual(unpassed, unwired);
+    assert.notDeepEqual(unpassed, wired);
+  } finally {
+    cleanup();
+  }
+});
+
+test("A DRIVER THAT WAS MEASURED BLIND IS NOT USED — the arm result does not silently re-admit it", async () => {
+  const { store, cleanup } = openStore();
+  try {
+    let calls = 0;
+    /*
+     * The pathological shape this guards against: a future edit that passes
+     * `repairArm` and `repair` together and lets the loop consult the arm result
+     * instead of the dep. `driverWired` is `repair !== undefined` — one reading,
+     * and it is the one that decides whether a cycle runs. So a loop given a BLIND
+     * arm result and NO driver must terminate the ticket at `blocked` with
+     * NO_REPAIR_DRIVER and call nothing.
+     */
+    const { loop } = await driveToRepairing(store, {
+      defectSignatureOf: () => "f".repeat(64),
+      repairArm: { armed: false, wrong: ["two arms collapsed"], probes: 8 },
+    });
+    await loop.tick();
+    const ticket = store.getSupervisorTicket("k1");
+    assert.equal(ticket?.state, "blocked");
+    assert.match(ticket?.nextAction ?? "", /no repair driver is wired/);
+    assert.equal(calls, 0);
+
+    // NEGATIVE HALF: the same ticket with an ARMED arm result and a driver reaches
+    // a different terminal state, so the blocking above is about the driver's
+    // absence and not about `repairing` being a dead end again.
+    const second = openStore();
+    try {
+      const armed = await driveToRepairing(second.store, {
+        defectSignatureOf: () => "f".repeat(64),
+        repairArm: { armed: true, wrong: [], probes: 8 },
+        repair: () => {
+          calls += 1;
+          return Promise.resolve({ kind: "refused", code: "GATE_REFUSE", detail: "the known-bad set did not hold" });
+        },
+      });
+      await armed.loop.tick();
+      assert.equal(calls, 1, "an armed driver was never called");
+      assert.match(second.store.getSupervisorTicket("k1")?.nextAction ?? "", /GATE_REFUSE/);
+    } finally {
+      second.cleanup();
+    }
   } finally {
     cleanup();
   }

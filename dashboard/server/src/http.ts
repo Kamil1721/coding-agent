@@ -155,7 +155,12 @@ import type {
   ApiSupervisorDesired,
   ApiSupervisorProbe,
   ApiSupervisorState,
+  ApiSupervisorTicketFiled,
+  ApiSupervisorTicketRow,
   ApiSupervisorTicketView,
+  ApiSupervisorTicketsResponse,
+  ApiTicketAttachments,
+  ApiTicketManifestState,
   CreateRunResponse,
   HealthResponse,
   ModelOption,
@@ -217,12 +222,14 @@ import {
   decodeReferenceDataUrl,
   digestBytes,
   documentDirFor,
+  manifestDocuments,
   manifestMotion,
   readReferenceManifest,
   referenceDirFor,
+  referenceIdentityMaterial,
   writeReferenceManifest,
 } from "./ticket-refs.js";
-import type { ReferenceDocument, ReferenceImage } from "./ticket-refs.js";
+import type { ReferenceDocument, ReferenceImage, ReferenceManifest } from "./ticket-refs.js";
 import {
   ACCEPTED_DOCUMENT_MEDIA_TYPES,
   MAX_DOCUMENT_BODY_BYTES,
@@ -1193,6 +1200,15 @@ export function armSupervisorRoute(
   log: (line: string) => void = (line) => {
     process.stderr.write(`${line}\n`);
   },
+  /**
+   * OPTIONAL, AND THE ABSENT CASE REPORTS ITSELF.
+   *
+   * Arm four reads the ticket attachment directory off the real runs root. Given
+   * no paths it CANNOT look, and says so on the boot line rather than printing a
+   * confident "0 unreadable" for a directory it never opened — that number would
+   * be the same one a healthy tree produces.
+   */
+  paths?: DashboardPaths,
 ): { readonly armed: boolean; readonly armNote: string } {
   const stateOnly = (state: ApiSupervisorState): string => {
     const { probe: _probe, ...rest } = state;
@@ -1212,11 +1228,11 @@ export function armSupervisorRoute(
     ),
   ];
   const distinct = new Set(bodies).size;
-  const armed = distinct === bodies.length;
-  const armNote = armed
+  const composerArmed = distinct === bodies.length;
+  const composerNote = composerArmed
     ? `composer renders ${String(distinct)} distinguishable states`
     : `BLIND: the composer renders only ${String(distinct)} of ${String(bodies.length)} states`;
-  log(`ARM CHECK: supervisor route ${armNote}`);
+  log(`ARM CHECK: supervisor route ${composerNote}`);
 
   const state = store.readSupervisorState();
   const tickets = store.listSupervisorTickets();
@@ -1227,6 +1243,76 @@ export function armSupervisorRoute(
       `active=${active === null ? "none" : `${active.ticketKey}/${active.state}`}, ` +
       `loop=${supervisor === undefined ? "NOT WIRED — nothing will claim a ticket and START will refuse" : "wired"}`,
   );
+
+  /*
+   * ARM THREE: DOES THE TICKET KEY SEE AN ATTACHMENT?
+   *
+   * THE FAILURE IT COVERS IS SILENT, EXPENSIVE AND SHAPED LIKE SUCCESS. If
+   * `supervisorTicketKey` ever stops folding the attachment digests, the owner's
+   * corrected CV under an unchanged brief answers 409 `ticket_already_queued` —
+   * a REFUSAL that is indistinguishable from the duplicate guard working
+   * properly, on the one route that decides what tonight is spent on. Every
+   * "does it answer 201" test in the tree stays green through that.
+   *
+   * A PURE FUNCTION, TWO INPUTS, ONE COMPARISON, in arm one's idiom: the same
+   * brief with and without a digest must not mint one key. The synthetic entry is
+   * built here rather than read from disk so the arm costs nothing and cannot be
+   * defeated by an empty tree.
+   */
+  const withoutAttachments = supervisorTicketKey("arm check brief", [], []);
+  const withAttachment = supervisorTicketKey(
+    "arm check brief",
+    [{ path: "reference-1.png", sha256: "f".repeat(64), bytes: 1 }],
+    [],
+  );
+  const keyArmed = withoutAttachments !== withAttachment;
+  const keyNote = keyArmed
+    ? `ticket key folds attachments (${withoutAttachments} vs ${withAttachment})`
+    : `BLIND: the ticket key ignores attachments — both derive ${withoutAttachments}, so a corrected CV answers 409`;
+  log(`ARM CHECK: supervisor ${keyNote}`);
+
+  /*
+   * ARM FOUR: WHAT IS ACTUALLY ON DISK UNDER `runs/tickets`.
+   *
+   * Arms one and three are pure; neither can see the failure this component will
+   * really have, which is a filed CV that no longer parses — the state
+   * `GET /api/supervisor/tickets` reports as `manifest: "unreadable"`. Printing
+   * the two counts at boot is the cheap version of the same measurement, and with
+   * no paths it says it could not look rather than printing a healthy-looking
+   * zero.
+   */
+  const intakeNote =
+    paths === undefined
+      ? "BLIND: no runs root was passed, so no ticket manifest was read"
+      : (() => {
+          const readings = tickets.map((ticket) => readTicketManifest(paths.runs, ticket.ticketKey));
+          return (
+            `reads ${String(readings.filter((r) => r.state === "read").length)} ticket(s) with attachments, ` +
+            `${String(readings.filter((r) => r.state === "unreadable").length)} unreadable, ` +
+            `under ${ticketAttachmentRoot(paths.runs)}`
+          );
+        })();
+  log(`ARM CHECK: supervisor ticket intake ${intakeNote}`);
+
+  /*
+   * `armed` IS THE CONJUNCTION OF THE TWO ARMS THAT CAN BE WRONG ABOUT A
+   * BEHAVIOUR — the composer and the key. Arms two and four are MEASUREMENTS of a
+   * live tree: an empty store is not a defect, so counting them here would set
+   * `probe.armed:false` on every fresh install and train the owner to ignore it.
+   *
+   * ARM FOUR'S BLINDNESS DOES REACH THE WIRE, THOUGH, AND IT HAS TO. `paths` is
+   * optional, so a caller that forgets it gets an arm that never looked — and a
+   * boot line nobody reads is exactly how "0 unreadable" comes to mean "I did not
+   * check". Measured: a mutation that dropped `deps.paths` at the one call site in
+   * `createDashboardServer` was invisible to every test, because the arm's own
+   * test calls this function directly. Folding the sentence into `armNote` puts it
+   * on `GET /api/supervisor` and `GET /api/supervisor/tickets`, where a test — and
+   * the owner — can see it.
+   */
+  const armed = composerArmed && keyArmed;
+  const armNote = [composerNote, keyArmed ? null : keyNote, paths === undefined ? `ticket intake ${intakeNote}` : null]
+    .filter((note): note is string => note !== null)
+    .join("; ");
   return { armed, armNote };
 }
 
@@ -1271,6 +1357,259 @@ type SupervisorAction = (typeof SUPERVISOR_ACTIONS)[number];
 
 function isSupervisorAction(value: string): value is SupervisorAction {
   return (SUPERVISOR_ACTIONS as readonly string[]).includes(value);
+}
+
+/* =========================================================================
+ * TICKET ATTACHMENTS — the owner's uploads, filed BEFORE any run exists
+ *
+ * THE PROBLEM THIS SOLVES. `POST /api/runs` writes a ticket's images and
+ * documents under `runs/<runId>/`, because that route mints the run id itself. A
+ * SUPERVISOR ticket has no run: the loop mints one when it claims the ticket,
+ * possibly hours later and possibly more than once. So the bytes need a home
+ * that is named by the TICKET, and the ticket key is the only durable name it
+ * has.
+ *
+ * MEASURED 2026-08-10, WHICH IS WHY THIS EXISTS. The route accepted `ticketText`
+ * and `modelId` and nothing else. The owner's real ticket — "content comes from
+ * the attached CV", an 80 KB PDF and a 560 KB reference image — answered 201 and
+ * DROPPED both attachments silently, so the only way to run it was `POST
+ * /api/runs`, which bypasses the supervisor entirely.
+ * ====================================================================== */
+
+/**
+ * `runs/tickets` — the parent of every filed ticket's attachment directory.
+ *
+ * UNDER `runs/`, AND NESTED ONE LEVEL DEEPER THAN A RUN. Two reasons, both
+ * measured rather than aesthetic:
+ *
+ *   IT IS GITIGNORED. `.gitignore` lists `dashboard/runs/`; it does NOT list a
+ *   hypothetical `dashboard/tickets/`. A 560 KB reference image under an
+ *   unignored path is one `git add -A` away from the repository, which is the
+ *   exact accident the per-agent `dist-*` rule in that file was written about.
+ *
+ *   IT IS ONE DIRECTORY, NOT N PSEUDO-RUNS. `project-runner.ts:1213`
+ *   `readdirSync`s the runs root and treats each directory as a run (it then
+ *   skips anything with no publish record, so this is safe today). Putting
+ *   tickets directly in the runs root would grow that scan by one entry per
+ *   ticket for ever; this way it grows by exactly one, ever.
+ *
+ * `referenceDirFor` AND `documentDirFor` ARE THEN REUSED UNCHANGED, so a ticket's
+ * attachments sit in the same `references/` + `documents/` shape a run's do — and
+ * a submission that copies them into a run has nothing to translate.
+ */
+export function ticketAttachmentRoot(runsRoot: string): string {
+  return join(runsRoot, "tickets");
+}
+
+/**
+ * The manifest's filename, restated ONCE and knowingly.
+ *
+ * `ticket-refs.ts` keeps `MANIFEST_FILE` private and this module is not its
+ * owner, so the one thing that cannot be imported is the name of the file whose
+ * PRESENCE distinguishes "this ticket attached nothing" from "this ticket's
+ * manifest will not parse" — a distinction `readReferenceManifest` deliberately
+ * flattens to `null` and this readout must not (see {@link ApiTicketManifestState}).
+ *
+ * DRIFT IS CAUGHT BY A TEST, NOT BY REVIEW: `supervisor-route.test.ts` writes
+ * corrupt JSON to this exact name and asserts the readout says `unreadable`, so a
+ * rename in `ticket-refs.ts` turns that assertion red rather than silently
+ * downgrading every corrupt manifest to "none".
+ */
+const TICKET_MANIFEST_FILE = "references.json";
+
+/**
+ * THE TICKET KEY, AND WHAT AN ATTACHMENT MEANS FOR IT.
+ *
+ * THE DECISION: the key covers the brief AND the bytes the owner attached. So
+ *
+ *   the same brief with the SAME attachments  -> the SAME ticket, and the second
+ *                                               POST is a decidable 409. A form
+ *                                               submitted twice, or a POST
+ *                                               retried after a dropped
+ *                                               connection, is not two nights of
+ *                                               spend.
+ *   the same brief with a DIFFERENT CV        -> a DIFFERENT ticket. The artefact
+ *                                               is built from the CV's contents
+ *                                               and graded against criteria
+ *                                               written from them, so these are
+ *                                               two pieces of work. Answering 409
+ *                                               would silently discard the
+ *                                               corrected CV — a refusal
+ *                                               indistinguishable from the
+ *                                               duplicate guard doing its job.
+ *
+ * NEITHER `captureUrl` NOR `motionUrl` IS IN THE MATERIAL, and that is the one
+ * place this deliberately differs from a RUN's ticket id. A page reading is a
+ * live network read: folding it in would move the key whenever the page moved, so
+ * a double-submitted form would file two tickets instead of one. The key is a
+ * function of what the OWNER supplied and of nothing the network returned.
+ *
+ * THE DERIVATION IS `referenceIdentityMaterial`, WHICH IS WHY NO EXISTING KEY
+ * MOVED. That function is documented (and pinned in `ticket-refs.test.ts`) to be
+ * byte-identical to the brief for empty lists, so a text-only ticket still hashes
+ * to `t-<sha256(ticketText)[0..16]>` — the key every ticket filed before this
+ * round already has. A second, hand-rolled concatenation here would have been a
+ * second answer to "what is this ticket", which is how a run ends up graded under
+ * a suite it never authored.
+ */
+export function supervisorTicketKey(
+  prose: string,
+  images: readonly ReferenceImage[],
+  documents: readonly ReferenceDocument[],
+): string {
+  const material = referenceIdentityMaterial(prose, images, documents);
+  return `t-${createHash("sha256").update(material, "utf8").digest("hex").slice(0, 16)}`;
+}
+
+/** A ticket's manifest, and WHY it is not there when it is not there. */
+interface TicketManifestReading {
+  readonly state: ApiTicketManifestState;
+  readonly manifest: ReferenceManifest | null;
+}
+
+function readTicketManifest(runsRoot: string, ticketKey: string): TicketManifestReading {
+  const dir = referenceDirFor(ticketAttachmentRoot(runsRoot), ticketKey);
+  const manifest = readReferenceManifest(dir);
+  if (manifest !== null) return { state: "read", manifest };
+  // THE FILE'S PRESENCE IS THE WHOLE QUESTION. Absent means this ticket attached
+  // nothing; present-and-unparsed means it attached something that will NOT reach
+  // a builder, and the owner has to be told which.
+  return { state: existsSync(join(dir, TICKET_MANIFEST_FILE)) ? "unreadable" : "none", manifest: null };
+}
+
+/** Every sha256 a manifest names, images and documents together. */
+function manifestDigests(manifest: ReferenceManifest): readonly string[] {
+  return [...manifest.images.map((image) => image.sha256), ...manifestDocuments(manifest).map((doc) => doc.sha256)];
+}
+
+/**
+ * DID THIS TICKET'S ATTACHMENTS REACH THE RUN IT PRODUCED?
+ *
+ * DIGESTS, NOT PATHS AND NOT COUNTS. A submission may copy the bytes into the
+ * run's own directory or record the ticket directory's absolute paths in place;
+ * both are legitimate and the digests are identical either way, so this probe
+ * does not constrain that choice. Counts would pass for a run that carried a
+ * DIFFERENT file.
+ *
+ * `null` IS NOT `false`. Nothing to carry, no run yet, or a manifest that could
+ * not be read are all "no verdict"; `false` is reserved for the one measured
+ * fact — a run exists and its manifest does not name what the ticket filed.
+ * Measured today: `createSupervisorSubmit` calls `ticketWithReferences` with
+ * `images: []`, so every attachment-bearing supervisor ticket reads `false`.
+ */
+function attachmentsCarriedIntoRun(runsRoot: string, manifest: ReferenceManifest | null, runId: string | null): boolean | null {
+  if (manifest === null) return null;
+  const digests = manifestDigests(manifest);
+  if (digests.length === 0) return null;
+  if (runId === null) return null;
+  const runManifest = readReferenceManifest(referenceDirFor(runsRoot, runId));
+  if (runManifest === null) return false;
+  const inRun = new Set(manifestDigests(runManifest));
+  return digests.every((digest) => inRun.has(digest));
+}
+
+/** One ticket's attachment block, for both the 201 and the readout. */
+function ticketAttachments(runsRoot: string, ticketKey: string, runId: string | null): ApiTicketAttachments {
+  const reading = readTicketManifest(runsRoot, ticketKey);
+  const manifest = reading.manifest;
+  return {
+    manifest: reading.state,
+    images: manifest?.images.length ?? 0,
+    documents: manifestDocuments(manifest).length,
+    capture: manifest !== null && manifest.capture !== null,
+    motion: manifestMotion(manifest) !== null,
+    carriedIntoRun: attachmentsCarriedIntoRun(runsRoot, manifest, runId),
+  };
+}
+
+/**
+ * `GET /api/supervisor/tickets` — THE MORNING READOUT.
+ *
+ * WHY IT HAD TO EXIST. `GET /api/supervisor` answers about the ACTIVE ticket, so
+ * a ticket that terminated at `blocked` overnight was readable only in
+ * `supervisor_tickets.next_action` and in this process's stdout: the owner's
+ * eight-hour readout required a SQL client. This route is the list — every
+ * ticket, its state, its attempt count, its sentence, and the run it names.
+ *
+ * ONE SOURCE, NO SECOND COPY. Everything comes from `listSupervisorTickets()`,
+ * which is the same read `SupervisorLoop.snapshot()` and the strip use, so a
+ * readout that says `blocked` and a loop that thinks otherwise cannot disagree.
+ *
+ * THE PROBE IS NOT DECORATION. An empty list is what a broken queue readout looks
+ * like, so the response states how many rows it saw, how many manifests it could
+ * not read, and how many tickets had their attachments dropped.
+ */
+function supervisorTicketsSnapshot(deps: ResolvedHttpDeps): ApiSupervisorTicketsResponse {
+  const runsRoot = deps.paths.runs;
+  const tickets = deps.store.listSupervisorTickets().map((ticket): ApiSupervisorTicketRow => {
+    // THE CURRENT RUN IF THERE IS ONE, ELSE THE LAST. The reader's question is
+    // "which run do I open", and a blocked ticket's answer is its last one.
+    const runId = ticket.currentRunId ?? ticket.lastRunId;
+    return {
+      ticketKey: ticket.ticketKey,
+      title: titleFromBrief(ticket.ticketText),
+      state: ticket.state,
+      modelId: ticket.modelId,
+      attemptNo: ticket.attemptNo,
+      maxAttempts: ticket.maxAttempts,
+      nextAction: nonBlank(ticket.nextAction, SUPERVISOR_NO_NEXT_ACTION),
+      nextActionAt: ticket.nextActionAt,
+      runId,
+      currentRunId: ticket.currentRunId,
+      lastClass: ticket.lastClass,
+      lastDefectId: ticket.lastDefectId,
+      patchId: ticket.patchId,
+      enqueuedAt: ticket.enqueuedAt,
+      updatedAt: ticket.updatedAt,
+      attachments: ticketAttachments(runsRoot, ticket.ticketKey, runId),
+    };
+  });
+  return {
+    tickets,
+    probe: {
+      ticketsSeen: tickets.length,
+      manifestsUnreadable: tickets.filter((row) => row.attachments.manifest === "unreadable").length,
+      attachmentsDropped: tickets.filter((row) => row.attachments.carriedIntoRun === false).length,
+      armed: deps.supervisorArm.armed,
+      armNote: deps.supervisorArm.armNote,
+      at: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * `captureUrl` and `motionUrl`, validated ONCE for both intake routes.
+ *
+ * EXTRACTED RATHER THAN COPIED. These two sentences are the API's statement of
+ * what the fields mean — one scans the brief, the other never does — and a second
+ * copy on the ticket route is how the ticket form and the chat box end up
+ * describing the same field differently. `null` means "this body is fine".
+ */
+function refuseCaptureFields(
+  body: Record<string, unknown>,
+): { readonly code: string; readonly message: string; readonly remediation: string } | null {
+  const captureUrl = body["captureUrl"];
+  if (captureUrl !== undefined && captureUrl !== null && typeof captureUrl !== "string") {
+    return {
+      code: "invalid_body",
+      message: "captureUrl must be a string, null or absent",
+      remediation: "null suppresses the capture; absent means the first URL in the ticket text is captured.",
+    };
+  }
+  const motionUrl = body["motionUrl"];
+  if (motionUrl !== undefined && motionUrl !== null && typeof motionUrl !== "string") {
+    return {
+      code: "invalid_body",
+      message: "motionUrl must be a string, null or absent",
+      // A DIFFERENT SENTENCE FROM `captureUrl`'S, because the two fields behave
+      // differently and one wording for both would document a scan that this
+      // field deliberately does not have.
+      remediation:
+        "It names a page whose ANIMATION you want read. Absent or null means none — the ticket text is " +
+        "never scanned for one, unlike captureUrl.",
+    };
+  }
+  return null;
 }
 
 /**
@@ -1339,15 +1678,35 @@ async function fileSupervisorTicket(
     return;
   }
 
-  const text = await readBody(request).catch((error: unknown) => {
-    sendError(response, 400, "invalid_body", describeError(error), "POST a JSON object with ticketText and modelId.");
-    return null;
-  });
-  if (text === null) return;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    /*
+     * THE ATTACHMENT ENVELOPE, AND IT IS HALF THE FIX.
+     *
+     * MEASURED AT HEAD: this route read the body under the 1 MiB default, so the
+     * owner's real ticket — an 80 KB CV plus a 560 KB reference image, ~860 KB as
+     * base64 — sat just under the cliff, and one 1 MB image answered `400
+     * invalid_body: request body too large (over 1048576 bytes)` with a
+     * remediation naming only `ticketText` and `modelId`. Adding the decoders
+     * without this line would have advertised per-image limits no request could
+     * reach — the exact defect `MAX_ATTACHMENT_BODY_BYTES` was declared to end.
+     */
+    parsed = JSON.parse(await readBody(request, MAX_ATTACHMENT_BODY_BYTES));
   } catch (error) {
+    // THE ENVELOPE REFUSAL IS ITS OWN CODE, the same one `POST /api/runs`
+    // answers, so a client can tell "your JSON is malformed" from "your
+    // attachments are 130 MB" without parsing prose.
+    if (error instanceof BodyTooLargeError) {
+      sendError(
+        response,
+        400,
+        "body_too_large",
+        error.message,
+        `A ticket may carry ${String(MAX_REFERENCE_IMAGES)} image(s) and ` +
+          `${String(MAX_REFERENCE_DOCUMENTS)} document(s). Send fewer, or smaller ones.`,
+      );
+      return;
+    }
     sendError(response, 400, "invalid_body", describeError(error), "POST a JSON object with ticketText and modelId.");
     return;
   }
@@ -1423,47 +1782,214 @@ async function fileSupervisorTicket(
     return;
   }
 
-  const ticketKey = `t-${createHash("sha256").update(ticketText, "utf8").digest("hex").slice(0, 16)}`;
+  /*
+   * THE ATTACHMENTS, VALIDATED BEFORE ANYTHING IS WRITTEN AND BEFORE THE KEY IS
+   * MINTED. Both functions are the ones `POST /api/runs` uses, so the caps, the
+   * accepted media types and the refusal codes are stated once for both routes.
+   * A request refused on its third document leaves no directory, no row and no
+   * key.
+   */
+  const captureRefusal = refuseCaptureFields(body);
+  if (captureRefusal !== null) {
+    sendError(response, 400, captureRefusal.code, captureRefusal.message, captureRefusal.remediation);
+    return;
+  }
+  const intake = readReferenceImages(body["references"]);
+  if (!intake.ok) {
+    sendError(response, intake.status, intake.code, intake.message, intake.remediation);
+    return;
+  }
+  const documentIntake = readReferenceDocuments(body["documents"]);
+  if (!documentIntake.ok) {
+    sendError(response, documentIntake.status, documentIntake.code, documentIntake.message, documentIntake.remediation);
+    return;
+  }
+
+  /*
+   * THE DIGESTS COME BEFORE THE DIRECTORY, WHICH LOOKS BACKWARDS AND IS NOT.
+   *
+   * The key is a function of the bytes, and the directory those bytes live in is
+   * named by the key — so the digest has to be taken first and the entries below
+   * carry a FILENAME in `path` until there is a directory to join it to.
+   * `referenceIdentityMaterial` reads only `sha256`, so the placeholder never
+   * reaches the identity; the loops after the 409 rewrite `path` to the absolute
+   * one that goes in the manifest.
+   */
+  const pendingImages: readonly ReferenceImage[] = intake.images.map((decoded, index) => ({
+    path: `reference-${String(index + 1)}.${decoded.ext}`,
+    sha256: digestBytes(decoded.bytes),
+    bytes: decoded.bytes.byteLength,
+  }));
+  const pendingDocuments: readonly ReferenceDocument[] = documentIntake.documents.map((decoded, index) => ({
+    path: `document-${String(index + 1)}.${decoded.extension}`,
+    sha256: digestBytes(decoded.bytes),
+    bytes: decoded.bytes.byteLength,
+    mediaType: decoded.mediaType,
+  }));
+
+  const ticketKey = supervisorTicketKey(ticketText, pendingImages, pendingDocuments);
+  /*
+   * THE DUPLICATE CHECK RUNS BEFORE ANY WRITE AND BEFORE ANY CAPTURE, so a
+   * double-submitted form costs neither bytes on disk nor a browser launch. It is
+   * not a lock: two concurrent POSTs of the same brief AND the same bytes both
+   * pass here and both write byte-identical files under the same key, and the
+   * loser of the INSERT gets the 409 from the catch below. Benign, and cheaper
+   * than serialising a route the owner uses once an hour.
+   */
   if (deps.store.getSupervisorTicket(ticketKey) !== null) {
     sendError(
       response,
       409,
       "ticket_already_queued",
-      `this exact brief is already filed as ${ticketKey}`,
-      "Change the brief, or read the existing ticket on GET /api/supervisor. A retried POST is not a second ticket.",
+      `this exact brief${pendingImages.length + pendingDocuments.length > 0 ? " with these exact attachments" : ""} is already filed as ${ticketKey}`,
+      "Change the brief, or attach a different file, or read the existing ticket on GET /api/supervisor/tickets. " +
+        "A retried POST is not a second ticket.",
     );
     return;
   }
 
-  const filed = deps.store.enqueueSupervisorTicket({
-    ticketKey,
-    ticketText,
-    modelId,
-    designLock: "auto",
-    ...(typeof maxAttempts === "number" ? { maxAttempts } : {}),
-    // NEVER BLANK BY CONTRACT — the store throws on an empty one — and it says
-    // what the owner still has to do, because a filed ticket on a STOPPED
-    // supervisor is work that will never start until someone presses start.
-    nextAction:
-      deps.store.readSupervisorState().desired === "running"
-        ? "waiting for the supervisor to claim it, which is the next tick"
-        : "nothing until the supervisor is running — POST /api/supervisor/start",
+  /*
+   * THE BYTES, UNDER THE TICKET'S OWN KEY. See {@link ticketAttachmentRoot} for
+   * why they are not under a run id: there is no run, and there may be several
+   * before this ticket is done.
+   */
+  const attachmentRoot = ticketAttachmentRoot(deps.paths.runs);
+  const referenceDir = referenceDirFor(attachmentRoot, ticketKey);
+  const documentDir = documentDirFor(attachmentRoot, ticketKey);
+  const images: ReferenceImage[] = [];
+  if (pendingImages.length > 0) mkdirSync(referenceDir, { recursive: true });
+  for (const [index, decoded] of intake.images.entries()) {
+    const pending = pendingImages[index];
+    if (pending === undefined) continue;
+    const path = join(referenceDir, pending.path);
+    writeFileSync(path, decoded.bytes);
+    images.push({ ...pending, path });
+  }
+  const documents: ReferenceDocument[] = [];
+  if (pendingDocuments.length > 0) mkdirSync(documentDir, { recursive: true });
+  for (const [index, decoded] of documentIntake.documents.entries()) {
+    const pending = pendingDocuments[index];
+    if (pending === undefined) continue;
+    const path = join(documentDir, pending.path);
+    writeFileSync(path, decoded.bytes);
+    documents.push({ ...pending, path });
+  }
+
+  /*
+   * THE PAGE READINGS HAPPEN HERE, ONCE, AND THAT IS THE WHOLE REASON THEY ARE ON
+   * THIS ROUTE AND NOT ON THE SUBMISSION.
+   *
+   * `supervisor-boot.ts` states the constraint it could not solve on its own: a
+   * capture is a live network read, so capturing at SUBMIT time would fold a
+   * different outline into the brief on every attempt, mint a different ticket
+   * id, find no frozen acceptance suite and pay for a whole second spec phase —
+   * with no throw and no compile error. Its docblock's own remedy is "a
+   * supervisor ticket that needs a captured page must carry the outline in its
+   * text", and that is exactly what is stored below: the reading is composed into
+   * `ticket_text` ONCE, at filing time, so every attempt submits the same bytes.
+   *
+   * THE COST IS A SLOW POST, and it is the same cost `POST /api/runs` pays —
+   * `CAPTURE_BUDGET_MS` for the markup read plus `MOTION_BUDGET_MS` and
+   * `MOTION_PHASE_MS` again if a motion reference is named. Sequenced, never
+   * parallel, so a failure names itself.
+   */
+  const capture = await runCapture(deps, requestedCaptureTarget(body, ticketText), referenceDir);
+  const motion = await runMotionCapture(deps, requestedMotionTarget(body));
+
+  /*
+   * THE STORED TEXT IS THE COMPOSED BRIEF, NOT THE OWNER'S PROSE.
+   *
+   * `composeBrief` returns the prose UNCHANGED when there is neither reading, so
+   * a ticket that named no page stores exactly what it always stored. When there
+   * IS a reading, the composed brief is what `createSupervisorSubmit` re-composes
+   * with a null capture — a no-op by that same property — so the run's ticket id
+   * is a function of these bytes and is identical on attempt 3 and attempt 1.
+   * `supervisor-route.test.ts` asserts that idempotence directly, because if it
+   * ever stops holding every retry silently re-authors the acceptance suite.
+   */
+  const composed = ticketWithReferences({
+    prose: ticketText,
+    images,
+    documents,
+    capture: capture.capture,
+    motion: motion.spec,
   });
+  if (images.length > 0 || documents.length > 0 || capture.capture !== null || motion.spec !== null) {
+    // `mkdirSync` HERE TOO: a ticket whose only attachment is a document creates
+    // `documents/` and never `references/`, and `writeReferenceManifest`
+    // deliberately does not create its own directory.
+    mkdirSync(referenceDir, { recursive: true });
+    writeReferenceManifest(referenceDir, { images, capture: capture.capture, documents, motion: motion.spec });
+  }
+
+  /*
+   * THE ROW IS WRITTEN LAST, AFTER THE BYTES ARE DURABLE.
+   *
+   * The loop can claim a `queued` ticket on its next tick, and a ticket claimed
+   * while its CV was still being written would be submitted without it. Nothing
+   * before this point is visible to the loop, so a failure anywhere above leaves
+   * an unreferenced directory rather than a half-filed ticket.
+   */
+  let filed;
+  try {
+    filed = deps.store.enqueueSupervisorTicket({
+      ticketKey,
+      ticketText: composed.brief,
+      modelId,
+      designLock: "auto",
+      ...(typeof maxAttempts === "number" ? { maxAttempts } : {}),
+      // NEVER BLANK BY CONTRACT — the store throws on an empty one — and it says
+      // what the owner still has to do, because a filed ticket on a STOPPED
+      // supervisor is work that will never start until someone presses start.
+      nextAction:
+        deps.store.readSupervisorState().desired === "running"
+          ? "waiting for the supervisor to claim it, which is the next tick"
+          : "nothing until the supervisor is running — POST /api/supervisor/start",
+    });
+  } catch (error) {
+    /*
+     * THE INSERT THREW, WHICH FOR THIS TABLE MEANS THE KEY IS TAKEN.
+     * `enqueueSupervisorTicket` is deliberately `INSERT OR IGNORE`-free, so the
+     * concurrent-POST window between the check above and this line surfaces here.
+     * A 409 says the same true thing the pre-check says; letting it out as a 500
+     * would tell the owner the queue is broken when his form was double-clicked.
+     */
+    if (deps.store.getSupervisorTicket(ticketKey) !== null) {
+      sendError(
+        response,
+        409,
+        "ticket_already_queued",
+        `this exact brief is already filed as ${ticketKey}`,
+        "Two POSTs of the same brief raced. Nothing was queued twice.",
+      );
+      return;
+    }
+    throw error;
+  }
   deps.store.logSupervisorDecision({
     ticketKey: filed.ticketKey,
     runId: null,
     decision: "claimed",
-    reason: `the owner filed this ticket from the dashboard: ${titleFromBrief(ticketText)}`,
+    reason: `the owner filed this ticket from the dashboard: ${composed.title}`,
   });
-  sendJson(response, 201, {
+  const body2: ApiSupervisorTicketFiled = {
     ticketKey: filed.ticketKey,
-    title: titleFromBrief(ticketText),
+    title: composed.title,
     state: filed.state,
     maxAttempts: filed.maxAttempts,
     nextAction: filed.nextAction,
     queuedTickets: deps.store.listSupervisorTickets(["queued"]).length,
     desired: deps.store.readSupervisorState().desired,
-  });
+    /*
+     * READ BACK OFF THE DISK, NEVER ECHOED FROM THE REQUEST. `ticketAttachments`
+     * re-reads the manifest that was just written, so a filing whose bytes did
+     * not land answers `manifest: "unreadable"` or a count of zero instead of
+     * repeating the request's own numbers back at the owner. The run id is `null`
+     * because no run exists a millisecond after filing.
+     */
+    attachments: ticketAttachments(deps.paths.runs, ticketKey, null),
+  };
+  sendJson(response, 201, body2);
 }
 
 async function supervisorCommand(
@@ -1616,7 +2142,9 @@ export function createDashboardServer(deps: HttpDeps): Server {
     // ONCE PER SERVER, AT BOOT, WHILE THE ANSWER IS KNOWN. Never per request:
     // an arm check that runs when the thing it checks is already suspect is a
     // post-mortem, not an arm check.
-    supervisorArm: armSupervisorRoute(deps.store, deps.supervisor),
+    // `deps.paths` SO ARM FOUR CAN LOOK. Without it the boot line says it could
+    // not read a ticket manifest, which is the honest version of "0 unreadable".
+    supervisorArm: armSupervisorRoute(deps.store, deps.supervisor, undefined, deps.paths),
   };
   const server = createServer((request, response) => {
     void handle(resolved, request, response).catch((error: unknown) => {
@@ -1836,6 +2364,19 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
      */
     if (segments.length === 3 && segments[2] === "tickets" && method === "POST") {
       await fileSupervisorTicket(deps, request, response);
+      return;
+    }
+    /*
+     * THE MORNING READOUT, AND IT WAS A MEASURED 404 UNTIL THIS ROUND.
+     *
+     * `GET /api/supervisor` answers about the ACTIVE ticket only, so a ticket that
+     * terminated at `blocked` overnight existed for the owner in
+     * `supervisor_tickets.next_action` and in this process's stdout and NOWHERE
+     * ELSE — the readout after eight unattended hours required opening runs.db in
+     * a SQL client. See `supervisorTicketsSnapshot`.
+     */
+    if (segments.length === 3 && segments[2] === "tickets" && method === "GET") {
+      sendJson(response, 200, supervisorTicketsSnapshot(deps));
       return;
     }
     if (segments.length === 3 && method === "POST") {
@@ -2704,30 +3245,12 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
     );
     return;
   }
-  const captureUrl = body["captureUrl"];
-  if (captureUrl !== undefined && captureUrl !== null && typeof captureUrl !== "string") {
-    sendError(
-      response,
-      400,
-      "invalid_body",
-      "captureUrl must be a string, null or absent",
-      "null suppresses the capture; absent means the first URL in the ticket text is captured.",
-    );
-    return;
-  }
-  const motionUrl = body["motionUrl"];
-  if (motionUrl !== undefined && motionUrl !== null && typeof motionUrl !== "string") {
-    sendError(
-      response,
-      400,
-      "invalid_body",
-      "motionUrl must be a string, null or absent",
-      // A DIFFERENT SENTENCE FROM `captureUrl`'S, because the two fields behave
-      // differently and one wording for both would document a scan that this
-      // field deliberately does not have.
-      "It names a page whose ANIMATION you want read. Absent or null means none — the ticket text is " +
-        "never scanned for one, unlike captureUrl.",
-    );
+  // ONE VALIDATOR FOR BOTH INTAKE ROUTES — see `refuseCaptureFields`. These two
+  // sentences ARE the API's statement of what the fields mean, and a second copy
+  // on the ticket route is how the two forms end up describing one field twice.
+  const captureRefusal = refuseCaptureFields(body);
+  if (captureRefusal !== null) {
+    sendError(response, 400, captureRefusal.code, captureRefusal.message, captureRefusal.remediation);
     return;
   }
   const intake = readReferenceImages(body["references"]);

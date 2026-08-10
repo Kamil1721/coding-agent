@@ -2760,3 +2760,132 @@ export interface ApiSupervisorCommandResponse extends ApiSupervisorState {
   /** Never blank: what the command did, in one sentence. */
   readonly note: string;
 }
+
+/* =========================================================================
+ * THE TICKET QUEUE — `GET /api/supervisor/tickets`
+ *
+ * WHY IT EXISTS. `GET /api/supervisor` reports the ACTIVE ticket only. Every
+ * other ticket the owner filed — including a `blocked` one whose whole
+ * explanation is its `next_action` sentence — was readable on this machine only
+ * by opening `runs.db` in a SQL client. The morning readout after eight
+ * unattended hours is a list, not a single row.
+ * ====================================================================== */
+
+/**
+ * Whether the ticket's reference manifest could be READ — three states, and the
+ * third one is the whole point.
+ *
+ * `none` A ticket that attached nothing. There is no `references.json`.
+ * `read` The manifest parsed; the counts beside this field are its contents.
+ * `unreadable` The file EXISTS and could not be parsed.
+ *
+ * `run-attachments.ts` deliberately flattens the last two into an empty list
+ * ("the distinction it preserves is the one that matters to a renderer"), which
+ * is right for a route that renders images and wrong for the readout that
+ * answers "did my CV survive?". A ticket whose manifest is corrupt has
+ * attachments that will NOT reach the builder, and it must not render
+ * identically to a ticket that never had any.
+ */
+export type ApiTicketManifestState = "none" | "read" | "unreadable";
+
+/**
+ * What one ticket carries, and whether the run it produced actually got it.
+ *
+ * {@link carriedIntoRun} IS THE PROBE, AND IT IS THREE-VALUED FOR A REASON.
+ * Measured 2026-08-10: `createSupervisorSubmit` calls `ticketWithReferences`
+ * with `images: []` and `documents: []`, so a ticket carrying an 80 KB CV is
+ * submitted as prose alone. This field compares the sha256s in the TICKET's
+ * manifest against the sha256s in the RUN's manifest, so it reports that drop
+ * as `false` today and flips to `true` by itself on the day the submission path
+ * carries them — nothing here has to be edited for it to become correct.
+ *
+ *   `null`  nothing to carry (no attachments), or no run exists yet
+ *   `false` the ticket's digests are NOT all in the run's manifest — DROPPED
+ *   `true`  every digest the ticket filed is in the run's manifest
+ *
+ * A two-valued field would read `false` for every attachment-free ticket, which
+ * is noise on the one field that answers the owner's question.
+ */
+export interface ApiTicketAttachments {
+  readonly manifest: ApiTicketManifestState;
+  readonly images: number;
+  readonly documents: number;
+  /** A page reading was frozen at filing time (`captureUrl`, or a URL in the brief). */
+  readonly capture: boolean;
+  /** A motion reading was frozen at filing time (`motionUrl`). */
+  readonly motion: boolean;
+  readonly carriedIntoRun: boolean | null;
+}
+
+/** One row of the queue. Every column the morning readout needs. */
+export interface ApiSupervisorTicketRow {
+  readonly ticketKey: string;
+  readonly title: string;
+  readonly state: ApiSupervisorTicketState;
+  readonly modelId: string;
+  readonly attemptNo: number;
+  readonly maxAttempts: number;
+  /** `next_action TEXT NOT NULL`, no default. The blocked ticket's whole reason. */
+  readonly nextAction: string;
+  readonly nextActionAt: string | null;
+  /**
+   * The run this ticket is ON, or the last one it had. One field, because the
+   * question a reader has is "which run do I open", and a row that had both
+   * would make them work out which one is current.
+   */
+  readonly runId: string | null;
+  /** Null once the run settles. Kept apart from {@link runId} so "running now" is decidable. */
+  readonly currentRunId: string | null;
+  readonly lastClass: string | null;
+  readonly lastDefectId: string | null;
+  readonly patchId: string | null;
+  readonly enqueuedAt: string;
+  readonly updatedAt: string;
+  readonly attachments: ApiTicketAttachments;
+}
+
+/**
+ * THIS ROUTE'S OWN ARM CHECK, ON THE WIRE — the same idea as
+ * {@link ApiSupervisorProbe} and for the same reason: an empty list is the
+ * failure mode of a queue readout, so the response says how much it looked at.
+ */
+export interface ApiSupervisorTicketsProbe {
+  readonly ticketsSeen: number;
+  /** Tickets whose `references.json` exists and would not parse. */
+  readonly manifestsUnreadable: number;
+  /** Tickets whose attachments did NOT reach their run — `carriedIntoRun: false`. */
+  readonly attachmentsDropped: number;
+  /** The route's boot arm check. False = it could not tell its outputs apart. */
+  readonly armed: boolean;
+  readonly armNote: string;
+  /** The server's own clock, so a frozen tab cannot render as a live reading. */
+  readonly at: string;
+}
+
+/** `GET /api/supervisor/tickets`. Oldest first — `enqueued_at ASC`, the store's order. */
+export interface ApiSupervisorTicketsResponse {
+  readonly tickets: readonly ApiSupervisorTicketRow[];
+  readonly probe: ApiSupervisorTicketsProbe;
+}
+
+/** `POST /api/supervisor/tickets` — 201. */
+export interface ApiSupervisorTicketFiled {
+  readonly ticketKey: string;
+  readonly title: string;
+  readonly state: ApiSupervisorTicketState;
+  readonly maxAttempts: number;
+  readonly nextAction: string;
+  readonly queuedTickets: number;
+  readonly desired: ApiSupervisorDesired;
+  /**
+   * WHAT THIS FILING ACTUALLY KEPT, read back off the disk it just wrote.
+   *
+   * NOT AN ECHO OF THE REQUEST. The counts come from re-reading the manifest
+   * that was written, so a filing whose bytes did not land answers `manifest:
+   * "unreadable"` or a count of zero instead of cheerfully repeating what was
+   * sent. `carriedIntoRun` is always `null` here — no run exists one millisecond
+   * after filing — and it is present rather than omitted so the client reads one
+   * shape on both routes.
+   */
+  readonly attachments: ApiTicketAttachments;
+}

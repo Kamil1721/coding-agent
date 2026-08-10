@@ -35,6 +35,7 @@
  * `supervisor_state` so `GET /api/supervisor` reports it rather than only stdout.
  */
 
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -229,13 +230,41 @@ export interface RepairDriverDeps {
   /** Where a hand-authored candidate diff is looked for, named by signature. */
   readonly proposalsDir: string;
   /**
+   * Where the cycle writes the rollback record for a patch it applied. Separate
+   * from `proposalsDir` because a proposal is an INPUT a human may edit and a
+   * rollback point is an OUTPUT nothing may edit: the only thing standing between
+   * an unattended patch and a tree nobody can restore.
+   */
+  readonly rollbackDir: string;
+  /**
    * Runs the cycle and returns its stdout. Injected so the test never spawns a
    * process it did not write, and so a spawn failure is a value rather than an
    * exception in the middle of a tick.
+   *
+   * `timedOut` IS A SEPARATE FIELD AND NOT AN `ok: false`. A cycle killed by the
+   * clock and a cycle that exited non-zero mean different things to the owner,
+   * and the second one may still have printed a usable verdict.
    */
-  readonly run: (args: readonly string[]) => { readonly ok: boolean; readonly stdout: string; readonly stderr: string };
+  readonly run: (args: readonly string[]) => {
+    readonly ok: boolean;
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly timedOut?: boolean;
+  };
   readonly log?: (line: string) => void;
 }
+
+/**
+ * THE PER-CYCLE WALL CLOCK, AND WHY IT IS NOT OPTIONAL.
+ *
+ * `SupervisorLoop.#repair` AWAITS the driver inside `tick()`, behind the
+ * re-entrancy flag. A cycle that hangs therefore stops every subsequent tick:
+ * nothing reconciles, nothing wakes, nothing is claimed, and the strip keeps
+ * showing the last reading it took. That is the queue dying silently — the exact
+ * failure the supervisor exists to end — caused by the component meant to fix
+ * things. Ten minutes is longer than the gate needs and shorter than a night.
+ */
+export const REPAIR_CYCLE_TIMEOUT_MS = 10 * 60 * 1_000;
 
 /**
  * The `repair` dep the loop has no default for.
@@ -268,8 +297,35 @@ export function createRepairDriver(deps: RepairDriverDeps): (request: Supervisor
       deps.ledgerDir,
       "--proposals",
       deps.proposalsDir,
+      "--rollback",
+      deps.rollbackDir,
+      /*
+       * THE TICKET'S DEADLINE TRAVELS INTO THE CYCLE. The supervisor's bound
+       * governs the TICKET across ticks; this hands the same instant to the
+       * CYCLE, so a cycle starting inside a window that has already closed
+       * refuses to spend a gate run on a ticket that is about to be terminated
+       * anyway. Two enforcers, one instant — not two clocks.
+       */
+      "--deadline",
+      request.deadlineAt,
     ];
     const result = deps.run(args);
+    /*
+     * THE CLOCK IS READ BEFORE THE OUTPUT IS, because a killed cycle's stdout is
+     * whatever it had managed to flush — possibly a complete-looking JSON line
+     * from an earlier stage. A timed-out cycle has no verdict by definition.
+     */
+    if (result.timedOut === true) {
+      log(`SUPERVISOR REPAIR: the cycle was killed by its own wall clock after running too long`);
+      return Promise.resolve({
+        kind: "inconclusive",
+        code: "REPAIR_CYCLE_TIMED_OUT",
+        detail:
+          `${deps.cyclePath} was killed by the per-cycle wall clock before it reached a verdict for run ` +
+          `${request.runId}. The bound exists because the supervisor AWAITS this call inside a tick: a cycle ` +
+          "allowed to hang would stop every subsequent tick, and the queue would die silently.",
+      });
+    }
     /*
      * A NON-ZERO EXIT IS STILL READ FOR AN ANSWER BEFORE IT IS TREATED AS A
      * FAULT, because the cycle prints its verdict and then may exit non-zero for
@@ -302,15 +358,48 @@ export function createRepairDriver(deps: RepairDriverDeps): (request: Supervisor
     const code = typeof bag["code"] === "string" ? bag["code"] : "NO_CODE";
     const detail = typeof bag["detail"] === "string" ? bag["detail"] : "the cycle named no reason";
     if (kind === "applied") {
-      const fingerprint = typeof bag["fingerprint"] === "string" ? bag["fingerprint"] : null;
+      /*
+       * AN APPLIED PATCH MUST NAME ITS ROLLBACK POINT, AND WITHOUT ONE IT IS NOT
+       * READ AS APPLIED.
+       *
+       * This is the one arm where the conservative direction is not obvious.
+       * Downgrading to `inconclusive` leaves a patch in the tree that the ticket
+       * does not admit to — but the ticket says so, in its own sentence, and the
+       * alternative is worse: `applied` re-queues the ticket for a run, and a run
+       * on a patched tree nobody can revert is the state that needs a human at
+       * 3am. So the tree is reported as CHANGED and UNREVERTIBLE, loudly, rather
+       * than as repaired.
+       */
+      const rollbackPath = typeof bag["rollbackPath"] === "string" ? bag["rollbackPath"] : null;
+      const patchId = typeof bag["patchId"] === "string" ? bag["patchId"] : null;
+      if (rollbackPath === null || rollbackPath.trim() === "") {
+        return Promise.resolve({
+          kind: "inconclusive",
+          code: "APPLIED_WITHOUT_ROLLBACK_POINT",
+          detail:
+            `${deps.cyclePath} reports that it applied a patch (${code}) and named NO rollback record, so nothing on ` +
+            `this machine knows how to undo it without a human: ${detail}. The ticket is NOT re-queued — a run on a ` +
+            "tree that cannot be restored is worse than a failure that stopped.",
+        });
+      }
       return Promise.resolve({
         kind: "applied",
         code,
-        detail,
+        /*
+         * THE COMMAND IS SPELLED OUT, AND IT IS ONE THAT EXISTS. This sentence
+         * used to read "Revert with tools/repair/supervisor-gate.mjs from <path>",
+         * naming a script whose CLI ran only `armCheck()` — so the owner's
+         * remediation at 3am was to write a node one-liner. The `--revert` arm now
+         * exists; nothing reverts on its own, and the sentence says that too,
+         * because `revertGatedPatch` still has no production caller.
+         */
+        detail:
+          `${detail} NOTHING WILL REVERT THIS ON ITS OWN — run: ` +
+          `node tools/repair/supervisor-gate.mjs --revert ${rollbackPath}`,
         // A PATCH WITH NO ID IS NOT AN APPLIED PATCH. `lastRepair` on the strip is
-        // specified as "blank is not legal", so a missing fingerprint gets a
+        // specified as "blank is not legal", so a missing identifier gets a
         // visible placeholder rather than an empty string.
-        patchId: fingerprint ?? "(the cycle applied a patch it did not fingerprint)",
+        patchId: patchId ?? (typeof bag["fingerprint"] === "string" ? bag["fingerprint"] : null) ?? "(the cycle applied a patch it did not fingerprint)",
       });
     }
     if (kind === "refused") return Promise.resolve({ kind: "refused", code, detail });
@@ -325,6 +414,282 @@ export function createRepairDriver(deps: RepairDriverDeps): (request: Supervisor
       code: kind === "inconclusive" ? code : `UNKNOWN_VERDICT_${String(kind)}`,
       detail,
     });
+  };
+}
+
+/**
+ * THE REAL SPAWN, WITH THE CLOCK ON IT.
+ *
+ * Lives here rather than in `index.ts` for the same reason everything else does:
+ * `index.ts` binds a port, so nothing in it is unit-testable, and a timeout that
+ * only exists in an untested file is a timeout nobody has watched fire.
+ */
+export function createCycleRunner(timeoutMs: number = REPAIR_CYCLE_TIMEOUT_MS): RepairDriverDeps["run"] {
+  return (args) => {
+    const result = spawnSync(process.execPath, [...args], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      /*
+       * SIGKILL, NOT SIGTERM — AND IT REAPS THE CHILD ONLY. SAY SO.
+       *
+       * This comment used to claim that SIGKILL covers the grandchildren "holding
+       * the clock this bound exists to enforce". IT DOES NOT. `spawnSync` signals
+       * the child pid; there is no `detached: true` and no process-group kill
+       * anywhere on this path, so a Tier 3 gate that the cycle spawned survives its
+       * parent being killed and keeps running — writing `dashboard/data/tier3`, and
+       * on a machine with docker, holding containers — while the supervisor has
+       * already filed the ticket as REPAIR_CYCLE_TIMED_OUT and moved on.
+       *
+       * WHAT IS BOUGHT INSTEAD, TODAY: `GATE_TIMEOUT_MS` in
+       * `tools/repair/supervisor-cycle.mjs` is now strictly SHORTER than this
+       * clock, so on a hanging gate the INNER clock fires first, inside the cycle
+       * that is the gate's real parent, and this outer kill is the fail-safe rather
+       * than the normal path. Reaping the group needs an async spawn (`spawn` +
+       * `process.kill(-pid)`), which changes `RepairDriverDeps["run"]` from sync to
+       * async and is carried forward, NOT claimed here.
+       */
+      killSignal: "SIGKILL",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const timedOut = result.error !== undefined && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    return {
+      ok: result.status === 0,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? (result.error === undefined ? "" : result.error.message),
+      ...(timedOut ? { timedOut: true } : {}),
+    };
+  };
+}
+
+export interface RepairDriverArm {
+  readonly armed: boolean;
+  readonly probes: number;
+  readonly wrong: readonly string[];
+  readonly lines: readonly string[];
+}
+
+/**
+ * THE DRIVER'S OWN ARM CHECK, AND THE REASON RULE 4 NEEDS ONE.
+ *
+ * `SupervisorLoop.armCheck()` used to print "a repair driver is wired" on the
+ * strength of `repair !== undefined` and two constants read out of this build. It
+ * observed NOTHING about the driver. That is a boot line reporting a healthy
+ * component it cannot see, which is strictly worse than the honest absence it
+ * replaced: the owner reads "a driver is wired" and leaves for eight hours.
+ *
+ * SO THE DRIVER IS DRIVEN, IN BOTH HALVES, WITH ANSWERS WRITTEN HERE IN THE SOURCE.
+ *
+ *   THE READER (this file). Eight known cycle answers must produce eight DISTINCT
+ *   codes and eight DISTINCT sentences, exactly one of which is `applied`, and the
+ *   `applied` one must carry a rollback point. Collapse any two arms of the parser
+ *   — or let an unknown verdict read as a patch that landed — and the pair is
+ *   named here.
+ *
+ *   THE DECIDER (`tools/repair/supervisor-cycle.mjs --armcheck`). Spawned, because
+ *   it is `.mjs` outside this package boundary and cannot be imported. Its own arm
+ *   check drives nine routing inputs AND the gate seam's eight verdict records. A
+ *   reader that is perfect in front of a decider that reads every gate verdict as
+ *   APPLY would report armed and be catastrophically wrong.
+ *
+ * IT SPENDS NO QUOTA AND WRITES NOTHING. `--armcheck` runs in a throwaway
+ * directory and returns; that is what makes it safe to run at start-up on the
+ * owner's real machine, and it is why the check exists at boot rather than only in
+ * a test file.
+ */
+export async function armRepairDriver(deps: RepairDriverDeps): Promise<RepairDriverArm> {
+  const wrong: string[] = [];
+  const probes: readonly {
+    readonly want: string;
+    readonly kind: SupervisorRepairOutcome["kind"];
+    readonly answer: { readonly ok: boolean; readonly stdout: string; readonly timedOut?: boolean };
+  }[] = [
+    {
+      want: "GATE_APPLY",
+      kind: "applied",
+      answer: {
+        ok: true,
+        stdout: JSON.stringify({
+          kind: "applied",
+          code: "GATE_APPLY",
+          detail: "the arm check's known-good answer",
+          patchId: "armpatch",
+          rollbackPath: "/dev/null/arm.json",
+        }),
+      },
+    },
+    {
+      want: "APPLIED_WITHOUT_ROLLBACK_POINT",
+      kind: "inconclusive",
+      answer: { ok: true, stdout: JSON.stringify({ kind: "applied", code: "GATE_APPLY", detail: "no rollback point", patchId: "armpatch" }) },
+    },
+    {
+      want: "GATE_REFUSE",
+      kind: "refused",
+      answer: { ok: true, stdout: JSON.stringify({ kind: "refused", code: "GATE_REFUSE", detail: "the arm check's known refusal" }) },
+    },
+    {
+      want: "GATE_BLIND",
+      kind: "inconclusive",
+      answer: { ok: true, stdout: JSON.stringify({ kind: "inconclusive", code: "GATE_BLIND", detail: "the arm check's known non-verdict" }) },
+    },
+    { want: "REPAIR_CYCLE_SILENT", kind: "inconclusive", answer: { ok: false, stdout: "" } },
+    { want: "REPAIR_CYCLE_UNREADABLE", kind: "inconclusive", answer: { ok: false, stdout: "Error: cannot find module\n" } },
+    { want: "REPAIR_CYCLE_TIMED_OUT", kind: "inconclusive", answer: { ok: false, stdout: "", timedOut: true } },
+    {
+      want: "UNKNOWN_VERDICT_escalated",
+      kind: "inconclusive",
+      answer: { ok: true, stdout: JSON.stringify({ kind: "escalated", code: "TIER_3", detail: "a word from a newer build" }) },
+    },
+  ];
+
+  /*
+   * THE PROBE LOOP IS NOT WRAPPED IN A CATCH, AND THAT IS A MEASURED DECISION
+   * RATHER THAN AN OVERSIGHT.
+   *
+   * One was written and then removed, because it survived its own mutation:
+   * deleting it left the test that was supposed to prove it GREEN. The reason is
+   * visible two lines below — this loop OVERRIDES `run` with its own fixed answer,
+   * so `deps.run` is never called here and no injected seam can make this loop
+   * throw. `createRepairDriver` construction cannot throw, the driver's own body
+   * returns on every path, and its `JSON.parse` is already inside a `try`. A guard
+   * over that is unreachable code that reads like protection, and this repository
+   * has twenty-two catalogued instances of exactly that shape.
+   *
+   * THE ONE REAL THROW SEAM IN THIS FUNCTION IS THE SPAWN, and it IS guarded, by
+   * name, further down — with a test that goes RED when the guard is removed. That
+   * matters because this function is awaited in `main()` ABOVE `server.listen`: an
+   * exception here means the dashboard never binds, which is the exact outcome the
+   * 30 s clock exists to prevent.
+   */
+  const got: SupervisorRepairOutcome[] = [];
+  for (const probe of probes) {
+    const driver = createRepairDriver({
+      ...deps,
+      log: () => undefined,
+      run: () => ({ ok: probe.answer.ok, stdout: probe.answer.stdout, stderr: "", ...(probe.answer.timedOut === true ? { timedOut: true } : {}) }),
+    });
+    got.push(
+      await driver({
+        ticketKey: "arm-ticket",
+        signature: "a".repeat(64),
+        runId: "arm-run",
+        failureClass: "structural",
+        cycleNo: 1,
+        maxCycles: 1,
+        deadlineAt: "2099-01-01T00:00:00.000Z",
+      }),
+    );
+  }
+
+  const codes = new Set(got.map((g) => g.code)).size;
+  const sentences = new Set(got.map((g) => g.detail)).size;
+  probes.forEach((probe, index) => {
+    const answer = got[index];
+    if (answer === undefined) return;
+    if (answer.code !== probe.want) wrong.push(`${probe.want} read as ${answer.code}`);
+    if (answer.kind !== probe.kind) wrong.push(`${probe.want} answered kind '${answer.kind}', wanted '${probe.kind}'`);
+    if (answer.detail.trim() === "") wrong.push(`${probe.want} carries a blank sentence`);
+  });
+  if (got.length === probes.length) {
+    if (codes !== probes.length) wrong.push(`${String(probes.length)} cycle answers collapsed into ${String(codes)} code(s)`);
+    if (sentences !== probes.length) wrong.push(`${String(probes.length)} cycle answers collapsed into ${String(sentences)} sentence(s)`);
+    const applied = got.filter((g) => g.kind === "applied").length;
+    if (applied !== 1) wrong.push(`${String(applied)} of ${String(probes.length)} cycle answers were read as an applied patch; exactly one may be`);
+  }
+
+  /*
+   * THE DECIDER'S OWN ARM CHECK, SPAWNED — AND READ, NOT MERELY EXIT-CODED.
+   *
+   * THE DEFECT THIS BLOCK EXISTS FOR. The whole verification of the decider used
+   * to be `if (!decider.ok)`, and every line the child printed was then echoed
+   * onto the boot block as `ARM CHECK: (cycle) <line>` regardless of what it said.
+   * So a runner that exits 0 while printing something that is not an arm-check
+   * report at all produced `armed=true, wrong=[]` and a boot block that LOOKED
+   * healthy while quoting arbitrary text. That is a boot line reporting a
+   * component it cannot see, which is the one direction rule 4 calls worse than an
+   * honest absence.
+   *
+   * THE COUPLING THAT WAS ASSUMED IS NOW ASSERTED. `supervisor-cycle.mjs` ends
+   * `process.exit(arm.armed ? 0 : 1)` and prints `ARM CHECK: armed — …` or
+   * `ARM CHECK: BLIND — …` as its LAST line. Nothing here checked either fact, so
+   * one refactor of that exit path would have made the boot line fiction. Both
+   * halves are checked, and they are checked against EACH OTHER: an exit code that
+   * disagrees with the printed verdict is its own named fault, because the two
+   * disagreeing means one of them is not measuring the cycle.
+   *
+   * A MISSING SCRIPT IS NOT A BLIND ONE. `cyclePath` is derived from
+   * `DASHBOARD_HOME`; point that anywhere but the repo's `dashboard/` and the
+   * spawn fails for a reason that has nothing to do with the decider's eyesight.
+   * "Nobody installed one" wearing "we refused a bad one" is the collapse the
+   * three-state boot reading exists to prevent, so it gets its own sentence.
+   */
+  const deciderVerdict = /^ARM CHECK: (armed|BLIND)\b/;
+  let deciderLines: string[] = [];
+  if (!existsSync(deps.cyclePath)) {
+    wrong.push(
+      `the repair cycle script is not at ${deps.cyclePath}, so no decider was driven at all — this is "nobody installed one", ` +
+        "not \"we refused a blind one\", and DASHBOARD_HOME pointing outside the repository is the way it happens",
+    );
+  } else {
+    let decider: { readonly ok: boolean; readonly stdout: string; readonly stderr: string; readonly timedOut?: boolean };
+    try {
+      decider = deps.run([deps.cyclePath, "--armcheck"]);
+    } catch (error) {
+      decider = { ok: false, stdout: "", stderr: `the spawn threw: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    deciderLines = decider.stdout.split("\n").filter((l) => l.trim() !== "");
+    const verdictLine = deciderLines.filter((l) => deciderVerdict.test(l)).pop() ?? null;
+    if (!decider.ok) {
+      wrong.push(
+        `${deps.cyclePath} --armcheck reported BLIND or could not run: ` +
+          `${deciderLines.slice(-2).join(" | ") || decider.stderr.trim().slice(0, 300) || "(it said nothing at all)"}`,
+      );
+    }
+    if (verdictLine === null) {
+      wrong.push(
+        `${deps.cyclePath} --armcheck exited ok=${String(decider.ok)} and printed no arm-check verdict line — nothing it said ` +
+          `matched ${String(deciderVerdict)}, so its ${String(deciderLines.length)} line(s) are text of unknown meaning and must ` +
+          `not be quoted onto a boot block as health: ${deciderLines.slice(-2).join(" | ") || "(it printed nothing)"}`,
+      );
+    } else if (deciderLines[deciderLines.length - 1] !== verdictLine) {
+      wrong.push(
+        `${deps.cyclePath} --armcheck printed its verdict line and then kept talking, so the last line of the boot block is ` +
+          `not the cycle's verdict: ${String(deciderLines[deciderLines.length - 1]).slice(0, 200)}`,
+      );
+    } else if (decider.ok !== /^ARM CHECK: armed\b/.test(verdictLine)) {
+      wrong.push(
+        `${deps.cyclePath} --armcheck exited ok=${String(decider.ok)} while printing '${verdictLine.slice(0, 120)}' — the exit code ` +
+          "and the printed verdict disagree, so one of them is not measuring the cycle and neither can be believed",
+      );
+    }
+    /*
+     * AND THE QUOTED TEXT MUST COVER THE GATE SEAM. This function's docblock
+     * claims the decider drives "the gate seam's eight verdict records"; a cycle
+     * that stopped printing that half would leave the claim standing over output
+     * that no longer contains it.
+     */
+    if (decider.ok && !deciderLines.some((l) => /gate-verdict router/.test(l))) {
+      wrong.push(
+        `${deps.cyclePath} --armcheck said nothing about the gate-verdict seam, so this boot block cannot claim the gate ` +
+          "records were driven — the sentence below would be describing a measurement that is not in the text above it",
+      );
+    }
+  }
+
+  const armed = wrong.length === 0;
+  return {
+    armed,
+    probes: probes.length,
+    wrong,
+    lines: [
+      `ARM CHECK: repair driver reads ${String(codes)} distinct code(s) and ${String(sentences)} distinct sentence(s) ` +
+        `from ${String(probes.length)} known cycle answers, exactly ${String(got.filter((g) => g.kind === "applied").length)} of them applied; ` +
+        `${String(wrong.length)} misread`,
+      ...deciderLines.map((line) => `ARM CHECK: (cycle) ${line.replace(/^ARM CHECK: /, "")}`),
+      armed
+        ? "ARM CHECK: armed — the repair driver and the cycle it spawns both tell their own outcomes apart, and only a gate-authorised patch with a rollback point reads as applied"
+        : `ARM CHECK: BLIND — the repair driver cannot be trusted to report what happened to a patch (${wrong.join("; ")}). It will NOT be wired.`,
+    ],
   };
 }
 
