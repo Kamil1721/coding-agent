@@ -126,7 +126,38 @@ place below.
 > marker (without "(fix pass)" or "(second pass)") is this morning's correction pass and was
 > not touched.
 
-> ### THE STRIP-CRASH / STILL-PARKS ROUND, 2026-08-10 — NEWEST ROUND, AND IT REWRITES §7.2
+> ### THE REPAIR-DRIVER ROUND, 2026-08-10 — NEWEST ROUND. IT IS ALL IN §9, AND IT IS NOT COMMITTED
+>
+> A fourth round ran on 2026-08-10 **beside a live run** (`run-2026-08-10T13-11-12-836Z-54927ebc`,
+> unharmed and progressing throughout): three lanes, a verifier, a reviewer and a repair pass. It
+> wired the repair driver into the boot path, gave the boot line four honest states instead of two,
+> built the gate-verdict seam that is the only thing in the tree that writes a patch, added the
+> morning readout route and a sixth strip liveness, and carried the owner's attachments onto a
+> ticket. **Everything it produced is in §9; §9.3 is the checklist and §9.4 is what needs you.**
+>
+> **THREE SENTENCES BEFORE YOU QUOTE ANY OF IT.**
+> 1. **`HEAD` IS STILL `70a91cf` AND NOTHING WAS COMMITTED.** The live run forbade docker, both
+>    dev ports, `npm run build` in `dashboard/server` and `bakeoff`, and any write to `runs.db`.
+>    **So the entire client half — client unit and the full browser suite — was NOT RUN**, and
+>    `dashboard/src/components/supervisor-strip.tsx` has zero executed tests. §9.3 names exactly
+>    what must run first. **Nothing here may be committed on the strength of this round.**
+> 2. **THE RUNNING SERVER TONIGHT DOES NOT HAVE THE DRIVER.** It is `node dist/index.js` and
+>    `dist/` was not rebuilt (`grep -c armRepairDriver dashboard/server/dist/index.js` → **0**).
+>    Tonight still prints `NO REPAIR DRIVER is wired`. The driver arms at the next rebuild — which
+>    is a decision (§9.4 item 2), because of the next sentence.
+> 3. **THE GATE CAN SAY `APPLY` WITH ITS CONTAINER ARMS UNABLE TO RUN.** Measured on the real
+>    `runGate()`, `containerExecuted 0`, real 64-hex token. Bounded tonight only because `dist/` is
+>    pre-round and `dashboard/data/repair-proposals` does not exist. **Keep that directory empty
+>    and do not rebuild `dist` until §9.4 item 1 is settled** — and it is a policy question, not a
+>    bug fix, because a green test pins the current behaviour.
+>
+> **THE HONEST HEADLINE, unchanged from the round before it in the one place that matters:** the
+> repair cycle **still has never fixed a real defect**, and the container arms of the Tier 3 gate
+> **have never run during a repair**. What changed is that a structural failure now terminates with
+> the cycle's own reason (`NO_PATCH_AUTHOR`, naming the path a diff must be written to) instead of
+> *"nobody wired a driver"*. §9.5 is unflinching about the rest.
+
+> ### THE STRIP-CRASH / STILL-PARKS ROUND, 2026-08-10 — SUPERSEDED AS NEWEST BY §9; IT REWRITES §7.2
 >
 > A fourth round ran on 2026-08-10, after the tag: **two lanes (`strip-crash`, `still-parks`), a
 > final gate, a repair pass and a final go/no-go.** It exists because the owner wants to start a
@@ -167,6 +198,9 @@ place below.
 > build-to-verdict, and the repair cycle has never fixed a real defect in production** — no
 > driver is wired into `index.ts`, nothing authors a patch, and there is no sandbox. §8.4 and
 > §7.3 are unflinching about which is which.
+> *(**CORRECTED 2026-08-10, repair-driver round:** a driver IS now wired into `index.ts` in source —
+> the running `dist/` still is not. The other two clauses stand: **nothing authors a patch and there
+> is no sandbox**, so the repair cycle still has never fixed a real defect. §9.1, §9.5.)*
 >
 > **Marker for this round's edits, and nothing else in this file was altered:**
 > ```
@@ -4664,7 +4698,8 @@ explains the death.**
   verdicts, because `return "idle"` gets one of three right:
   `ARM CHECK: supervisor discriminator returns 3 distinct verdict(s) on 3 known inputs; 0
   misread` / `sees N ticket(s) — queued A, in flight B, waiting C; desired='…'` /
-  `armed — idle and stuck are distinguishable`. **It is now CALLED at boot** (`index.ts:159`),
+  `armed — idle and stuck are distinguishable`. **It is now CALLED at boot** (`index.ts:146`
+  — **re-measured 2026-08-10, repair-driver round; the published `:159` is stale**),
   which it was not when the lane filed it.
 - **THE ATTEMPT CAP MOVED TO THE CLAIM STEP** (`:455`) and a failed submission now counts as an
   attempt (`:518`). Before that, a deterministically throwing `submit` re-claimed every 30 s
@@ -4821,6 +4856,54 @@ ticks with no driver wired, which was verified live rather than reasoned (`index
 **But a repair-router sentence collision now refuses the WHOLE boot**, not just the repair step,
 because `armCheck().armed` includes it. That is the fail-safe direction and it is deliberate.
 
+> ### CORRECTED 2026-08-10 (repair-driver round) — THE BLOCK ABOVE IS SUPERSEDED, AND SO IS ITS GREP
+>
+> **THE PUBLISHED GREP IS NOW FALSE AND THAT MATTERS MORE THAN THE BOOT LINE.** *"`grep -an
+> 'repair\|defectSignatureOf' index.ts` → **0 hits**"* was true when it was written and is
+> **re-measured today at ELEVEN hits** — `index.ts:40,42,43` (the imports), `:143` (`await
+> armRepairDriver(...)`), `:144` (its lines printed), `:160` (the conditional `repair` dep),
+> `:161` (`repairArm`), `:170` (`defectSignatureOf: createDefectSignatureReader(paths.runs)`). A
+> reader who trusts a published grep result is exactly the harm this document exists to prevent,
+> so the old result stays visible above and is corrected here rather than edited away. The same
+> **0 hits** claim is repeated in stop 2 below and is corrected there too.
+>
+> **THE REPAIR LINE NOW HAS FOUR STATES, NOT TWO, and each one is a different fact:**
+>
+> ```
+> ARM CHECK: repair router returns 7 distinct code(s) and 7 distinct sentence(s) on 7 known inputs; 0 misread
+> ARM CHECK: a repair driver is wired AND MEASURED — it told 8 known cycle answers apart, 0 misread,
+>            and only a gate-authorised patch with a rollback point reads as applied. CONFIGURED,
+>            NOT OBSERVED: at most 2 cycle(s) per defect signature and a 30-minute bound on
+>            'repairing' are constants read out of this build — nothing here has watched either one
+>            fire. N ticket(s) are repairing now.
+> ARM CHECK: (cycle) supervisor repair entry point returns 9 distinct code(s) and 9 distinct sentence(s)
+>            on 9 known inputs, exactly 1 of them applied; 0 misread
+> ARM CHECK: (cycle) gate-verdict router returns 8 distinct code(s) … exactly 1 of them APPLY; 0 misread
+> ARM CHECK: (cycle) armed — an APPLY is only reachable with a token that verifies, and an applied
+>            patch was reverted from its own record
+> ```
+>
+> The other three states, all reachable and all mutation-proved to read differently:
+>
+> | what happened | the line you get |
+> |---|---|
+> | no driver was constructed at all | `ARM CHECK: NO REPAIR DRIVER is wired. …` — **the line the old block quotes, still reachable and still a distinct fact** |
+> | a driver exists and its arm check found it blind | `ARM CHECK: BLIND — a repair driver EXISTS and was NOT wired, because it could not be shown to tell its own outcomes apart (<the reasons>). … This is the fail-safe direction and it is NOT the same as having no driver: fix the driver, do not read this as an idle machine.` |
+> | the cycle script is not at `cyclePath` | its own `wrong[]` reason — *"nobody installed one, not we refused a blind one"* — because a missing file used to wear the refused-a-blind-driver sentence |
+> | measured armed and then **not passed** to the loop | `ARM CHECK: BLIND BY WIRING — a repair driver was MEASURED ARMED … AND THEN NOT PASSED to the loop. Nothing is wrong with the driver … Look at the \`repair\` dep in index.ts, not at tools/repair.` |
+>
+> **THE WORD `MEASURED` NOW COVERS ONLY WHAT WAS DRIVEN.** The two bounds it used to recite in
+> the same breath are relabelled **CONFIGURED, NOT OBSERVED**, because they are constants read out
+> of the build and nothing at boot watches either one fire.
+>
+> **AND THE ONE SENTENCE A READER MUST NOT SKIP: THE RUNNING PROCESS TONIGHT IS NOT THIS BUILD.**
+> All of the above is wired **in source and in a private sibling outDir** (`dist-repair`,
+> `dist-gate`). The live server is `node dist/index.js`, `dist/` was deliberately **not** rebuilt
+> while the run was live, and `grep -c armRepairDriver dashboard/server/dist/index.js` → **0**
+> (measured, `dist/index.js` mtime Aug 10 15:10). **Tonight's supervisor still prints `NO REPAIR
+> DRIVER is wired` and still has no `repair` dep.** The driver arms at the next rebuild, and that
+> rebuild is one of the owner decisions in §9.4 — not a housekeeping step.
+
 **If instead you see `ARM CHECK FAILED: the supervisor is BLIND and was NOT started`, stop.**
 No interval was installed, no tick was taken, and `desired` was forced to `stopped` with the
 reason written to the database — so `GET /api/supervisor` will tell you the same thing. **Do
@@ -4849,6 +4932,39 @@ curl -sS -X POST http://127.0.0.1:4176/api/supervisor/tickets \
 the same brief, twice        → 409 ticket_already_queued  "this exact brief is already filed as t-…"
 {"modelId":"haiku"}          → 201
 ```
+
+> ### EXTENDED 2026-08-10 (repair-driver round) — THE TICKET NOW CARRIES ATTACHMENTS, AND THERE IS A GET
+>
+> **FOUR NEW REQUEST FIELDS**, with the same caps, codes and refusal sentences `POST /api/runs`
+> already uses (the validators are the same functions, not a second copy): `references`
+> (base64 image data URLs, cap 6), `documents` (base64 data URLs, cap 4), `captureUrl`
+> (`string | null`), `motionUrl` (`string | null`). Bytes land under
+> `dashboard/runs/tickets/<ticketKey>/{references,documents}` with a `references.json` manifest.
+> **The single line that decided whether the ticket could be filed at all** was the 1 MiB default
+> body envelope: a 573 KB image + an 81 KB PDF answered `400 invalid_body / "request body too
+> large (over 1048576 bytes)"`. It is now `MAX_ATTACHMENT_BODY_BYTES`, and the envelope refusal has
+> its own code:
+>
+> ```
+> over the attachment envelope   → 400 body_too_large        (NEW code on this route)
+> the same brief AND same bytes  → 409 ticket_already_queued  "this exact brief with these exact
+>                                                             attachments is already filed as t-…"
+> the same brief, a DIFFERENT CV → 201 with a DIFFERENT key   (a 409 there would discard the
+>                                                             corrected CV — decided, not incidental)
+> ```
+>
+> **`GET /api/supervisor/tickets` EXISTS — it is the morning readout, and it replaces opening
+> `runs.db` in a SQL client.** Every ticket with its state, model, `attempt N of M`, its own
+> `next_action` sentence, `nextActionAt`, run id (current or last), `lastClass`, `lastDefectId`,
+> `patchId`, timestamps, and an `attachments` block. Plus a response `probe` —
+> `ticketsSeen / manifestsUnreadable / attachmentsDropped / armed / armNote / at` — so **an empty
+> queue and a blind reader are different bodies.** `attachments.carriedIntoRun` is three-valued
+> and compares sha256s, not counts: `null` = nothing to carry / no run yet / manifest unreadable;
+> `false` = a run exists and its manifest does not name what the ticket filed — **which is what
+> today's `createSupervisorSubmit` produces, because it still passes `images: []` and
+> `documents: []`**; `true` = every filed digest is in the run. **Capture and motion need no
+> submit-path change** (they are composed into `ticket_text` at filing time and the
+> re-composition is pinned as a no-op); **images and documents do.**
 
 **`400 invalid_model` is new this round and it used to be a lie.** §7.2 has promised it since it
 was written; `http.ts` only checked for a non-empty string, so `no-such-model` was **queued with
@@ -4906,9 +5022,26 @@ all five words and all five sentences are distinct. **`malformed` renders NO dat
 the reading carries no snapshot; `unreachable` keeps the last cells beside it, as history, by
 design.
 
+> ### SIX IN SOURCE, FIVE MEASURED — 2026-08-10 (repair-driver round)
+>
+> **A sixth liveness `blocked` (red, sharing `stuck`'s tone) landed in `dashboard/src/lib/supervisor.ts`
+> this round, and with it the distinction stop 17 names:** a queue that FINISHED reads
+> `idle · queue finished · N done`; a queue where every ticket died reads `blocked · queue ended ·
+> N blocked`; a queue that was never given anything reads `idle · idle, no tickets filed`; and **no
+> census at all** still reads `idle · idle, queue empty` with the reason appended, so today's build
+> stops claiming more than it can see. The classifier half is mutation-proved (blinding the sixth
+> probe takes the boot line to `ARM CHECK FAILED — THE SUPERVISOR STRIP IS BLIND: only 5 of 6
+> states are distinguishable`). **THE RENDERING HALF IS SOURCE-ONLY.** No browser project could be
+> run this round — `dashboard/playwright.config.ts` declares `webServer` at top level, so every
+> project run boots a server on the live run's ports — so the table above, its colour claims and
+> the extended *"all six states"* spec are **unverified by browser**, and
+> `dashboard/src/components/supervisor-strip.tsx` has **zero executed tests**. Read the table as
+> five measured states plus one that compiles. §9.3 is the checklist that closes this.
+
 **THE ARM LINE NOW READS `5 distinct`, not 4** (`unreachable · idle · running · stuck ·
 malformed`), and it is rendered in the detail pane **pass or fail** — *a report that only appears
-when it failed is a report nobody has ever seen working*. `stuck` after silence fires at
+when it failed is a report nobody has ever seen working*. **(In source it now reads `6 distinct`
+and names what it can tell apart; browser-unverified — see the block above.)** `stuck` after silence fires at
 **40 minutes**, and that threshold is **calibrated on one run** (`a913c871`'s largest real
 inter-event gap was 25.2 min, and `DEFAULT_SILENCE_WARN_MIN = 90` never fired). The quiet clock
 **skips `rate_limit` frames**, which is the whole reason `a913c871` looked alive.
@@ -4976,6 +5109,24 @@ answer: what will have happened by morning.** It was driven on a real loop again
    `state=blocked`, `next_action="nothing automatic: no repair driver is wired into this
    supervisor, so no proposal for defect sig-spec-oscillation (class 'structural') can ever be
    produced. Run tools/repair/cycle.mjs by hand and re-enqueue the ticket."`
+
+   > **CORRECTED 2026-08-10 (repair-driver round) — SAME OUTCOME, DIFFERENT SENTENCE, AND THE
+   > SENTENCE IS THE POINT.** With the driver wired **in source**, the ticket still leaves
+   > `repairing` in one tick and still lands `blocked` — deterministically, measured twice on a
+   > `.backup` snapshot of the live database with the real defect writer producing the record — but
+   > the reason is no longer *"no repair driver is wired"*. It is now
+   > `REPAIR_INCONCLUSIVE / NO_PATCH_AUTHOR`: *"nothing automatic: the repair cycle for defect
+   > 02d2e44b… reached NO verdict (NO_PATCH_AUTHOR) — no candidate diff exists at
+   > `<proposals>/02d2e44b….diff`, and nothing in this build authors one — design §5.3 records that
+   > the patch author is deliberately not built… Write a diff to that path (or run
+   > tools/repair/cycle.mjs against an isolated copy by hand) and re-enqueue the ticket."` **And
+   > `last_defect_id` is now populated with the real 64-hex signature — the column had no writer
+   > that reached it before this round, so it was permanently null.** Two side measurements kept
+   > because they are separately named: a hand-written `repairing` row with no `nextActionAt`
+   > terminates at `REPAIR_DEADLINE_EXCEEDED` (the documented fail-safe — a repairing ticket with no
+   > deadline is EXPIRED, not IMMORTAL), and a defect record with no `signature` field answers
+   > `NO_DEFECT_SIGNATURE`. **In no configuration did a ticket stay in `repairing`.** Tonight's
+   > live process still answers `NO_REPAIR_DRIVER`, because `dist/` was not rebuilt.
 4. **THEREFORE THE REALISTIC NIGHT IS ONE ATTEMPT, NOT EIGHT HOURS OF ITERATION.** Within ~1-3
    hours the ticket is either `done` (the gate scores it; run 1 proves that path reproduces) or
    `blocked` with a named sentence — and then the loop ticks every 30 s over an empty queue until
@@ -4995,6 +5146,16 @@ answer: what will have happened by morning.** It was driven on a real loop again
      "select seq, at, ticket_key, run_id, decision, reason from supervisor_log order by seq;"
    ```
    (There is **no `supervisor_decisions` table** — the audit trail is `supervisor_log`.)
+
+   > **CORRECTED 2026-08-10 (repair-driver round) — THE 404 IS CLOSED; THE READOUT IS A ROUTE NOW.**
+   > `GET /api/supervisor/tickets` exists and answers every ticket, its state, its `attempt N of M`,
+   > its own `next_action` sentence and its attachment block, plus a `probe` that reports how much
+   > it looked at — so the two SQL queries above are the fallback, not the procedure. And the strip
+   > has a sixth liveness that tells a FINISHED queue from an ALL-BLOCKED one. **Both halves carry
+   > the same qualification and it is not a small one:** the route is measured (its own suite, and
+   > the empty-store case asserted separately so *"no tickets"* and *"the reader is blind"* are
+   > different bodies), the strip's classifier is measured, and **the strip's RENDERING is
+   > unverified — no browser project could run beside the live run.** §9.3.
 
 **Nothing spins, nothing double-spends, no owner byte is at risk, and nothing restarts the node
 process if it dies.**
@@ -5016,8 +5177,8 @@ three new ones the repair pass created or left are added.**
 
 | # | it stops when | why, with the evidence |
 |---|---|---|
-| **1** | ~~**A STRUCTURAL FAILURE HAPPENS** … the ticket settles to `repairing` … **and nothing ever moves it out.**~~ **CORRECTED 2026-08-10 (strip-crash round): `repairing` IS NO LONGER A PARK, AND IT IS STILL A STOP.** A repair step now runs inside `tick()` and routes every repairing ticket to **one of six named outcomes, five of them terminal** — `REPAIR_DEADLINE_EXCEEDED`, `NO_REPAIR_DRIVER`, `REPAIR_CYCLES_EXHAUSTED`, `REPAIR_APPLIED`, `REPAIR_REFUSED`, `REPAIR_INCONCLUSIVE`, plus the one non-terminal `REPAIR_DEFERRED`. With no driver wired — today's state — the ticket reaches `blocked` **on the next tick** with a sentence naming the signature and the class, and the loop moves on. **It still needs you in the morning; it no longer reads like progress and no longer waits for ever.** | Measured live, not reasoned: a `repairing` ticket inserted, start pressed, one tick later `state=blocked`. The router is `routeRepairOutcome()`; deadline is checked FIRST so no queue can starve a ticket into permanence; `SUPERVISOR_REPAIR_DEADLINE_MS` = 30 min, `SUPERVISOR_REPAIR_MAX_PER_SIGNATURE` = 2 counted in a NEW `supervisor_tickets.repair_counts` column (never `attempt_no` — DESIGN §7.6 forbids mixing counters). **The old sentence *"waiting for a repair proposal for this failure class"* is gone from the product; wherever this document still quotes it, that quotation is history.** |
-| **2** | **A REPAIR IS NEEDED AT ALL — still true, and now for a smaller reason.** The seam is built: `createRepairDriver` + `createDefectSignatureReader` exist in `supervisor-boot.ts`, `tools/repair/supervisor-cycle.mjs` exists with its own `--armcheck`, and the loop calls a `repair?` dep when it is given one. **`index.ts` does not give it one.** ~4 lines. | `grep -an 'repair\|defectSignatureOf\|createRepairDriver' dashboard/server/src/index.ts` → **0 hits**; `new SupervisorLoop({` is at `:86`. And even wired, the cycle answers `NO_PATCH_AUTHOR` (nothing authors a patch) or `NO_SANDBOX` (the prover correctly refuses the working tree and nothing makes an isolated copy). |
+| **1** | ~~**A STRUCTURAL FAILURE HAPPENS** … the ticket settles to `repairing` … **and nothing ever moves it out.**~~ **CORRECTED 2026-08-10 (strip-crash round): `repairing` IS NO LONGER A PARK, AND IT IS STILL A STOP.** A repair step now runs inside `tick()` and routes every repairing ticket to **one of six named outcomes, five of them terminal** — `REPAIR_DEADLINE_EXCEEDED`, `NO_REPAIR_DRIVER`, `REPAIR_CYCLES_EXHAUSTED`, `REPAIR_APPLIED`, `REPAIR_REFUSED`, `REPAIR_INCONCLUSIVE`, plus the one non-terminal `REPAIR_DEFERRED`. With no driver wired — today's state — the ticket reaches `blocked` **on the next tick** with a sentence naming the signature and the class, and the loop moves on. **It still needs you in the morning; it no longer reads like progress and no longer waits for ever.** **RE-CORRECTED 2026-08-10 (repair-driver round): `NO_REPAIR_DRIVER` IS NO LONGER THE ANSWER IN SOURCE — `NO_PATCH_AUTHOR` IS, AND IT IS STILL A STOP.** A driver is wired in source; the ticket still leaves `repairing` in one tick and still lands `blocked`, now with the cycle's own reason (`REPAIR_INCONCLUSIVE / NO_PATCH_AUTHOR`, naming the exact path a diff must be written to) and with `last_defect_id` populated. **Tonight's running process is not this build** — `dist/` was not rebuilt, so live it is still `NO_REPAIR_DRIVER`. The stop moves from *"nobody wired a driver"* to *"nothing authors a patch"*; it does not close. | Measured live, not reasoned: a `repairing` ticket inserted, start pressed, one tick later `state=blocked`. The router is `routeRepairOutcome()`; deadline is checked FIRST so no queue can starve a ticket into permanence; `SUPERVISOR_REPAIR_DEADLINE_MS` = 30 min, `SUPERVISOR_REPAIR_MAX_PER_SIGNATURE` = 2 counted in a NEW `supervisor_tickets.repair_counts` column (never `attempt_no` — DESIGN §7.6 forbids mixing counters). **The old sentence *"waiting for a repair proposal for this failure class"* is gone from the product; wherever this document still quotes it, that quotation is history.** |
+| **2** | ~~**A REPAIR IS NEEDED AT ALL — still true, and now for a smaller reason.** … **`index.ts` does not give it one.** ~4 lines.~~ **CLOSED AS A WIRING GAP 2026-08-10 (repair-driver round), AND THE STOP SURVIVES ONE LAYER DOWN.** `index.ts` now awaits `armRepairDriver` **before** constructing the loop and passes `repair` **only if the arm armed** (a spread, not a ternary, so a blind driver is not wired at all), plus `defectSignatureOf`. **The prediction in the old evidence cell was right and is now the live answer: the cycle answers `NO_PATCH_AUTHOR`.** Nothing authors a patch, and `tools/repair/cycle.mjs` — the prover-backed cycle that would need an isolated copy — is still invoked by nothing. | **THE PUBLISHED GREP IS SUPERSEDED:** `grep -an 'repair\|defectSignatureOf\|createRepairDriver' dashboard/server/src/index.ts` → **0 hits** was true when written and re-measures today at **11 hits** (`:40,42,43,143,144,160,161,170`). The old result is left in the strikethrough above deliberately, because a stale grep quoted as evidence is worse than a stale sentence. **And the construction site moved too, re-measured rather than interpolated:** `grep -n "new SupervisorLoop" dashboard/server/src/index.ts` → **`:146`** — so the previously published `:86` and `:159` are both stale (`:159` appears twice more in this file, at §7.1 and in the CLOSED-SINCE paragraph below, and is corrected there). |
 | **3** | **A TICKET NEEDS FILING AND YOU ARE NOT AT A TERMINAL.** There is no button and no client API function; the queue can only be filled by curl. | `api.ts` declares `supervisor`, `supervisorStart`, `supervisorStop` and nothing else. |
 | ~~**4**~~ | ~~**THE FIRST SUPERVISOR SUBMISSION HITS A SHAPE MISMATCH.**~~ **CLOSED 2026-08-10 (strip-crash round) — EXERCISED, AND CLEAN.** A real ticket was filed, claimed in the nudged tick, `submitted / attempt 1 of 1` written to `supervisor_log`, and a real run row (`run-2026-08-10T11-19-00-192Z-36f87c2b`) created and driven to `phase=spec, status=running` by the real orchestrator with a real Agent-SDK subprocess. **No `NewRun` column mismatch, no `bus.emit` drift.** Repeated in the final check with a second run. | The stop that used to say *"exercise it once before you rely on it"* has been exercised twice, on two different days' binaries. **Crash recovery too, with a real `kill -9` mid-`spec`:** the restarted binary resumed **from the DB** — `attemptNo` stayed 1, the quiet clock reset when the resumed seat wrote an event, and process accounting showed exactly ONE Agent-SDK child. |
 | **5** | **A SUBMISSION FAILS DETERMINISTICALLY** (missing directory, full disk, an auth failure). It is BOUNDED — the claim step reads the cap before spending and the throw path counts the attempt — but there is **no backoff**, so the ticket burns all `maxAttempts` in `maxAttempts` ticks (~90 s at the default 3) and lands `blocked`. You come back to a blocked ticket, not a spinning one. **The example this row used to lead with — a bad model id — no longer reaches here: it is refused at filing with `400 invalid_model`.** | `supervisor.ts:926` (the cap read, before the spend) and `:989` (the throw path counting an attempt) — **the previously published `:455`/`:518` are wrong and both were re-measured.** Both are mutation-proved, and the cap mutation reddens THREE tests, not one. |
@@ -5026,18 +5187,23 @@ three new ones the repair pass created or left are added.**
 | **8** | **A RUN KEEPS LANDING NON-TERMINAL** (`rate_limited` / `awaiting_input`) past its attempts. The ticket parks `waiting` with a `next_action_at` instant and polls — it never holds a timer — but each wake that must re-submit spends an attempt, and the cap now catches it at the claim step. | §7.1. There is **no per-ticket wall-clock or spend ceiling at all** (`grep -c "wall\|deadline\|budgetMs"` → **0**). |
 | **9** | **A SUBMISSION CREATES THE RUN ROW AND THEN THROWS.** The run is named by no ticket, invisible to `#inFlight()` and to the strip, and the next tick submits a second run. **Reasoned from the code, not measured.** | `supervisor.ts:567`, catch at `:496`. §6.6 item 8. |
 | **10** | **A REPAIR CYCLE REFUSES AND SOMETHING RETRIES IT** — closed for the tree-state half, still open for the caller. `cycle.mjs:143` now reverts on every non-ACCEPTED exit, so the old trap (second attempt reports `COULD_NOT_REPRODUCE`, a clean plausible wrong answer) is gone. **ACCEPTED deliberately KEEPS the patch applied**, because that root is the artefact the gate reads — so a caller that reuses an ACCEPTED root will misread it. | Verifier-measured before the fix: cycle 1 REFUSED → `node check.mjs` exits 0 → cycle 2 `COULD_NOT_REPRODUCE`. |
-| **11** | **THE REPAIR AGENT ASKS "HAVE I ALREADY TRIED THIS?"** The answer is always "no": the ruled-out ledger is addressed by a digest the defect writer does not produce, and the writer hashes **no field paths at all** today. The same failed patch can be re-proposed until the cap. | §6.6 items 3 and 4. |
-| **12** | **AN INSIDE-CLOSURE PATCH IS PROPOSED.** Zero container arms execute, so 4/4 proofs is unreachable and every such patch parks as SELF-PROPOSE. **Correct behaviour** — and it means grader-adjacent repairs always wait for you. | `17 arm(s) held; 5 UNARMED`. |
+| **11** | **THE REPAIR AGENT ASKS "HAVE I ALREADY TRIED THIS?"** The answer is always "no": the ruled-out ledger is addressed by a digest the defect writer does not produce, and the writer hashes **no field paths at all** today. The same failed patch can be re-proposed until the cap. | §6.6 items 3 and 4. **CORRECTED 2026-08-10 (repair-driver round): THE ADDRESSING HALF IS CLOSED ON THE LIVE PATH; THE LEDGER IS NOW READ BEFORE EVERY GATE RUN.** `createDefectSignatureReader` reads the `signature` FIELD off `defect.json` verbatim, and both the `<signature>.diff` lookup and `ruledOutFingerprints(signature)` key off that same string — the writer's digest end to end. The feared second formula is **not on any lookup**: `grep` for `computeSignature` outside tests returns exactly two callers, `arm.mjs` (its own arm check) and `loop-guard.mjs:97` (comparing attempts to **each other**, self-consistent). `ALREADY_RULED_OUT` is a real arm, spent **before** the gate. **What survives:** the writer's signature still carries no field paths (nothing writes `violations`), so it discriminates by site and not by what failed; and a future lookup that computes its own digest would reintroduce the mismatch as a silent ledger miss. |
+| **12** | **AN INSIDE-CLOSURE PATCH IS PROPOSED.** Zero container arms execute, so 4/4 proofs is unreachable and every such patch parks as SELF-PROPOSE. **Correct behaviour** — and it means grader-adjacent repairs always wait for you. | `17 arm(s) held; 5 UNARMED`. **RE-MEASURED 2026-08-10 (repair-driver round): TRUE, AND ITS CONVERSE IS NOT.** An identical bundle placed INSIDE the closure did park as SELF-PROPOSE with a null token, on all three container proofs — so this row holds. **But the same bundle OUTSIDE the closure reached APPLY with zero container arms executed**, which is stop 20. The row is not the protection it reads like: the arm that parks inside-closure patches never runs on the editable arm, and the EDITABLE package holds the orchestrator, the recovery classifier and the gate's own caller (`gate.mjs:253-254`). |
 | **13** | **A PATCH LEGITIMATELY NEEDS A HUMAN.** Every trail record carries `humanReviewed: null` and nobody has designed who mints an out-of-loop approval token while you are asleep. | `RESEARCH` §5 item 4; DESIGN §10.5 item 9. |
 | **14** | **YOU WANT TO KILL A RUN WITHOUT LOSING THE QUEUE.** abort-now answers 501 and the strip has no abort control; the options are drain (wait) or cancel the run directly and leave the ticket inconsistent. | `http.ts:1520`. |
 | **15** | **THE PIPELINE FAILS IN A WAY WITH NO STRUCTURED DETAIL** — which is all of them today. `violations` is still `null` at the write site, so the signature carries zero field paths and nothing writes the authoring trail. **HALF-CHANGED 2026-08-10 (strip-crash round):** the client no longer hardcodes the blank. It reads the wire's `probe.unsourced`, renders the real `snapshot.attempts` when they arrive, and the whole `stuck / looping, not converging` path — the ONLY arm that catches `a913c871` — is now **armed, rendered and browser-tested against that run's three real rejection sets**, with a healthy 15 s quiet clock so it cannot pass via the 40-minute ceiling. **It still cannot fire on live data**, because nothing produces the trail. The day a producer lands, the name leaves `unsourced`, the list renders, and **no client code changes.** | `orchestrator.ts:7316` (`violations: null`, one hit). `ATTEMPTS_NOT_ON_THE_WIRE` survives only inside a docblock at `supervisor-strip.tsx:74` recording that it used to be a value. **And it was measured that wiring the trail on PROSE-ONLY `problems` would be worse than the gap:** on `a913c871`'s own data that shape gives `blind:true, arm:BLIND, escalateAtAttempt:2` — a false stop on attempt 2 of every ticket. |
 | **16** | **THE PROCESS ITSELF DIES.** There is no launchd plist and no crash-loop brake (DESIGN §9 step 15, not built). The loop survives its own restart — **verified with a real `kill -9`, twice now** — but nothing restarts the process. | §7.1, §6.6. |
-| **17** | **THE MORNING READOUT CANNOT TELL "THE QUEUE FINISHED" FROM "THE QUEUE IS ALL BLOCKED".** Both read `IDLE / idle, queue empty`. The terminal reason exists only in `supervisor_tickets.next_action`, `supervisor_log` and stdout — **`GET /api/supervisor/tickets` is a measured 404** (only `POST` is routed). **This is the house defect in display form: five livenesses, and none of them is "the queue is exhausted with blocked tickets".** | C2 item 5 has the two SQL queries. A sixth liveness, or a `blockedTickets` count on the wire, is the fix; neither is built. |
+| **17** | ~~**THE MORNING READOUT CANNOT TELL "THE QUEUE FINISHED" FROM "THE QUEUE IS ALL BLOCKED".** … **`GET /api/supervisor/tickets` is a measured 404** …~~ **HALF CLOSED 2026-08-10 (repair-driver round): THE ROUTE AND THE SIXTH LIVENESS BOTH EXIST; THE PAINT IS UNVERIFIED.** `GET /api/supervisor/tickets` is routed and measured (its own suite; an empty store answers `200 {tickets:[], probe:{ticketsSeen:0…}}` so a blind reader is a different body from an empty queue). The strip gained a sixth liveness `blocked` and now reads `blocked · queue ended · N blocked` versus `idle · queue finished · N done` versus `idle · idle, no tickets filed` versus `idle · idle, queue empty` + the reason it cannot see a census. **What is NOT closed:** no browser project could run beside the live run, so `supervisor-strip.tsx` has **zero executed tests** — the four `censusCell` branches, the failed-row list, the absent-column paragraph and `data-cycle` have no runnable check and therefore no mutation coverage. **A readout whose rendering has never been executed is not yet a readout.** | Route: measured. Classifier: mutation-proved (blinding the sixth probe reddens 8 unit tests and the boot line reads `only 5 of 6 states are distinguishable`). Rendering: §9.3 items 2-5. |
 | **18** | **A REPAIRING TICKET NEVER GETS A CYCLE ON A BUSY NIGHT.** The repair step runs at most one cycle per repairing ticket per tick and **declines entirely while a run is in flight** — never patch a tree under a live build. On a permanently busy queue the ticket therefore reaches its 30-minute deadline with `REPAIR_DEADLINE_EXCEEDED` **without a cycle ever running**. The sentence says so. | Designed trade. The deadline is the number to raise once a sandbox exists — not before, or a ticket waits longer for the same nothing. |
 | **19** | **`next build` REWRITES A TRACKED FILE UNDER YOU.** It appends `.next/types/**/*.ts` globs to `dashboard/tsconfig.json`'s `include` and prints only *"include was updated to add…"*. Not a run-stopper; a **commit**-stopper, and it is why §7.2-A now opens with a `git diff`. | Observed twice this round, restored byte-exactly from `git show HEAD:dashboard/tsconfig.json` both times. Next's own behaviour; nothing in this repo calls it. |
+| **20** | **THE GATE CAN SAY `APPLY` WITH ITS CONTAINER ARMS UNABLE TO RUN — added 2026-08-10 (repair-driver round), and this is the round's BLOCKING finding.** An OUTSIDE-CLOSURE diff plus a hand-typed evidence bundle got **`VERDICT APPLY` and a real 64-hex `applyToken`** on this dockerless machine, `containerExecuted 0`. With the driver wired that token is exactly what `applyGatedPatch` accepts to `git apply` against the owner's real working tree, unattended, on the 30 s tick. **It is not armed tonight** (live `dist/` is pre-round and `dashboard/data/repair-proposals` does not exist — both re-measured), and it arms at the next rebuild. | Measured on the real `tools/tier3/gate.mjs#runGate()`; both negative controls park with a null token. Mechanism, all three re-verified from source by the recorder: `ok: arms.length === 5 && blind.length === 0` (`armcheck.mjs:213`) — the container arms A6/A7 live in a separate `unarmed` list `ok` never reads; `aggregateKnownBad` returns `PASS-WITH-UNARMED` (`known-bad.mjs:466`) whose own reason promises *"UNARMED is not PASS: it degrades any proof that depends on it to INCONCLUSIVE"* and **`decide()` has no branch that reads that word** (`grep PASS-WITH-UNARMED` → one hit, the producer); the sole proof consulted on the editable arm is satisfied by a non-empty string (`gate.mjs:114`). **§9.4 item 1 — owner arbitration, because `gate.test.mjs:553` PINS this behaviour and passes.** |
+| **21** | **AN APPLIED PATCH CANNOT AFFECT THE ATTEMPT IT WAS APPLIED FOR — added 2026-08-10.** `git apply` writes to `src`; **nothing on the path rebuilds.** The live server runs `node dist/index.js` and the scorer resolves its own compiled output, so `REPAIR_APPLIED` re-queues the ticket, the re-run executes byte-identical behaviour, the same defect reproduces, an attempt is spent — and the tree has silently diverged from `dist`. | `grep` for a builder in `tools/repair`, `tools/tier3/gate.mjs`, `dashboard/server/src/supervisor*.ts` and `index.ts` → nothing. The staleness is **known and unenforced**: `gate.mjs:142` computes `distFreshness(...)` and records it in the trail at `:201`; `decide()` never reads it. **Catalogued instance candidate — see §9.5 for the numbering.** |
+| **22** | **NOTHING REVERTS AN APPLIED PATCH ON ITS OWN — added 2026-08-10.** `revertGatedPatch` has **no production caller**; the rollback record is written before `git apply` and the round trip is exercised at every boot in a throwaway repo, so the mechanism works — but a human runs it. What changed this round is that the sentence the owner reads at 3 a.m. now names a command that **exists**: `node tools/repair/supervisor-gate.mjs --revert <rollbackPath>`. Before, that sentence pointed at a script whose CLI ran the arm check and exited 0 — *a paste that printed `ARM CHECK: armed` and looked like a successful revert*. | `grep -rn revertGatedPatch tools dashboard/server/src dashboard/src` → callers only inside `armCheck()` and the test. `git apply -R` is the whole mechanism, so a line touched since is a **named** `REVERT_NOT_APPLIED` refusal, not a silent failure — honest, and it leaves a patched tree plus a refusal. |
+| **23** | **A HANGING GATE IS ORPHANED — added 2026-08-10, and it is the one finding with a live blast radius.** `spawnSync` with `killSignal: SIGKILL` signals the **child**, not the process group; there is no `detached: true` and no group kill anywhere on this path, so the gate the cycle spawned survives its parent's death and can keep writing `dashboard/data/tier3` (and, with docker, running containers) after the ticket has been filed as `REPAIR_CYCLE_TIMED_OUT`. **Half fixed:** `GATE_TIMEOUT_MS` is now **8 min**, strictly shorter than the supervisor's 10 min, so the inner clock fires first inside the gate's real parent and the outer kill is the fail-safe rather than the normal path — pinned by a test that reads the outer bound out of `supervisor-boot.ts` source. **That pins an inequality between two constants; it does not prove the reaping.** | The false comment that asserted a polite signal *"leaves the grandchildren holding the clock"* is corrected in place. The real fix needs `detached: true` + `process.kill(-pid)`, which converts `RepairDriverDeps["run"]` from sync to async across the driver, the arm and every injected test runner. **The negative control to write with it:** a child that spawns a sleeping grandchild, parent timed out, grandchild asserted gone. |
+| **24** | **THE APPLY TOKEN IS A SELF-CONSISTENCY DIGEST, NOT AN AUTHORITY — added 2026-08-10.** `tokenInputs` reads `frozen.digest`, `knownBad.verdict`, `proofs` and `armCheck.ok` **out of the same record it is validating**, and `mintApplyToken` is an **unkeyed** sha256 over them. So the seam checks that a record is internally consistent and bound to THIS diff — not that a gate ran, that the known-bad set passed, or that any proof was satisfied. Today the record comes from the real gate's trail file, so the live exposure is the gate's bar (stop 20), not forgery. | The proof is in the file: `armApplyRecord()` fabricates a record and mints a verifying token for it in five lines. The docblock's old claim — *"the token is the only authority this file accepts"* — is corrected in place to what it does: **it binds one gate record to one diff and one frozen manifest.** Closing it needs **provenance** (a key the gate holds, or binding to the trail the gate wrote), not more guards over self-supplied fields — see §9.4 and §9.5. |
 
 **CLOSED SINCE THE REVIEWER WROTE THEIR LIST, and recorded so the fix is not re-reported as a
-gap:** *"the supervisor is never constructed"* (now `index.ts:159`, arm-gated); *"there is no way
+gap:** *"the supervisor is never constructed"* (now `index.ts:146`, arm-gated — **`:159` re-measured 2026-08-10, repair-driver round**); *"there is no way
 to file a ticket"* (now `POST /api/supervisor/tickets`, though still curl-only — stop 3);
 *"a throwing submit spins for ever"* and *"`#wake` exceeds `maxAttempts` without bound"* (claim-step
 cap); *"a REFUSED cycle leaves the patch applied"* (`cycle.mjs:143`); *"a 200 with the wrong body
@@ -5439,7 +5605,289 @@ next defect.
 - **TWENTY-FOUR — OPEN.** `IDLE / idle, queue empty` for both a finished queue and a queue of
   blocked tickets (§7.2-D stop 17, §8.4 item 3). **A display that cannot distinguish success from
   exhaustion is the same defect wearing different clothes**, and it is the one the owner meets at
-  breakfast rather than at 3am.
+  breakfast rather than at 3am. **HALF CLOSED 2026-08-10 (repair-driver round) — §9.5's numbering
+  note carries the update and adds TWENTY-FIVE and TWENTY-SIX.**
+
+---
+
+## 9. THE REPAIR-DRIVER ROUND — BUILT AND MEASURED 2026-08-10, AFTER §8
+
+> **WHY THIS ROUND EXISTED, in the system's own words.** The boot line quoted at §7.2-A said:
+> *"ARM CHECK: NO REPAIR DRIVER is wired. Every ticket that reaches 'repairing' terminates at
+> 'blocked' with NO_REPAIR_DRIVER and the loop carries on to the next ticket."* `tools/repair`
+> (16 files) and `tools/tier3` (9 files) existed and **no process invoked either**. A structural
+> failure was classified correctly, filed with a sentence, terminated in one tick, and the loop
+> moved on. Bounded and named — **not repaired.**
+>
+> **THE BINDING CONSTRAINT, and it shaped what can be claimed below.** A real run,
+> `run-2026-08-10T13-11-12-836Z-54927ebc`, was live throughout on ports 4176/4319 with a real
+> Agent-SDK subprocess. It was **unharmed and progressing** (`spec` → `build`; re-read read-only at
+> the end of the round: `build`, `running`). Nothing bound those ports, nothing ran docker, nothing
+> ran `npm run build` in `dashboard/server` or `bakeoff` (every compile went to a private sibling
+> `dist-<lane>`), nothing opened `runs.db` for write, and no commit, push, amend or tag happened —
+> **HEAD is still `70a91cf`.** The price is stated rather than hidden: **half the tree could not be
+> measured.** §9.3 is that debt written down.
+>
+> **THE ROUND'S GATE DID NOT PASS.** One blocking finding is a policy question only the owner can
+> settle (§9.4 item 1) and one is the unmeasured client half (§9.3).
+
+### 9.1 WHAT IS WIRED — AND THE LIVE/SOURCE SPLIT, WHICH COMES FIRST
+
+**THE RUNNING PROCESS TONIGHT DOES NOT HAVE ANY OF THIS.** The live server is
+`node dist/index.js`; `dist/` was deliberately not rebuilt while a run was live.
+`grep -c armRepairDriver dashboard/server/dist/index.js` → **0** (measured; `dist/index.js` mtime
+Aug 10 15:10, PID 55866 still up). **Tonight's supervisor still prints `NO REPAIR DRIVER is wired`
+and still has no `repair` dep.** Everything below is wired **in source** and observed from
+`dist-repair` / `dist-gate`. It **arms at the next rebuild of `dashboard/server/dist`** — and that
+rebuild is §9.4 item 2, not housekeeping. A reader must not infer that tonight has repair.
+
+| what | where | what it does | how it is covered |
+|---|---|---|---|
+| **The boot wiring** | `index.ts:143,160,161,170` | `armRepairDriver` is **awaited before the loop is constructed** (with its own 30 s runner, so a wedged git cannot stop `server.listen`), and `repair` is passed **through a spread, only if the arm armed**. `repairArm` is passed unconditionally, so *"nobody wired one"* and *"one exists and we refused it"* stay different facts. `defectSignatureOf` is wired for the first time — before this, `last_defect_id` was permanently null, the per-signature budget keyed on `class:<class>`, and the `<signature>.diff` lookup could never hit. | Mutation: passing the driver unconditionally → `AssertionError: the driver is passed unconditionally: a blind driver would be wired anyway and the arm check would be decoration` |
+| **The boot line, with four states** | `supervisor.ts:805-848` | unwired · **wired AND MEASURED** · **BLIND** (a driver exists and was refused, reasons printed) · **BLIND BY WIRING** (measured armed, then not passed — *"look at the `repair` dep in index.ts, not at tools/repair"*). The word MEASURED covers only the eight driven answers; the two bounds are relabelled **CONFIGURED, NOT OBSERVED**. | Four boots asserted mutually distinct. Mutations: `: true` for the measurement → the blind boot printed the healthy sentence; deleting the fourth branch → an armed-but-unpassed driver got the blind driver's explanation |
+| **The driver's own arm check** | `supervisor-boot.ts#armRepairDriver` | Drives the **real** driver with 8 known cycle answers requiring 8 distinct codes, 8 distinct sentences and **exactly one `applied`**; then spawns `tools/repair/supervisor-cycle.mjs --armcheck` (9 routing inputs + the gate seam's 8 verdict records) and **reads its OUTPUT, not only its exit code** — five named arms: no `ARM CHECK: (armed\|BLIND)` line, the verdict line not last, exit code disagreeing with the printed word, no mention of the gate seam, silence. A missing `cyclePath` is its own sentence (*"nobody installed one, not we refused a blind one"*) and the cycle is not spawned. | Six-case test with a negative control; each sub-arm mutated in isolation, each with its own verbatim RED |
+| **The gate decides, and only the gate** | `tools/repair/supervisor-gate.mjs` (new) | The **only place in the tree that writes a patch.** Reads the Tier 3 gate's **trail record** (not its stdout verdict line — the token is minted over fields only the trail carries), maps it to one of 8 codes and 3 intents, and refuses to apply anything whose intent is not APPLY. A caller wanting to apply on its own judgement must **forge an intent** — a visible source edit, not an omission. | 8 gate records driven through the real cycle against a throwaway git repo, asserting **the tree** and the ledger row, not the return value. Mutation replacing `decideApply` with `{apply:true}` → `2 of 8 gate records were read as APPLY; exactly one may be` |
+| **Rollback without a human** | same file | The rollback record `{patchId, signature, appliedAt, root, sourceSha, gateTrail, applyToken, diff}` is written **before** `git apply` runs; a second revert is a **named** `REVERT_NOT_APPLIED`, never a silent second success; an `applied` answer naming no rollback path is downgraded to `inconclusive / APPLIED_WITHOUT_ROLLBACK_POINT`. The boot arm performs a real apply/revert/revert-again round trip in a throwaway repo. **New:** `--revert <rollbackPath>` exists as a CLI, so the 3 a.m. sentence names a command that runs. | Mutations: a no-op revert reporting success → `the revert reported success and the bytes did not come back 'new\n' !== 'old\n'`; `if (false)` on the rollback check → `+ 'applied' - 'inconclusive'`; `revertAt = -1` → the CLI printed an arm check and exited 0 instead of reverting |
+| **Three bounds, all spent before the gate** | `supervisor-cycle.mjs`, `supervisor-boot.ts` | The ticket's own deadline forwarded as `--deadline`; attempts per **signature** (now reachable); the ruled-out ledger consulted before any gate run. Plus a spawn timeout with `timedOut` reported as a **separate field from `ok`** — the clock is read **before** the output, because a killed cycle's flushed stdout can be a complete-looking JSON line from an earlier stage. This matters because the driver is awaited **inside `tick()`** behind the re-entrancy flag: a hanging cycle would stop every later tick and the queue would die silently. | `if (false && result.timedOut)` → `+ 'GATE_APPLY' - 'REPAIR_CYCLE_TIMED_OUT'`, i.e. the flushed stdout of a killed cycle read as an applied patch; plus a real 60 s process against a 300 ms budget |
+| **The anti-loop rule is comparison, not counting** | `supervisor-cycle.mjs` | `evaluateAttempts`/`shouldEscalate` run **before** any gate run and record an `ESCALATED` ledger row with **no fingerprint** — the escalation is about the SEQUENCE and must not rule out a diff nobody graded. The `a913c871` shape escalates as `ANTI_LOOP_NON_MONOTONE` at attempt **2**, 87 minutes earlier than the oscillation arm. | `if (false && shouldEscalate(loop))` → a non-convergent sequence spent a gate run **and got its patch applied**. Negative control: a **shrinking** sequence must reach the gate |
+| **A parked patch is not blacklisted** | `supervisor-gate.mjs`, `supervisor-cycle.mjs` | PARK outcomes — and, after review, `GATE_APPLY_UNTOKENED` — write a ledger row with `proposalFingerprint: null`. Otherwise the pre-existing rule (*every non-ACCEPTED row carrying a fingerprint is ruled out*) would blacklist a docker-parked patch **for ever** on a machine that later has docker. | Mutation writing the fingerprint on a PARK → `+ '71f9f64b…' - null`. The untokened-APPLY case was shipped wrong and caught in review: one wrong field path in `tokenInputs` would otherwise have blacklisted **every gate-approved patch for ever** |
+| **The morning readout** | `http.ts` (`GET /api/supervisor/tickets`), `supervisor.ts` client lib | Every ticket, its state, `attempt N of M`, its own `next_action`, run ids, `lastDefectId`, `patchId`, and an attachment block with three-valued `carriedIntoRun`; plus a response `probe` so an empty queue and a blind reader are different bodies. The strip gained a sixth liveness `blocked` that tells a FINISHED queue from an ALL-BLOCKED one. | Route + classifier measured and mutation-proved. **`supervisor-strip.tsx` has ZERO executed tests** — §9.3 |
+| **The ticket carries the owner's attachments** | `http.ts`, `api-types.ts` | `references` / `documents` / `captureUrl` / `motionUrl` through the **same functions** `POST /api/runs` uses; the ticket key now folds the attached bytes (same brief + same bytes = 409; same brief + a **different** CV = a new ticket, because a 409 there would silently discard the corrected CV); capture and motion are read once at filing and **frozen into `ticket_text`**, so every attempt submits byte-identical text. | Baseline probe against the already-built `dist/`: the owner's real ticket (573,440-byte image + 81,920-byte PDF) was **accepted and both attachments silently dropped**. 8 refusal cases plus a positive control; digests read **back off disk** |
+
+### 9.2 WHAT EACH GATE VERDICT NOW DOES TO A TICKET
+
+**MOST REPAIRING TICKETS NEVER REACH A GATE VERDICT, AND THAT IS BY DESIGN.** The cycle's arms are
+spent in order and each one is spent **before** the gate: **window → anti-loop → no-patch-author →
+ruled-out ledger → gate.** On today's tree the answer is almost always the third
+(`NO_PATCH_AUTHOR`), and on a busy night it is none of them, because the repair step **declines
+entirely while a run is in flight** and the ticket reaches its 30-minute deadline with
+`REPAIR_DEADLINE_EXCEEDED` without a cycle ever running (§7.2-D stop 18).
+
+| the gate's trail record | cycle code | driver kind | ticket goes to | ruled-out ledger |
+|---|---|---|---|---|
+| `APPLY` **with a token that re-mints** | `GATE_APPLY` | `applied` | **`queued`** — re-run, `patch_id` set, rollback path in the sentence | row `ACCEPTED`, **fingerprint recorded** |
+| `APPLY` **with no / a wrong token** | `GATE_APPLY_UNTOKENED` | `refused` | `blocked` | row written, **fingerprint `null`** — the bar said yes and the plumbing disagreed, so nothing is blacklisted |
+| `SELF-PROPOSE` | `GATE_SELF_PROPOSE` | `inconclusive` | `blocked` | row written, **fingerprint `null`** |
+| `REFUSE-BLIND` (an arm did not report) | `GATE_BLIND` | `inconclusive` | `blocked` | row written, **fingerprint `null`** — *a gate that cannot see does not become a gate that agrees* |
+| `REFUSE` (the known-bad set did not hold) | `GATE_REFUSE` | `refused` | `blocked` | row `REFUSED`, **fingerprint recorded** — this patch is ruled out |
+| `REFUSED` (the diff touches the admission set) | `GATE_REFUSED_ADMISSION` | `refused` | `blocked` | row `REFUSED`, **fingerprint recorded** |
+| a verdict word this build does not know | `GATE_VERDICT_UNRECOGNISED_<word>` | `inconclusive` | `blocked` | row written, **fingerprint `null`** |
+| **no trail record at all** | `NO_GATE_RECORD` | `inconclusive` | `blocked` | row written, **fingerprint `null`** |
+
+**THE APPLY ROW CARRIES THREE QUALIFICATIONS AND EACH IS A REAL COST.** (1) An `applied` answer
+that names no rollback path is **downgraded** to `inconclusive` — a run on a tree that cannot be
+restored is worse than a failure that stopped. (2) `applyGatedPatch` runs `git apply` against
+**`REPO_ROOT`, the owner's real working tree**, unattended, on the 30 s tick; the trigger is a diff
+at `dashboard/data/repair-proposals/<signature>.diff` (§9.4 item 3 is who may write there).
+(3) **Nothing rebuilds afterwards**, so the re-queued run executes byte-identical behaviour —
+§7.2-D stop 21.
+
+The three intents were chosen so the driver can never reach the gate's effect by another path:
+`APPLY → applied`, `REFUSE → refused`, `PARK → inconclusive`. **No driver-side veto was added on
+purpose:** a driver that refuses an APPLY the gate passed is the same violation mirrored.
+
+### 9.3 THE PRE-COMMIT CHECKLIST — NOTHING FROM THIS ROUND MAY BE COMMITTED ON THE STRENGTH OF IT
+
+**This round could not measure half the tree.** These are not suggestions; each names the number a
+re-run must reproduce, and each is labelled **baseline** (previously measured here) or **claim**
+(a lane's self-report, not yet independent).
+
+0. **DECIDE ON BOTH UNTRACKED FILES EXPLICITLY, BEFORE `git add` OF ANY KIND.** `git status` shows
+   two: **`tools/repair/supervisor-gate.mjs`** — the only file in the tree that writes a patch — and
+   **`dashboard/tests/no-server.config.ts`**. **A commit made with `git add -u` lands the driver
+   wiring and the new boot line and leaves the gate seam behind.** The arm check would catch that
+   (BLIND, the fail-safe direction, `repair` not passed), which is the right failure and still a
+   state nobody should reach by accident. Name both paths, decide both.
+1. **Review or discard `dashboard/tests/no-server.config.ts`.** It is **untracked** and unreviewed,
+   and it is the harness Lane 3's client numbers came through. Track it or delete it — do not
+   commit on its output.
+2. **CLIENT UNIT.** Baseline **199** (measured here 2026-08-10, zero removals). Lane 3 claims
+   **224** through the untracked config: that is a **claim**, not a baseline.
+3. **CLIENT BROWSER, the full suite.** Baseline **273 passed / 1 skipped**, twice, identical leaf
+   sets, 33 files — **as measured and recorded in §7.3.** **Reconcile the tail digit on the re-run
+   rather than raising an alarm on it:** this round's own reports quote the same baseline as
+   *"273 pass / 1 fail"* and as *"273/1"*. One skipped and one failing are not the same tree, and
+   nobody has re-measured which it is. Nine specs in `supervisor-strip.browser.spec.ts` were **authored and never
+   executed**, and the pre-existing *"all five states"* describe was extended to six. **A first
+   failure there may be an authoring error in the spec rather than a product defect — check the
+   spec before filing a bug**, and do not report the suite as broken without that check.
+4. **`prose-guard.browser.spec.ts`** specifically. Neither run nor modified; the risk was reasoned
+   *by construction* (the new prose lives in the detail pane, no new `title` on the 30 px row) and
+   reasoning is not the measurement this file exists to be.
+5. **THEN MUTATE `dashboard/src/components/supervisor-strip.tsx`.** `censusCell`'s four branches,
+   the failed-row list, the absent-column paragraph and `data-cycle` have **zero executed tests**
+   and therefore zero mutation coverage. A mutation with no runnable check is a code review.
+6. **A DOCKER-ARMED TIER 3 GATE RUN, end to end, exercising `spawnGate`.** Every gate test injects
+   the `gate` seam, so the production spawn **plus the trail read** has zero coverage.
+   `tools/tier3/gate.mjs` was never executed this round in tests or otherwise. Run it once, watched,
+   against an **isolated copy** of the repository (`prover.mjs#assertSandbox` throws for any path
+   inside this one, by design) and keep the trail.
+7. **RE-RUN THE HALVES THAT WERE MEASURED, from a private outDir, and match them:** server
+   **1972 tests / 1969 pass / 0 fail / 3 skipped** (from `dist-gate`; reference was 1961/1958/0/3,
+   so +11 and +11), tools **115 / 115 / 0** (re-measured by the recorder today, exit 0; it was 113
+   before the repair pass added two), bakeoff **164 / 164**, `tsc --noEmit` clean in all three
+   packages.
+8. **`git diff dashboard/tsconfig.json` must be EMPTY.** `next build` appends
+   `.next/types/**/*.ts` globs to a tracked file and prints only *"include was updated to add…"* —
+   §7.2-D stop 19. A commit-stopper, observed twice.
+9. **Sweep the sibling outDirs.** `dashboard/server` now carries **42** `dist-*` directories (counted today) from
+   previous rounds. Gitignored and harmless — except that a build from a **mutated** tree in one of
+   them is live ammunition for anyone who runs `node --test dist-<something>`.
+10. **And the two items that are decisions, not tests: §9.4 items 1 and 2 must be settled before
+    `dashboard/server/dist` is rebuilt**, because the rebuild is what arms the APPLY path.
+
+### 9.4 WHAT STILL NEEDS THE OWNER — IN FULL
+
+1. **THE ITEM-6 ARBITRATION: may a gate whose container arms cannot run say `APPLY`?** Measured
+   answer today: **yes** (§7.2-D stop 20). This is a **decision, not a bug fix**, because
+   `tools/tier3/gate.test.mjs:553` — *"an editable-only patch with full evidence self-applies and
+   gets a token"* — **pins** the current behaviour on this dockerless machine and is green (verified
+   by the recorder in the 115). Its docblock names mutation M11 and argues *"a gate that can never
+   pass is not a gate"*, and `gate.mjs:264-267` states the intent that the three container proofs
+   must **not** be required on the editable arm. Against that: the EDITABLE package holds the
+   orchestrator, the recovery classifier and the gate's own caller, so **grader softening is
+   reachable one level up from the closure** — and `noOpAblation`, the sole proof consulted on that
+   arm, has **zero producers** anywhere in `tools/` or `dashboard/server/src` outside
+   `gate.test.mjs` (`prover.mjs#proveRepair` emits only `{redBefore, greenAfter, mutationRed}`), so
+   it can only ever arrive **hand-typed** in a `<signature>.evidence.json` sidecar. The gate-side
+   prescription if you close it: one branch in `decide()` reading
+   `aggregate.verdict === "PASS-WITH-UNARMED"` (or folding `arm.unarmed.length > 0` into `arm.ok`'s
+   consumer) plus an **executed** proof for the editable arm. **Do not close it with a driver-side
+   veto, and do not edit the pinned test unilaterally.**
+2. **KEEP `dashboard/data/repair-proposals/` EMPTY AND DO NOT REBUILD `dashboard/server/dist` UNTIL
+   ITEM 1 LANDS.** Those two facts are the only reason tonight is safe, and both were re-measured:
+   the directory does not exist, and the live `dist/index.js` contains no `armRepairDriver`. Either
+   one changing arms the APPLY path.
+3. **WHO MAY WRITE INTO `dashboard/data/repair-proposals/`.** The supervised Agent-SDK subprocess
+   has write access to this repository, so **as built, the graded agent can author both its own
+   patch and its own evidence bundle** and have it applied. If that is not intended, the directory
+   must move outside the agent's reach, or the proposal needs a provenance the agent cannot mint,
+   **before** autonomous repair is switched on.
+4. **WHO REBUILDS `dist` AND RESTARTS THE SERVER AFTER AN APPLIED PATCH — and whether the ticket may
+   be re-queued before that happens.** As built, an applied patch cannot affect the attempt it was
+   applied for, and nothing enforces the `distFreshness` the gate already computes and records
+   (stop 21). Both prescriptions are yours to pick: the cycle rebuilds the affected package
+   (which means the unattended loop runs `npm run build` over the tree a live process resolves
+   against), or `decide()` refuses to mint a token for a patch whose effect cannot reach the running
+   system (which on this machine refuses every patch while a run is live).
+5. **THE APPLY TOKEN'S PROVENANCE.** It is an **unkeyed** sha256 over inputs read out of the record
+   it validates (stop 24). Closing it needs a key the gate holds, or binding the record to the
+   append-only trail the gate wrote — **not** more guards over self-supplied fields. The docblock
+   now states the token's true size; the mechanism is unchanged.
+6. **WRITER/READER SIGNATURE CONVERGENCE**, before any proposal is placed on disk. Not reachable
+   today (both sides read the `signature` field verbatim — verified), but two formulas for one
+   question remain in `signature.mjs:88-102`, and the day a lookup computes its own digest the
+   symptom is `NO_PATCH_AUTHOR` — **indistinguishable from "no proposal exists"**.
+7. **THE TWO UNENFORCEABLE CHECKS IN `tools/tier3/proposal.mjs`** — `NO_INDEPENDENT_CHECK` and
+   `SCOPE_UNIMPLICATED_FILE`. `runGate` is given neither a defect record nor an executed replay, and
+   `spawnGate` does not supply them, so **an inside-closure repair clears a LOWER bar than
+   `cycle.mjs` would impose.** Whether the gate grows those inputs is your call.
+8. **THE END-TO-END REPAIR THAT HAS NEVER HAPPENED ONCE**, watched, against an isolated copy, before
+   any of this runs unattended — and with it the never-executed `spawnGate` seam.
+9. **THE FULL CLIENT SUITE RUN (§9.3), including reviewing or discarding the untracked
+   `no-server.config.ts`, before anything from this round is committed.**
+
+### 9.5 WHAT REMAINS UNPROVEN
+
+**THE TWO SENTENCES THAT MATTER MOST, and neither moved this round:**
+
+1. **THE REPAIR CYCLE HAS NEVER FIXED A REAL DEFECT — not once, in production or anywhere else.**
+   No `defect → diff → gate → APPLY → re-run` has ever happened. What was measured is the
+   **routing**: a real defect record written by the real writer, driven through the real driver
+   against a snapshot of the live database, terminating deterministically at
+   `REPAIR_INCONCLUSIVE / NO_PATCH_AUTHOR` with an actionable sentence. **That is a repair machine
+   that has never repaired anything**, and the reason is stated rather than implied: nothing authors
+   a patch (§5.3 of DESIGN records the patch author as deliberately not built), the evidence bundle
+   is read from a hand-authored sidecar rather than synthesised by a prover, and
+   `tools/repair/cycle.mjs#runRepairCycle` — the prover-backed cycle the design's own step list
+   names — **is still invoked by nothing.**
+2. **THE CONTAINER ARMS OF THE TIER 3 GATE HAVE NEVER RUN DURING A REPAIR.** A6 (re-score) and A7
+   (calibration) are registered **UNARMED**, docker was not invoked once this round, and
+   `containerExecuted` was **0** in the one real `runGate()` measurement taken. Every gate test
+   injects the seam. So the gate's verdict on any repair to date has been reached with **five of
+   seven arms** — and, per stop 20, that does not degrade it to self-proposing on the editable arm.
+
+**AND THE REST, so nothing reads as resolved:**
+
+- **`spawnGate` has never executed** — the production spawn plus trail read has zero coverage. Treat
+  the 115 green tools tests as covering the **router**, not the plumbing.
+- **`REPAIR_WINDOW_CLOSED` is nearly unreachable in production.** The router already blocks a ticket
+  whose deadline has passed, so the cycle normally sees an open window; the arm exists for a
+  hand-invoked cycle. It is proved end to end through the real spawn, and that is all.
+- **The gate seam's arm check cannot see a wrong field path.** It mints and verifies through the
+  same `tokenInputs`, so it is self-consistent by construction: a mutation moving `frozen.digest`
+  to `frozenDigest` left it **ARMED at exit 0** while production would have answered
+  `GATE_APPLY_UNTOKENED` for every approved patch. A source-pinning regex test is the only cover,
+  and a refactor changing both sides consistently would pass it.
+- **The grandchild reaping is not proved** — only an inequality between two constants is (stop 23).
+- **`revertGatedPatch` has no production caller** (stop 22). Nothing reverts on its own.
+- **The strip's rendering is unexecuted** (stop 17, §9.3 items 3-5), and with it the colour claims,
+  the six-state table and the census panel.
+- **`stop (drain)` is still not exercised** — unchanged from §7.2-C.
+- **The client/server census pair has never been exercised together.** There is no golden fixture
+  for `GET /api/supervisor/tickets` the way `tests/fixtures/supervisor-wire.golden.json` exists for
+  `/api/supervisor`; the drift detector is a **hand-transcribed row**, which the api-types docblock
+  itself calls the weaker form. Generate the golden from the server's own composer and assert it
+  from both ends.
+- **The client validator is deliberately LOOSER than the wire.** Every census column is
+  `?: T | null`, so a server that stops sending one is reported **on screen** in
+  `census.absentFields` rather than reddening a test. If you want a dropped column to be a red test,
+  the golden fixture above is the mechanism — not a tighter validator.
+
+> **THE MUTATION LEDGER, ATTRIBUTED — because "the round was mutation-proved" is a round-level claim
+> this project does not accept.** The verifier **independently reproduced three** with byte-exact
+> restoration proved by **per-file sha256** (`git diff` is worthless here: much of the mutated
+> surface is untracked, so a clean diff proves nothing): Lane 2's `attachmentsCarriedIntoRun` digest
+> comparison (**the fix took** — the one mutation in the whole report that had survived first pass),
+> Lane 1's token field path (documented to leave the arm check ARMED at exit 0 — **reproduced
+> exactly**, and the suite caught it with 5 red tests, not the 1 predicted: **under**-claimed), and
+> the cycle-timeout guard (2 red, including the arm check going blind about itself). The remainder
+> are lane self-reports with verbatim RED quoted but not independently re-driven.
+>
+> **AND ONE MUTATION SURVIVED, IN THE REPAIR PASS'S OWN PATCH, and it is reported rather than
+> patched quietly:** a `try/catch` added around the driver's eight arm probes was deleted and
+> **every test stayed green (18/18)**. Diagnosis, not a re-patch: the probe loop overrides `run`
+> with fixed answers, so no injected seam can make it throw and the guard was **unreachable**. It
+> was **deleted**, the docblock records why, and the replacement guard — around the real spawn — has
+> its own RED (`Error: spawn EAGAIN … at armRepairDriver`, i.e. the exception escaping the boot path
+> exactly as it did in production).
+
+> **THE INSTANCE COUNT, AND A NUMBERING COLLISION RESOLVED SO THE NEXT ROUND DOES NOT INHERIT TWO
+> OF THEM.** §8.6 already used **22, 23 and 24**. This round's own reports each nominated a fresh
+> "twenty-three" and a fresh "twenty-four" for two different defects; both numbers were taken.
+> The catalogue as it now stands:
+> - **TWENTY-FOUR — HALF CLOSED.** `IDLE / idle, queue empty` for both a finished and an
+>   all-blocked queue. The sixth liveness and the census route exist in source; **the rendering has
+>   never been executed**, so the display half of the defect is not yet measured shut.
+> - **TWENTY-FIVE — CLOSED IN THE PASS THAT CREATED IT** (the repair pass called this
+>   "twenty-three"). A guard whose mutation left every test green because **no injected seam could
+>   reach it.** Closed by deleting the unreachable guard rather than keeping it as decoration.
+> - **TWENTY-SIX — OPEN** (the reviewer called this "twenty-three", the repair pass's carry-forward
+>   called it "twenty-four"). **`REPAIR_APPLIED` is success-shaped with no measurable effect:**
+>   `git apply` writes to `src`, nothing rebuilds, the live process and the scorer resolve compiled
+>   output, so the success path is **indistinguishable from doing nothing** — while
+>   `distFreshness` is computed, recorded in the trail, and never read. Whichever fix the owner
+>   picks (§9.4 item 4), the arm check needs a probe that tells *"applied and the behaviour changed"*
+>   from *"applied and nothing changed"* — one accepting check re-run against the **built artefact**,
+>   not the source.
+
+### 9.6 WHERE THIS ROUND MADE THE RECORD STALE — AND WHERE IT IS CORRECTED
+
+Every correction is **in place**, dated, with the superseded text left visible. This is the index:
+
+| what went stale | corrected at |
+|---|---|
+| the boot block, and its `grep … → 0 hits` for `repair` in `index.ts` (**re-measured at 11 hits**) | §7.2-A, dated block after the arm-check listing |
+| the same `0 hits` grep, repeated as evidence | §7.2-D stop 2 |
+| `repairing` terminates at `NO_REPAIR_DRIVER` | §7.2-C2 item 3 and §7.2-D stop 1 — in source it is now `NO_PATCH_AUTHOR`; **live it is still `NO_REPAIR_DRIVER`** |
+| *"`GET /api/supervisor/tickets` is a measured 404"* | §7.2-C2 item 5 and §7.2-D stop 17 |
+| the ticket route's refusal list, and the ticket key | §7.2-A, the `EXTENDED` block (adds `400 body_too_large`, the extended 409, four request fields, and the GET as the morning readout) |
+| *"FIVE STATES … THE ARM LINE NOW READS `5 distinct`"* | §7.2-B — six in source, five measured, rendering unverified |
+| *"the ruled-out ledger is addressed by a digest the defect writer does not produce"* | §7.2-D stop 11 — closed on the live path, with the two remaining formulas named |
+| *"every inside-closure patch parks … correct behaviour"* read as protection | §7.2-D stop 12 — true, and its converse (stop 20) is not |
+| DESIGN §5.2's *"steps 3-7 still cannot run … `index.ts` passes no `repair` dep"* | DESIGN §5.2, dated block |
+| DESIGN §6.6's *"the apply step treats absence exactly like failure"* and *"fail-closed … implemented and mutation-proved"* | DESIGN §6.6, dated block — **false for A6/A7** |
+| DESIGN §7.6's *"With no driver wired, which is today's state"* | DESIGN §7.6, dated block |
 
 ---
 

@@ -54,6 +54,31 @@ did not re-measure, it says so.
 > of the seven fields have no producer). The full build report, the operator's page and the
 > unflinching not-proven list are `STATE-2026-08-09-where-we-are.md` §7.
 
+> ### CORRECTED 2026-08-10 (REPAIR-DRIVER ROUND) — TIER 2 HAS A CALLER, AND TIER 3's FAIL-CLOSED CLAIM IS FALSE FOR THE CONTAINER ARMS
+>
+> A fourth round ran the same day, **beside a live run**, and touched three of this file's sections.
+> `HEAD` is still **`70a91cf`** (tag `gate-verified-2026-08-10-supervisor`); **nothing was
+> committed**, and the client half of the tree could not be measured at all. Read these three
+> corrections before quoting §§5-7:
+>
+> 1. **§5.2 — step 0 has a caller.** The repair driver is wired into the boot path in source, and
+>    the *`grep → 0 hits`* this file and STATE both relied on re-measures at **11 hits**. But
+>    **`cycle.mjs#runRepairCycle` is invoked by nothing**: the driver builds the proposal directly
+>    and hands it to the gate, so the chain that runs is **not** §5.2's step list, and the evidence
+>    bundle is **hand-authored rather than prover-produced**. `spawnGate` has never executed.
+> 2. **§6.6 — the fail-closed claim is false for A6/A7.** The real `runGate()` reached
+>    **`APPLY` with a real token and `containerExecuted 0`** on a dockerless machine. `arm.ok` never
+>    reads the `unarmed` list, `decide()` never reads `PASS-WITH-UNARMED`, and the editable arm's sole
+>    proof is satisfied by a non-empty string that no prover in this tree produces. **A green test
+>    pins the behaviour**, so closing it is an owner arbitration, not an edit.
+> 3. **§7.6 — *"with no driver wired, which is today's state"* is no longer today's state in
+>    source**, and the two `repairing` rows now end with the cycle's own reason
+>    (`NO_PATCH_AUTHOR`) rather than with `NO_REPAIR_DRIVER`.
+>
+> **AND THE ONE SENTENCE THAT KEEPS ALL THREE HONEST:** the live server is `node dist/index.js`,
+> `dist/` was not rebuilt, so **the running system has none of this** and the APPLY hole is not armed
+> today. STATE §9 is the round's record; §9.3 is what must run before any of it is committed.
+
 ---
 
 ## 1. THE ASK, AND WHAT IT MEANS TECHNICALLY
@@ -710,6 +735,58 @@ plausible repair is inside the closure never gets an agent; it gets an owner not
 > Raise the deadline once a sandbox exists — not before, or the ticket waits longer for the same
 > nothing.
 
+> ### CORRECTED 2026-08-10 (repair-driver round) — STEP 0 HAS A CALLER; STEP 4 STILL HAS NO AUTHOR; AND STEPS 1-7 ARE NOT THE CHAIN THAT RUNS
+>
+> **THE FIRST OF THE THREE REASONS ABOVE IS CLOSED.** `index.ts` now awaits `armRepairDriver`
+> **before** constructing the loop and passes `repair` through a spread **only if the arm armed**,
+> plus `defectSignatureOf` (unwired until now, which is why `last_defect_id` was permanently null,
+> the per-signature budget keyed on `class:<class>` and the `<signature>.diff` lookup could never
+> hit). **The `→ 0 hits` grep this block relied on re-measures at 11 hits**; corrected in STATE
+> §7.2-D stop 2. **The running process is a different question:** `dist/` was not rebuilt while a
+> run was live, so tonight's server has no driver at all.
+>
+> **THE OTHER TWO REASONS STAND, and they are why the cycle's live answer is `NO_PATCH_AUTHOR`.**
+> Step 4 has no author — `runRepairCycle` takes the candidate diff as an INPUT — and step 2's
+> isolated copy does not exist. Measured twice on a snapshot of the owner's live database, with the
+> defect record built by the **real** writer: the ticket leaves `repairing` in one tick and lands
+> `blocked` with `REPAIR_INCONCLUSIVE / NO_PATCH_AUTHOR`, naming the exact path a diff must be
+> written to. **In no configuration did a ticket stay in `repairing`.**
+>
+> **AND THE CHAIN THAT RUNS IS NOT THIS LIST — stated plainly rather than left to be discovered.**
+> This section's chain is *defect record → `tools/repair/cycle.mjs` → RepairProposal →
+> `tools/tier3/gate.mjs`*. **`cycle.mjs#runRepairCycle` is invoked by nothing.** The driver builds
+> the proposal directly (`buildProposal`) and hands it to the gate, because `cycle.mjs` requires a
+> reproduction command and calls `proveRepair`, and `prover.mjs#assertSandbox` **throws for any path
+> inside this repository by design** — proving a repair applies the patch, runs a reproduction,
+> reverts the fix hunk and runs it again, which on the owner's live tree is a corrupted workspace.
+> **Two consequences, both live:** the evidence bundle is read from a **hand-authored**
+> `<signature>.evidence.json` sidecar and graded, never synthesised by a prover — which is precisely
+> why a hand-typed bundle clears the gate's editable arm (§6.6's correction) — and `spawnGate`, the
+> only production path that runs `tools/tier3/gate.mjs` and reads its trail, has **never been
+> executed**: every gate test injects the seam. **Treat the 115 green `tools` tests as covering the
+> router, not the plumbing.**
+>
+> **STEPS 5-7 DID GAIN A REAL SEAM, and it is the one place in the tree that writes a patch.**
+> `tools/repair/supervisor-gate.mjs` maps the gate's own **trail record** — not its stdout verdict
+> line, because the token is minted over fields only the trail carries — to three intents
+> (`APPLY → applied`, `REFUSE → refused`, `PARK → inconclusive`) across 8 named codes. APPLY is
+> reachable only with an apply token that re-mints over the frozen manifest digest, this exact diff
+> and the recorded verdicts; the rollback record is written **before** `git apply`; an `applied`
+> answer naming no rollback point is downgraded to `inconclusive`; and a caller wanting to apply on
+> its own judgement must **forge an intent** — a visible source edit, not an omission. STATE §9.2 is
+> the verdict-by-verdict table.
+>
+> **THE ONE BOUND THIS SECTION DID NOT HAVE AND NOW DOES.** The driver is awaited **inside
+> `tick()`** behind the re-entrancy flag, so a hanging cycle would have stopped every later tick and
+> the queue would have died silently. It is spawned with a timeout whose `timedOut` is a **separate
+> field from `ok`**, and the clock is read **before** the output, because a killed cycle's flushed
+> stdout can be a complete-looking JSON line from an earlier stage — the mutation that disabled that
+> check read a killed cycle as an applied patch. **What is still NOT bounded:** `spawnSync` signals
+> the child, not the process group, so a gate whose own child hangs is orphaned and keeps writing
+> `dashboard/data/tier3` after the ticket has been filed. Only the clock ORDER is fixed
+> (`GATE_TIMEOUT_MS` 8 min < the supervisor's 10 min, pinned by a test that reads the outer bound out
+> of source). **That is an inequality between two constants; it is not a proof of reaping.**
+
 ### 5.3 THE EVIDENCE BAR — a fix with no verbatim RED is unlanded
 
 This repository's signature defect is checks that can only observe success, twenty
@@ -748,6 +825,42 @@ have Bash, or the mutation proof is a claim.
 > compares sentences for **equality** — correctly, and uselessly, stayed armed. It catches a copied
 > sentence, not a nearly-copied one. That limit now lives in the function's docblock rather than in
 > a reviewer's memory.
+
+> ### APPLIED AGAIN 2026-08-10 (repair-driver round) — THREE REPRODUCED BY sha256, ONE SURVIVED, AND THE SURVIVOR IS THE USEFUL ONE
+>
+> **The bar was applied per mutation again, and the attribution is recorded because the strongest
+> sentence in a report is otherwise the one nobody checked.** The verifier **independently
+> reproduced three**, restoring byte-exactly and proving it with **per-file sha256** — never with
+> `git diff`, which is worthless here because much of the mutated surface is untracked, so a clean
+> diff proves nothing either way:
+>
+> 1. The digest comparison behind *"did my CV reach the run?"* — the one mutation in the whole round
+>    reported as having **survived** first pass. **The fix took**, RED reproduced.
+> 2. The apply token's field path — documented as the gate seam's **arm-check blind spot** and
+>    reproduced exactly: the arm check printed `ARM CHECK: armed` and **exited 0** while production
+>    would have answered `GATE_APPLY_UNTOKENED` for every approved patch. The suite caught it with
+>    **5 red tests, not the 1 predicted** — under-claimed, which is the safe direction.
+> 3. The cycle-timeout guard — 2 red, one of which is the arm check going **blind about itself**.
+>
+> **AND A MUTATION SURVIVED IN THE REPAIR PASS'S OWN PATCH, which this bar says is DATA.** A
+> `try/catch` added around the driver's eight arm probes was deleted and **every test stayed green
+> (18/18)**. It was diagnosed, not re-patched: the probe loop overrides its runner with fixed
+> answers, so **no injected seam can make it throw** and the guard was unreachable. The unreachable
+> guard was **deleted** rather than kept as decoration, the docblock records why, and the
+> replacement — around the real spawn — has its own RED (`Error: spawn EAGAIN … at
+> armRepairDriver`, the exception escaping the boot path exactly as it did in production).
+> **The generalisable lesson: a guard added in the same pass as its test is the highest-risk
+> instance of this repository's signature defect, because the test was written to the guard.**
+>
+> **ONE PRESCRIPTION WAS REFUSED ON THIS BAR'S OWN GROUNDS, and the refusal is the interesting
+> part.** A reviewer asked for substantive guards beside the apply token — refuse unless the
+> known-bad verdict passed, every proof is satisfied, and `armCheck.ok` is true. Two of the three are
+> **unreachable on every record the real gate produces** (`decide()` already returns REFUSE /
+> SELF-PROPOSE / REFUSE-BLIND on exactly those conditions), so they could only ever fire on a
+> fabricated record and could only be "proved" by a probe written to satisfy them — **this
+> repository's signature defect inside the file that exists to prevent it.** The third contradicts
+> the round's own blocking finding: on a real dockerless editable APPLY, three container proofs
+> legitimately carry `satisfied: false`. The docblock's false claim was corrected instead.
 
 > ### IMPLEMENTED 2026-08-10 — THE BAR IS REAL, THE PROVER EXECUTES, AND THE PATCH AUTHOR IS NOT BUILT
 >
@@ -1357,6 +1470,59 @@ so.
 > behaviour this section specifies is implemented and mutation-proved; the red autonomy banner
 > is not built** (the gate is a CLI with no dashboard surface).
 
+> ### CORRECTED 2026-08-10 (repair-driver round) — THE FAIL-CLOSED CLAIM ABOVE IS FALSE FOR A6/A7, AND THIS SECTION'S OWN RULE IS THE ONE BEING BROKEN
+>
+> **THE SENTENCE THAT MUST GO FIRST, because it contradicts the block above:** *"the fail-closed
+> behaviour this section specifies is implemented and mutation-proved"* is **true for the five live
+> arms and false for the two UNARMED ones.** This section's own rule is *"a cycle whose arm-check
+> block is absent is a cycle whose gate is unproven, and the apply step treats absence exactly like
+> failure."* **A6 and A7 are absent on every dockerless machine, and the apply step does not treat
+> them like failure at all.**
+>
+> **MEASURED, not reasoned** — the real `runGate()` driven in-process with docker never invoked and
+> every write redirected to a temp directory: an OUTSIDE-CLOSURE diff touching
+> `dashboard/server/src/supervisor.ts` with a **hand-typed** evidence bundle produced
+> `arm.ok true`, `arm.blind []`, `arm.unarmed ["A6","A7"]`, `aggregate PASS-WITH-UNARMED`,
+> `containerExecuted 0` → **`VERDICT APPLY`, `selfProposing false`, a real 64-hex `applyToken`.**
+> Both negative controls held, so the probe discriminates: the same bundle with a blank ablation, and
+> the same bundle INSIDE the closure, each parked as SELF-PROPOSE with a null token.
+>
+> **THREE MECHANISMS, each independently sufficient, each re-verified from source:**
+> 1. `runArmChecks` computes `ok: arms.length === 5 && blind.length === 0` (`armcheck.mjs:213`) and
+>    keeps A6/A7 in a **separate `unarmed` list that `ok` never reads** — so `arm.ok` is true with no
+>    docker and the `REFUSE-BLIND` door at `gate.mjs:224` never opens.
+> 2. `aggregateKnownBad` returns `PASS-WITH-UNARMED` (`known-bad.mjs:466`) whose own reason string
+>    promises *"UNARMED is not PASS: it degrades any proof that depends on it to INCONCLUSIVE"* —
+>    and **`decide()` has no branch that reads that word.** `grep PASS-WITH-UNARMED` over the tree
+>    returns **one hit: the producer.** The string is a promise the router never keeps.
+> 3. On the OUTSIDE-CLOSURE arm the only proof consulted is `no-op-ablation-failing`, satisfied by
+>    `typeof …noOpAblation === "string" && …trim().length > 0` (`gate.mjs:114`, `mode: "evidence"`) —
+>    **a non-empty string, executed by nothing.** And `noOpAblation` has **zero producers** anywhere
+>    in `tools/` or `dashboard/server/src` outside `gate.test.mjs`; `prover.mjs#proveRepair` emits
+>    only `{redBefore, greenAfter, mutationRed}`. **The field that authorises self-apply cannot be
+>    produced by any prover on this machine.**
+>
+> **AND IT IS PINNED, so closing it is a DECISION and not a bug fix.** `tools/tier3/gate.test.mjs:553`
+> — *"an editable-only patch with full evidence self-applies and gets a token"* — drives the real
+> `gate()` on this dockerless machine and asserts `APPLY` with a 64-char token. It is green (verified
+> by the recorder in a 115/115 run). Its docblock names mutation M11 and argues *"a gate that can
+> never pass is not a gate"*; `gate.mjs:264-267` states the intent that the three CONTAINER proofs
+> must **not** be required on the editable arm, because requiring them makes every editable repair
+> wait for docker. **The counter-argument is `gate.mjs:253-254`'s own words:** the EDITABLE package
+> holds the orchestrator, the recovery classifier and this gate's own caller, so **grader softening
+> is reachable one level up from the closure.**
+>
+> **THE PRESCRIPTION IF THE OWNER CLOSES IT** (STATE §9.4 item 1 is the arbitration): one branch in
+> `decide()` reading `aggregate.verdict === "PASS-WITH-UNARMED"`, or folding
+> `arm.unarmed.length > 0` into `arm.ok`'s consumer, so INCONCLUSIVE stops agreeing — **plus** a proof
+> for the editable arm that is EXECUTED rather than a string. **Do not close it with a veto in the
+> caller:** a driver refusing an APPLY the gate passed is the same violation mirrored, one layer out.
+> Until it is decided, `dashboard/data/repair-proposals/` stays empty and `dashboard/server/dist`
+> stays un-rebuilt — those two facts are the only reason the hole is not armed today.
+>
+> **ALSO UNCHANGED AND WORTH STATING HERE:** the container arms **have never run during a repair**,
+> `spawnGate` has never been executed, and the red autonomy banner is still not built.
+
 ### 6.7 The audit trail
 
 **Reuse, don't invent.** `dashboard/server/probes/README.md` already specifies the shape and
@@ -1740,6 +1906,34 @@ working. Two questions, two numbers.
 > a ticket that never re-ran — **a patch with no run behind it.** Letting a repair mint an extra
 > attempt is exactly the counter-mixing this section forbids, so the odd-looking row is the correct
 > one; it is now documented in the router rather than discovered on the strip.
+
+> ### CORRECTED 2026-08-10 (repair-driver round) — *"WITH NO DRIVER WIRED, WHICH IS TODAY'S STATE"* IS NO LONGER TODAY'S STATE IN SOURCE
+>
+> A driver **is** wired: `index.ts` awaits `armRepairDriver` before constructing the loop and passes
+> `repair` only if the arm armed. **The two `repairing` rows above therefore route differently now,
+> and the difference is the sentence, not the destination.** `failed, structural` → `repairing` for
+> one visible tick → **`blocked` with the CYCLE's own reason.** On today's tree that reason is
+> `REPAIR_INCONCLUSIVE / NO_PATCH_AUTHOR` — *"no candidate diff exists at
+> `<proposals>/<signature>.diff`, and nothing in this build authors one"* — measured twice against a
+> snapshot of the owner's live database with the record written by the real defect writer. **And
+> `last_defect_id` is now populated with the real 64-hex signature**, which is what made the
+> per-signature bound and the diff lookup reachable at all; before this round the column had no
+> writer that ever ran.
+>
+> **THREE QUALIFICATIONS, all load-bearing:**
+> 1. **The running process is not this build.** `dist/` was deliberately not rebuilt while a run was
+>    live, so the live supervisor still has no `repair` dep and still prints `NO REPAIR DRIVER is
+>    wired`. **The rebuild that arms it is an owner decision** (STATE §9.4 item 2), because the gate
+>    can currently reach APPLY with its container arms unable to run (§6.6's correction).
+> 2. **`repairing` now has a fourth way to end that is not in the six:** the cycle is spawned with a
+>    clock, and a cycle that hangs is killed and filed as `REPAIR_CYCLE_TIMED_OUT` — its own
+>    inconclusive code, distinct from a silent or unreadable cycle, because the driver reads the clock
+>    **before** the output.
+> 3. **The odd row this block documents gets a second cousin.** `REPAIR_APPLIED` re-queues the ticket
+>    — and **nothing rebuilds**, so the re-run executes byte-identical behaviour, the same defect
+>    reproduces, and an attempt is spent. `patch_id` set on a ticket whose run could not possibly have
+>    seen the patch is the same shape as the row above, one layer worse. STATE §7.2-D stop 21 and
+>    §9.5's instance TWENTY-SIX.
 
 #### 7.6.1 A ticket may not be marked `done` by a run whose grader moved
 
@@ -2291,6 +2485,20 @@ authoring-closure patches self-apply unproxied.
 - **Slow drift in judge/adversary behaviour.** No committed baseline tracks it.
 
 ### 10.3 The residual risk the owner is knowingly accepting on Tier 3
+
+> **ADDED 2026-08-10 (repair-driver round) — TWO RISKS THIS LIST DID NOT NAME, AND THEY ARE LARGER
+> THAN ANY BELOW.** (a) **The gate reaches `APPLY` with its container arms unable to run** —
+> measured, real token, `containerExecuted 0` (§6.6's correction). The list below assumes a gate that
+> degrades to self-proposing when it cannot see; on the editable arm it does not. (b) **The trigger is
+> a drop box the graded agent can write to.** The apply path reads
+> `dashboard/data/repair-proposals/<signature>.diff` **plus a hand-authored
+> `<signature>.evidence.json`**, that directory sits inside the repository the supervised Agent-SDK
+> subprocess can write, and the seam then `git apply`s to the owner's real working tree, unattended,
+> on the 30 s tick. **So the reachable shape is: the agent being graded authors its own patch AND its
+> own evidence bundle and has it applied.** Bounded today only because the live `dist/` is pre-round
+> and that directory does not exist. Also unnamed below: **the apply token is an unkeyed digest over
+> fields read out of the record it validates**, so it binds a record to a diff and is not evidence
+> that a gate ran. STATE §9.4 items 1, 3 and 5.
 
 Named plainly, because the owner has decided and should hold the accurate version:
 
