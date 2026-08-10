@@ -750,6 +750,360 @@ export function parseSuiteManifest(raw: unknown): SuiteManifest {
 }
 
 /* -------------------------------------------------------------------------
+ * 3b. Collect-all validation, for the AUTHORING AUDIT only
+ * ---------------------------------------------------------------------- */
+
+/**
+ * One thing wrong with a candidate manifest.
+ *
+ * `field` is the path the parser itself named — `dataExpectations[0].id` — not a
+ * path this module invented.
+ */
+export interface ManifestProblem {
+  readonly field: string;
+  readonly message: string;
+  readonly remediation: string;
+}
+
+/**
+ * A manifest with every field at a value `parseSuiteManifest` accepts.
+ *
+ * THE PROBE BASE. Every problem below is found by substituting ONE field of the
+ * candidate into this document and parsing the result with the real parser, so
+ * the only thing that can fail is the field under test. Nothing here reimplements
+ * a rule.
+ */
+const PROBE_EXECUTION = Object.freeze({
+  install: null,
+  build: null,
+  typecheck: null,
+  lint: null,
+  start: null,
+  port: null,
+  healthPath: null,
+  bootTimeoutMs: null,
+  commandTimeoutMs: null,
+});
+
+const PROBE_MANIFEST = Object.freeze({
+  manifestVersion: 1,
+  ticketId: "probe",
+  target: "web",
+  execution: PROBE_EXECUTION,
+  sourceDirs: ["."],
+  uiFlows: [] as readonly unknown[],
+  dataExpectations: [] as readonly unknown[],
+});
+
+const PROBE_SQLITE = Object.freeze({
+  id: "probe-entry",
+  kind: "sqlite",
+  file: "data/app.db",
+  table: "t",
+  sql: null,
+  path: null,
+  minRows: 1,
+});
+
+const PROBE_HTTP = Object.freeze({
+  id: "probe-entry",
+  kind: "http",
+  file: null,
+  table: null,
+  sql: null,
+  path: "/probe",
+  minRows: 1,
+});
+
+const PROBE_FLOW = Object.freeze({
+  id: "probe-flow",
+  path: "/",
+  description: "probe",
+  waitForSelector: null,
+});
+
+/** `n` accepted filler entries, so a probe lands at the candidate's own index. */
+function padded(base: Readonly<Record<string, unknown>>, n: number): unknown[] {
+  return Array.from({ length: n }, (_, i) => ({ ...base, id: `probe-pad-${String(i)}` }));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Parse a probe document and return what it complained about, or null. */
+function probe(manifest: unknown, field: string): ManifestProblem | null {
+  try {
+    parseSuiteManifest(manifest);
+    return null;
+  } catch (error) {
+    if (error instanceof BakeoffError) {
+      return { field, message: error.message, remediation: error.remediation };
+    }
+    return { field, message: String(error), remediation: "Regenerate the manifest." };
+  }
+}
+
+/**
+ * EVERY field a candidate manifest gets wrong, not just the first one.
+ *
+ * WHY THIS EXISTS, MEASURED. `fail()` is typed `never`, so `parseSuiteManifest`
+ * throws at the FIRST offending field and a rejection can only ever name one.
+ * Run `a913c871` (2026-08-09) spent 1h26m54s discovering a seven-key object one
+ * key per attempt: attempt 1 was told "missing id", attempt 2 added `id` and was
+ * told "missing kind", attempt 3 added `kind` and dropped the `id` it had
+ * already got right. Three single-field hints over a seven-key object cannot
+ * converge in three attempts, and the model was not the thing that failed.
+ *
+ * THE SCORER PATH IS UNTOUCHED, AND THAT IS DELIBERATE. `parseSuiteManifest` is
+ * byte-identical: `scorer-container.ts` parses the manifest unconditionally five
+ * lines into `main()` and `secret-intake.ts` parses it again, and both want to
+ * abort on the first defect rather than survey a document they are not going to
+ * execute. Its `never` return is also load-bearing for control-flow narrowing
+ * through the whole function body. This is an ADDITIVE second reader for the one
+ * caller that needs the full list: the authoring audit, which can regenerate.
+ *
+ * HOW IT AVOIDS BECOMING A SECOND, DIVERGING VALIDATOR — the property that
+ * matters more than the feature. It does not restate a single rule. It builds a
+ * document that `parseSuiteManifest` ACCEPTS, substitutes ONE field of the
+ * candidate into it, and parses again with the real parser; every message and
+ * every remediation returned here was produced by the sealed parser itself.
+ * A rule added to the parser tomorrow is enforced here tomorrow.
+ *
+ * WHAT IT DOES NOT MODEL. Only field-level substitution: a rule that emerges
+ * from a combination this function does not substitute together is not surveyed.
+ * The parser's own first complaint is therefore ALWAYS included, first, whether
+ * or not a probe reproduced it — so the list can never be shorter than the
+ * fail-fast behaviour it replaces, and can never be empty on a document that
+ * does not parse.
+ */
+export function collectManifestProblems(raw: unknown): readonly ManifestProblem[] {
+  const authoritative = probe(raw, "suite.manifest.json");
+  if (authoritative === null) return [];
+
+  const found: ManifestProblem[] = [authoritative];
+  /**
+   * Deduplicate by MESSAGE, and let a probe name the field.
+   *
+   * The authoritative entry is labelled `suite.manifest.json` because a thrown
+   * error carries no structured field — the path is inside the sentence. When a
+   * probe reproduces that same message it knows exactly which field it
+   * substituted, so it upgrades the label rather than being discarded as a
+   * duplicate. Without this the first defect — the very one fail-fast reports —
+   * would be the one problem in the list with no field on it.
+   */
+  const add = (problem: ManifestProblem | null): void => {
+    if (problem === null) return;
+    const at = found.findIndex((p) => p.message === problem.message);
+    if (at < 0) {
+      found.push(problem);
+      return;
+    }
+    const existing = found[at];
+    if (existing !== undefined && existing.field === "suite.manifest.json") {
+      found[at] = { ...existing, field: problem.field };
+    }
+  };
+
+  if (!isRecord(raw)) return found;
+
+  for (const key of ["manifestVersion", "ticketId", "target", "sourceDirs"] as const) {
+    add(probe({ ...PROBE_MANIFEST, [key]: raw[key] }, key));
+  }
+
+  const execution = raw["execution"];
+  if (!isRecord(execution)) {
+    add(probe({ ...PROBE_MANIFEST, execution }, "execution"));
+  } else {
+    for (const key of Object.keys(PROBE_EXECUTION)) {
+      // START, PORT AND HEALTHPATH ARE NEVER PROBED ALONE, and skipping them is
+      // a correctness fix rather than an optimisation. Substituting a valid
+      // `"start": "npm start"` into a base whose port and healthPath are null
+      // trips the cross-field rule and reports a field the candidate got RIGHT.
+      // A collect-all list that invents work is worse than a fail-fast one: the
+      // seat spends an attempt on a field that was never wrong. They are
+      // surveyed together, below.
+      if (key === "start" || key === "port" || key === "healthPath") continue;
+      add(
+        probe(
+          { ...PROBE_MANIFEST, execution: { ...PROBE_EXECUTION, [key]: execution[key] } },
+          `execution.${key}`,
+        ),
+      );
+    }
+    // The one cross-field rule in `execution`, substituted as the triple it is:
+    // a start command with no port or no healthPath is a boot gate that cannot
+    // decide anything, and no single-field probe can see it.
+    add(
+      probe(
+        {
+          ...PROBE_MANIFEST,
+          execution: {
+            ...PROBE_EXECUTION,
+            start: execution["start"],
+            port: execution["port"],
+            healthPath: execution["healthPath"],
+          },
+        },
+        "execution.start",
+      ),
+    );
+  }
+
+  addListProblems(raw["uiFlows"], "uiFlows", PROBE_FLOW, ["id", "path", "description", "waitForSelector"], add);
+  addDataExpectationProblems(raw["dataExpectations"], add);
+  return found;
+}
+
+/** Per-entry field probes for a list, plus one whole-list probe for duplicates. */
+function addListProblems(
+  list: unknown,
+  key: "uiFlows" | "dataExpectations",
+  base: Readonly<Record<string, unknown>>,
+  fields: readonly string[],
+  add: (problem: ManifestProblem | null) => void,
+): void {
+  if (!Array.isArray(list)) {
+    add(probe({ ...PROBE_MANIFEST, [key]: list }, key));
+    return;
+  }
+  list.forEach((entry, i) => {
+    const where = `${key}[${String(i)}]`;
+    if (!isRecord(entry)) {
+      add(probe({ ...PROBE_MANIFEST, [key]: [...padded(base, i), entry] }, where));
+      return;
+    }
+    for (const field of fields) {
+      add(
+        probe(
+          { ...PROBE_MANIFEST, [key]: [...padded(base, i), { ...base, [field]: entry[field] }] },
+          `${where}.${field}`,
+        ),
+      );
+    }
+  });
+  // DUPLICATE IDS ARE A PROPERTY OF THE LIST, not of any entry, so no per-entry
+  // probe can see one. This substitutes the ids the candidate actually declared.
+  add(
+    probe(
+      {
+        ...PROBE_MANIFEST,
+        [key]: list.map((entry) => (isRecord(entry) ? { ...base, id: entry["id"] } : entry)),
+      },
+      `${key}[].id`,
+    ),
+  );
+}
+
+/**
+ * `dataExpectations` needs its own walk for one reason: `kind` selects which
+ * fields are required, so the accepted base a field is substituted into depends
+ * on the candidate's own kind. Probing an http entry against a sqlite base
+ * reports the base's missing `path` and never reaches the field under test.
+ */
+function addDataExpectationProblems(
+  list: unknown,
+  add: (problem: ManifestProblem | null) => void,
+): void {
+  if (!Array.isArray(list)) {
+    add(probe({ ...PROBE_MANIFEST, dataExpectations: list }, "dataExpectations"));
+    return;
+  }
+  list.forEach((entry, i) => {
+    const where = `dataExpectations[${String(i)}]`;
+    if (!isRecord(entry)) {
+      add(probe({ ...PROBE_MANIFEST, dataExpectations: [...padded(PROBE_SQLITE, i), entry] }, where));
+      return;
+    }
+    const kind = entry["kind"];
+    const pad = padded(PROBE_SQLITE, i);
+    if (kind !== "sqlite" && kind !== "http") {
+      add(probe({ ...PROBE_MANIFEST, dataExpectations: [...pad, { ...PROBE_SQLITE, kind }] }, `${where}.kind`));
+      // `id` and `minRows` are the two fields `kind` does not govern, so they
+      // can still be surveyed. `file`, `table`, `sql` and `path` cannot: which
+      // of them is required IS the kind, and naming them against a guessed kind
+      // would send the seat to fix fields it may not need. Attempt 1 of run
+      // a913c871 got three of its fields named here instead of one.
+      for (const field of ["id", "minRows"]) {
+        add(
+          probe(
+            { ...PROBE_MANIFEST, dataExpectations: [...pad, { ...PROBE_SQLITE, [field]: entry[field] }] },
+            `${where}.${field}`,
+          ),
+        );
+      }
+      return;
+    }
+    const base = kind === "http" ? PROBE_HTTP : PROBE_SQLITE;
+    for (const field of ["id", "file", "path", "minRows"]) {
+      add(
+        probe(
+          { ...PROBE_MANIFEST, dataExpectations: [...pad, { ...base, [field]: entry[field] }] },
+          `${where}.${field}`,
+        ),
+      );
+    }
+    // `sql` ALONE, AND IT MUST RUN BEFORE THE PAIRED PROBE BELOW.
+    //
+    // WHY IT EXISTS. The paired probe substitutes `table` AND `sql` under one
+    // hardcoded label, so the word `sql` could not appear anywhere in a
+    // collection: last night's attempt-3 shape returned id/file/path/minRows/
+    // table on both entries and nothing named `sql`. A seat that obediently
+    // repairs every field it is handed is rejected AGAIN on the next attempt,
+    // which then names `sql` — and in the round that exists because a 3-attempt
+    // budget ran out, that one extra trip is the whole remaining slack.
+    //
+    // WHY IT CANNOT FALSE-POSITIVE, which is the reason only `sql` moves: the
+    // base carries a valid `table` (`PROBE_SQLITE.table === "t"`), so the
+    // at-least-one-of-table-or-sql rule is already satisfied by the base and the
+    // only thing this probe can fail on is `sql`'s own shape. A legal
+    // `sql: null` substitutes into a base that already reads `sql: null` and
+    // returns nothing; so does a legal `sql: "select 1"`. Both are asserted in
+    // `scorer-protocol.test.ts` as negative controls, because a probe that
+    // reported a problem on a valid document would send the seat to repair a
+    // field that was already right — the same failure this whole collector
+    // exists to stop, inverted.
+    //
+    // WHY THE ORDER IS LOAD-BEARING AND NOT STYLE. `add` deduplicates by
+    // MESSAGE and only upgrades a label that is still `suite.manifest.json`.
+    // When `table` is valid and `sql` alone is malformed, BOTH probes produce
+    // the identical sentence, so whichever runs first owns the label and the
+    // other is dropped. Below the pair, this probe is dropped every time and the
+    // sentence keeps `${where}.table` on it. Above it, the field reads `.sql`.
+    // Move it back down and the cosmetic half of this fix silently reverts with
+    // no test able to see the sentence change, because the sentence does not.
+    add(
+      probe(
+        { ...PROBE_MANIFEST, dataExpectations: [...pad, { ...base, sql: entry["sql"] }] },
+        `${where}.sql`,
+      ),
+    );
+    // `table` and `sql` are one rule, not two: a sqlite entry needs at least one
+    // of them, which neither field alone can be judged against.
+    add(
+      probe(
+        {
+          ...PROBE_MANIFEST,
+          dataExpectations: [...pad, { ...base, table: entry["table"], sql: entry["sql"] }],
+        },
+        `${where}.table`,
+      ),
+    );
+  });
+  add(
+    probe(
+      {
+        ...PROBE_MANIFEST,
+        dataExpectations: list.map((entry) =>
+          isRecord(entry) ? { ...PROBE_SQLITE, id: entry["id"] } : entry,
+        ),
+      },
+      "dataExpectations[].id",
+    ),
+  );
+}
+
+/* -------------------------------------------------------------------------
  * 4. The sealed plan (host -> container)
  * ---------------------------------------------------------------------- */
 

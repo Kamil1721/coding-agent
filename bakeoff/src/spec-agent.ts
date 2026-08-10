@@ -107,6 +107,64 @@ import { join } from "node:path";
 /** The origin the frozen suite must default to. See {@link STATIC_SERVE_PORT}. */
 const STATIC_ORIGIN_DEFAULT = `http://127.0.0.1:${String(STATIC_SERVE_PORT)}`;
 
+/**
+ * THE SHAPE OF A `dataExpectations` ENTRY, SHOWN TO THE SEAT.
+ *
+ * WHY THESE EXIST AS CONSTANTS RATHER THAN AS PROSE IN THE PROMPT. Run
+ * `…a913c871` (2026-08-09) burned 1h26m54s and died in the spec phase because
+ * the prompt ORDERED a populated `dataExpectations` for any SERVER ticket and
+ * never showed one. The only example in the prompt was `"dataExpectations": []`;
+ * the sealed scorer's parser requires seven keys; `grep -ac minRows` over this
+ * file returned 0. `parseSuiteManifest`'s `fail()` is typed `never`, so each
+ * rejection named exactly ONE field, and three attempts learned three fields —
+ * `id`, then `kind`, and the third dropped the `id` it had already got right.
+ * Discovering a seven-key object one key per attempt in three attempts is
+ * arithmetically impossible. The model did nothing wrong.
+ *
+ * THE SQLITE ENTRY IS COPIED VERBATIM from `bakeoff/docker/README.md` section
+ * "the manifest", which was the ONLY correct populated example in the
+ * repository and sits in a file the seat never reads.
+ *
+ * WHAT KEEPS THEM HONEST. `spec-agent.test.ts` runs both of these through
+ * `parseSuiteManifest` — the very function whose rejection killed that run — and
+ * runs a violation of every documented rule through it too, asserting the
+ * validator rejects each one and names the field. A prompt that documents a
+ * shape the validator does not accept recreates the same bug with different
+ * field names, and a test that only greps the prompt for a string cannot see it.
+ */
+export const MANIFEST_DATA_EXPECTATION_EXAMPLES = Object.freeze({
+  sqlite: Object.freeze({
+    id: "db-query-7",
+    kind: "sqlite",
+    file: "data/app.db",
+    table: "bookings",
+    sql: null,
+    path: null,
+    minRows: 1,
+  }),
+  http: Object.freeze({
+    id: "api-count-1",
+    kind: "http",
+    file: null,
+    table: null,
+    sql: null,
+    path: "/api/bookings",
+    minRows: 1,
+  }),
+});
+
+/**
+ * The two examples as the prompt renders them, indented into the template.
+ *
+ * SERIALISED FROM THE CONSTANTS, NOT RETYPED. The test asserts the prompt
+ * contains `JSON.stringify(example)` for each, so an example edited in one place
+ * and not the other is red rather than silently divergent.
+ */
+const DATA_EXPECTATION_EXAMPLE_BLOCK = [
+  `        ${JSON.stringify(MANIFEST_DATA_EXPECTATION_EXAMPLES.sqlite)},`,
+  `        ${JSON.stringify(MANIFEST_DATA_EXPECTATION_EXAMPLES.http)}`,
+].join("\n");
+
 export {
   assertSuiteIntact,
   freezeSuite,
@@ -297,8 +355,15 @@ Without it the suite cannot be executed at all.
       },
       "sourceDirs": ["."],
       "uiFlows": [{ "id": "home", "path": "/", "description": "<one line>", "waitForSelector": null }],
-      "dataExpectations": []
+      "dataExpectations": [
+${DATA_EXPECTATION_EXAMPLE_BLOCK}
+      ]
     }
+
+That is a TEMPLATE, not a manifest to copy whole. Both "dataExpectations" entries are shown so that
+you can see the fields of BOTH kinds; a real manifest carries only the ones its ticket needs, and []
+when the ticket asks for no stored data at all. They are shown here beside a STATIC "execution" for
+the same reason — the shapes are what the template is for, not the combination.
 
 CHOOSE ONE OF TWO MODES, from the ticket text alone. DECIDE ON THE BEHAVIOUR THE TICKET ASKS FOR,
 NEVER ON WHAT KIND OF SITE IT IS. What the product is called tells you nothing about which mode it
@@ -340,9 +405,31 @@ layout. "uiFlows" are the pages that get screenshotted at three breakpoints; eve
 and starts with "/". "dataExpectations" is [] ONLY when the ticket asks for no stored data at all: if
 you chose SERVER for a persistence trigger, declare at least one expectation here, because an empty
 list makes the persistence gate report "not applicable" and nothing outside your own tests ever looks
-at what was stored. The four
+at what was stored. The two entries shown in the template above are the SHAPE: copy the one whose kind
+you need and change its values. The four
 nullable timeouts take the harness defaults when null, which is the right choice for a project you have
 not seen.
+
+### THE SEVEN KEYS OF A dataExpectations ENTRY, AND THE RULES THE SCORER ENFORCES
+
+Every entry carries ALL SEVEN of "id", "kind", "file", "table", "sql", "path" and "minRows", whichever
+kind it is. Omitting a key is not the same as declaring it absent and is rejected: give the keys the
+entry does not use the value null, exactly as the two examples above do. This file is parsed before
+anything is executed, and one unparseable entry aborts scoring for the whole run.
+
+- "id" is a non-empty string and no two entries may share one. It labels the result and is what a
+  criterion's "evidenceRequired" resolves against, so an entry without one cannot be attributed.
+- "kind" is exactly "sqlite" or "http". No other value is accepted.
+- "minRows" is a number and must be at least 1. Zero rows proves nothing, so 0 is rejected.
+- kind "sqlite" reads a database file inside the artefact, and it is the STRONGEST evidence available
+  because application code cannot intercept it. "file" is REQUIRED and is a path relative to the
+  artefact root — no leading "/" and no "..". You must also give EITHER "table", whose rows are
+  counted for you, OR "sql", a statement whose first column of its first row is that count. Set "path"
+  to null.
+- kind "http" reads a declared endpoint, which the running app can fabricate, so prefer "sqlite" when
+  the ticket names a database. "path" is REQUIRED and is a same-origin path starting with "/" with no
+  query string and no fragment; the endpoint answers with a JSON array or with {"count": <number>}.
+  Set "file", "table" and "sql" to null.
 
 ## Output
 
@@ -621,6 +708,20 @@ export interface AuthoringAttempt {
   readonly judgeRan: boolean;
   readonly accepted: boolean;
   readonly costUsd: number;
+  /**
+   * The `max_tokens` this attempt finally ran at — its rung on the truncation
+   * ladder, AFTER any free escalation.
+   *
+   * RECORDED BECAUSE NOTHING ELSE RECORDS IT. Run `a913c871` (2026-08-09) could
+   * only establish which rung its three attempts ran on by reading
+   * `CLAUDE_CODE_MAX_OUTPUT_TOKENS` out of the live seat's environment with
+   * `ps eww`, from outside the product, and that sampler covered two of the
+   * three seat processes. An escalation from 64,000 to 128,000 is the single
+   * most informative thing the authoring loop can do and it was invisible.
+   */
+  readonly maxOutputTokens: number;
+  /** True when this attempt's response came back cut off and was retried free. */
+  readonly truncationRetried: boolean;
 }
 
 /** Everything the freezer needs, plus the audit trail. */
@@ -1159,10 +1260,44 @@ export async function generateAuditedSuite(
   const attempts: AuthoringAttempt[] = [];
   let feedback: readonly string[] = [];
   let outputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-  let truncationRetried = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const generatedAt = now().toISOString();
+    /**
+     * DECLARED INSIDE THE LOOP, AND THE MOVE IS PROVABLY A NO-OP. Read this
+     * before "fixing" it in either direction.
+     *
+     * Until 2026-08-10 this was declared OUTSIDE the loop, and run
+     * `a913c871`'s post-mortem filed that as a defect: "the free 128k retry is
+     * once per RUN, not once per attempt … a suite that overflows on attempts 2
+     * and 3 gets no ladder at all." THAT CLAIM IS FALSE, and the argument is
+     * short enough to check:
+     *
+     *   the flag is set to true immediately BEFORE `if (outputTokens <
+     *   MAX_STREAMABLE_OUTPUT_TOKENS)`, and that branch assigns
+     *   `outputTokens = MAX_STREAMABLE_OUTPUT_TOKENS`. So after the block,
+     *   `outputTokens >= MAX_STREAMABLE_OUTPUT_TOKENS` on BOTH paths, and
+     *   `outputTokens` never decreases. Therefore `flag === true` implies
+     *   `outputTokens >= MAX`, whose contrapositive is `outputTokens < MAX`
+     *   implies `flag === false`. The flag can never be the reason the rung
+     *   guard is skipped — the rung guard is. The escalation is once per run
+     *   because THE RUNG IS once per run, with or without this variable.
+     *
+     * WHAT THE MOVE DOES CHANGE, MEASURED (2026-08-10), and it is not the call
+     * sequence. The flag is now RECORDED on each `AuthoringAttempt` and read
+     * back by `describeOutputCeilings`. Declared once per run it is STICKY:
+     * after attempt 2 escalates, attempt 3 — which was never truncated and
+     * never retried — also reports `truncationRetried: true`, and the failure
+     * message reads *"the free truncation retry fired on attempt(s) 2, 3"*.
+     * That is a record of an event that did not happen, on the exact channel
+     * built to stop a run guessing about its own ceiling. Restoring the outer
+     * declaration turns "the failure names the rung every attempt ran on" red
+     * with that sentence.
+     *
+     * So the scope is load-bearing for the RECORD and inert for the CALLS, and
+     * the docblock says both rather than letting the reader infer either.
+     */
+    let truncationRetried = false;
     let generated = await generateSuite(
       ticket,
       { ...sharedOptions, maxOutputTokens: outputTokens },
@@ -1220,6 +1355,8 @@ export async function generateAuditedSuite(
         judgeRan: false,
         accepted: false,
         costUsd: generated.call.usage.costUsd,
+        maxOutputTokens: outputTokens,
+        truncationRetried,
       });
       feedback = generated.problems;
       continue;
@@ -1241,6 +1378,8 @@ export async function generateAuditedSuite(
       accepted: !audit.mustRegenerate,
       costUsd:
         generated.call.usage.costUsd + (audit.judgeCall === null ? 0 : audit.judgeCall.usage.costUsd),
+      maxOutputTokens: outputTokens,
+      truncationRetried,
     });
 
     if (audit.mustRegenerate) {
@@ -1283,13 +1422,153 @@ export async function generateAuditedSuite(
     "suite_not_audited",
     `could not author an acceptance suite for ticket ${ticket.id} that passes the bad-test audit in ` +
       `${String(maxAttempts)} attempt(s). Last attempt's blocking problems:\n` +
-      reasons.map((r) => `  - ${r}`).join("\n"),
-    "Do NOT start builds. doc 03 section 7.4: a suite that fails the audit must be regenerated, not " +
-      "used. Read the blocking findings above — repeated failures on the same criterion usually mean " +
-      "the TICKET is ambiguous rather than the model incapable, and the fix is to sharpen the ticket " +
-      "text (then re-record its digest and re-run every configuration). Raising maxAttempts spends " +
-      "more money on the same ambiguity.",
+      reasons.map((r) => `  - ${r}`).join("\n") +
+      `\n${describeOutputCeilings(attempts)}`,
+    remediationForFailedAuthoring(last?.findings ?? []),
   );
+}
+
+/**
+ * The rung each attempt ran on, and whether the free retry ever fired.
+ *
+ * WHY IT IS IN THE THROWN MESSAGE AND NOT AN EVENT. The escalation from
+ * `DEFAULT_MAX_OUTPUT_TOKENS` to `MAX_STREAMABLE_OUTPUT_TOKENS` emitted nothing
+ * anywhere, so run `a913c871` could only read the ceiling by sampling
+ * `CLAUDE_CODE_MAX_OUTPUT_TOKENS` out of the live seat process with `ps eww` —
+ * outside the product, covering two of that run's three seats. A new callback
+ * on `SpecAgentOptions` would not have fixed it: no production caller passes
+ * `onEvent` to this function, so the emitter would have had no reader, which is
+ * the same defect this repository already catalogues in the other direction
+ * (a "no reference capture" reader with no writer). THIS message is a channel
+ * with a proven reader: it lands verbatim in `runs.failure_reason`, and the
+ * post-mortem quoted the whole of it.
+ *
+ * The negative statement is deliberate and is the useful half. "The free
+ * truncation retry did not fire" is what turns a green-looking ladder fix into
+ * an honest "unexercised", which is exactly the conclusion run `a913c871`
+ * needed 87 minutes and a subprocess sampler to reach.
+ */
+function describeOutputCeilings(attempts: readonly AuthoringAttempt[]): string {
+  if (attempts.length === 0) return "No attempt completed, so no output-token ceiling was recorded.";
+  const rungs = attempts.map((a) => `${String(a.attempt)}:${String(a.maxOutputTokens)}`).join(" ");
+  const escalated = attempts.filter((a) => a.truncationRetried).map((a) => String(a.attempt));
+  return (
+    `Output-token ceiling by attempt: ${rungs}. ` +
+    (escalated.length === 0
+      ? "The free truncation retry did NOT fire on any attempt: no response came back cut off at " +
+        "max_tokens, so nothing here says anything about whether the ladder works."
+      : `The free truncation retry fired on attempt(s) ${escalated.join(", ")}, without consuming an ` +
+        "attempt.")
+  );
+}
+
+/**
+ * The manifest field roots `parseSuiteManifest` can name in a complaint.
+ *
+ * NOT GUESSED. These are exactly the `where` prefixes the parser passes to its
+ * own helpers (`scorer-protocol.ts`: "suite.manifest.json", "execution",
+ * `uiFlows[i]`, `dataExpectations[i]`, `sourceDirs[i]`) plus the top-level
+ * scalars it names inline (`manifestVersion`, `ticketId`, `target`), so a field
+ * this misses is a field the parser cannot complain about. The optional index and member
+ * suffixes reproduce the shapes it builds — `dataExpectations[0].id`.
+ */
+const MANIFEST_FIELD_RE =
+  /\b(?:suite\.manifest\.json|manifestVersion|ticketId|target|execution|sourceDirs|uiFlows|dataExpectations)(?:\[\d+\])?(?:\.[A-Za-z]+)*/g;
+
+/** Every manifest field path named by these findings, in order, deduplicated. */
+function manifestFieldsNamed(findings: readonly AuditFinding[]): readonly string[] {
+  const seen = new Set<string>();
+  for (const finding of findings) {
+    for (const match of finding.detail.matchAll(MANIFEST_FIELD_RE)) {
+      // The bare document name is the parser's `where` for top-level failures
+      // and appears in every manifest finding's preamble; it names no field.
+      if (match[0] === "suite.manifest.json") continue;
+      seen.add(match[0]);
+    }
+  }
+  return [...seen];
+}
+
+/**
+ * What to tell the owner when three authoring attempts all failed.
+ *
+ * WHY THIS IS A FUNCTION AND NOT A STRING LITERAL. Until 2026-08-10 it was one
+ * literal, and it read: *"repeated failures on the same criterion usually mean
+ * the TICKET is ambiguous rather than the model incapable, and the fix is to
+ * sharpen the ticket text (then re-record its digest and re-run every
+ * configuration)."* Run `a913c871` died on a manifest finding constructed with
+ * `criterionId = null` (`spec-validate.ts`, `blocking("other", null, …)`) —
+ * **there was no criterion**, and the ticket it accused was the most explicit
+ * one in the repository. The first hour of that post-mortem was spent auditing
+ * the ticket because the harness said to. A harness defect wearing a
+ * ticket-quality accusation costs more than it looks like it costs.
+ *
+ * THREE CASES, AND THE THIRD IS THE ONE A CARELESS BRANCH GETS WRONG. "Every
+ * blocking finding has a null criterion" is VACUOUSLY TRUE over an empty list,
+ * and the list IS empty on the commonest failure of all — an attempt whose
+ * response never parsed, which produces `problems` and no findings at all. A
+ * two-way branch would announce a structural manifest defect on a run where
+ * nothing structural was ever measured.
+ *
+ *   structural findings (criterionId === null)  -> the suite DOCUMENT is broken;
+ *                                                  name the fields; sharpening
+ *                                                  the ticket cannot fix it
+ *   criterion-bearing findings                  -> the ambiguity text, which is
+ *                                                  true when there is a
+ *                                                  criterion to be ambiguous
+ *   no blocking findings at all                 -> say so: the failure is about
+ *                                                  the RESPONSE, not the ticket
+ *                                                  and not the suite
+ *
+ * Mixed findings get both paragraphs, structural first: a suite that cannot be
+ * executed blocks regardless of how sharp the ticket is.
+ */
+export function remediationForFailedAuthoring(findings: readonly AuditFinding[]): string {
+  const blockingFindings = findings.filter((f) => f.mustRegenerate);
+  const structural = blockingFindings.filter((f) => f.criterionId === null);
+  const attributed = blockingFindings.filter((f) => f.criterionId !== null);
+
+  const parts: string[] = [
+    "Do NOT start builds. doc 03 section 7.4: a suite that fails the audit must be regenerated, not " +
+      "used.",
+  ];
+
+  if (structural.length > 0) {
+    const fields = manifestFieldsNamed(structural);
+    parts.push(
+      `${structural.length === blockingFindings.length ? "EVERY" : String(structural.length)} blocking ` +
+        "finding above carries NO criterion id, which means the SUITE IS STRUCTURALLY UNEXECUTABLE: " +
+        "the document itself is wrong — a manifest the sealed scorer cannot parse, a test file that " +
+        "declares no test ids, an id declared twice — and not a disagreement about what the ticket " +
+        "means. Sharpening the ticket cannot fix it, and doing so costs a new ticket digest and a " +
+        "re-run of every configuration for nothing." +
+        (fields.length === 0
+          ? ""
+          : ` The manifest field(s) the findings name: ${fields.join(", ")}. Fix the field — and, if ` +
+            "the seat was never shown it, fix AUTHORING_SYSTEM_PROMPT in bakeoff/src/spec-agent.ts so " +
+            "the next attempt is shown the shape the validator requires."),
+    );
+  }
+
+  if (attributed.length > 0) {
+    const criteria = [...new Set(attributed.map((f) => f.criterionId ?? ""))].join(", ");
+    parts.push(
+      `Blocking findings are attached to criteria (${criteria}). Repeated failures on the same ` +
+        "criterion usually mean the TICKET is ambiguous rather than the model incapable, and the fix " +
+        "is to sharpen the ticket text (then re-record its digest and re-run every configuration).",
+    );
+  }
+
+  if (blockingFindings.length === 0) {
+    parts.push(
+      "The last attempt produced NO auditable suite at all — its response did not parse, so no " +
+        "finding was ever made about the suite's contents. The problems listed above are about the " +
+        "RESPONSE. Neither the ticket nor the suite has been shown to be at fault by anything here.",
+    );
+  }
+
+  parts.push("Raising maxAttempts spends more money on the same problem.");
+  return parts.join(" ");
 }
 
 function collectUsage(

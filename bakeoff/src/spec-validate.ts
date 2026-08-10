@@ -37,12 +37,12 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuditFinding, AuditFindingKind, CriterionTier, Ticket } from "./contracts.js";
-import { BakeoffError } from "./contracts.js";
 import { redactText } from "./redact.js";
 // The scorer's own manifest parser, used as the authoring-time validator. One
 // definition of the manifest shape, checked in both places, so a suite cannot
 // be frozen in a form the sealed container will later refuse.
-import { parseSuiteManifest } from "./scorer-protocol.js";
+import { collectManifestProblems } from "./scorer-protocol.js";
+import type { ManifestProblem } from "./scorer-protocol.js";
 import {
   MAX_CRITERIA,
   MIN_VISIBLE_FUNCTIONAL_FRACTION,
@@ -1297,20 +1297,42 @@ export function deterministicAudit(
     // DEFAULT_MAX_AUTHORING_ATTEMPTS), so the seat gets the parser's own
     // remediation text and another attempt, for free, before anything is built.
     if (isSuiteManifestPath(file.path)) {
+      // ONE REJECTION NAMES EVERY OFFENDING FIELD, not the first.
+      //
+      // `parseSuiteManifest`'s `fail()` is typed `never`, so it throws at the
+      // first defect and a feedback turn built from it can only ever carry one
+      // field. Run `a913c871` (2026-08-09) burned 1h26m54s on that channel: the
+      // seat was told "missing id", added `id` and was told "missing kind",
+      // added `kind` and dropped the `id`. `collectManifestProblems` surveys
+      // the document with the SAME parser and returns every field it can
+      // isolate; its first entry is always the parser's own first complaint, so
+      // this can never say less than the fail-fast path said.
+      //
+      // ONE FINDING PER PROBLEM, deliberately. `blockingFindingSummary` renders
+      // one line per finding, and that is the shape the next attempt's prompt
+      // carries. A single finding with the fields joined into one sentence
+      // would be one line however many fields it names.
+      let problems: readonly ManifestProblem[];
       try {
-        parseSuiteManifest(JSON.parse(file.source) as unknown);
+        problems = collectManifestProblems(JSON.parse(file.source) as unknown);
       } catch (error) {
-        const detail =
-          error instanceof BakeoffError
-            ? `${error.message} :: ${error.remediation}`
-            : error instanceof Error
-              ? error.message
-              : String(error);
+        // The source is not JSON at all, so nothing can be surveyed. This is
+        // the one manifest defect that genuinely has a single cause.
+        problems = [
+          {
+            field: file.path,
+            message: error instanceof Error ? error.message : String(error),
+            remediation: "Emit the manifest as a complete JSON document, not as JavaScript.",
+          },
+        ];
+      }
+      for (const problem of problems) {
         findings.push(
           blocking(
             "other",
             null,
-            `the suite manifest "${safe(file.path)}" is not executable by the sealed scorer: ${safe(detail)}`,
+            `the suite manifest "${safe(file.path)}" is not executable by the sealed scorer: ` +
+              `${safe(problem.message)} :: ${safe(problem.remediation)}`,
           ),
         );
       }

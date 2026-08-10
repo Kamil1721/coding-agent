@@ -95,14 +95,76 @@
  * So the assertion is on the DETAIL TEXT, not on a call spy: the text is the
  * thing that reaches the seat, and a spy would pass just as happily on a brief
  * that was threaded and then dropped.
+ *
+ * ------------------------------------------------------------------------
+ * PART 3 — THE DOCUMENTED MANIFEST SHAPE, CHECKED AGAINST THE VALIDATOR
+ * ------------------------------------------------------------------------
+ *
+ * WHAT WENT WRONG, MEASURED. Run `a913c871` (2026-08-09) spent 1h26m54s and died
+ * in the spec phase. The prompt ORDERED a populated `dataExpectations` for any
+ * SERVER ticket and showed only `"dataExpectations": []`; the sealed scorer's
+ * parser requires seven keys; `grep -ac minRows bakeoff/src/spec-agent.ts`
+ * returned 0. `parseSuiteManifest`'s `fail()` is typed `never`, so it throws at
+ * the FIRST offending field and each rejection names exactly one. The three
+ * attempts learned `id`, then `kind`, and the third dropped the `id` it had
+ * already got right — the behaviour of a model that has never been shown the
+ * object, not of one accumulating fields.
+ *
+ * WHY A STRING-MATCH TEST WOULD NOT HAVE CAUGHT IT, and this is the whole point
+ * of part 3. `AUTHORING_SYSTEM_PROMPT.includes("dataExpectations")` was TRUE
+ * throughout that run. So was every assertion in part 1. What was false — and
+ * what nothing measured — is that the shape the prompt documents is a shape
+ * `parseSuiteManifest` accepts. These tests cut the template out of the prompt
+ * and run it through the scorer's own parser, and run a VIOLATION of every
+ * documented rule through it too. Prose the validator does not enforce, and
+ * enforcement the prose does not mention, both go red.
+ *
+ * NEGATIVE CONTROLS. Four mutations, applied to production code, run, WATCHED
+ * RED, restored (2026-08-10). Two weaken the prompt and two weaken the
+ * validator, because the binding has two ends and a one-ended test only sees
+ * one of them:
+ *
+ *   mutation                                      test that went red
+ *   A  the template's `dataExpectations` put      "the manifest template ... is
+ *      back to `[]` — the literal pre-fix          accepted by the sealed
+ *      prompt of run a913c871                      scorer's parser" ("the
+ *                                                  template shows 0 data
+ *                                                  expectation(s)") + "both
+ *                                                  worked examples reach the
+ *                                                  prompt verbatim"
+ *   B  the sqlite example's `file` changed to     all four part-3 tests,
+ *      "/data/app.db" (absolute)                   including each probe's own
+ *                                                  control: "the control entry
+ *                                                  ... is itself rejected, so
+ *                                                  its violation proves nothing"
+ *   C  the `minRows` prose rule deleted from      "every rule the prompt states
+ *      the prompt                                  ... is a rule the scorer
+ *                                                  enforces" ("the prompt no
+ *                                                  longer states the rule
+ *                                                  minRows is at least 1")
+ *   D  `reqNumber(item,"minRows",where,1)` in     same test, other direction:
+ *      scorer-protocol.ts replaced with a          "parseSuiteManifest ACCEPTED
+ *      defaulting read                             a violation"
+ *
+ * B IS THE CONTROL ON THE CONTROLS. Each probe first parses a REPAIRED entry of
+ * the same kind and requires it to be accepted. Without that, a violation
+ * rejected for an unrelated reason — a typo in the fixture, a helper that
+ * dropped a field — reads as the rule being enforced, which is this
+ * repository's signature defect in its most convincing costume.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Ticket } from "./contracts.js";
 import { ticketDigest } from "./hash.js";
-import { AUTHORING_SYSTEM_PROMPT, auditSuite } from "./spec-agent.js";
-import { STATIC_SERVE_PORT } from "./scorer-protocol.js";
+import {
+  AUTHORING_SYSTEM_PROMPT,
+  MANIFEST_DATA_EXPECTATION_EXAMPLES,
+  auditSuite,
+  remediationForFailedAuthoring,
+} from "./spec-agent.js";
+import type { AuditFinding } from "./contracts.js";
+import { STATIC_SERVE_PORT, parseSuiteManifest } from "./scorer-protocol.js";
 import type { SuiteDraft } from "./spec-types.js";
 
 /* -------------------------------------------------------------------------
@@ -389,5 +451,415 @@ test("auditSuite threads the ticket brief into the deterministic pass", async ()
     prose[0]?.detail ?? "",
     /the ticket never states 200/,
     "the finding did not name the ticket, so `ticketBrief` never reached the rule",
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * PART 3 — the documented manifest shape, checked against the validator
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The manifest template EXACTLY AS THE SEAT RECEIVES IT, cut out of the prompt.
+ *
+ * Sliced and brace-matched rather than read from a constant, for the reason
+ * `manifestModeSection` gives one section up: the slice proves the document is
+ * IN the prompt. A constant the prompt no longer interpolates would keep every
+ * assertion below green while the seat is shown nothing.
+ *
+ * The matcher tracks quoting so a brace inside a string value cannot end the
+ * document early. It throws rather than returning "" on any failure.
+ */
+function manifestTemplateJson(): string {
+  const anchor = AUTHORING_SYSTEM_PROMPT.indexOf('"manifestVersion": 1');
+  if (anchor < 0) {
+    throw new Error(
+      'AUTHORING_SYSTEM_PROMPT no longer contains a manifest template ("manifestVersion": 1). The ' +
+        "seat is being ordered to emit a document it is never shown, which is how run a913c871 died.",
+    );
+  }
+  const start = AUTHORING_SYSTEM_PROMPT.lastIndexOf("{", anchor);
+  if (start < 0) throw new Error("the manifest template has no opening brace before manifestVersion");
+
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < AUTHORING_SYSTEM_PROMPT.length; i += 1) {
+    const ch = AUTHORING_SYSTEM_PROMPT[i];
+    if (inString) {
+      if (ch === "\\") i += 1;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") depth += 1;
+    else if (ch === "}" || ch === "]") {
+      depth -= 1;
+      if (depth === 0) return AUTHORING_SYSTEM_PROMPT.slice(start, i + 1);
+    }
+  }
+  throw new Error("the manifest template in AUTHORING_SYSTEM_PROMPT is not brace-balanced");
+}
+
+/** The whole prompt with runs of whitespace collapsed. See `MODE_FLAT`. */
+const PROMPT_FLAT = AUTHORING_SYSTEM_PROMPT.replace(/\s+/g, " ");
+
+/**
+ * THE TEST THAT WOULD HAVE CAUGHT IT, and the reason it is not a string match.
+ *
+ * Run `a913c871` (2026-08-09) spent 1h26m54s and died because the prompt
+ * mandated a populated `dataExpectations` and showed only `[]`. A test asserting
+ * `AUTHORING_SYSTEM_PROMPT.includes("dataExpectations")` was satisfied by that
+ * prompt. This one is not: it takes the document the seat is shown, parses it
+ * with the SEALED SCORER'S OWN PARSER — the function whose rejection killed the
+ * run — and fails if the two ever disagree.
+ */
+test("the manifest template in the prompt is accepted by the sealed scorer's parser", () => {
+  const raw = manifestTemplateJson();
+
+  // POSITIVE ANCHORS. Everything after this reads fields off the parse; a
+  // template that shrank to `{}` would fail the parse loudly, but a template
+  // whose dataExpectations quietly went back to `[]` would not.
+  assert.ok(raw.length > 200, `the manifest template is only ${String(raw.length)} characters long`);
+
+  const parsed = parseSuiteManifest(JSON.parse(raw) as unknown);
+
+  assert.ok(
+    parsed.dataExpectations.length >= 2,
+    `the template shows ${String(parsed.dataExpectations.length)} data expectation(s). It must show ` +
+      "both kinds populated. `[]` is the shape the seat was shown for the whole life of run a913c871, " +
+      "and it is the one shape that teaches nothing, because it is the branch the mandate forbids.",
+  );
+  assert.deepEqual(
+    [...parsed.dataExpectations].map((e) => e.kind).sort(),
+    ["http", "sqlite"],
+    "the template must show BOTH kinds: the seat picks one from the ticket and cannot infer the " +
+      "other's fields from the one it was shown",
+  );
+
+  // THE FIELD THE THREE DEAD ATTEMPTS NEVER EMITTED AND WERE NEVER TOLD ABOUT.
+  // `grep -ac minRows bakeoff/src/spec-agent.ts` returned 0 on 2026-08-09.
+  assert.ok(
+    AUTHORING_SYSTEM_PROMPT.includes("minRows"),
+    "the prompt does not contain the string `minRows` anywhere. That was literally true during run " +
+      "a913c871, and no attempt emitted the field.",
+  );
+});
+
+/**
+ * The examples are the constants, byte for byte.
+ *
+ * The prompt interpolates `JSON.stringify(example)`, so this assertion uses the
+ * SAME call: an example edited in the constant and left stale in a hand-written
+ * block, or vice versa, is red here rather than divergent in production.
+ */
+test("both worked examples reach the prompt verbatim, and both parse", () => {
+  for (const [kind, example] of Object.entries(MANIFEST_DATA_EXPECTATION_EXAMPLES)) {
+    assert.ok(
+      AUTHORING_SYSTEM_PROMPT.includes(JSON.stringify(example)),
+      `the ${kind} example is not in the prompt as it is written in the constant. The prompt must ` +
+        "interpolate JSON.stringify of it, or the seat is shown something the test never checked.",
+    );
+    assert.doesNotThrow(
+      () => parseSuiteManifest(manifestWith([example])),
+      `the ${kind} example the prompt shows is rejected by parseSuiteManifest`,
+    );
+  }
+});
+
+/** A minimal, otherwise-valid manifest carrying the given expectations. */
+function manifestWith(dataExpectations: readonly unknown[]): unknown {
+  return {
+    manifestVersion: 1,
+    ticketId: "t-probe",
+    target: "web",
+    execution: {
+      install: null,
+      build: null,
+      typecheck: null,
+      lint: null,
+      start: null,
+      port: null,
+      healthPath: null,
+      bootTimeoutMs: null,
+      commandTimeoutMs: null,
+    },
+    sourceDirs: ["."],
+    uiFlows: [{ id: "home", path: "/", description: "landing", waitForSelector: null }],
+    dataExpectations,
+  };
+}
+
+/** An entry built from an example with fields overridden or deleted. */
+function entry(
+  base: "sqlite" | "http",
+  overrides: Readonly<Record<string, unknown>>,
+  drop: readonly string[] = [],
+): Record<string, unknown> {
+  const built: Record<string, unknown> = { ...MANIFEST_DATA_EXPECTATION_EXAMPLES[base], ...overrides };
+  for (const key of drop) delete built[key];
+  return built;
+}
+
+/**
+ * One documented rule, one sentence in the prompt, one violation of it.
+ *
+ * `promptSays` is what the seat is told. `violation` is an entry that breaks
+ * exactly that rule. `namesField` is what the validator must complain about.
+ * The three together are the divergence check: prose the validator does not
+ * enforce, or enforcement the prose does not mention, cannot both stay green.
+ */
+interface RuleProbe {
+  readonly rule: string;
+  readonly promptSays: RegExp;
+  readonly violation: Record<string, unknown>;
+  readonly namesField: RegExp;
+}
+
+const RULE_PROBES: readonly RuleProbe[] = [
+  {
+    rule: "all seven keys are present on every entry",
+    promptSays: /Every entry carries ALL SEVEN of "id", "kind", "file", "table", "sql", "path" and "minRows"/,
+    violation: entry("sqlite", {}, ["minRows"]),
+    namesField: /minRows/,
+  },
+  {
+    rule: "an omitted key is not a null key",
+    promptSays: /Omitting a key is not the same as declaring it absent and is rejected/,
+    violation: entry("sqlite", {}, ["sql"]),
+    namesField: /\.sql\b/,
+  },
+  {
+    rule: "id is a non-empty string",
+    promptSays: /"id" is a non-empty string and no two entries may share one/,
+    violation: entry("sqlite", { id: "" }),
+    namesField: /\.id\b/,
+  },
+  {
+    rule: 'kind is exactly "sqlite" or "http"',
+    promptSays: /"kind" is exactly "sqlite" or "http"\. No other value is accepted\./,
+    violation: entry("sqlite", { kind: "postgres" }),
+    namesField: /\.kind\b/,
+  },
+  {
+    rule: "minRows is at least 1",
+    promptSays: /"minRows" is a number and must be at least 1\. Zero rows proves nothing, so 0 is rejected\./,
+    violation: entry("sqlite", { minRows: 0 }),
+    namesField: /minRows/,
+  },
+  {
+    rule: "sqlite requires file",
+    promptSays: /kind "sqlite" reads a database file inside the artefact.{0,400}?"file" is REQUIRED/,
+    violation: entry("sqlite", { file: null }),
+    namesField: /\.file\b/,
+  },
+  {
+    rule: "a sqlite file path is artefact-relative",
+    promptSays: /a path relative to the artefact root — no leading "\/" and no "\.\."/,
+    violation: entry("sqlite", { file: "/etc/hosts" }),
+    namesField: /\.file\b/,
+  },
+  {
+    rule: "sqlite needs either a table or a sql count",
+    promptSays: /EITHER "table", whose rows are counted for you, OR "sql"/,
+    violation: entry("sqlite", { table: null, sql: null }),
+    namesField: /table name or an explicit sql count/,
+  },
+  {
+    rule: "http requires path",
+    promptSays: /kind "http" reads a declared endpoint.{0,300}?"path" is REQUIRED/,
+    violation: entry("http", { path: null }),
+    namesField: /\.path\b/,
+  },
+  {
+    rule: "an http path is same-origin, leading slash, no query and no fragment",
+    promptSays: /a same-origin path starting with "\/" with no query string and no fragment/,
+    violation: entry("http", { path: "https://example.test/api/bookings" }),
+    namesField: /\.path\b/,
+  },
+];
+
+test("every rule the prompt states about dataExpectations is a rule the scorer enforces", () => {
+  assert.ok(RULE_PROBES.length >= 10, "the probe table was emptied, so this test measures nothing");
+
+  for (const probe of RULE_PROBES) {
+    assert.match(
+      PROMPT_FLAT,
+      new RegExp(probe.promptSays.source.replace(/\s+/g, " "), probe.promptSays.flags),
+      `the prompt no longer states the rule "${probe.rule}", but parseSuiteManifest still enforces ` +
+        "it. That gap is exactly how run a913c871 died: mandated, enforced, never shown.",
+    );
+
+    // THE NEGATIVE CONTROL, PER PROBE. Without it a violation that is rejected
+    // for some unrelated reason — a typo in the fixture, a field the builder
+    // helper dropped — reads as the rule being enforced.
+    const repaired = entry(
+      probe.violation["kind"] === "http" ? "http" : "sqlite",
+      { id: "control" },
+    );
+    assert.doesNotThrow(
+      () => parseSuiteManifest(manifestWith([repaired])),
+      `the control entry for "${probe.rule}" is itself rejected, so its violation proves nothing`,
+    );
+
+    assert.throws(
+      () => parseSuiteManifest(manifestWith([probe.violation])),
+      (error: unknown) => {
+        assert.ok(error instanceof Error, `expected an Error, got ${String(error)}`);
+        assert.match(
+          error.message,
+          probe.namesField,
+          `the validator rejected the violation of "${probe.rule}" without naming the field. The ` +
+            "seat gets this message and nothing else.",
+        );
+        return true;
+      },
+      `parseSuiteManifest ACCEPTED a violation of "${probe.rule}". The prompt tells the seat a rule ` +
+        "the scorer does not have, which is a different way of lying to it.",
+    );
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * PART 4 — the remediation on a failed authoring run
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The finding that killed run a913c871, quoted from `runs.failure_reason`.
+ *
+ * Built the way `spec-validate.ts` builds it — `blocking("other", null, …)` —
+ * because the null criterion is the whole subject. Its detail is the parser's
+ * own message and remediation, joined by " :: ", exactly as the audit joins
+ * them.
+ */
+const MANIFEST_FINDING: AuditFinding = {
+  criterionId: null,
+  kind: "other",
+  detail:
+    'the suite manifest "suite.manifest.json" is not executable by the sealed scorer: ' +
+    "dataExpectations[0].id must be a non-empty string :: Set dataExpectations[0].id.",
+  mustRegenerate: true,
+};
+
+const CRITERION_FINDING: AuditFinding = {
+  criterionId: "REQ-004",
+  kind: "vacuous",
+  detail: 'criterion REQ-004: holdout test T-9 asserts nothing the criterion states',
+  mustRegenerate: true,
+};
+
+/** An advisory finding never reaches the reasons list and must not steer this. */
+const ADVISORY: AuditFinding = {
+  criterionId: null,
+  kind: "other",
+  detail: "advisory: uiFlows[1].description is terse",
+  mustRegenerate: false,
+};
+
+const AMBIGUITY = /the TICKET is ambiguous/;
+const STRUCTURAL = /STRUCTURALLY UNEXECUTABLE/;
+const NO_SUITE = /NO auditable suite at all/;
+
+test("a null-criterion failure says the suite is unexecutable and names the field, and does NOT blame the ticket", () => {
+  const text = remediationForFailedAuthoring([MANIFEST_FINDING]);
+
+  assert.match(text, STRUCTURAL, "the remediation does not say the suite cannot be executed");
+  assert.match(
+    text,
+    /dataExpectations\[0\]\.id/,
+    "the remediation does not name the field. Naming it is the difference between a defect the " +
+      "owner can fix in one edit and 87 minutes of auditing a ticket that was never at fault.",
+  );
+
+  // THE ASSERTION THIS FIX EXISTS FOR, AND IT IS AN ABSENCE. The old text sent
+  // the owner to sharpen a ticket that carried no criterion to be ambiguous
+  // about. A test that only checked the new sentence was present would have
+  // passed with the accusation still underneath it.
+  assert.doesNotMatch(
+    text,
+    AMBIGUITY,
+    "the remediation still blames the ticket on a finding constructed with criterionId = null. " +
+      "There is no criterion, so there is nothing to sharpen.",
+  );
+  assert.doesNotMatch(text, NO_SUITE, "a suite WAS audited; the no-suite branch must not fire");
+});
+
+test("a top-level manifest defect names its field too, not only a dataExpectations one", () => {
+  // THE GAP THIS CLOSES. The field extractor's alternation is the parser's own
+  // `where` prefixes; the top-level scalars are named INLINE in the parser's
+  // message ("suite.manifest.json manifestVersion is 2, expected 1") rather
+  // than as a `where`, so they were missing from it and this branch emitted the
+  // structural paragraph with no field clause at all.
+  const text = remediationForFailedAuthoring([
+    {
+      criterionId: null,
+      kind: "other",
+      detail:
+        'the suite manifest "suite.manifest.json" is not executable by the sealed scorer: ' +
+        "suite.manifest.json manifestVersion is 2, expected 1 :: Regenerate the manifest against the " +
+        "current scorer protocol.",
+      mustRegenerate: true,
+    },
+  ]);
+  assert.match(text, STRUCTURAL);
+  assert.match(text, /manifestVersion/, "the remediation names no field on a top-level manifest defect");
+  assert.doesNotMatch(text, AMBIGUITY);
+});
+
+test("a criterion-bearing failure keeps the ambiguity advice, which is true when there is a criterion", () => {
+  const text = remediationForFailedAuthoring([CRITERION_FINDING]);
+
+  assert.match(text, AMBIGUITY, "the ambiguity advice was deleted wholesale rather than branched");
+  assert.match(text, /REQ-004/, "the remediation does not name the criterion the owner has to sharpen");
+  assert.doesNotMatch(
+    text,
+    STRUCTURAL,
+    "a finding that names a criterion is not a structural defect in the suite document",
+  );
+  assert.doesNotMatch(text, NO_SUITE);
+});
+
+/**
+ * THE VACUOUS-TRUTH BRANCH. "Every blocking finding has a null criterion" is
+ * TRUE over an empty list, and the list is empty on the commonest failure there
+ * is: a response that never parsed. A two-way branch reports a structural
+ * manifest defect on a run where no manifest was ever seen.
+ */
+test("a run whose last attempt never parsed blames neither the ticket nor the suite", () => {
+  for (const findings of [[], [ADVISORY]]) {
+    const text = remediationForFailedAuthoring(findings);
+    assert.match(text, NO_SUITE, "the response-level failure is not named");
+    assert.doesNotMatch(text, STRUCTURAL, "no manifest was audited, so nothing structural was measured");
+    assert.doesNotMatch(text, AMBIGUITY, "no criterion was measured, so the ticket is not implicated");
+  }
+});
+
+test("a mixed failure leads with the structural half and keeps both", () => {
+  const text = remediationForFailedAuthoring([CRITERION_FINDING, MANIFEST_FINDING]);
+
+  assert.match(text, STRUCTURAL);
+  assert.match(text, AMBIGUITY);
+  assert.ok(
+    text.indexOf("STRUCTURALLY UNEXECUTABLE") < text.search(AMBIGUITY),
+    "the ambiguity advice comes first. A suite the scorer cannot parse blocks every configuration " +
+      "at once, however sharp the ticket is, so it is the sentence to read first.",
+  );
+  assert.doesNotMatch(text, /EVERY blocking finding/, "not every finding is structural here");
+});
+
+test("every branch still refuses builds and still says raising maxAttempts is not the answer", () => {
+  for (const findings of [[], [MANIFEST_FINDING], [CRITERION_FINDING], [CRITERION_FINDING, MANIFEST_FINDING]]) {
+    const text = remediationForFailedAuthoring(findings);
+    assert.match(text, /Do NOT start builds/, "a branch dropped the instruction that stops the run");
+    assert.match(text, /Raising maxAttempts spends more money/, "a branch dropped the cost warning");
+  }
+});
+
+test("the uniqueness rule the prompt states is enforced across the list", () => {
+  const one = entry("sqlite", { id: "same" });
+  const two = entry("http", { id: "same" });
+  assert.doesNotThrow(() => parseSuiteManifest(manifestWith([one, entry("http", { id: "other" })])));
+  assert.throws(
+    () => parseSuiteManifest(manifestWith([one, two])),
+    /duplicate dataExpectations id/,
+    "two entries may share an id, but the prompt tells the seat they may not",
   );
 });

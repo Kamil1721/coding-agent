@@ -25,10 +25,12 @@ import {
   TITLE_PATH_SEPARATOR,
   criterionNamedInTestTitle,
   isSuiteTestFailure,
+  collectManifestProblems,
   parseContainerResult,
+  parseSuiteManifest,
   triageSuiteFailures,
 } from "./scorer-protocol.js";
-import type { SuiteTestOutcome } from "./scorer-protocol.js";
+import type { ManifestProblem, SuiteTestOutcome } from "./scorer-protocol.js";
 import { gateToCriterion } from "./scorer.js";
 
 const criterion = (id: string, tier: CriterionTier): AcceptanceCriterion => ({
@@ -278,3 +280,343 @@ function containerResultWithBuildOutcome(outcome: string): unknown {
     infrastructureErrors: [],
   };
 }
+
+/* -------------------------------------------------------------------------
+ * COLLECT-ALL MANIFEST VALIDATION
+ *
+ * WHY IT EXISTS. `parseSuiteManifest`'s `fail()` is typed `never`: it throws at
+ * the FIRST offending field, so an authoring feedback turn built from it names
+ * exactly one. Run `a913c871` (2026-08-09) died on that channel after 1h26m54s —
+ * told "missing id", it added `id` and was told "missing kind"; told "missing
+ * kind", it added `kind` and dropped the `id` it had already got right. Seven
+ * keys, one hint per attempt, three attempts.
+ *
+ * THE PROPERTY THESE TESTS DEFEND IS NOT "IT FINDS MORE". A collector that
+ * reimplemented the rules would drift from the parser silently and start naming
+ * fields the scorer does not care about, which costs an authoring attempt every
+ * time. So the tests are mostly about AGREEMENT with the parser:
+ *   - a document the parser accepts yields NO problems;
+ *   - a document the parser rejects yields the parser's own first message FIRST,
+ *     verbatim, always — the list can never say less than fail-fast said;
+ *   - a document with exactly one defect yields exactly one problem, in
+ *     particular for the cross-field `execution` rule, where a naive per-field
+ *     probe invents a defect in a field the candidate got right.
+ *
+ * NEGATIVE CONTROLS. Mutations applied to production code, run, watched RED,
+ * restored (2026-08-10) — recorded in the lane report; each is named on the test
+ * it reddened in the assertion messages below.
+ * ---------------------------------------------------------------------- */
+
+const SERVER_EXECUTION = {
+  install: null,
+  build: null,
+  typecheck: null,
+  lint: null,
+  start: "npm start",
+  port: 8080,
+  healthPath: "/api/health",
+  bootTimeoutMs: null,
+  commandTimeoutMs: null,
+};
+
+function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    manifestVersion: 1,
+    ticketId: "t-collect",
+    target: "web",
+    execution: SERVER_EXECUTION,
+    sourceDirs: ["."],
+    uiFlows: [{ id: "home", path: "/", description: "landing", waitForSelector: null }],
+    dataExpectations: [
+      { id: "db-1", kind: "sqlite", file: "data/app.db", table: "messages", sql: null, path: null, minRows: 1 },
+    ],
+    ...overrides,
+  };
+}
+
+const fieldsOf = (problems: readonly ManifestProblem[]): readonly string[] =>
+  [...new Set(problems.map((p) => p.field))].sort();
+
+test("a manifest the sealed parser accepts produces no problems at all", () => {
+  // THE ANCHOR. Every count assertion below is meaningless if the collector
+  // reports something on a document that is fine — and a collector that cried
+  // wolf would spend an authoring attempt per run, for ever.
+  assert.doesNotThrow(() => parseSuiteManifest(manifest()));
+  assert.deepEqual(collectManifestProblems(manifest()), []);
+});
+
+test("three fields wrong in one entry are named in ONE rejection", () => {
+  // ATTEMPT 3 OF RUN a913c871, verbatim in shape: it had been told to add
+  // `kind`, so it emitted {kind, method, path, expectStatus, description} and
+  // lost the `id` it had got right on attempt 2. Under fail-fast it would have
+  // been told about `id` and nothing else, for the third time.
+  const problems = collectManifestProblems(
+    manifest({
+      dataExpectations: [{ kind: "http", method: "GET", path: "/api/messages", expectStatus: 200, description: "x" }],
+    }),
+  );
+
+  for (const field of ["dataExpectations[0].id", "dataExpectations[0].file", "dataExpectations[0].minRows"]) {
+    assert.ok(
+      fieldsOf(problems).includes(field),
+      `${field} is not in the rejection: ${fieldsOf(problems).join(", ")}. Discovering a seven-key ` +
+        "object one key per attempt in three attempts is arithmetically impossible.",
+    );
+  }
+  assert.ok(problems.length >= 3, `expected at least three problems, got ${String(problems.length)}`);
+
+  // AND EVERY ONE CARRIES THE PARSER'S OWN REMEDIATION. A field name without
+  // one is what the seat cannot act on.
+  for (const problem of problems) {
+    assert.ok(problem.remediation.length > 0, `${problem.field} has no remediation`);
+    assert.ok(problem.message.length > 0, `${problem.field} has no message`);
+  }
+});
+
+test("attempt 1's shape — the FIRST rejection is the one that stops the cascade", () => {
+  // {entity, source, expectation}: what run a913c871's first attempt emitted,
+  // having never been shown the object. Fail-fast told it "missing id" and
+  // nothing else, and the next two attempts each learned one more field.
+  //
+  // `kind` is invalid here, and `kind` decides which of file/table/sql/path are
+  // required — so those four are deliberately NOT named (naming them against a
+  // guessed kind sends the seat to fix fields it may not need). `id` and
+  // `minRows` are the two `kind` does not govern, and they ARE named.
+  const problems = collectManifestProblems(
+    manifest({ dataExpectations: [{ entity: "messages", source: "sqlite", expectation: "one row" }] }),
+  );
+
+  assert.deepEqual(fieldsOf(problems), [
+    "dataExpectations[0].id",
+    "dataExpectations[0].kind",
+    "dataExpectations[0].minRows",
+  ]);
+  assert.ok(
+    problems.some((p) => /minRows/.test(p.message)),
+    "minRows appeared in no message. No attempt of run a913c871 ever emitted that field and none was " +
+      "ever told it exists.",
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * `sql` — the seventh key, which no probe could name until 2026-08-10
+ * ---------------------------------------------------------------------- */
+
+/**
+ * WHY NO EXISTING TEST COULD HAVE CAUGHT THIS, stated so the gap is not
+ * re-opened: every `dataExpectations` fixture above carries `sql` present, so
+ * the field was never the thing under test. `table` and `sql` were probed as ONE
+ * substitution hardcoded to the label `${where}.table`, and there was no `.sql`
+ * probe in the file at all — measured, not assumed: against run a913c871's
+ * attempt-3 shape the collector returned eight problems and the word `sql`
+ * appeared in none of them. A seat that repairs all eight is rejected again on
+ * the attempt after, which finally names `sql`. That extra round trip is the
+ * entire remaining slack of a 3-attempt budget, in the round that exists
+ * because a 3-attempt budget ran out.
+ */
+test("a manifest whose ONLY defect is a missing `sql` is told the word `sql`", () => {
+  const problems = collectManifestProblems(
+    manifest({
+      dataExpectations: [
+        // Everything the parser wants except `sql`. `table` is VALID here, which
+        // is the point: the at-least-one-of-table-or-sql rule is satisfied, so
+        // the only thing left to fail on is `sql`'s own shape.
+        { id: "db-1", kind: "sqlite", file: "data/app.db", table: "messages", path: null, minRows: 1 },
+      ],
+    }),
+  );
+
+  assert.deepEqual(
+    fieldsOf(problems),
+    ["dataExpectations[0].sql"],
+    `the sole defect was an absent \`sql\` and the rejection named ${fieldsOf(problems).join(", ") || "nothing"}`,
+  );
+  assert.ok(
+    problems.some((p) => /\bsql\b/.test(p.message)),
+    "no message contains the word `sql`, so the seat is handed a rejection it cannot act on",
+  );
+});
+
+/**
+ * THE CASE THAT ACTUALLY COST THE ROUND, kept separate from the one above
+ * because only this one is invisible in the sentence the seat reads.
+ *
+ * `spec-validate` renders `problem.message` and `problem.remediation` and never
+ * `problem.field`, so on a single-defect document the old collector was merely
+ * MISLABELLED — the seat still read "dataExpectations[0].sql must be …". Here
+ * `table` is wrong TOO. The paired probe then spends its one report on `table`,
+ * the sql substitution is gone, and the word `sql` disappears from every
+ * message in the list. Measured on run a913c871's attempt-3 shape before the
+ * fix: eleven problems, `sql` in none of them. That is a seat repairing every
+ * field it was handed and being rejected again for the one it was not.
+ */
+test("when `table` is wrong too, `sql` is STILL named and not swallowed by the pair", () => {
+  const problems = collectManifestProblems(
+    manifest({
+      dataExpectations: [{ id: "db-1", kind: "sqlite", file: "data/app.db", path: null, minRows: 1 }],
+    }),
+  );
+
+  assert.ok(
+    problems.some((p) => /\bsql\b/.test(p.message)),
+    "the seat is told about `table` and never about `sql`, so its next attempt is rejected for `sql` " +
+      `alone — one more round trip out of a 3-attempt budget. Got: ${problems.map((p) => p.message).join(" | ")}`,
+  );
+  assert.ok(
+    problems.some((p) => /\btable\b/.test(p.message)),
+    "the cross-field table rule stopped being reported, which trades one blind spot for another",
+  );
+});
+
+/**
+ * THE NEGATIVE CONTROLS, and they are the half that matters.
+ *
+ * A probe that reports a problem on a LEGAL document sends the seat to repair a
+ * field that was already right — the same wasted attempt this collector exists
+ * to prevent, inverted, and strictly worse because it is unfixable. `sql: null`
+ * with a real `table`, and `sql: "…"` with `table: null`, are both accepted by
+ * the sealed parser; `parseSuiteManifest` is asserted on each one directly so
+ * that these cases cannot silently become invalid documents that pass for the
+ * wrong reason.
+ */
+test("a legal `sql` — null beside a table, or a query with no table — is not reported", () => {
+  const sqlNull = manifest({
+    dataExpectations: [
+      { id: "db-1", kind: "sqlite", file: "data/app.db", table: "messages", sql: null, path: null, minRows: 1 },
+    ],
+  });
+  const sqlQuery = manifest({
+    dataExpectations: [
+      {
+        id: "db-1",
+        kind: "sqlite",
+        file: "data/app.db",
+        table: null,
+        sql: "select count(*) from messages",
+        path: null,
+        minRows: 1,
+      },
+    ],
+  });
+
+  for (const [label, candidate] of [
+    ["sql: null beside a real table", sqlNull],
+    ["a query with table: null", sqlQuery],
+  ] as const) {
+    assert.doesNotThrow(
+      () => parseSuiteManifest(candidate),
+      `${label} is supposed to be a document the sealed parser accepts`,
+    );
+    assert.deepEqual(
+      collectManifestProblems(candidate),
+      [],
+      `${label} is legal and the collector reported on it anyway`,
+    );
+  }
+});
+
+test("the parser's own first complaint is always first, so the list can never say less", () => {
+  const corpus: readonly Record<string, unknown>[] = [
+    manifest({ manifestVersion: 2 }),
+    manifest({ ticketId: "" }),
+    manifest({ target: "ios" }),
+    manifest({ sourceDirs: [] }),
+    manifest({ sourceDirs: ["/abs"] }),
+    manifest({ execution: { ...SERVER_EXECUTION, port: null, healthPath: null } }),
+    manifest({ execution: { ...SERVER_EXECUTION, healthPath: "https://example.test/health" } }),
+    manifest({ uiFlows: [{ id: "a b", path: "/", description: "x", waitForSelector: null }] }),
+    manifest({ uiFlows: [{ id: "home", path: "nope", description: "x", waitForSelector: null }] }),
+    manifest({ dataExpectations: [{ entity: "messages", source: "sqlite", expectation: "one row" }] }),
+    manifest({ dataExpectations: [{ id: "d", description: "x", entity: "m", minRowCount: 1, readBack: true }] }),
+    manifest({ dataExpectations: [{ id: "d", kind: "sqlite", file: "data/a.db", table: null, sql: null, path: null, minRows: 1 }] }),
+    manifest({ dataExpectations: [{ id: "d", kind: "http", file: null, table: null, sql: null, path: null, minRows: 1 }] }),
+    manifest({ dataExpectations: [{ id: "d", kind: "sqlite", file: "../etc/x", table: "t", sql: null, path: null, minRows: 0 }] }),
+  ];
+
+  for (const candidate of corpus) {
+    let thrown: string | null = null;
+    try {
+      parseSuiteManifest(candidate);
+    } catch (error) {
+      thrown = error instanceof Error ? error.message : String(error);
+    }
+    const problems = collectManifestProblems(candidate);
+
+    assert.ok(thrown !== null, `this corpus entry parses cleanly and proves nothing: ${JSON.stringify(candidate)}`);
+    assert.ok(problems.length > 0, `collect returned nothing for a document the parser rejects: ${thrown}`);
+    assert.equal(
+      problems[0]?.message,
+      thrown,
+      "the parser's own first complaint is not the first problem. It must be, unconditionally: that " +
+        "is what makes this list a superset of the fail-fast behaviour rather than a second opinion.",
+    );
+  }
+});
+
+test("a document with exactly ONE defect produces exactly one problem", () => {
+  // NO INVENTED WORK. Every field named costs the seat an edit, and a field it
+  // did not get wrong costs it an attempt. The `execution` case is the one that
+  // catches a naive collector: substituting a perfectly good `"start": "npm
+  // start"` into a base whose port and healthPath are null trips the cross-field
+  // rule and reports `execution.start` on a manifest that declared all three.
+  const singles: readonly [string, Record<string, unknown>][] = [
+    ["manifestVersion", manifest({ manifestVersion: 2 })],
+    ["ticketId", manifest({ ticketId: "" })],
+    ["target", manifest({ target: "ios" })],
+    ["sourceDirs", manifest({ sourceDirs: [] })],
+    [
+      "execution cross-field",
+      manifest({ execution: { ...SERVER_EXECUTION, port: null, healthPath: null } }),
+    ],
+    [
+      "dataExpectations minRows",
+      manifest({
+        dataExpectations: [
+          { id: "db-1", kind: "sqlite", file: "data/app.db", table: "messages", sql: null, path: null, minRows: 0 },
+        ],
+      }),
+    ],
+    [
+      "uiFlows path",
+      manifest({ uiFlows: [{ id: "home", path: "nope", description: "landing", waitForSelector: null }] }),
+    ],
+  ];
+
+  for (const [name, candidate] of singles) {
+    const problems = collectManifestProblems(candidate);
+    assert.equal(
+      problems.length,
+      1,
+      `"${name}" has one defect and produced ${String(problems.length)}: ` +
+        problems.map((p) => `${p.field} (${p.message})`).join(" | "),
+    );
+  }
+});
+
+test("a duplicate id is a property of the LIST, and no per-entry probe can see one", () => {
+  const dup = manifest({
+    dataExpectations: [
+      { id: "same", kind: "sqlite", file: "data/app.db", table: "m", sql: null, path: null, minRows: 1 },
+      { id: "same", kind: "http", file: null, table: null, sql: null, path: "/api/m", minRows: 1 },
+    ],
+  });
+  const problems = collectManifestProblems(dup);
+  assert.equal(problems.length, 1, problems.map((p) => p.field).join(", "));
+  assert.match(problems[0]?.message ?? "", /duplicate dataExpectations id/);
+
+  const dupFlows = manifest({
+    uiFlows: [
+      { id: "home", path: "/", description: "a", waitForSelector: null },
+      { id: "home", path: "/b", description: "b", waitForSelector: null },
+    ],
+  });
+  assert.match(collectManifestProblems(dupFlows)[0]?.message ?? "", /duplicate uiFlows id/);
+});
+
+test("a manifest that is not an object at all produces the parser's complaint and stops", () => {
+  for (const junk of [null, 42, "a string", [1, 2, 3]]) {
+    const problems = collectManifestProblems(junk);
+    assert.equal(problems.length, 1, `${JSON.stringify(junk)} produced ${String(problems.length)} problems`);
+    assert.match(problems[0]?.message ?? "", /is not a JSON object|manifestVersion/);
+  }
+});

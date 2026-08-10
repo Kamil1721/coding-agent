@@ -169,6 +169,18 @@ export interface AuthoringTrailEntry {
   readonly judgeRan: boolean;
   readonly accepted: boolean;
   readonly costUsd: number;
+  /**
+   * The `max_tokens` this attempt ran at, and whether the free truncation retry
+   * fired inside it. Optional because trails frozen before 2026-08-10 do not
+   * carry them and a reader must not mistake "not recorded" for "64,000".
+   *
+   * They are here so the rung reaches disk on the SUCCESS path too: the thrown
+   * `suite_not_audited` message carries the same history on the failure path,
+   * and between them there is no longer a run whose ceiling can only be
+   * recovered by sampling a subprocess environment from outside the product.
+   */
+  readonly maxOutputTokens?: number;
+  readonly truncationRetried?: boolean;
 }
 
 export interface FreezeSuiteInput {

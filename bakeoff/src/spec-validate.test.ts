@@ -33,6 +33,7 @@ import test from "node:test";
 import type { AuditFinding } from "./contracts.js";
 import {
   PROSE_LENGTH_FLOOR_MIN,
+  blockingFindingSummary,
   deterministicAudit,
   numericAssertionDriftFindings,
   proseLengthFloorFindings,
@@ -664,4 +665,121 @@ test("a declared id that appears only as another id's prefix is ABSENT, not vacu
     'test("[REQ-001] T-13 the page settles", async ({ page }) => { await page.goto("/"); expect(1).toBe(1); });',
   ].join("\n");
   assert.deepEqual(vacuousIds(onlyT13, ["T-1", "T-13"]), []);
+});
+
+/* -------------------------------------------------------------------------
+ * THE MANIFEST REJECTION NAMES EVERY FIELD, NOT THE FIRST
+ *
+ * WHAT THIS REPLACES. Until 2026-08-10 the audit called `parseSuiteManifest`
+ * inside a `try` and turned the single thrown error into a single finding. That
+ * parser's `fail()` is typed `never`, so the feedback turn could name exactly
+ * one field per attempt. Run `a913c871` spent 1h26m54s and three authoring
+ * attempts learning three of the seven keys of ONE object, and its third attempt
+ * dropped the key it had already got right.
+ *
+ * THE FIXTURE IS THE MANIFEST THAT KILLED IT, in shape: attempt 3's
+ * {kind, method, path, expectStatus, description}.
+ * ---------------------------------------------------------------------- */
+
+const MANIFEST_SOURCE = (dataExpectations: unknown): string =>
+  JSON.stringify(
+    {
+      manifestVersion: 1,
+      ticketId: "CAL4B-PORTFOLIO",
+      target: "web",
+      execution: {
+        install: null,
+        build: null,
+        typecheck: null,
+        lint: null,
+        start: "npm start",
+        port: 8080,
+        healthPath: "/api/health",
+        bootTimeoutMs: null,
+        commandTimeoutMs: null,
+      },
+      sourceDirs: ["."],
+      uiFlows: [{ id: "home", path: "/", description: "landing", waitForSelector: null }],
+      dataExpectations,
+    },
+    null,
+    2,
+  );
+
+const HOLDOUT_MINIMAL = [
+  'import { test, expect } from "@playwright/test";',
+  'test("[REQ-001] T-1 the home page answers", async ({ page }) => {',
+  '  const response = await page.goto("/");',
+  "  expect(response.status()).toBe(200);",
+  "});",
+].join("\n");
+
+function manifestFindings(dataExpectations: unknown): readonly AuditFinding[] {
+  const draft = draftOf([criterion("REQ-001", "The site shall serve a home page.", ["T-1"])], [
+    { path: "holdout/home.spec.mjs", source: HOLDOUT_MINIMAL, testIds: ["T-1"], criterionIds: ["REQ-001"] },
+    { path: "suite.manifest.json", source: MANIFEST_SOURCE(dataExpectations), testIds: [], criterionIds: [] },
+  ]);
+  return deterministicAudit(draft, { syntaxCheck: false }).filter((f) =>
+    f.detail.includes("not executable by the sealed scorer"),
+  );
+}
+
+test("a manifest with three fields wrong produces three findings, not one", () => {
+  const findings = manifestFindings([
+    { kind: "http", method: "GET", path: "/api/messages", expectStatus: 200, description: "x" },
+  ]);
+
+  const text = findings.map((f) => f.detail).join("\n");
+  for (const field of ["dataExpectations[0].id", "dataExpectations[0].file", "dataExpectations[0].minRows"]) {
+    assert.ok(
+      text.includes(field),
+      `the audit did not name ${field}. Findings:\n${text || "(none)"}`,
+    );
+  }
+  assert.ok(
+    findings.length >= 3,
+    `expected at least three manifest findings, got ${String(findings.length)}. One finding is one ` +
+      "line in the regeneration prompt, however many fields it mentions.",
+  );
+
+  // EVERY ONE BLOCKS, and every one is suite-level. `criterionId === null` is
+  // what the remediation branch in spec-agent.ts keys on to stop blaming the
+  // ticket for a defect no criterion is involved in.
+  for (const finding of findings) {
+    assert.equal(finding.mustRegenerate, true, "a manifest the scorer cannot parse must force a re-author");
+    assert.equal(finding.criterionId, null, "a manifest defect belongs to no criterion");
+  }
+
+  // AND ALL OF THEM REACH THE NEXT ATTEMPT. `blockingFindingSummary` renders one
+  // line per finding and is the literal text the regeneration prompt carries;
+  // the whole fix is worthless if the extra findings stop at the audit.
+  const summary = blockingFindingSummary(findings);
+  assert.equal(summary.length, findings.length);
+  for (const field of ["dataExpectations[0].id", "dataExpectations[0].file", "dataExpectations[0].minRows"]) {
+    assert.ok(summary.join("\n").includes(field), `${field} does not reach the regeneration prompt`);
+  }
+});
+
+test("a manifest the scorer accepts produces no manifest finding at all", () => {
+  // THE NEGATIVE CONTROL. Every assertion above counts findings; a rule that
+  // fired on a correct manifest would satisfy them all and burn every authoring
+  // attempt on a document that was already right.
+  assert.deepEqual(
+    manifestFindings([
+      { id: "db-1", kind: "sqlite", file: "data/app.db", table: "messages", sql: null, path: null, minRows: 1 },
+    ]),
+    [],
+  );
+});
+
+test("a manifest that is not JSON is still one finding, because it has one cause", () => {
+  const draft = draftOf([criterion("REQ-001", "The site shall serve a home page.", ["T-1"])], [
+    { path: "holdout/home.spec.mjs", source: HOLDOUT_MINIMAL, testIds: ["T-1"], criterionIds: ["REQ-001"] },
+    { path: "suite.manifest.json", source: "export default { manifestVersion: 1 };", testIds: [], criterionIds: [] },
+  ]);
+  const findings = deterministicAudit(draft, { syntaxCheck: false }).filter((f) =>
+    f.detail.includes("not executable by the sealed scorer"),
+  );
+  assert.equal(findings.length, 1, findings.map((f) => f.detail).join("\n"));
+  assert.match(findings[0]?.detail ?? "", /JSON/);
 });

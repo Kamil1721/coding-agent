@@ -164,7 +164,36 @@ const manifestFile = (source) => ({
 
 /* ---- the suite: one failing assertion, four taggings -------------------- */
 
-/** Passes on this artefact. Present so the suite is not one red test alone. */
+/**
+ * Passes on this artefact. Present so the suite is not one red test alone.
+ *
+ * T-2 USED TO CARRY A PROSE BAR, AND THE HARNESS IT TESTS REJECTED IT. It read
+ * `const rendered = (await page.locator("body").innerText()).trim();` followed by
+ * a floor of 20 on that value. `proseLengthFloorFindings` (spec-validate.ts, rule
+ * 1) is BLOCKING and fires at a threshold of `PROSE_LENGTH_FLOOR_MIN = 20` or
+ * above, so `deterministicAudit` rejected this very fixture — and `gradeSuite`
+ * refuses to run builds against a suite the audit rejected. The consequence was
+ * not a soft warning: all four cases died at step 1, NO SCORER CONTAINER WAS EVER
+ * STARTED, and the file reported 0/4 from 2026-07-29 to 2026-08-09 without anyone
+ * seeing it, because `bakeoff`'s `npm test` globs `dist/*.test.js` and cannot
+ * reach a `test/*.e2e.mjs` at all.
+ *
+ * THE REPLACEMENT IS WHAT THE RULE ASKS FOR, NOT A WAY ROUND IT. The rule's own
+ * remedy is "assert the THING the ticket asked for … not that its copy is long
+ * enough", and the brief names exactly three things: the studio name, a one-line
+ * description of the work, and a way to get in touch by email. REQ-002 is
+ * "serve the home document with a substantive body", so T-2 now asserts 200 plus
+ * the presence of the description line and the contact route. Lowering the floor
+ * under 20 to slip past the rule's minimum was available and was NOT done: it
+ * would have left the fixture asserting the thing the harness exists to condemn,
+ * while reporting green.
+ *
+ * IT STILL FAILS AN EMPTY SHELL, which is the whole of REQ-002. `blank-page` in
+ * the calibration set — valid HTML, 200 on every route, an empty `<div id=root>`
+ * — has no `<main> <p>` and no `mailto:` anchor, so both awaits below fail on it.
+ * The old character floor is the one that could not tell that artefact from this
+ * one without counting.
+ */
 const PASSING_TESTS = `test("[REQ-001] T-1 the studio name is rendered on the home page", async ({ page }) => {
   await page.goto("/");
   const heading = page.locator("h1");
@@ -172,11 +201,11 @@ const PASSING_TESTS = `test("[REQ-001] T-1 the studio name is rendered on the ho
   await expect(heading).toContainText(/aperture studio/i);
 });
 
-test("[REQ-002] T-2 the home document is served and is not blank", async ({ page }) => {
+test("[REQ-002] T-2 the home document is served with a body, not an empty shell", async ({ page }) => {
   const response = await page.goto("/");
   expect(response.status()).toBe(200);
-  const rendered = (await page.locator("body").innerText()).trim();
-  expect(rendered.length).toBeGreaterThan(20);
+  await expect(page.locator("main p").first()).toBeVisible();
+  await expect(page.locator('a[href^="mailto:"]')).toHaveCount(1);
 });
 `;
 

@@ -245,3 +245,110 @@ test("the ladder stops at the ceiling and fails with the limit named, not with a
   assert.equal(error.code, "invalid_usage_shape");
   assert.match(error.message, new RegExp(String(MAX_STREAMABLE_OUTPUT_TOKENS)));
 });
+
+/* -------------------------------------------------------------------------
+ * 4. A LATER attempt gets the ladder too — and the flag that seemed to stop it
+ * ---------------------------------------------------------------------- */
+
+/**
+ * THE POST-MORTEM'S CLAIM, AND WHY THE TEST BELOW IS NOT THE TEST IT ASKED FOR.
+ *
+ * `docs/RUN-a913c871-observations.md` files this as a limit of the fix: *"
+ * `truncationRetried` is declared outside the attempt loop, so the free 128k
+ * retry is once per RUN, not once per attempt. A suite that overflows on
+ * attempts 2 and 3 gets no ladder at all."*
+ *
+ * THE SECOND SENTENCE IS FALSE, and the first is true but inert. Proof, from the
+ * code rather than from a run: the flag is set immediately BEFORE the rung guard
+ * `if (outputTokens < MAX_STREAMABLE_OUTPUT_TOKENS)`, and that branch assigns
+ * `outputTokens = MAX_STREAMABLE_OUTPUT_TOKENS`. So `flag === true` implies
+ * `outputTokens >= MAX` on both paths, and `outputTokens` never decreases.
+ * Contrapositive: whenever the rung guard could pass, the flag is false. The
+ * flag can never be the reason an escalation is skipped.
+ *
+ * THE MOVE IS STILL WORTH MAKING, AND THE REASON IS THE RECORD, NOT THE CALLS.
+ * The flag is now written onto each `AuthoringAttempt`. Declared once per run it
+ * is STICKY: after attempt 2 escalates, attempt 3 — never truncated, never
+ * retried — reports `truncationRetried: true` too, and the failure message says
+ * *"the free truncation retry fired on attempt(s) 2, 3"*. MEASURED, 2026-08-10:
+ * restoring the outer declaration (the exact pre-fix code) leaves the four call
+ * sequence tests above GREEN, exactly as the proof predicts, and turns the last
+ * test in this file RED on that sentence. An observability channel that reports
+ * an escalation which did not happen is worse than none: this run's whole
+ * post-mortem turned on establishing that the ladder had NOT fired.
+ *
+ * WHAT THIS TEST DOES MEASURE, and it was uncovered until now: attempt 1 fails
+ * WITHOUT truncating, attempt 2 truncates, and the ladder fires on attempt 2.
+ * `end_turn` on an unparseable response is not a truncation, so attempt 1
+ * consumes an attempt and leaves the rung where it was.
+ */
+test("an attempt that is NOT the first still gets the free retry", async () => {
+  const { spec } = await runAuthoring(["end_turn", "max_tokens"]);
+
+  assert.equal(
+    spec.requests.length,
+    DEFAULT_MAX_AUTHORING_ATTEMPTS + 1,
+    "attempt 2's truncation must buy a free retry exactly as attempt 1's does",
+  );
+  assert.deepEqual(
+    budgets(spec),
+    [
+      DEFAULT_MAX_OUTPUT_TOKENS, // attempt 1 — unparseable, not truncated
+      DEFAULT_MAX_OUTPUT_TOKENS, // attempt 2 — truncated at the starting rung
+      MAX_STREAMABLE_OUTPUT_TOKENS, // the free retry, still inside attempt 2
+      MAX_STREAMABLE_OUTPUT_TOKENS, // attempt 3, on the raised rung
+    ],
+    "the rung must stay at the default until something is actually truncated, then climb once",
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * 5. The rung is on the record, because nothing else records it
+ * ---------------------------------------------------------------------- */
+
+/**
+ * WHAT THIS REPLACES: `ps eww -p <seat pid> | grep CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
+ *
+ * That was the only instrument that could see the ceiling during run
+ * `a913c871`, it ran outside the product, and it covered two of the three seat
+ * processes. The escalation emitted nothing. The failure message is a channel
+ * with a proven reader — it lands verbatim in `runs.failure_reason`, and the
+ * post-mortem quoted the whole of it — so the rung history goes there.
+ *
+ * BOTH DIRECTIONS ARE ASSERTED, and the negative one is the point. A run where
+ * nothing was truncated must SAY that nothing was truncated: run `a913c871`
+ * finished believing its 64k→128k repair might have run, and establishing that
+ * it had not cost the post-mortem an argument from the shape of an unrelated
+ * error message.
+ */
+test("the failure names the rung every attempt ran on, and says when the ladder did not fire", async () => {
+  const quiet = await runAuthoring([]);
+
+  assert.match(
+    quiet.error.message,
+    new RegExp(`Output-token ceiling by attempt: 1:${String(DEFAULT_MAX_OUTPUT_TOKENS)}`),
+    "the failure does not say what budget the attempts ran on",
+  );
+  assert.match(
+    quiet.error.message,
+    /free truncation retry did NOT fire on any attempt/,
+    "a run where the ladder never fired must say so, or a reader assumes it did and was fine",
+  );
+
+  const climbed = await runAuthoring(["end_turn", "max_tokens"]);
+  assert.match(
+    climbed.error.message,
+    new RegExp(`2:${String(MAX_STREAMABLE_OUTPUT_TOKENS)}`),
+    "the escalated attempt's raised rung is not on the record",
+  );
+  assert.match(
+    climbed.error.message,
+    /free truncation retry fired on attempt\(s\) 2, without consuming an attempt/,
+    "the escalation is still invisible, which is the defect this replaces",
+  );
+  assert.doesNotMatch(
+    climbed.error.message,
+    /did NOT fire/,
+    "a run whose ladder DID fire must not carry the sentence saying it did not",
+  );
+});
