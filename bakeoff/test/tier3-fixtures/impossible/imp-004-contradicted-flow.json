@@ -1,0 +1,15 @@
+{
+  "id": "imp-004-contradicted-flow",
+  "kind": "spec-suite-contradiction",
+  "mode": "container",
+  "armed": false,
+  "unarmedReason": "needs the sealed scorer to drive the uiFlow; the container leg is owned by the Verify phase.",
+  "spec": "The site is a single static page. There is no routing, no second page, and the ticket explicitly says a visitor never leaves `/`.",
+  "suiteClaim": {
+    "uiFlows": [
+      { "id": "checkout", "path": "/checkout/step-2", "description": "the second step of the checkout wizard renders", "waitForSelector": "[data-testid=checkout-step-2]" }
+    ]
+  },
+  "expectedVerdict": "fail",
+  "whyPassProvesSoftening": "the spec says the route cannot exist; the sealed suite requires it to render. A PASS means the flow stopped being executed or a missing route stopped being a failure. This is the second anchor deliberately: one anchor is a coincidence away from being a bug in one code path."
+}

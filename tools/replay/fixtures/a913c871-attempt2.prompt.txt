@@ -1,0 +1,235 @@
+TICKET t-b79ff5e2a1b314e4
+
+The ticket text follows between the markers, verbatim. Everything you need is in it.
+
+<<<TICKET_BRIEF
+Build my personal portfolio site — a real application with a working backend, not a
+static page with a decorative contact form.
+
+Content comes from the attached CV. Take the roles, dates, projects, skills and
+contact details from it. Do not invent employers, job titles, dates or numbers. If
+the CV is ambiguous about something, leave it out rather than filling the gap.
+
+THE LOOK
+
+Hand-drawn sketchbook, not a template. The attached image is the direction. In words,
+so it can be graded:
+
+Warm off-white paper background with faint coloured-pencil scribble at the edges of
+the viewport. Content sits on slightly tilted white paper cards with soft drop shadows
+and thin dark hand-inked rules, as if photographed on a desk. Headings are large,
+uppercase, condensed and hand-lettered in near-black. Body copy is a plain readable
+serif at normal weight — the drawing carries the personality, the text does not need
+to. Illustrations are coloured-pencil line art with visible hatching, in a restrained
+palette of purple, orange, green, red and blue on paper white. Buttons are small
+outlined pills with lowercase labels. Section flows are numbered with circled digits
+and hand-drawn curved arrows between steps. Top navigation is a single row of
+uppercase links with a hand-drawn underline under the active one.
+
+No gradients, no glassmorphism, no neon, no dark mode. If it could have come out of a
+generic component library, it is wrong.
+
+THE MOTION
+
+A reading of a reference page's motion is attached to this ticket. Match it: same
+families, same properties, durations and stagger within about 40% of the numbers
+given. Where the reading says a family was observed but not compared, treat it as a
+direction rather than a measurement. Everything must still work with
+prefers-reduced-motion: reduce — motion is the finish, never the mechanism.
+
+RESEARCH BEFORE YOU BUILD
+
+You have network access while building; the graders do not. Before writing the
+illustration and motion layer, look up how hand-drawn and sketch aesthetics are
+actually implemented on the web today, and how the motion families in the attached
+reading are usually built. Say in your self-report what you looked at and what you
+took from it. Vendor anything you depend on into the artefact — nothing is fetched at
+grading time.
+
+PAGES
+
+/          hero with my name, role and one line about what I do; a short selected-work
+           strip pulled from the CV.
+/work      projects from the CV, each as its own paper card: title, what it is, the
+           stack, my role.
+/about     the career narrative, roles and dates from the CV, and the skills list.
+/contact   the form described below.
+
+THE BACKEND — THIS IS THE PART THAT MUST ACTUALLY WORK
+
+A Node HTTP server. Zero runtime npm dependencies: node:http, node:sqlite and the
+standard library only. Starts with `npm start`, listens on PORT defaulting to 3000,
+serves every page and API route from one process, and persists to a SQLite file
+created automatically on first boot.
+
+  POST /api/contact   accepts {name, email, message} as JSON. Validates all three:
+                      name non-empty, email structurally valid, message at least 20
+                      characters. Rejects with 400 and a JSON body naming WHICH field
+                      failed. On success stores the message with a timestamp and
+                      returns 201 with the new record's id. An empty or invalid
+                      submission must never be stored and must never return a success
+                      response — a form that confirms a submission it discarded is the
+                      failure I care most about.
+  GET  /api/messages  stored messages as JSON, newest first. Requires a bearer token
+                      read from an environment variable at boot: 401 without it, 401
+                      with the wrong one. If the variable is unset the route stays
+                      available and refuses every request rather than opening up.
+  GET  /api/projects  the CV's projects as JSON, served from the database rather than
+                      hardcoded in the page, seeded on first boot.
+  GET  /api/health    200 with {"ok":true}.
+  everything else     a real 404 page in the site's own visual style — not a stack
+                      trace, not a blank body.
+
+The contact page posts to /api/contact for real and renders the server's response: the
+field-level error on a 400, a confirmation on a 201. No optimistic "thanks!" before the
+server has answered. Rate-limit POST /api/contact to a handful of submissions per
+minute per IP, in memory, returning 429 past that.
+
+YOU CANNOT OPEN A PORT WHILE BUILDING THIS
+
+The build sandbox denies listen() on every port with EPERM. That is measured. So
+structure it to be testable without a socket: request handling in an exported router
+function, `server.mjs` doing nothing but wiring it to node:http, every database access
+behind functions taking a database handle as an argument. Write node --test tests that
+call those directly. Cover the 400 on each invalid field, the 201, both 401s, the 429,
+and survival of data across a reopen. Run them and get them passing before you declare
+done, and say how many there are.
+
+CONSTRAINTS
+
+Runs entirely offline once built. No external API, no hosted database, no email
+provider, no analytics, no third-party fonts or CDN — embed or self-host every asset.
+No secrets in the repository; the one token is read from the environment. Responsive at
+1440, 768 and 375 with no horizontal scrolling. Keyboard-navigable throughout, visible
+focus rings, alt text on every illustration.
+
+HOW I WILL KNOW IT WORKS
+
+- `npm start` boots on one port and serves every page and every API route.
+- Submitting the contact form with a blank message shows a field error and stores
+  nothing; GET /api/messages with the right token proves the count did not change.
+- A valid message returns 201 and then appears in GET /api/messages.
+- GET /api/messages with no token and with a wrong token both return 401.
+- Killing the server and starting it again still returns messages submitted before.
+- Every project on /work traces to a line in the attached CV.
+- All four pages render in the sketchbook style at 1440, 768 and 375.
+- The motion matches the attached reading, and the site is fully usable with reduced
+  motion enabled.
+
+
+--- MOTION READ FROM THE REFERENCE PAGE (BEGIN) ---
+
+This is a partial, automated reading of how a reference page MOVES, taken once
+when the ticket was submitted by sampling the rendered page frame by frame. It is
+not the page and it is not complete: motion it does not mention may still exist.
+
+Durations are rounded to the nearest 50ms and stagger to the nearest 20ms, because
+an exact measurement differs between two readings of the same page.
+
+The motion observed:
+  span — revealed once on scroll into view animating transform over 250ms
+
+The reference honours the reduced motion preference: it stops when prefers-reduced-motion is set. Anything built from it must too.
+
+--- MOTION READ FROM THE REFERENCE PAGE (END) ---
+
+
+--- WHAT THE DASHBOARD ASKED BEFORE ANY CRITERIA WERE WRITTEN ---
+
+Before the acceptance criteria for this run were written, the dashboard read the
+ticket and asked the owner the questions below. HIS ANSWERS ARE HIS OWN WORDS and
+are part of what he asked for. Where he left a question to the dashboard, or where
+the window closed before he answered, the assumption the run is proceeding on is
+stated instead — THOSE ARE THE DASHBOARD'S GUESSES AND NOT HIS, and a criterion
+resting on one is a guess however confidently it is written.
+
+WHAT THE DASHBOARD SAID IT WOULD BUILD (its own reading of the ticket, shown to the
+owner before he answered; not his words):
+  Ticket is unusually complete: look, motion, API contract and tests all specified.
+  CV gives six projects; nav maps cleanly to HOME/WORK/ABOUT/CONTACT.
+  Reference image is a different product's UI, so it settles style, not content counts.
+  Three gaps left: illustration scope, home strip count, numbered flow section.
+  Everything else I could ask yields the same criterion either way.
+
+PQ-1 — asked: "Does every project card on [a file path was removed here] get its own hand-drawn illustration, or do drawings stay in the hero and section headers?" [ANSWERED BY THE OWNER]
+  he answered: "Yes — every project card on [a file path was removed here] carries its own hand-drawn coloured-pencil illustration (with alt text), not just the hero and section headers."
+  (recorded from his message: "PQ-1: yes it dies")
+
+PQ-2 — asked: "How many projects should the home page selected-work strip show — three, or all six from the CV?" [ANSWERED BY THE OWNER]
+  he answered: "The home page selected-work strip shows all six projects from the CV (Teewise, Trade Assistant, JobSilver, Kori, Parts Agent, CrewFlow), not a trimmed set of three."
+  (recorded from his message: "PQ-2: all")
+
+PQ-3 — asked: "Do you want a numbered 'how I build' step flow as its own section, or are circled digits and arrows just decoration?" [LEFT TO THE DASHBOARD BY THE OWNER]
+  the dashboard is assuming: "No dedicated flow section; the marks stay decorative."
+
+THE OWNER ALSO ASKED:
+
+  he asked (about PQ-1): "PQ-1: why does that matter?"
+  the dashboard answered: "It sets the pass mark. Unanswered, the criterion is "hero and section headers carry coloured-pencil line art; [a file path was removed here] cards are text on paper." Answered the other way it becomes "each of the six project cards carries its own illustration with alt text." That's six drawings versus two, and a grader can count them without seeing your reference."
+
+  he asked (about PQ-1): "PQ-1: why does that matter?"
+  the dashboard answered: "It picks the criterion. Unanswered, I write: "hero and section headers carry coloured-pencil illustrations; project cards are text only." Answered the other way: "each of the six project cards carries its own illustration with alt text." Six drawings versus two, and a grader can count them either way — so it changes what gets built, not just how it looks."
+
+  he asked (about PQ-1): "PQ-1: why does that matter?"
+  the dashboard answered: "It sets a countable criterion. Silence gives "hero and section headers carry coloured-pencil line art; project cards are text on paper." Your other answer gives "each of the six [a file path was removed here] cards carries its own distinct illustration with alt text." That's six drawings versus none, and a grader can count them without seeing your reference."
+
+HOW THE EXCHANGE ENDED: every question was settled — 2 answered, 1 left to the dashboard.
+
+--- END OF THE PLANNING EXCHANGE ---
+
+
+--- MOTION READ FROM THE REFERENCE PAGE (BEGIN) ---
+
+This is a partial, automated reading of how a reference page MOVES, taken once
+when the ticket was submitted by sampling the rendered page frame by frame. It is
+not the page and it is not complete: motion it does not mention may still exist.
+
+Durations are rounded to the nearest 50ms and stagger to the nearest 20ms, because
+an exact measurement differs between two readings of the same page.
+
+The motion observed:
+  span — revealed once on scroll into view animating transform over 250ms
+
+The reference honours the reduced motion preference: it stops when prefers-reduced-motion is set. Anything built from it must too.
+
+--- MOTION READ FROM THE REFERENCE PAGE (END) ---
+
+
+--- WHAT THE DASHBOARD ASKED BEFORE ANY CRITERIA WERE WRITTEN ---
+
+Before the acceptance criteria for this run were written, the dashboard read the
+ticket and asked the owner the questions below. HIS ANSWERS ARE HIS OWN WORDS and
+are part of what he asked for. Where he left a question to the dashboard, or where
+the window closed before he answered, the assumption the run is proceeding on is
+stated instead — THOSE ARE THE DASHBOARD'S GUESSES AND NOT HIS, and a criterion
+resting on one is a guess however confidently it is written.
+
+WHAT THE DASHBOARD SAID IT WOULD BUILD (its own reading of the ticket, shown to the
+owner before he answered; not his words):
+  Ticket already states look, motion, API contract and tests in gradeable words.
+  Reference image confirms: centred uppercase nav row, 2-up paper cards, lowercase outlined pills, circled-digit flow — all already in the prose.
+  PQ-1/PQ-2 settled (six cards, each illustrated); PQ-3 he left to us, not re-asking.
+  Three gaps remain: what /contact publishes besides the form, whether card reveals stagger, whether nav is pinned.
+  Everything else I could ask produces the same criterion either way.
+  Heading size, palette and card tilt I will write from what I saw, not ask.
+
+PQ-1 — asked: "Should /contact publish your phone number and email beside the form, or keep the page to the form alone?" [LEFT TO THE DASHBOARD BY THE OWNER]
+  the dashboard is assuming: "The page carries the form plus the CV email address and profile links; the phone number is left off."
+
+PQ-2 — asked: "Does the top nav stay pinned to the top of the viewport as you scroll, or scroll away with the page?" [ANSWERED BY THE OWNER]
+  he answered: "The top navigation row stays pinned to the top of the viewport while the page scrolls beneath it — it remains visible at all scroll positions on every page, rather than scrolling away with the content."
+  (recorded from his message: "PQ-2: it stays pinned")
+
+PQ-3 — asked: "Should the six work cards reveal one after another with a short delay between them, or all together when scrolled into view?" [LEFT TO THE DASHBOARD BY THE OWNER]
+  the dashboard is assuming: "They reveal as one group, no delay between neighbours."
+
+HOW THE EXCHANGE ENDED: every question was settled — 1 answered, 2 left to the dashboard.
+
+--- END OF THE PLANNING EXCHANGE ---
+TICKET_BRIEF>>>
+
+Your previous suite for this ticket was rejected by the bad-test audit and has been discarded. Write a NEW suite for the same ticket that does not repeat these defects. Do not try to patch the old one — you no longer have it.
+
+1. [vacuous] test file "holdout/api-core.test.mjs" contains a "not implemented" marker.
+2. [other] test file "visible/api-core.test.mjs" contains credential-shaped literal(s): AUTHORIZATION_HEADER x1. Use an obviously-fake fixture that no redaction rule matches. The offending value is deliberately not quoted here.
+3. [other] the suite manifest "suite.manifest.json" is not executable by the sealed scorer: dataExpectations[0].id must be a non-empty string :: Set dataExpectations[0].id.

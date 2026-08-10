@@ -1,0 +1,37 @@
+{
+  "id": "a913c871-attempt1",
+  "runId": "run-2026-08-09T21-04-00-713Z-a913c871",
+  "ticketId": "t-b79ff5e2a1b314e4",
+  "attempt": 1,
+  "provenance": {
+    "source": "claude-code CLI session transcript (NOT a harness artefact)",
+    "transcript": "cfdffda9-a91d-4208-9584-46e47e9f4909.jsonl",
+    "emittedAt": "2026-08-09T21:31:52.881Z",
+    "promptAt": "2026-08-09T21:06:30.036Z",
+    "spanFromPostMortem": "21:06:30 → 21:31:52",
+    "citedIn": "docs/RUN-a913c871-observations.md §TIMELINE, CONTINUED"
+  },
+  "promptTextSha256": "5bf1739f4c412c9e80356caee0588b7ad733ad0740d84df7af0c0c557a5edc74",
+  "promptTextChars": 13859,
+  "attachments": [
+    {
+      "kind": "document",
+      "mediaType": "application/pdf",
+      "base64Chars": 106804,
+      "sha256OfBase64": "186561c3e37e94db41700e9067d1d5c09a774f4df42c9863c75b8f5dee12d04f"
+    }
+  ],
+  "testFilePaths": [
+    "holdout/api-core.test.mjs",
+    "holdout/api-contact.test.mjs",
+    "holdout/site-content.spec.mjs",
+    "holdout/site-behaviour.spec.mjs",
+    "visible/api-core.test.mjs",
+    "visible/api-contact.test.mjs",
+    "visible/site.spec.mjs",
+    "suite.manifest.json"
+  ],
+  "criteriaCount": 23,
+  "manifestSha256": "d548c859a19b614a0f1bc3dcfe5b9e666e4a5fe5f6e63bd02992df5faff1e387",
+  "manifestCanonicalSha256": "80415b082ef54dabb174c0c40835015cac933e89e623c0726b601043b1a49690"
+}

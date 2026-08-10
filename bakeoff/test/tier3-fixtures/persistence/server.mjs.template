@@ -1,0 +1,54 @@
+/**
+ * FIXTURE G — the SERVER artefact, one template for both sides of the pair.
+ *
+ * `__PERSIST_HUNK__` is replaced by the generator: with a comment on the
+ * hollow side, with a real INSERT on the restored side. One template plus one
+ * hunk is one mutation; two checked-in server files would be two artefacts
+ * that drift apart.
+ *
+ * This file is NOT executed by the host-import arm — that arm reads the
+ * database directly with the frozen `evaluateSqliteExpectation`, because
+ * "reading the database file directly is deliberately chosen over asking the
+ * application" (tier0.ts). It exists so the container leg, which the Verify
+ * phase owns, has a real artefact to boot and POST to.
+ */
+import { createServer } from "node:http";
+import { DatabaseSync } from "node:sqlite";
+
+const db = new DatabaseSync(new URL("./data/app.db", import.meta.url).pathname);
+
+const server = createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/api/health") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/contact") {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(body || "{}");
+      } catch {
+        parsed = {};
+      }
+      __PERSIST_HUNK__
+      res.writeHead(201, { "content-type": "application/json" });
+      res.end(JSON.stringify({ received: true }));
+    });
+    return;
+  }
+  if (req.method === "GET" && req.url === "/api/messages") {
+    const rows = db.prepare("SELECT id, name, email, body, created_at FROM messages").all();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(rows));
+    return;
+  }
+  res.writeHead(404, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: "not found" }));
+});
+
+server.listen(Number(process.env.PORT ?? 8080), "127.0.0.1");

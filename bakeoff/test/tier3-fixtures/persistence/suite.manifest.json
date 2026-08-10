@@ -1,0 +1,50 @@
+{
+  "__comment": [
+    "FIXTURE G — the first suite manifest in this repository with a POPULATED",
+    "dataExpectations. Four instances existed before it and all four were `[]`,",
+    "so the persistence gate had never executed with a real expectation and the",
+    "gate's negative arm was vacuous in exactly the area the first Tier-2 repair",
+    "touches (DESIGN §2.3 point 2, §6.4 row G).",
+    "Both `kind` branches are present deliberately: with only one, the other",
+    "branch of checkDataExpectations never executes on any fixture in the repo.",
+    "The parser ignores unknown top-level keys? It does not — this key is",
+    "stripped by the loader in tools/tier3/fixture-g.mjs before parsing, which",
+    "is asserted, so this comment can never soften the accept arm."
+  ],
+  "manifestVersion": 1,
+  "ticketId": "t-fixture-g-persistence",
+  "target": "web",
+  "execution": {
+    "install": "npm ci",
+    "build": null,
+    "typecheck": null,
+    "lint": null,
+    "start": "node server.mjs",
+    "port": 8080,
+    "healthPath": "/api/health",
+    "bootTimeoutMs": null,
+    "commandTimeoutMs": null
+  },
+  "sourceDirs": ["."],
+  "uiFlows": [{ "id": "home", "path": "/", "description": "the landing page renders", "waitForSelector": null }],
+  "dataExpectations": [
+    {
+      "id": "db-query-7",
+      "kind": "sqlite",
+      "file": "data/app.db",
+      "table": "messages",
+      "sql": null,
+      "path": null,
+      "minRows": 1
+    },
+    {
+      "id": "http-readback-1",
+      "kind": "http",
+      "file": null,
+      "table": null,
+      "sql": null,
+      "path": "/api/messages",
+      "minRows": 1
+    }
+  ]
+}

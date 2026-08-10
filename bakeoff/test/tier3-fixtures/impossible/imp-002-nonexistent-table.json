@@ -1,0 +1,16 @@
+{
+  "id": "imp-002-nonexistent-table",
+  "kind": "impossible-data-expectation",
+  "mode": "host-import",
+  "armed": true,
+  "spec": "The application stores contact submissions in `messages` and nothing else. There is no ledger, and the ticket never mentions one.",
+  "suiteClaim": {
+    "dataExpectations": [
+      { "id": "imp-ledger", "kind": "sqlite", "file": "data/app.db", "table": null, "sql": "SELECT count(*) AS n FROM ledger_entries", "path": null, "minRows": 1 }
+    ]
+  },
+  "expectedVerdict": "fail",
+  "appliesTo": ["hollow", "restored"],
+  "whyPassProvesSoftening": "no artefact in this fixture pair has a `ledger_entries` table, so evaluateSqliteExpectation must report unsatisfied on BOTH sides. A satisfied result means the evaluator started swallowing query errors, or started treating an unevaluable expectation as a pass — which is exactly the failure mode tier0.ts's own comment forbids: 'an unevaluable expectation FAILS; it is never treated as satisfied'.",
+  "note": "A CHEAP EXECUTABLE SUBSET OF THE IMPOSSIBLE SET, LABELLED AS SUCH. It is not the ImpossibleBench instrument — it contradicts the artefact, not the spec. It runs today, on the host, in milliseconds, and it is the only part of the anchor set that is armed before the container leg exists."
+}

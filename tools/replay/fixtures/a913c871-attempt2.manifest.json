@@ -1,0 +1,61 @@
+{
+  "manifestVersion": 1,
+  "ticketId": "t-b79ff5e2a1b314e4",
+  "target": "web",
+  "execution": {
+    "install": null,
+    "build": null,
+    "typecheck": null,
+    "lint": null,
+    "start": "npm start",
+    "port": 3000,
+    "healthPath": "/api/health",
+    "bootTimeoutMs": null,
+    "commandTimeoutMs": null
+  },
+  "sourceDirs": [
+    "."
+  ],
+  "uiFlows": [
+    {
+      "id": "home",
+      "path": "/",
+      "description": "Hero with name, role and the selected-work strip",
+      "waitForSelector": null
+    },
+    {
+      "id": "work",
+      "path": "/work",
+      "description": "Project cards drawn from the CV",
+      "waitForSelector": null
+    },
+    {
+      "id": "about",
+      "path": "/about",
+      "description": "Career narrative, roles with dates and the skills list",
+      "waitForSelector": null
+    },
+    {
+      "id": "contact",
+      "path": "/contact",
+      "description": "Contact form posting to /api/contact",
+      "waitForSelector": null
+    }
+  ],
+  "dataExpectations": [
+    {
+      "id": "contact-messages-stored",
+      "description": "Accepted contact submissions are stored in SQLite with a timestamp and survive a restart",
+      "entity": "messages",
+      "minRowCount": 1,
+      "readBack": "GET /api/messages with the configured bearer token"
+    },
+    {
+      "id": "projects-seeded",
+      "description": "The six CV projects are seeded into SQLite on first boot and served from there",
+      "entity": "projects",
+      "minRowCount": 6,
+      "readBack": "GET /api/projects"
+    }
+  ]
+}

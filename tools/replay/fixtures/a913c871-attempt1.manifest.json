@@ -1,0 +1,57 @@
+{
+  "manifestVersion": 1,
+  "ticketId": "t-b79ff5e2a1b314e4",
+  "target": "web",
+  "execution": {
+    "install": null,
+    "build": null,
+    "typecheck": null,
+    "lint": null,
+    "start": "npm start",
+    "port": 3000,
+    "healthPath": "/api/health",
+    "bootTimeoutMs": null,
+    "commandTimeoutMs": null
+  },
+  "sourceDirs": [
+    "."
+  ],
+  "uiFlows": [
+    {
+      "id": "home",
+      "path": "/",
+      "description": "hero with name, role, one line, and the six-project selected-work strip",
+      "waitForSelector": null
+    },
+    {
+      "id": "work",
+      "path": "/work",
+      "description": "six CV project cards, each with its own illustration",
+      "waitForSelector": null
+    },
+    {
+      "id": "about",
+      "path": "/about",
+      "description": "career narrative, roles with dates, and the skills list",
+      "waitForSelector": null
+    },
+    {
+      "id": "contact",
+      "path": "/contact",
+      "description": "contact form posting to /api/contact and rendering the server response",
+      "waitForSelector": null
+    }
+  ],
+  "dataExpectations": [
+    {
+      "entity": "contact_message",
+      "source": "POST /api/contact",
+      "expectation": "every accepted submission is written to the SQLite file with name, email, message and a timestamp, survives a restart, and is only readable through GET /api/messages with the correct bearer token"
+    },
+    {
+      "entity": "project",
+      "source": "GET /api/projects",
+      "expectation": "at least six project rows seeded into SQLite on first boot covering Teewise, Trade Assistant, JobSilver, Kori, Parts Agent and CrewFlow"
+    }
+  ]
+}

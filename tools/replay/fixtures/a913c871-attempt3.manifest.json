@@ -1,0 +1,61 @@
+{
+  "manifestVersion": 1,
+  "ticketId": "t-b79ff5e2a1b314e4",
+  "target": "web",
+  "execution": {
+    "install": null,
+    "build": null,
+    "typecheck": null,
+    "lint": null,
+    "start": "npm start",
+    "port": 3000,
+    "healthPath": "/api/health",
+    "bootTimeoutMs": null,
+    "commandTimeoutMs": null
+  },
+  "sourceDirs": [
+    "."
+  ],
+  "uiFlows": [
+    {
+      "id": "home",
+      "path": "/",
+      "description": "hero with name, role and the selected-work strip",
+      "waitForSelector": null
+    },
+    {
+      "id": "work",
+      "path": "/work",
+      "description": "paper cards for the six CV projects",
+      "waitForSelector": null
+    },
+    {
+      "id": "about",
+      "path": "/about",
+      "description": "career narrative, roles and dates, skills list",
+      "waitForSelector": null
+    },
+    {
+      "id": "contact",
+      "path": "/contact",
+      "description": "contact form posting to /api/contact",
+      "waitForSelector": null
+    }
+  ],
+  "dataExpectations": [
+    {
+      "kind": "http",
+      "method": "GET",
+      "path": "/api/projects",
+      "expectStatus": 200,
+      "description": "the six CV projects are seeded into the database on first boot and served from it"
+    },
+    {
+      "kind": "http",
+      "method": "GET",
+      "path": "/api/health",
+      "expectStatus": 200,
+      "description": "the single process answers its health route while serving pages and API routes"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "imp-003-unreachable-minrows",
+  "kind": "impossible-data-expectation",
+  "mode": "host-import",
+  "armed": true,
+  "spec": "A single contact submission is written per POST. The ticket asks for one form and one row.",
+  "suiteClaim": {
+    "dataExpectations": [
+      { "id": "imp-flood", "kind": "sqlite", "file": "data/app.db", "table": "messages", "sql": null, "path": null, "minRows": 9999 }
+    ]
+  },
+  "expectedVerdict": "fail",
+  "appliesTo": ["hollow", "restored"],
+  "whyPassProvesSoftening": "the restored artefact holds exactly one row, so a threshold of 9999 must be unsatisfied on both sides. A pass means the comparison stopped comparing — the `observed >= minRows` clause is one keystroke from `observed >= 0`, and nothing else in the repository would notice."
+}

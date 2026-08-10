@@ -1,0 +1,38 @@
+{
+  "id": "a913c871-attempt2",
+  "runId": "run-2026-08-09T21-04-00-713Z-a913c871",
+  "ticketId": "t-b79ff5e2a1b314e4",
+  "attempt": 2,
+  "provenance": {
+    "source": "claude-code CLI session transcript (NOT a harness artefact)",
+    "transcript": "60fcb909-5bfb-4132-b89c-ac5ea33c8644.jsonl",
+    "emittedAt": "2026-08-09T22:07:19.272Z",
+    "promptAt": "2026-08-09T21:31:54.462Z",
+    "spanFromPostMortem": "21:31:54 → 22:07:19",
+    "citedIn": "docs/RUN-a913c871-observations.md §TIMELINE, CONTINUED"
+  },
+  "promptTextSha256": "b4af7a95d1014880db32c6ef2b0a17bdfb7cd5d245e1c0ec0f862d0f08a9f51d",
+  "promptTextChars": 14576,
+  "attachments": [
+    {
+      "kind": "document",
+      "mediaType": "application/pdf",
+      "base64Chars": 106804,
+      "sha256OfBase64": "186561c3e37e94db41700e9067d1d5c09a774f4df42c9863c75b8f5dee12d04f"
+    }
+  ],
+  "testFilePaths": [
+    "holdout/server-contract.test.mjs",
+    "holdout/contact-api.test.mjs",
+    "holdout/site-pages.spec.mjs",
+    "holdout/contact-flow.spec.mjs",
+    "holdout/presentation.spec.mjs",
+    "visible/contact-api.test.mjs",
+    "visible/site-pages.spec.mjs",
+    "visible/contact-flow.spec.mjs",
+    "suite.manifest.json"
+  ],
+  "criteriaCount": 23,
+  "manifestSha256": "9d600d8cf17fb2358c32139c8adf54526de65b38d9f62622cdfde01cb288c2e8",
+  "manifestCanonicalSha256": "aab0f98aa43951fd958f27a90d7b2a3a7ed36c0a79431ad65cf2f9023d624e75"
+}

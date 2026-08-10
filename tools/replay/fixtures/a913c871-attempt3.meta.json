@@ -1,0 +1,39 @@
+{
+  "id": "a913c871-attempt3",
+  "runId": "run-2026-08-09T21-04-00-713Z-a913c871",
+  "ticketId": "t-b79ff5e2a1b314e4",
+  "attempt": 3,
+  "provenance": {
+    "source": "claude-code CLI session transcript (NOT a harness artefact)",
+    "transcript": "e327a0fb-2604-42fc-83ac-1b064c0d7502.jsonl",
+    "emittedAt": "2026-08-09T22:31:03.651Z",
+    "promptAt": "2026-08-09T22:07:20.864Z",
+    "spanFromPostMortem": "22:07:20 → 22:31:03",
+    "citedIn": "docs/RUN-a913c871-observations.md §TIMELINE, CONTINUED"
+  },
+  "promptTextSha256": "48dbf98a61f0f2e7a46726fa7d42af91938a6f8876c99945ff0c388d091a0f4d",
+  "promptTextChars": 14867,
+  "attachments": [
+    {
+      "kind": "document",
+      "mediaType": "application/pdf",
+      "base64Chars": 106804,
+      "sha256OfBase64": "186561c3e37e94db41700e9067d1d5c09a774f4df42c9863c75b8f5dee12d04f"
+    }
+  ],
+  "testFilePaths": [
+    "holdout/health-and-routes.test.mjs",
+    "holdout/contact-api.test.mjs",
+    "holdout/messages-auth.test.mjs",
+    "holdout/projects-api.test.mjs",
+    "holdout/contact-form-flow.spec.mjs",
+    "holdout/site-content.spec.mjs",
+    "holdout/motion-a11y.spec.mjs",
+    "visible/contact-api.test.mjs",
+    "visible/site-pages.spec.mjs",
+    "suite.manifest.json"
+  ],
+  "criteriaCount": 24,
+  "manifestSha256": "6f628191d68fa8be82e97e8667eae61031aa9d46ffeee8362082e0c1ecb01f7f",
+  "manifestCanonicalSha256": "ef0ffa8bce22f26fdf6e8689d2e4ba8165fce9276963170651d780e3d1a9db7b"
+}

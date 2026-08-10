@@ -1,0 +1,70 @@
+{
+  "site": "spec/suite.manifest.json",
+  "blessedBy": {
+    "note": "The checker whose output these expectations were recorded from. NOT a gate — replaying against a candidate checker is the whole point — but a FAIL is only readable if you know what moved.",
+    "checker": "bakeoff/dist/scorer-protocol.js",
+    "sha256": "6e064d7d56b07a5a8eb9e783d408b322835796ffb8db390b9006bf2fb477a517",
+    "mtime": "2026-08-10T05:29:54.756Z",
+    "bytes": 52655,
+    "recordedAt": "2026-08-10"
+  },
+  "note": "Recorded outcomes of the REAL validator (bakeoff parseSuiteManifest + collectManifestProblems) over recorded artefacts. expectFields are NORMALISED field paths (array indices collapsed, see signature.mjs). A field that disappears from the list is a FAILURE: the validator stopped naming something it used to name. A field that appears is DRIFT: reported, not fatal, because a validator that surveys more is the direction the 2026-08-10 repair round moved in.",
+  "cases": [
+    {
+      "id": "a913c871-attempt1",
+      "from": "fixture",
+      "why": "authoring attempt 1 of run-2026-08-09T21-04-00-713Z-a913c871. Emitted {entity, source, expectation} — no id, no kind, no minRows. Killed nothing on its own; it is the start of the id->kind->id oscillation.",
+      "expect": "reject",
+      "expectFailFastMessage": "dataExpectations[0].id must be a non-empty string",
+      "expectFields": [
+        "dataExpectations[].id",
+        "dataExpectations[].kind",
+        "dataExpectations[].minRows"
+      ],
+      "signature": "spec/suite.manifest.json#176d75d025b304fd"
+    },
+    {
+      "id": "a913c871-attempt2",
+      "from": "fixture",
+      "why": "attempt 2. Told 'set dataExpectations[0].id', it added id and kept everything else wrong: {id, description, entity, minRowCount, readBack}.",
+      "expect": "reject",
+      "expectFailFastMessage": "dataExpectations[0].kind must be \"sqlite\" or \"http\", got undefined",
+      "expectFields": [
+        "dataExpectations[].kind",
+        "dataExpectations[].minRows"
+      ],
+      "signature": "spec/suite.manifest.json#87cee68a583051a3"
+    },
+    {
+      "id": "a913c871-attempt3",
+      "from": "fixture",
+      "why": "attempt 3, THE MANIFEST THAT ENDED THE RUN. Told to add kind, it added kind and threw away the id it had right on attempt 2. docs/RUN-a913c871-observations.md records this exact case measured from the shipped bakeoff/dist: fail-fast names 1 field, collect-all names id | file | minRows | sql | table. That published measurement is this corpus's wiring proof — it was produced by a different reader on a different day.",
+      "expect": "reject",
+      "expectFailFastMessage": "dataExpectations[0].id must be a non-empty string",
+      "expectFields": [
+        "dataExpectations[].file",
+        "dataExpectations[].id",
+        "dataExpectations[].minRows",
+        "dataExpectations[].sql",
+        "dataExpectations[].table"
+      ],
+      "signature": "spec/suite.manifest.json#a3dc0c299295f7d1"
+    },
+    {
+      "id": "populated-manifest",
+      "from": "literal-known-good",
+      "why": "MUST-ACCEPT. A server-shaped manifest carrying the bakeoff/docker/README.md:391 sqlite entry verbatim plus an http entry. Without a must-accept case the whole corpus passes against a validator that rejects everything, which is the exact defect this repo catalogues twenty-one times.",
+      "expect": "accept",
+      "expectFields": [],
+      "signature": "spec/suite.manifest.json#unattributed"
+    },
+    {
+      "id": "shipped-prompt-examples",
+      "from": "shipped-prompt",
+      "why": "MUST-ACCEPT, and it is the a913c871 root cause turned into a standing check: the dataExpectations examples the SHIPPED authoring prompt shows the seat, parsed by the real validator. A prompt that documents a shape the validator rejects puts the seat back in a box with no door it can see. Read from bakeoff/dist/spec-agent.js, so it tracks what a run would actually send.",
+      "expect": "accept",
+      "expectFields": [],
+      "signature": "spec/suite.manifest.json#unattributed"
+    }
+  ]
+}
