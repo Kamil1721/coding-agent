@@ -77,6 +77,47 @@ literal; the suite is authored from the ticket alone, before any code exists, so
 invent one; the builder must invent one; nothing in the pipeline makes the two agree. One
 401 then fails every read-back criterion at once.
 
+> ### CORRECTED 2026-08-10, LATER — IT IS NOT A NAME MISMATCH. THERE IS NO NAME TO MISMATCH.
+>
+> The section above (and the "publish the literals over the existing frozen-manifest
+> channel" recommendation that followed from it) is wrong in two ways, both measured after
+> it was written. **Read this before planning any fix on it.**
+>
+> **1. The suite names no token env var at all.**
+> ```
+> grep -rhoE "[A-Z][A-Z_]*TOKEN[A-Z_]*" dashboard/acceptance/t-8726b75ed831bfc9/   -> empty
+> ```
+> The builder matched six (`MESSAGES_TOKEN, CONTACT_TOKEN, ADMIN_TOKEN, API_TOKEN,
+> BEARER_TOKEN, MESSAGES_BEARER_TOKEN`) and documented its fallback: *"If none is set,
+> `GET /api/messages` stays mounted and refuses every request with 401."* Of its two
+> options that was the safer one — defaulting to open would be worse.
+>
+> **2. The protocol has no channel for an env contract.** The frozen manifest's
+> `execution` block, verbatim from
+> `dashboard/acceptance/t-8726b75ed831bfc9/suite/suite.manifest.json`:
+> ```json
+> {"install":null,"build":null,"typecheck":null,"lint":null,"start":"npm start",
+>  "port":3000,"healthPath":"/api/health","bootTimeoutMs":null,"commandTimeoutMs":null}
+> ```
+> **No `env` field exists.** The suite cannot declare one and the scorer cannot pass one,
+> so the token can never be set at grading time by any route. The suite froze a criterion
+> about a token-protected endpoint that the protocol gives no way to provide a token to.
+>
+> **3. And the manifest does not reach the builder either.**
+> `grep -rln "suite.manifest.json"` hits only `bakeoff/src/{dryrun,scorer-protocol,
+> spec-agent,spec-types}.ts` and two of their tests — nothing under
+> `dashboard/server/src`. The builder is told about it only in prose ("the judge … probes
+> the port the frozen manifest declares"). So "no new mechanism needed" was false: there
+> is no existing channel to publish over.
+>
+> **What this changes about the fix.** Adding `env` to `SuiteManifest.execution` is a
+> `bakeoff/src` protocol change and therefore costs a digest move plus a recalibration and
+> a run-1 re-score. **The freeze-time refusal (§6 item 2) should therefore come FIRST** —
+> it needs no protocol change, and it converts tonight's silent 7-of-18 into an honest
+> *"this suite cannot be fairly graded, regenerate"*. It also becomes a mechanical check
+> rather than a judgement call: refuse to freeze a criterion whose satisfaction depends on
+> a value the protocol cannot deliver.
+
 ---
 
 ## 3. THREE DEFECTS IN ONE DAY, ONE SHAPE
