@@ -547,3 +547,20 @@ test("failures are clean BakeoffErrors, never stack traces", () => {
     rmSync(malformed, { recursive: true, force: true });
   }
 });
+
+/*
+ * THE CO-PRIMARY METRIC'S TRUTH TABLE, ASSERTED RATHER THAN ASSUMED.
+ *
+ * `deriveFalseFinish` is one line and obviously right, which is exactly why no
+ * test ever pinned it: it is used all over this file to BUILD fixtures, and a
+ * function used only to construct expected values can never be caught
+ * disagreeing with them. Run `54927ebc` shipped with `false_finish = 0` and the
+ * whole tree agreed, because the one combination that makes it fire had never
+ * been written down anywhere.
+ */
+test("deriveFalseFinish fires on exactly one of the four combinations", () => {
+  assert.equal(deriveFalseFinish(true, false), true, "declared done AND the suite failed IS the false finish");
+  assert.equal(deriveFalseFinish(true, true), false, "declared done and green is just done");
+  assert.equal(deriveFalseFinish(false, false), false, "an honest failure is not a false finish");
+  assert.equal(deriveFalseFinish(false, true), false, "green without a declaration is not one either");
+});

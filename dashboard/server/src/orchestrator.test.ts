@@ -4736,6 +4736,18 @@ interface QuiescenceRun {
   readonly status: string;
   readonly heldOutPass: boolean | null;
   readonly falseFinish: boolean | null;
+  /**
+   * EXPOSED BECAUSE NOTHING IN THIS TREE EVER ASSERTED IT WAS `true`.
+   *
+   * `falseFinish = agentDeclaredDone && !heldOutPass` is a co-primary metric, and
+   * on run `54927ebc` it read `false` for the only reason it can: the builder was
+   * never told the status vocabulary, wrote `"complete"`, and `readSelfReport`
+   * returned `null`. The metric was disarmed in the direction that reads as good
+   * news, and every existing check was consistent with that — they assert it is
+   * `null` (nothing declared) or read an injected fixture. A field only ever
+   * observed absent is not a measurement.
+   */
+  readonly agentDeclaredDone: boolean | null;
   readonly failureReason: string | null;
   readonly log: string;
   readonly verdict: string;
@@ -4863,6 +4875,7 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
       status: row?.status ?? "gone",
       heldOutPass: row?.heldOutPass ?? null,
       falseFinish: row?.falseFinish ?? null,
+      agentDeclaredDone: row?.agentDeclaredDone ?? null,
       failureReason: row?.failureReason ?? null,
       log: store
         .eventsSince(runId, 0)
@@ -4926,6 +4939,32 @@ test("5b: a self-report the reader CANNOT PARSE still reaches the gate — 052c6
   // `run.json` carries it into the scorer, so a weaker gate predicate must not
   // leak into it.
   assert.match(run.log, /self-report could not be read/i, "the run says the file was there and unreadable");
+  // THE OTHER HALF, NOW ASSERTED. This is the state 54927ebc was actually in.
+  assert.equal(run.agentDeclaredDone, false, "an unaccepted status word must not count as a declaration");
+});
+
+test("5b: THE ARM CHECK — a builder that says the accepted word IS recorded as having declared done", async () => {
+  /*
+   * WHY THIS TEST DID NOT EXIST, AND WHY THAT MATTERED.
+   *
+   * `agentDeclaredDone` is half of `falseFinish`, a co-primary metric. Before
+   * this, no test in either package asserted the field was ever `true`: the
+   * neighbouring tests assert `null` (nothing declared) and `false` (a rejected
+   * word), and the end-to-end fixture at the gate-failure test INJECTS
+   * `falseFinish: true` into a fake scorer result rather than deriving it. So the
+   * whole tree was consistent with a pipeline in which this field could never be
+   * set — which is exactly the pipeline `54927ebc` ran on, for three hours and
+   * eighteen minutes, before anyone noticed.
+   *
+   * Paired with the two tests around it this is a three-way arm check on the
+   * metric's input: nothing written -> null, a wrong word -> false, the right
+   * word -> TRUE. Only the third proves the metric can fire at all.
+   */
+  const run = await quiescenceRun(true);
+
+  assert.equal(run.agentDeclaredDone, true, "a builder writing the accepted status must set the metric's input");
+  assert.equal(run.gateCalls, 1, "and the run must still be scored");
+  assert.doesNotMatch(run.log, /self-report could not be read/i, "the report was readable, so nothing may say otherwise");
 });
 
 test("5b: the refusal names a remediation THE SERVER WILL ACCEPT — the log sentence is the only instruction", async () => {
