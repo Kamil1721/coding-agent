@@ -123,7 +123,7 @@ Every one of these is optional, and **none of them is ever a credential.**
 | `DASHBOARD_HOST` | `127.0.0.1` | **Only `127.0.0.1` is accepted.** Anything else and the process exits 2. |
 | `BAKEOFF_SCORER_IMAGE` | `bakeoff-scorer:1` | Scorer image. Pin it by digest. |
 | `BAKEOFF_SCORER_TIMEOUT_MIN` | harness default | Hard boundary on one scoring container. |
-| `DASHBOARD_SPEC_MODEL` | `default` | Model for the spec and judge seats. |
+| `DASHBOARD_SPEC_MODEL` | `claude-opus-5[1m]` | Model for the plan, spec, audit and judge seats. **An escape hatch, not an opt-in** — unsetting it does not go back to letting the CLI choose, it lands on that literal. SET it only if the pin is retired. The ceiling table (`MODEL_OUTPUT_CEILINGS`, `server/src/orchestrator.ts`) is consulted once per run, before phase 0, and decides three ways: below 64,000 (the budget the spec seat's FIRST call asks for) the run is REFUSED at zero spend; at or above 64,000 but below the 128,000 rung `spec-agent` retries a truncated suite at, the run PROCEEDS with a `warn` line saying that free retry is a no-op here; an id the table does not know PROCEEDS with a `warn` line, so the hatch still opens for a model newer than the table. |
 | `DASHBOARD_SEAT_MAX_TURNS` | `8` | Turn cap for a seat call. A measured floor, not a bound. |
 | `DASHBOARD_ALLOW_UNSANDBOXED_BUILDER` | unset | `1` lets a build run when the CLI sandbox cannot start. Deliberate opt-out. |
 | `DASHBOARD_API_ORIGIN` | `http://127.0.0.1:4176` | UI → API origin. **Build-time only.** |

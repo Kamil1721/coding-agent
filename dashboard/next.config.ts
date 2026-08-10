@@ -62,6 +62,47 @@ const distDir = process.env["NEXT_TEST_DIST_DIR"] ?? ".next";
 const nextConfig: NextConfig = {
   distDir,
 
+  /**
+   * THE PREVIEW LINK IS A DIRECTORY URL, AND NEXT USED TO EAT ITS TRAILING SLASH.
+   *
+   * `GET /api/runs/:id/preview/` is a directory: the backend reads `index.html`
+   * out of it and every relative asset in that document resolves against it. A
+   * request that arrives WITHOUT the slash gets a 302 that puts one back
+   * (`server/src/http.ts`, `servePreview`), because from the slashless address
+   * `styles.css` resolves to `/api/runs/:id/styles.css`, one segment too high.
+   *
+   * Next's default canonicalisation does the exact opposite: it 308s
+   * `/anything/` to `/anything`. The two rules pointed at each other and the
+   * owner's preview link was an infinite redirect loop for 104 commits — nine
+   * hops of 308/302 and then `net::ERR_TOO_MANY_REDIRECTS` on a blank white
+   * page. `server/src/preview-through-next.test.ts` reproduces it with a real
+   * Next in the path and prints the chain.
+   *
+   * IT TAKES BOTH LINES BELOW, AND EACH ALONE STILL LOOPS. That was measured, on
+   * this Next (16.2.12), before either was written:
+   *
+   *   1. `skipTrailingSlashRedirect` removes the 308 — `redirects: []` in
+   *      `routes-manifest.json` — and the route STILL loops, because
+   *      `path-to-regexp` compiles the source `/api/:path*` to
+   *      `^/api(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))?(?:/)?$`, where the trailing
+   *      slash is matched by `(?:/)?` OUTSIDE the capture and is therefore
+   *      dropped from `:path`. The REWRITE itself strips the slash, the backend
+   *      302s it back on, and the slash form now redirects to ITSELF forever.
+   *   2. `/api/:path(.*)` compiles to `^/api(?:/(.*))(?:/)?$`, whose capture is
+   *      greedy and DOES include the trailing slash — but on its own the 308
+   *      still fires first, so the loop is unchanged.
+   *
+   * `trailingSlash: true` was measured too and fails the same way as (1).
+   *
+   * WHAT SKIPPING THE REDIRECT COSTS, stated because it is wider than `/api/*`:
+   * Next stops canonicalising PAGE urls as well, so `/runs` and `/runs/` both
+   * answer 200 and neither redirects to the other. For a loopback single-user
+   * tool that already sends `X-Robots-Tag: noindex` there is no duplicate-URL
+   * problem to have; measured across `/`, `/runs`, `/runs/`, `/runs/<id>`,
+   * `/runs/<id>/`, `/projects`, `/projects/` — all 200 — and `/nope` still 404.
+   */
+  skipTrailingSlashRedirect: true,
+
   // The dashboard is a single-user local tool. It must never be reachable
   // off-machine: both subscription providers forbid making the account
   // available to anyone else. Loopback binding is enforced by `-H 127.0.0.1`
@@ -80,8 +121,26 @@ const nextConfig: NextConfig = {
     ];
   },
 
+  /*
+   * `:path(.*)` AND NOT `:path*` — see `skipTrailingSlashRedirect` above for the
+   * loop this half closes.
+   *
+   * WHAT MAKES A REVERT TO `:path*` RED is the HOP COUNT in
+   * `server/src/preview-through-next.test.ts`, and only that: reverted, the
+   * slash form 302s to ITSELF nine times. Stated because two other tests in that
+   * file look like they guard this line and do not — they pass under either
+   * source and are guards against a FUTURE change of shape rather than proof
+   * about this one:
+   *
+   *   - a preview asset called `poster frame.png`, linked as
+   *     `/assets/poster%20frame.png`. `:path(.*)` substitutes the remainder
+   *     verbatim where `:path*` re-encodes per segment; both spellings happened
+   *     to resolve when measured.
+   *   - the SSE stream at `/api/runs/:id/events`, which still delivers an event
+   *     emitted after the response headers in about a millisecond.
+   */
   rewrites: async () => [
-    { source: "/api/:path*", destination: `${apiOrigin}/api/:path*` },
+    { source: "/api/:path(.*)", destination: `${apiOrigin}/api/:path` },
   ],
 };
 

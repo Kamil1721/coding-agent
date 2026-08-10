@@ -736,8 +736,9 @@ const DASHBOARD_ORIGIN_HOSTS: readonly string[] = [LOOPBACK_HOST, "localhost"];
  * undefined?
  *
  * Rule 2 says a cron run auto-selects, and never says what makes a request a
- * cron run. Defined narrowly here: a request is interactive when it carries an
- * explicit `designLock`, or a `Referer` from a loopback page. Everything else —
+ * cron run. Defined narrowly here: a request is interactive when it asks to be
+ * (`designLock: "ask"`), or when it carries a `Referer` from a loopback page and
+ * has not explicitly opted out with `designLock: "auto"`. Everything else —
  * `curl`, cron, a script — is non-interactive and therefore `auto`. The failure
  * direction was chosen deliberately: a mis-classified interactive request
  * auto-selects (a mockup the owner did not pick, recorded as automatic), while
@@ -751,7 +752,28 @@ const DASHBOARD_ORIGIN_HOSTS: readonly string[] = [LOOPBACK_HOST, "localhost"];
  * which is not the same fact as "the request asked for auto".
  */
 export function designLockInteractive(requested: unknown, referer: string | undefined): boolean {
-  if (requested === "auto" || requested === "ask") return true;
+  // `"auto"` IS AN OPT-OUT AND IS ANSWERED FIRST, BEFORE THE `Referer` RULE.
+  //
+  // CORRECTED 2026-08-09. This line used to read `requested === "auto" ||
+  // requested === "ask"`, folding both explicit values into "a deliberate
+  // caller". That is true of the caller and false of the QUESTION: the dashboard
+  // always sends this field (`page.tsx:365`), and its two choices are "Ask me
+  // which to build" and "Let ui-designer pick" — the second is the only control
+  // on the screen that says *do not ask me anything*, and it produced
+  // `interactive = true` exactly like the first.
+  //
+  // The mockup lock survived that, because `designLockPolicy` reads `requested`
+  // before it reads this flag. The PLAN phase did not: `planPolicy(true)` is
+  // `"ask"`, so an owner who picked the unattended-looking radio and walked away
+  // paid a plan seat to compose questions and then a 20-minute park waiting for
+  // an answer nobody was there to give.
+  //
+  // THE FAILURE DIRECTION IS UNCHANGED. Everything not explicitly `"auto"` still
+  // falls through to the `Referer` rule, so a dashboard submission that states
+  // nothing is still interactive and still asks; only the value that spells out
+  // "pick for me" is taken at its word.
+  if (requested === "auto") return false;
+  if (requested === "ask") return true;
   if (referer === undefined || referer.length === 0) return false;
   try {
     return DASHBOARD_ORIGIN_HOSTS.includes(new URL(referer).hostname);
@@ -2632,6 +2654,117 @@ function previewRootPrefix(workspace: string): string | null {
   return null;
 }
 
+/**
+ * Re-point every ROOT-ABSOLUTE reference in a served document at the preview
+ * mount, because the owner's builds write their sites for an origin root and
+ * this route serves them four segments deep.
+ *
+ * THE ARTEFACT THAT FORCED THIS, quoted from disk rather than imagined:
+ *
+ *   runs/run-2026-07-30T20-16-40-242Z-052c6e02/workspace/index.html
+ *     <link rel="stylesheet" href="/styles.css">
+ *     <script src="/main.js"></script>
+ *     <video poster="/assets/world/leg-1-poster.webp">
+ *   …/workspace/server.mjs:6-8
+ *     "The artefact directory itself is the document root … Serving anything
+ *      deeper would 404 the root document."
+ *
+ * Served at `/api/runs/<id>/preview/`, that document asked the ORIGIN root for
+ * its stylesheet and its script. Both 404'd, and — this is the part that made it
+ * survive — a 404 stylesheet is not an error a browser shows anyone. The page
+ * painted in Times New Roman with browser-default blue links, which is
+ * indistinguishable from a build that produced nothing. Measured with a negative
+ * control: the OTHER finished run links its stylesheet relatively and renders
+ * fully styled through the same route in the same second, so the preview server
+ * was never the broken part.
+ *
+ * WHY NOT `<base href>`, WHICH IS THE OBVIOUS FIX AND IS NOT A FIX AT ALL. It
+ * cannot work here for a reason that has nothing to do with this route's CSP:
+ * a root-absolute URL is resolved against the base URL's ORIGIN, not its path,
+ * so `/styles.css` under `<base href="/api/runs/<id>/preview/">` still resolves
+ * to `http://127.0.0.1:4176/styles.css`. `<base>` moves RELATIVE references, and
+ * the relative ones already work. (The CSP would have blocked it as well —
+ * `base-uri 'none'` at `PREVIEW_CSP` — so it would have shipped green twice
+ * over.)
+ *
+ * WHY NOT AN ORIGIN-ROOT SERVER, which is the architecturally right answer. It
+ * needs a second loopback port per run, the client's URL builder to point at it
+ * (`src/lib/spec-pipeline.ts`, another module's file), and `frame-ancestors
+ * 'self'` to become an explicit origin so the dashboard can still frame it. That
+ * is a day's work overlapping the project runner's published-folder server, and
+ * it is the correct thing to do if previews ever leave this machine.
+ *
+ * WHAT THIS DOES NOT COVER, said plainly because the alternative is a reader
+ * assuming it is complete:
+ *
+ *   - URLS BUILT AT RUN TIME BY JAVASCRIPT. Nothing here can see them, and
+ *     rewriting string literals inside a script is a transform that would
+ *     eventually corrupt one. STRUCTURAL, NOT OBSERVED: the one candidate on
+ *     this machine is `052c6e02`'s `main.js:56`, `fetch("/assets/world/leg-1.mp4")`
+ *     — and `connect-src 'none'` in `PREVIEW_CSP` already stops that fetch
+ *     whatever its path, while the artefact's own `.catch` leaves the poster in
+ *     place. Measured through the client origin with a full scroll of the page:
+ *     zero non-200 responses and zero failed requests.
+ *   - UNQUOTED ATTRIBUTES (`src=/main.js`). Legal HTML, not emitted by any
+ *     generator seen here, and the pattern below requires the quotes.
+ *   - ANY FILE THAT IS NOT `text/html` OR `text/css`. An SVG with a
+ *     root-absolute `xlink:href`, or a JSON manifest of asset paths, goes out
+ *     byte-for-byte.
+ *   - A DOCUMENT THAT IS NOT UTF-8. The two rewritten types are read and
+ *     re-emitted as UTF-8, which is what their `Content-Type` has always
+ *     claimed; a latin-1 HTML file that previously went out byte-for-byte and
+ *     rendered by luck now goes out transcoded. Nothing built here has produced
+ *     one.
+ */
+function rewriteRootAbsolute(source: string, mount: string, kind: "html" | "css"): string {
+  // `url(/…)` covers the inline `<style>` block, the `style="…"` attribute and
+  // every rule of a served stylesheet, which is where a generated site puts its
+  // background images.
+  const withUrls = source.replace(
+    /url\(\s*(['"]?)(\/(?!\/)[^)'"]*)\1\s*\)/gi,
+    (_match, quote: string, path: string) => `url(${quote}${mount}${path}${quote})`,
+  );
+  if (kind === "css") return withUrls;
+
+  // A FUNCTION REPLACER THROUGHOUT, not a `$1` string: a run id is part of
+  // `mount`, and `$&`/`$1` inside a replacement string are substitution
+  // patterns rather than text.
+  const withAttributes = withUrls.replace(
+    /\b(href|src|poster|action|formaction)=(["'])(\/(?!\/)[^"']*)\2/gi,
+    (_match, attribute: string, quote: string, path: string) =>
+      `${attribute}=${quote}${mount}${path}${quote}`,
+  );
+
+  // `srcset` IS A LIST, and a naive URL rewrite over it eats the descriptors.
+  // Each candidate is `url [descriptor]`, comma-separated.
+  return withAttributes.replace(
+    /\b(srcset|imagesrcset)=(["'])([^"']*)\2/gi,
+    (_match, attribute: string, quote: string, value: string) => {
+      const rewritten = value
+        .split(",")
+        .map((candidate) => {
+          const trimmed = candidate.trim();
+          if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return candidate;
+          return candidate.replace(trimmed, `${mount}${trimmed}`);
+        })
+        .join(",");
+      return `${attribute}=${quote}${rewritten}${quote}`;
+    },
+  );
+}
+
+/**
+ * The size above which a document is streamed unrewritten.
+ *
+ * The rewrite has to buffer, and a preview is served from a workspace a run may
+ * still be writing. Four megabytes is far beyond any entry document or
+ * stylesheet a build here has produced (the largest measured: 31 KB of HTML,
+ * 43 KB of CSS) and far below anything that would matter to this process's
+ * memory. A file past the cap goes out byte-for-byte, which is the behaviour
+ * this route had before the rewrite existed.
+ */
+const PREVIEW_REWRITE_MAX_BYTES = 4 * 1024 * 1024;
+
 function servePreview(
   deps: HttpDeps,
   runId: string,
@@ -2663,6 +2796,18 @@ function servePreview(
    */
   const previewRoot = previewRootPrefix(workspace) ?? "";
   const rooted = [previewRoot, decoded.path].filter((part) => part !== "").join("/");
+
+  /*
+   * THE MOUNT, TAKEN FROM THE CLIENT'S OWN SPELLING RATHER THAN REBUILT.
+   *
+   * `/api/runs/<id>/preview` — the first five segments of the request path,
+   * still percent-encoded exactly as they arrived. Rebuilding it from `runId`
+   * would re-encode the id a second way and hand the browser an address that
+   * does not match the one it is already on, which is a cache miss at best and a
+   * second redirect at worst. `rewriteRootAbsolute` prefixes it onto every
+   * root-absolute reference in the document.
+   */
+  const mount = url.pathname.split("/").slice(0, 5).join("/");
 
   const resolved = resolvePreviewTarget(workspace, rooted);
   if (resolved.kind === "refusal") {
@@ -2697,11 +2842,11 @@ function servePreview(
       sendError(response, status, code, message, remediation);
       return;
     }
-    sendPreviewFile(index.target, indexPath, response);
+    sendPreviewFile(index.target, indexPath, mount, response);
     return;
   }
 
-  sendPreviewFile(resolved.target, resolved.path, response);
+  sendPreviewFile(resolved.target, resolved.path, mount, response);
 }
 
 /**
@@ -2718,16 +2863,24 @@ function servePreview(
  * `MAX_FILE_BYTES`. That cap exists because a 12 MB transcript rendered into a
  * JSON string in a browser tab freezes it; a browser streaming a 12 MB image
  * handles it natively, and truncating a PNG produces a broken image with no
- * explanation. Nothing is buffered in this process either way.
+ * explanation. Nothing is buffered in this process either way —
+ * EXCEPT the two text types the mount rewrite has to read whole; see
+ * `rewriteRootAbsolute` and `PREVIEW_REWRITE_MAX_BYTES`.
  *
  * THE STREAM'S `error` IS HANDLED. Headers are already sent by then, so there is
  * no status left to change and the only honest move is to break the connection —
  * but an unhandled `error` on a stream takes the whole server down, and a file
  * disappearing mid-read is a thing a live workspace genuinely does.
  */
-function sendPreviewFile(target: string, relPath: string, response: ServerResponse): void {
+function sendPreviewFile(
+  target: string,
+  relPath: string,
+  mount: string,
+  response: ServerResponse,
+): void {
+  const contentType = previewContentType(relPath);
   response.writeHead(200, {
-    "Content-Type": previewContentType(relPath),
+    "Content-Type": contentType,
     // The workspace changes under a running run; a cached asset would show the
     // owner a build that no longer exists.
     "Cache-Control": "no-store",
@@ -2738,6 +2891,34 @@ function sendPreviewFile(target: string, relPath: string, response: ServerRespon
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": PREVIEW_CSP,
   });
+
+  /*
+   * THE ONLY TRANSFORM POINT ON THIS PIPE, and it is here rather than in
+   * `servePreview` because both call sites — the resolved file and a
+   * directory's `index.html` — have to get it.
+   *
+   * `statSync` rather than reading first and measuring: the point of the cap is
+   * not to hold the file. A file that vanishes between the stat and the read
+   * throws, and the `catch` falls through to the stream, which has its own
+   * `error` handler for exactly that race.
+   */
+  const kind = contentType.startsWith("text/html")
+    ? "html"
+    : contentType.startsWith("text/css")
+      ? "css"
+      : null;
+  if (kind !== null) {
+    try {
+      if (statSync(target).size <= PREVIEW_REWRITE_MAX_BYTES) {
+        response.end(rewriteRootAbsolute(readFileSync(target, "utf8"), mount, kind));
+        return;
+      }
+    } catch {
+      // Fall through to the stream, whose `error` handler is the one place this
+      // race is already handled.
+    }
+  }
+
   const stream = createReadStream(target);
   stream.on("error", () => {
     response.destroy();

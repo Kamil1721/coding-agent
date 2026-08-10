@@ -69,6 +69,23 @@ const SITE_RUN_ID = "run-preview-site";
 const NO_INDEX_RUN_ID = "run-preview-no-index";
 /** A run row with no directory on disk at all. */
 const NO_WORKSPACE_RUN_ID = "run-preview-no-workspace";
+/**
+ * A run whose site is written for an ORIGIN ROOT, which is how the owner's
+ * builds actually write them.
+ *
+ * `SITE_RUN_ID` above links its assets relatively and always worked. Both of
+ * the finished artefacts on this machine were read before this fixture was
+ * added and one of them does not:
+ *
+ *   runs/run-2026-07-30T20-16-40-242Z-052c6e02/workspace/index.html
+ *     <link rel="stylesheet" href="/styles.css">   <script src="/main.js">
+ *
+ * Served four segments deep at `/api/runs/<id>/preview/`, that document asked
+ * the dashboard's ORIGIN root for its stylesheet, got a 404, and painted in
+ * Times New Roman — which is what a build that produced nothing looks like. A
+ * suite whose only preview fixture is the relative spelling cannot see it.
+ */
+const ROOT_ABS_RUN_ID = "run-preview-root-absolute";
 
 /**
  * The string that must never cross the wire. It stands in for a held-out test
@@ -157,9 +174,39 @@ async function startHarness(): Promise<Harness> {
   // directory does not, which is what a run cancelled before its build segment
   // looks like.
 
+  /*
+   * THE ROOT-ABSOLUTE SITE. Every reference shape one document, so the fix for
+   * the root-absolute ones is visibly not a fix that rewrites everything:
+   * `/…` moves, `assets/…` and `https://…` and `//…` and `#…` do not.
+   */
+  const rootAbs = runPathsFor(paths, ROOT_ABS_RUN_ID);
+  ensureRunDirs(rootAbs);
+  writeFileSync(
+    join(rootAbs.workspace, "index.html"),
+    `<!doctype html><html><head>` +
+      `<link rel="stylesheet" href="/styles.css">` +
+      `<link rel="stylesheet" href="https://example.com/vendor.css">` +
+      `<style>body { background-image: url(/assets/hero.png) }</style>` +
+      `</head><body><h1>${INDEX_MARKER}</h1>` +
+      `<img src="/assets/hero.png"><img src="assets/hero.png">` +
+      `<a href="#top">top</a>` +
+      `<script src="//example.com/vendor.js"></script>` +
+      `<script src="/script.js"></script>` +
+      `</body></html>\n`,
+    "utf8",
+  );
+  writeFileSync(
+    join(rootAbs.workspace, "styles.css"),
+    `body { background: url(/assets/hero.png) } /* ${CSS_MARKER} */\n`,
+    "utf8",
+  );
+  writeFileSync(join(rootAbs.workspace, "script.js"), `console.log("${JS_MARKER}");\n`, "utf8");
+  mkdirSync(join(rootAbs.workspace, "assets"), { recursive: true });
+  writeFileSync(join(rootAbs.workspace, "assets", "hero.png"), PNG_BYTES);
+
   const store = RunStore.open(paths.database);
   const bus = new RunEventBus(store);
-  for (const runId of [SITE_RUN_ID, NO_INDEX_RUN_ID, NO_WORKSPACE_RUN_ID]) {
+  for (const runId of [SITE_RUN_ID, NO_INDEX_RUN_ID, NO_WORKSPACE_RUN_ID, ROOT_ABS_RUN_ID]) {
     store.createRun({
       runId,
       ticketId: "t-1",
@@ -552,6 +599,110 @@ test("a run with no workspace, and a run that does not exist, are told apart", a
     const unknown = await preview(harness, "/", "run-does-not-exist");
     assert.equal(unknown.status, 404);
     assert.equal(errorBody(unknown).error, "unknown_run");
+  } finally {
+    await harness.close();
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * The document written for an origin root
+ * ---------------------------------------------------------------------- */
+
+test("A ROOT-ABSOLUTE DOCUMENT'S ASSETS ARE RE-POINTED AT THE PREVIEW, because the workspace is not the origin root", async () => {
+  const harness = await startHarness();
+  try {
+    const mount = `/api/runs/${ROOT_ABS_RUN_ID}/preview`;
+    const index = await preview(harness, "/", ROOT_ABS_RUN_ID);
+    assert.equal(index.status, 200, index.raw.slice(0, 300));
+    assert.ok(index.raw.includes(INDEX_MARKER));
+
+    /*
+     * THE NEGATIVE CONTROL FIRST. `/styles.css` at this server's origin root is
+     * not served and never was — that is the whole bug: the document asked for
+     * an address that does not exist, and a 404 stylesheet is not an error any
+     * browser shows a reader. Without this, the assertions below would pass on
+     * a server that happened to serve the workspace at its root too.
+     */
+    const atOriginRoot = await raw(`${harness.base}/styles.css`);
+    assert.notEqual(atOriginRoot.status, 200, "the origin root serves the stylesheet, so this test proves nothing");
+    assert.ok(!atOriginRoot.raw.includes(CSS_MARKER));
+
+    // WHAT THE DOCUMENT NOW NAMES, resolved the way a browser resolves it.
+    const href = /<link rel="stylesheet" href="([^"]*)"/.exec(index.raw)?.[1];
+    assert.equal(href, `${mount}/styles.css`, `the stylesheet reference is still ${String(href)}`);
+    const css = await raw(new URL(href ?? "", `${harness.base}${mount}/`).toString());
+    assert.equal(css.status, 200, css.raw.slice(0, 200));
+    assert.equal(css.contentType, "text/css; charset=utf-8");
+    assert.ok(css.raw.includes(CSS_MARKER));
+
+    // The script and the image, same treatment.
+    assert.match(index.raw, new RegExp(`<script src="${mount}/script\\.js"`));
+    assert.match(index.raw, new RegExp(`<img src="${mount}/assets/hero\\.png"`));
+    const js = await preview(harness, "/script.js", ROOT_ABS_RUN_ID);
+    assert.equal(js.status, 200);
+    assert.ok(js.raw.includes(JS_MARKER));
+
+    // `url()` IN CSS TOO — inline in the document, and in the stylesheet the
+    // document pulls. A background image is most of what a generated site's
+    // stylesheet points at.
+    assert.ok(
+      index.raw.includes(`url(${mount}/assets/hero.png)`),
+      `the inline <style> url() was not re-pointed: ${index.raw.slice(0, 400)}`,
+    );
+    assert.ok(
+      css.raw.includes(`url(${mount}/assets/hero.png)`),
+      `the stylesheet's url() was not re-pointed: ${css.raw.slice(0, 200)}`,
+    );
+
+    /*
+     * AND THE THREE SHAPES THAT MUST NOT MOVE. A relative reference already
+     * resolves correctly (that is what the trailing-slash redirect is for), and
+     * re-pointing an off-site URL at the preview turns a working CDN link into a
+     * 404 inside the workspace.
+     */
+    assert.ok(index.raw.includes('<img src="assets/hero.png">'), "a relative reference was rewritten");
+    assert.ok(index.raw.includes('href="https://example.com/vendor.css"'), "an absolute URL was rewritten");
+    assert.ok(index.raw.includes('src="//example.com/vendor.js"'), "a protocol-relative URL was rewritten");
+    assert.ok(index.raw.includes('href="#top"'), "a fragment was rewritten");
+
+    // THE OTHER RUN IS THE CONTROL FOR THE CONTROL: its document is relative and
+    // must come back byte-for-byte as it is on disk.
+    const relative = await preview(harness, "/");
+    assert.equal(relative.status, 200);
+    assert.ok(
+      relative.raw.includes('<link rel="stylesheet" href="styles.css">'),
+      `the relative document was altered: ${relative.raw.slice(0, 300)}`,
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the mount a document is re-pointed at is the PREVIEW ROOT, not the directory the document sits in", async () => {
+  const harness = await startHarness();
+  try {
+    // A root-absolute reference means "from the top of the site", so a document
+    // two levels down must still be re-pointed at `…/preview`, not at
+    // `…/preview/deep/`. Getting this wrong is invisible on a flat site and
+    // breaks every sub-page on a site with folders.
+    const workspace = runPathsFor(harness.paths, ROOT_ABS_RUN_ID).workspace;
+    mkdirSync(join(workspace, "deep", "deeper"), { recursive: true });
+    writeFileSync(
+      join(workspace, "deep", "deeper", "index.html"),
+      `<!doctype html><link rel="stylesheet" href="/styles.css">\n`,
+      "utf8",
+    );
+
+    const nested = await preview(harness, "/deep/deeper/", ROOT_ABS_RUN_ID);
+    assert.equal(nested.status, 200, nested.raw.slice(0, 200));
+    assert.ok(
+      nested.raw.includes(`href="/api/runs/${ROOT_ABS_RUN_ID}/preview/styles.css"`),
+      `a nested document was re-pointed at the wrong root: ${nested.raw}`,
+    );
+    // And the address it now names really is the stylesheet.
+    const css = await preview(harness, "/styles.css", ROOT_ABS_RUN_ID);
+    assert.equal(css.status, 200);
+    assert.ok(css.raw.includes(CSS_MARKER));
   } finally {
     await harness.close();
   }
