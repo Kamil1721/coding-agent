@@ -190,6 +190,29 @@ const BUTTON_SIZE: Readonly<Record<ButtonSize, string>> = {
   lg: "gap-2 px-4 py-2 text-[13px] font-semibold",
 };
 
+/**
+ * `data-testid` IS DECLARED AND FORWARDED, AND THE REASON IS A TYPESCRIPT HOLE
+ * THAT COST TWO ALWAYS-RED TESTS (found 2026-08-10).
+ *
+ * This component takes a CLOSED prop list — no `...rest` — which is deliberate:
+ * it is how the design system stops arbitrary DOM attributes leaking through a
+ * styled control. But `supervisor-strip.tsx` wrote
+ * `<Button data-testid="supervisor-detail-toggle">`, the attribute was silently
+ * dropped, and `getByTestId("supervisor-detail-toggle")` could never resolve. Two
+ * browser tests waited 60 s for an element that no source line could ever produce.
+ *
+ * IT COMPILED, AND THAT IS THE HOLE. TypeScript's excess-property check on JSX
+ * attributes SKIPS any attribute whose name contains a hyphen — `data-*` and
+ * `aria-*` are exempt by design, so the compiler cannot report the one class of
+ * prop that is both invisible at runtime and load-bearing for the test suite.
+ * `npx tsc --noEmit` was exit 0 the whole time.
+ *
+ * So the prop is declared HERE rather than fixed at the call site: a caller that
+ * needs a test id on a styled control must get one, and the next call site that
+ * writes it gets an attribute on the DOM instead of silence. `aria-label` is NOT
+ * added speculatively — this is the attribute a test actually asked for, and an
+ * unused forwarded prop is its own kind of dead code.
+ */
 export function Button({
   variant = "default",
   size = "default",
@@ -199,6 +222,7 @@ export function Button({
   children,
   className,
   title,
+  "data-testid": testId,
 }: {
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -208,6 +232,7 @@ export function Button({
   children: ReactNode;
   className?: string;
   title?: string;
+  "data-testid"?: string;
 }): ReactNode {
   return (
     <button
@@ -215,6 +240,7 @@ export function Button({
       title={title}
       disabled={disabled}
       onClick={onClick}
+      data-testid={testId}
       className={cx(
         "inline-flex items-center rounded-sm border transition-colors",
         BUTTON_SIZE[size],

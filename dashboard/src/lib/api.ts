@@ -10,6 +10,7 @@ import type {
   ProjectsResponse,
   RunDetail,
   RunSummary,
+  SupervisorCommandResponse,
 } from "./api-types";
 
 /**
@@ -70,6 +71,16 @@ export const KEY = {
    */
   projectLogs: (slug: string): string =>
     `/api/projects/${encodeURIComponent(slug)}/logs`,
+  /**
+   * The autonomy switch and its read-out. DESIGN §7.6.2.
+   *
+   * NOT `/api/projects/:slug/start`. That pair is the PUBLISHED-PROJECT preview
+   * control and has nothing to do with the loop; the two were one keyword apart
+   * and the confusion is worth a line of comment rather than a bug.
+   */
+  supervisor: "/api/supervisor",
+  supervisorStart: "/api/supervisor/start",
+  supervisorStop: "/api/supervisor/stop",
 } as const;
 
 /**
@@ -361,6 +372,29 @@ export function stopProject(slug: string): Promise<ProjectStopResponse> {
 
 export function projectLogs(slug: string): Promise<ProjectLogs> {
   return request<ProjectLogs>(KEY.projectLogs(slug));
+}
+
+/**
+ * START and STOP, and STOP MEANS DRAIN — DESIGN §7.5.
+ *
+ * BOTH RETURN THE WHOLE STATE — `ApiSupervisorCommandResponse extends
+ * ApiSupervisorState` plus `{changed, note}` — AND THE CALLER STILL REVALIDATES
+ * INSTEAD OF WRITING THE REPLY INTO THE CACHE. That is not pedantry: STOP answers
+ * `draining` while a run is still in flight and only becomes `stopped` later, so a
+ * control that painted its own reply as final would say STOPPED over a live
+ * builder. (This docblock said the response was `{desired, changed,
+ * inFlightRunId, note}` until 2026-08-10; `inFlightRunId` has never been on the
+ * wire, and the mirror declared it for exactly as long.)
+ *
+ * `changed: false` is a real answer, not an error: starting a running
+ * supervisor is a no-op and `note` says so.
+ */
+export function startSupervisor(): Promise<SupervisorCommandResponse> {
+  return request<SupervisorCommandResponse>(KEY.supervisorStart, { method: "POST" });
+}
+
+export function stopSupervisor(): Promise<SupervisorCommandResponse> {
+  return request<SupervisorCommandResponse>(KEY.supervisorStop, { method: "POST" });
 }
 
 export function errorMessage(error: unknown): string {

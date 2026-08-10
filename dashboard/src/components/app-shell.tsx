@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { useHealth } from "@/lib/hooks";
+import { RenderGuard } from "./render-guard";
+import { SupervisorStrip } from "./supervisor-strip";
 import { Dot, cx } from "./ui";
 
 /**
@@ -205,6 +207,61 @@ export function AppShell({ children }: { children: ReactNode }): ReactNode {
           <div className="ml-auto">
             <AuthGlance />
           </div>
+        </div>
+
+        {/*
+          * THE SUPERVISOR STRIP IS A SECOND HEADER ROW, ON EVERY ROUTE.
+          *
+          * ALWAYS MOUNTED, deliberately. The question it answers — "is the loop
+          * moving" — is the one the owner has after eight hours away, and it
+          * must not be reachable only from a screen he would have to know to
+          * open. DESIGN §7.6.2 puts it here for that reason.
+          *
+          * IT TAKES ITS OWN ROW RATHER THAN SHARING THE NAV'S, and the nav row
+          * is `h-11` with a nav, a wordmark and the auth glance already in it.
+          * Seven fields plus three controls in the remainder would truncate to
+          * the point of being unreadable at 1440px, which is the width every
+          * screenshot of this app is taken at.
+          *
+          * THE COST IS 30px OFF THE CANVAS AND IT IS PAID BY FLEX, NOT BY
+          * ARITHMETIC. On `/runs/<id>` the shell is `h-dvh overflow-hidden` and
+          * `main` is `flex-1 min-h-0`, so a taller header simply leaves the
+          * canvas 30px less and nothing overflows. There is no `--run-chrome`
+          * constant to update, because the fix that deleted it is what makes
+          * this row free. `supervisor-strip.browser.spec.ts` asserts the run
+          * view still has no scrollbar in either axis, no clipped node, and a
+          * fit scale above 0.7 at 2000px with the strip mounted.
+          *
+          * It carries the SAME cap as the nav row: on a full-bleed route a
+          * capped strip would inset against an edge-to-edge canvas, which is
+          * the misalignment the header cap fix already dealt with once.
+          */}
+        <div
+          className={cx(
+            "w-full border-t border-line px-4",
+            capped ? "mx-auto max-w-[1440px]" : "",
+          )}
+        >
+          {/*
+            * THE ONLY ERROR BOUNDARY IN THIS APP, AND IT IS HERE BECAUSE THIS IS
+            * THE ONE PLACE A THROW COSTS EVERYTHING. Every other component in
+            * the tree is a child of `main` on ONE route; this row is mounted
+            * from `RootLayout` on EVERY route, and React unwinds a throw to the
+            * nearest boundary — with none, that is the root, which renders
+            * nothing: no nav, no canvas, no error text, on every page. Measured
+            * twice on 2026-08-10 from two different fields of one API body.
+            *
+            * IT WRAPS THE STRIP AND NOTHING ELSE, DELIBERATELY. Wrapping
+            * `{children}` would swallow page-level throws that specs in this
+            * suite deliberately provoke and that Next's own overlay reports in
+            * dev — a boundary that hides a bug is worse than the blank page,
+            * because the blank page at least gets fixed. See `render-guard.tsx`
+            * for why validation in `lib/supervisor.ts` does not remove the need
+            * for this, and for the arm check that proves it can still catch.
+            */}
+          <RenderGuard what="the supervisor strip">
+            <SupervisorStrip />
+          </RenderGuard>
         </div>
       </header>
 
