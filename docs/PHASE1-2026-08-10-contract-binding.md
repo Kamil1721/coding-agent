@@ -659,3 +659,57 @@ The plan's phases 1–3 all assume a run reaches a verdict and argue about wheth
 is right. **Half of them do not get there.** Phase 1's work stands — `falseFinish` was
 genuinely disarmed and is now armed — but the next measurement worth having is not a better
 grader. It is a spec phase that freezes on the first or second attempt rather than the third.
+
+---
+
+## 15. THE TICKET'S PROSE SHAPE BECOMES THE CRITERION'S SHAPE
+
+Three runs died in spec tonight. The third names the mechanism exactly:
+
+```
+[mis_specified] REQ-013: statement matches no EARS template.
+Statement: "Each project page shall present at least one block of descriptive text that
+does not appear on /work, a link back to /work, and an illustration rendered wider than
+that project's illustration on /work."
+```
+
+That criterion is a near-transcription of a bullet I wrote:
+
+> *"Each project page carries … the project name as the page heading, what it is, my role,
+> the stack, and a fuller description than the card gives … The project's illustration
+> appears at a larger size than on the card."*
+
+**Four requirements in one sentence, opening with a noun phrase the EARS grammar has no slot
+for.** The seat mirrored the shape it was given, and the audit refused the result — three
+times, at roughly two hours a time.
+
+### Why this is a pipeline defect and not an author error
+
+The owner writes tickets in prose, which is the entire point of the product: *"you type a
+ticket in plain English."* Nothing tells him — or me — that a compound sentence beginning
+"Each X carries A, B and C" cannot become a well-formed criterion. The constraint is real,
+enforced, and invisible until a seat has spent two hours discovering it.
+
+Note the shape of the remediation the harness printed on the two failures, because it is
+right both times and points in opposite directions:
+
+| run | finding | criterion id | harness says |
+|---|---|---|---|
+| 0629aa6c | `[vacuous]` stub marker | **none** | structurally unexecutable — *"sharpening the ticket cannot fix it"* |
+| aa6e721e | `[mis_specified]` EARS | **REQ-013** | *"repeated failures on the same criterion usually mean the TICKET is ambiguous"* |
+
+The presence or absence of a criterion id is the discriminator, and it is already computed.
+
+### The fix that belongs in the system
+
+**Check the brief at submission, not the criteria at attempt three.** `POST /api/runs` already
+refuses an empty brief and an over-long one in milliseconds. A brief-shape check could refuse —
+or better, warn and offer a rewrite — the moment a requirement sentence carries a conjunction
+of distinct obligations, or opens with a noun phrase no EARS template accepts. Seconds instead
+of two hours, and before any quota is spent.
+
+That this session's workaround was *me* hand-rewriting the amendment into
+`The site shall … / When … / If … / Where …` form is precisely the smell: a capability the
+pipeline needs, living in prose a human happens to know how to write.
+
+**Measured cost of not having it: three runs, roughly six hours, no verdict.**
