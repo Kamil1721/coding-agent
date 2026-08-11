@@ -7280,6 +7280,15 @@ export class Orchestrator {
    */
   #finish(runId: string, status: ApiRunStatus, patch: Parameters<RunStore["updateRun"]>[1]): void {
     const row = this.#deps.store.updateRun(runId, { ...patch, status });
+    // THIS RUN'S PREVIEW DIES WITH THIS RUN, and that is what makes a per-run
+    // PreviewHost safe to keep. The singleton it replaced freed its port on the
+    // NEXT deploy, so a finished run kept 4321 until someone else wanted it —
+    // and the docblock on PreviewHost warned that per-run servers would leak a
+    // listener for every run ever deployed. Tying the lifetime to the run
+    // answers that: at most `maxConcurrentRuns` servers exist at once.
+    // Deliberately not awaited — `#finish` is synchronous and is called from
+    // paths that must not block on a socket close.
+    void this.#deps.preview.stop(runId);
     /*
      * THE ATTEMPT IS CLOSED BEFORE THE VERDICT IS WRITTEN, because the verdict
      * reads the attempt ledger to state how many attempts there were, and an
