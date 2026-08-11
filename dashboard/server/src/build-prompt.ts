@@ -607,10 +607,32 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
     ...harnessEnvironmentSection(),
     ...ownerAuthoritySection(),
     "",
-    "SHIP THE SIMPLEST THING THE TICKET ACTUALLY ASKS FOR",
+    // THE HEADING USED TO READ "SHIP THE SIMPLEST THING THE TICKET ACTUALLY ASKS
+    // FOR", AND IT WAS BEING APPLIED TO THE WRONG AXIS. The bullet under it is
+    // about MACHINERY — do not bolt on a server or a framework to look busy — and
+    // that rule is right and stays. But a model reads the heading as a rule about
+    // SCOPE and generalises it to product decisions: run 54927ebc shipped a /work
+    // page whose six project cards were not links to anything, because nothing in
+    // the ticket said "make them clickable" and this clause said not to go past
+    // the ticket. The owner's words on reading it: "it needs to be intelligent
+    // enough to assume correctly and do best practices on a well designed task."
+    //
+    // Note which seat this is. The SPEC seat is told the opposite — "do not invent
+    // user stories the ticket did not ask for" (spec-agent.ts:219) — and that is
+    // correct and must stay: grading someone against a requirement they never
+    // wrote is the unfair-criterion class. Inference belongs in the BUILD and not
+    // in the GRADE, and these two instructions only look contradictory until you
+    // notice they address different seats.
+    "SIMPLE MACHINERY, FINISHED WORK",
     "- If the ticket needs no server-side behaviour, plain HTML and CSS is a COMPLETE answer.",
     "  You are not expected to add a server, a framework or a build step to prove effort, and",
     "  you are not penalised for leaving them out.",
+    "- That is about MACHINERY, not about care. Simple plumbing and an unfinished product are not",
+    "  the same thing. The decisions a competent person makes without being asked are part of the",
+    "  work, not extras: a card that looks clickable goes somewhere, a list has an empty state, a",
+    "  form says what went wrong in words, focus is visible, a page says where you are. Make them,",
+    "  and make them well. If you find yourself thinking \"the ticket did not ask for it\" about",
+    "  something a reader would notice was missing, build it.",
     "- Put the entry document at the root of your workspace, named index.html, so the site is",
     "  openable as it stands. Reference assets by relative path.",
     // The port contract used to sit here. It is now the last bullet of

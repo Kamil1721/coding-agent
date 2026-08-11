@@ -765,3 +765,35 @@ test("NEGATIVE CONTROL: a CLI ticket still sees no design lane and no denied age
   // ...while the asset rule, which is universal, still applies to it.
   assert.match(p, /MADE for this build/, "the asset rule is not design-lane-only");
 });
+
+test("the simplicity clause bounds MACHINERY, not craft", () => {
+  /*
+   * Run 54927ebc shipped a /work page whose six project cards linked nowhere. The
+   * ticket had not said "make them clickable", and the prompt's heading — "SHIP
+   * THE SIMPLEST THING THE TICKET ACTUALLY ASKS FOR" — reads as a rule about
+   * scope. It was only ever meant as a rule about plumbing.
+   *
+   * Both halves are asserted, because dropping either one breaks something real:
+   * remove the anti-over-engineering bullet and builds bolt on a framework to
+   * look busy; remove the craft bullet and they ship the unfinished thing again.
+   */
+  const p = buildPrompt({ ticketText: "the ticket", allowedAgents: ["debugger"] });
+  assert.match(p, /not expected to add a server, a framework or a build step/, "the machinery bound must survive");
+  assert.match(p, /about MACHINERY, not about care/, "and must be distinguished from craft");
+  assert.match(p, /a reader would notice was missing/, "with the test the builder can actually apply");
+  assert.doesNotMatch(
+    p,
+    /SHIP THE SIMPLEST THING THE TICKET ACTUALLY ASKS FOR/,
+    "the heading that was being read as a scope rule is gone",
+  );
+});
+
+test("the builder is told to infer; the SPEC seat is told not to — and they are different seats", () => {
+  // These two instructions look contradictory and are not. Grading someone
+  // against a requirement they never wrote is the unfair-criterion class; BUILDING
+  // the obvious thing is craft. This pins the split so a future edit cannot
+  // "resolve" it by making the builder timid again.
+  const p = buildPrompt({ ticketText: "the ticket", allowedAgents: ["debugger"] });
+  assert.doesNotMatch(p, /do not invent/i, "the builder must not inherit the spec seat's restraint");
+  assert.match(p, /your\s+judgement to exercise/, "the builder is handed the judgement call");
+});
