@@ -137,6 +137,7 @@
 import { WORKSPACE, type SelfReportStatus } from "bakeoff/dist/runner.js";
 import { STATIC_SERVE_PORT } from "bakeoff/dist/scorer-protocol.js";
 import { DELIVERY_LANES, type Lane } from "./agent-shortlist.js";
+import { GEMINI_IMAGE_SCRIPT } from "./design-capability.js";
 
 /**
  * THE STATUS VOCABULARY, AS ONE RUNTIME VALUE, BECAUSE THE PROMPT AND THE READER
@@ -410,6 +411,53 @@ function harnessEnvironmentSection(): readonly string[] {
 }
 
 /**
+ * THE SHORT LIST OF THINGS THAT ARE NOT THE BUILDER'S TO DECIDE.
+ *
+ * WHY IT IS SHORT, AND WHY THAT IS THE DESIGN. The owner's instruction, verbatim:
+ * *"It should just have slight guides … Rest should just be judgement calls …
+ * if we limit the ai too much we will get no work done."* A prompt that
+ * enumerates taste produces work that reads like an enumeration. So this names
+ * only the constraints a builder cannot infer from the ticket or discover
+ * without spending a turn, and explicitly hands everything else back.
+ *
+ * THE GAP IT CLOSES, MEASURED. `design-prompt.ts` already carries all of this —
+ * gemini appears in it 15 times, CDN 6, the taste agent 4. `build-prompt.ts`
+ * carried none of it: 0, 0, and one incidental mention. So a ticket with a user
+ * interface that does NOT trigger the design lane got no steer at all, and the
+ * build segment of a design run — which takes `resumeBuilderPrompt` — inherited
+ * none of segment 1's art direction either.
+ *
+ * WHY THE ASSET RULE IS NOT ALREADY IMPLIED by "the judge has no network". The
+ * builder DOES have network while building (`orchestrator.ts:701-712` measured
+ * that, and the run record's own label is "unrestricted-host-network"), so it can
+ * download an icon pack, vendor it into the workspace, and pass a no-network
+ * judge while breaking the rule. The prohibition has to be said.
+ *
+ * NO AGENT IS NAMED HERE, DELIBERATELY. `delegationSection` already names the
+ * shortlisted agents by lane, and `build-prompt.test.ts:126` requires that a CLI
+ * ticket never sees the word DESIGN — naming an agent the delegation guard would
+ * deny costs a turn per guess. The rule belongs here; the roster belongs there.
+ */
+function craftSection(): readonly string[] {
+  return [
+    "",
+    "MAKING THINGS RATHER THAN FETCHING THEM",
+    "- Every image, icon and font you ship must be MADE for this build and live in this workspace.",
+    "  No CDN link, no icon font, no icon package, no stock photo, no remote webfont — including the",
+    "  ones your own skills recommend by name. You have network while building and the judge does",
+    "  not, so a fetched asset is a defect even when it renders perfectly for you.",
+    `- To make one: ${GEMINI_IMAGE_SCRIPT} writes an image file from a text prompt. Run it with -h`,
+    "  for its flags. If it cannot run, say so in your self-report rather than substituting a",
+    "  download.",
+    "- A pre-tool hook refuses work that reads as generic AI output. It is not a style opinion and",
+    "  arguing with it costs a turn — take a refusal as a note to make the thing more specific.",
+    "",
+    "That is the whole list. Everything else about how this looks and how it is built is your",
+    "judgement to exercise, and you should exercise it rather than wait to be told.",
+  ];
+}
+
+/**
  * THE SELF-REPORT CONTRACT, ON EVERY PATH THAT CAN END A BUILD.
  *
  * ONE DEFINITION, TWO CALL SITES, for the reason `harnessEnvironmentSection`
@@ -575,6 +623,7 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
     // thing" first and take delegation as a way to do that well, not as a bar to
     // clear.
     ...delegationSection(request.allowedAgents),
+    ...craftSection(),
     ...selfReportSection(),
     "",
     "THE TICKET",
@@ -616,6 +665,7 @@ export function resumeBuilderPrompt(reason: string): string {
     // Run `54927ebc` guessed `"complete"` off the back of it and disarmed
     // `falseFinish`. The description now travels with the instruction.
     ...selfReportSection(),
+    ...craftSection(),
     ...harnessEnvironmentSection(),
     // THE SAME EXCEPTION, FOR THE SAME MEASURED REASON AS THE ENVIRONMENT ABOVE.
     // `orchestrator.ts` appends `builderReferenceSection(references)` to the build

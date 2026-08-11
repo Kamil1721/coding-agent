@@ -35,6 +35,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readSelfReport, WORKSPACE } from "bakeoff/dist/runner.js";
+import { GEMINI_IMAGE_SCRIPT } from "./design-capability.js";
 import { DELIVERY_LANES } from "./agent-shortlist.js";
 import { dashboardBuilderPrompt, resumeBuilderPrompt, SELF_REPORT_STATUSES } from "./build-prompt.js";
 import { designHandoffSection, visualGatePrompt } from "./design-prompt.js";
@@ -719,4 +720,48 @@ test("the resume prompt describes the contract instead of deferring it", () => {
     "a design-lane run has no earlier turn that described it — that forward reference is what broke falseFinish",
   );
   assert.match(resumed, /exactly this shape/, "the resume prompt must state the shape itself");
+});
+
+/* ===========================================================================
+ * THE SHORT LIST — slight guides, and nothing more
+ *
+ * The owner's instruction: "It should just have slight guides ... Rest should
+ * just be judgement calls." So these tests hold two properties at once: the few
+ * things a builder cannot infer ARE stated on every path, and the section does
+ * not grow into a style manual or start naming agents the guard would deny.
+ * ======================================================================== */
+
+test("the asset rule reaches every prompt that can end a build", () => {
+  // design-prompt.ts already said this; build-prompt.ts said none of it, so a UI
+  // ticket that never triggered the design lane got no steer at all.
+  for (const { whose, text } of PROMPTS_THAT_CAN_END_A_BUILD) {
+    assert.match(text, /MADE for this build/, `${whose}: no asset rule`);
+    assert.match(text, /No CDN link, no icon font/, `${whose}: the prohibition is not stated`);
+    assert.match(text, /gemini-image\.sh/, `${whose}: told what NOT to do and not what to do instead`);
+  }
+});
+
+test("the tool it names is the one the harness actually has", () => {
+  // A prompt that names a tool the environment lacks is the fix-prompt defect
+  // over again. Bound to the constant rather than retyped.
+  for (const { text } of PROMPTS_THAT_CAN_END_A_BUILD) {
+    assert.ok(text.includes(GEMINI_IMAGE_SCRIPT), "the rendered path drifted from GEMINI_IMAGE_SCRIPT");
+  }
+});
+
+test("it hands the rest back rather than enumerating taste", () => {
+  const p = buildPrompt({ ticketText: "the ticket", allowedAgents: ["debugger"] });
+  assert.match(p, /That is the whole list/, "the section must close the list explicitly");
+  assert.match(p, /your\s+judgement to exercise/, "and hand everything else back");
+});
+
+test("NEGATIVE CONTROL: a CLI ticket still sees no design lane and no denied agent", () => {
+  // The rule that makes this section safe to add unconditionally: it names the
+  // CONSTRAINT, never the agent. delegationSection owns the roster, and naming an
+  // agent the guard would deny costs a turn per guess.
+  const p = buildPrompt({ ticketText: "a CLI", allowedAgents: ["cli-developer", "debugger"] });
+  assert.doesNotMatch(p, /DESIGN/, "a CLI ticket was advertised a design lane");
+  assert.doesNotMatch(p, /taste-frontend-expert/, "an agent outside the shortlist was named");
+  // ...while the asset rule, which is universal, still applies to it.
+  assert.match(p, /MADE for this build/, "the asset rule is not design-lane-only");
 });
