@@ -246,8 +246,33 @@ export function parseSuiteDraft(raw: unknown, ticket: Ticket): ParseResult {
  * Complex requirements chain the prefixes ("While X, when Y, the Z shall W")
  * and are matched by the leading keyword.
  */
+/**
+ * The determiners a ubiquitous statement may open with.
+ *
+ * WHY THIS IS NOT JUST `The`, AND WHAT IT COST TO LEARN. Run `aa6e721e` died on
+ * `[mis_specified] REQ-013: statement matches no EARS template` for the statement
+ * *"Each project page shall present …"*. That requirement is unambiguous, binary
+ * and perfectly gradeable. It was refused for one word.
+ *
+ * The prompt shows the templates as `The <system> shall <response>`, and a writer
+ * reasonably reads `<system>` as the slot and `The` as part of it — so
+ * "Each project page" is a legal substitution to the author and a regex refusal
+ * to the checker. Three attempts, roughly two hours, no build.
+ *
+ * Widening the determiner set loses nothing the grader needs: EARS constrains the
+ * SHAPE of a requirement so it is testable, and "Each project page shall X" is the
+ * same shape as "The project page shall X". Atomicity — one obligation per
+ * criterion — is a separate concern (ISO/IEC/IEEE 29148's "singular"), is not part
+ * of EARS at all, and is not enforced here either way.
+ *
+ * This is the checker being generous where strictness bought nothing. It is NOT a
+ * licence to accept vagueness: the `shall` clause, the comma before it in the four
+ * prefixed forms, and the ban on weak modals are all unchanged.
+ */
+const UBIQUITOUS_DETERMINERS = "(?:The|Each|Every|All|Any|A|An)";
+
 const EARS_TEMPLATES: readonly { readonly name: string; readonly pattern: RegExp }[] = Object.freeze([
-  { name: "ubiquitous", pattern: /^The\s+\S+[\s\S]*\sshall\s+\S/ },
+  { name: "ubiquitous", pattern: new RegExp(`^${UBIQUITOUS_DETERMINERS}\\s+\\S+[\\s\\S]*\\sshall\\s+\\S`) },
   { name: "event-driven", pattern: /^When\s+[\s\S]+,\s*[\s\S]*\sshall\s+\S/ },
   { name: "state-driven", pattern: /^While\s+[\s\S]+,\s*[\s\S]*\sshall\s+\S/ },
   { name: "unwanted-behaviour", pattern: /^If\s+[\s\S]+,\s*then\s+[\s\S]*\sshall\s+\S/ },
@@ -1428,8 +1453,21 @@ export function deterministicAudit(
       );
     }
 
+    // COMMENTS ARE MASKED HERE, AND THE POLICY SAYING SO WAS ALREADY WRITTEN — see
+    // `maskComments`' own docblock above: "A COMMENT CAN ONLY EVER BE A FALSE
+    // POSITIVE … A rule that forces regeneration over a line of prose is worse
+    // than the bar it was written to catch, and it would fire hardest on exactly
+    // the suites whose author bothered to explain itself."
+    //
+    // That masking was applied to the three ADVISORY rules and never to this
+    // loop, which is the only one that can throw the suite away. So
+    // `// the artefact must not render "Not Implemented"` discarded an entire
+    // suite and burned one of three attempts — punishing the seat for
+    // documenting its own test. Run 0629aa6c died on a `not implemented` marker;
+    // this is one of the two ways that can happen without a defect in a test.
+    const scanned = maskComments(file.source);
     for (const rule of BLOCKING_SOURCE_PATTERNS) {
-      if (rule.pattern.test(file.source)) {
+      if (rule.pattern.test(scanned)) {
         findings.push(blocking(rule.kind, null, `test file "${safe(file.path)}" ${rule.detail}`));
       }
     }

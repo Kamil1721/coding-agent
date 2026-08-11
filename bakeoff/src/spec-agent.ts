@@ -300,8 +300,23 @@ Do not write any of these. Each one is a way a suite passes work that was never 
 - A test whose expected value is hardcoded such that returning the fixture unchanged passes it.
 - A test that mocks the thing under test. Exercise the real path.
 - A try/catch that swallows the failure it was meant to surface.
+- A FAKE CREDENTIAL LONGER THAN 15 CHARACTERS. The suite is scanned for credential-shaped text,
+  and the scan cannot tell your invented fixture from a real leak — so it blocks the suite and,
+  by design, refuses to quote the value back to you, which makes it very hard to find. The shape
+  that fires is a name containing key/token/secret/password/bearer/authorization, then = or :,
+  then 16 or more characters. Keep every fake secret SHORT: a token fixture of five or six
+  characters is fine, a realistic-looking twenty-character one is not. The same applies to an
+  Authorization header literal — use a tiny fake value, never a long random-looking string.
 - process.exit() anywhere in a test file.
-- TODO, FIXME, XXX or "not implemented" anywhere in a test file.
+- TODO, FIXME, XXX or "not implemented" anywhere in a test file — including inside a string or a
+  regex. THIS IS THE ONE PROHIBITION THAT CONTRADICTS AN INSTRUCTION ABOVE, so read it carefully:
+  the BLOCKING tier asks for "no stub markers", and the obvious way to test that is to search the
+  page or the response for the words. Do not. The harness scans "sourceDirs" for stub markers
+  itself and reports it without your help. Express that criterion by asserting what a stub would
+  LACK — the record reads back, the route renders its content — never by searching for the marker
+  text. A test that greps for "not implemented" gets the whole suite discarded, and you will have
+  spent an attempt on it.
+  (Comments are exempt: explain your tests freely.)
 - A test that specifies HOW the ticket should be implemented (a class name, a file layout, an
   internal function) rather than WHAT must be observably true. The ticket may be built in any
   reasonable way; the suite tests behaviour.

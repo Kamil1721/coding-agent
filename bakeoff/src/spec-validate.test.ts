@@ -38,6 +38,7 @@ import {
   numericAssertionDriftFindings,
   proseLengthFloorFindings,
   shapeHeuristicProbeFindings,
+  statementProblems,
   statesToken,
   unstatedEnvContractFindings,
 } from "./spec-validate.js";
@@ -1045,4 +1046,98 @@ test("rule 5 is WIRED into deterministicAudit", () => {
     f.detail.includes("NO element children"),
   );
   assert.equal(wired.length, 1, "the audit did not surface rule 5");
+});
+
+/* -------------------------------------------------------------------------
+ * THE THREE RULES THAT KILLED FOUR OVERNIGHT RUNS, 2026-08-10/11
+ *
+ * Four runs died in the spec phase without ever reaching a builder, on three
+ * DIFFERENT blocking rules. None was a defect in the artefact and none was a
+ * defect in the test being written — each was the checker refusing work that was
+ * correct, or the prompt commissioning what it forbade.
+ * ---------------------------------------------------------------------- */
+
+test("EARS accepts every determiner a requirement can honestly open with", () => {
+  // run aa6e721e died on "Each project page shall present ..." — unambiguous,
+  // binary, gradeable, refused for one word.
+  for (const s of [
+    "The project page shall present the project title.",
+    "Each project page shall present the project title.",
+    "Every project card shall display a distinct title.",
+    "All submitted enquiries shall be stored with a timestamp.",
+    "Any request without a token shall be refused with HTTP 401.",
+    "A visitor shall be able to read the about page.",
+  ]) {
+    assert.deepEqual(
+      statementProblems(s).filter((p) => p.detail.includes("EARS")),
+      [],
+      `EARS refused a gradeable statement: ${s}`,
+    );
+  }
+});
+
+test("NEGATIVE CONTROL: loosening the determiner did NOT open the gate to anything", () => {
+  // If this passes vacuously the rule is dead and every statement is accepted.
+  const refused = [
+    "Project pages are nice to have.", // no shall
+    "The site should present a projects section.", // weak modal, not shall
+    "Rendering the page quickly.", // no subject, no shall
+    "When a visitor submits the form the system shall store it.", // prefixed form, comma still required
+  ];
+  for (const s of refused) {
+    assert.ok(
+      statementProblems(s).length > 0,
+      `EARS accepted a statement it must refuse: ${s}`,
+    );
+  }
+});
+
+test("a COMMENT explaining a test no longer discards the suite", () => {
+  // run 0629aa6c died on a "not implemented" marker. The module's own policy
+  // (see maskComments) says a comment can only ever be a false positive — and
+  // that masking was applied to every advisory rule and to none of the blocking
+  // ones, which are the only rules that can throw the suite away.
+  const documented = [
+    'import { test } from "node:test";',
+    'import assert from "node:assert/strict";',
+    "",
+    "// The artefact must never render the words Not Implemented on a real route.",
+    'test("[REQ-001] T-1 the home page renders real content", async () => {',
+    '  const res = await fetch(process.env.APP_BASE_URL + "/");',
+    "  const body = await res.text();",
+    '  assert.ok(body.includes("Projects"), "the home page renders no project section");',
+    "});",
+  ].join("\n");
+  const draft = draftOf(
+    [criterion("REQ-001", "The home page shall render a projects section.", ["T-1"])],
+    [{ path: "holdout/home.test.mjs", source: documented, testIds: ["T-1"], criterionIds: ["REQ-001"] }],
+  );
+  // Scoped to the rule under test. A one-file draft with no visible half trips
+  // unrelated suite-level rules, and asserting "no findings at all" would make
+  // this test about those instead — and would fail for the wrong reason forever.
+  const stubFindings = deterministicAudit(draft, { syntaxCheck: false, ticketBrief: TICKET_BRIEF }).filter(
+    (f) => f.mustRegenerate && f.detail.includes("not implemented"),
+  );
+  assert.deepEqual(stubFindings, [], stubFindings.map((f) => f.detail).join("\n"));
+});
+
+test("NEGATIVE CONTROL: the marker in EXECUTABLE code still discards the suite", () => {
+  // The arm that must survive masking. If this goes quiet the rule is gone, and a
+  // suite may ship a test that greps for a stub instead of asserting an effect.
+  const real = [
+    'import { test } from "node:test";',
+    'import assert from "node:assert/strict";',
+    'test("[REQ-001] T-1 no stubs", async () => {',
+    '  const res = await fetch(process.env.APP_BASE_URL + "/");',
+    '  assert.ok(!/not implemented/i.test(await res.text()));',
+    "});",
+  ].join("\n");
+  const draft = draftOf(
+    [criterion("REQ-001", "The home page shall render a projects section.", ["T-1"])],
+    [{ path: "holdout/home.test.mjs", source: real, testIds: ["T-1"], criterionIds: ["REQ-001"] }],
+  );
+  const fired = deterministicAudit(draft, { syntaxCheck: false, ticketBrief: TICKET_BRIEF }).filter(
+    (f) => f.mustRegenerate && f.detail.includes("not implemented"),
+  );
+  assert.equal(fired.length, 1, "the stub-marker rule stopped firing on executable code");
 });
