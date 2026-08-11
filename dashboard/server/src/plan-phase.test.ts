@@ -274,7 +274,7 @@ function harness(options: { script?: readonly string[]; env?: NodeJS.ProcessEnv 
     seatCalls,
     settle: async () => {
       await orchestrator.shutdown();
-      await waitFor(() => orchestrator.activeRunId === null, "the run to stop executing", 30_000);
+      await waitFor(() => orchestrator.activeRunIds.length === 0, "the run to stop executing", 30_000);
     },
     cleanup: () => {
       store.close();
@@ -637,7 +637,7 @@ test("the re-armed timer fires on what is LEFT of the window, not on a fresh one
       );
     } finally {
       await second.shutdown();
-      await waitFor(() => second.activeRunId === null, "the resumed run to stop executing", 30_000);
+      await waitFor(() => second.activeRunIds.length === 0, "the resumed run to stop executing", 30_000);
       store2.close();
     }
   } finally {
@@ -690,7 +690,7 @@ test("a park that expired while the dashboard was down is resumed on boot, not l
       // THE RESUMED RUN IS EXECUTING IN `second`, so the store cannot close under
       // it — see `Harness.settle`.
       await second.shutdown();
-      await waitFor(() => second.activeRunId === null, "the resumed run to stop executing", 30_000);
+      await waitFor(() => second.activeRunIds.length === 0, "the resumed run to stop executing", 30_000);
       store2.close();
     }
   } finally {
@@ -1364,7 +1364,7 @@ test("an unreadable plan.json ENDS the park — the run proceeds and says why", 
       // THE RESUMED RUN IS EXECUTING IN `second` — see `Harness.settle`. It was
       // not, before this test asserted the exit.
       await second.shutdown();
-      await waitFor(() => second.activeRunId === null, "the resumed run to stop executing", 30_000);
+      await waitFor(() => second.activeRunIds.length === 0, "the resumed run to stop executing", 30_000);
       store2.close();
     }
   } finally {

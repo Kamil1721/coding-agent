@@ -239,7 +239,7 @@ import {
 } from "./defect-record.js";
 import { judgeArtifact } from "./judge.js";
 import type { ModelCatalog } from "./models.js";
-import { ensureRunDirs, gateEnv, runPathsFor, safeSegment } from "./paths.js";
+import { DASHBOARD_ENV, ensureRunDirs, gateEnv, runPathsFor, safeSegment } from "./paths.js";
 import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { publishProject } from "./project-publish.js";
@@ -869,6 +869,28 @@ export const RATE_LIMIT_AUTO_RESUME_ENV = "DASHBOARD_RATE_LIMIT_AUTO_RESUME";
 
 const RATE_LIMIT_AUTO_RESUME_ON: readonly string[] = ["1", "true", "yes", "on"];
 
+/**
+ * How many runs may execute concurrently.
+ *
+ * DEFAULT 1, AND THAT IS THE POINT. Concurrency here spends one laptop and ONE
+ * Claude subscription in parallel; a value the owner did not choose is a value
+ * that turns a working serial pipeline into rate-limit failures he did not ask
+ * for. So the knob exists and the default changes nothing.
+ *
+ * A malformed or non-positive value falls back to 1 rather than throwing: this
+ * is read on every Orchestrator construction, including during recovery, and a
+ * typo in an env var should not stop the dashboard booting. It is capped at 4
+ * because the sealed scorer asks docker for 6g and 2 cpus PER container, and a
+ * fifth concurrent grading is a machine the owner cannot use while it runs.
+ */
+export function readMaxConcurrentRuns(env: NodeJS.ProcessEnv): number {
+  const raw = (env[DASHBOARD_ENV.maxConcurrentRuns] ?? "").trim();
+  if (raw.length === 0) return 1;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 1) return 1;
+  return Math.min(n, 4);
+}
+
 export function rateLimitAutoResume(env: NodeJS.ProcessEnv): boolean {
   return RATE_LIMIT_AUTO_RESUME_ON.includes((env[RATE_LIMIT_AUTO_RESUME_ENV] ?? "").trim().toLowerCase());
 }
@@ -1179,7 +1201,21 @@ function expandedDirection(
 
 export class Orchestrator {
   readonly #deps: OrchestratorDeps;
-  #active: ActiveRun | null = null;
+  /**
+   * The runs executing right now, keyed by run id.
+   *
+   * THIS WAS A SINGLE SLOT — `#active: ActiveRun | null` — AND EVERY READ OF IT
+   * MEANT ONE OF TWO DIFFERENT THINGS that a scalar could not tell apart: "the
+   * one run in flight" (the pump's capacity question) and "the run this call is
+   * about" (cancel, resume, shutdown). While N was 1 those coincided. They stop
+   * coinciding the moment a second run starts, and two of the reads were unsafe
+   * in a way that is silent today — see `cancel` and `resume`, both of which
+   * would have acted on the wrong run rather than refusing.
+   */
+  readonly #active = new Map<string, ActiveRun>();
+
+  /** How many of the above may exist at once. 1 unless the owner raises it. */
+  readonly #maxConcurrent: number;
   #pumping = false;
   #stopped = false;
   /**
@@ -1426,6 +1462,7 @@ export class Orchestrator {
 
   constructor(deps: OrchestratorDeps) {
     this.#deps = deps;
+    this.#maxConcurrent = readMaxConcurrentRuns(deps.env);
     const host: PlanDialogueHost = {
       env: deps.env,
       resultsDir: (runId) => runPathsFor(deps.paths, runId).results,
@@ -1472,8 +1509,17 @@ export class Orchestrator {
     });
   }
 
-  get activeRunId(): string | null {
-    return this.#active?.runId ?? null;
+  get activeRunIds(): readonly string[] {
+    return [...this.#active.keys()];
+  }
+
+  /**
+   * Is THIS run executing? The question every caller other than the pump was
+   * really asking. A scalar `activeRunId` that returned "the first of N" would
+   * answer it wrongly and silently, which is why it is gone rather than adapted.
+   */
+  isActive(runId: string): boolean {
+    return this.#active.has(runId);
   }
 
   /* ---- queue -------------------------------------------------------- */
@@ -1491,9 +1537,13 @@ export class Orchestrator {
     this.#pumping = true;
     try {
       const queued = this.assignQueuePositions();
-      if (this.#active === null) {
-        const next = queued[0];
-        if (next !== undefined) void this.#start(next.runId);
+      // START AS MANY AS THERE IS ROOM FOR, not one. `maxConcurrentRuns` is 1
+      // unless the owner raises it, so this loop runs at most once by default
+      // and the serial behaviour is bit-for-bit what it was.
+      for (const next of queued) {
+        if (this.#active.size >= this.#maxConcurrent) break;
+        if (this.#active.has(next.runId)) continue;
+        void this.#start(next.runId);
       }
     } finally {
       this.#pumping = false;
@@ -1567,8 +1617,15 @@ export class Orchestrator {
     this.#clearDesignLockTimer(runId);
     this.#clearRateLimitTimer(runId);
     this.#closeDesignParkOnCancel(runId);
-    if (this.#active !== null && this.#active.runId === runId) {
-      this.#active.abort.abort(ABORT_CANCELLED);
+    // STOP-SHIP UNDER CONCURRENCY, AND SILENT AT N=1. The old test was "is the
+    // ONE active run this one?" — with two runs live it is false for whichever
+    // is not first, and the fallthrough below calls `#finish(..., "cancelled")`
+    // on a run whose builder is still writing: it closes the attempt, writes a
+    // verdict and a defect record, and PUBLISHES the half-built workspace, then
+    // marks the row terminal so it can never be resumed.
+    const live = this.#active.get(runId);
+    if (live !== undefined) {
+      live.abort.abort(ABORT_CANCELLED);
       return true;
     }
     this.#finish(runId, "cancelled", { queuePosition: null, endedAt: new Date().toISOString() });
@@ -1587,7 +1644,10 @@ export class Orchestrator {
   resume(runId: string, chosenMockup: string | null = null, chosenDirection: string | null = null): boolean {
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
-    if (this.#active !== null && this.#active.runId === runId) return false;
+    // SAME SHAPE, SAME SILENCE. Passing this guard on a running row requeues it
+    // and pumps, which starts a SECOND `#start` for one run id in one workspace,
+    // with two `#finish` paths racing one row.
+    if (this.#active.has(runId)) return false;
 
     // THE DESIGN-LOCK BRANCH COMES FIRST, and the existing body below is exactly
     // what segment 2 needs afterwards: requeue, re-execute, and `nextBuildSegment`
@@ -1960,7 +2020,7 @@ export class Orchestrator {
     // ABORT_SHUTDOWN: this path must leave the row `running` for
     // `reconcileOnBoot`. `#stopped` is already set above, so the `pump()` in
     // `#start`'s finally cannot start the next queued run on the way out.
-    this.#active?.abort.abort(ABORT_SHUTDOWN);
+    for (const live of this.#active.values()) live.abort.abort(ABORT_SHUTDOWN);
     await this.#deps.preview.stop();
   }
 
@@ -1968,7 +2028,7 @@ export class Orchestrator {
 
   async #start(runId: string): Promise<void> {
     const abort = new AbortController();
-    this.#active = { runId, abort };
+    this.#active.set(runId, { runId, abort });
     try {
       await this.#execute(runId, abort.signal);
     } catch (error) {
@@ -2030,7 +2090,7 @@ export class Orchestrator {
       // disarm it. A watch left running on a parked run would announce a silence
       // that is the park working correctly.
       this.#clearSilenceWatch(runId);
-      this.#active = null;
+      this.#active.delete(runId);
       this.pump();
     }
   }
@@ -4384,7 +4444,7 @@ export class Orchestrator {
 
         /* ---- STAGE B CAME BACK: the hero is locked, LAST ----------------
          *
-         * `lockedMockup` KEEPS ITS MEANING — the one canonical still — and this is
+         * `lockedMockup` import { DASHBOARD_ENV, ensureDirs, resolvePaths } from "./paths.js";S ITS MEANING — the one canonical still — and this is
          * the only place a directions run sets it. Every existing consumer (the
          * grading section of `design-prompt.ts`, `chosenMockupRef`, the verdict)
          * then works unchanged, because what changed is WHICH still is canonical
@@ -6644,7 +6704,7 @@ export class Orchestrator {
    * (`clearInterval` on a cleared handle is a no-op) so a caller may disarm on
    * more than one path without a guard.
    *
-   * `unref()` SO THE PULSE CANNOT KEEP A PROCESS ALIVE. A `setInterval` is a
+   * `unref()` SO THE PULSE CANNOT import { DASHBOARD_ENV, ensureDirs, resolvePaths } from "./paths.js"; A PROCESS ALIVE. A `setInterval` is a
    * live handle to Node's event loop; a bug that lost the disarm would turn a
    * missing `clearInterval` into a server that will not shut down, which is a
    * worse failure than the silence this closes. Unref'd, the worst case is a
@@ -7977,7 +8037,7 @@ export function visualGateInputFor(
  * be declared, consumed at four sites, and assigned by nothing: the seam where a
  * producer would attach was in a place no test could observe.
  *
- * `undefined` AND `[]` ARE DIFFERENT ANSWERS AND THIS FUNCTION KEEPS THEM APART.
+ * `undefined` AND `[]` ARE DIFFERENT ANSWERS AND THIS FUNCTION import { DASHBOARD_ENV, ensureDirs, resolvePaths } from "./paths.js";S THEM APART.
  * A run that never reached the gate has no visual record, and `visualFindings`
  * must be ABSENT for it — `verdict.ts:139-151` documents `undefined` as "no
  * observation was scored" and `[]` as "scored, nothing fired". Collapsing them

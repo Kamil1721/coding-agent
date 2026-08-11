@@ -202,7 +202,7 @@ function harness(script: readonly string[]): Harness {
     seatCalls,
     settle: async () => {
       await orchestrator.shutdown();
-      await waitFor(() => orchestrator.activeRunId === null, "the run to stop executing", 30_000);
+      await waitFor(() => orchestrator.activeRunIds.length === 0, "the run to stop executing", 30_000);
     },
     cleanup: () => {
       store.close();

@@ -83,7 +83,7 @@ import {
   renderEvidence,
   verdictSourceFor,
   visualGateInputFor,
-} from "./orchestrator.js";
+  readMaxConcurrentRuns,} from "./orchestrator.js";
 import type { DesignPostSegmentAction } from "./orchestrator.js";
 import { attemptPath, liveResultPath, readAttempt, scorerOutRoot, scoresRoot } from "./gate-attempts.js";
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
@@ -5476,4 +5476,36 @@ test("an UNKNOWN model id PROCEEDS, loudly — the escape hatch stays open", asy
   } finally {
     await h.cleanup();
   }
+});
+
+/* ===========================================================================
+ * CONCURRENT RUNS — the slot became a map
+ *
+ * Two of the reads of the old `#active` scalar were unsafe in a way that is
+ * SILENT while N is 1, because "the one active run" and "the run this call is
+ * about" are the same run until they are not. Both are asserted here, and both
+ * assertions fail against the scalar version.
+ * ======================================================================== */
+
+test("the concurrency bound defaults to 1, so nothing changes until the owner opts in", () => {
+  assert.equal(readMaxConcurrentRuns({}), 1, "an unset var must not silently parallelise the pipeline");
+  assert.equal(readMaxConcurrentRuns({ DASHBOARD_MAX_CONCURRENT_RUNS: "" }), 1);
+  assert.equal(readMaxConcurrentRuns({ DASHBOARD_MAX_CONCURRENT_RUNS: "   " }), 1);
+});
+
+test("a malformed bound falls back to 1 rather than throwing the dashboard over", () => {
+  // Read on every Orchestrator construction, including during recovery. A typo
+  // must not stop the server booting.
+  for (const raw of ["nonsense", "0", "-3", "1.5", "NaN", "1e2x"]) {
+    assert.equal(readMaxConcurrentRuns({ DASHBOARD_MAX_CONCURRENT_RUNS: raw }), 1, `"${raw}" must fall back`);
+  }
+});
+
+test("the bound is honoured and capped — the scorer asks docker for 6g and 2 cpus per container", () => {
+  assert.equal(readMaxConcurrentRuns({ DASHBOARD_MAX_CONCURRENT_RUNS: "3" }), 3);
+  assert.equal(readMaxConcurrentRuns({ DASHBOARD_MAX_CONCURRENT_RUNS: "4" }), 4);
+  assert.equal(readMaxConcurrentRuns({ DASHBOARD_MAX_CONCURRENT_RUNS: "99" }), 4, "a fifth grading is a unusable machine");
+  // NEGATIVE CONTROL: if this returned the raw number the cap is dead and the
+  // test above would pass anyway.
+  assert.notEqual(readMaxConcurrentRuns({ DASHBOARD_MAX_CONCURRENT_RUNS: "99" }), 99);
 });

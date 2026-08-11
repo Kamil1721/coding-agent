@@ -31,6 +31,12 @@ export const DASHBOARD_ENV = Object.freeze({
   /** Interface to bind. Only 127.0.0.1 is accepted — see http.ts. */
   host: "DASHBOARD_HOST",
   port: "DASHBOARD_PORT",
+  /**
+   * How many runs may execute at once. Default 1 — the serial behaviour this
+   * dashboard has always had. Raising it is the owner's call and costs quota in
+   * parallel against one subscription, so it is opt-in rather than a guess.
+   */
+  maxConcurrentRuns: "DASHBOARD_MAX_CONCURRENT_RUNS",
   /** Scorer image reference. Pin it by digest. */
   scorerImage: "BAKEOFF_SCORER_IMAGE",
   /** Hard boundary on one scoring container, in minutes. */
