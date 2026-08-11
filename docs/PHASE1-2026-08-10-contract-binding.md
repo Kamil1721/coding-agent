@@ -595,3 +595,67 @@ survive that check — the CV and the design reference — and both are really s
 seats to one literal exists because prose drifted from reality. The ticket is prose, it is
 the input every other seat is derived from, and it had no such check at all. A brief that
 promises an attachment should not be submittable without it.
+
+---
+
+## 14. THE BOTTLENECK IS NOT THE GRADER — HALF THE RUNS NEVER REACH ONE
+
+Measured over every run this machine has recorded, not sampled:
+
+| run | outcome | died in | cause |
+|---|---|---|---|
+| 07-29 23:28 | **passed** | — | — |
+| 07-30 13:31 | failed | spec | operator abort ("aborted by user") — not a defect |
+| 07-30 20:16 | failed | gate | suite did not go green |
+| 08-04 11:08 | failed | spec | output ceiling: "exceeded the 64000 output token maximum" |
+| 08-09 21:04 | failed | spec | `suite_not_audited` — `dataExpectations[0].id must be a non-e…` |
+| 08-10 13:11 | failed | gate | suite did not go green |
+| 08-10 20:38 | cancelled | spec | my ticket bug (§13) |
+| 08-10 22:10 | failed | spec | `suite_not_audited` — `[vacuous] … contains a "not implemented" marker` |
+
+**Four of eight completed runs died in the spec phase. Only three ever produced a verdict.**
+
+### But two of those four are already answered, and saying otherwise would overstate it
+
+- **08-04** is the 64,000-token ceiling. The ceiling is now 128,000 with a free truncation
+  retry, and tonight's failure log confirms both are live: *"Output-token ceiling by attempt:
+  1:128000 2:128000 3:128000. The free truncation retry fired on attempt(s) 1, without
+  consuming an attempt."*
+- **08-09** is the `dataExpectations` shape — postmortem §3's instance one. The fix (show the
+  seat the manifest shape in its prompt) worked by prevention on 08-10: *"not one
+  `dataExpectations` error in either draft."*
+
+So the honest count of live, unexplained authoring failures is **one — tonight's.**
+
+### What tonight's actually is, and why "try again" was the right call and not a shrug
+
+Three checks, each of which could have changed the answer:
+
+1. **Suite size?** No. The run that SUCCEEDED emitted a *larger* suite — 25 criteria across 13
+   files — than the one that failed (24 across 8). Capacity was not the constraint.
+2. **Was the seat told?** Yes, twice over. `spec-agent.ts:304` forbids `"not implemented"`
+   anywhere in a test file, and `blockingFindingSummary` feeds the finding back into every
+   regeneration prompt.
+3. **Did my new rules cause it?** No. All three are `advisory`, so they cannot set
+   `mustRegenerate`, and the same summary filters them out before the seat sees them.
+
+### The hypothesis worth testing next, stated as a hypothesis
+
+The prohibition tells the seat what **not** to write and never what to do **instead**. A seat
+that cannot finish its last file has two options — stub it, or author fewer files — and only
+one of them is forbidden. `dataExpectations` was fixed by *showing the seat the right shape*
+rather than by forbidding the wrong one, and that is the same move available here: "if you
+cannot complete every file you planned, plan fewer files; a stub is the one thing that
+guarantees the suite is thrown away."
+
+**Not implemented tonight, deliberately, for a reason that matters more than the fix:** a run
+is in flight and the spec seat loads `AUTHORING_SYSTEM_PROMPT` from `bakeoff/dist` at call
+time. Rebuilding the harness mid-run would change the instructions between one attempt and
+the next — mutating the experiment while it is running. It waits for a quiet tree.
+
+### What this means for the plan
+
+The plan's phases 1–3 all assume a run reaches a verdict and argue about whether that verdict
+is right. **Half of them do not get there.** Phase 1's work stands — `falseFinish` was
+genuinely disarmed and is now armed — but the next measurement worth having is not a better
+grader. It is a spec phase that freezes on the first or second attempt rather than the third.
