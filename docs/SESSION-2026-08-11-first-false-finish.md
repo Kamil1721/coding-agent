@@ -99,15 +99,50 @@ halves are impossible here.
 
 ## 5. WHAT IS STILL OPEN, RANKED BY WHAT IT COSTS TO LEAVE
 
-1. **The ticket has no shape check.** `POST /api/runs` refuses an empty or over-long brief in
+> **AMENDED 2026-08-12, AND THE AMENDMENT REVERSES THE TOP TWO.** The ranking below was
+> written from memory of the night rather than from `runs.failure_reason`. Reading that
+> column changes it. Every spec-phase death in the run history, with the blocking problem
+> the harness actually recorded:
+>
+> | run | what killed it | class |
+> |---|---|---|
+> | `ac275880` | one credential-shaped literal in `holdout/motion-and-visuals.spec.mjs` | suite defect |
+> | `0629aa6c` | a `"not implemented"` marker in `holdout/site-routes.test.mjs` | suite defect |
+> | `aa6e721e` | `[mis_specified] REQ-013: statement matches no EARS template` | brief shape |
+> | `a913c871` | `dataExpectations[0].id must be a non-empty string` | harness/prompt |
+>
+> So of the three runs item 1 charges to the ticket, **two died on suite defects the ticket
+> could not have prevented**, and the third — `aa6e721e` — was killed by the determiner
+> regex, whose fix shipped that same night (§2 row 4). Running `statementProblems()` against
+> REQ-013's exact statement now returns `[]`. A brief-shape check aimed at that failure would
+> be aimed at a bug that no longer exists.
+>
+> What survives of item 1 is narrower and provable: run `dfd5a050`'s brief promised *"A
+> reading of a reference page's motion is attached to this ticket"* and its manifest carries
+> `motion: null`. That is not a heuristic about prose shape — it is a claim in the brief
+> contradicted by the request that carried it, checkable in milliseconds at intake.
+>
+> And item 2 grows: **all four rejections above name one artefact** — a file path or a
+> criterion id — in a suite that was otherwise audited and accepted. Repair-before-regenerate
+> addresses every one of them; the brief check addresses the fifth run, the cancelled one.
+> The two items swap places, and both shipped on 2026-08-12.
+
+1. ~~The ticket has no shape check~~ — **SHIPPED (narrowed), 2026-08-12.** `briefShape()`
+   refuses, at both intake routes, a brief that promises an attachment the request does not
+   carry. The original entry read: *"`POST /api/runs` refuses an empty or over-long brief in
    milliseconds and says nothing about a sentence that conjoins four obligations. Cost of not
-   having it, measured: three runs, ~6 hours, no verdict. The workaround was a human
-   hand-writing EARS — a capability the pipeline needs, living in prose someone happens to
-   know how to write.
-2. **Repair before regenerate.** One bad statement discards the entire suite and burns one of
-   three attempts. The research is unambiguous that self-correction works *with* an external
-   verifier and fails without one — and the audit **is** an external verifier. Cheapest
-   remaining reliability win.
+   having it, measured: three runs, ~6 hours, no verdict."* The cost figure is the part the
+   amendment above corrects — it is attributed to the ticket, and two of those three runs died
+   on defects in the suite rather than in the brief. Multi-obligation sentences are now
+   reported as advisories rather than refusals, because the one measured instance of that
+   class passes the grader today and a refusal on a heuristic would cost real work.
+2. ~~Repair before regenerate~~ — **SHIPPED 2026-08-12**, and it was the higher-value half.
+   One bad statement no longer discards the entire suite: the artefacts the findings name go
+   back to the seat with the complaints against them, the spliced suite is re-audited in full
+   by both passes, and the attempt is not spent. The research is unambiguous that
+   self-correction works *with* an external verifier and fails without one — and the audit
+   **is** an external verifier, which is why the re-audit is not optional. `spec-repair.ts`,
+   with `maxRepairRounds: 0` as the negative control the tests run the same fixture through.
 3. **Semantic slots instead of a formatted sentence.** Have the seat emit
    `{intent, template, system, response}` and let the harness render the EARS string. The
    regex becomes unfailable by construction; there is no "Each" to write. Note from EMNLP 2024
