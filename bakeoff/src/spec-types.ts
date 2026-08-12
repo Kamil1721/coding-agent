@@ -353,6 +353,49 @@ export interface DraftCriterion extends AcceptanceCriterion {
   readonly visibleTestIds: readonly string[];
   /** Non-test artefacts, e.g. "db-query-7 count >= 1". May be empty. */
   readonly evidenceArtifacts: readonly string[];
+  /**
+   * Which of the owner's OWN acceptance signals this criterion claims to cover.
+   *
+   * 1-BASED INDICES into `acceptanceSignals(ticket.brief)` (spec-validate.ts) —
+   * the numbered list the authoring prompt shows the seat, produced by one
+   * extractor and consumed by one rule so the numbering on both sides is the
+   * same list. An empty array is legal and common: a criterion may cover none.
+   *
+   * WHAT FORCED IT. Run `6ec44b2f` shipped a working portfolio and its sealed
+   * suite marked it DID NOT PASS on four grader defects. The worst: the brief
+   * said, under HOW I WILL KNOW IT WORKS, *"Killing the server and starting it
+   * again still returns messages submitted before."* The seat wrote 25 criteria
+   * and NONE of them restarted anything. It verified persistence structurally
+   * instead — find files carrying the SQLite header, grep them for the bytes
+   * just POSTed — and the builder's `PRAGMA journal_mode = WAL` (correct and
+   * conventional) put the row in `portfolio.db-wal`, which carries WAL magic and
+   * not the SQLite header, until a checkpoint. The artefact was booted and the
+   * data proved durable across a real kill-and-restart. The suite could not see
+   * it. Nothing had restricted the seat; it was handed the right check in plain
+   * English and invented a cheaper, implementation-coupled proxy, because a
+   * byte-grep is easier to assert than a restart. Declaring coverage is what
+   * makes the trade visible before the suite is frozen.
+   *
+   * COVERAGE IS NOT CORRECTNESS. A criterion may claim signal 5 and still test
+   * it badly. This field raises a floor — every signal is claimed by somebody —
+   * and guarantees nothing about how well the claim is honoured.
+   *
+   * OPTIONAL FOR ONE STRUCTURAL REASON, NOT AS A SOFT REQUIREMENT.
+   * `parseSuiteDraft` REQUIRES it of every authored criterion. But
+   * `spec-repair.ts` rebuilds a corrected criterion from the repair channel's
+   * own schema, which does not carry this field and cannot be widened from here;
+   * a required property would make that file fail to compile. `spec-agent.ts`
+   * strips the field before a repair round and re-attaches it by criterion id
+   * afterwards — see `withoutCoverageClaims` there for why both halves are
+   * needed.
+   *
+   * DELIBERATELY ABSENT FROM `planFromDraft`, `holdoutPlanDigest` AND
+   * `criteriaFromDraft`. This is authoring-time scaffolding for a deterministic
+   * rule, not part of the sealed artefact: adding it to the plan would change
+   * `holdoutPlanDigest` for every suite already frozen on disk and invalidate
+   * their integrity checks, to record a number the scorer never reads.
+   */
+  readonly coversAcceptanceSignals?: readonly number[];
 }
 
 /** A complete suite as authored, before audit and freeze. */

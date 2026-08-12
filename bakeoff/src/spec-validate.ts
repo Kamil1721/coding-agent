@@ -67,8 +67,28 @@ import type {
  * 1. Findings
  * ---------------------------------------------------------------------- */
 
-function blocking(kind: AuditFindingKind, criterionId: string | null, detail: string): AuditFinding {
-  return { criterionId, kind, detail, mustRegenerate: true };
+/**
+ * `remedy` DEFAULTS TO `"edit"` HERE AND ONLY HERE, and the asymmetry with the
+ * judge is deliberate.
+ *
+ * Every rule in this file inspects an artefact it can name — this file's source,
+ * that criterion's statement, this manifest's field — and says what is wrong
+ * with it. Those are edits by construction. The five COVERAGE rules are the
+ * exception (no BLOCKING-tier criterion, no FUNCTIONAL-tier criterion, no
+ * held-out files, no visible files, no criterion with both halves): they are
+ * about what the suite does not contain, and each passes `"add"` explicitly.
+ *
+ * The judge gets no such default. Its findings are prose about a suite it read
+ * once, and {@link parseJudgeFindings} treats an unstated remedy as `"add"` —
+ * see `AuditFinding.remedy` for the run that argument is written from.
+ */
+function blocking(
+  kind: AuditFindingKind,
+  criterionId: string | null,
+  detail: string,
+  remedy: "edit" | "add" = "edit",
+): AuditFinding {
+  return { criterionId, kind, detail, mustRegenerate: true, remedy };
 }
 
 function advisory(kind: AuditFindingKind, criterionId: string | null, detail: string): AuditFinding {
@@ -116,6 +136,34 @@ function asStringArray(value: unknown, where: string, problems: string[]): reado
     const item: unknown = value[i];
     if (typeof item !== "string") {
       problems.push(`${where}[${i}]: expected a string`);
+      return null;
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * A list of 1-based acceptance-signal indices, as authored.
+ *
+ * REQUIRED OF EVERY AUTHORED CRITERION, EMPTY ALLOWED. The field is in
+ * `AUTHORING_JSON_SCHEMA`'s `required` list, so on the structured-output path
+ * the model cannot omit it; this is the check for the paths where the schema is
+ * not enforced. An absent field is rejected rather than defaulted to `[]`,
+ * because `[]` is a CLAIM — "this criterion covers none of the owner's signals"
+ * — and inferring it from silence is how every signal ends up claimed by nobody
+ * with no complaint recorded anywhere.
+ */
+function asSignalIndexArray(value: unknown, where: string, problems: string[]): readonly number[] | null {
+  if (!Array.isArray(value)) {
+    problems.push(`${where}: expected an array of 1-based acceptance-signal numbers (use [] for none)`);
+    return null;
+  }
+  const out: number[] = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const item: unknown = value[i];
+    if (typeof item !== "number" || !Number.isInteger(item)) {
+      problems.push(`${where}[${i}]: expected a whole number, as shown in the ticket turn's numbered list`);
       return null;
     }
     out.push(item);
@@ -182,6 +230,11 @@ export function parseSuiteDraft(raw: unknown, ticket: Ticket): ParseResult {
       `${where}.evidenceArtifacts`,
       problems,
     );
+    const coversAcceptanceSignals = asSignalIndexArray(
+      item["coversAcceptanceSignals"],
+      `${where}.coversAcceptanceSignals`,
+      problems,
+    );
     if (
       id === null ||
       statement === null ||
@@ -189,11 +242,21 @@ export function parseSuiteDraft(raw: unknown, ticket: Ticket): ParseResult {
       tier === null ||
       holdoutTestIds === null ||
       visibleTestIds === null ||
-      evidenceArtifacts === null
+      evidenceArtifacts === null ||
+      coversAcceptanceSignals === null
     ) {
       continue;
     }
-    criteria.push({ id, statement, evidenceRequired, tier, holdoutTestIds, visibleTestIds, evidenceArtifacts });
+    criteria.push({
+      id,
+      statement,
+      evidenceRequired,
+      tier,
+      holdoutTestIds,
+      visibleTestIds,
+      evidenceArtifacts,
+      coversAcceptanceSignals,
+    });
   }
 
   const files: DraftTestFile[] = [];
@@ -1156,6 +1219,318 @@ export function numericAssertionDriftFindings(draft: SuiteDraft): readonly Audit
 }
 
 /* -------------------------------------------------------------------------
+ * RULE 6 — an acceptance signal the owner wrote down that no criterion claims.
+ *
+ * THE RUN. `6ec44b2f` produced a working portfolio site and its sealed suite
+ * marked it DID NOT PASS; four of the five failures were the grader, and this is
+ * the worst of them. The brief said, in the owner's own words, under a heading
+ * reading HOW I WILL KNOW IT WORKS:
+ *
+ *     "Killing the server and starting it again still returns messages
+ *      submitted before."
+ *     "A valid message returns 201 and then appears in GET /api/messages."
+ *
+ * The spec seat wrote 25 criteria and ZERO of them restarted a server. It
+ * verified persistence STRUCTURALLY instead: find the files carrying the SQLite
+ * header, then grep them for the bytes just POSTed. The builder used
+ * `PRAGMA journal_mode = WAL` — correct, conventional — so the row sat in
+ * `portfolio.db-wal`, which carries WAL magic rather than the SQLite header,
+ * until a checkpoint. The artefact was booted by hand and the data proved
+ * durable: it reads back through the API and survives a real kill-and-restart.
+ * The suite could not see it.
+ *
+ * THE SEAT WAS NOT RESTRICTED. It was handed the right check in plain English
+ * and invented a worse, implementation-coupled one, because a byte-grep is
+ * easier to assert than a restart. It optimised for provability over fidelity,
+ * and nothing told it that was a trade.
+ *
+ * WHY THIS RULE IS DETERMINISTIC AND THE JUDGE IS NOT ASKED. A check that
+ * depends on a judge NOTICING a missing restart is the weaker design: it is a
+ * second opinion on the same reading that produced the gap. Extracting the
+ * owner's bullets is mechanical, and so is comparing a set of declared indices
+ * against them. What is NOT mechanical — whether a criterion that claims signal
+ * 5 actually restarts anything — is left to the judge pass and to the prompt.
+ *
+ * COVERAGE IS NOT CORRECTNESS, AND THIS RULE DOES NOT CLAIM IT IS. A criterion
+ * can claim the restart signal and still test it by grepping a file. All this
+ * raises is a floor: every sentence the owner wrote under "how I will know" is
+ * claimed by somebody, in writing, before the suite is frozen.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * A heading line: no lower-case letter, at least one upper-case one.
+ *
+ * REIMPLEMENTED, NOT IMPORTED, AND THE REASON IS THE PACKAGE BOUNDARY. The
+ * working implementation is `HEADING_LINE` and `sentencesOf` in
+ * `dashboard/server/src/brief-shape.ts`, which reads the same briefs for the
+ * same shapes at submission time. That module imports FROM this one
+ * (`bakeoff/dist/spec-validate.js`, for {@link SCALE_PATTERNS} and
+ * {@link WEAK_MODAL_PATTERN}); an import back the other way would make the two
+ * packages mutually dependent, and bakeoff must build and run with no dashboard
+ * present at all. So the behaviour is matched deliberately and the real brief is
+ * the fixture that pins the match — `spec-validate.test.ts` runs the owner's own
+ * ticket through this extractor and asserts the 15 bullets it yields.
+ *
+ * The owner's briefs head their sections in capitals ("HOW I WILL KNOW IT
+ * WORKS", "--- WHAT IS DIFFERENT THIS TIME ---") rather than in markdown, so
+ * that is what is detected; a leading `#` is accepted because a brief pasted out
+ * of a markdown editor is the obvious other case. Prose never matches: one
+ * lower-case letter anywhere on the line disqualifies it.
+ */
+const HEADING_LINE = /^(?:#{1,6}\s+\S|[^a-z]*[A-Z][^a-z]*$)/;
+
+/** A bullet starts a new signal: two bullets are two things to check, not one. */
+const BULLET_LINE = /^\s*(?:[-*•]|\d+[.)])\s+\S/;
+
+/** The bullet marker itself, stripped so the text is the owner's sentence. */
+const BULLET_MARKER = /^\s*(?:[-*•]|\d+[.)])\s+/;
+
+/**
+ * The headings under which the owner is listing how he will judge the work.
+ *
+ * THE SAME THREE ALTERNATIVES `brief-shape.ts` USES for `REQUIREMENT_HEADING`,
+ * for the same reason the two pattern lists above are shared: a brief whose
+ * acceptance section the intake check recognises and this rule does not is a
+ * brief where the owner was warned about a sentence nobody later required
+ * anyone to cover.
+ */
+const ACCEPTANCE_HEADING = /how i will know|acceptance|criteria/i;
+
+/** One acceptance signal: a bullet the owner wrote under an acceptance heading. */
+export interface AcceptanceSignal {
+  /**
+   * 1-BASED, AND THE NUMBERING IS THE CONTRACT. This is the number the authoring
+   * prompt shows the seat and the number the seat puts in
+   * `coversAcceptanceSignals`. Produced once, consumed twice: a second
+   * extractor, or a 1-based prompt read by a 0-based rule, would misreport
+   * coverage while both sides passed their own tests.
+   */
+  readonly index: number;
+  /**
+   * The owner's sentence, VERBATIM, with only the bullet marker removed.
+   *
+   * An exact substring of the brief, internal line breaks from hard wrapping
+   * included — `spec-validate.test.ts` asserts `brief.includes(signal.text)` for
+   * every signal. A finding quotes this back to whoever reads the audit, and a
+   * quote that cannot be found in the brief by searching for it is worse than no
+   * quote at all.
+   */
+  readonly text: string;
+  /** The acceptance heading it sat under, verbatim. */
+  readonly heading: string;
+}
+
+/**
+ * The owner's acceptance signals, in the order he wrote them.
+ *
+ * MEASURED ON THE OWNER'S REAL BRIEF (the `6ec44b2f` re-run ticket): 15 signals,
+ * 8 under HOW I WILL KNOW IT WORKS and 7 under HOW I WILL KNOW THIS PART WORKS.
+ * The near-misses matter as much as the hits and the fixture pins them too: the
+ * 10 bullets under EACH PROJECT GETS ITS OWN PAGE and the 3 under THREE THINGS
+ * THAT WERE MEASURABLY WRONG LAST TIME are requirements, not acceptance signals,
+ * and are excluded because their headings do not match.
+ *
+ * Pure and total: no model, no clock, no file. A brief with no acceptance
+ * heading yields an empty list, which is the NO-OP case and is the common one.
+ */
+export function acceptanceSignals(brief: string): readonly AcceptanceSignal[] {
+  const out: AcceptanceSignal[] = [];
+  let heading = "";
+  let open: string[] | null = null;
+
+  const flush = (): void => {
+    if (open === null) return;
+    const text = open.join("\n").trim();
+    open = null;
+    if (text.length > 0) out.push({ index: out.length + 1, text, heading });
+  };
+
+  for (const line of brief.split("\n")) {
+    if (line.trim().length === 0) {
+      flush();
+      continue;
+    }
+    if (HEADING_LINE.test(line)) {
+      flush();
+      heading = line.trim();
+      continue;
+    }
+    // Outside an acceptance section nothing is collected, and an open bullet is
+    // closed: a section ends where the next heading or blank line begins.
+    if (!ACCEPTANCE_HEADING.test(heading)) {
+      flush();
+      continue;
+    }
+    if (BULLET_LINE.test(line)) {
+      flush();
+      open = [line.replace(BULLET_MARKER, "")];
+      continue;
+    }
+    // A hard-wrapped continuation of the bullet above. Kept verbatim, indent and
+    // all, so the text stays an exact substring of the brief.
+    if (open !== null) open.push(line);
+  }
+  flush();
+  return out;
+}
+
+/**
+ * What {@link acceptanceCoverage} found, in all three states it can be in.
+ *
+ * THREE FACTS, NOT TWO, AND THAT IS THE WHOLE POINT OF THE SHAPE. "No brief
+ * reached this audit", "the brief declares no acceptance signals" and "every
+ * signal is claimed" are three different things, and a rule that answers all
+ * three with an empty finding list is a rule that can only observe success —
+ * this repository's signature defect. So the counts come back structurally and a
+ * test asserts them directly, rather than being inferred from silence.
+ */
+export interface AcceptanceCoverageReport {
+  /** False when no ticket brief was supplied: the rule DID NOT RUN. */
+  readonly ran: boolean;
+  /** Every signal found, empty when the brief has no acceptance section. */
+  readonly signals: readonly AcceptanceSignal[];
+  /** Signals claimed by no criterion. Always empty when `signals` is empty. */
+  readonly uncovered: readonly AcceptanceSignal[];
+  /** Indices declared by some criterion that name no signal. Never blocking. */
+  readonly outOfRange: readonly number[];
+  readonly findings: readonly AuditFinding[];
+}
+
+/**
+ * Refuse a suite that leaves one of the owner's acceptance signals unclaimed.
+ *
+ * BLOCKING, WITH `remedy: "add"`. Closing it needs a criterion that does not
+ * exist, and `spec-repair.ts` may only return artefacts it was handed — the same
+ * argument as the five COVERAGE rules in {@link deterministicAudit} and the same
+ * failure (run `d143e52d`) that made `AuditFinding.remedy` exist at all. A
+ * finding about a MISSING criterion declared `"edit"` gets localised onto
+ * criteria that cannot fix it, the repair round returns, the fresh re-audit does
+ * not re-raise it, and a correct rejection becomes an acceptance.
+ *
+ * SILENCE MEANS EXACTLY ONE THING, BY CONSTRUCTION: signals were found and every
+ * one of them is claimed. The two arms where the rule required nothing of the
+ * suite each emit an ADVISORY saying so, so that "this rule passed" and "this
+ * rule had nothing to do" are never the same observation. That is the negative
+ * control, and it is the reason those two advisories exist rather than being
+ * tidied away as noise.
+ */
+export function acceptanceCoverage(draft: SuiteDraft, ticketBrief?: string): AcceptanceCoverageReport {
+  if (ticketBrief === undefined) {
+    return {
+      ran: false,
+      signals: [],
+      uncovered: [],
+      outOfRange: [],
+      findings: [
+        advisory(
+          "other",
+          null,
+          "no ticket brief was supplied to this audit, so the owner's acceptance signals could not be " +
+            "read and NO criterion was required to cover anything. This rule did NOT run; treat its " +
+            "silence as unknown, not as a pass. `auditSuite` passes `ticketBrief: ticket.brief`, so a " +
+            "real authoring run never lands here.",
+        ),
+      ],
+    };
+  }
+
+  const signals = acceptanceSignals(ticketBrief);
+  if (signals.length === 0) {
+    return {
+      ran: true,
+      signals,
+      uncovered: [],
+      outOfRange: [],
+      findings: [
+        advisory(
+          "other",
+          null,
+          "the ticket brief declares NO acceptance signals — it has no bulleted list under a heading " +
+            'matching "how I will know", "acceptance" or "criteria" — so this rule required nothing of ' +
+            "the suite. Recorded because 0 signals found is a different fact from every signal covered, " +
+            "and a rule that reports both as silence can only ever observe success.",
+        ),
+      ],
+    };
+  }
+
+  // Claimed indices, 1-based. An index naming no signal covers nothing: it is
+  // reported as an observation but never blocks, because the signal it failed to
+  // claim is already blocking on its own account below and two findings for one
+  // mistake read as two mistakes. De-duplicated because two criteria declaring
+  // the same wrong number is one wrong number, and the finding is prose a person
+  // reads ("names 99, 99" is a worse sentence than "names 99").
+  const claimed = new Set<number>();
+  const outOfRange = new Set<number>();
+  for (const criterion of draft.criteria) {
+    for (const index of criterion.coversAcceptanceSignals ?? []) {
+      if (Number.isInteger(index) && index >= 1 && index <= signals.length) claimed.add(index);
+      else outOfRange.add(index);
+    }
+  }
+
+  const uncovered = signals.filter((signal) => !claimed.has(signal.index));
+  const findings: AuditFinding[] = [];
+
+  /*
+   * ONE FINDING PER UNCOVERED SIGNAL, AND THE SHAPE WAS MEASURED BEFORE IT WAS
+   * CHOSEN.
+   *
+   * `blockingFindingSummary` renders ONE LINE PER FINDING, and that list is what
+   * `accumulatedConstraintsTurn` numbers and hands to the next attempt. The
+   * first version of this rule emitted a single finding listing every uncovered
+   * signal on its own line: rendered against the owner's real brief with one
+   * criterion claiming signal 1, the seat received ONE numbered constraint whose
+   * body was 17 unnumbered lines — and three of the signals hard-wrap, so their
+   * second halves arrived as lines indistinguishable from the start of the next
+   * signal. The manifest rule above already resolved exactly this, in those
+   * words: "ONE FINDING PER PROBLEM, deliberately."
+   *
+   * THE QUOTE IS COLLAPSED ONTO ONE LINE HERE, and `AcceptanceSignal.text` keeps
+   * the break. A finding is a line in a numbered list; the signal is an exact
+   * substring of the brief. Both are true and they want different whitespace.
+   *
+   * WHY THE WAL STORY IS NOT REPEATED IN ALL FIFTEEN. The worked example lives
+   * in `AUTHORING_SYSTEM_PROMPT`, which is sent on every attempt including this
+   * one. Fifteen copies of it would be the longest thing in the prompt and would
+   * say nothing the system prompt did not.
+   */
+  for (const signal of uncovered) {
+    findings.push(
+      blocking(
+        "mis_specified",
+        null,
+        `acceptance signal ${String(signal.index)} of ${String(signals.length)} is covered by NO ` +
+          `criterion: "${safe(signal.text.replace(/\s*\n\s*/g, " "))}". That is a sentence the owner ` +
+          'wrote under his own "how I will know it works" heading, and this suite decides nothing ' +
+          "about it. Add a criterion that tests what the sentence DESCRIBES — the action it names, " +
+          "performed — rather than a structural proxy that is easier to assert.",
+        // COVERAGE, NOT A DEFECT IN AN ARTEFACT: no edit to any criterion that
+        // exists can create the criterion that is missing. See AuditFinding.remedy.
+        // It also keeps the repair loop honest: a null-criterionId finding with
+        // remedy "add" lands in `repairTargets`' unlocalised list, so the round
+        // is DECLINED rather than dispatched at artefacts that cannot close it.
+        "add",
+      ),
+    );
+  }
+
+  if (outOfRange.size > 0) {
+    findings.push(
+      advisory(
+        "other",
+        null,
+        `coversAcceptanceSignals names ${[...outOfRange].map((n) => String(n)).join(", ")}, which is ` +
+          `outside the 1..${String(signals.length)} the brief actually declares. Those entries cover ` +
+          "nothing. The numbering is 1-based and is exactly the list shown in the ticket turn.",
+      ),
+    );
+  }
+
+  return { ran: true, signals, uncovered, outOfRange: [...outOfRange], findings };
+}
+
+/* -------------------------------------------------------------------------
  * 7. The deterministic audit
  * ---------------------------------------------------------------------- */
 
@@ -1167,10 +1542,13 @@ export interface DeterministicAuditOptions {
   /**
    * The ticket's verbatim brief, when the caller has it.
    *
-   * Used ONLY to suppress {@link proseLengthFloorFindings} when the ticket
-   * itself states the character floor. Absent, the rule still fires — see its
-   * doc comment. `auditSuite` in spec-agent.ts already holds the `Ticket` and
-   * should pass `ticketBrief: ticket.brief` when it builds these options.
+   * Used to suppress {@link proseLengthFloorFindings} when the ticket itself
+   * states the character floor (absent, that rule still fires — see its doc
+   * comment), to check {@link unstatedEnvContractFindings} against what the
+   * owner named, and as the ONLY source of the acceptance signals
+   * {@link acceptanceCoverage} requires the suite to cover. `auditSuite` in
+   * spec-agent.ts already holds the `Ticket` and passes `ticketBrief:
+   * ticket.brief` when it builds these options.
    */
   readonly ticketBrief?: string;
 }
@@ -1268,6 +1646,9 @@ export function deterministicAudit(
         null,
         "no BLOCKING-tier criterion. doc 02 section 5.4 puts builds/boots/suite-passes/no-protected-file-" +
           "modification in the BLOCKING tier, and all of them must pass to ship.",
+        // COVERAGE, NOT A DEFECT IN AN ARTEFACT: nothing here can be edited into
+        // existence, so repair must decline it. See AuditFinding.remedy.
+        "add",
       ),
     );
   }
@@ -1278,6 +1659,7 @@ export function deterministicAudit(
         null,
         "no FUNCTIONAL-tier criterion. doc 02 section 5.4 requires one criterion per user story in the " +
           "ticket, at 100%. A suite with none gates on nothing the ticket actually asked for.",
+        "add",
       ),
     );
   }
@@ -1555,6 +1937,7 @@ export function deterministicAudit(
         "other",
         null,
         "the suite has no held-out test files. The held-out half is the gate; without it nothing is sealed.",
+        "add",
       ),
     );
   }
@@ -1565,6 +1948,7 @@ export function deterministicAudit(
         null,
         "the suite has no visible test files. doc 03 section 7.5 requires the gap between the visible " +
           "and held-out pass rates to be reported, and that gap is undefined without a visible half.",
+        "add",
       ),
     );
   }
@@ -1621,6 +2005,7 @@ export function deterministicAudit(
         "no criterion has BOTH a held-out and a visible test. The visible-vs-held-out pass-rate gap " +
           "(doc 03 section 7.5, doc 02 section 5.4) is the reward-hacking metric and it is undefined " +
           "without at least one paired criterion.",
+        "add",
       ),
     );
   }
@@ -1683,6 +2068,13 @@ export function deterministicAudit(
   findings.push(...numericAssertionDriftFindings(draft));
   findings.push(...unstatedEnvContractFindings(draft, options.ticketBrief));
   findings.push(...shapeHeuristicProbeFindings(draft));
+
+  /* ---- signals the owner wrote that nobody covers -------------------- */
+
+  // Only the findings ride out of here; the counts stay on the report for the
+  // caller that wants them. `acceptanceCoverage` never returns an empty list —
+  // see its doc comment on why silence would be the defect.
+  findings.push(...acceptanceCoverage(draft, options.ticketBrief).findings);
 
   /* ---- syntax ------------------------------------------------------- */
 

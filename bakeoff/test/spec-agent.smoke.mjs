@@ -80,18 +80,24 @@ test("[REQ-003] T-3 the booking form submits and renders a confirmation", async 
 });
 `;
 
+// `coversAcceptanceSignals: []` on every criterion below: the ticket brief in
+// this fixture carries no "how I will know" heading, so `acceptanceSignals()`
+// returns [] for it and the coverage rule requires nothing. The FIELD is still
+// mandatory — `parseSuiteDraft` rejects a criterion that omits it, because []
+// is the claim "this criterion covers none of them" and inferring that from
+// silence is how every signal ends up claimed by nobody. See run `6ec44b2f`.
 function baseDraft() {
   return {
     ticketId: ticket.id,
     ticketSha256: ticket.sha256,
     criteria: [
       { id: "REQ-001", tier: "BLOCKING", statement: "The application shall boot and answer GET /health with a non-5xx status.",
-        evidenceRequired: "holdout test T-2 PASS", holdoutTestIds: ["T-2"], visibleTestIds: [], evidenceArtifacts: [] },
+        evidenceRequired: "holdout test T-2 PASS", holdoutTestIds: ["T-2"], visibleTestIds: [], evidenceArtifacts: [], coversAcceptanceSignals: [] },
       { id: "REQ-002", tier: "FUNCTIONAL", statement: "When a visitor submits a tee time, the system shall persist a booking row for that time.",
         evidenceRequired: "holdout test T-1 PASS AND a bookings row exists for the submitted time",
-        holdoutTestIds: ["T-1"], visibleTestIds: ["T-20"], evidenceArtifacts: ["db-query-7 count >= 1"] },
+        holdoutTestIds: ["T-1"], visibleTestIds: ["T-20"], evidenceArtifacts: ["db-query-7 count >= 1"], coversAcceptanceSignals: [] },
       { id: "REQ-003", tier: "QUALITY", statement: "When the booking form is submitted with no time, the system shall render an inline error message.",
-        evidenceRequired: "holdout test T-3 PASS", holdoutTestIds: ["T-3"], visibleTestIds: [], evidenceArtifacts: [] },
+        evidenceRequired: "holdout test T-3 PASS", holdoutTestIds: ["T-3"], visibleTestIds: [], evidenceArtifacts: [], coversAcceptanceSignals: [] },
     ],
     files: [
       { path: "holdout/booking.test.mjs", visibility: "holdout", runner: "node-test", description: "persistence",
@@ -175,7 +181,7 @@ expectBlocking("over-cap criteria blocked", (d) => {
   for (let i = 4; i <= 40; i += 1) {
     d.criteria.push({ id: `REQ-${String(i).padStart(3, "0")}`, tier: "QUALITY",
       statement: "The system shall do a thing.", evidenceRequired: "holdout test T-2 PASS",
-      holdoutTestIds: ["T-2"], visibleTestIds: [], evidenceArtifacts: [] });
+      holdoutTestIds: ["T-2"], visibleTestIds: [], evidenceArtifacts: [], coversAcceptanceSignals: [] });
   }
 }, "exceeds the cap");
 expectBlocking("no BLOCKING tier blocked", (d) => { d.criteria[0].tier = "QUALITY"; }, "no BLOCKING-tier criterion");

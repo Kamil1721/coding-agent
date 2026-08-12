@@ -33,9 +33,12 @@ import test from "node:test";
 import type { AuditFinding } from "./contracts.js";
 import {
   PROSE_LENGTH_FLOOR_MIN,
+  acceptanceCoverage,
+  acceptanceSignals,
   blockingFindingSummary,
   deterministicAudit,
   numericAssertionDriftFindings,
+  parseSuiteDraft,
   proseLengthFloorFindings,
   shapeHeuristicProbeFindings,
   statementProblems,
@@ -1140,4 +1143,478 @@ test("NEGATIVE CONTROL: the marker in EXECUTABLE code still discards the suite",
     (f) => f.mustRegenerate && f.detail.includes("not implemented"),
   );
   assert.equal(fired.length, 1, "the stub-marker rule stopped firing on executable code");
+});
+
+/* -------------------------------------------------------------------------
+ * RULE 6 — the owner's acceptance signals, and the suite that covers none of
+ *          them.
+ *
+ * THE RUN. `6ec44b2f` produced a working portfolio site and its sealed suite
+ * marked it DID NOT PASS. Four of the five failures were the grader; the worst
+ * was that the brief below says, under HOW I WILL KNOW IT WORKS, *"Killing the
+ * server and starting it again still returns messages submitted before."* — and
+ * the spec seat wrote 25 criteria, none of which restarted anything. It checked
+ * persistence structurally instead: find the files carrying the SQLite header,
+ * grep them for the bytes just POSTed. The builder's `PRAGMA journal_mode = WAL`
+ * is correct and conventional, so the row lived in `portfolio.db-wal` (WAL
+ * magic, not the SQLite header) until a checkpoint. The artefact was booted and
+ * the data proved durable — it reads back through the API and survives a real
+ * kill-and-restart. The suite could not see it.
+ *
+ * WHAT THESE TESTS PIN, AND WHAT THEY DO NOT. They pin that the owner's
+ * sentences are extracted, numbered and REQUIRED to be claimed. They do not —
+ * and cannot — pin that a criterion claiming signal 5 actually restarts a
+ * server. Coverage is not correctness; this rule raises a floor.
+ *
+ * BOTH ARMS OF EVERY ARM. A rule that only ever fires is as blind as one that
+ * never does, so each of the three states is asserted directly: signals found
+ * and all claimed (silent), signals found and one unclaimed (blocking), and no
+ * acceptance section at all (a NO-OP that says so). The third is the one this
+ * repository keeps getting wrong.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The owner's real ticket, embedded verbatim.
+ *
+ * This is the brief run `6ec44b2f` was authored from, byte for byte, including
+ * its hard wrapping — the wrapping is load-bearing, because two of the fifteen
+ * bullets continue onto a second line and the extractor has to join them and
+ * still return an exact substring of the brief.
+ */
+const OWNER_BRIEF = `Build my personal portfolio site — a real application with a working backend, not a
+static page with a decorative contact form.
+
+Content comes from the attached CV. Take the roles, dates, projects, skills and
+contact details from it. Do not invent employers, job titles, dates or numbers. If
+the CV is ambiguous about something, leave it out rather than filling the gap.
+
+THE LOOK
+
+Hand-drawn sketchbook, not a template. The attached image is the direction. In words,
+so it can be graded:
+
+Warm off-white paper background with faint coloured-pencil scribble at the edges of
+the viewport. Content sits on slightly tilted white paper cards with soft drop shadows
+and thin dark hand-inked rules, as if photographed on a desk. Headings are large,
+uppercase, condensed and hand-lettered in near-black. Body copy is a plain readable
+serif at normal weight — the drawing carries the personality, the text does not need
+to. Illustrations are coloured-pencil line art with visible hatching, in a restrained
+palette of purple, orange, green, red and blue on paper white. Buttons are small
+outlined pills with lowercase labels. Section flows are numbered with circled digits
+and hand-drawn curved arrows between steps. Top navigation is a single row of
+uppercase links with a hand-drawn underline under the active one.
+
+No gradients, no glassmorphism, no neon, no dark mode. If it could have come out of a
+generic component library, it is wrong.
+
+THE MOTION
+
+Keep it to what the reference page actually does, which is very little: text spans
+reveal once as they scroll into view, animating transform over about 250ms. Nothing
+else moves on its own. Stay within about 40% of that duration, animate transform
+rather than layout, and reveal each element once rather than every time it re-enters
+the viewport. Everything must still work with
+prefers-reduced-motion: reduce — motion is the finish, never the mechanism.
+
+RESEARCH BEFORE YOU BUILD
+
+You have network access while building; the graders do not. Before writing the
+illustration and motion layer, look up how hand-drawn and sketch aesthetics are
+actually implemented on the web today, and how the motion described above is
+usually built. Say in your self-report what you looked at and what you
+took from it. Vendor anything you depend on into the artefact — nothing is fetched at
+grading time.
+
+PAGES
+
+/          hero with my name, role and one line about what I do; a short selected-work
+           strip pulled from the CV.
+/work      projects from the CV, each as its own paper card: title, what it is, the
+           stack, my role.
+/about     the career narrative, roles and dates from the CV, and the skills list.
+/contact   the form described below.
+
+THE BACKEND — THIS IS THE PART THAT MUST ACTUALLY WORK
+
+A Node HTTP server. Zero runtime npm dependencies: node:http, node:sqlite and the
+standard library only. Starts with \`npm start\`, listens on PORT defaulting to 3000,
+serves every page and API route from one process, and persists to a SQLite file
+created automatically on first boot.
+
+  POST /api/contact   accepts {name, email, message} as JSON. Validates all three:
+                      name non-empty, email structurally valid, message at least 20
+                      characters. Rejects with 400 and a JSON body naming WHICH field
+                      failed. On success stores the message with a timestamp and
+                      returns 201 with the new record's id. An empty or invalid
+                      submission must never be stored and must never return a success
+                      response — a form that confirms a submission it discarded is the
+                      failure I care most about.
+  GET  /api/messages  stored messages as JSON, newest first. Requires a bearer token
+                      read from an environment variable at boot: 401 without it, 401
+                      with the wrong one. If the variable is unset the route stays
+                      available and refuses every request rather than opening up.
+  GET  /api/projects  the CV's projects as JSON, served from the database rather than
+                      hardcoded in the page, seeded on first boot.
+  GET  /api/health    200 with {"ok":true}.
+  everything else     a real 404 page in the site's own visual style — not a stack
+                      trace, not a blank body.
+
+The contact page posts to /api/contact for real and renders the server's response: the
+field-level error on a 400, a confirmation on a 201. No optimistic "thanks!" before the
+server has answered. Rate-limit POST /api/contact to a handful of submissions per
+minute per IP, in memory, returning 429 past that.
+
+YOU CANNOT OPEN A PORT WHILE BUILDING THIS
+
+The build sandbox denies listen() on every port with EPERM. That is measured. So
+structure it to be testable without a socket: request handling in an exported router
+function, \`server.mjs\` doing nothing but wiring it to node:http, every database access
+behind functions taking a database handle as an argument. Write node --test tests that
+call those directly. Cover the 400 on each invalid field, the 201, both 401s, the 429,
+and survival of data across a reopen. Run them and get them passing before you declare
+done, and say how many there are.
+
+CONSTRAINTS
+
+Runs entirely offline once built. No external API, no hosted database, no email
+provider, no analytics, no third-party fonts or CDN — embed or self-host every asset.
+No secrets in the repository; the one token is read from the environment. Responsive at
+1440, 768 and 375 with no horizontal scrolling. Keyboard-navigable throughout, visible
+focus rings, alt text on every illustration.
+
+HOW I WILL KNOW IT WORKS
+
+- \`npm start\` boots on one port and serves every page and every API route.
+- Submitting the contact form with a blank message shows a field error and stores
+  nothing; GET /api/messages with the right token proves the count did not change.
+- A valid message returns 201 and then appears in GET /api/messages.
+- GET /api/messages with no token and with a wrong token both return 401.
+- Killing the server and starting it again still returns messages submitted before.
+- Every project on /work traces to a line in the attached CV.
+- All four pages render in the sketchbook style at 1440, 768 and 375.
+- The motion matches what is described above, and the site is fully usable with reduced
+  motion enabled.
+
+--- WHAT IS DIFFERENT THIS TIME ---
+
+You built this once already. It came out close. Everything above still stands; the list
+below is in addition to it.
+
+EACH PROJECT GETS ITS OWN PAGE
+
+On /work the six project cards go nowhere. Clicking a project must open a page about that
+project, the way it works on kamilborzecki.dev.
+
+Treat the six project pages as ONE requirement, not six. They share a single template, and
+one test that walks all six slugs is the right way to check them.
+
+Stated one requirement at a time:
+
+- When a visitor clicks a project card on /work, the site shall open that project's page.
+- The site shall serve a page at /work/<slug> for each of the six projects, where slug is
+  teewise, trade-assistant, jobsilver, kori, parts-agent and crewflow. Typing the URL
+  directly shall work, not only clicking through.
+- The site shall render, on each project page, the project name as the page heading.
+- The site shall render, on each project page, a description of several sentences taken from
+  the CV that does not appear on /work.
+- The site shall render, on each project page, that project's role and stack from the CV.
+- The site shall render, on each project page, that project's illustration.
+- The site shall render, on each project page, a link back to /work.
+- Where a project page is shown, the site shall keep the top navigation pinned and the
+  sketchbook style identical to the rest of the site.
+- If a project slug does not exist, then the site shall serve the styled 404 page rather than
+  a crash or a blank body.
+- The site shall make every project card reachable by keyboard, in the order the cards
+  appear, with a visible focus ring.
+
+GO ONE STEP PAST THE LITERAL MINIMUM
+
+The site shall render, at the foot of each project page, links to the previous and next
+project.
+
+THREE THINGS THAT WERE MEASURABLY WRONG LAST TIME
+
+Each one is stated on its own, with the measurement that decides it, because the last
+build satisfied the prose and failed the check.
+
+- Two poster images shipped STRETCHED, at 0.69 and 0.28 of their true aspect ratio, and
+  nothing caught it. The site shall render every image so that its rendered box has the
+  same width-to-height ratio as the image file it came from, within one percent, at 1440,
+  768 and 375. A test that reads naturalWidth/naturalHeight and compares them to the
+  rendered getBoundingClientRect() for every <img> on every page is the right way to
+  check this.
+
+- A submission that satisfies every documented validation rule did not answer 201. When a
+  POST to /api/contact carries a non-empty name, a structurally valid email and a message
+  of at least twenty characters, the site shall answer HTTP 201 with a JSON body carrying
+  the new record's id. That exact request, with that exact shape, must not answer 400.
+
+- Something that declares motion still animated under reduced motion. Where
+  prefers-reduced-motion: reduce is set, the site shall run no animation at all:
+  document.getAnimations() shall return an empty list after the page has settled, and no
+  element shall change its opacity or transform over time. Reveal-on-scroll content shall
+  be visible immediately in that mode rather than waiting for an animation that never runs.
+
+HOW I WILL KNOW THIS PART WORKS
+
+- Clicking any of the six cards on /work lands on that project's page.
+- Each of the six URLs loads directly, with that project's own content.
+- /work/nonsense returns the styled 404.
+- No image renders at a shape different from the file it came from, on any page, at any of
+  the three widths.
+- A valid contact submission answers 201 and the message then appears in GET /api/messages.
+- With reduced motion enabled, nothing on any page animates and nothing is left invisible.
+- Every project page is readable at 375 with no horizontal scrolling.
+`;
+
+/** A criterion that claims some of the owner's acceptance signals. */
+function claiming(id: string, covers: readonly number[], holdoutTestIds: readonly string[] = ["T-1"]): DraftCriterion {
+  return { ...criterion(id, "The site shall serve the contact API.", holdoutTestIds), coversAcceptanceSignals: covers };
+}
+
+/** A draft whose criteria between them claim exactly `covers`. */
+function draftClaiming(covers: readonly (readonly number[])[]): SuiteDraft {
+  return draftOf(
+    covers.map((c, i) => claiming(`REQ-${String(i + 1).padStart(3, "0")}`, c)),
+    [{ path: "holdout/api.test.mjs", source: "// fixture", testIds: ["T-1"], criterionIds: [] }],
+  );
+}
+
+/** Every signal number in the owner's brief, 1..15. */
+const ALL_SIGNALS = Array.from({ length: 15 }, (_, i) => i + 1);
+
+test("the owner's real brief yields exactly its acceptance bullets, verbatim", () => {
+  const signals = acceptanceSignals(OWNER_BRIEF);
+  assert.equal(signals.length, 15, signals.map((s) => s.text).join("\n---\n"));
+
+  // THE ONE THE RUN TURNED ON. Named as a literal rather than by index alone:
+  // an off-by-one in the numbering would still satisfy a count assertion.
+  assert.equal(
+    signals[4]?.text,
+    "Killing the server and starting it again still returns messages submitted before.",
+  );
+  assert.equal(signals[4]?.index, 5, "the numbering shown to the seat is 1-based");
+  assert.equal(signals[2]?.text, "A valid message returns 201 and then appears in GET /api/messages.");
+
+  // INDEX N IS ALWAYS THE Nth SIGNAL. The prompt renders these numbers and the
+  // rule decodes `coversAcceptanceSignals` against them; a gap or a 0-based
+  // slip anywhere would make every claim point at the wrong sentence.
+  signals.forEach((signal, i) => {
+    assert.equal(signal.index, i + 1);
+  });
+
+  // VERBATIM, so a finding quoting one can be found in the brief by searching.
+  for (const signal of signals) {
+    assert.ok(
+      OWNER_BRIEF.includes(signal.text),
+      `signal ${String(signal.index)} is not a substring of the brief: ${JSON.stringify(signal.text)}`,
+    );
+  }
+
+  // Both acceptance sections, and only those two.
+  assert.deepEqual(
+    [...new Set(signals.map((s) => s.heading))],
+    ["HOW I WILL KNOW IT WORKS", "HOW I WILL KNOW THIS PART WORKS"],
+  );
+});
+
+test("NEAR MISSES: bullets under a non-acceptance heading are NOT signals", () => {
+  // The brief carries 10 bullets under EACH PROJECT GETS ITS OWN PAGE and 3
+  // under THREE THINGS THAT WERE MEASURABLY WRONG LAST TIME. Both lists are
+  // requirements, and both are the plausible way for the count to be wrong.
+  const texts = acceptanceSignals(OWNER_BRIEF).map((s) => s.text);
+  assert.ok(
+    !texts.some((t) => t.includes("teewise, trade-assistant")),
+    "a requirement bullet from EACH PROJECT GETS ITS OWN PAGE was read as an acceptance signal",
+  );
+  assert.ok(
+    !texts.some((t) => t.includes("0.69 and 0.28")),
+    "a bullet from THREE THINGS THAT WERE MEASURABLY WRONG LAST TIME was read as an acceptance signal",
+  );
+  assert.ok(
+    OWNER_BRIEF.includes("- The site shall serve a page at /work/<slug> for each of the six projects"),
+    "the fixture no longer contains the near-miss bullets, so this control proves nothing",
+  );
+});
+
+test("a suite covering every signal passes, and says how many it checked", () => {
+  const report = acceptanceCoverage(draftClaiming([ALL_SIGNALS]), OWNER_BRIEF);
+  assert.equal(report.ran, true);
+  assert.equal(report.signals.length, 15);
+  assert.deepEqual(report.uncovered, []);
+  assert.deepEqual(report.findings, [], report.findings.map((f) => f.detail).join("\n"));
+});
+
+test("a suite leaving one signal unclaimed is BLOCKING and names it verbatim", () => {
+  // Signal 5 is the restart. Everything else is claimed, so the finding cannot
+  // be passing for the trivial reason that nothing was claimed at all.
+  const report = acceptanceCoverage(draftClaiming([ALL_SIGNALS.filter((n) => n !== 5)]), OWNER_BRIEF);
+  assert.equal(report.ran, true);
+  assert.equal(report.uncovered.length, 1);
+  assert.equal(report.uncovered[0]?.index, 5);
+
+  const blockers = report.findings.filter((f) => f.mustRegenerate);
+  assert.equal(blockers.length, 1, report.findings.map((f) => f.detail).join("\n"));
+  assert.ok(
+    blockers[0]?.detail.includes(
+      "Killing the server and starting it again still returns messages submitted before.",
+    ),
+    `the finding does not quote the signal: ${blockers[0]?.detail ?? "(none)"}`,
+  );
+});
+
+test("ONE FINDING PER SIGNAL, ONE LINE EACH — the shape the next attempt reads", () => {
+  // MEASURED, THEN FIXED. The first version emitted a single finding listing
+  // every uncovered signal on its own line. `blockingFindingSummary` renders one
+  // line per FINDING and `accumulatedConstraintsTurn` numbers that list, so the
+  // seat received ONE numbered constraint with a 17-line body — and three of the
+  // owner's bullets hard-wrap, so their second halves arrived looking exactly
+  // like the start of the next signal.
+  const report = acceptanceCoverage(draftClaiming([[1]]), OWNER_BRIEF);
+  const blockers = report.findings.filter((f) => f.mustRegenerate);
+  assert.equal(blockers.length, 14, "14 signals are unclaimed, so 14 constraints reach the next attempt");
+
+  const summary = blockingFindingSummary(report.findings);
+  assert.equal(summary.length, 14);
+  for (const line of summary) {
+    assert.ok(!line.includes("\n"), `a constraint spans more than one line: ${JSON.stringify(line)}`);
+  }
+  // The wrapped bullets are quoted whole, on one line. Signal 8 is one of the
+  // three that wrap in the brief.
+  assert.ok(
+    summary.some((l) =>
+      l.includes(
+        "The motion matches what is described above, and the site is fully usable with reduced motion enabled.",
+      ),
+    ),
+    "a hard-wrapped signal is not quoted whole on its constraint line",
+  );
+});
+
+test("the finding's remedy is 'add' — no criterion that exists can close it", () => {
+  // `spec-repair.ts` may only return artefacts it was handed, so a finding
+  // about a MISSING criterion declared "edit" is localised onto criteria that
+  // cannot fix it, the round returns, and the fresh re-audit does not re-raise
+  // it. That is run `d143e52d`, and it turned a correct rejection into an
+  // acceptance.
+  const report = acceptanceCoverage(draftClaiming([[1]]), OWNER_BRIEF);
+  const blockers = report.findings.filter((f) => f.mustRegenerate);
+  assert.equal(blockers.length, 14);
+  for (const finding of blockers) {
+    assert.equal(finding.remedy, "add", `a coverage finding declared a remedy repair cannot deliver: ${finding.detail}`);
+    // Suite-level by construction: the missing artefact has no id to name, and
+    // `repairTargets` puts a null-criterionId "add" finding in its unlocalised
+    // list, so the repair round is DECLINED rather than dispatched at criteria
+    // that cannot close it.
+    assert.equal(finding.criterionId, null);
+  }
+});
+
+test("NO ACCEPTANCE SECTION: the rule is a no-op, and the fact is observable", () => {
+  // Most tickets look like this. The rule must require nothing — and must not
+  // report that as a pass, which is the defect this whole file exists against.
+  const plain = "Build a portfolio site for Ada Lovelace. It needs a hero with her name.";
+  const report = acceptanceCoverage(draftClaiming([[]]), plain);
+
+  assert.equal(report.ran, true, "the rule ran: a brief was supplied");
+  assert.equal(report.signals.length, 0, "a brief with no acceptance heading declares no signals");
+  assert.deepEqual(report.uncovered, []);
+  assert.deepEqual(
+    report.findings.filter((f) => f.mustRegenerate),
+    [],
+    "a brief with no acceptance signals must never block a suite",
+  );
+  // THE OBSERVABLE. "0 signals found, so nothing was required" is a different
+  // fact from "every signal is covered", and both `signals.length` and this
+  // advisory distinguish them. Without it the two states are one silence.
+  assert.equal(report.findings.length, 1);
+  assert.ok(
+    report.findings[0]?.detail.includes("declares NO acceptance signals"),
+    report.findings[0]?.detail ?? "(no finding)",
+  );
+});
+
+test("NO BRIEF AT ALL: the rule announces that it did not run", () => {
+  const report = acceptanceCoverage(draftClaiming([[]]), undefined);
+  assert.equal(report.ran, false, "with no brief the rule cannot have run");
+  assert.deepEqual(report.findings.filter((f) => f.mustRegenerate), []);
+  assert.equal(report.findings.length, 1);
+  assert.ok(report.findings[0]?.detail.includes("did NOT run"), report.findings[0]?.detail ?? "(none)");
+});
+
+test("an index naming no signal covers nothing, and does not crash", () => {
+  // 0 and 99 are the two ways a 1-based list gets miscounted. Neither may be
+  // read as coverage, and neither gets a blocking finding of its own: the
+  // signal they failed to claim is already blocking, and two findings for one
+  // mistake read as two mistakes.
+  const report = acceptanceCoverage(draftClaiming([[0, 99], ALL_SIGNALS.filter((n) => n !== 5)]), OWNER_BRIEF);
+  assert.deepEqual(report.outOfRange, [0, 99]);
+  assert.deepEqual(report.uncovered.map((s) => s.index), [5]);
+  assert.equal(report.findings.filter((f) => f.mustRegenerate).length, 1);
+  // DE-DUPLICATED: two criteria naming the same wrong number is one wrong number.
+  const twice = acceptanceCoverage(draftClaiming([[99], [99], ALL_SIGNALS]), OWNER_BRIEF);
+  assert.deepEqual(twice.outOfRange, [99]);
+  assert.equal(
+    report.findings.filter((f) => !f.mustRegenerate).length,
+    1,
+    "the out-of-range indices are reported, advisory, exactly once",
+  );
+});
+
+test("the rule fires THROUGH deterministicAudit, not only when called directly", () => {
+  // The wiring, which is its own defect class: a rule nobody calls is a rule
+  // nobody has. `auditSuite` passes `ticketBrief: ticket.brief`.
+  const uncovered = deterministicAudit(draftClaiming([[1]]), {
+    syntaxCheck: false,
+    ticketBrief: OWNER_BRIEF,
+  }).filter((f) => f.mustRegenerate && f.detail.includes("acceptance signal"));
+  assert.equal(uncovered.length, 14, "the coverage rule is not wired into the deterministic pass");
+  assert.ok(uncovered.every((f) => f.remedy === "add"));
+
+  const covered = deterministicAudit(draftClaiming([ALL_SIGNALS]), {
+    syntaxCheck: false,
+    ticketBrief: OWNER_BRIEF,
+  }).filter((f) => f.detail.includes("acceptance signal"));
+  assert.deepEqual(covered, [], "a fully-covered suite must draw no coverage finding at all");
+});
+
+test("parseSuiteDraft REQUIRES the declaration rather than defaulting it to []", () => {
+  // [] is a CLAIM — "this criterion covers none of them" — and inferring it
+  // from silence is how every signal ends up claimed by nobody with no
+  // complaint recorded anywhere.
+  const criterionJson = {
+    id: "REQ-001",
+    statement: "The system shall serve the contact API.",
+    evidenceRequired: "holdout test T-1 PASS",
+    tier: "FUNCTIONAL",
+    holdoutTestIds: ["T-1"],
+    visibleTestIds: [],
+    evidenceArtifacts: [],
+  };
+  const files = [
+    {
+      path: "holdout/api.test.mjs",
+      visibility: "holdout",
+      runner: "node-test",
+      description: "api",
+      testIds: ["T-1"],
+      criterionIds: ["REQ-001"],
+      source: "// fixture",
+    },
+  ];
+  const ticket = { id: "T-1", brief: OWNER_BRIEF, sha256: "0".repeat(64), tier: "hard", title: "t" } as const;
+
+  const missing = parseSuiteDraft({ criteria: [criterionJson], testFiles: files }, ticket);
+  assert.equal(missing.ok, false, "a criterion with no coverage declaration was accepted");
+  assert.ok(
+    !missing.ok && missing.problems.some((p) => p.includes("coversAcceptanceSignals")),
+    !missing.ok ? missing.problems.join("; ") : "",
+  );
+
+  const present = parseSuiteDraft(
+    { criteria: [{ ...criterionJson, coversAcceptanceSignals: [3, 5] }], testFiles: files },
+    ticket,
+  );
+  assert.equal(present.ok, true, present.ok ? "" : present.problems.join("; "));
+  assert.deepEqual(present.ok ? present.draft.criteria[0]?.coversAcceptanceSignals : null, [3, 5]);
 });

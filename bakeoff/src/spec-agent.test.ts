@@ -172,6 +172,7 @@ import { BakeoffError } from "./contracts.js";
 import { ticketDigest } from "./hash.js";
 import {
   ATTEMPT_TIMEOUT_ENV_NAME,
+  AUTHORING_JSON_SCHEMA,
   AUTHORING_SYSTEM_PROMPT,
   DEFAULT_ATTEMPT_TIMEOUT_MS,
   MANIFEST_DATA_EXPECTATION_EXAMPLES,
@@ -183,7 +184,11 @@ import {
   generateAuditedSuite,
   remediationForFailedAuthoring,
   resolveAttemptTimeoutMs,
+  ticketTurn,
+  withCoverageClaimsFrom,
+  withoutCoverageClaims,
 } from "./spec-agent.js";
+import { acceptanceSignals } from "./spec-validate.js";
 import type { AuditFinding } from "./contracts.js";
 import { AnthropicSeatCaller } from "./anthropic-seat.js";
 import type { SeatCallRequest, SeatCallResult } from "./anthropic-seat.js";
@@ -1097,6 +1102,11 @@ function replayResponse(manifest: string, visibleSource: string): string {
         holdoutTestIds: ["T-2"],
         visibleTestIds: ["T-1"],
         evidenceArtifacts: [],
+        // REQUIRED BY `parseSuiteDraft`, EMPTY BECAUSE `REPLAY_BRIEF` DECLARES
+        // NO ACCEPTANCE SIGNALS. `acceptanceSignals("...")` returns [] for it —
+        // no "how I will know" heading — so this suite is required to cover
+        // nothing and the rule's no-op arm is what runs here.
+        coversAcceptanceSignals: [],
       },
       {
         id: "REQ-002",
@@ -1106,6 +1116,11 @@ function replayResponse(manifest: string, visibleSource: string): string {
         holdoutTestIds: ["T-2"],
         visibleTestIds: ["T-1"],
         evidenceArtifacts: [],
+        // REQUIRED BY `parseSuiteDraft`, EMPTY BECAUSE `REPLAY_BRIEF` DECLARES
+        // NO ACCEPTANCE SIGNALS. `acceptanceSignals("...")` returns [] for it —
+        // no "how I will know" heading — so this suite is required to cover
+        // nothing and the rule's no-op arm is what runs here.
+        coversAcceptanceSignals: [],
       },
     ],
     testFiles: [
@@ -2137,5 +2152,343 @@ test("the deadline timer holds the event loop open, so a bare hung process still
     child.status,
     0,
     `the child did not exit cleanly after abandoning. stderr: ${child.stderr.trim()}`,
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * PART 8 — the owner's acceptance signals: shown to the seat, declared back,
+ *          and carried across a repair round.
+ *
+ * WHY THIS PART EXISTS. Run `6ec44b2f` shipped a working portfolio and its
+ * sealed suite marked it DID NOT PASS. The brief said, under HOW I WILL KNOW IT
+ * WORKS, *"Killing the server and starting it again still returns messages
+ * submitted before."*; the seat wrote 25 criteria and none of them restarted
+ * anything, checking persistence by grepping files with the SQLite header for
+ * the posted bytes instead. `PRAGMA journal_mode = WAL` put the row in the -wal
+ * sidecar until a checkpoint, so the grep found nothing on an artefact whose
+ * data really did survive a kill-and-restart.
+ *
+ * THE RULE ITSELF IS TESTED IN `spec-validate.test.ts`. What is tested here is
+ * the half that lives in this module: that the seat is SHOWN the signals with
+ * the same numbering the rule decodes, that the schema makes the declaration
+ * unskippable, and that a repair round neither loses the declarations nor
+ * breaks the no-op guard by carrying them.
+ * ---------------------------------------------------------------------- */
+
+/** The owner's real ticket for run `6ec44b2f`, embedded verbatim. */
+const SIGNAL_BRIEF = `Build my personal portfolio site — a real application with a working backend, not a
+static page with a decorative contact form.
+
+Content comes from the attached CV. Take the roles, dates, projects, skills and
+contact details from it. Do not invent employers, job titles, dates or numbers. If
+the CV is ambiguous about something, leave it out rather than filling the gap.
+
+THE LOOK
+
+Hand-drawn sketchbook, not a template. The attached image is the direction. In words,
+so it can be graded:
+
+Warm off-white paper background with faint coloured-pencil scribble at the edges of
+the viewport. Content sits on slightly tilted white paper cards with soft drop shadows
+and thin dark hand-inked rules, as if photographed on a desk. Headings are large,
+uppercase, condensed and hand-lettered in near-black. Body copy is a plain readable
+serif at normal weight — the drawing carries the personality, the text does not need
+to. Illustrations are coloured-pencil line art with visible hatching, in a restrained
+palette of purple, orange, green, red and blue on paper white. Buttons are small
+outlined pills with lowercase labels. Section flows are numbered with circled digits
+and hand-drawn curved arrows between steps. Top navigation is a single row of
+uppercase links with a hand-drawn underline under the active one.
+
+No gradients, no glassmorphism, no neon, no dark mode. If it could have come out of a
+generic component library, it is wrong.
+
+THE MOTION
+
+Keep it to what the reference page actually does, which is very little: text spans
+reveal once as they scroll into view, animating transform over about 250ms. Nothing
+else moves on its own. Stay within about 40% of that duration, animate transform
+rather than layout, and reveal each element once rather than every time it re-enters
+the viewport. Everything must still work with
+prefers-reduced-motion: reduce — motion is the finish, never the mechanism.
+
+RESEARCH BEFORE YOU BUILD
+
+You have network access while building; the graders do not. Before writing the
+illustration and motion layer, look up how hand-drawn and sketch aesthetics are
+actually implemented on the web today, and how the motion described above is
+usually built. Say in your self-report what you looked at and what you
+took from it. Vendor anything you depend on into the artefact — nothing is fetched at
+grading time.
+
+PAGES
+
+/          hero with my name, role and one line about what I do; a short selected-work
+           strip pulled from the CV.
+/work      projects from the CV, each as its own paper card: title, what it is, the
+           stack, my role.
+/about     the career narrative, roles and dates from the CV, and the skills list.
+/contact   the form described below.
+
+THE BACKEND — THIS IS THE PART THAT MUST ACTUALLY WORK
+
+A Node HTTP server. Zero runtime npm dependencies: node:http, node:sqlite and the
+standard library only. Starts with \`npm start\`, listens on PORT defaulting to 3000,
+serves every page and API route from one process, and persists to a SQLite file
+created automatically on first boot.
+
+  POST /api/contact   accepts {name, email, message} as JSON. Validates all three:
+                      name non-empty, email structurally valid, message at least 20
+                      characters. Rejects with 400 and a JSON body naming WHICH field
+                      failed. On success stores the message with a timestamp and
+                      returns 201 with the new record's id. An empty or invalid
+                      submission must never be stored and must never return a success
+                      response — a form that confirms a submission it discarded is the
+                      failure I care most about.
+  GET  /api/messages  stored messages as JSON, newest first. Requires a bearer token
+                      read from an environment variable at boot: 401 without it, 401
+                      with the wrong one. If the variable is unset the route stays
+                      available and refuses every request rather than opening up.
+  GET  /api/projects  the CV's projects as JSON, served from the database rather than
+                      hardcoded in the page, seeded on first boot.
+  GET  /api/health    200 with {"ok":true}.
+  everything else     a real 404 page in the site's own visual style — not a stack
+                      trace, not a blank body.
+
+The contact page posts to /api/contact for real and renders the server's response: the
+field-level error on a 400, a confirmation on a 201. No optimistic "thanks!" before the
+server has answered. Rate-limit POST /api/contact to a handful of submissions per
+minute per IP, in memory, returning 429 past that.
+
+YOU CANNOT OPEN A PORT WHILE BUILDING THIS
+
+The build sandbox denies listen() on every port with EPERM. That is measured. So
+structure it to be testable without a socket: request handling in an exported router
+function, \`server.mjs\` doing nothing but wiring it to node:http, every database access
+behind functions taking a database handle as an argument. Write node --test tests that
+call those directly. Cover the 400 on each invalid field, the 201, both 401s, the 429,
+and survival of data across a reopen. Run them and get them passing before you declare
+done, and say how many there are.
+
+CONSTRAINTS
+
+Runs entirely offline once built. No external API, no hosted database, no email
+provider, no analytics, no third-party fonts or CDN — embed or self-host every asset.
+No secrets in the repository; the one token is read from the environment. Responsive at
+1440, 768 and 375 with no horizontal scrolling. Keyboard-navigable throughout, visible
+focus rings, alt text on every illustration.
+
+HOW I WILL KNOW IT WORKS
+
+- \`npm start\` boots on one port and serves every page and every API route.
+- Submitting the contact form with a blank message shows a field error and stores
+  nothing; GET /api/messages with the right token proves the count did not change.
+- A valid message returns 201 and then appears in GET /api/messages.
+- GET /api/messages with no token and with a wrong token both return 401.
+- Killing the server and starting it again still returns messages submitted before.
+- Every project on /work traces to a line in the attached CV.
+- All four pages render in the sketchbook style at 1440, 768 and 375.
+- The motion matches what is described above, and the site is fully usable with reduced
+  motion enabled.
+
+--- WHAT IS DIFFERENT THIS TIME ---
+
+You built this once already. It came out close. Everything above still stands; the list
+below is in addition to it.
+
+EACH PROJECT GETS ITS OWN PAGE
+
+On /work the six project cards go nowhere. Clicking a project must open a page about that
+project, the way it works on kamilborzecki.dev.
+
+Treat the six project pages as ONE requirement, not six. They share a single template, and
+one test that walks all six slugs is the right way to check them.
+
+Stated one requirement at a time:
+
+- When a visitor clicks a project card on /work, the site shall open that project's page.
+- The site shall serve a page at /work/<slug> for each of the six projects, where slug is
+  teewise, trade-assistant, jobsilver, kori, parts-agent and crewflow. Typing the URL
+  directly shall work, not only clicking through.
+- The site shall render, on each project page, the project name as the page heading.
+- The site shall render, on each project page, a description of several sentences taken from
+  the CV that does not appear on /work.
+- The site shall render, on each project page, that project's role and stack from the CV.
+- The site shall render, on each project page, that project's illustration.
+- The site shall render, on each project page, a link back to /work.
+- Where a project page is shown, the site shall keep the top navigation pinned and the
+  sketchbook style identical to the rest of the site.
+- If a project slug does not exist, then the site shall serve the styled 404 page rather than
+  a crash or a blank body.
+- The site shall make every project card reachable by keyboard, in the order the cards
+  appear, with a visible focus ring.
+
+GO ONE STEP PAST THE LITERAL MINIMUM
+
+The site shall render, at the foot of each project page, links to the previous and next
+project.
+
+THREE THINGS THAT WERE MEASURABLY WRONG LAST TIME
+
+Each one is stated on its own, with the measurement that decides it, because the last
+build satisfied the prose and failed the check.
+
+- Two poster images shipped STRETCHED, at 0.69 and 0.28 of their true aspect ratio, and
+  nothing caught it. The site shall render every image so that its rendered box has the
+  same width-to-height ratio as the image file it came from, within one percent, at 1440,
+  768 and 375. A test that reads naturalWidth/naturalHeight and compares them to the
+  rendered getBoundingClientRect() for every <img> on every page is the right way to
+  check this.
+
+- A submission that satisfies every documented validation rule did not answer 201. When a
+  POST to /api/contact carries a non-empty name, a structurally valid email and a message
+  of at least twenty characters, the site shall answer HTTP 201 with a JSON body carrying
+  the new record's id. That exact request, with that exact shape, must not answer 400.
+
+- Something that declares motion still animated under reduced motion. Where
+  prefers-reduced-motion: reduce is set, the site shall run no animation at all:
+  document.getAnimations() shall return an empty list after the page has settled, and no
+  element shall change its opacity or transform over time. Reveal-on-scroll content shall
+  be visible immediately in that mode rather than waiting for an animation that never runs.
+
+HOW I WILL KNOW THIS PART WORKS
+
+- Clicking any of the six cards on /work lands on that project's page.
+- Each of the six URLs loads directly, with that project's own content.
+- /work/nonsense returns the styled 404.
+- No image renders at a shape different from the file it came from, on any page, at any of
+  the three widths.
+- A valid contact submission answers 201 and the message then appears in GET /api/messages.
+- With reduced motion enabled, nothing on any page animates and nothing is left invisible.
+- Every project page is readable at 375 with no horizontal scrolling.
+`;
+
+const SIGNAL_TICKET: Ticket = Object.freeze({
+  id: "T-SIGNALS",
+  brief: SIGNAL_BRIEF,
+  sha256: ticketDigest(SIGNAL_BRIEF),
+  tier: "hard",
+  title: "6ec44b2f re-run",
+});
+
+test("the ticket turn numbers the owner's signals, and line N is signal N", () => {
+  const turn = ticketTurn(SIGNAL_TICKET);
+  const signals = acceptanceSignals(SIGNAL_BRIEF);
+  assert.equal(signals.length, 15, "the fixture stopped yielding the owner's fifteen signals");
+
+  assert.ok(turn.includes(SIGNAL_BRIEF), "the brief is no longer carried verbatim");
+  assert.match(turn, /ACCEPTANCE SIGNALS — 15 sentences/);
+
+  // PARSED BACK OUT OF THE RENDERED TURN, not re-derived from the extractor. A
+  // block that renumbered, reordered or dropped an entry would still satisfy a
+  // "contains the sentence" assertion; this cannot.
+  const numbered = turn
+    .split("\n")
+    .map((line) => /^(\d+)\. (.+)$/.exec(line))
+    .filter((m): m is RegExpExecArray => m !== null);
+  assert.equal(numbered.length, 15, "the turn does not carry exactly fifteen numbered lines");
+
+  numbered.forEach((match, i) => {
+    const signal = signals[i];
+    assert.equal(match[1], String(i + 1), "the numbering shown to the seat is not 1..15 in order");
+    // The rendered line collapses a hard-wrapped bullet onto one line; the
+    // signal's own text keeps the break, because a finding quoting it must stay
+    // findable in the brief. Compared under the same collapse.
+    assert.equal(match[2], signal?.text.replace(/\s*\n\s*/g, " "), `line ${String(i + 1)} is not signal ${String(i + 1)}`);
+  });
+
+  // THE ONE THE RUN TURNED ON, named as a literal.
+  assert.ok(
+    turn.includes("5. Killing the server and starting it again still returns messages submitted before."),
+    "the restart signal is not shown to the seat as number 5",
+  );
+});
+
+test("NEGATIVE CONTROL: a brief with no acceptance section adds nothing to the turn", () => {
+  // Most tickets look like this, and for them the turn must be exactly what it
+  // was before any of this existed — a block appended unconditionally would be
+  // fifteen lines of instruction about a list that does not exist.
+  const plain: Ticket = Object.freeze({
+    id: "T-PLAIN",
+    brief: BRIEF,
+    sha256: ticketDigest(BRIEF),
+    tier: "medium",
+    title: "portfolio",
+  });
+  const turn = ticketTurn(plain);
+  assert.ok(!turn.includes("ACCEPTANCE SIGNALS"), "a signal block was rendered for a brief with no signals");
+  assert.ok(turn.endsWith("TICKET_BRIEF>>>"), `the turn gained a trailing block: ${turn.slice(-120)}`);
+});
+
+test("the authoring schema REQUIRES coversAcceptanceSignals, so it cannot be skipped", () => {
+  // Without this, deleting the field from the schema's `required` list leaves
+  // every other test green: the model simply stops declaring coverage, every
+  // signal reads as unclaimed, and the rule blocks every suite for a reason
+  // nobody introduced on purpose.
+  const properties = AUTHORING_JSON_SCHEMA["properties"] as Record<string, Record<string, unknown>>;
+  const item = (properties["criteria"] ?? {})["items"] as Record<string, unknown>;
+  const required = (item["required"] ?? []) as readonly string[];
+  assert.ok(required.includes("coversAcceptanceSignals"), "the authoring schema no longer requires the declaration");
+  const itemProps = (item["properties"] ?? {}) as Record<string, Record<string, unknown>>;
+  assert.deepEqual(itemProps["coversAcceptanceSignals"], { type: "array", items: { type: "integer" } });
+});
+
+test("the authoring prompt teaches the restart signal with the WAL case that forced it", () => {
+  // The prompt is the only place the BEHAVIOURAL half of this can live: the
+  // deterministic rule checks that a signal is claimed, never that the claim is
+  // honoured. If this text goes, coverage becomes a box-ticking exercise.
+  assert.match(AUTHORING_SYSTEM_PROMPT, /coversAcceptanceSignals/);
+  assert.ok(
+    AUTHORING_SYSTEM_PROMPT.includes(
+      '"Killing the server and starting it again still returns messages submitted before."',
+    ),
+    "the worked example no longer quotes the signal it is about",
+  );
+  assert.match(AUTHORING_SYSTEM_PROMPT, /PRAGMA journal_mode = WAL/);
+  assert.match(AUTHORING_SYSTEM_PROMPT, /EASIER TO PROVE/);
+});
+
+test("a repair round strips the declarations and puts them back by criterion id", () => {
+  // BOTH HALVES, BECAUSE EITHER ONE ALONE IS A DEFECT. Unstripped, the repair
+  // parser's no-op guard compares an eight-field original against a seven-field
+  // correction and reads a pure echo as a change (run `d143e52d`'s failure).
+  // Unrestored, the spliced suite declares no coverage at all and the re-audit
+  // rejects it for a gap the repair never opened.
+  const draft: SuiteDraft = {
+    ticketId: SIGNAL_TICKET.id,
+    ticketSha256: SIGNAL_TICKET.sha256,
+    criteria: [
+      { ...DRAFT.criteria[0]!, id: "REQ-001", coversAcceptanceSignals: [3, 5] },
+      { ...DRAFT.criteria[0]!, id: "REQ-002", coversAcceptanceSignals: [] },
+    ],
+    files: DRAFT.files,
+  };
+
+  const stripped = withoutCoverageClaims(draft);
+  for (const criterion of stripped.criteria) {
+    assert.ok(
+      !("coversAcceptanceSignals" in criterion),
+      "the key survives the strip, so JSON.stringify still sees an eight-field object",
+    );
+  }
+  // Everything else about the criterion is untouched.
+  assert.equal(stripped.criteria[0]?.statement, draft.criteria[0]?.statement);
+  assert.equal(stripped.files, draft.files);
+
+  // Restored onto the shape a repair actually returns: the stripped objects,
+  // one of them rewritten, in draft order.
+  const repaired: SuiteDraft = {
+    ...stripped,
+    criteria: [
+      { ...stripped.criteria[0]!, statement: "The system shall serve the contact API over HTTP." },
+      stripped.criteria[1]!,
+    ],
+  };
+  const restored = withCoverageClaimsFrom(repaired, draft);
+  assert.deepEqual(restored.criteria[0]?.coversAcceptanceSignals, [3, 5]);
+  assert.deepEqual(restored.criteria[1]?.coversAcceptanceSignals, []);
+  assert.equal(
+    restored.criteria[0]?.statement,
+    "The system shall serve the contact API over HTTP.",
+    "the restore overwrote the correction it was supposed to preserve",
   );
 });
