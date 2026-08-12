@@ -161,3 +161,74 @@ REQ-009 — "When the server process is killed and started again, the site shall
 
 That is acceptance signal 5, in the owner's words, now binding on the grader — and a
 check no storage layout can defeat.
+
+---
+
+## 8. HOW THE TWO RUNS ENDED — MEASURED AFTER THE FACT
+
+```
+A  e1c15359  design lane FULL      242m  gate 3 (retry-cap)      20/25  falseFinish 1
+B  047f9872  design lane REUSED    112m  gate 2 (not-converging) 21/25  falseFinish 1
+```
+
+**DESIGN REUSE WORKED, AND IT IS THE UNAMBIGUOUS WIN.**
+
+```
+A  mode full     images 11  imageCalls 7  reusedFrom —
+B  mode reused   images 11  imageCalls 0  reusedFrom 6ec44b2f
+```
+
+Zero image calls, zero Veo legs, the same eleven stills, the source recorded, and the
+run finished in **less than half the wall-clock**. Repeat runs no longer cost art.
+
+**BOTH FAILED, AND THE FAILURE IS ALMOST CERTAINLY A THIRD GRADER ARTEFACT.**
+
+Failing criteria, run A: REQ-006, REQ-007, REQ-009, REQ-010, REQ-022. Run B: the same
+minus REQ-022. The signature is the tell — **every test in the two files that SPAWN
+their own server failed, 6 of 6, and files that do not spawn passed**:
+
+```
+holdout/messages-persistence.test.mjs   T-108 T-109 T-110 T-111   all failed
+visible/inbox-token.test.mjs            T-207 T-208 T-209         all failed
+```
+
+That is a file-level failure, not six independent build defects. Adjudicated by booting
+run A's artefact by hand:
+
+```
+POST /api/contact                 201
+GET /api/messages (token)         200, message present
+kill the process, start it again
+GET /api/messages (token)         200, SAME message returned
+portfolio.db                      28672 bytes, checkpointed
+```
+
+**REQ-009 — the restart criterion this whole day was spent producing — is correctly
+written and the artefact satisfies it.** It still scored `fail`, because the seat
+implemented it by spawning a second server instance inside the sealed container, and
+that pattern does not survive there. The criterion is behavioural and right; its
+EXECUTION is what breaks.
+
+Note what this means for §2's argument: forcing the seat to bind to the owner's words
+produced the right REQUIREMENT and did not constrain HOW it was checked. The seat chose
+`spawn` — a mechanism that works on the developer's machine and not in the sealed
+container — for the same reason it previously chose a byte-grep: it optimised for what
+was easy to write.
+
+## 9. THE FIRST THING TO DO TOMORROW
+
+**Find out why a spawned server fails inside the sealed container, and teach the seat
+not to need one.** The ticket itself says the BUILD sandbox denies `listen()` on every
+port with EPERM; if the scorer container shares that restriction, then every criterion
+the seat implements by spawning is unpassable by construction, and three of today's five
+failures — plus REQ-004/008/009 of the previous run — are one root cause with two
+disguises.
+
+Candidates, cheapest first:
+1. Read the scorer's raw stderr for `messages-persistence.test.mjs`. It was not in
+   `results/`; find where the container's per-file output lands.
+2. If `listen()` is denied: the suite must exercise the ALREADY-RUNNING app (the scorer
+   boots it on `execution.port` and health-checks it) instead of spawning its own, and
+   the authoring prompt must say so — the same "use what is there" lesson as §2.
+3. A restart criterion then needs the harness to restart the app under test, which is a
+   capability the manifest does not currently express.
