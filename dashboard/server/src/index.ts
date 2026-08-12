@@ -35,6 +35,7 @@ import { Orchestrator } from "./orchestrator.js";
 import { DASHBOARD_ENV, ensureDirs, resolvePaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
 import { ProjectRunner } from "./project-runner.js";
+import { createAuthoringRepairDriver, createSeatPatchAuthorCall, DEFAULT_AUTHOR_JOURNAL_DIRNAME } from "./repair-author.js";
 import { SupervisorLoop } from "./supervisor.js";
 import {
   armRepairDriver,
@@ -157,7 +158,38 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
      * reading is `repair !== undefined`, so both work here, but the arm check's
      * three-state reading depends on the two fields being independently present.
      */
-    ...(repairArm.armed ? { repair: createRepairDriver(repairDriverDeps) } : {}),
+    /*
+     * THE AUTHOR SITS IN FRONT OF THE DRIVER, AND ONLY WHEN THE DRIVER IS ARMED.
+     *
+     * MEASURED 2026-08-12 in `supervisor-cycle.mjs#decideRepairOutcome`: with no
+     * diff at `<proposals>/<signature>.diff` the chain answers `NO_PATCH_AUTHOR`
+     * and stops, so the whole self-repair loop terminated on the one link that
+     * was a human. `createAuthoringRepairDriver` is driver-shaped in and
+     * driver-shaped out — `supervisor-boot.ts` is unchanged and `repairArm`
+     * still measures the same driver it always measured.
+     *
+     * INSIDE THE `armed` BRANCH DELIBERATELY. A blind grader means no authoring
+     * either: quota spent writing a patch that nothing on this machine can
+     * prove or gate buys a file in a directory and nothing else.
+     */
+    ...(repairArm.armed
+      ? {
+          repair: createAuthoringRepairDriver({
+            driver: createRepairDriver(repairDriverDeps),
+            runsDir: paths.runs,
+            proposalsDir: repairDriverDeps.proposalsDir,
+            journalDir: join(paths.data, DEFAULT_AUTHOR_JOURNAL_DIRNAME),
+            // The git tree the bar will copy with `git archive HEAD`, which is
+            // what the authored diff's context lines have to match.
+            repoRoot: join(paths.home, ".."),
+            // The same subscription seat and SpendCeiling every other seat uses.
+            // `cwd` is inert for this one — `SubscriptionSeatCaller` pins
+            // `tools: []`, so the seat cannot read from it.
+            call: createSeatPatchAuthorCall({ cwd: paths.home, env }),
+            log: (line: string) => { process.stdout.write(`  ${line}\n`); },
+          }),
+        }
+      : {}),
     repairArm,
     /*
      * WITHOUT THIS, `settle()` WRITES `lastDefectId: null` AND THE WHOLE

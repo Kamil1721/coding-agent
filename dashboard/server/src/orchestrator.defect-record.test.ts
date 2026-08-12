@@ -227,6 +227,46 @@ test("a dead run writes a defect record, and the record says what it does not kn
     // The failure text is CARRIED, never parsed — but it must be there for a human.
     assert.ok(String(record["failureReason"] ?? "").length > 0);
 
+    /*
+     * THE REPRODUCTION REACHES DISK FROM A RUN THAT REALLY DIED, and for this
+     * class it is a NAMED ABSENCE rather than a command.
+     *
+     * The pure arms of `planReproduction` are driven in
+     * `defect-record.reproduction.test.ts`; this assertion is here because it is
+     * the only place the field is observed on a `results/defect.json` written by
+     * `#finish` — a planner that worked perfectly while the orchestrator never
+     * passed `provider`/`modelId` would pass every test in that file.
+     *
+     * SUITE AUTHORING STILL GETS NO COMMAND, AND THE REASON IS NARROWER THAN IT
+     * WAS. Until 2026-08-12 the blocker was a build output: the replay harness
+     * loads `bakeoff/dist/scorer-protocol.js`, absent from `git archive HEAD`.
+     * `isolate.mjs` now provisions `bakeoff/node_modules` and proves the copy
+     * compiles, so that half is gone. What is left is the run's OWN rejected
+     * manifest, which lives under gitignored `dashboard/runs` and reaches this
+     * record as nothing — and a class-generic command is not a substitute:
+     * `node tools/replay/replay.mjs` exits 0 in a built copy, so it is green
+     * before a patch and green after it. The absence is still the honest record.
+     * MUTATION (2026-08-12): the suite-authoring arm of `planReproduction`
+     * returns `{available: true, command: "npm test", cases: [], why: ""}`. It
+     * TYPE-CHECKS — `npx tsc --noEmit` exit 0 — so this is a runtime red and not
+     * a build break; a first attempt that kept `code:` alongside `available:
+     * true` was rejected by the compiler instead and is not what is quoted here.
+     *   VERBATIM RED:
+     *   AssertionError [ERR_ASSERTION]: a suite-authoring defect has no runnable
+     *   reproduction: bakeoff/dist is not in `git archive HEAD`
+     *
+     *   true !== false
+     */
+    const reproduction = record["reproduction"] as Record<string, unknown> | undefined;
+    assert.ok(reproduction !== undefined, "every terminal record must carry a reproduction block, even an absent one");
+    assert.equal(
+      reproduction["available"],
+      false,
+      "a suite-authoring defect has no runnable reproduction: the run's own rejected manifest is not in the copy",
+    );
+    assert.equal(reproduction["code"], "REPRODUCTION_NEEDS_THE_RECORDED_MANIFEST");
+    assert.ok(!Object.hasOwn(reproduction, "command"), "an absence that carries a command would send the bar to run nothing");
+
     // The shard is content-addressed and was appended to.
     const shard = join(run.defectsDir, `${String(record["signature"])}.jsonl`);
     assert.ok(existsSync(shard), `${shard} must exist`);
