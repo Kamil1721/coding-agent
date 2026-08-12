@@ -231,3 +231,61 @@ test("every finding quotes a sentence that appears verbatim in the brief", () =>
     }
   }
 });
+
+/* -------------------------------------------------------------------------
+ * PROSE ABOUT ATTACHMENTS IS NOT A CLAIM ABOUT THIS REQUEST
+ * ---------------------------------------------------------------------- */
+
+/**
+ * FOUND BY ADVERSARIAL REVIEW, 2026-08-12, AND IT WAS SHIPPED. The
+ * `attachedThenKind` arm matched any prose containing an attachment word near a
+ * kind word, so a brief for software that HANDLES uploads was refused at the
+ * submit button. Every sentence below was answered 400 with three images, two
+ * documents and a page capture attached.
+ *
+ * The distinguisher is deixis: a claim points at one thing ("the attached CV"),
+ * a feature description quantifies a class ("each attached video").
+ */
+const PRODUCT_PROSE: readonly string[] = Object.freeze([
+  "Each attached video shall be transcoded to MP4 on upload.",
+  "The player shows attached recordings inline.",
+  "Deleting an attachment removes the recording from storage.",
+  "The gallery lists attached videos newest first.",
+  "The panel shall list attached documents in a table.",
+  "Each attached document shall be virus-scanned before it is stored.",
+  "Hovering an attachment shows the document name and size.",
+  "Users may download any attachment as a PDF.",
+  "An attachment larger than 10 MB is rejected with a clear message.",
+]);
+
+test("a ticket for software that handles attachments is not refused", () => {
+  const rich: BriefAttachments = { images: 3, documents: 2, motion: false, capture: true };
+  const sparse: BriefAttachments = { images: 1, documents: 0, motion: false, capture: false };
+  for (const sentence of PRODUCT_PROSE) {
+    for (const attachments of [rich, sparse, NOTHING]) {
+      assert.deepEqual(
+        blocking(sentence, attachments),
+        [],
+        `refused a sentence describing the product, not this request: ${sentence}`,
+      );
+    }
+  }
+});
+
+test("THE OTHER ARM: a deictic claim still fires, or the rule now catches nothing", () => {
+  // Without this, the fix above could be "delete the rule" and the file stays
+  // green. Each of these points at ONE thing that is not here.
+  for (const sentence of [
+    "Content comes from the attached CV.",
+    "The attached image is the direction.",
+    "A reading of a reference page's motion is attached to this ticket.",
+    "I have attached the screenshot.",
+    "Build it to match this attached mockup.",
+  ]) {
+    assert.equal(
+      blocking(sentence, NOTHING).length,
+      1,
+      `a real dangling promise stopped being caught: ${sentence}`,
+    );
+  }
+});

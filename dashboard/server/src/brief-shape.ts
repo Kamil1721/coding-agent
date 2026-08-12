@@ -184,6 +184,29 @@ function assertsAttachment(sentence: string): boolean {
 const WORD = String.raw`[\w'’-]+`;
 
 /**
+ * Determiners that point at ONE specific thing rather than quantifying a class.
+ *
+ * Deliberately excludes `a`, `an`, `each`, `every`, `any`, `some` and the bare
+ * plural — those are how a brief describes a FEATURE that handles attachments,
+ * and treating them as claims is what refused seven legitimate sentences on
+ * 2026-08-12. See {@link namesSlot}.
+ */
+const DEICTIC = "the|this|that|these|those|my|our|its|his|her|their";
+
+/**
+ * An attachment reference that points at ONE thing, with no kind named.
+ *
+ * The gate for the no-kind arm, and it needs the same deixis the kinded arm
+ * needs. "See the attachment" is a claim about this request. *"An attachment
+ * larger than 10 MB is rejected with a clear message"* is a size limit in a
+ * product, and it was refused on 2026-08-12 for containing the word.
+ */
+const DEICTIC_ATTACHMENT = new RegExp(
+  String.raw`\b(?:${DEICTIC})\s+attach(?:ment|ments)\b|\b(?:is|are|was|were)\s+attached\b`,
+  "i",
+);
+
+/**
  * Does this sentence name this slot AS THE THING THAT IS ATTACHED?
  *
  * TWO SHAPES, AND CO-OCCURRENCE IS NOT ONE OF THEM.
@@ -198,12 +221,37 @@ const WORD = String.raw`[\w'’-]+`;
  * brief with no images attached would be refused for a sentence about typography.
  */
 function namesSlot(sentence: string, rule: SlotRule): boolean {
-  // `ments?`, NOT `ment`: {@link ATTACHMENT_ASSERTION} admits "attachments" and
-  // this did not, so "the attachments include the CV" passed the gate and then
-  // named no slot — a promise the gate had already accepted, dropped one line
-  // later for a missing letter.
+  /*
+   * THE CLAIM MUST POINT AT A SPECIFIC THING, NOT DESCRIBE A CLASS OF THINGS.
+   *
+   * MEASURED 2026-08-12, AND IT REFUSED SEVEN LEGITIMATE SENTENCES. The arm was
+   * `attach(?:ed|ments?)` + up to two words + a kind, which fires on any prose
+   * ABOUT attachments — and a brief for software that handles uploads is full of
+   * it. With three images, two documents and a page capture all attached:
+   *
+   *     "Each attached video shall be transcoded to MP4 on upload."      -> 400
+   *     "The gallery lists attached videos newest first."                -> 400
+   *     "Deleting an attachment removes the recording from storage."     -> 400
+   *     "The panel shall list attached documents in a table."            -> 400
+   *
+   * Every one of those describes the PRODUCT. None is a claim about what came
+   * with this request, and refusing them means this dashboard cannot accept a
+   * ticket for any app with a file upload — at the submit button, with the owner
+   * watching, which is the error direction this module's header forbids.
+   *
+   * THE DISTINGUISHER IS DEIXIS. A brief claiming an attachment points at one:
+   * *the* attached CV, *this* attached image, "I have attached *the* screenshot".
+   * Prose about a feature quantifies over a class: *each* attached video,
+   * *an* attachment, bare-plural *attached documents*. So the kind must sit
+   * beside a DEFINITE or POSSESSIVE determiner, on one side or the other. The
+   * copula arm below is unaffected — "a reading … is attached to this ticket"
+   * carries its own deixis in "this ticket".
+   */
   const attachedThenKind = new RegExp(
-    String.raw`attach(?:ed|ments?)\b(?:\s+${WORD}){0,2}\s+(?:${rule.kinds})\b`,
+    // "the attached CV", "this attached reference image"
+    String.raw`\b(?:${DEICTIC})\s+attach(?:ed|ments?)\b(?:\s+${WORD}){0,2}\s+(?:${rule.kinds})\b` +
+      // "I have attached the screenshot"
+      String.raw`|\battached\s+(?:${DEICTIC})\s+(?:${WORD}\s+){0,1}(?:${rule.kinds})\b`,
     "i",
   );
   const kindThenAttached = new RegExp(
@@ -448,7 +496,15 @@ export function briefShape(brief: string, attachments: BriefAttachments): readon
             `carries none: "${text}"`,
           remediation: danglingRemediation(empty.map((rule) => rule.fix)),
         });
-      } else if (named.length === 0 && !namesAnyKind(text) && carriesNothing(attachments)) {
+      } else if (
+        named.length === 0 &&
+        !namesAnyKind(text) &&
+        // DEIXIS HERE TOO — see DEICTIC_ATTACHMENT. Without it this arm fires on
+        // any sentence carrying the word, which refused "An attachment larger
+        // than 10 MB is rejected with a clear message" on an empty request.
+        DEICTIC_ATTACHMENT.test(text) &&
+        carriesNothing(attachments)
+      ) {
         // THE NO-KIND ARM, AND IT IS THE NARROWEST ONE ON PURPOSE. "See the
         // attachment" names nothing, so the only request it can be checked
         // against is one carrying nothing whatsoever — where the claim is false
