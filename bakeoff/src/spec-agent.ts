@@ -90,6 +90,7 @@ import {
 } from "./spec-types.js";
 import type { DraftTestFile, HoldoutPlan, SuiteDraft } from "./spec-types.js";
 import {
+  acceptanceSignals,
   blockingFindingSummary,
   deterministicAudit,
   parseSuiteDraft,
@@ -240,6 +241,42 @@ A JSON object with exactly two keys, "criteria" and "testFiles". No prose outsid
   statement does not already make. If the evidence line mentions a threshold, a field or a condition
   that the statement omits, the statement is the thing that is wrong: put it in the statement, or
   take it out of both.
+
+## The owner's own acceptance signals — "coversAcceptanceSignals"
+
+If the ticket has a section listing how the owner will know the work is done, its bullets are
+reproduced for you as a NUMBERED LIST in the ticket turn, under the heading ACCEPTANCE SIGNALS. Those
+are his words, not a summary of them. Every criterion carries "coversAcceptanceSignals": the numbers
+of the signals it decides. An empty array is a legitimate answer for a criterion that decides none of
+them, and several criterion may claim the same signal.
+
+EVERY NUMBER IN THAT LIST MUST BE CLAIMED BY AT LEAST ONE CRITERION. A suite that leaves one
+unclaimed is rejected outright, before any audit spends a call on it, and the rejection names the
+sentence you skipped.
+
+A CRITERION THAT CLAIMS A SIGNAL MUST TEST WHAT THE SIGNAL DESCRIBES, BEHAVIOURALLY. Not a structural
+proxy for it. Not a cheaper thing that correlates with it. The sentence is the specification of the
+check; if it names an action, the test performs that action.
+
+  THE WORKED EXAMPLE, AND IT IS MEASURED. A ticket carried the signal:
+
+      "Killing the server and starting it again still returns messages submitted before."
+
+  The suite written for it had 25 criteria and NONE of them restarted anything. It checked
+  persistence structurally instead: find the files carrying the SQLite header, then grep them for the
+  bytes just POSTed. The build used "PRAGMA journal_mode = WAL" — correct, conventional, what a
+  competent engineer writes — so the row lived in the -wal sidecar file, which carries WAL magic
+  rather than the SQLite header, until a checkpoint. The site worked. The data really did survive a
+  restart. The suite reported that it did not, and a correct artefact was graded DID NOT PASS.
+
+  The check that signal asks for is: POST a message, stop the process, start it again, GET the
+  messages, assert the message is there. It is harder to assert than a byte-grep. That is not a
+  reason to assert something else.
+
+The general form of the mistake is choosing the check that is EASIER TO PROVE over the check the
+owner asked for. A file's bytes are easier than a process lifecycle; an element's existence is easier
+than what it contains; a 201 is easier than a stored row. Every one of those substitutions passes a
+build that does not work and fails a build that does. When the two diverge, write the harder one.
 
 ## The split: holdout and visible
 
@@ -469,7 +506,8 @@ Return ONLY the JSON object. Every field is required.
       "evidenceRequired": "<names at least one of this criterion's holdoutTestIds>",
       "holdoutTestIds": ["T-1"],
       "visibleTestIds": ["T-20"],
-      "evidenceArtifacts": ["<non-test evidence, e.g. a db row count; may be empty>"]
+      "evidenceArtifacts": ["<non-test evidence, e.g. a db row count; may be empty>"],
+      "coversAcceptanceSignals": [3, 5]
     }
   ],
   "testFiles": [
@@ -546,6 +584,30 @@ the suite less good than it could be. Mark those "advisory".
 
 Set "verdict" to "regenerate" if and only if at least one finding is blocking.
 
+## Remedy — what would actually close the finding
+
+Every finding also carries "remedy", and it decides whether the harness may hand your finding back
+to the author as a targeted correction or must throw the suite away and re-author it. Answer about
+the FIX, not about the wording of your complaint.
+
+  "edit"  the defect lives INSIDE artefacts that already exist, and rewriting those exact artefacts
+          closes it. A test asserting the wrong number. A statement that is not EARS. A criterion
+          whose evidence names the wrong test. A file leaking a credential-shaped literal.
+
+  "add"   closing it requires artefacts that DO NOT EXIST YET — another criterion, another test,
+          another data expectation — or a change spread across the suite as a whole. Anything you
+          would describe as missing coverage is "add", however many existing criteria you name while
+          explaining it.
+
+NAMING AN ARTEFACT DOES NOT MAKE A FINDING "edit". "No criterion anywhere observes that a submission
+is stored; REQ-004/T-6 and REQ-006/T-7 only check status codes" names three artefacts and is "add",
+because no edit to those three can create the criterion that is missing. If you find yourself
+writing "this requires new tests" or "re-authoring", the remedy is "add".
+
+When you are unsure, answer "add". A wrong "add" costs one re-authoring cycle. A wrong "edit" gets
+your finding handed to a correction that cannot possibly satisfy it, and a suite you rejected is
+then re-audited fresh and may be accepted with the defect still in it.
+
 Be specific. "REQ-004's test T-9 asserts only that the create endpoint returns 201; a handler that
 returns 201 and writes nothing passes it, which is exactly the failure REQ-004 exists to catch" is a
 finding. "Tests could be stronger" is not.
@@ -562,6 +624,7 @@ Return ONLY the JSON object:
       "criterionId": "REQ-004" | null,
       "kind": "vacuous" | "tautological" | "mis_specified" | "trivially_satisfiable" | "ambiguous" | "leaks_implementation" | "other",
       "severity": "blocking" | "advisory",
+      "remedy": "edit" | "add",
       "detail": "<what is wrong, which test, and the lazy implementation that defeats it>"
     }
   ]
@@ -591,6 +654,12 @@ export const AUTHORING_JSON_SCHEMA: Record<string, unknown> = Object.freeze({
           "holdoutTestIds",
           "visibleTestIds",
           "evidenceArtifacts",
+          // REQUIRED, EMPTY ALLOWED. A criterion may legitimately cover none of
+          // the owner's acceptance signals; what it may not do is stay silent
+          // about which it covers, because the union of those declarations is
+          // what `acceptanceCoverage` checks the brief against. See run
+          // `6ec44b2f` in that rule's header.
+          "coversAcceptanceSignals",
         ],
         properties: {
           id: { type: "string" },
@@ -600,6 +669,7 @@ export const AUTHORING_JSON_SCHEMA: Record<string, unknown> = Object.freeze({
           holdoutTestIds: { type: "array", items: { type: "string" } },
           visibleTestIds: { type: "array", items: { type: "string" } },
           evidenceArtifacts: { type: "array", items: { type: "string" } },
+          coversAcceptanceSignals: { type: "array", items: { type: "integer" } },
         },
       },
     },
@@ -635,9 +705,10 @@ export const AUDIT_JSON_SCHEMA: Record<string, unknown> = Object.freeze({
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["criterionId", "kind", "severity", "detail"],
+        required: ["criterionId", "kind", "severity", "remedy", "detail"],
         properties: {
           criterionId: { type: ["string", "null"] },
+          remedy: { type: "string", enum: ["edit", "add"] },
           kind: {
             type: "string",
             enum: [
@@ -1056,12 +1127,59 @@ function stopReasonProblem(call: SeatCallResult): string | null {
   return null;
 }
 
-function ticketTurn(ticket: Ticket): string {
+/**
+ * The owner's acceptance bullets, numbered, appended to the ticket turn.
+ *
+ * ONE EXTRACTOR, TWO CONSUMERS. The numbering shown here IS
+ * `acceptanceSignals(ticket.brief)`'s `index`, imported from spec-validate.ts
+ * rather than recomputed, because `acceptanceCoverage` decodes
+ * `coversAcceptanceSignals` against that same list. A second extractor here — or
+ * a 1-based prompt read by a 0-based rule — would put every claim off by one and
+ * both halves would still pass their own tests. `spec-agent.test.ts` parses the
+ * numbered lines back out of this turn and asserts line N is signal N.
+ *
+ * NOTHING IS ADDED TO A BRIEF THAT HAS NO ACCEPTANCE SECTION. Most tickets do
+ * not have one; for those this returns "" and the turn is byte-identical to what
+ * it was before this existed.
+ *
+ * NOT A FOURTH TURN. `TURN_MARKER_TICKET` says "TURN 1 OF 3" and the tests
+ * assert on the ordering of the three markers; these sentences are part of the
+ * ticket, so they belong inside the ticket's turn.
+ */
+function acceptanceSignalsBlock(brief: string): string {
+  const signals = acceptanceSignals(brief);
+  if (signals.length === 0) return "";
+  const lines = signals.map((signal) => `${String(signal.index)}. ${signal.text.replace(/\s*\n\s*/g, " ")}`);
+  return (
+    `\n\nACCEPTANCE SIGNALS — ${String(signals.length)} sentences the owner wrote above, under his own ` +
+    '"how I will know" heading, extracted verbatim and numbered.\n\n' +
+    `${lines.join("\n")}\n\n` +
+    "Every one of these numbers must appear in at least one criterion's \"coversAcceptanceSignals\", " +
+    "and a criterion that claims one must test what that sentence describes rather than a structural " +
+    "proxy for it. See the section on acceptance signals in your instructions."
+  );
+}
+
+/**
+ * EXPORTED SO THE NUMBERING CAN BE CROSS-CHECKED AGAINST ITS ONE SOURCE.
+ * `spec-agent.test.ts` renders this turn for the owner's real brief, parses the
+ * numbered lines back out and asserts line N is `acceptanceSignals(brief)[N-1]`
+ * — the check neither side makes on its own, and the one that catches a 1-based
+ * prompt read by a 0-based rule.
+ */
+export function ticketTurn(ticket: Ticket): string {
   // Exactly what the spec seat is given about the ticket: the id and the brief
   // verbatim. Not the title (out-of-band metadata), not the tier (a label the
   // owner assigned, which would bias how many criteria get written), and
   // nothing at all about any implementation.
-  return `TICKET ${ticket.id}\n\nThe ticket text follows between the markers, verbatim. Everything you need is in it.\n\n<<<TICKET_BRIEF\n${ticket.brief}\nTICKET_BRIEF>>>`;
+  //
+  // THE NUMBERED SIGNALS ARE NOT NEW INFORMATION — they are the owner's own
+  // bullets, already inside the brief above them, repeated with numbers so the
+  // seat and the validator can refer to the same sentence by the same integer.
+  return (
+    `TICKET ${ticket.id}\n\nThe ticket text follows between the markers, verbatim. Everything you need is in it.\n\n` +
+    `<<<TICKET_BRIEF\n${ticket.brief}\nTICKET_BRIEF>>>${acceptanceSignalsBlock(ticket.brief)}`
+  );
 }
 
 /**
@@ -1242,6 +1360,18 @@ function parseJudgeFindings(text: string): readonly AuditFinding[] | null {
       // destroys a good suite and burns a full authoring cycle, and an
       // unparseable severity is not evidence of a defect.
       mustRegenerate: record["severity"] === "blocking",
+      /*
+       * ABSENT OR UNREADABLE MEANS `add`, WHICH MEANS REPAIR DECLINES IT.
+       *
+       * The opposite default cost run `d143e52d`: a finding whose own text said
+       * "closing this requires new criteria and tests, i.e. re-authoring" was
+       * handed to a repair round that cannot add a criterion, the round could
+       * not fix it, and the fresh re-audit did not re-raise it — so a correct
+       * rejection became an acceptance and the suite froze gating nothing on
+       * persistence. A remedy nobody declared is a remedy nobody has shown to
+       * be an edit.
+       */
+      remedy: record["remedy"] === "edit" ? "edit" : "add",
       detail: redactText(detail).text,
     });
   }
@@ -1765,6 +1895,64 @@ export async function generateSuite(
  * self-verification the literature says does not work, wearing the name of the
  * loop that does.
  */
+/**
+ * The draft with every `coversAcceptanceSignals` declaration removed.
+ *
+ * WHY A REPAIR ROUND IS RUN AGAINST A STRIPPED DRAFT, AND WHY BOTH HALVES OF
+ * THIS ARE NEEDED. `spec-repair.ts` rebuilds a corrected criterion field by
+ * field from `REPAIR_JSON_SCHEMA`, which does not carry this one and cannot be
+ * widened from this module. Two things break if the draft goes in unstripped:
+ *
+ *  1. THE NO-OP ECHO GUARD STOPS FIRING. `parseRepairResponse` decides "did
+ *     anything actually change?" with `JSON.stringify(repaired) ===
+ *     JSON.stringify(original)`. The repaired object would carry seven fields
+ *     and the original eight, so a response echoing back exactly what it was
+ *     sent would compare as CHANGED and be spliced in — and that guard exists
+ *     because of run `d143e52d`, where an unchanged suite went to a fresh judge
+ *     with no memory of the first and its blocking finding was never re-raised.
+ *  2. THE RE-AUDIT WOULD REJECT A SUITE WHOSE COVERAGE NEVER CHANGED. The
+ *     spliced criterion would come back with no declaration at all, its signals
+ *     would read as unclaimed, and `acceptanceCoverage` would raise a blocking
+ *     finding caused entirely by a channel that cannot carry the field.
+ *
+ * So the declarations are held here and re-attached BY CRITERION ID afterwards.
+ * That is sound because a repair may not add, remove or renumber a criterion —
+ * `parseRepairResponse` refuses an id it did not send — so the ids on the way
+ * out are exactly the ids on the way in. What a repair CAN do is change what a
+ * criterion tests, and its claim is carried across unexamined; the re-audit's
+ * judge pass is what reads the corrected criterion against the ticket.
+ */
+export function withoutCoverageClaims(draft: SuiteDraft): SuiteDraft {
+  return {
+    ...draft,
+    criteria: draft.criteria.map(({ coversAcceptanceSignals: _dropped, ...rest }) => rest),
+  };
+}
+
+/**
+ * Put the held declarations back on, matched by criterion id. See above.
+ *
+ * EXPORTED WITH ITS TWIN SO THE ROUND TRIP CAN BE TESTED DIRECTLY. The
+ * production path that needs them runs inside the repair loop behind two seat
+ * calls; a unit test that strips and restores is what actually pins the two
+ * halves together.
+ */
+export function withCoverageClaimsFrom(draft: SuiteDraft, source: SuiteDraft): SuiteDraft {
+  const claims = new Map<string, readonly number[]>();
+  for (const criterion of source.criteria) {
+    if (criterion.coversAcceptanceSignals !== undefined) {
+      claims.set(criterion.id, criterion.coversAcceptanceSignals);
+    }
+  }
+  return {
+    ...draft,
+    criteria: draft.criteria.map((criterion) => {
+      const claim = claims.get(criterion.id);
+      return claim === undefined ? criterion : { ...criterion, coversAcceptanceSignals: claim };
+    }),
+  };
+}
+
 async function repairDraft(
   ticket: Ticket,
   draft: SuiteDraft,
@@ -2286,14 +2474,20 @@ export async function generateAuditedSuite(
 
     while (audit.mustRegenerate && repairRounds < maxRepairRounds) {
       const problems = blockingFindingSummary(audit.findings);
-      const targets = repairTargets(draft, audit.findings, problems);
+      // STRIPPED FOR THE WHOLE ROUND, NOT JUST FOR THE CALL. `repairTargets`
+      // hands `parseRepairResponse` the very criterion objects it compares the
+      // response against, so the targets and the draft must be the same,
+      // field-free objects or the echo guard reads a difference that is only
+      // this module's bookkeeping. See {@link withoutCoverageClaims}.
+      const repairable = withoutCoverageClaims(draft);
+      const targets = repairTargets(repairable, audit.findings, problems);
       if (!isRepairable(targets)) {
         // DECLINED, AND SAID SO. A blocking finding that names no criterion and
         // no file cannot be handed back as an artefact, and repairing the three
         // that can be would buy a second rejection at the price of a call.
         rowProblems.push(
-          `repair was declined: ${String(targets.unlocalised.length)} blocking finding(s) named no ` +
-            `criterion or file in the draft — ${targets.unlocalised.join(" | ")}`,
+          `repair was declined: ${String(targets.unlocalised.length)} blocking finding(s) cannot be ` +
+            `cleared by editing an artefact that exists — ${targets.unlocalised.join(" | ")}`,
         );
         break;
       }
@@ -2302,7 +2496,7 @@ export async function generateAuditedSuite(
 
       const repaired = await repairDraft(
         ticket,
-        draft,
+        repairable,
         targets,
         { ...sharedOptions, maxOutputTokens: outputTokens },
         attempt,
@@ -2321,7 +2515,10 @@ export async function generateAuditedSuite(
         break;
       }
       attemptCost += repaired.call.usage.costUsd;
-      draft = repaired.draft;
+      // Re-attached from the PRE-repair draft, by id, before the re-audit sees
+      // it. Without this the spliced suite declares no coverage at all and
+      // `acceptanceCoverage` rejects it for a gap the repair never opened.
+      draft = withCoverageClaimsFrom(repaired.draft, draft);
       repairPromptSha256 = repaired.promptSha256;
       audit = await auditSuite(draft, ticket, { ...sharedOptions, maxOutputTokens: outputTokens });
       auditedAt = now().toISOString();
@@ -2429,7 +2626,7 @@ function describeRepairs(attempts: readonly AuthoringAttempt[], maxRounds: numbe
       `Repair before regenerate: enabled (max ${String(maxRounds)} round(s) per attempt) and NO round fired. ` +
       (declined.length === 0
         ? "No attempt reached the audit with a repairable rejection."
-        : `Every rejection was declined as unlocalisable — ${declined.join(" | ")}`)
+        : `Every rejection was declined as unrepairable in place — ${declined.join(" | ")}`)
     );
   }
   const fired = attempts.filter((a) => a.repairRounds > 0).map((a) => String(a.attempt));

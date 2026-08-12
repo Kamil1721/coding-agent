@@ -24,7 +24,7 @@ import test from "node:test";
 import type { AnthropicSeat, AuditFinding, Ticket } from "./contracts.js";
 import { BakeoffError } from "./contracts.js";
 import { ticketDigest } from "./hash.js";
-import { generateAuditedSuite } from "./spec-agent.js";
+import { AUDIT_JSON_SCHEMA, generateAuditedSuite } from "./spec-agent.js";
 import {
   DEFAULT_MAX_REPAIR_ROUNDS,
   isRepairable,
@@ -128,6 +128,11 @@ const CRITERIA = [
     holdoutTestIds: ["T-2"],
     visibleTestIds: ["T-1"],
     evidenceArtifacts: [],
+    // REQUIRED BY `parseSuiteDraft` SINCE THE ACCEPTANCE-COVERAGE RULE LANDED.
+    // Empty because `BRIEF` above carries no "how I will know" heading, so
+    // `acceptanceSignals(BRIEF)` is [] and this suite is required to cover
+    // nothing — the rule's no-op arm, not a waiver of it.
+    coversAcceptanceSignals: [],
   },
   {
     id: "REQ-002",
@@ -137,6 +142,7 @@ const CRITERIA = [
     holdoutTestIds: ["T-3"],
     visibleTestIds: [],
     evidenceArtifacts: [],
+    coversAcceptanceSignals: [],
   },
 ] as const;
 
@@ -210,6 +216,16 @@ function draftOf(visibleSource: string): SuiteDraft {
       holdoutTestIds: [...c.holdoutTestIds],
       visibleTestIds: [...c.visibleTestIds],
       evidenceArtifacts: [...c.evidenceArtifacts],
+      // NO `coversAcceptanceSignals` HERE, AND ITS ABSENCE IS THE POINT. A
+      // draft reaching `parseRepairResponse` has been through
+      // `withoutCoverageClaims` (spec-agent.ts), which strips that field for
+      // the whole round and re-attaches it by id afterwards. The no-op guard
+      // below compares `JSON.stringify(repaired)` against
+      // `JSON.stringify(original)`, and this module rebuilds a criterion from
+      // the repair schema's seven fields — so an unstripped draft would make a
+      // pure ECHO compare as CHANGED and be spliced in, which is the failure
+      // run `d143e52d` cost. Measured: adding the field here turns the last
+      // assertion in "a repair that changes only a CRITERION" red.
     })),
     files: [
       {
@@ -431,7 +447,11 @@ test("AN UNLOCALISABLE BLOCKING FINDING DECLINES THE ROUND RATHER THAN GUESSING"
       assert.ok(error instanceof BakeoffError);
       assert.match(error.message, /no FUNCTIONAL-tier criterion/);
       assert.match(error.message, /NO round fired/);
-      assert.match(error.message, /declined as unlocalisable/);
+      assert.match(error.message, /declined as unrepairable in place/);
+      // `[remedy=add]`, NOT `[unlocalised]`: the no-FUNCTIONAL-tier rule is one of
+      // the five COVERAGE rules and declares its own remedy as `add`. The tag is
+      // what tells the owner an edit could never have cleared it.
+      assert.match(error.message, /\[remedy=add\]/, "the decline reason must say WHICH class it was");
       return true;
     },
   );
@@ -442,11 +462,19 @@ test("AN UNLOCALISABLE BLOCKING FINDING DECLINES THE ROUND RATHER THAN GUESSING"
  * PART 3 — localisation and splicing, directly
  * ---------------------------------------------------------------------- */
 
+/**
+ * A blocking finding the judge has declared FIXABLE IN PLACE.
+ *
+ * `remedy: "edit"` is stated on every fixture here rather than defaulted,
+ * because the default is the other way round and that is the point: a finding
+ * whose remedy nobody declared is declined. The `add` case has its own test.
+ */
 const finding = (detail: string, criterionId: string | null = null): AuditFinding => ({
   criterionId,
   kind: "other",
   detail,
   mustRegenerate: true,
+  remedy: "edit",
 });
 
 test("repairTargets selects by the draft's own identifiers, in draft order", () => {
@@ -487,7 +515,7 @@ test("an id match cannot be satisfied by a longer id that contains it", () => {
 test("a finding that names nothing in the draft is reported, not silently dropped", () => {
   const targets = repairTargets(draftOf(CLEAN_SOURCE), [finding("the suite gates on nothing")], ["p1"]);
   assert.equal(isRepairable(targets), false);
-  assert.deepEqual(targets.unlocalised, ["p1"]);
+  assert.deepEqual(targets.unlocalised, ["[unlocalised] p1"]);
 });
 
 test("the splice replaces only the returned artefacts and keeps every position", () => {
@@ -684,7 +712,20 @@ test("every rejection this repository has actually recorded is localisable", () 
   for (const rejection of RECORDED_REJECTIONS) {
     const targets = repairTargets(
       draft,
-      [{ criterionId: null, kind: "other", detail: rejection.detail, mustRegenerate: true }],
+      [
+        {
+          criterionId: null,
+          kind: "other",
+          detail: rejection.detail,
+          mustRegenerate: true,
+          // ALL FOUR CAME FROM THE DETERMINISTIC PASS, which declares "edit" for
+          // every rule that inspects an artefact it can name — and each of these
+          // is exactly that: one manifest field, one marker, one literal, one
+          // statement. The remedy is stated here rather than defaulted so the
+          // fixture says which pass produced it.
+          remedy: "edit" as const,
+        },
+      ],
       [rejection.detail],
     );
     assert.equal(
@@ -840,7 +881,7 @@ test("a round with ONE unlocalisable finding among localisable ones is declined 
   );
 
   assert.equal(targets.files.length, 1, "the localisable finding must still select its file");
-  assert.deepEqual(targets.unlocalised, ["p2"]);
+  assert.deepEqual(targets.unlocalised, ["[unlocalised] p2"]);
   assert.equal(
     isRepairable(targets),
     false,
@@ -869,9 +910,272 @@ test("end to end: a mixed rejection dispatches NO repair call", async () => {
     (error: unknown) => {
       assert.ok(error instanceof BakeoffError);
       assert.match(error.message, /NO round fired/);
-      assert.match(error.message, /declined as unlocalisable/);
+      assert.match(error.message, /declined as unrepairable in place/);
+      // `[remedy=add]`, NOT `[unlocalised]`: the no-FUNCTIONAL-tier rule is one of
+      // the five COVERAGE rules and declares its own remedy as `add`. The tag is
+      // what tells the owner an edit could never have cleared it.
+      assert.match(error.message, /\[remedy=add\]/, "the decline reason must say WHICH class it was");
       return true;
     },
   );
   assert.equal(spec.requests.length, 3, "a repair call was dispatched for a round it could not finish");
+});
+
+/* -------------------------------------------------------------------------
+ * PART 6 — the finding that named everything and could be fixed by nothing
+ * ---------------------------------------------------------------------- */
+
+/**
+ * RUN `d143e52d`, 2026-08-12, REPLAYED. This is the defect that made `remedy`
+ * exist, and the detail below is the judge's own text, abridged only in the
+ * middle.
+ *
+ * The finding named REQ-004, REQ-003, REQ-006, T-6 and T-33 — every one of them
+ * a real artefact in that draft — so the old predicate localised it and sent
+ * those artefacts back. A repair may only return artefacts it was given, so it
+ * could not create the criterion the finding said was missing. The round
+ * cleared nothing, the fresh re-audit did not re-raise it, and a suite that a
+ * zero-persistence build passes 23/23 was frozen as audited.
+ */
+const D143E52D_DETAIL =
+  "REQ-004: No criterion in the suite ever observes that a submission is stored. T-6 (and visible " +
+  "T-33) assert only status 201, a non-empty id, and that a second submission returns a different " +
+  "id — an in-memory `let nextId = 1` handler that never touches a database passes. REQ-006/T-7 " +
+  "exercises only the missing-token and wrong-token paths; REQ-003/T-3 accepts a hardcoded JSON " +
+  "array. As authored, a build with zero persistence passes 23/23 criteria. Closing this requires " +
+  "new criteria and tests, i.e. re-authoring.";
+
+test("a finding that names five real artefacts is STILL declined when its remedy is 'add'", () => {
+  const draft = draftOf(LEAKY_SOURCE);
+  const targets = repairTargets(
+    draft,
+    [{ criterionId: "REQ-001", kind: "trivially_satisfiable", detail: D143E52D_DETAIL, mustRegenerate: true, remedy: "add" }],
+    ["[trivially_satisfiable] REQ-001: …"],
+  );
+
+  assert.equal(
+    isRepairable(targets),
+    false,
+    "a coverage finding was handed to a repair round that cannot add a criterion — the d143e52d defect",
+  );
+  assert.equal(targets.unlocalised.length, 1, "and the decision must be reported, not silent");
+});
+
+test("NEGATIVE CONTROL: the same finding text WITH remedy 'edit' is repairable", () => {
+  // Proves the previous test turns on the remedy and not on the words. The
+  // detail is byte-identical; only the judge's declared remedy differs.
+  const draft = draftOf(LEAKY_SOURCE);
+  const targets = repairTargets(
+    draft,
+    [{ criterionId: "REQ-001", kind: "trivially_satisfiable", detail: D143E52D_DETAIL, mustRegenerate: true, remedy: "edit" }],
+    ["[trivially_satisfiable] REQ-001: …"],
+  );
+  assert.equal(isRepairable(targets), true);
+  assert.deepEqual(targets.criteria.map((c) => c.id), ["REQ-001"]);
+});
+
+test("a finding with NO remedy stated is declined, because absent is not 'edit'", () => {
+  const draft = draftOf(LEAKY_SOURCE);
+  const targets = repairTargets(
+    draft,
+    [{ criterionId: null, kind: "other", detail: `test file "${VISIBLE_PATH}" is wrong`, mustRegenerate: true }],
+    ["p1"],
+  );
+  assert.equal(isRepairable(targets), false);
+});
+
+test("the deterministic pass still declares its own findings editable", () => {
+  // The five COVERAGE rules pass "add" explicitly; every other rule in
+  // spec-validate.ts inspects an artefact it names, and defaults to "edit". If
+  // that default ever flips, repair silently stops firing on the three real
+  // suite defects it was built for and this file would otherwise stay green.
+  const leaky = deterministicAudit(draftOf(LEAKY_SOURCE), { syntaxCheck: false, ticketBrief: BRIEF });
+  const blockingFindings = leaky.filter((f) => f.mustRegenerate);
+  assert.equal(blockingFindings.length, 1);
+  assert.equal(blockingFindings[0]?.remedy, "edit");
+
+  // And the coverage rule is the other arm: a suite with no FUNCTIONAL-tier
+  // criterion is missing something, not carrying something wrong.
+  const noFunctional: SuiteDraft = {
+    ...draftOf(CLEAN_SOURCE),
+    criteria: [draftOf(CLEAN_SOURCE).criteria[0] as SuiteDraft["criteria"][number]],
+  };
+  const coverage = deterministicAudit(noFunctional, { syntaxCheck: false, ticketBrief: BRIEF })
+    .filter((f) => f.mustRegenerate && /no FUNCTIONAL-tier criterion/.test(f.detail));
+  assert.equal(coverage.length, 1, "the coverage rule did not fire, so its remedy is untested");
+  assert.equal(coverage[0]?.remedy, "add");
+});
+
+test("a repair that echoes back exactly what it was sent is rejected", () => {
+  // OPEN ITEM 2 FROM THE d143e52d POSTMORTEM. Every other rule in
+  // `parseRepairResponse` passes on this response: the path is known, the
+  // fields are present, the count is non-zero. The spliced draft would be
+  // byte-identical to the one the audit rejected, and it would then go to a
+  // fresh judge with no memory of the first — a coin flip on whether the defect
+  // survives, at the price of a judge call.
+  const draft = draftOf(LEAKY_SOURCE);
+  const targets = repairTargets(
+    draft,
+    [finding(`test file "${VISIBLE_PATH}" contains credential-shaped literal(s)`)],
+    ["p1"],
+  );
+  const echo = parseRepairResponse(JSON.parse(repairResponse(LEAKY_SOURCE)), draft, targets);
+  assert.equal(echo.ok, false);
+  if (echo.ok) return;
+  assert.match(echo.problems[0] ?? "", /exactly as it was sent/);
+
+  // THE OTHER ARM: one changed byte is enough, and it must be.
+  const fixed = parseRepairResponse(JSON.parse(repairResponse(CLEAN_SOURCE)), draft, targets);
+  assert.equal(fixed.ok, true, "a genuine correction was refused by the no-op guard");
+});
+
+test("a round that fixes one artefact may return the others untouched", () => {
+  // The system prompt tells the seat an artefact it did not need to change may
+  // come back as it is. Requiring EVERY artefact to differ would refuse the
+  // commonest honest repair shape.
+  const draft = draftOf(LEAKY_SOURCE);
+  const targets = repairTargets(
+    draft,
+    [
+      finding(`test file "${VISIBLE_PATH}" contains credential-shaped literal(s)`),
+      finding("REQ-002 is worded loosely", "REQ-002"),
+    ],
+    ["p1", "p2"],
+  );
+  assert.equal(targets.files.length, 1);
+  assert.equal(targets.criteria.length, 1);
+
+  const partial = {
+    // REQ-002 comes back verbatim; only the file changed.
+    criteria: [targets.criteria[0]],
+    testFiles: [
+      {
+        path: VISIBLE_PATH,
+        visibility: "visible",
+        runner: "node-test",
+        description: "visible twin",
+        testIds: ["T-1"],
+        criterionIds: ["REQ-001"],
+        source: CLEAN_SOURCE,
+      },
+    ],
+  };
+  const result = parseRepairResponse(JSON.parse(JSON.stringify(partial)), draft, targets);
+  assert.equal(result.ok, true);
+});
+
+/* -------------------------------------------------------------------------
+ * PART 7 — THE JUDGE PATH, WHICH IS THE ONLY PATH THAT PRODUCED THE DEFECT
+ * ---------------------------------------------------------------------- */
+
+/**
+ * FOUND BY ADVERSARIAL REVIEW, 2026-08-12: every test above drives the
+ * DETERMINISTIC pass, which defaults `remedy` to `"edit"` and therefore cannot
+ * exercise the line that reads it off a model. Hardcoding
+ * `parseJudgeFindings`' remedy to `"edit"` — restoring the exact behaviour that
+ * cost run `d143e52d` — left all 212 tests green. The judge is the only source
+ * of a model-declared remedy and the only source of the finding that broke.
+ *
+ * The suite below is deterministically clean, so `auditSuite` does NOT
+ * short-circuit and the judge really runs. Both facts are asserted.
+ */
+
+/** CLEAN_SOURCE with one more line, so a repair of it is not a no-op echo. */
+const ALT_SOURCE = `${CLEAN_SOURCE}// the repaired twin\n`;
+
+function judgeRejects(remedy: "edit" | "add" | null): string {
+  const finding: Record<string, unknown> = {
+    criterionId: "REQ-001",
+    kind: "trivially_satisfiable",
+    severity: "blocking",
+    detail: `test file "${VISIBLE_PATH}" asserts only the status code`,
+  };
+  if (remedy !== null) finding["remedy"] = remedy;
+  return JSON.stringify({ verdict: "regenerate", findings: [finding] });
+}
+
+async function runWithJudge(remedy: "edit" | "add" | null): Promise<{ spec: ReplayCaller; judge: ReplayCaller }> {
+  const spec = new ReplayCaller(SPEC_SEAT, [
+    authoringResponse(CLEAN_SOURCE),
+    repairResponse(ALT_SOURCE),
+    authoringResponse(CLEAN_SOURCE),
+    repairResponse(ALT_SOURCE),
+    authoringResponse(CLEAN_SOURCE),
+    repairResponse(ALT_SOURCE),
+  ]);
+  const judge = new ReplayCaller(JUDGE_SEAT, [
+    judgeRejects(remedy),
+    judgeRejects(remedy),
+    judgeRejects(remedy),
+    judgeRejects(remedy),
+    judgeRejects(remedy),
+    judgeRejects(remedy),
+  ]);
+  await assert.rejects(
+    generateAuditedSuite(TICKET, { specCaller: spec, judgeCaller: judge, syntaxCheck: false }),
+    (error: unknown) => error instanceof BakeoffError,
+  );
+  return { spec, judge };
+}
+
+test("THE JUDGE RUNS AT ALL: the fixture is deterministically clean, so it is not short-circuited", async () => {
+  const { judge } = await runWithJudge("add");
+  assert.ok(
+    judge.requests.length > 0,
+    "no judge call was made, so every assertion in this section would be about a pass that never ran",
+  );
+});
+
+test("a JUDGE finding with remedy 'add' dispatches NO repair call", async () => {
+  const { spec } = await runWithJudge("add");
+  assert.equal(
+    spec.requests.length,
+    3,
+    `expected one authoring call per attempt and no repair; purposes were ${spec.requests.map((r) => r.purpose).join(" | ")}`,
+  );
+  assert.ok(spec.requests.every((r) => r.purpose.startsWith("suite-authoring")));
+});
+
+test("a JUDGE finding with remedy 'edit' DOES dispatch a repair call", async () => {
+  // THE ARM THAT PROVES THE PREVIOUS TEST MEASURES THE REMEDY. Same fixture,
+  // same finding text, one field different.
+  const { spec } = await runWithJudge("edit");
+  assert.equal(spec.requests.length, 6, "a repair round did not fire for an editable judge finding");
+  assert.equal(spec.requests.filter((r) => r.purpose.startsWith("suite-repair")).length, 3);
+});
+
+test("a JUDGE finding with NO remedy field is treated as 'add', not as 'edit'", async () => {
+  const { spec } = await runWithJudge(null);
+  assert.equal(
+    spec.requests.length,
+    3,
+    "an unstated remedy was read as editable — the exact default that cost run d143e52d",
+  );
+});
+
+test("the audit schema REQUIRES remedy, so the seat cannot omit it silently", () => {
+  // Without this, deleting `remedy` from AUDIT_JSON_SCHEMA leaves every test
+  // green: the parser's fallback would quietly absorb it and the judge would
+  // stop being asked for the field at all.
+  const properties = AUDIT_JSON_SCHEMA["properties"] as Record<string, Record<string, unknown>>;
+  const item = (properties["findings"] ?? {})["items"] as Record<string, unknown>;
+  const required = (item["required"] ?? []) as readonly string[];
+  assert.ok(required.includes("remedy"), "remedy is not required by the audit schema");
+  const itemProps = (item["properties"] ?? {}) as Record<string, Record<string, unknown>>;
+  assert.deepEqual((itemProps["remedy"] ?? {})["enum"], ["edit", "add"]);
+});
+
+test("a repair that changes only a CRITERION, leaving files untouched, is not a no-op", () => {
+  // The no-op guard has two arms and only the files one was covered; deleting
+  // the criteria arm left the suite green.
+  const draft = draftOf(CLEAN_SOURCE);
+  const targets = repairTargets(draft, [finding("REQ-002 is worded loosely", "REQ-002")], ["p1"]);
+  assert.deepEqual(targets.criteria.map((c) => c.id), ["REQ-002"]);
+
+  const rewritten = { ...targets.criteria[0], statement: "The system shall serve the project list from SQLite." };
+  const changed = parseRepairResponse({ criteria: [rewritten], testFiles: [] }, draft, targets);
+  assert.equal(changed.ok, true, "a genuine criterion-only repair was rejected as a no-op");
+
+  const echoed = parseRepairResponse({ criteria: [targets.criteria[0]], testFiles: [] }, draft, targets);
+  assert.equal(echoed.ok, false, "an unchanged criterion echoed back was accepted as a correction");
 });

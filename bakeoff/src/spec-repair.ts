@@ -39,7 +39,10 @@
  * whole new suite, LOST a manifest field that attempt 2 had already got right.
  * An artefact that is never re-derived cannot be lost.
  *
- * WHAT MAKES A FINDING REPAIRABLE. It must name something that exists in the
+ * WHAT MAKES A FINDING REPAIRABLE. TWO THINGS, AND THE FIRST WAS ADDED AFTER IT
+ * WAS MISSING COST A RUN. The judge must have declared the remedy an `edit` —
+ * a defect INSIDE an artefact rather than a missing one; see `AuditFinding.remedy`
+ * and run `d143e52d`. And it must name something that exists in the
  * draft — a criterion id, or a test file path. `AuditFinding` carries
  * `criterionId` structurally but has no field for a file, so the path is found
  * by looking for each of THIS DRAFT'S OWN paths inside the finding's detail.
@@ -86,7 +89,14 @@ export interface RepairTargets {
   readonly files: readonly DraftTestFile[];
   readonly problems: readonly string[];
   /**
-   * Blocking findings that named no artefact in this draft.
+   * Blocking findings this round cannot clear, each tagged with WHY.
+   *
+   * TWO CLASSES, AND THEY ARE DIFFERENT FACTS ABOUT THE FINDING. `[remedy=add]`
+   * means the judge said closing it needs an artefact that does not exist, so no
+   * edit to anything can satisfy it. `[unlocalised]` means it named nothing in
+   * this draft to hand back. Reporting both as "named no criterion or file"
+   * — which this field's consumers did until 2026-08-12 — tells the owner
+   * something false about a finding that named five real artefacts.
    *
    * NON-EMPTY MEANS THE ROUND IS DECLINED, and the sentences are kept so the
    * decision can be reported rather than inferred. A caller that silently did
@@ -124,6 +134,29 @@ export function repairTargets(
   for (let i = 0; i < blocking.length; i += 1) {
     const finding = blocking[i];
     if (finding === undefined) continue;
+
+    /*
+     * REMEDY FIRST, LOCALISATION SECOND, AND THE ORDER IS THE CORRECTION.
+     *
+     * This function used to ask only "does the finding name an artefact that
+     * exists?" — and run `d143e52d` (2026-08-12) proved that question is the
+     * wrong one. Its blocking finding named REQ-004, REQ-003, REQ-006, T-6 and
+     * T-33, all real, and said in the same breath that closing it "requires new
+     * criteria and tests, i.e. re-authoring". A finding about something MISSING
+     * names the artefacts that fail to cover it. It localised perfectly and was
+     * unfixable by construction: a repair may only return artefacts it was
+     * given, so it can never add the criterion that is absent. The round could
+     * not clear it, the fresh re-audit did not re-raise it, and a suite that
+     * gated nothing on persistence was frozen as audited.
+     *
+     * `remedy !== "edit"` rather than `=== "add"`: absent is the unrepairable
+     * case too. See `AuditFinding.remedy`.
+     */
+    if (finding.remedy !== "edit") {
+      unlocalised.push(`[remedy=add] ${problems[i] ?? `[${finding.kind}] ${finding.detail}`}`);
+      continue;
+    }
+
     let localised = false;
 
     for (const criterion of draft.criteria) {
@@ -143,7 +176,7 @@ export function repairTargets(
     }
 
     if (!localised) {
-      unlocalised.push(problems[i] ?? `[${finding.kind}] ${finding.detail}`);
+      unlocalised.push(`[unlocalised] ${problems[i] ?? `[${finding.kind}] ${finding.detail}`}`);
     }
   }
 
@@ -454,6 +487,35 @@ export function parseRepairResponse(
     return {
       ok: false,
       problems: ["the repair response returned no artefact at all, so nothing was corrected"],
+    };
+  }
+
+  /*
+   * AT LEAST ONE ARTEFACT MUST ACTUALLY DIFFER.
+   *
+   * A response echoing back exactly what it was sent satisfies every rule above:
+   * the ids are known, the fields are present, the count is non-zero. Nothing
+   * was corrected, but the spliced draft is byte-identical to the audited one
+   * and goes to a FRESH judge with no memory of the first — which is precisely
+   * how run `d143e52d`'s blocking finding stopped being raised. A no-op repair
+   * is therefore not a wasted call; it is a coin flip on whether a real defect
+   * survives, paid for at the price of a judge call.
+   *
+   * ONE, NOT ALL: the seat is told it may return an artefact it did not need to
+   * change, and a round that fixes one of three files legitimately sends two
+   * back untouched. Requiring every artefact to differ would refuse that.
+   */
+  const unchanged = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  const anyChanged =
+    [...repairedCriteria.values()].some((c) => !unchanged(c, allowedCriteria.get(c.id))) ||
+    [...repairedFiles.values()].some((f) => !unchanged(f, allowedFiles.get(f.path)));
+  if (!anyChanged) {
+    return {
+      ok: false,
+      problems: [
+        "the repair response returned every artefact exactly as it was sent, so the suite that would " +
+          "be re-audited is the one the audit already rejected",
+      ],
     };
   }
 

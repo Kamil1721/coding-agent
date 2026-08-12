@@ -316,6 +316,32 @@ export interface AuditFinding {
    * suite that fails the audit must never have builds run against it.
    */
   readonly mustRegenerate: boolean;
+  /**
+   * WHAT WOULD CLOSE THIS FINDING: editing an artefact that exists, or ADDING
+   * one that does not.
+   *
+   * THE DISTINCTION IS NOT COSMETIC AND IT COST A RUN. Run `d143e52d`
+   * (2026-08-12) was rejected with a blocking finding whose own text read *"a
+   * build with zero persistence passes 23/23 criteria"* and *"closing this
+   * requires new criteria and tests, i.e. re-authoring"*. The finding NAMED
+   * REQ-004, REQ-003, REQ-006, T-6 and T-33 — every one of them real — so the
+   * repair loop localised it cleanly and sent those artefacts back. But repair
+   * may only return artefacts it was given: it is structurally incapable of
+   * adding a criterion. The round could not fix the defect, the fresh re-audit
+   * did not re-raise it, and a correct rejection became an acceptance. The
+   * frozen suite gates nothing on persistence.
+   *
+   * NAMING AN ARTEFACT IS NOT THE SAME AS BEING FIXABLE IN ONE. A finding about
+   * something MISSING names the artefacts that fail to cover it while requiring
+   * artefacts that do not exist yet, which is why `repairTargets` cannot infer
+   * this from the detail text and the judge is asked for it directly.
+   *
+   * OPTIONAL, AND ABSENT MEANS `add`. Every consumer must treat "not stated" as
+   * the unrepairable case: a finding whose remedy nobody declared is one nobody
+   * has shown to be an edit, and the failure above is what happens when the
+   * benefit of that doubt goes the other way.
+   */
+  readonly remedy?: "edit" | "add";
 }
 
 /** Who authored the suite, and with what. Held constant across all configs. */
