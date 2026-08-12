@@ -95,6 +95,16 @@ import {
   parseSuiteDraft,
   requiresRegeneration,
 } from "./spec-validate.js";
+import {
+  DEFAULT_MAX_REPAIR_ROUNDS,
+  REPAIR_JSON_SCHEMA,
+  REPAIR_SYSTEM_PROMPT,
+  isRepairable,
+  parseRepairResponse,
+  renderRepairTurn,
+  repairTargets,
+} from "./spec-repair.js";
+import type { RepairTargets } from "./spec-repair.js";
 import { freezeSuite, resolveHarnessIdentity, readFrozenSuite, suiteRootFor } from "./spec-freeze.js";
 // The authoring prompt must name the SAME loopback port the sealed scorer
 // serves a static artefact on. Imported rather than retyped: a suite authored
@@ -670,6 +680,15 @@ export interface SpecAgentOptions {
   /** Regeneration cap. Default 3. Fail clean rather than loop forever. */
   readonly maxAttempts?: number;
   /**
+   * Repair rounds allowed inside one attempt before the suite is discarded.
+   * Defaults to {@link DEFAULT_MAX_REPAIR_ROUNDS}. `0` disables repair.
+   *
+   * ZERO IS EXPRESSIBLE ON PURPOSE. A repair loop that cannot be turned off is a
+   * loop whose effect cannot be measured: the tests that prove repair saves an
+   * attempt run the same scripted seat at `0` and assert the attempt is spent.
+   */
+  readonly maxRepairRounds?: number;
+  /**
    * Wall-clock bound for ONE authoring call, in milliseconds. `0` disables it.
    *
    * PER CALL, NOT PER ATTEMPT, and the distinction is load-bearing: the free
@@ -799,6 +818,38 @@ export interface AuthoringAttempt {
    * measurement: see {@link callWithDeadline}.
    */
   readonly timedOut: boolean;
+  /**
+   * Repair rounds dispatched inside this attempt. `0` means none was — either
+   * the audit passed, or the blocking findings named nothing in the draft.
+   *
+   * A COUNT RATHER THAN A BOOLEAN because the distinction a reader needs is
+   * "repair ran and the suite was accepted" versus "repair ran and the suite
+   * was still discarded", and the second is only legible next to
+   * {@link accepted}. See {@link repairedProblems} for what it was asked to fix.
+   */
+  readonly repairRounds: number;
+  /**
+   * Digest of the REPAIR prompt that produced the accepted draft, or null when
+   * no repair round succeeded in this attempt.
+   *
+   * SEPARATE FROM {@link promptSha256}, NOT INSTEAD OF IT. A repaired suite is
+   * the product of two prompts and reproducing it needs both; a single field
+   * holding whichever came last would silently drop the other. `promptSha256`
+   * is the authoring prompt for every attempt, repaired or not, which is what
+   * `AcceptanceSuite.authoringPromptSha256` has always meant.
+   */
+  readonly repairPromptSha256: string | null;
+  /**
+   * The blocking sentences a repair round was asked to clear, oldest first.
+   * Empty when no repair ran.
+   *
+   * WITHOUT THIS THE RECORD LIES BY OMISSION. A repaired attempt ends with
+   * `accepted: true` and `findings` from the RE-audit, which is clean — so an
+   * attempt that shipped a credential-shaped literal, was told about it, and
+   * fixed it would read on disk as an attempt that never had a defect. This
+   * field is the only place that fact survives.
+   */
+  readonly repairedProblems: readonly string[];
 }
 
 /**
@@ -1698,6 +1749,103 @@ export async function generateSuite(
   return { ok: true, draft: result.draft, call, promptSha256 };
 }
 
+/**
+ * One repair round: send back the artefacts the audit named, splice what comes
+ * back over the draft.
+ *
+ * SHARES `GenerateSuiteResult` WITH THE AUTHORING CALL, AND SHOULD. Every
+ * failure a repair call can suffer — abandoned on the deadline, truncated at
+ * `max_tokens`, refused, unreadable — is a failure the authoring call can
+ * suffer, and the loop above handles them in one place because they are one
+ * set. A separate union would be a second copy of the same three variants,
+ * drifting.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO: audit anything. The caller re-audits the
+ * spliced draft in full. A repair that graded its own output would be the
+ * self-verification the literature says does not work, wearing the name of the
+ * loop that does.
+ */
+async function repairDraft(
+  ticket: Ticket,
+  draft: SuiteDraft,
+  targets: RepairTargets,
+  options: SpecAgentOptions,
+  attempt: number,
+  round: number,
+): Promise<GenerateSuiteResult> {
+  const ceiling = newCeiling(options);
+  const caller = callerFor(options.specSeat ?? SPEC_SEAT, "spec", options, ceiling);
+
+  const userTurns = [
+    `${TURN_MARKER_TICKET}\n\n${ticketTurn(ticket)}`,
+    renderRepairTurn(targets, ticket),
+  ];
+  const promptSha256 = promptDigest(REPAIR_SYSTEM_PROMPT, userTurns);
+
+  const timeoutMs = resolveAttemptTimeoutMs(options);
+  const purpose = `suite-repair ${ticket.id} attempt ${String(attempt)} round ${String(round)}`;
+  const decisionsBefore = caller.ceiling.decisions.length;
+  const outcome = await callWithDeadline(
+    caller.call({
+      system: REPAIR_SYSTEM_PROMPT,
+      userTurns,
+      maxOutputTokens: options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      jsonSchema: (options.structuredOutput ?? true) ? REPAIR_JSON_SCHEMA : null,
+      purpose,
+    }),
+    timeoutMs,
+  );
+
+  if (outcome === DEADLINE_EXCEEDED) {
+    return {
+      ok: false,
+      timedOut: true,
+      timeoutMs,
+      problems: [attemptTimeoutProblem(timeoutMs)],
+      call: null,
+      promptSha256,
+      reservedUsd: reserveAbandonedCall(caller.ceiling, decisionsBefore, purpose),
+    };
+  }
+  const call = outcome;
+
+  const stopProblem = stopReasonProblem(call);
+  if (stopProblem !== null) {
+    return { ok: false, timedOut: false, problems: [stopProblem], call, promptSha256 };
+  }
+
+  const json = extractJsonObject(call.text);
+  if (json === null) {
+    return {
+      ok: false,
+      timedOut: false,
+      problems: ["the repair response contained no JSON object"],
+      call,
+      promptSha256,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (error) {
+    return {
+      ok: false,
+      timedOut: false,
+      problems: [
+        `the repair response was not valid JSON: ${redactText(error instanceof Error ? error.message : String(error)).text}`,
+      ],
+      call,
+      promptSha256,
+    };
+  }
+
+  const result = parseRepairResponse(parsed, draft, targets);
+  if (!result.ok) {
+    return { ok: false, timedOut: false, problems: result.problems, call, promptSha256 };
+  }
+  return { ok: true, draft: result.draft, call, promptSha256 };
+}
+
 /* -------------------------------------------------------------------------
  * 7. auditSuite — the adversarial bad-test audit
  * ---------------------------------------------------------------------- */
@@ -1891,6 +2039,15 @@ export async function generateAuditedSuite(
       "Use DEFAULT_MAX_AUTHORING_ATTEMPTS (3) unless you have a measured reason to change it.",
     );
   }
+  const maxRepairRounds = options.maxRepairRounds ?? DEFAULT_MAX_REPAIR_ROUNDS;
+  if (!Number.isInteger(maxRepairRounds) || maxRepairRounds < 0) {
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `maxRepairRounds must be a non-negative integer, got ${String(maxRepairRounds)}`,
+      "0 disables repair and restores the discard-and-regenerate loop exactly; the default is " +
+        "DEFAULT_MAX_REPAIR_ROUNDS (1).",
+    );
+  }
   const harness = options.harness ?? resolveHarnessIdentity();
   const now = options.now ?? ((): Date => new Date());
 
@@ -2059,6 +2216,12 @@ export async function generateAuditedSuite(
         maxOutputTokens: outputTokens,
         truncationRetried,
         timedOut: generated.timedOut,
+        // NOTHING CAME BACK, SO THERE WAS NOTHING TO REPAIR. A repair round
+        // needs an artefact to hand back; an attempt that produced no readable
+        // draft has none, and `0` here is a measurement rather than a default.
+        repairRounds: 0,
+        repairPromptSha256: null,
+        repairedProblems: [],
       });
       if (generated.timedOut) reservedUsd += generated.reservedUsd;
       recordConstraints(attempt, generated.problems);
@@ -2073,30 +2236,118 @@ export async function generateAuditedSuite(
       continue;
     }
 
-    const audit = await auditSuite(generated.draft, ticket, {
-      ...sharedOptions,
-      maxOutputTokens: outputTokens,
-    });
-    const auditedAt = now().toISOString();
+    /**
+     * THE REPAIR LOOP, AND WHY IT SITS INSIDE THE ATTEMPT RATHER THAN BESIDE IT.
+     *
+     * Every one of the four audit rejections in this repository's run history
+     * named ONE artefact in an otherwise-audited suite (see spec-repair.ts for
+     * the four, with their run ids). Discarding the suite threw away the other
+     * twenty-odd criteria to fix a string, and spent one of three attempts
+     * doing it. A repair round costs one seat call and one re-audit, and when
+     * it lands the attempt is not spent at all — which is the whole point, and
+     * why `attempt` is not incremented anywhere in here.
+     *
+     * THE SUITE THAT COMES OUT IS AUDITED IN FULL, NOT SPOT-CHECKED. `audit` is
+     * reassigned from a complete `auditSuite` over the spliced draft — the same
+     * deterministic pass and the same judge seat a freshly authored suite gets.
+     * The header's third guarantee holds unchanged: what fails the audit is
+     * regenerated, never used, and a repair that fails its re-audit falls
+     * through to exactly the regeneration it would have had.
+     */
+    let draft = generated.draft;
+    /**
+     * THE AUTHORING PROMPT'S DIGEST, WHICH A REPAIR MUST NOT OVERWRITE.
+     *
+     * This variable was briefly reassigned to the repair prompt's digest, on the
+     * argument that the record should name the prompt whose output was sealed.
+     * That argument is wrong twice. `AcceptanceSuite.authoringPromptSha256` is
+     * documented in contracts.ts as *"Digest of the authoring prompt, for
+     * reproducibility"*, and a repaired suite is not reproducible from EITHER
+     * prompt alone — so pointing the field at the repair prompt does not buy
+     * reproducibility, it just makes one field mean two different things
+     * depending on a fact the suite object does not carry. And it DESTROYS the
+     * authoring digest: nothing else records it, so a repaired attempt would
+     * have no trace of the prompt that produced most of its artefacts.
+     *
+     * The authoring digest stays here and on the suite; the repair digest is
+     * recorded beside it on the attempt row, where the repair itself is
+     * recorded. Every suite that was never repaired is byte-identical to what
+     * this loop produced before the repair loop existed.
+     */
+    const promptSha256 = generated.promptSha256;
+    let repairPromptSha256: string | null = null;
+    let audit = await auditSuite(draft, ticket, { ...sharedOptions, maxOutputTokens: outputTokens });
+    let auditedAt = now().toISOString();
+    let attemptCost =
+      generated.call.usage.costUsd + (audit.judgeCall === null ? 0 : audit.judgeCall.usage.costUsd);
+    let repairRounds = 0;
+    const repairedProblems: string[] = [];
+    const rowProblems: string[] = [];
+
+    while (audit.mustRegenerate && repairRounds < maxRepairRounds) {
+      const problems = blockingFindingSummary(audit.findings);
+      const targets = repairTargets(draft, audit.findings, problems);
+      if (!isRepairable(targets)) {
+        // DECLINED, AND SAID SO. A blocking finding that names no criterion and
+        // no file cannot be handed back as an artefact, and repairing the three
+        // that can be would buy a second rejection at the price of a call.
+        rowProblems.push(
+          `repair was declined: ${String(targets.unlocalised.length)} blocking finding(s) named no ` +
+            `criterion or file in the draft — ${targets.unlocalised.join(" | ")}`,
+        );
+        break;
+      }
+      repairRounds += 1;
+      repairedProblems.push(...problems);
+
+      const repaired = await repairDraft(
+        ticket,
+        draft,
+        targets,
+        { ...sharedOptions, maxOutputTokens: outputTokens },
+        attempt,
+        repairRounds,
+      );
+      if (!repaired.ok) {
+        // A FAILED REPAIR COSTS THE CALL AND NOTHING ELSE. The draft, the audit
+        // and the findings are untouched, so the regeneration below is the one
+        // this attempt would have had — and the reason the round bought nothing
+        // is on the row rather than nowhere.
+        if (repaired.timedOut) reservedUsd += repaired.reservedUsd;
+        else attemptCost += repaired.call.usage.costUsd;
+        rowProblems.push(
+          `repair round ${String(repairRounds)} produced no usable correction: ${repaired.problems.join("; ")}`,
+        );
+        break;
+      }
+      attemptCost += repaired.call.usage.costUsd;
+      draft = repaired.draft;
+      repairPromptSha256 = repaired.promptSha256;
+      audit = await auditSuite(draft, ticket, { ...sharedOptions, maxOutputTokens: outputTokens });
+      auditedAt = now().toISOString();
+      attemptCost += audit.judgeCall === null ? 0 : audit.judgeCall.usage.costUsd;
+    }
 
     attempts.push({
       attempt,
-      promptSha256: generated.promptSha256,
+      promptSha256,
+      repairPromptSha256,
       parsed: true,
-      problems: [],
+      problems: rowProblems,
       findings: audit.findings,
       judgeRan: audit.judgeRan,
       accepted: !audit.mustRegenerate,
-      costUsd:
-        generated.call.usage.costUsd + (audit.judgeCall === null ? 0 : audit.judgeCall.usage.costUsd),
+      costUsd: attemptCost,
       maxOutputTokens: outputTokens,
       truncationRetried,
       timedOut: false,
+      repairRounds,
+      repairedProblems,
     });
 
     if (audit.mustRegenerate) {
       recordConstraints(attempt, blockingFindingSummary(audit.findings));
-      const manifest = manifestSourceOf(generated.draft);
+      const manifest = manifestSourceOf(draft);
       if (manifest === null) {
         noManifestReason =
           `Attempt ${String(attempt)} emitted no "${SUITE_MANIFEST_FILENAME}" entry at all.`;
@@ -2108,11 +2359,13 @@ export async function generateAuditedSuite(
     }
 
     const suite = buildAcceptanceSuite({
-      draft: generated.draft,
+      draft,
       specSeat,
       judgeSeat,
       harness,
-      authoringPromptSha256: generated.promptSha256,
+      // THE AUTHORING PROMPT, ALWAYS — see the declaration of `promptSha256`
+      // above for why a repair must not overwrite this.
+      authoringPromptSha256: promptSha256,
       generatedAt,
       auditedAt,
       findings: audit.findings,
@@ -2121,8 +2374,8 @@ export async function generateAuditedSuite(
     const usage = collectUsage(specCaller, judgeCaller);
     return {
       suite,
-      plan: planFromDraft(generated.draft),
-      files: generated.draft.files,
+      plan: planFromDraft(draft),
+      files: draft.files,
       findings: audit.findings,
       attempts,
       usage,
@@ -2144,8 +2397,46 @@ export async function generateAuditedSuite(
       `${String(maxAttempts)} attempt(s). Last attempt's blocking problems:\n` +
       reasons.map((r) => `  - ${r}`).join("\n") +
       `\n${describeOutputCeilings(attempts)}` +
+      `\n${describeRepairs(attempts, maxRepairRounds)}` +
       `\n${describeAttemptTimeouts(attempts, resolveAttemptTimeoutMs(options), reservedUsd)}`,
     remediationForFailedAuthoring(last?.findings ?? []),
+  );
+}
+
+/**
+ * What the repair loop did, INCLUDING when it did nothing.
+ *
+ * BOTH DIRECTIONS, FOR THE REASON {@link describeAttemptTimeouts} GIVES. A
+ * repair loop that reports only when it fires is indistinguishable, from the
+ * failure message of a dead run, from a repair loop that is disabled, wired to
+ * nothing, or declining every round on a predicate nobody can see. This
+ * repository's signature defect is the check that can only observe success, and
+ * a silent repair loop would be one more.
+ *
+ * THE DECLINED CASE IS THE INTERESTING ONE and is named separately: "no round
+ * fired because every finding named an artefact that does not exist in the
+ * draft" is a fact about the AUDIT's wording, and it is the sentence that would
+ * send a reader to `repairTargets` rather than to the seat.
+ */
+function describeRepairs(attempts: readonly AuthoringAttempt[], maxRounds: number): string {
+  if (maxRounds === 0) {
+    return "Repair before regenerate: DISABLED for this run (maxRepairRounds 0), so every rejected suite was discarded whole.";
+  }
+  const rounds = attempts.reduce((acc, a) => acc + a.repairRounds, 0);
+  if (rounds === 0) {
+    const declined = attempts.flatMap((a) => a.problems.filter((p) => p.startsWith("repair was declined")));
+    return (
+      `Repair before regenerate: enabled (max ${String(maxRounds)} round(s) per attempt) and NO round fired. ` +
+      (declined.length === 0
+        ? "No attempt reached the audit with a repairable rejection."
+        : `Every rejection was declined as unlocalisable — ${declined.join(" | ")}`)
+    );
+  }
+  const fired = attempts.filter((a) => a.repairRounds > 0).map((a) => String(a.attempt));
+  return (
+    `Repair before regenerate: ${String(rounds)} round(s) fired, on attempt(s) ${fired.join(", ")}, ` +
+    "and none of them produced a suite that passed the re-audit — so the failure above is what the " +
+    "seat could not fix when handed the exact artefact and the exact complaint."
   );
 }
 

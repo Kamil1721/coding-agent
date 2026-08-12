@@ -1187,6 +1187,22 @@ async function replayRun(): Promise<Replay> {
       // `node --check` would spawn a child process per file for sources whose
       // syntax is not what is under test here.
       syntaxCheck: false,
+      /*
+       * REPAIR OFF, BECAUSE THIS DRIVER MEASURES THE OTHER CHANNEL. Everything
+       * below asserts what a REGENERATION is told — the manifest echo and the
+       * accumulated constraints, both of which only exist between attempts.
+       * With repair at its default of 1 this fixture's rejections (which name
+       * `suite.manifest.json`) are localisable, so attempt 1 would be followed
+       * by a repair round and `spec.requests[1]` would be a repair prompt: the
+       * assertions would still be about a real prompt, just not the one they
+       * name. The within-attempt channel has its own driver and its own
+       * negative control in spec-repair.test.ts.
+       *
+       * This is also the seam where a future edit could silently delete the
+       * regeneration path: if repair ever became unconditional, these tests
+       * would be the only thing still exercising the turns above.
+       */
+      maxRepairRounds: 0,
     });
   } catch (error) {
     assert.ok(error instanceof BakeoffError, `expected a BakeoffError, got ${String(error)}`);
@@ -1594,6 +1610,16 @@ async function runAgainstAHang(
       specCaller: spec,
       judgeCaller: judge,
       syntaxCheck: false,
+      /*
+       * REPAIR OFF: every assertion downstream indexes `spec.requests` BY
+       * ATTEMPT, and a repair round is a call inside an attempt. With repair at
+       * its default this driver's `requests[2]` is attempt 2's repair prompt
+       * rather than attempt 3's authoring prompt, and the assertions would be
+       * reading the wrong document while still passing or failing for reasons
+       * about the timeout bound. The bound is what this driver measures; see
+       * spec-repair.test.ts for the loop that is not.
+       */
+      maxRepairRounds: 0,
       ...options,
     });
   } catch (error) {
@@ -1812,6 +1838,10 @@ test("a call that returns inside the bound is unaffected by it", async () => {
       syntaxCheck: false,
       maxAttempts: 1,
       attemptTimeoutMs: 10_000,
+      // The claim is about the BOUND — one call, returned inside it, audited
+      // rather than cut short. A repair round would make it two calls and the
+      // count below would be measuring the repair loop instead.
+      maxRepairRounds: 0,
     }),
     (error: unknown) => {
       assert.ok(error instanceof BakeoffError);

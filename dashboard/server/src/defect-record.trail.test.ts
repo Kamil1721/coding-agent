@@ -87,3 +87,58 @@ test("a candidate with no trail is null, and an empty trail is an empty list", (
   assert.equal(readAuthoringAttempts({ notATrail: 1 }), null);
   assert.deepEqual(readAuthoringAttempts(trail([])), []);
 });
+
+/* -------------------------------------------------------------------------
+ * REPAIR ROUNDS — the defect a repaired attempt no longer carries
+ * ---------------------------------------------------------------------- */
+
+const REPAIRED = /repair round\(s\) ran inside this attempt/;
+
+/**
+ * WHY THIS ROW WOULD OTHERWISE READ AS CLEAN. A repair round that clears a
+ * blocking finding leaves the attempt recorded with the RE-audit's findings,
+ * which are empty, and `accepted: true`. So the attempt that shipped a
+ * credential-shaped literal and then fixed it is, on disk, indistinguishable
+ * from an attempt that never had one — unless this reader says otherwise.
+ */
+test("a repaired attempt still reports what the repair had to clear", () => {
+  const attempts = readAuthoringAttempts(
+    trail([
+      {
+        attempt: 1,
+        parsed: true,
+        accepted: true,
+        problems: [],
+        findings: [],
+        repairRounds: 1,
+        repairedProblems: ['[other] test file "visible/x.test.mjs" contains credential-shaped literal(s)'],
+      },
+    ]),
+  );
+  const problems = attempts?.[0]?.problems ?? [];
+  assert.equal(problems.length, 1, `expected exactly one row problem, got ${JSON.stringify(problems)}`);
+  assert.ok(REPAIRED.test(problems[0] ?? ""));
+  assert.match(problems[0] ?? "", /credential-shaped literal/);
+});
+
+test("absent is NOT zero: a pre-2026-08-12 trail claims nothing about repair", () => {
+  const attempts = readAuthoringAttempts(trail([{ attempt: 1, parsed: true, problems: [] }]));
+  assert.equal(attempts?.[0]?.problems.length, 0);
+  assert.ok(
+    !REPAIRED.test((attempts?.[0]?.problems ?? []).join(" ")),
+    "a trail with no repairRounds field was reported as having run repair rounds",
+  );
+});
+
+test("zero rounds is a measurement and says nothing, and a non-number is not a count", () => {
+  for (const value of [0, "1", true, null] as const) {
+    const attempts = readAuthoringAttempts(
+      trail([{ attempt: 1, parsed: true, problems: [], repairRounds: value }]),
+    );
+    assert.ok(
+      !REPAIRED.test((attempts?.[0]?.problems ?? []).join(" ")),
+      `repairRounds: ${JSON.stringify(value)} produced a repair sentence. Only a number above zero — ` +
+        "the value `spec-agent.ts` writes — may.",
+    );
+  }
+});

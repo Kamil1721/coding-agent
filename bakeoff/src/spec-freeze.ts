@@ -200,6 +200,28 @@ export interface AuthoringTrailEntry {
    * manifest, so `suite_hash_mismatch` is not reachable from this field.
    */
   readonly timedOut?: boolean;
+  /**
+   * How many repair rounds ran inside this attempt, and what they were asked to
+   * clear. Optional for the reason above: a trail frozen before 2026-08-12 does
+   * not carry them, and absent must read as "not recorded" rather than as "no
+   * repair ran" — the two are different facts about a run and only one of them
+   * is evidence about the repair loop.
+   *
+   * DECLARED HERE BECAUSE `authoringTrail: authored.attempts` PASSES A VARIABLE
+   * and TypeScript's excess-property check therefore does not fire — the exact
+   * mechanism that let `timedOut` reach disk while being invisible to every
+   * reader of this type. See {@link AuthoringAttempt.repairedProblems} for why
+   * the second field is not decoration: without it a repaired attempt reads on
+   * disk as an attempt that never had a defect.
+   */
+  readonly repairRounds?: number;
+  readonly repairedProblems?: readonly string[];
+  /**
+   * Digest of the repair prompt, when one produced the accepted draft. Null on
+   * an attempt that was not repaired; ABSENT on a trail frozen before
+   * 2026-08-12, and the two must not be read as the same thing.
+   */
+  readonly repairPromptSha256?: string | null;
 }
 
 export interface FreezeSuiteInput {

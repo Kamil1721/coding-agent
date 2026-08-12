@@ -275,6 +275,28 @@ export function readAuthoringAttempts(candidate: unknown): readonly DefectAttemp
           "this attempt was cut off by the harness, not answered by the seat",
       );
     }
+    /*
+     * A REPAIRED ATTEMPT'S DEFECTS, WHICH ITS OWN `findings` NO LONGER CARRY.
+     * When a repair round clears a blocking finding, the attempt is recorded
+     * with the findings of the RE-audit — which is clean — so the row of an
+     * attempt that shipped a credential-shaped literal and then fixed it is
+     * indistinguishable from the row of an attempt that never had one. That is
+     * the fact `repairedProblems` exists to keep, and a defect record built
+     * without it would report a spec phase that went green first time.
+     *
+     * `typeof === "number"`, never truthiness: `repairRounds` is optional on
+     * `AuthoringTrailEntry` so that a trail frozen before 2026-08-12 reads as
+     * "not recorded", and 0 is a measurement that must not read as absent.
+     */
+    if (typeof item["repairRounds"] === "number" && item["repairRounds"] > 0) {
+      const cleared = Array.isArray(item["repairedProblems"])
+        ? (item["repairedProblems"] as unknown[]).filter((p): p is string => typeof p === "string")
+        : [];
+      problems.push(
+        `${String(item["repairRounds"])} repair round(s) ran inside this attempt` +
+          (cleared.length === 0 ? "" : `, against: ${cleared.join(" | ")}`),
+      );
+    }
     if (Array.isArray(item["problems"])) {
       for (const p of item["problems"] as unknown[]) if (typeof p === "string") problems.push(p);
     }
