@@ -45,6 +45,7 @@ import { REQUIRED_DIST_MODULES, aggregateKnownBad, runKnownBad } from "./known-b
 import { runArmChecks } from "./armcheck.mjs";
 import { decideApply, mintApplyToken, validateProposal } from "./proposal.mjs";
 import { appendTrail, trailDir } from "./trail.mjs";
+import { noOpAblationHolds } from "../repair/prover.mjs";
 
 /** The four proofs an inside-closure diff must clear. Named, not counted. */
 export const CLOSURE_PROOFS = Object.freeze([
@@ -109,14 +110,38 @@ export function proofsFor({ knownBad, aggregate, proposal }) {
             ? "no container-mode re-score of run 1 was observed"
             : "the re-score did not produce 21/20/1 with the sole REQ-013 QUALITY failure",
     },
-    {
-      id: "no-op-ablation-failing",
-      satisfied: typeof proposal?.evidence?.noOpAblation === "string" && proposal.evidence.noOpAblation.trim().length > 0,
-      mode: "evidence",
-      why:
-        "the accepting check must be run against a no-op implementation of the thing being fixed and observed FAILING; " +
-        "a check that still passes against a no-op is vacuous and the patch is UNPROVEN (RESEARCH R8)",
-    },
+    /*
+     * READ THE TRANSCRIPT, DO NOT WEIGH IT.
+     *
+     * THIS WAS `trim().length > 0` UNTIL 2026-08-12, AND A REVIEWER LANDED A
+     * PATCH THROUGH IT. The full chain, executed in a throwaway repository:
+     * `noOpAblation` set to the literal string *"I did not run any ablation.
+     * This string was typed by hand.\n# exit code: 1"* produced verdict APPLY,
+     * a 64-character token that verified, `classifyGateRecord` intent APPLY,
+     * and `applyGatedPatch` rewriting the file on disk. The proof that exists to
+     * establish the accepting check is not vacuous was itself satisfied by
+     * anything non-empty — which is the same defect it is designed to catch,
+     * one level up, and the reason RESEARCH R8 is cited two lines below.
+     *
+     * `noOpAblationHolds` is the prover's own reader and is imported rather than
+     * reimplemented: it requires the prover's ablation header, a fingerprint
+     * that matches THIS diff (so a transcript recycled from another repair is
+     * refused), a command line, an exit-code trailer, and a NON-ZERO exit. A
+     * check that passed under the no-op fails the proof, which is the whole
+     * point — that patch is unproven, not proven.
+     */
+    (() => {
+      const verdict = noOpAblationHolds(proposal?.evidence?.noOpAblation, { diff: proposal?.diff });
+      return {
+        id: "no-op-ablation-failing",
+        satisfied: verdict.holds,
+        mode: "evidence",
+        why:
+          verdict.why +
+          " — the accepting check must be run against a no-op implementation of the thing being fixed and observed " +
+          "FAILING; a check that still passes against a no-op is vacuous and the patch is UNPROVEN (RESEARCH R8)",
+      };
+    })(),
     // The aggregate is carried so a REFUSE inside the known-bad set cannot be
     // hidden by a proof that happens not to read it.
   ].map((p) => ({ ...p, aggregateVerdict: aggregate.verdict }));
@@ -243,6 +268,87 @@ export function decide({ arm, verify, validation, aggregate, proofs }) {
   }
   if (aggregate.verdict === "INCONCLUSIVE") {
     return { verdict: "SELF-PROPOSE", reason: `${aggregate.reason}. The patch parks; Tiers 1 and 2 keep running.`, selfProposing: true };
+  }
+
+  /*
+   * UNARMED IS NOT PASS — OWNER ARBITRATION, 2026-08-12.
+   *
+   * `aggregateKnownBad` returns `PASS-WITH-UNARMED` when some known-bad arm did
+   * not run, and says so in its own reason string: *"UNARMED is not PASS: it
+   * degrades any proof that depends on it to INCONCLUSIVE."* This function never
+   * read that verdict. It fell through to the self-apply branches below, so a
+   * patch could be written to the editable package on a night when the container
+   * arms never executed — measured, and pinned by two tests that were green at
+   * the same time: `containerExecuted.length === 0` AND "an editable-only patch
+   * with full evidence self-applies and gets a token".
+   *
+   * WHAT THE KNOWN-BAD REGISTRY PROVES, AND WHY ITS ABSENCE IS DISQUALIFYING.
+   * It is the check that THIS GATE STILL CATCHES BAD WORK — known-bad artefacts
+   * that must fail, and false-FAIL controls that must pass. With those arms
+   * unarmed, the gate has no evidence that it can fail at all, and a detector
+   * that cannot be shown to fire is the defect this repository is named for.
+   * Applying a patch on that basis is self-repair grading its own homework with
+   * the marker missing.
+   *
+   * THE COST IS REAL AND IS ACCEPTED. The OUTSIDE-CLOSURE note below says the
+   * three CONTAINER proofs must not be required, so that an editable repair need
+   * not wait for docker. This branch does make it wait — not for the closure
+   * proofs, but for the registry that proves the gate works. The owner arbitrated
+   * that trade on 2026-08-12 after the alternative was measured: a self-applying
+   * patcher whose proof never ran. It PARKS rather than REFUSES, so Tiers 1 and 2
+   * keep running and nothing about the pipeline stops.
+   */
+  if (aggregate.verdict === "PASS-WITH-UNARMED") {
+    /*
+     * WHICH ARMS MATTER IS DECIDED BY THE DIFF'S BLAST RADIUS, NOT BY COUNTING.
+     *
+     * REFINED 2026-08-12 AFTER THE BLUNT VERSION WAS MEASURED INERT. Requiring
+     * every arm parked EVERY patch for ever: `known-bad.mjs` registers its four
+     * container legs with `armed: false` as LITERALS — "docker is owned by the
+     * Verify phase" — so `PASS-WITH-UNARMED` is the best verdict this registry
+     * can return on any day, docker up or down. A reviewer fed the gate a
+     * perfect aggregate with all four closure proofs satisfied and still got
+     * SELF-PROPOSE. A gate that can never pass is not a gate; it is the same
+     * defect as one that always passes, wearing the safer costume.
+     *
+     * THE SPLIT IS THE ONE THE ROUTING ALREADY MAKES. The container legs grade
+     * the SEALED SCORER (`area: "grader"`, `"persistence"`). An OUTSIDE-CLOSURE
+     * diff cannot touch the sealed scorer — that is what OUTSIDE-CLOSURE MEANS,
+     * and `validateProposal` refuses a proposal that under-reports its own blast
+     * radius. So for an editable-only patch those legs are evidence about
+     * something the patch cannot reach, and the branch below says exactly that,
+     * in the same voice as the note further down about not requiring the three
+     * container PROOFS for the same reason.
+     *
+     * WHAT IS STILL REQUIRED, AND IT IS NOT NOTHING: every HOST arm must have
+     * run, and at least one must have. An unarmed HOST arm is a check that could
+     * have run here and did not, which is missing evidence about the very tier
+     * doing the grading. INSIDE-CLOSURE is unchanged and still parks — its four
+     * proofs count container-mode evidence only, so it was never reachable this
+     * way in the first place.
+     */
+    const unarmed = Array.isArray(aggregate.unarmed) ? aggregate.unarmed : [];
+    const executed = Array.isArray(aggregate.executed) ? aggregate.executed : [];
+    const unarmedHost = unarmed.filter((r) => r?.mode !== "container");
+    const editableOnly = validation.route === "OUTSIDE-CLOSURE";
+
+    if (!editableOnly || unarmedHost.length > 0 || executed.length === 0) {
+      return {
+        verdict: "SELF-PROPOSE",
+        reason:
+          `${aggregate.reason} ` +
+          (unarmedHost.length > 0
+            ? `${String(unarmedHost.length)} HOST arm(s) could have run here and did not (${unarmedHost.map((r) => r.id).join(", ")}), so the gate cannot show it still catches bad work on its own tier. `
+            : executed.length === 0
+              ? "NO arm executed at all, so nothing was graded. "
+              : "The diff is not editable-only, so the sealed scorer's arms are evidence about code this patch can reach. ") +
+          "The patch parks; Tiers 1 and 2 keep running.",
+        selfProposing: true,
+      };
+    }
+    // Editable-only, every host arm held, and only the sealed scorer's own legs
+    // are unarmed. Fall through to the OUTSIDE-CLOSURE branch, which still
+    // demands the no-op ablation before it will write anything.
   }
 
   /*

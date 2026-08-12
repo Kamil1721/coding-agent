@@ -22,6 +22,7 @@ import test from "node:test";
 import { CLOSURE_FLOOR, classifyDiff, classifyPath, frozenClosure } from "./closure.mjs";
 import { buildFrozenManifest, isolateGateRoot, verifyFrozenManifest } from "./manifest.mjs";
 import { KNOWN_BAD_FLOOR, aggregateKnownBad, loadImpossibleSet, runKnownBad } from "./known-bad.mjs";
+import { proposalFingerprint } from "../repair/evidence.mjs";
 import { runArmChecks } from "./armcheck.mjs";
 import { decideApply, mintApplyToken, validateProposal } from "./proposal.mjs";
 import { appendTrail } from "./trail.mjs";
@@ -61,7 +62,21 @@ function proposalFor(paths, extra = {}) {
       redBefore: "FAIL dataExpectations[0].id — verbatim red\n# exit code: 1",
       greenAfter: "pass 1 fail 0 — verbatim green\n# exit code: 0",
       mutationRed: "reverting the fix hunk: FAIL dataExpectations[0].id — verbatim red\n# exit code: 1",
-      noOpAblation: "the accepting check against a no-op implementation: FAIL dataExpectations[0].id\n# exit code: 1",
+      /*
+       * THE HEADER AND THE FINGERPRINT ARE LOAD-BEARING SINCE 2026-08-12.
+       * `proofsFor` no longer weighs this string, it READS it through the
+       * prover's own `noOpAblationHolds`: prover header, a fingerprint over THIS
+       * diff, a command line, and a non-zero exit trailer. The prose version
+       * that used to sit here satisfied the proof, and a reviewer walked a patch
+       * all the way to `applyGatedPatch` with a hand-typed sentence in this
+       * field. Built from `proposalFingerprint` rather than pasted, so a fixture
+       * whose diff changes cannot keep an ablation about the old one.
+       */
+      noOpAblation:
+        `# no-op ablation of repair ${proposalFingerprint({ diff })}: 1 added line(s) removed\n` +
+        "$ node --test acceptance.test.mjs\n" +
+        "FAIL dataExpectations[0].id — the accepting check against a no-op implementation\n" +
+        "# exit code: 1\n",
     },
     proposedAt: new Date().toISOString(),
     ...extra,
@@ -122,9 +137,11 @@ test("an inside-closure diff can never reach APPLY while the container legs are 
  * twenty-two — a trail field that reads like container evidence, produced by a
  * host import. */
 test("a no-op ablation transcript does not buy the container proofs it cannot replace", async () => {
-  const p = proposalFor(["bakeoff/src/scorer.ts"]);
-  p.evidence.noOpAblation = "the accepting check against a no-op: FAIL — verbatim red";
-  const result = await gate(p);
+  // THE FIXTURE'S ABLATION IS GENUINE, and that is the point: it satisfies its
+  // OWN proof and none of the three container ones. Until 2026-08-12 this test
+  // overwrote the field with prose, because prose satisfied the proof — the
+  // scaffolding was itself the defect the hardening removed.
+  const result = await gate(proposalFor(["bakeoff/src/scorer.ts"]));
   const satisfied = result.proofs.filter((x) => x.satisfied === true).map((x) => x.id);
   assert.deepEqual(
     satisfied,
@@ -132,6 +149,47 @@ test("a no-op ablation transcript does not buy the container proofs it cannot re
     `UNARMED container evidence satisfied a closure proof. satisfied=${satisfied.join(",")}`,
   );
   assert.equal(result.verdict, "SELF-PROPOSE");
+});
+
+/* ---------------------------------------------------------------------------
+ * A HAND-TYPED ABLATION BUYS NOTHING, AND A PATCH LANDED THROUGH THIS.
+ *
+ * MEASURED 2026-08-12 by an adversarial review, end to end in a throwaway
+ * repository: `noOpAblation` set to "I did not run any ablation. This string was
+ * typed by hand.\n# exit code: 1" produced verdict APPLY, a 64-character token
+ * that verified, intent APPLY, and `applyGatedPatch` rewriting the file on disk.
+ * `proofsFor` weighed the string instead of reading it.
+ * ------------------------------------------------------------------------- */
+test("a hand-typed ablation is refused, and an ablation about ANOTHER repair is too", async () => {
+  const typed = proposalFor(["bakeoff/src/spec-agent.ts"]);
+  typed.evidence.noOpAblation = "I did not run any ablation. This string was typed by hand.\n# exit code: 1";
+  const handTyped = await gate(typed);
+  assert.notEqual(handTyped.verdict, "APPLY", "a hand-typed ablation reached APPLY");
+  assert.equal(handTyped.applyToken, null);
+  assert.match(handTyped.reason, /ablation/i);
+
+  // RECYCLED: a real prover transcript, correct in every way, about a DIFFERENT
+  // diff. The fingerprint is what refuses it.
+  const recycled = proposalFor(["bakeoff/src/spec-agent.ts"]);
+  recycled.evidence.noOpAblation =
+    `# no-op ablation of repair ${"0".repeat(32)}: 1 added line(s) removed\n` +
+    "$ node --test acceptance.test.mjs\nFAIL — verbatim red\n# exit code: 1\n";
+  const stale = await gate(recycled);
+  assert.notEqual(stale.verdict, "APPLY", "an ablation about another repair reached APPLY");
+
+  // AND THE CHECK THAT PASSED UNDER THE NO-OP is a refusal, not a pass: a
+  // vacuous accepting check is the thing this proof exists to catch.
+  const vacuous = proposalFor(["bakeoff/src/spec-agent.ts"]);
+  vacuous.evidence.noOpAblation =
+    `# no-op ablation of repair ${proposalFingerprint({ diff: vacuous.diff })}: 1 added line(s) removed\n` +
+    "$ node --test acceptance.test.mjs\nok 1 — still passes with the fix gutted\n# exit code: 0\n";
+  const passed = await gate(vacuous);
+  assert.notEqual(passed.verdict, "APPLY", "a check that PASSED under the no-op was treated as proof");
+
+  // THE OTHER ARM: the genuine fixture still applies, or this is a proof that
+  // can never be satisfied.
+  const real = await gate(proposalFor(["bakeoff/src/spec-agent.ts"]));
+  assert.equal(real.verdict, "APPLY", `a genuine prover ablation was refused: ${real.reason}`);
 });
 
 /* MUTATION M1b-isolated — in gate.mjs `proofsFor`, drop ONLY the mode filter:
@@ -542,30 +600,140 @@ test("apply refuses a token minted over a different diff, and refuses a missing 
 });
 
 /* ---------------------------------------------------------------------------
- * 10. AN OUTSIDE-CLOSURE PATCH DOES SELF-APPLY. Without this the whole gate
- *     could be `return REFUSE` and every test above would still pass.
+ * 10. AN OUTSIDE-CLOSURE PATCH DOES SELF-APPLY — BUT NOT WHILE THE REGISTRY
+ *     THAT PROVES THIS GATE WORKS IS UNARMED.
  *
- * MUTATION M11 — in gate.mjs `decide`, change the OUTSIDE-CLOSURE branch to
- * return SELF-PROPOSE. Watched RED 2026-08-10:
- *     AssertionError: an editable-only patch with full evidence did not
- *     self-apply — a gate that can never pass is not a gate
+ * REWRITTEN 2026-08-12, OWNER ARBITRATION, AND THE ORIGINAL IS QUOTED BELOW
+ * BECAUSE IT WAS GREEN AND WRONG. It read:
+ *
+ *     test("an editable-only patch with full evidence self-applies and gets a token")
+ *       assert.equal(result.verdict, "APPLY")
+ *       assert.equal(result.applyToken.length, 64)
+ *
+ * and it passed on this machine AT THE SAME TIME as section 4's
+ * `assert.equal(agg.containerExecuted.length, 0)`. Both green, together: the
+ * gate minted a real apply token for a patch to the editable package on a run
+ * where no container arm had executed. `decide()` never read
+ * `PASS-WITH-UNARMED`, so the aggregator's own rule — "UNARMED is not PASS: it
+ * degrades any proof that depends on it to INCONCLUSIVE" — was stated in one
+ * file and ignored in the next.
+ *
+ * WHAT IS KEPT. The original's point was that the gate must be ABLE to pass:
+ * without it the whole thing could be `return REFUSE` and every other test here
+ * would still be green. That arm survives below as a `decide()` unit with a
+ * clean aggregate, so MUTATION M11 (turn the OUTSIDE-CLOSURE branch into
+ * SELF-PROPOSE) still goes red.
+ *
+ * WHAT IS LOST, STATED RATHER THAN HIDDEN. `runGate` has no injectable
+ * known-bad seam, so the END-TO-END mint path — real gate, real token, real
+ * trail — cannot execute on a machine whose container arms are unarmed, and no
+ * test here exercises it any more. `mintApplyToken`/`decideApply` keep their
+ * unit coverage in section 9. If the container arms are ever armed in CI, the
+ * end-to-end arm should come back.
  * ------------------------------------------------------------------------- */
-test("an editable-only patch with full evidence self-applies and gets a token", async () => {
+test("an editable-only patch self-applies when only the SEALED SCORER's legs are unarmed", async () => {
+  // The four container legs are registered `armed: false` as literals — they
+  // grade the sealed scorer, which an OUTSIDE-CLOSURE diff cannot touch. If this
+  // parks, self-repair is inert for every patch for ever, which is how the blunt
+  // version of the 2026-08-12 arbitration was measured.
   const result = await gate(proposalFor(["bakeoff/src/spec-agent.ts", "bakeoff/src/spec-validate.ts"]));
   assert.equal(result.record.route, "OUTSIDE-CLOSURE", "the a913c871 repair must classify as EDITABLE");
   assert.equal(
     result.verdict,
     "APPLY",
-    `an editable-only patch with full evidence did not self-apply — a gate that can never pass is not a gate. reason: ${result.reason}`,
+    `an editable patch parked although every arm that could run here held. reason: ${result.reason}`,
   );
   assert.equal(typeof result.applyToken, "string");
   assert.equal(result.applyToken.length, 64);
   assert.equal(result.trail.ok, true);
+
+  // The unarmed legs really are all container-mode — otherwise this test is
+  // asserting the rule from the wrong side.
   const written = JSON.parse(readFileSync(result.trail.file, "utf8"));
-  assert.equal(written.humanReviewed, null);
-  assert.equal(written.frozen.verify.ok, true);
-  assert.equal(written.armCheck.ok, true);
   assert.ok(written.knownBad.results.every((r) => typeof r.mode === "string"), "a known-bad result reached the trail with no execution mode");
+  const unarmed = written.knownBad.results.filter((r) => r.outcome === "UNARMED");
+  assert.ok(unarmed.length > 0, "no arm was unarmed, so this fixture cannot exercise the rule");
+  assert.ok(unarmed.every((r) => r.mode === "container"), `a HOST arm was unarmed: ${unarmed.map((r) => r.id).join(", ")}`);
+});
+
+/* THE OTHER SIDE OF THE SAME RULE. An unarmed arm on the tier that IS doing the
+ * grading is missing evidence, and no route tolerates it. */
+test("an unarmed HOST arm parks the patch even when the diff is editable-only", () => {
+  const base = {
+    arm: { ok: true, blind: [] },
+    verify: { ok: true, mismatches: [] },
+    validation: { ok: true, route: "OUTSIDE-CLOSURE", refusals: [], classified: { touchesAdmission: false } },
+    proofs: [{ id: "no-op-ablation-failing", satisfied: true, why: "observed failing" }],
+  };
+  const hostUnarmed = decide({
+    ...base,
+    aggregate: {
+      verdict: "PASS-WITH-UNARMED",
+      reason: "1 UNARMED",
+      unarmed: [{ id: "kb-host-thing", mode: "host-import" }],
+      executed: [{ id: "kb-other", mode: "host-import" }],
+    },
+  });
+  assert.equal(hostUnarmed.verdict, "SELF-PROPOSE", "an unarmed HOST arm did not park an editable patch");
+  assert.match(hostUnarmed.reason, /HOST arm/);
+
+  // ...and the container-only case is the one that proceeds.
+  const containerOnly = decide({
+    ...base,
+    aggregate: {
+      verdict: "PASS-WITH-UNARMED",
+      reason: "4 UNARMED",
+      unarmed: [{ id: "kb-rescore-run1-21-20-1", mode: "container" }],
+      executed: [{ id: "kb-other", mode: "host-import" }],
+    },
+  });
+  assert.equal(containerOnly.verdict, "APPLY");
+
+  // An INSIDE-CLOSURE diff never gets that tolerance.
+  const inside = decide({
+    ...base,
+    validation: { ...base.validation, route: "INSIDE-CLOSURE" },
+    aggregate: {
+      verdict: "PASS-WITH-UNARMED",
+      reason: "4 UNARMED",
+      unarmed: [{ id: "kb-rescore-run1-21-20-1", mode: "container" }],
+      executed: [{ id: "kb-other", mode: "host-import" }],
+    },
+  });
+  assert.equal(inside.verdict, "SELF-PROPOSE", "an inside-closure diff was let through on host evidence");
+});
+
+/* NOTHING EXECUTED AT ALL is not a pass either, on any route. */
+test("a registry where nothing executed parks, however the diff is routed", () => {
+  const parked = decide({
+    arm: { ok: true, blind: [] },
+    verify: { ok: true, mismatches: [] },
+    validation: { ok: true, route: "OUTSIDE-CLOSURE", refusals: [], classified: { touchesAdmission: false } },
+    proofs: [{ id: "no-op-ablation-failing", satisfied: true, why: "observed failing" }],
+    aggregate: { verdict: "PASS-WITH-UNARMED", reason: "all unarmed", unarmed: [{ id: "a", mode: "container" }], executed: [] },
+  });
+  assert.equal(parked.verdict, "SELF-PROPOSE");
+  assert.match(parked.reason, /NO arm executed/);
+});
+
+/* THE ARM THE ORIGINAL TEST EXISTED FOR: the gate CAN still pass. A gate that
+ * can never pass is not a gate, and MUTATION M11 must still be caught. */
+test("with every known-bad arm executed, the same editable patch DOES self-apply", () => {
+  const base = {
+    arm: { ok: true, blind: [] },
+    verify: { ok: true, mismatches: [] },
+    validation: { ok: true, route: "OUTSIDE-CLOSURE", refusals: [], classified: { touchesAdmission: false } },
+    proofs: [{ id: "no-op-ablation-failing", satisfied: true, why: "observed failing" }],
+  };
+  assert.equal(
+    decide({ ...base, aggregate: { verdict: "PASS", reason: "9 arm(s) held, none unarmed" } }).verdict,
+    "APPLY",
+    "an editable-only patch with full evidence and a fully armed registry did not self-apply — a gate that can never pass is not a gate",
+  );
+  // ...and the ONLY difference that parks it is the unarmed registry.
+  const parked = decide({ ...base, aggregate: { verdict: "PASS-WITH-UNARMED", reason: "5 UNARMED" } });
+  assert.equal(parked.verdict, "SELF-PROPOSE");
+  assert.equal(parked.selfProposing, true);
 });
 
 /* ---------------------------------------------------------------------------
