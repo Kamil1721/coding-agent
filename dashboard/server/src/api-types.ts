@@ -20,6 +20,23 @@
  */
 
 /**
+ * THE ONE IMPORT IN THIS FILE, AND WHY IT IS NOT A MIRRORED COPY.
+ *
+ * `BriefShapeFinding` is a UNION OF CODES that `brief-shape.ts` produces —
+ * `dangling_attachment | multi_obligation | weak_modal | scale_language` — and
+ * the rules that produce them live there. Re-declaring the shape here would put
+ * the list of codes in two files, and the copy that drifts is always the one
+ * nobody runs: this one. The pattern the rest of the file follows for exactly
+ * this reason is the opposite (`gateStopReason: string | null` is deliberately
+ * NOT narrowed to `StopReason`), and the difference is that a widened string
+ * cannot go stale while an enumerated union can.
+ *
+ * It is a TYPE-ONLY import, so nothing about this file's job as the frozen wire
+ * contract changes: it still compiles to nothing and still describes only shapes.
+ */
+import type { BriefShapeFinding } from "./brief-shape.js";
+
+/**
  * Providers the DASHBOARD knows about — deliberately NARROWER than `Provider` in
  * `bakeoff/src/contracts.ts`, which keeps all four.
  *
@@ -2338,6 +2355,27 @@ export interface CreateRunRequest {
 
 export interface CreateRunResponse {
   readonly runId: string;
+  /**
+   * What the intake check noticed about the BRIEF, on a request it accepted.
+   *
+   * ABSENT WHEN THERE IS NOTHING TO SAY — never `[]`. A field that is present on
+   * every response is a field a reader learns to skip, and these are worth
+   * reading precisely because they are rare.
+   *
+   * ADVISORY BY CONSTRUCTION. The blocking half of `briefShape` never reaches a
+   * 201: a dangling attachment is a 400 (`dangling_attachment`) and no run is
+   * created. Everything that arrives here is a reading of English —
+   * `multi_obligation`, `weak_modal`, `scale_language` — which is why it rides a
+   * successful response instead of refusing one. See `brief-shape.ts` for run
+   * `dfd5a050`, the brief that made the blocking half necessary.
+   *
+   * NOT MIRRORED IN `dashboard/src/lib/api-types.ts` YET, and said here rather
+   * than left to be discovered: the client's hand-written `CreateRunResponse`
+   * declares `runId` alone, so today these warnings are visible to `curl` and to
+   * the tests and to nothing on screen. Adding them to the UI is a client change
+   * that has not been made, not a server field that failed to arrive.
+   */
+  readonly briefWarnings?: readonly BriefShapeFinding[];
 }
 
 /**
@@ -2888,4 +2926,14 @@ export interface ApiSupervisorTicketFiled {
    * shape on both routes.
    */
   readonly attachments: ApiTicketAttachments;
+  /**
+   * The same advisory reading of the brief `CreateRunResponse` carries, on the
+   * route where nobody is watching.
+   *
+   * IT MATTERS MORE HERE, NOT LESS. A ticket filed at 2am is submitted by the
+   * loop without anyone reading it again, so this response is the last moment a
+   * human sees anything about the brief's shape before a spec phase is paid for.
+   * Absent when there is nothing to say, exactly as on the other route.
+   */
+  readonly briefWarnings?: readonly BriefShapeFinding[];
 }

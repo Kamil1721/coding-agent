@@ -289,8 +289,15 @@ const EARS_TEMPLATES: readonly { readonly name: string; readonly pattern: RegExp
  *
  * Deliberately narrow. "the Lighthouse accessibility score shall be at least
  * 90" is a THRESHOLD, which is binary, and must not be flagged.
+ *
+ * EXPORTED FOR THE INTAKE CHECK, WHICH MUST NOT OWN A SECOND COPY.
+ * `dashboard/server/src/brief-shape.ts` reads the owner's BRIEF for the same
+ * language this validator refuses in a criterion, hours earlier and for free. A
+ * private copy over there would answer "no scale language" on a brief this
+ * grader would later flag — the two lists drifting is the defect, not the
+ * duplication itself.
  */
-const SCALE_PATTERNS: readonly RegExp[] = Object.freeze([
+export const SCALE_PATTERNS: readonly RegExp[] = Object.freeze([
   /\bon\s+a\s+scale\b/i,
   /\brate[ds]?\s+(?:it\s+)?from\s+\d/i,
   /\b[1-9]\s*(?:-|–|—|\bto\b)\s*(?:5|10)\s+(?:scale|rating|rubric)/i,
@@ -299,8 +306,15 @@ const SCALE_PATTERNS: readonly RegExp[] = Object.freeze([
   /\b(?:five|ten)[- ]point\s+scale\b/i,
 ]);
 
-/** Weak modals. EARS uses "shall"; "should"/"may" make a criterion unfalsifiable. */
-const WEAK_MODAL_PATTERN = /\b(?:should|may|might|could|ideally|preferably)\b/i;
+/**
+ * Weak modals. EARS uses "shall"; "should"/"may" make a criterion unfalsifiable.
+ *
+ * EXPORTED FOR THE SAME REASON {@link SCALE_PATTERNS} IS: the intake check in
+ * `dashboard/server/src/brief-shape.ts` warns about a weak modal in the BRIEF,
+ * and "what counts as weak" has to be one list. A second copy would let a brief
+ * pass intake carrying exactly the word this validator blocks a criterion for.
+ */
+export const WEAK_MODAL_PATTERN = /\b(?:should|may|might|could|ideally|preferably)\b/i;
 
 export interface StatementProblem {
   readonly blocking: boolean;

@@ -195,7 +195,20 @@ function logLines(harness: Harness, runId: string): readonly { level: string; te
 test("a ticket document is written to disk, recorded as a PATH AND A DIGEST, and moves the ticket id", async () => {
   const harness = await startHarness();
   try {
-    const text = "Build the thing described in the attached scope";
+    /*
+     * "the attached scope" UNTIL 2026-08-12, AND THE WORDING IS LOAD-BEARING IN A
+     * WAY IT WAS NOT WHEN IT WAS WRITTEN. This test submits the SAME text twice —
+     * once with no attachments, to prove the ticket id moves when a document is
+     * added — and `briefShape` now refuses a brief that claims an attachment on a
+     * request carrying nothing at all. The first submission was therefore a
+     * dangling promise by the intake check's own definition, and a correct 400.
+     *
+     * Reworded rather than exempted. Nothing this test measures — the id moving,
+     * `sha256` staying the digest of the brief, the bytes landing under the run's
+     * own directory — depends on the brief claiming an attachment, and the rule
+     * that now refuses it has both its arms tested in `brief-shape.test.ts`.
+     */
+    const text = "Build the thing described in the scope";
     const scope = pdfDataUrl("s", 512);
 
     const plain = await runIdOf(await submit(harness, { ticketText: text }));

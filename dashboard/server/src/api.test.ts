@@ -1524,3 +1524,78 @@ test("THE FOUR STAGES ON THE WIRE, and `expanding` is the one a renderer gets wr
     await harness.close();
   }
 });
+
+/* -------------------------------------------------------------------------
+ * The brief-shape check, at the route
+ * ---------------------------------------------------------------------- */
+
+/**
+ * A DANGLING PROMISE IS REFUSED BEFORE ANYTHING IS SPENT.
+ *
+ * Run `dfd5a050` (2026-08-10) filed a brief saying a motion reading was attached
+ * to the ticket and filed no motion reading. The spec phase learned that hours
+ * later. The point of the check is not only that it refuses — it is that the
+ * refusal COSTS NOTHING, so the run list must be untouched afterwards.
+ */
+test("POST /api/runs refuses a brief that promises an attachment it does not carry", async () => {
+  const harness = await startHarness(true);
+  try {
+    const refused = await fetch(`${harness.base}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticketText:
+          "# Portfolio\n\nBuild a one-page portfolio site. A reading of the reference page's " +
+          "motion is attached to this ticket. Match it exactly.",
+        modelId: "opus[1m]",
+      }),
+    });
+    assert.equal(refused.status, 400);
+    const body = (await refused.json()) as { error: string; message: string; remediation: string | null };
+    assert.equal(body.error, "dangling_attachment");
+    assert.match(body.message, /motion/i, "the refusal must name what was promised");
+    assert.ok(body.remediation !== null && body.remediation.length > 0);
+
+    // NOTHING WAS SPENT. A refusal that had already minted a run id or written a
+    // directory would be a cheaper failure, not a free one.
+    const summaries = (await (await fetch(`${harness.base}/api/runs`)).json()) as RunSummary[];
+    assert.deepEqual(summaries, [], "a refused brief created a run anyway");
+    assert.equal(harness.calls.pump, 0, "a refused brief asked the queue to advance");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("POST /api/runs still accepts a brief whose promises are kept, and returns its advisories", async () => {
+  const harness = await startHarness(true);
+  try {
+    const created = await fetch(`${harness.base}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        // Says "attached" about nothing, and promises nothing — the arm that
+        // keeps the test above honest. Carries one three-obligation acceptance
+        // bullet, so the advisory channel has something to report.
+        ticketText:
+          "# Portfolio\n\nBuild a one-page portfolio site.\n\nHOW I WILL KNOW IT WORKS\n\n" +
+          "- Submitting the form shows a field error and stores nothing; GET /api/messages " +
+          "proves the count did not change.",
+        modelId: "opus[1m]",
+      }),
+    });
+    assert.equal(created.status, 201);
+    const body = (await created.json()) as {
+      runId: string;
+      briefWarnings?: readonly { code: string; blocking: boolean }[];
+    };
+    assert.match(body.runId, /^run-/);
+    assert.ok(body.briefWarnings !== undefined, "the advisory never reached the caller");
+    assert.ok(body.briefWarnings.some((w) => w.code === "multi_obligation"));
+    assert.ok(
+      body.briefWarnings.every((w) => !w.blocking),
+      "a blocking finding was returned on a 201, which means it did not block",
+    );
+  } finally {
+    await harness.close();
+  }
+});

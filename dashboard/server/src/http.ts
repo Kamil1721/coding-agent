@@ -169,6 +169,8 @@ import type {
   RunGraphResponse,
   RunSummary,
 } from "./api-types.js";
+import { briefShape } from "./brief-shape.js";
+import type { BriefShapeFinding } from "./brief-shape.js";
 import {
   PREVIEW_INDEX_DOCUMENT,
   decodePreviewPath,
@@ -1613,6 +1615,63 @@ function refuseCaptureFields(
 }
 
 /**
+ * The brief, read against what this request actually carries — for both intake
+ * routes, from one place, on the same inputs.
+ *
+ * ONE VALIDATOR FOR BOTH ROUTES, the rule `refuseCaptureFields` above states:
+ * `POST /api/runs` and the supervisor queue take the same brief and the same
+ * attachments, and a second copy of "what counts as a dangling promise" is how
+ * the unattended queue ends up spending the night on a brief the attended route
+ * would have refused at the button. See `brief-shape.ts` for run `dfd5a050`,
+ * which is why this exists at all.
+ *
+ * WHERE THE FOUR SLOTS COME FROM, AND WHICH WAY THIS ERRS.
+ *
+ * `images` and `documents` are exact: both intakes have decoded by the time this
+ * runs, so the count is the number of attachments this request really carries.
+ *
+ * `motion` and `capture` are NOT counts and cannot be, because the readings have
+ * not happened yet — both routes capture AFTER this point (deliberately: a
+ * refusal here must cost neither a browser launch nor a byte). What is knowable
+ * now is whether the request named a page at all, and that is what is passed:
+ *
+ *   `kind === "none"`  the request named no page, by field or by URL in the
+ *                      prose, so no reading can ever exist. PROVABLY EMPTY, and
+ *                      the only case the blocking rule may fire on. It is run
+ *                      `dfd5a050`'s case exactly.
+ *   anything else      a reading was asked for and will be ATTEMPTED. It may
+ *                      fail — `refused`, a slow page, a browser that will not
+ *                      launch — and the house rule for every one of those is
+ *                      already "a failed capture must not fail the request"
+ *                      (see `runCapture`'s callers). Treated as FILLED.
+ *
+ * SO THE ERROR THIS MAKES IS ALWAYS THE SILENT ONE. A brief promising a motion
+ * reading whose capture then fails is not refused here; the failure is reported
+ * on the run's own stream by `captureNotes`, as it already was. The opposite
+ * error — refusing a brief whose reading would have arrived — would be a 400 in
+ * the owner's face for a promise the request was keeping, and no amount of
+ * remediation prose makes that acceptable on a blocking rule.
+ *
+ * ONE CONSEQUENCE WORTH NAMING: `requestedCaptureTarget` scans the PROSE for a
+ * URL, so a brief that merely cites a link reads as `capture: true` here and its
+ * capture-slot claims can never fire. That is the same conservative direction,
+ * reached by a different road.
+ */
+function briefShapeFindings(
+  body: Record<string, unknown>,
+  ticketText: string,
+  images: number,
+  documents: number,
+): readonly BriefShapeFinding[] {
+  return briefShape(ticketText, {
+    images,
+    documents,
+    motion: requestedMotionTarget(body).kind !== "none",
+    capture: requestedCaptureTarget(body, ticketText).kind !== "none",
+  });
+}
+
+/**
  * `POST /api/supervisor/tickets` — the only way a ticket ever enters the queue.
  *
  * THE KEY IS MINTED HERE, FROM THE BRIEF, AND THE CALLER MAY NOT SUPPLY ONE.
@@ -1806,6 +1865,27 @@ async function fileSupervisorTicket(
   }
 
   /*
+   * THE BRIEF, READ AGAINST WHAT THIS TICKET WILL ACTUALLY CARRY — and this is
+   * the route where it matters most, because nobody is watching. A dangling
+   * promise filed here is claimed by the loop on the next tick and spends a
+   * whole spec phase overnight before the contradiction is visible anywhere.
+   *
+   * BEFORE THE KEY, BEFORE THE DIRECTORY, BEFORE THE CAPTURE. The refusal must
+   * cost nothing, and everything below this line costs something: bytes under
+   * the ticket's key, a browser launch, a row the loop can claim.
+   */
+  const shape = briefShapeFindings(body, ticketText, intake.images.length, documentIntake.documents.length);
+  const dangling = shape.find((finding) => finding.blocking);
+  if (dangling !== undefined) {
+    // `dangling.code` RATHER THAN THE LITERAL, so this stays true if a second
+    // blocking rule is ever added. Today there is exactly one and it is
+    // `dangling_attachment`.
+    sendError(response, 400, dangling.code, dangling.detail, dangling.remediation);
+    return;
+  }
+  const briefWarnings = shape.filter((finding) => !finding.blocking);
+
+  /*
    * THE DIGESTS COME BEFORE THE DIRECTORY, WHICH LOOKS BACKWARDS AND IS NOT.
    *
    * The key is a function of the bytes, and the directory those bytes live in is
@@ -1980,6 +2060,11 @@ async function fileSupervisorTicket(
     nextAction: filed.nextAction,
     queuedTickets: deps.store.listSupervisorTickets(["queued"]).length,
     desired: deps.store.readSupervisorState().desired,
+    // OMITTED ENTIRELY WHEN THERE ARE NONE, not sent as `[]`: the field means
+    // "here is something to read", and an empty array on every clean filing
+    // trains the reader to stop looking. `exactOptionalPropertyTypes` makes the
+    // spread the only way to express that.
+    ...(briefWarnings.length > 0 ? { briefWarnings } : {}),
     /*
      * READ BACK OFF THE DISK, NEVER ECHOED FROM THE REQUEST. `ticketAttachments`
      * re-reads the manifest that was just written, so a filing whose bytes did
@@ -3273,6 +3358,34 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
     return;
   }
 
+  /*
+   * THE BRIEF, READ AGAINST WHAT THIS REQUEST ACTUALLY CARRIES.
+   *
+   * HERE BECAUSE THIS IS THE FIRST LINE THAT HAS BOTH HALVES. The claim lives in
+   * `ticketText` and the manifest is `intake` plus `documentIntake`, and the
+   * decoders above are what make the second half knowable — so the check cannot
+   * be higher. It also must not be lower: the comment on the intakes above states
+   * the invariant this refusal honours — the run id is minted BELOW this point,
+   * so a ticket refused here costs no directory, no row, no capture and no spec
+   * phase. That is the entire point of the rule; a shape check that fired after
+   * the run existed would be paying for the thing it is supposed to prevent.
+   *
+   * IT THEREFORE RUNS BEFORE THE MODEL IS RESOLVED, and a request that is wrong
+   * in both ways hears about the brief first. That is the right order: the model
+   * id is a typo the caller fixes in a second, and the brief is the thing that
+   * would have cost hours.
+   */
+  const shape = briefShapeFindings(body, ticketText, intake.images.length, documentIntake.documents.length);
+  const dangling = shape.find((finding) => finding.blocking);
+  if (dangling !== undefined) {
+    // `dangling.code` RATHER THAN THE LITERAL, so this stays true if a second
+    // blocking rule is ever added. Today there is exactly one and it is
+    // `dangling_attachment`.
+    sendError(response, 400, dangling.code, dangling.detail, dangling.remediation);
+    return;
+  }
+  const briefWarnings = shape.filter((finding) => !finding.blocking);
+
   const entry = await deps.catalog.resolve(modelId);
   if (entry === null) {
     sendError(
@@ -3473,7 +3586,14 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
 
   deps.orchestrator.pump();
 
-  const body2: CreateRunResponse = { runId };
+  // THE WARNINGS RIDE THE 201, AND ONLY WHEN THERE ARE SOME. They are readings
+  // of English rather than facts about this request (see `brief-shape.ts`), so
+  // they may not refuse the run — but the owner is standing at the submit button
+  // with the brief still editable, which is the only moment they are cheap to
+  // act on. The field is OMITTED when empty rather than sent as `[]`:
+  // `exactOptionalPropertyTypes` makes the spread the way to say that, and a
+  // client that sees the key at all knows there is something to read.
+  const body2: CreateRunResponse = { runId, ...(briefWarnings.length > 0 ? { briefWarnings } : {}) };
   sendJson(response, 201, body2);
 }
 
