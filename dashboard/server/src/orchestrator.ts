@@ -154,6 +154,7 @@ import {
   designLaneFailureMessage,
   writeDesignLaneRecord,
 } from "./design-outcome.js";
+import { copyDesignAssets, readDesignReuseMarker, validateDesignReuseSource } from "./design-reuse.js";
 import {
   DESIGN_DIRECTION_CHOICE_FILE,
   MAX_DESIGN_LOCK_TURNS,
@@ -3797,7 +3798,28 @@ export class Orchestrator {
       if (row === null) return { kind: "cancelled" };
       const manifest = readDesignManifest(runPaths.workspace);
       const segment = nextBuildSegment({
-        laneMode,
+        /*
+         * THE SEAM `build-segment.ts` PREDICTED, ARRIVING EXACTLY WHERE IT SAID IT
+         * WOULD. That file inlines this union rather than importing it and its
+         * docblock says why: "if `design-lane.ts` ever grows a fourth member, the
+         * call site in `orchestrator.ts` stops compiling, which is where that
+         * should surface". `reused` is that fourth member and this is that call
+         * site.
+         *
+         * `nextBuildSegment` answers ONE question — is there design work left for a
+         * segment to do? — and for a reused lane the answer is no: the stills, the
+         * manifest and the lock were copied into this workspace by `#designLaneFor`
+         * before this loop began. So it takes the same "straight to the build" arm
+         * `off` takes, and THAT is what makes zero image generations structural
+         * rather than a matter of the design prompt asking nicely: no design
+         * segment runs, so nothing is ever prompted to call `gemini-image.sh`.
+         *
+         * IT IS NOT RECORDED AS `off` ANYWHERE. `design-lane.json` says `reused`
+         * and names the source run; `designHandoffSection` and `shortlistFor` are
+         * both passed the real `laneMode` a few lines below, where a reused lane
+         * behaves like a full one because it HAS art.
+         */
+        laneMode: laneMode === "reused" ? "off" : laneMode,
         manifestExists: manifest !== null,
         manifestLocked: manifest?.lockedMockup != null,
         sessionId: row.builderSessionId,
@@ -4635,7 +4657,7 @@ export class Orchestrator {
   #preflight: DesignPreflight = NO_PREFLIGHT;
 
   /**
-   * Which of the DESIGN lane's three states this run is in.
+   * Which of the DESIGN lane's FOUR states this run is in.
    *
    * THE PURE GATE RUNS FIRST, AND THAT ORDER IS NOT A MICRO-OPTIMISATION.
    * `designSurfaceGate` is the only term that can answer "off", and the preflight
@@ -4646,6 +4668,14 @@ export class Orchestrator {
    * `degraded`, where `taste-frontend-expert` still art-directs and writes
    * `direction.md`; it never turns the lane off. Blocking a build on an absent
    * image key is a worse failure than shipping without mockups.
+   *
+   * REUSE HAPPENS HERE, BEFORE THE MODE IS DECIDED, AND THAT IS THE WHOLE OF ITS
+   * PLACEMENT REQUIREMENT. `#buildPhase` calls this once, after `#prepareWorkspace`
+   * has created and git-initialised the workspace and before the pass loop — so the
+   * copied set is on disk before `#buildSegmentPrompt` composes a handoff out of it
+   * and long before the visual gate looks for a locked reference. It also runs
+   * before the preflight, which a reused run skips entirely: probing `npx` for 20
+   * seconds answers a question this run does not ask.
    */
   async #designLaneFor(
     runId: string,
@@ -4654,16 +4684,19 @@ export class Orchestrator {
     surface: ReturnType<typeof classifySurface>,
   ): Promise<DesignLaneMode> {
     const capability = this.#capability();
-    this.#preflight = designSurfaceGate(surface, ticket.brief)
-      ? await designPreflight({
-          env: this.#deps.env,
-          homeDir: this.#deps.env["HOME"] ?? homedir(),
-          workspace: runPaths.workspace,
-          capability,
-          run: this.#deps.designRun ?? execCommandRunner,
-          canWrite: this.#deps.designCanWrite ?? canWriteDir,
-        })
-      : NO_PREFLIGHT;
+    const gateOn = designSurfaceGate(surface, ticket.brief);
+    const reuse = gateOn ? this.#reuseDesignFor(runId, runPaths) : null;
+    this.#preflight =
+      gateOn && reuse === null
+        ? await designPreflight({
+            env: this.#deps.env,
+            homeDir: this.#deps.env["HOME"] ?? homedir(),
+            workspace: runPaths.workspace,
+            capability,
+            run: this.#deps.designRun ?? execCommandRunner,
+            canWrite: this.#deps.designCanWrite ?? canWriteDir,
+          })
+        : NO_PREFLIGHT;
     for (const check of this.#preflight.checks) {
       if (!check.ok) {
         this.#emitLog(runId, check.blocking ? "warn" : "info", `design preflight — ${check.detail}`);
@@ -4674,8 +4707,18 @@ export class Orchestrator {
       ticketText: ticket.brief,
       capability,
       preflightOk: this.#preflight.ok,
+      // A FAILED COPY IS STILL A REUSED LANE, and that is deliberate rather than an
+      // oversight. The alternative — falling through to `full` — would spend the
+      // five metered generations this feature exists to save, on a run whose owner
+      // asked for none; and falling through to `degraded` would hand the design
+      // segment a prompt that says "no Gemini key resolves", which is false on a
+      // machine that has one. `classifyDesignLane`'s `reused` arm is what tells the
+      // two apart: a copy that landed reports the stills and the source, a copy
+      // that did not reports a NAMED FAILURE saying this run has no design input at
+      // all. Either way nothing is generated.
+      reusedFrom: reuse?.sourceRunId ?? null,
     });
-    if (mode !== "off") {
+    if (mode !== "off" && mode !== "reused") {
       this.#emitLog(
         runId,
         mode === "full" ? "info" : "warn",
@@ -4685,7 +4728,182 @@ export class Orchestrator {
               "back to rule-based scoring with no reference image",
       );
     }
+    if (mode === "reused" && reuse !== null) this.#recordReusedDesignLane(runId, runPaths, reuse, capability);
     return mode;
+  }
+
+  /**
+   * Copy another run's design set into this run's workspace, or say why not.
+   *
+   * NULL MEANS "THIS RUN GENERATES ITS OWN", which is every run submitted without
+   * `reuseDesignFrom` and therefore every run before 2026-08-12: no marker file, no
+   * read of another run's directory, and the caller's preflight and mode decision
+   * are byte-identical to what they were.
+   *
+   * IT RE-VALIDATES THE SOURCE. `POST /api/runs` already validated it before
+   * minting this run's id, and that check is not redundant with this one: a run can
+   * sit in the queue for hours behind other runs, and the source's directory can be
+   * deleted in between. The refusal an intake would have sent becomes a failed
+   * reuse here, which is loud and does not block.
+   *
+   * IT IS IDEMPOTENT, WHICH THE RESUME PATH REQUIRES. The marker is durable, so
+   * every re-entry into `#buildPhase` — a rate-limit resume, a boot reconciliation,
+   * an owner clicking resume — reaches this method again. Copying a second time
+   * would `rm` and re-create `design-refs/` underneath a build segment that is
+   * already reading it. So a workspace that already holds a parsed manifest with a
+   * lock on disk is left exactly as it is.
+   */
+  #reuseDesignFor(runId: string, runPaths: RunPaths): { sourceRunId: string; images: number } | null {
+    const marker = readDesignReuseMarker(runPaths.root);
+    if (marker === null) return null;
+    const source = marker.sourceRunId;
+
+    const existing = readDesignManifest(runPaths.workspace);
+    if (existing?.lockedMockup != null && existsSync(existing.lockedMockup)) {
+      this.#emitLog(
+        runId,
+        "info",
+        `the design copied from run ${source} is already in this run's workspace; it is not copied again`,
+      );
+      return { sourceRunId: source, images: countDesignPngs(refsDirFor(runPaths.workspace)) };
+    }
+
+    const check = validateDesignReuseSource(source, runPathsFor(this.#deps.paths, source));
+    if (!check.ok) {
+      this.#emitLog(
+        runId,
+        "error",
+        `the design of run ${source} cannot be reused (${check.code}): ${check.message}. It was checked ` +
+          `and accepted when this run was submitted, so it has changed on disk since. Nothing is ` +
+          `generated in its place: this run has no design input.`,
+      );
+      return { sourceRunId: source, images: 0 };
+    }
+    const copied = copyDesignAssets(check.source, runPaths);
+    if (!copied.ok) {
+      this.#emitLog(
+        runId,
+        "error",
+        `the design of run ${source} could not be copied into this run's workspace: ${copied.detail}. ` +
+          `Nothing is generated in its place: this run has no design input.`,
+      );
+      return { sourceRunId: source, images: 0 };
+    }
+
+    /*
+     * THE LOCK BECOMES THIS RUN'S OWN, IN BOTH PLACES IT LIVES.
+     *
+     * `copyDesignAssets` rewrote `manifest.json` — what the build agents and the
+     * visual gate read — to paths inside THIS workspace. This is the other half:
+     * `results/design-lock.json`, the run RECORD of the same decision (§17.3 rule
+     * 5), whose `locked` field on the source is an absolute path into the SOURCE's
+     * workspace. Left alone it would point the record — and the panel's mockup
+     * cards through it — at another run's files. That is the class of defect this
+     * repository has already hit once, when a shared preview host served one run's
+     * site under another run's URL.
+     *
+     * THROUGH `#mergeDesignLock` AND `#recordDesignMockups`, NOT A FRESH LITERAL.
+     * The first recomputes the per-direction mirror from the manifest against
+     * `#mockupDir(runId)` — THIS run's screenshot directory — and the second is
+     * what actually publishes the copies there, so the cards a reused run shows are
+     * its own files. A hand-written record here would have to derive both, and
+     * would drift from the one every other lock write goes through.
+     *
+     * THE DIALOGUE COUNTERS ARE NOT CARRIED OVER. `turnsUsed`, `rendersUsed` and
+     * `requests` are the SOURCE run's spend on ITS park; this run has not parked
+     * and has spent nothing, and inheriting them would tell an owner he had already
+     * used a render budget he has not touched. `emptyDesignLockRecord` supplies the
+     * zeroes, as it does for any run with no record yet.
+     */
+    this.#recordDesignMockups(runId, copied.manifest);
+    this.#mergeDesignLock(
+      runId,
+      runPaths,
+      {
+        awaiting: false,
+        locked: copied.locked,
+        lockedBy: copied.manifest.lockedBy,
+        reason: copied.manifest.lockedReason,
+        chosenDirection: copied.manifest.chosenDirection,
+        chosenDirectionBy: copied.manifest.directionChoice?.by ?? null,
+        chosenDirectionReason: copied.manifest.directionChoice?.reason ?? null,
+        // STAGE B IS OVER — it happened in the source run. `http.ts` reads this
+        // field rather than `locked !== null` to decide the panel's `settled`
+        // stage, so a reused run whose design is finished must say so or it renders
+        // as one still expanding.
+        expanded: true,
+      },
+      copied.manifest,
+    );
+    this.#emitLog(
+      runId,
+      "info",
+      `the DESIGN lane REUSED run ${source}'s design: ${String(copied.files)} file(s) copied into ` +
+        `${refsDirFor(runPaths.workspace)}, of which ${String(copied.images)} are stills, and the lock now ` +
+        `names this run's own copy (${copied.locked}). No image was generated. This run's verdict is a ` +
+        `build against run ${source}'s design and is not evidence about a design lane.`,
+    );
+    // THE VIDEO MARKS, IF THERE WERE ANY, SAID OUT LOUD. `runVideoLane` runs on the
+    // BUILD segment, which is the only segment this run takes, so an inherited
+    // `animate: true` would have bought a metered Veo leg for art this run did not
+    // make. `stripVideoMarks` drops them; this is the half that means the owner is
+    // not surprised by a build with no motion in it.
+    if (copied.videoMarksDropped > 0) {
+      this.#emitLog(
+        runId,
+        "info",
+        `${String(copied.videoMarksDropped)} still(s) in run ${source}'s design were marked for video. The ` +
+          `marks were NOT copied: the image→video lane spends against a metered key, and a run that ` +
+          `reused its design to spend nothing must not buy motion for art it did not make. This run ships ` +
+          `no video of its own.`,
+      );
+    }
+    return { sourceRunId: source, images: copied.images };
+  }
+
+  /**
+   * `results/design-lane.json` for a reused lane — THE HONESTY REQUIREMENT.
+   *
+   * WRITTEN HERE BECAUSE NOTHING ELSE WOULD WRITE IT. The record's only other
+   * writer is the post-design-segment block in `#buildPhase`, and a reused run
+   * never takes a design segment (see the `nextBuildSegment` call site) — so
+   * without this line a run that copied its art would leave NO lane record at all,
+   * and a reader comparing it against a run that generated would find one file
+   * missing rather than a different answer.
+   *
+   * THROUGH `classifyDesignLane`, NOT A LITERAL. That function is where this
+   * repository keeps the rule that a lane which produced nothing must never look
+   * successful; its `reused` arm grades the copy that actually landed, names the
+   * source run, and reports `imageCalls` rather than asserting it.
+   */
+  #recordReusedDesignLane(
+    runId: string,
+    runPaths: RunPaths,
+    reuse: { sourceRunId: string; images: number },
+    capability: ReturnType<typeof detectDesignCapability>,
+  ): void {
+    const record = classifyDesignLane({
+      mode: "reused",
+      manifest: readDesignManifest(runPaths.workspace),
+      // FROM DISK, like every other call of this function: the count is what is in
+      // the refs directory now, not what the copy believed it wrote.
+      pngCount: countDesignPngs(refsDirFor(runPaths.workspace)),
+      // ZERO, AND IT IS A MEASUREMENT RATHER THAN AN ASSUMPTION: the counter in
+      // `#buildPhase` only increments on a design segment's tool events, and this
+      // run takes none. It is the number the whole feature is for.
+      imageCalls: 0,
+      keySource: capability.key.source,
+      preflight: this.#preflight.checks,
+      reusedFrom: reuse.sourceRunId,
+    });
+    writeDesignLaneRecord(runPaths.results, record);
+    // THE TRAP, ON THIS PATH TOO. A reuse that landed nothing is a lane with no
+    // design input, and it must be as loud as a `full` lane that generated nothing.
+    const failure = designLaneFailureMessage(record);
+    if (failure !== null) {
+      this.#emitLog(runId, "error", failure);
+      this.#deps.store.updateRun(runId, { failureReason: failure });
+    }
   }
 
   /**
@@ -7390,6 +7608,18 @@ export class Orchestrator {
          * but STABLE, which is what the fingerprint rule needs.
          */
         site: `${row.phase}/${status}/${signals?.bakeoffCode ?? "no-code"}`,
+        /*
+         * THE TWO COLUMNS A REPRODUCTION CAN BE BUILT FROM, HANDED OVER AS
+         * VALUES. `planReproduction` (defect-record.ts) turns these into a
+         * command the evidence bar can execute on an isolated copy of HEAD, for
+         * the one defect class whose failing call takes arguments this record
+         * actually holds — and into a NAMED absence for every other class. They
+         * come off the `runs` row for the same reason `bakeoffCode` is carried
+         * rather than re-derived: the alternative is reading the model out of the
+         * failure text, which is the one discrimination this program forbids.
+         */
+        provider: row.provider,
+        modelId: row.modelId,
         // NULL, NOT `[]`. Nothing structured travels on this failure yet.
         violations: null,
         attempts: readAuthoringAttempts(this.#lastAuthoringError.get(runId) ?? null),

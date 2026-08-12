@@ -198,6 +198,7 @@ import type {
 import { DESIGN_MOCKUP_COPY_PREFIX, DESIGN_MOCKUP_LABEL, readDesignLock } from "./design-lock.js";
 import type { DesignLockRecord } from "./design-lock.js";
 import { MAX_DESIGN_LOCK_TURNS, MAX_DESIGN_ON_DEMAND_RENDERS } from "./design-prompt.js";
+import { validateDesignReuseSource, writeDesignReuseMarker } from "./design-reuse.js";
 import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
 import { describeError, silenceOf } from "./orchestrator.js";
@@ -3417,6 +3418,53 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
   }
 
   /*
+   * REUSE ANOTHER RUN'S DESIGN — THE LAST REFUSAL BEFORE ANYTHING IS MINTED.
+   *
+   * WHY IT IS THE LAST ONE. Every check above reads the request; this one opens
+   * four files in another run's directory, so a submission that is also missing a
+   * `modelId` hears about the typo it can fix in a second before it hears about a
+   * run directory it may have to go and look for. It still sits ABOVE the mint,
+   * which is the invariant the intake comments above state and the one that
+   * matters: a refused submission costs no run id, no directory, no row, no
+   * capture and no spec phase.
+   *
+   * WHY IT IS ON DISK RATHER THAN ON THE SOURCE RUN'S STATUS. A run row says
+   * `completed` when the gate finished, which says nothing about its DESIGN lane:
+   * a `degraded` run completes with no stills at all, and a `full` run whose image
+   * chain died completes with a manifest listing refs nobody wrote
+   * (`classifyDesignLane`'s `manifest-invalid` arm is that exact shape). The
+   * question here is "is there a complete design set on disk", and only disk
+   * answers it.
+   *
+   * A PARTIAL COPY IS WORSE THAN NO COPY, which is what these four codes are for:
+   * half a direction puts the build agent in front of `Read` targets that resolve
+   * to nothing and the visual gate in front of a missing reference, and both
+   * surface as somebody else's fault several turns deep.
+   */
+  const reuseDesignFrom = body["reuseDesignFrom"];
+  let reuseSourceRunId: string | null = null;
+  if (reuseDesignFrom !== undefined && reuseDesignFrom !== null) {
+    if (typeof reuseDesignFrom !== "string" || reuseDesignFrom.trim().length === 0) {
+      sendError(
+        response,
+        400,
+        "invalid_body",
+        "reuseDesignFrom must be a non-empty run id string, null or absent",
+        "Absent means this run generates its own design, which is what every run did before " +
+          "2026-08-12.",
+      );
+      return;
+    }
+    const sourceRunId = reuseDesignFrom.trim();
+    const check = validateDesignReuseSource(sourceRunId, runPathsFor(deps.paths, sourceRunId));
+    if (!check.ok) {
+      sendError(response, 400, check.code, check.message, check.remediation);
+      return;
+    }
+    reuseSourceRunId = sourceRunId;
+  }
+
+  /*
    * THE RUN ID IS MINTED BEFORE THE TICKET, WHICH IS A REVERSAL.
    *
    * References are bytes, and bytes need a directory. The directory is the run's
@@ -3427,6 +3475,26 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
    * them.
    */
   const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+  /*
+   * THE REUSE INTENT, INTO THE RUN'S OWN DIRECTORY, BESIDE ITS REFERENCES.
+   *
+   * A FILE RATHER THAN A COLUMN, and the reasoning is on
+   * {@link DESIGN_REUSE_MARKER_FILE}: no migration, and the fact is about bytes on
+   * disk, which is exactly what the two directories written below this line are.
+   *
+   * THE COPY ITSELF DOES NOT HAPPEN HERE. The workspace does not exist yet —
+   * `#prepareWorkspace` creates and git-initialises it at the top of the build
+   * phase — and the copied manifest's paths have to be rewritten to a workspace
+   * that exists. Copying at intake would also charge every submission for a
+   * directory the run may never reach: a queued run can be cancelled, and a run
+   * that is refused a model never builds.
+   */
+  if (reuseSourceRunId !== null) {
+    writeDesignReuseMarker(runPathsFor(deps.paths, runId).root, {
+      sourceRunId: reuseSourceRunId,
+      requestedAt: new Date().toISOString(),
+    });
+  }
   const referenceDir = referenceDirFor(deps.paths.runs, runId);
   const images: ReferenceImage[] = [];
   if (intake.images.length > 0) mkdirSync(referenceDir, { recursive: true });
@@ -3582,6 +3650,21 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
    */
   for (const line of captureNotes(capture, images.length, documents, motion)) {
     deps.bus.emit(runId, { type: "log", level: line.level, text: line.text });
+  }
+
+  // THE REUSE, ON THE RUN'S OWN STREAM, FROM THE MOMENT IT WAS ASKED FOR. The
+  // orchestrator says it again when the files actually land — this line is the
+  // record that the REQUEST carried it, which is the half a reader of the trace
+  // cannot otherwise recover if the run is cancelled before it builds.
+  if (reuseSourceRunId !== null) {
+    deps.bus.emit(runId, {
+      type: "log",
+      level: "info",
+      text:
+        `this run will REUSE run ${reuseSourceRunId}'s design instead of generating one: its ` +
+        `design-refs/ are copied into this run's workspace before the build, and no image is ` +
+        `generated. Its verdict is a build against that run's design, not evidence about a design lane.`,
+    });
   }
 
   deps.orchestrator.pump();

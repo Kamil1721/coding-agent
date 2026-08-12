@@ -2236,6 +2236,37 @@ export interface CreateRunRequest {
    */
   readonly designLock: "auto" | "ask" | null;
   /**
+   * Build this run against ANOTHER RUN'S design instead of generating one.
+   *
+   * WHAT IT COSTS TODAY, MEASURED, AND WHY THE FIELD EXISTS. From the 2026-08-12
+   * portfolio run's `results/design-lane.json`: `"mode": "full", "images": 11,
+   * "imageCalls": 5`. Three directions are canvassed, ONE is locked and the other
+   * two are discarded immediately; eleven runs of that same ticket have each paid
+   * for it, against a Gemini key that is the binding constraint on how often this
+   * pipeline can be tested at all.
+   *
+   * VALIDATED AT INTAKE, AGAINST DISK, BEFORE A RUN ID IS MINTED. Four refusals,
+   * each with its own code, all 400: `reuse_source_missing` (no such run
+   * directory), `reuse_source_no_design_refs`, `reuse_source_no_manifest` (absent,
+   * or present and unparseable) and `reuse_source_no_lock` (no locked still in the
+   * manifest, none in `design-lock.json`, or one naming a file that is gone). A
+   * refused submission mints no run and writes no directory. The SOURCE RUN'S
+   * STATUS IS NEVER CONSULTED: a `completed` run whose lane was degraded has no
+   * stills, and a `completed` run whose image chain died has a manifest listing
+   * refs nobody wrote.
+   *
+   * WHAT THE RUN THEN IS, AND IT IS NOT A RUN THAT PRODUCED ITS OWN DESIGN.
+   * `results/design-lane.json` records `mode: "reused"`, the source run id and the
+   * count of stills copied; the run's log says which run the art came from. The
+   * DESIGN lane is a variable in every comparison this dashboard makes, so a
+   * verdict from a reused run may never be read as one that art-directed for
+   * itself.
+   *
+   * ABSENT AND `null` BOTH MEAN "generate": omitting this field leaves every
+   * existing caller's behaviour byte-identical.
+   */
+  readonly reuseDesignFrom?: string | null;
+  /**
    * Reference images for the ticket, as base64 `data:image/…` URLs.
    *
    * SAME CAPS AS THE CHAT'S IMAGE INTAKE, from one declaration

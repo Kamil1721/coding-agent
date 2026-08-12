@@ -59,6 +59,17 @@ export interface DesignLaneRecord {
   readonly degradeReason: string | null;
   readonly failure: DesignFailure | null;
   readonly detail: string;
+  /**
+   * THE RUN THIS ONE'S ART CAME FROM, or null on every lane that made its own.
+   *
+   * NON-NULL EXACTLY WHEN `mode === "reused"`. A verdict from a run that copied
+   * its design is not the same experiment as one that generated it — the lane is
+   * a variable in every comparison this dashboard makes — so the record names the
+   * source rather than leaving two runs with identical-looking evidence. Null is
+   * the answer for every record written before 2026-08-12, which is what
+   * `readDesignLaneRecord` returns for them: an absent key, read as absent.
+   */
+  readonly reusedFrom: string | null;
   readonly locked: string | null;
   readonly lockedBy: DesignLockedBy | null;
   readonly lockedReason: string | null;
@@ -137,6 +148,13 @@ export function classifyDesignLane(input: {
    * floor entirely still cannot pass a lopsided canvass.
    */
   floor?: number;
+  /**
+   * The run whose `design-refs/` this run copied, or null/absent when it made its
+   * own. Non-null is what the `reused` arm below is graded on, and it is required
+   * for that arm: a reused lane that could not name its source would be exactly
+   * the indistinguishability this file exists to prevent, one road further along.
+   */
+  reusedFrom?: string | null;
 }): DesignLaneRecord {
   const floor = input.floor ?? MIN_DESIGN_REFS;
   const base = {
@@ -146,6 +164,7 @@ export function classifyDesignLane(input: {
     imageModel: DESIGN_IMAGE_MODEL,
     keySource: input.keySource,
     preflight: input.preflight,
+    reusedFrom: input.reusedFrom ?? null,
     locked: input.manifest?.lockedMockup ?? null,
     lockedBy: input.manifest?.lockedBy ?? null,
     lockedReason: input.manifest?.lockedReason ?? null,
@@ -153,6 +172,62 @@ export function classifyDesignLane(input: {
 
   if (input.mode === "off") {
     return { ...base, degradeReason: null, failure: null, detail: "the DESIGN lane did not run" };
+  }
+  /* ---- THE REUSED LANE (2026-08-12) -----------------------------------
+   *
+   * ITS OWN ARM, ABOVE THE `full` CHECKS AND NOT INSIDE THEM, because every one of
+   * those checks grades a GENERATION: `no-images` reads "0 attempts, the lane never
+   * reached the tool", which is the correct and expected shape here and is not a
+   * fault; `too-few-images` grades a stage floor against a set no stage of THIS run
+   * produced. Running them would report a copied set as a broken lane, or — the
+   * worse direction — pass a reused run through prose that says it generated.
+   *
+   * WHAT IS STILL GRADED, AND IT IS THE ONLY THING WORTH GRADING HERE: the copy
+   * either landed or it did not. `copyDesignAssets` reads the manifest back through
+   * `parseDesignManifest` against the DESTINATION workspace and refuses a set whose
+   * lock did not survive the path rewrite, so a `reused` record with zero images or
+   * no lock means the caller recorded a copy that its own read-back rejected.
+   *
+   * `imageCalls` IS THE POINT OF THE FEATURE AND IS REPORTED, NOT ASSUMED. It is
+   * whatever the caller counted; a non-zero value on this arm would mean a reused
+   * run generated anyway, and the detail says so rather than hiding it behind a
+   * "0 generations" sentence nobody measured.
+   */
+  if (input.mode === "reused") {
+    const from = input.reusedFrom;
+    if (from === null || from === undefined) {
+      return {
+        ...base,
+        degradeReason: null,
+        failure: "no-manifest",
+        detail:
+          "the DESIGN lane is recorded as REUSED and names no source run. A verdict from a run whose " +
+          "art came from elsewhere is not the same experiment as one that made its own, and this record " +
+          "cannot say which this was.",
+      };
+    }
+    if (input.pngCount === 0 || input.manifest === null || input.manifest.lockedMockup === null) {
+      return {
+        ...base,
+        degradeReason: null,
+        failure: input.manifest === null ? "no-manifest" : "no-images",
+        detail:
+          `the DESIGN lane was to reuse run ${from}'s design and there is nothing usable in this ` +
+          `workspace: ${String(input.pngCount)} still(s), ` +
+          `${input.manifest === null ? "no readable manifest" : "no locked still"}. Nothing was ` +
+          `generated either, so this run has no design input at all.`,
+      };
+    }
+    return {
+      ...base,
+      degradeReason: null,
+      failure: null,
+      detail:
+        `the DESIGN lane REUSED run ${from}'s design: ${String(input.pngCount)} still(s) copied into ` +
+        `this run's own workspace, ${String(input.imageCalls)} image generation(s). This run did not ` +
+        `art-direct and did not generate — read its verdict as a build against ${from}'s design, not ` +
+        `as evidence about a design lane.`,
+    };
   }
   if (input.mode === "degraded") {
     return {
