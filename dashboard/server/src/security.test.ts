@@ -189,3 +189,53 @@ test("no metered credential reaches an SDK subprocess", () => {
   assert.ok(!JSON.stringify(strings).includes(fakeAnthropic));
   assert.equal(strings["CODEX_HOME"], "/home/owner/.codex");
 });
+
+/**
+ * THE REPAIR LANE'S MAIL CREDENTIAL MUST NOT REACH A BUILDER.
+ *
+ * Added 2026-08-16 from a debugfix finding, verified against source before it
+ * was believed: `STRIPPED_ENV_NAMES` held thirteen names, every one an LLM
+ * provider credential, and `REPAIR_SMTP_URL` — which carries a password in its
+ * userinfo — was not among them. `subscriptionSubprocessEnv` is a SUBTRACTION
+ * ("Everything else is preserved", its own docblock), so the builder inherited
+ * it by default. The builder is an LLM agent with Bash, running unattended: one
+ * `env` puts the plaintext password in the model's context and in
+ * `runs/<id>/results/build.log`.
+ *
+ * THE REDACTOR IS NOT A SECOND LAYER HERE, WHICH IS WHY THIS ONE MATTERS.
+ * `bakeoff/src/redact.ts`'s `DEFAULT_KNOWN_ENV_NAMES` lists four provider keys,
+ * so its known-value pass never looks for this variable, and a Gmail app
+ * password is four lowercase words that no entropy rule flags.
+ *
+ * WHY IT IS A SEPARATE TEST RATHER THAN A NAME ADDED TO THE FIXTURE ABOVE. That
+ * test loops `STRIPPED_ENV_NAMES` and asserts each key is absent from a fixture
+ * that sets only some of them, so every unset name passes VACUOUSLY — adding
+ * `REPAIR_SMTP_URL` to the list alone would have produced a green assertion that
+ * observed nothing. This fixture carries the secret, and the assertions are
+ * about the SECRET's absence, not the key's.
+ *
+ * MUTATION: remove "REPAIR_SMTP_URL" from STRIPPED_ENV_NAMES -> RED on both
+ * assertions.
+ */
+test("REPAIR_SMTP_URL's password never reaches a subscription subprocess", () => {
+  const password = "abcd efgh ijkl mnop"; // the shape Gmail issues: four low-entropy words
+  const url = `smtps://owner%40gmail.com:${encodeURIComponent(password)}@smtp.gmail.com:465`;
+
+  const clean = subscriptionSubprocessEnv({
+    PATH: "/usr/bin",
+    REPAIR_SMTP_URL: url,
+    REPAIR_MAIL_TO: "owner@gmail.com",
+  });
+
+  assert.equal(clean["REPAIR_SMTP_URL"], undefined, "the mail credential must not be inherited by a builder");
+  assert.equal(
+    JSON.stringify(clean).includes("abcd"),
+    false,
+    "no fragment of the password may survive anywhere in the subprocess environment",
+  );
+  // THE ADDRESS IS DELIBERATELY KEPT. `repair-mail.ts` rules that an address is
+  // not a credential; stripping it would be theatre. Asserted so that a later
+  // over-correction is a visible decision rather than a silent one.
+  assert.equal(clean["REPAIR_MAIL_TO"], "owner@gmail.com");
+  assert.equal(clean["PATH"], "/usr/bin", "the subtraction must not take what the CLI needs to run");
+});

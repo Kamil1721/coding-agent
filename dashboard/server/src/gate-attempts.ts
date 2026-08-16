@@ -63,6 +63,84 @@ export function scoresRoot(paths: DashboardPaths): string {
   return join(paths.results, "scores");
 }
 
+/**
+ * The repair lane's report root, and it is SEALED for the third time for the
+ * SAME reason — which is the point of writing it here rather than at the deny.
+ *
+ * FOUND 2026-08-16 by a debugfix lens, and it is the third instance of one
+ * pattern: a new artefact directory is added under `results/`, its content is
+ * derived from held-out material, and the deny list is not updated because the
+ * deny list is a hand-written array somewhere else. `results/scores` was the
+ * second (see above, 2026-07-30). This is the third, caught BEFORE it shipped
+ * rather than after.
+ *
+ * WHAT THE REPORTS CONTAIN. `repair-report.ts` composes owner-facing prose from
+ * the defect record and from `adjudicate.ts`'s verdict reasons, which quote a
+ * `TestFailure`'s `titlePath`, `expected` and `actual` verbatim. The scorer
+ * protocol is explicit about that type (`scorer-protocol.ts`, {@link TestFailure}):
+ * it "lives ONLY under `results/scorer-out`, which is a sealed root … copying a
+ * `TestFailure` anywhere a build can read is a held-out leak, and there is no
+ * tripwire that would catch it."
+ *
+ * SEALED WHILE THE LEAK IS STILL ONLY PLAUSIBLE, deliberately. Nothing calls
+ * `deliverRepairReport` yet, so no report exists to be read and the exploit
+ * cannot be demonstrated today. Containment costs one array entry; the leak it
+ * prevents is undetectable after the fact, and the suite is frozen per ticket
+ * and reused across attempts, so the window is every later attempt on the same
+ * ticket. Waiting for it to become demonstrable means waiting for a run whose
+ * `heldOutPass` is worthless and unmarked.
+ */
+/**
+ * THE WHOLE RESULTS TREE, SEALED AS ONE — and this replaces enumerating its
+ * children, because enumerating them has now missed a directory THREE TIMES.
+ *
+ *   2026-07-30  `results/scores` was in no deny layer. Held-out test titles,
+ *               verbatim, 24 in one file.
+ *   2026-08-16  `results/repair-reports` was in no deny layer (caught before it
+ *               shipped, because nothing writes there yet).
+ *   2026-08-16  and the fix for THAT sealed two directories which DO NOT EXIST
+ *               while `results/calibration-4a` and `-4b` — 484 files holding
+ *               complete held-out suite SOURCES, real `TestFailure` records and
+ *               the reward-hacking detector's own rule corpus — stayed readable.
+ *               Measured with the real permission predicate: ALLOW.
+ *
+ * The pattern is not carelessness, it is the shape of the check. A hand-written
+ * list of children is a deny that fails OPEN for anything added later, and the
+ * things added later are exactly the new artefact directories nobody thought to
+ * re-check. Sealing the PARENT fails CLOSED instead: a new child is denied on
+ * the day it is created, and the cost of being wrong is a build that cannot read
+ * something it needs — loud, immediate, and fixable — rather than a held-out
+ * leak, which is silent and undetectable after the fact.
+ *
+ * NOTHING UNDER HERE IS BUILD INPUT. The artefact is built in
+ * `runs/<id>/workspace`; `results/` is where the GRADER's output goes.
+ */
+export function resultsRoot(paths: DashboardPaths): string {
+  return paths.results;
+}
+
+export function repairReportsRoot(paths: DashboardPaths): string {
+  return join(paths.results, "repair-reports");
+}
+
+/**
+ * The repair lane's PROOF transcripts — the raw output of the reproduce/fix/
+ * ablate runs, which quote the failing test's own output.
+ *
+ * Same reasoning as {@link repairReportsRoot}; named separately because it is a
+ * separate directory and this file's own comments record what happens when a
+ * path is assumed to be covered by a neighbouring deny.
+ *
+ * NEITHER OF THESE TWO IS LOAD-BEARING FOR THE DENY ANY MORE, and saying so
+ * matters: {@link resultsRoot} seals their parent, so a writer that lands beside
+ * them rather than inside them is still denied. They are kept as the single
+ * definition of WHERE the repair lane writes, which `repair-report.ts` is bound
+ * to by a test, and not as the thing that protects it.
+ */
+export function repairProofsRoot(paths: DashboardPaths): string {
+  return join(paths.results, "repair-proofs");
+}
+
 /** Where the scorer itself writes, and therefore where every attempt starts. */
 export function liveResultPath(paths: DashboardPaths, runId: string): string {
   return join(scorerOutRoot(paths), safeSegment(runId), "result.json");

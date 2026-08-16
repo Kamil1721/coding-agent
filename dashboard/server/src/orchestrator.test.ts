@@ -89,7 +89,7 @@ import { attemptPath, liveResultPath, readAttempt, scorerOutRoot, scoresRoot } f
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
-import { AUTO_CONTINUE_MAX } from "./recovery.js";
+import { AUTO_CONTINUE_MAX, boundFor } from "./recovery.js";
 import { PreviewHost } from "./preview.js";
 import { renderRunVerdict } from "./run-report.js";
 import { ticketFromText } from "./ticket.js";
@@ -2531,22 +2531,66 @@ test("run.json's held constants are all present, so none can quietly go missing"
  * same trap the egress tests above call out.
  * ---------------------------------------------------------------------- */
 
-test("the builder is denied the score records, not just the scorer output", async () => {
+test("the builder is denied everything under results/, however the deny is spelled", async () => {
+  /*
+   * REWRITTEN 2026-08-16, AND THE REWRITE IS THE POINT.
+   *
+   * This test used to assert that `sealedRoots` CONTAINED specific entries —
+   * `scoresRoot(paths)`, `scorerOutRoot(paths)`. That pins the SPELLING of the
+   * deny, not its EFFECT, and the difference cost a real leak: the enumeration
+   * it was guarding missed `results/calibration-4a` and `-4b` (484 files holding
+   * complete held-out suite SOURCES, real TestFailure records and the
+   * reward-hacking detector's own rule corpus), and this test stayed green
+   * throughout, because the entries it named were all still present.
+   *
+   * A check that can only observe the presence of the entries it already knows
+   * about cannot observe the child nobody added. So it now asserts the property:
+   * for each sensitive path, SOME sealed root contains it. That holds whether the
+   * deny enumerates children or seals the parent, and it fails the day a new
+   * artefact directory appears under `results/` unsealed.
+   */
   const h = await designRun({ designLock: "auto" });
   try {
     const call = h.builderCalls[0];
     assert.ok(call !== undefined, "a build must have started, or this asserts nothing");
     const sealed = call.sealedRoots;
 
-    const scores = scoresRoot(h.paths);
-    assert.ok(
-      sealed.includes(scores),
-      `results/scores must be sealed — it carries held-out test titles verbatim. Got: ${sealed.join(", ")}`,
+    const denied = (path: string): boolean =>
+      sealed.some((root) => path === root || path.startsWith(`${root}/`));
+
+    const mustBeDenied: readonly [string, string][] = [
+      [join(scoresRoot(h.paths), "run-1.json"), "score records carry held-out test titles verbatim"],
+      [join(scorerOutRoot(h.paths), "run-1", "result.json"), "the scorer output carries TestFailure records"],
+      [
+        join(h.paths.results, "calibration-4a", "blank-page", "acceptance", "CAL", "suite", "holdout", "portfolio.spec.mjs"),
+        "the calibration corpus holds COMPLETE held-out suite sources — the leak this rewrite exists for",
+      ],
+      [
+        join(h.paths.results, "calibration-4b", "x", "results", "scores", "cal.container.json"),
+        "and its score records too",
+      ],
+      [
+        join(h.paths.results, "repair-reports", "2026-01-01-sig.txt"),
+        "repair reports quote TestFailure strings",
+      ],
+      [
+        join(h.paths.results, "a-directory-nobody-has-added-yet", "leak.json"),
+        "a NEW child of results/ must be denied the day it is created, not the day someone remembers it",
+      ],
+      [join(h.paths.acceptance, "t-1", "suite", "holdout", "x.test.mjs"), "the suite store itself"],
+    ];
+
+    for (const [path, why] of mustBeDenied) {
+      assert.ok(denied(path), `${path} is READABLE by the builder — ${why}. Sealed roots: ${sealed.join(", ")}`);
+    }
+
+    // THE CONTROL. The deny must not have swallowed the workspace: a builder that
+    // cannot read the thing it is building is a broken build, not a secure one.
+    assert.equal(
+      denied(join(h.paths.home, "runs", "run-1", "workspace", "server.mjs")),
+      false,
+      "the artefact's own workspace must stay readable",
     );
-    // And the two older roots are still there. A "fix" that replaced rather than
-    // added would trade one leak for two.
-    assert.ok(sealed.includes(h.paths.acceptance), "the suite store is still sealed");
-    assert.ok(sealed.includes(scorerOutRoot(h.paths)), "the scorer output is still sealed");
   } finally {
     await h.cleanup();
   }
@@ -5061,10 +5105,20 @@ interface SpendRun {
   readonly rowTokens: ApiTokens | null;
   readonly seats: readonly ApiSeatSpend[];
   readonly fixRounds: number;
+  /** `recovery_class` on the TERMINAL row. See the two-arm test at the foot of this file. */
+  readonly terminalRecoveryClass: string | null;
+  /** …and what it was when the builder first ran, which is the stronger check. */
+  readonly classAtFirstBuild: string | null;
 }
 
-/** One run that gates RED once, fixes once, and stops. */
-async function spendRun(): Promise<SpendRun> {
+/**
+ * One run that gates RED once, fixes once, and stops.
+ *
+ * `preStampClass` simulates a row that already carries a class when the verdict
+ * lands — which is what `reconcileOnBoot` leaves behind after a restart
+ * mid-build. Default `null` keeps every pre-existing caller unchanged.
+ */
+async function spendRun(preStampClass: string | null = null): Promise<SpendRun> {
   const dir = mkdtempSync(join(tmpdir(), "dash-spend-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
@@ -5087,6 +5141,13 @@ async function spendRun(): Promise<SpendRun> {
   // one gate attempt and no fixing. Both faults were in the fixture.)
   const ticketText = "Build a command line tool that prints a report to stdout.";
   const ticket = ticketFromText(ticketText);
+  /*
+   * WHAT THE ROW LOOKED LIKE WHEN THE BUILDER FIRST RAN. Captured because it is
+   * the only point that can distinguish "the stale class was cleared at the START
+   * of the run" from "it was cleared at the verdict" — and only the former
+   * protects the two terminal exits in `#execute` that never reach a verdict.
+   */
+  const classAtBuild: (string | null)[] = [];
   const builder = new FakeBuilder({
     workspace: () => runPathsFor(paths, runId).workspace,
     pngCount: 0,
@@ -5094,6 +5155,9 @@ async function spendRun(): Promise<SpendRun> {
     segmentTokens: [500_000, 7],
     writeManifest: false,
     animateRefs: false,
+    onRequest: () => {
+      classAtBuild.push(store.getRun(runId)?.recoveryClass ?? null);
+    },
   });
 
   // THE GATE'S RED IS ON DISK, NOT IN THE INJECTED RECORD. `#gatePhase` reads
@@ -5178,6 +5242,11 @@ async function spendRun(): Promise<SpendRun> {
   });
 
   try {
+    // BEFORE THE PUMP, so the class is on the row for the whole run exactly as a
+    // boot reconcile would have left it.
+    if (preStampClass !== null) {
+      store.updateRun(runId, { recoveryClass: preStampClass as never });
+    }
     orchestrator.pump();
     for (const deadline = Date.now() + 30_000; ; ) {
       const row = store.getRun(runId);
@@ -5190,6 +5259,8 @@ async function spendRun(): Promise<SpendRun> {
       seats: store.listSeatSpend(runId),
       // Call 0 is the build segment; anything after it is a fix round.
       fixRounds: builder.calls.length - 1,
+      terminalRecoveryClass: store.getRun(runId)?.recoveryClass ?? null,
+      classAtFirstBuild: classAtBuild[0] ?? null,
     };
   } finally {
     await orchestrator.shutdown();
@@ -5508,4 +5579,101 @@ test("the bound is honoured and capped — the scorer asks docker for 6g and 2 c
   // NEGATIVE CONTROL: if this returned the raw number the cap is dead and the
   // test above would pass anyway.
   assert.notEqual(readMaxConcurrentRuns({ DASHBOARD_MAX_CONCURRENT_RUNS: "99" }), 99);
+});
+
+/* =========================================================================
+ * A RESTART MUST NOT REBUILD THE TICKET
+ *
+ * Added 2026-08-16 against a MEASURED live defect, not a hypothetical.
+ *
+ * `recovery_class` has five writers in `orchestrator.ts` (`:1883`, `:1899`,
+ * `:2082`, `:7146`, `:7289`) and none of them ever writes null, while
+ * `db.ts:1361` writes the column only when the key is defined. So a class
+ * stamped early survives to the terminal row. `reconcileOnBoot` stamps
+ * `interrupted` when the dashboard restarts mid-build (`:1883`) and requeues;
+ * the run then reaches the gate and fails on its own merits, and the terminal
+ * row still reads `interrupted`.
+ *
+ * WHY THAT IS DANGEROUS RATHER THAN UNTIDY, measured against the real `dist`:
+ *
+ *     boundFor("interrupted")    = 3      isRepairable("interrupted") = true
+ *     boundFor("unclassified")   = 0
+ *     boundFor(null)             = undefined
+ *
+ * and `supervisor.ts:1410` routes on `typeof bound !== "number" || bound === 0`.
+ * A bound of 3 therefore skips that arm and reaches `:1462`, which RE-SUBMITS
+ * THE WHOLE TICKET. A dashboard restart silently converts an earned DID NOT
+ * PASS into an automatic rebuild of the main task — the one wake the repair
+ * lane is forbidden to cause.
+ *
+ * `null` and `"unclassified"` both take the same arm, so clearing the class
+ * removes the re-submit without moving today's routing by a byte.
+ * ====================================================================== */
+
+test("a gate-red verdict clears the recovery class, so a restart cannot re-submit the ticket", async () => {
+  /*
+   * ARM 2 IS THE DEFECT. Arm 1 is the control that proves arm 2 is measuring
+   * the clear rather than an absence that was always there.
+   *
+   * MUTATION: delete the `updateRun(runId, { recoveryClass: null })` immediately
+   * before `#finish` in `#gatePhase`. Arm 1 stays GREEN — it never had a class —
+   * and arm 2 goes RED reading "interrupted". An arm-1-only test would therefore
+   * have shipped green over the defect, which is this repo's signature failure.
+   */
+  const clean = await spendRun();
+  assert.equal(
+    clean.terminalRecoveryClass,
+    null,
+    "a run that reached a verdict has no failure CLASS — it has a RESULT",
+  );
+
+  const afterRestart = await spendRun("interrupted");
+  assert.equal(
+    afterRestart.terminalRecoveryClass,
+    null,
+    "the boot reconciler's 'interrupted' survived to the terminal row, and boundFor('interrupted') is 3, " +
+      "so the supervisor would rebuild this ticket up to three times over a verdict it earned",
+  );
+
+  // BOTH ARMS MUST HAVE ACTUALLY RUN THE GATE. Without this, a fixture that
+  // failed early would satisfy both assertions by never reaching the path.
+  assert.equal(clean.fixRounds, 1, "arm 1 never reached the gate/fix loop, so it measured nothing");
+  assert.equal(afterRestart.fixRounds, 1, "arm 2 never reached the gate/fix loop, so it measured nothing");
+
+  /*
+   * AND IT WAS CLEARED BEFORE THE RUN DID ANY WORK — the assertion that covers
+   * the exits this test cannot reach.
+   *
+   * Added 2026-08-16 after a debugfix lens measured that the first version of the
+   * fix cleared the class immediately before the VERDICT, and `#execute` has
+   * three terminal `failed` exits. The other two — the builder wrote no
+   * self-report, and the gate produced no record — kept the stale `interrupted`
+   * and would still have re-submitted the ticket. Driving those two paths needs
+   * two more full-run fixtures; observing that the clear happens BEFORE the
+   * builder is even called proves the property for all three at once.
+   *
+   * MUTATION: move the clear back to just before `#finish` in the verdict path
+   * -> this goes RED while the two assertions above stay green, which is exactly
+   * the blind spot that shipped.
+   */
+  assert.equal(
+    afterRestart.classAtFirstBuild,
+    null,
+    "the stale class was still on the row when the builder started, so any terminal exit that does not " +
+      "reach the verdict would carry it — and boundFor('interrupted') is 3, which re-submits the ticket",
+  );
+});
+
+test("the retry bounds this fix depends on are what the fix assumes", () => {
+  /*
+   * THE CLEAR IS ONLY SAFE BECAUSE null AND "unclassified" ROUTE IDENTICALLY.
+   * That is an assumption about `recovery.ts`, and an assumption nothing pins is
+   * how a bug fix silently becomes a routing change.
+   *
+   * MUTATION: give `null` a non-zero bound in `recovery.ts` -> RED here, before
+   * anyone discovers it by watching a ticket rebuild itself at 3am.
+   */
+  assert.equal(boundFor("interrupted" as never), 3, "if this is no longer 3, re-derive the defect above");
+  assert.equal(boundFor("unclassified" as never), 0);
+  assert.equal(boundFor(null as never), undefined, "an unknown class must take the conservative arm");
 });

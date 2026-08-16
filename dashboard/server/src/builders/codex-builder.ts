@@ -22,7 +22,7 @@
  * ALLOW list, so reaching for it would widen access, not narrow it. There is
  * therefore no mechanism on this driver equivalent to the Claude driver's
  * `sandbox.filesystem.denyRead`, and `request.sealedRoots` is readable by a
- * Codex build with `cat` or `grep`. That field now carries TWO roots, not one:
+ * Codex build with `cat` or `grep`. That field now carries the sealed roots (now `acceptance` plus the whole of `results/` — see gate-attempts.ts#resultsRoot; this count has changed three times and is deliberately no longer written as a number):
  * `dashboard/acceptance` (the suite store) and `dashboard/results/scorer-out`,
  * whose `result.json` persists `criterionCoverage[].testRefs` — held-out TEST
  * TITLES — outside the sealed store. Both are exposed on this path.

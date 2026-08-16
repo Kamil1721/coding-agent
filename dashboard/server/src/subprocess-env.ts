@@ -52,6 +52,35 @@ export const STRIPPED_ENV_NAMES: readonly string[] = Object.freeze([
   "MOONSHOT_BASE_URL",
   "DEEPSEEK_API_KEY",
   "DEEPSEEK_BASE_URL",
+  /*
+   * THE REPAIR LANE'S MAIL CREDENTIAL — 2026-08-16, AND IT IS NOT A PROVIDER KEY,
+   * WHICH IS WHY IT WAS MISSED.
+   *
+   * `REPAIR_SMTP_URL` carries a password in its userinfo
+   * (`smtps://user:<app-password>@host:465`). Every name above it is an LLM
+   * provider credential, so a new credential that is not one reads as "not this
+   * list's business" — and this list is a SUBTRACTION, so anything unlisted is
+   * inherited by default. The failure direction of an allowlist is a broken
+   * subprocess; the failure direction of a subtraction is a leaked secret.
+   *
+   * WHY IT MATTERS MORE HERE THAN A PROVIDER KEY WOULD. The builder is an LLM
+   * agent WITH BASH, running unattended against a ticket the owner may not have
+   * written. One `env` or `printenv`, one dependency postinstall that dumps
+   * configuration, and the plaintext password is in the model's context and in
+   * `runs/<id>/results/build.log`.
+   *
+   * AND THE REDACTOR CANNOT SAVE IT. `bakeoff/src/redact.ts`'s
+   * `DEFAULT_KNOWN_ENV_NAMES` holds four names, all provider keys, so the
+   * known-value pass does not know to look for this one; and a Gmail app
+   * password is four lowercase words, which no entropy rule will flag. The only
+   * place this can be stopped is here, before the subprocess exists.
+   *
+   * THE ADDRESS IS NOT STRIPPED, deliberately. `REPAIR_MAIL_TO` is an email
+   * address, and `repair-mail.ts:104-109` already rules that an address is not a
+   * credential. Stripping it would be security theatre that also breaks nothing
+   * usefully.
+   */
+  "REPAIR_SMTP_URL",
 ]);
 
 /**

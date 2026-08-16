@@ -168,7 +168,12 @@ import { defaultVideoCapabilityDeps, videoCapability } from "./design/video-capa
 import { defaultSpawnLeg, runVideoLane } from "./design/video-lane.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
 import type { FixTask } from "./fix-triage.js";
-import { archiveAttempt, readAttempt, scorerOutRoot, scoresRoot } from "./gate-attempts.js";
+import {
+  archiveAttempt,
+  readAttempt,
+  resultsRoot,
+  scorerOutRoot,
+} from "./gate-attempts.js";
 // THE ONE DOOR. `renderEvidence` routes the judge's evidence bundle through the
 // same allowlist the fix loop's prompts go through, rather than through a second
 // copy of the same decision. See the docblock on `renderEvidence`.
@@ -2100,6 +2105,35 @@ export class Orchestrator {
     const store = this.#deps.store;
     const row0 = store.getRun(runId);
     if (row0 === null) return;
+
+    /*
+     * CLEAR THE STALE RECOVERY CLASS HERE — ONCE, AT THE START — RATHER THAN AT
+     * EVERY TERMINAL EXIT. Corrected 2026-08-16.
+     *
+     * The first version of this fix put `recoveryClass: null` immediately before
+     * the verdict's `#finish`. A debugfix lens then measured what that missed:
+     * `#execute` has THREE terminal `failed` exits (`:2471` the builder wrote no
+     * self-report, `:2535` the gate produced no record, and the verdict), and it
+     * covered one. Enumerating exit points is the same shape of check that let a
+     * new directory land outside `sealedRoots` twice — it fails open for the path
+     * nobody remembered.
+     *
+     * Clearing at the START is correct by construction instead. `recovery_class`
+     * describes why THIS attempt failed; anything on the row when the attempt
+     * begins was written by a PREVIOUS one — `reconcileOnBoot` stamps
+     * `interrupted` (`:1883`) when the dashboard restarts mid-build — and is
+     * stale by definition. A class written later BY this run
+     * (`classifyPhaseFailure` at `:2082`, `throttled` at `:7146`) is written
+     * after this line and survives to the terminal row, which is what those
+     * writers are for.
+     *
+     * WHY IT MATTERED: `boundFor("interrupted")` is 3, so `supervisor.ts:1462`
+     * re-submits the whole ticket. A restart silently converted an earned DID NOT
+     * PASS into an automatic rebuild of the main task.
+     */
+    if (row0.recoveryClass !== null) {
+      store.updateRun(runId, { recoveryClass: null });
+    }
 
     const runPaths = runPathsFor(this.#deps.paths, runId);
     ensureRunDirs(runPaths);
@@ -4198,19 +4232,14 @@ export class Orchestrator {
         // strongly as the bake-off's container does.
         sealedRoots: [
           this.#deps.paths.acceptance,
-          // ONE definition, shared with the attempt archive that lives inside it
-          // (gate-attempts.ts). Spelling the path a second time here is how a
-          // later attempt directory ends up outside the deny it was supposed to
-          // inherit.
-          scorerOutRoot(this.#deps.paths),
-          // AND the score records. `ScoreRecord.criterionCoverage[].testRefs`
-          // carries held-out test titles verbatim — measured on the live run,
-          // 24 of them in one file — and the suite is frozen per ticket and
-          // reused across attempts, so a builder reading a PREVIOUS run's score
-          // would learn the titles it is about to be graded against while
-          // `heldOutPass` stayed true and meant nothing. Named 2026-07-30; it
-          // was in no deny layer before that.
-          scoresRoot(this.#deps.paths),
+          /*
+           * THE WHOLE RESULTS TREE. Replaced an enumeration of its children on
+           * 2026-08-16 after that enumeration missed `results/calibration-4a`
+           * and `-4b` — 484 files of held-out suite source — while sealing two
+           * directories that do not exist. See `gate-attempts.ts#resultsRoot`
+           * for the three-strike history and why the parent fails closed.
+           */
+          resultsRoot(this.#deps.paths),
         ],
         // THE DELEGATION BOUNDARY. `settingSources: ["user"]` makes 144 agents
         // visible to the builder; this is the far smaller set it may actually
@@ -5864,8 +5893,7 @@ export class Orchestrator {
       workspace: runPaths.workspace,
       sealedRoots: [
         this.#deps.paths.acceptance,
-        scorerOutRoot(this.#deps.paths),
-        scoresRoot(this.#deps.paths),
+        resultsRoot(this.#deps.paths),
       ],
       allowedAgents: fixAllowedAgents(task),
       modelId: row.modelId,
@@ -6539,7 +6567,7 @@ export class Orchestrator {
       runId,
       prompt: call.sessionPrompt,
       workspace: call.scratchDir,
-      sealedRoots: [this.#deps.paths.acceptance, scorerOutRoot(this.#deps.paths), scoresRoot(this.#deps.paths)],
+      sealedRoots: [this.#deps.paths.acceptance, resultsRoot(this.#deps.paths)],
       allowedAgents: call.allowedAgents,
       modelId: row.modelId,
       effort: entry.effort,
