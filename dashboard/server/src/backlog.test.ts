@@ -81,6 +81,8 @@ test("the backlog NEVER contains a held-out test title", () => {
       testsFailed: 1,
       timedOut: false,
       reportProblem: "1 failing: renders the hero heading",
+      // No suite executed in this fixture, so no failure carried a reason.
+      failures: [],
     },
   });
   const report = toAgentVisible(container);

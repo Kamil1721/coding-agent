@@ -20,10 +20,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AcceptanceCriterion, CriterionTier } from "./contracts.js";
+import type { FailureSourceSpec } from "./scorer-protocol.js";
 import {
   GATE_IDS,
   TITLE_PATH_SEPARATOR,
+  MAX_PERSISTED_FAILURES,
+  collectFailures,
   criterionNamedInTestTitle,
+  readParsedFailure,
   isSuiteTestFailure,
   collectManifestProblems,
   parseContainerResult,
@@ -619,4 +623,242 @@ test("a manifest that is not an object at all produces the parser's complaint an
     assert.equal(problems.length, 1, `${JSON.stringify(junk)} produced ${String(problems.length)} problems`);
     assert.match(problems[0]?.message ?? "", /is not a JSON object|manifestVersion/);
   }
+});
+
+/* =========================================================================
+ * TestFailure — the reason a test failed, carried where a machine can read it
+ *
+ * ADDED 2026-08-16. These do not test a gate; they test whether a CAUSE
+ * survives the trip from the runner to `result.json`. The defect they were
+ * written against is not hypothetical: runs `e1c15359` and `047f9872` each lost
+ * four FUNCTIONAL criteria to one cause, and that cause reached disk only
+ * inside a human-readable transcript in a single string field.
+ *
+ * EVERY TEST BELOW WAS MUTATED BEFORE IT WAS KEPT. The mutation is named in
+ * each docblock, with what turned red. A test whose mutation leaves it green is
+ * not evidence, and this file has fifteen neighbours that say so.
+ * ====================================================================== */
+
+const NODE_FAIL: FailureSourceSpec = {
+  runner: "node-test",
+  titlePath: "holdout/messages-persistence.test.mjs › [REQ-006] T-108 a blank message is refused",
+  ok: false,
+  statuses: ["failed"],
+  failure: {
+    name: "AssertionError",
+    code: "ERR_ASSERTION",
+    operator: "fail",
+    message: 'npm start did not answer /api/health on port 39211 within 45s  npm error Missing script: "start"',
+    stack: "at startServer (file:///scorer/suite/holdout/messages-persistence.test.mjs:116:12)",
+  },
+};
+
+/**
+ * THE 2026-08-12 CASE, END TO END THROUGH THE PURE PATH.
+ *
+ * MUTATION: drop `failure` from the spec. `message` becomes null and this goes
+ * red on the final assertion — which is precisely the state both August runs
+ * shipped in, so the mutation reproduces the historical defect rather than an
+ * invented one.
+ */
+test("a failing test carries its REASON, not just its name", () => {
+  const failures = collectFailures(["REQ-006", "REQ-007"], [NODE_FAIL]);
+  assert.equal(failures.length, 1);
+  const only = failures[0];
+  assert.ok(only);
+  assert.deepEqual(only.criterionIds, ["REQ-006"]);
+  assert.equal(only.code, "ERR_ASSERTION");
+  // The one string that would have collapsed four criteria into one diagnosis.
+  assert.match(only.message ?? "", /Missing script: "start"/);
+});
+
+/**
+ * MUTATION: change `specs.filter((spec) => !spec.ok)` to `.filter(() => true)`.
+ * The passing spec appears and this goes red. Without it, "collects failures"
+ * could be satisfied by a function that collects everything.
+ */
+test("a PASSING test is never collected as a failure", () => {
+  const passing: FailureSourceSpec = {
+    runner: "node-test",
+    titlePath: "holdout/api-core.test.mjs › [REQ-001] T-101 health answers 200",
+    ok: true,
+    statuses: ["passed"],
+  };
+  assert.deepEqual(collectFailures(["REQ-001"], [passing]), []);
+  assert.equal(collectFailures(["REQ-001", "REQ-006"], [passing, NODE_FAIL]).length, 1);
+});
+
+/**
+ * AN UNTAGGED FAILURE IS THE ONE MOST LIKELY TO BE A SUITE DEFECT, AND IT IS
+ * INVISIBLE IN `criterionCoverage` — coverage is keyed by criterion, so a test
+ * naming none appears in it nowhere. That is exactly the shape of a broken
+ * helper, an unresolved import, or a file that threw before its first test.
+ *
+ * MUTATION: filter `collectFailures` to entries with a non-empty
+ * `criterionIds`. This goes red; nothing else in the suite notices.
+ */
+test("a failing test that names NO criterion is still reported", () => {
+  const untagged: FailureSourceSpec = {
+    runner: "node-test",
+    titlePath: "holdout/helpers.test.mjs › the shared fixture boots",
+    ok: false,
+    statuses: ["failed"],
+    failure: { name: "Error", message: "ENOENT: no such file or directory" },
+  };
+  const failures = collectFailures(["REQ-001"], [untagged]);
+  assert.equal(failures.length, 1, "an untagged failure must not be dropped");
+  assert.deepEqual(failures[0]?.criterionIds, []);
+  assert.match(failures[0]?.message ?? "", /ENOENT/);
+});
+
+/**
+ * MUTATION: drop the lookbehind/lookahead from `criterionToken`. REQ-01 then
+ * matches the REQ-011 title and this goes red. The same rule already protects
+ * `attributeCriteria`; lifting it must not have weakened it.
+ */
+test("criterion ids match as WHOLE tokens, so REQ-01 is not REQ-011", () => {
+  const spec: FailureSourceSpec = {
+    runner: "playwright",
+    titlePath: "holdout/pages.spec.mjs › [REQ-011] T-9 the work page renders",
+    ok: false,
+    statuses: ["failed"],
+  };
+  assert.deepEqual(collectFailures(["REQ-01", "REQ-011"], [spec])[0]?.criterionIds, ["REQ-011"]);
+});
+
+/**
+ * A FAILURE WITH NO ATTACHED REASON IS A REAL STATE AND MUST STAY VISIBLE.
+ * Playwright reports a timed-out spec with no `error` object at all.
+ *
+ * MUTATION: make `collectFailures` skip specs whose `failure` is undefined.
+ * This goes red, and the run would silently report fewer failures than
+ * `testsFailed` counts.
+ */
+test("a failure the runner gave no reason for is reported with null fields", () => {
+  const bare: FailureSourceSpec = {
+    runner: "playwright",
+    titlePath: "holdout/slow.spec.mjs › [REQ-020] T-21 ratios hold",
+    ok: false,
+    statuses: ["failed"],
+  };
+  const only = collectFailures(["REQ-020"], [bare])[0];
+  assert.ok(only, "a reasonless failure is still a failure");
+  assert.equal(only.message, null);
+  assert.deepEqual(only.criterionIds, ["REQ-020"]);
+});
+
+/**
+ * MUTATION: raise the slice bound above the input length. The count becomes 61
+ * and this goes red. The cap exists because the 2026-08-12 shape — whole files
+ * failing on one cause — is what produces hundreds of near-identical records.
+ */
+test("the persisted failure list is capped, and the cap is the declared one", () => {
+  const many = Array.from({ length: MAX_PERSISTED_FAILURES + 1 }, (_unused, i) => ({
+    runner: "node-test" as const,
+    titlePath: `holdout/x.test.mjs › [REQ-001] T-${String(i)} case`,
+    ok: false,
+    statuses: ["failed"],
+  }));
+  assert.equal(collectFailures(["REQ-001"], many).length, MAX_PERSISTED_FAILURES);
+});
+
+/**
+ * `readParsedFailure` is the boundary with a file the harness does NOT
+ * typecheck, so it must degrade rather than throw.
+ *
+ * MUTATION: drop the `typeof v === "string"` guard. The numeric `code` survives
+ * as a non-string and the deepEqual goes red.
+ */
+test("the reporter boundary keeps only strings, and folds `cause` into the message", () => {
+  assert.equal(readParsedFailure(null), undefined);
+  assert.equal(readParsedFailure("not an object"), undefined);
+  assert.equal(readParsedFailure({ message: "" }), undefined, "an all-empty object is absent, not present");
+
+  const folded = readParsedFailure({ message: "outer failed", cause: "inner ECONNREFUSED", code: 7 });
+  assert.deepEqual(folded, { message: "outer failed\ncaused by: inner ECONNREFUSED" });
+  assert.equal((folded as Record<string, unknown>)["cause"], undefined, "cause must not survive as its own field");
+});
+
+/**
+ * ABSENT AND MALFORMED ARE DIFFERENT DEFECTS AND ARE TREATED DIFFERENTLY.
+ * Absent is every archived record in this repo. Malformed can only come from
+ * our own writer.
+ *
+ * MUTATION: make `parseTestFailures` return `[]` for a non-array instead of
+ * calling `fail`. The second assertion goes red, and a writer bug would ship as
+ * "this run had no failures".
+ */
+test("a result.json with no `failures` key parses; one with a malformed key does not", () => {
+  const base = containerResultWithBuildOutcome("pass") as Record<string, unknown>;
+  assert.deepEqual(parseContainerResult(base).suiteExecution.failures, []);
+
+  const malformed = containerResultWithBuildOutcome("pass") as Record<string, unknown>;
+  (malformed["suiteExecution"] as Record<string, unknown>)["failures"] = "not an array";
+  assert.throws(() => parseContainerResult(malformed), /failures is present but is not an array/);
+});
+
+
+/**
+ * A LEGAL SKIP IS NOT A FAILURE, AND `!ok` DOES NOT MEAN "FAILED".
+ *
+ * Found 2026-08-16 by a debugfix lens, in code written the same day.
+ * `collectFailures` filtered on `!spec.ok`. Both parsers compute
+ * `ok = passed && !skip && !todo` on purpose — a skipped test is not evidence
+ * and must never satisfy a criterion — so `!ok` is true for a skip, a todo AND
+ * a failure. One `test.skip` in a frozen suite therefore produced a
+ * `TestFailure` carrying no message, no code and no stack, which
+ * `adjudicate.ts` would then route on.
+ *
+ * That is this repository's own defect, manufactured by the field added to
+ * remove it: a failure with no reason, indistinguishable from a real one.
+ *
+ * MUTATION: revert the filter to `!spec.ok` -> the first assertion goes RED
+ * (the skip reappears) while the last stays green, which is the pair that
+ * matters — the fix must not have simply stopped collecting failures.
+ */
+test("a skipped or todo test is never collected as a failure", () => {
+  const skipped: FailureSourceSpec = {
+    runner: "node-test",
+    titlePath: "holdout/api.test.mjs \u203a [REQ-001] T-1 pending while the endpoint lands",
+    ok: false,
+    statuses: ["skipped"],
+  };
+  const todo: FailureSourceSpec = {
+    runner: "node-test",
+    titlePath: "holdout/api.test.mjs \u203a [REQ-001] T-2 not written yet",
+    ok: false,
+    statuses: ["todo"],
+  };
+
+  assert.deepEqual(
+    collectFailures(["REQ-001"], [skipped, todo]),
+    [],
+    "a skip has ok:false because a skip is not evidence — that is not the same as a failure, and filing it " +
+      "as one hands the repair lane a failure with no reason to diagnose",
+  );
+
+  // THE CONTROL: the same criterion, genuinely failing, is still collected.
+  const failed: FailureSourceSpec = {
+    runner: "node-test",
+    titlePath: "holdout/api.test.mjs \u203a [REQ-001] T-3 the endpoint answers 200",
+    ok: false,
+    statuses: ["failed"],
+    failure: { message: "expected 200, got 500" },
+  };
+  assert.equal(collectFailures(["REQ-001"], [skipped, todo, failed]).length, 1);
+});
+
+/**
+ * A Playwright spec that reported NO results at all is a collection problem,
+ * not a skip, and hiding it would be the fix over-reaching.
+ *
+ * MUTATION: make `specActuallyFailed` return false for an empty `statuses` ->
+ * RED. A file that collected nothing would then vanish from the failure list
+ * entirely, which is the silent-absence class this repo refuses everywhere else.
+ */
+test("an outcome with NO statuses is still reported — absence is not a skip", () => {
+  const collected = collectFailures(["REQ-009"], [
+    { runner: "playwright", titlePath: "holdout/x.spec.mjs \u203a [REQ-009] T-9 renders", ok: false, statuses: [] },
+  ]);
+  assert.equal(collected.length, 1);
 });

@@ -1523,6 +1523,228 @@ export interface DomFinding {
   readonly detail: string;
 }
 
+/** Which runner produced an outcome. Both are attributed by one token rule. */
+export type SuiteRunnerName = "playwright" | "node-test";
+
+/**
+ * WHY one failing test failed, structured.
+ *
+ * ADDED 2026-08-16. Until this existed a `fail` was a bare boolean everywhere a
+ * machine could reach: `ParsedSpec.ok`, `CriterionCoverage.outcome`, and a
+ * one-line `detail` naming the test but not the reason. The reason DID exist —
+ * inside the human-readable runner transcript, in a single string field — and
+ * reaching it meant a person with a regex. Runs `e1c15359` and `047f9872` each
+ * lost four FUNCTIONAL criteria to one cause that was legible in two lines of
+ * that transcript and illegible to every consumer downstream of it.
+ *
+ * THIS IS TRIAGE EVIDENCE AND NEVER A SCORING INPUT. `computeHeldOutPass` does
+ * not see it, `attributeCriteria` does not read it, and no verdict may move
+ * because of it. It exists so that a defect record, and the repair lane behind
+ * it, can be handed a cause instead of a criterion id.
+ *
+ * IT LIVES ONLY UNDER `results/scorer-out`, WHICH IS A SEALED ROOT. The strings
+ * here can quote held-out assertion text verbatim, so the same rule that already
+ * protects `criterionCoverage[].testRefs` protects this: the builder's
+ * permission layer denies that whole tree (STATUS.md section 0.1). Copying a
+ * `TestFailure` anywhere a build can read is a held-out leak, and there is no
+ * tripwire that would catch it.
+ */
+export interface TestFailure {
+  /** Suite-relative title path, the same string `CriterionCoverage.testRefs` carries. */
+  readonly titlePath: string;
+  readonly runner: SuiteRunnerName;
+  /**
+   * Criterion ids this title carries as whole tokens, by the ONE attribution
+   * rule. Resolved here so a consumer never re-implements that regex — a second
+   * copy of it is how a criterion gets scored against the wrong requirement.
+   * Empty when the test is untagged, which is itself worth seeing.
+   */
+  readonly criterionIds: readonly string[];
+  /** Error class, e.g. `AssertionError`. Null when the runner reported none. */
+  readonly name: string | null;
+  readonly message: string | null;
+  /** Bounded. The frames are how a suite defect is told from an artefact defect. */
+  readonly stack: string | null;
+  readonly operator: string | null;
+  /** `ERR_ASSERTION`, `ENOENT`, … — the cheapest single discriminator there is. */
+  readonly code: string | null;
+  readonly expected: string | null;
+  readonly actual: string | null;
+}
+
+
+/* ---- failure attribution (moved out of scorer-container.ts, 2026-08-16) ----
+ *
+ * These three functions were written inside `scorer-container.ts` and were
+ * therefore UNTESTABLE: that module exports nothing and throws on import
+ * outside the sealed container, by design. Code the repair lane reasons from
+ * cannot be code no test can reach — that is this repo's own §6 defect, a check
+ * that only observes success, applied to the thing doing the observing.
+ *
+ * They are pure: no filesystem, no clock, no container. `scorer-container.ts`
+ * imports them; `scorer-protocol.test.ts` exercises them with mutation controls.
+ */
+
+/**
+ * The reason one outcome failed, as the RUNNER reported it, before attribution.
+ *
+ * Every field is optional because every runner attaches a different subset, and
+ * an absent field is a fact: Playwright has no `operator`, a thrown string has
+ * no `stack`, and a test killed by a timeout may have only a message.
+ */
+export interface ParsedFailure {
+  readonly name?: string;
+  readonly message?: string;
+  readonly stack?: string;
+  readonly operator?: string;
+  readonly code?: string;
+  readonly expected?: string;
+  readonly actual?: string;
+}
+
+/** Local copy of the container's helper: this module may not import that one. */
+function truncateForFailure(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}… (${text.length - max} more characters)`;
+}
+
+/** The shape `collectFailures` needs from a parsed outcome. Both runners produce it. */
+export interface FailureSourceSpec {
+  readonly runner: SuiteRunnerName;
+  readonly titlePath: string;
+  readonly ok: boolean;
+  /**
+   * The runner's own status words for this outcome.
+   *
+   * REQUIRED BECAUSE `ok` IS NOT THE OPPOSITE OF "FAILED". Both parsers compute
+   * `ok = passed && !skip && !todo`, deliberately — a skipped test is not
+   * evidence and must not satisfy a criterion. The consequence is that `!ok`
+   * covers THREE states, and only one of them is a failure.
+   */
+  readonly statuses: readonly string[];
+  readonly failure?: ParsedFailure;
+}
+
+/**
+ * Was this outcome a FAILURE, as opposed to merely not-evidence?
+ *
+ * FOUND 2026-08-16 by a debugfix lens, in code written the same day.
+ * `collectFailures` filtered on `!spec.ok`, and `ok` is false for a skipped or
+ * todo test as well as a failing one — node reports a skip as a PASS and the
+ * parser then strips it, precisely so a skip cannot satisfy a criterion. So one
+ * legal `test.skip` anywhere in a frozen suite produced a `TestFailure` with no
+ * message, no code and no stack, which `adjudicate.ts` would then have to route
+ * on. A failure with no reason is exactly the shape this whole field was added
+ * to eliminate, manufactured by the function that adds it.
+ *
+ * A spec counts as failed when it is not ok AND at least one of its statuses is
+ * something other than skipped/todo. An empty `statuses` is treated as a real
+ * failure: the parsers only produce that for a Playwright spec with no test
+ * results at all, which is a collection problem worth seeing rather than hiding.
+ */
+export function specActuallyFailed(spec: FailureSourceSpec): boolean {
+  if (spec.ok) return false;
+  if (spec.statuses.length === 0) return true;
+  return spec.statuses.some((status) => status !== "skipped" && status !== "todo");
+}
+
+/**
+ * Read the reporter's `failure` object, keeping only string fields.
+ *
+ * SHAPE-TOLERANT ON PURPOSE, AND ONLY HERE. This is the boundary with a file
+ * that is NOT typechecked by the harness (`docker/node-test-reporter.mjs` says
+ * so at its head), so a field it renders wrongly must degrade to "absent"
+ * rather than abort the parse of an otherwise good stream. The STRICT check
+ * lives one layer out, in `parseTestFailures`, which reads what THIS process
+ * wrote and is loud about anything malformed.
+ */
+export function readParsedFailure(value: unknown): ParsedFailure | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const key of ["name", "message", "stack", "operator", "code", "expected", "actual", "cause"]) {
+    const v = source[key];
+    if (typeof v === "string" && v.length > 0) out[key] = v;
+  }
+  // `cause` is folded into the message rather than given a field of its own:
+  // `TestFailure` has no `cause`, and a reader who has to check two places for
+  // "what actually went wrong" will check one of them.
+  const cause = out["cause"];
+  if (cause !== undefined) {
+    out["message"] = out["message"] === undefined ? `caused by: ${cause}` : `${out["message"]}\ncaused by: ${cause}`;
+    delete out["cause"];
+  }
+  return Object.keys(out).length === 0 ? undefined : (out as ParsedFailure);
+}
+
+
+/**
+ * THE SCORING attribution rule — and it is NOT {@link criterionNamedInTestTitle}.
+ *
+ * THIS FILE HOLDS TWO MATCHERS ON PURPOSE. DO NOT COLLAPSE THEM.
+ *
+ *  - **this one** matches the token anywhere in the title path, THE FILENAME
+ *    INCLUDED. It decides which criterion a test is charged to. Being generous
+ *    is safe here: a false positive marks a criterion FAILED, which fails the
+ *    run.
+ *  - **`criterionNamedInTestTitle`** strips the leading file segment first. It
+ *    decides which failures are EXCUSED as QUALITY-only. Being generous there is
+ *    a gate that stops gating, which is why `holdout/REQ-007-a11y.spec.mjs`
+ *    must not make every untagged test inside it look QUALITY-bound.
+ *
+ * `collectFailures` uses THIS one, deliberately, so that a `TestFailure`'s
+ * `criterionIds` and `criterionCoverage`'s verdict can never disagree about the
+ * same event. Two records of one failure that name different criteria is worse
+ * than one record.
+ *
+ * Inlined inside `attributeCriteria` until 2026-08-16; lifted here so both
+ * readers share one definition rather than one hand-copied regex.
+ */
+export function criterionToken(id: string): RegExp {
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`);
+}
+
+/**
+ * Every failing outcome's reason, labelled with the criteria its title carries.
+ *
+ * WHY IT IS NOT DERIVED FROM `criterionCoverage`. Coverage is keyed by criterion
+ * and a failing test that carries NO criterion id appears in it nowhere — it is
+ * invisible to every consumer, and it is precisely the test most likely to be a
+ * suite defect rather than an artefact defect. This list is keyed by TEST, so an
+ * untagged failure is present with `criterionIds: []`.
+ *
+ * REPORT ORDER IS PRESERVED, WHICH IS FILE-GROUPED WITHIN EACH RUNNER — the
+ * node:test pass runs at `--test-concurrency=1` and Playwright's report is a
+ * suite tree. That grouping is what makes the 2026-08-12 signature legible: two
+ * files 0-for-N on one cause with every other file green reads as ONE defect,
+ * where the same failures shuffled read as six. The cap can still slice the tail
+ * of a long run; it does not reorder what survives.
+ */
+export function collectFailures(
+  criterionIds: readonly string[],
+  specs: readonly FailureSourceSpec[],
+): readonly TestFailure[] {
+  const tokens = criterionIds.map((id) => ({ id, token: criterionToken(id) }));
+  const failing = specs.filter((spec) => specActuallyFailed(spec));
+  return failing.slice(0, MAX_PERSISTED_FAILURES).map((spec) => {
+    const f = spec.failure ?? {};
+    const orNull = (value: string | undefined): string | null => (value === undefined ? null : value);
+    return {
+      titlePath: truncateForFailure(spec.titlePath, 300),
+      runner: spec.runner,
+      criterionIds: tokens.filter((t) => t.token.test(spec.titlePath)).map((t) => t.id),
+      name: orNull(f.name),
+      message: orNull(f.message),
+      stack: orNull(f.stack),
+      operator: orNull(f.operator),
+      code: orNull(f.code),
+      expected: orNull(f.expected),
+      actual: orNull(f.actual),
+    } satisfies TestFailure;
+  });
+}
+
+
 /** Raw suite execution facts. Mapped onto contracts' `SuiteExecution` by the host. */
 export interface SuiteExecutionRaw {
   readonly exitCode: number;
@@ -1535,7 +1757,27 @@ export interface SuiteExecutionRaw {
   readonly timedOut: boolean;
   /** Why no report could be parsed, or null when one was parsed. */
   readonly reportProblem: string | null;
+  /**
+   * Every failing test's reason, bounded by {@link MAX_PERSISTED_FAILURES}.
+   *
+   * EMPTY IS AMBIGUOUS AND THE READER MUST NOT COLLAPSE IT. `[]` means either
+   * "nothing failed" or "things failed and no runner attached a reason to any of
+   * them" — `testsFailed` is what separates those, and a consumer that reports
+   * "no failures" from this array alone has reintroduced the bug this field was
+   * added to remove.
+   */
+  readonly failures: readonly TestFailure[];
 }
+
+/**
+ * How many failing tests carry their reason into `result.json`.
+ *
+ * A suite where everything fails — the shape BOTH 2026-08-12 runs took, where
+ * two whole files went 0-for-N on one cause — would otherwise write hundreds of
+ * near-identical records. The cap is on the PERSISTED list only; `testsFailed`
+ * still counts them all, so truncation can never read as a smaller failure.
+ */
+export const MAX_PERSISTED_FAILURES = 60;
 
 /** How a frozen criterion was decided. */
 export type CoverageOutcome =
@@ -1585,6 +1827,64 @@ export interface ContainerResult {
 }
 
 /** Parse the container's result on the host. Strict: the host trusts nothing. */
+/**
+ * Parse `suiteExecution.failures`, tolerating the KEY's absence and nothing else.
+ *
+ * THE TWO CASES ARE NOT THE SAME DEFECT AND ARE NOT TREATED THE SAME WAY.
+ *
+ *  - **Key absent** — a record written before 2026-08-16, when the field did not
+ *    exist. Not a defect; every archived `result.json` in this repo is one.
+ *    Yields `[]`.
+ *  - **Key present and malformed** — a bug in OUR OWN container writer, which is
+ *    the only thing that ever writes this key. Loud, via `fail`. Dropping a
+ *    malformed entry quietly would mean a repair lane reasoning from a failure
+ *    list that silently lost the one entry that mattered, and "the reason was
+ *    not in the record" is precisely the condition this whole field removes.
+ *
+ * `null` is rejected rather than coerced: the writer has no branch that emits
+ * it, so a null here means something else wrote this document.
+ */
+function parseTestFailures(value: unknown): readonly TestFailure[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    fail(
+      "result.json.suiteExecution.failures is present but is not an array",
+      "Fix the container result writer. Omit the key entirely for a record that predates the field.",
+    );
+  }
+  return value.map((entry, i) => {
+    const where = `suiteExecution.failures[${i}]`;
+    const f = asRecord(entry, where);
+    const runner = f["runner"];
+    if (runner !== "playwright" && runner !== "node-test") {
+      fail(`${where}.runner is ${JSON.stringify(runner)}`, 'Set it to "playwright" or "node-test".');
+    }
+    const optional = (key: string): string | null => {
+      const v = f[key];
+      if (v === undefined || v === null) return null;
+      if (typeof v !== "string") fail(`${where}.${key} must be a string or absent`, "Fix the container result writer.");
+      return v;
+    };
+    const ids = f["criterionIds"];
+    if (!Array.isArray(ids)) fail(`${where}.criterionIds must be an array`, "Fix the container result writer.");
+    return {
+      titlePath: reqString(f, "titlePath", where),
+      runner,
+      criterionIds: ids.map((id, j) => {
+        if (typeof id !== "string") fail(`${where}.criterionIds[${j}] must be a string`, "Fix the writer.");
+        return id;
+      }),
+      name: optional("name"),
+      message: optional("message"),
+      stack: optional("stack"),
+      operator: optional("operator"),
+      code: optional("code"),
+      expected: optional("expected"),
+      actual: optional("actual"),
+    } satisfies TestFailure;
+  });
+}
+
 export function parseContainerResult(raw: unknown): ContainerResult {
   const root = asRecord(raw, "result.json");
   if (root["protocolVersion"] !== SCORER_PROTOCOL_VERSION) {
@@ -1659,6 +1959,22 @@ export function parseContainerResult(raw: unknown): ContainerResult {
     testsFailed: nullableNumber(se, "testsFailed", "suiteExecution"),
     timedOut: se["timedOut"] === true,
     reportProblem: nullableString(se, "reportProblem", "suiteExecution"),
+    /*
+     * ABSENT IS TOLERATED, AND DELIBERATELY NOT A PROTOCOL BUMP.
+     *
+     * Every `result.json` written before 2026-08-16 — including the five under
+     * `dashboard/results/scorer-out` that this field was added to explain — has
+     * no `failures` key at all. Rejecting those would make the archive
+     * unreadable to `report`, `aggregate` and every post-mortem, to gain a
+     * distinction that nothing gates on: this field is triage evidence and no
+     * verdict may move because of it (see {@link TestFailure}).
+     *
+     * SO `[]` HERE MEANS THREE THINGS AT ONCE — nothing failed, things failed
+     * with no reason attached, or the record predates the field. `testsFailed`
+     * and `protocolVersion` are what separate them, and a reader that prints
+     * "no failures" off this array alone is wrong in two of the three cases.
+     */
+    failures: parseTestFailures(se["failures"]),
   };
 
   const criterionCoverage = reqArray(root, "criterionCoverage", "result.json").map((entry, i) => {

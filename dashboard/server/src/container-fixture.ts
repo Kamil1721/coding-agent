@@ -34,6 +34,8 @@ const CLEAN_EXECUTION: SuiteExecutionRaw = {
   testsFailed: 0,
   timedOut: false,
   reportProblem: null,
+  // No suite executed in this fixture, so no failure carried a reason.
+  failures: [],
 };
 
 /** Every field a `ContainerResult` requires, in its "nothing went wrong" state. */

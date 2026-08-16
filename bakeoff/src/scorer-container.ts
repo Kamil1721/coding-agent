@@ -44,13 +44,17 @@ import {
   SCORER_PROTOCOL_VERSION,
   SUITE_MANIFEST_FILENAME,
   TITLE_PATH_SEPARATOR,
+  collectFailures,
+  criterionToken,
   parseScorerPlan,
   parseSuiteManifest,
+  readParsedFailure,
   resolveExecutionPlan,
   triageSuiteFailures,
   assertSuiteEnvNamesAgree,} from "./scorer-protocol.js";
 import type {
   ContainerResult,
+  ParsedFailure,
   CriterionCoverage,
   DomFinding,
   ExploitFinding,
@@ -900,6 +904,20 @@ interface ParsedSpec {
   readonly titlePath: string;
   readonly ok: boolean;
   readonly statuses: readonly string[];
+  /**
+   * Present when the runner said WHY.
+   *
+   * NOT "only on a failing outcome", which is what this said until 2026-08-16.
+   * The node branch attaches it only on `test:fail`, but the Playwright branch
+   * computes it for every spec and attaches whatever it finds — a spec that
+   * passed on a retry carries the first attempt's error. That is useful and is
+   * left alone; the docblock was the thing that was wrong.
+   *
+   * `ok === false` with no `failure` is a real and reportable state — the test
+   * failed and nothing attached a reason — and it must stay distinguishable from
+   * a pass. Do not default this to an empty object.
+   */
+  readonly failure?: ParsedFailure;
 }
 
 interface ParsedReport {
@@ -989,9 +1007,47 @@ function parsePlaywrightReport(path: string, suiteDir: string): ParsedReport {
             ? ((t as Record<string, unknown>)["status"] as string)
             : "unknown",
         );
+        /*
+         * THE FIRST NON-PASSING ATTEMPT'S ERROR. Playwright nests it at
+         * `tests[].results[].error{message,stack}` — there is no `operator`,
+         * `expected` or `actual` on that shape, which is why `ParsedFailure`
+         * has every field optional rather than pretending both runners report
+         * the same thing.
+         *
+         * FIRST, NOT LAST. Under `retries` the LAST result is the one that gave
+         * up; the FIRST is the one that shows the original cause, before any
+         * retry-specific noise (a port already held by the previous attempt, a
+         * half-written file). The message is capped here because Playwright's
+         * `message` carries ANSI-coloured diff output that runs to kilobytes.
+         */
+        const failure = ((): ParsedFailure | undefined => {
+          for (const t of tests) {
+            if (t === null || typeof t !== "object") continue;
+            const results = (t as Record<string, unknown>)["results"];
+            if (!Array.isArray(results)) continue;
+            for (const entry of results) {
+              if (entry === null || typeof entry !== "object") continue;
+              const result = entry as Record<string, unknown>;
+              if (result["status"] === "passed" || result["status"] === "skipped") continue;
+              const error = result["error"];
+              if (error === null || typeof error !== "object") continue;
+              const e = error as Record<string, unknown>;
+              const message = typeof e["message"] === "string" ? truncate(e["message"], 4000) : undefined;
+              const stack = typeof e["stack"] === "string" ? truncate(e["stack"], 4000) : undefined;
+              if (message === undefined && stack === undefined) continue;
+              return {
+                name: "PlaywrightError",
+                ...(message === undefined ? {} : { message }),
+                ...(stack === undefined ? {} : { stack }),
+              };
+            }
+          }
+          return undefined;
+        })();
         specs.push({
           runner: "playwright",
           titlePath: [...path, specTitle].join(TITLE_PATH_SEPARATOR),
+          ...(failure === undefined ? {} : { failure }),
           // A SKIPPED TEST IS NOT EVIDENCE. Playwright sets `spec.ok` on a
           // skipped spec, so `ok` alone would let a `test.skip` satisfy a
           // criterion — the same "absence of evidence read as satisfaction"
@@ -1146,6 +1202,11 @@ function parseNodeTestReport(path: string, suiteDir: string): ParsedReport {
     const todo = r["todo"] === true;
     const passed = r["outcome"] === "pass";
     leafOutcomes.set(file, (leafOutcomes.get(file) ?? 0) + 1);
+    // The reporter emits `failure` ONLY on `test:fail`, and only when node
+    // attached an error. A record from before 2026-08-16 has no such key, so
+    // this reads `undefined` and the spec carries no reason — which is exactly
+    // what those runs had.
+    const failure = readParsedFailure(r["failure"]);
     specs.push({
       runner: "node-test",
       // The suite-relative file path leads the title path, exactly as Playwright's
@@ -1155,6 +1216,7 @@ function parseNodeTestReport(path: string, suiteDir: string): ParsedReport {
       // the Playwright branch above.
       ok: passed && !skip && !todo,
       statuses: [skip ? "skipped" : todo ? "todo" : passed ? "passed" : "failed"],
+      ...(failure === undefined ? {} : { failure }),
     });
   }
 
@@ -1216,8 +1278,7 @@ function attributeCriteria(plan: ScorerPlan, report: ParsedReport): readonly Cri
     `${perRunner("playwright")} from Playwright, ${perRunner("node-test")} from node:test`;
 
   return plan.criteria.map((criterion) => {
-    const escaped = criterion.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const token = new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`);
+    const token = criterionToken(criterion.id);
     const matching = report.specs.filter((spec) => token.test(spec.titlePath));
 
     if (matching.length === 0) {
@@ -1577,6 +1638,14 @@ async function runFrozenSuite(plan: ScorerPlan, origin: string | null, timeoutMs
       testsFailed: null,
       timedOut: false,
       reportProblem: "the app never booted, so the frozen suite was not executed",
+      /*
+       * EMPTY BECAUSE NOTHING RAN — and that is readable here, in a way it is
+       * NOT readable from the array alone: every one of the five sites that
+       * writes `failures: []` also writes a non-null `reportProblem`. That
+       * pairing is the discriminator between "no test failed" and "no test
+       * ran", and `SuiteExecutionRaw.failures` says so at its declaration.
+       */
+      failures: [],
     };
     return {
       gate: gate(
@@ -1660,6 +1729,19 @@ async function runFrozenSuite(plan: ScorerPlan, origin: string | null, timeoutMs
       infrastructureErrors.length === 0
         ? merged.problem
         : [merged.problem, infrastructureErrors[0]].filter((p) => p !== null && p !== undefined).join(" | "),
+    /*
+     * THE ONLY SITE THAT PRODUCES A NON-EMPTY LIST. Everything else in this file
+     * writes `[]` because the suite did not execute.
+     *
+     * `merged`, NOT either pass — the attribution rule is applied to the MERGED
+     * outcome set exactly as `attributeCriteria` applies it, so a failure and
+     * the criterion it is charged to can never disagree about which tests
+     * existed.
+     */
+    failures: collectFailures(
+      plan.criteria.map((criterion) => criterion.id),
+      merged.specs,
+    ),
   };
 
   // ---- WHICH FAILURES GATE ------------------------------------------------
@@ -1925,6 +2007,7 @@ async function main(): Promise<number> {
         testsFailed: null,
         timedOut: true,
         reportProblem: "the scorer's total time budget was exhausted before the frozen suite could run",
+        failures: [],
       },
       criterionCoverage: plan.criteria.map((criterion) => ({
         criterionId: criterion.id,
@@ -2008,6 +2091,7 @@ async function main(): Promise<number> {
               testsFailed: null,
               timedOut: true,
               reportProblem: "the scorer's total time budget was exhausted before the frozen suite could run",
+              failures: [],
             } satisfies SuiteExecutionRaw,
             coverage: plan.criteria.map((criterion) => ({
               criterionId: criterion.id,
@@ -2104,6 +2188,7 @@ main()
           testsFailed: null,
           timedOut: false,
           reportProblem: "the scorer aborted before executing the suite",
+          failures: [],
         },
         criterionCoverage: [],
         screenshots: [],

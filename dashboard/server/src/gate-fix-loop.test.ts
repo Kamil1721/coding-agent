@@ -98,6 +98,10 @@ function failingWithTestRefs(title: string): ContainerResult {
       testsTotal: 6,
       testsPassed: 5,
       testsFailed: 1,
+      // This fixture asserts gate/report BEHAVIOUR, not triage: the one failure
+      // it declares carries no reason, which is a state the real scorer also
+      // produces when a runner attaches none.
+      failures: [],
       timedOut: false,
       reportProblem: `1 failing: ${title}`,
     },
