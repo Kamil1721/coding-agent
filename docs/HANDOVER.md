@@ -1,5 +1,14 @@
 # HANDOVER — read this first
 
+> **SUPERSEDED FOR CURRENT WORK, 2026-08-16.** This file is the map of the
+> 2026-07-30 session and is kept for its measurements, not for its state — its
+> test counts and its open list are both stale by two weeks. The live handoff is
+> **[`HANDOFF-2026-08-16-repair-lane.md`](HANDOFF-2026-08-16-repair-lane.md)**,
+> which carries the current baseline, the open decision that blocks the repair
+> lane, and the findings still outstanding. Read that one first; come back here
+> for the July measurements it does not repeat.
+
+
 Written 2026-07-30 at the end of a three-day session. **Its job is to stop the next
 session re-deriving what this one measured, and to stop it trusting what this one did not
 verify.** Both STATUS files are longer and more precise; this is the map.
