@@ -86,6 +86,8 @@ import { CriteriaPanel } from "@/components/run/criteria";
 import { MotionReadoutPanel } from "@/components/run/motion";
 import { OutcomeNotice } from "@/components/run/notices";
 import { PublishedProjectPanel } from "@/components/run/published-project";
+import { ProjectControls, useProjectControl } from "@/components/project/controls";
+import { useProjects } from "@/lib/hooks";
 import { ScreenshotsPanel } from "@/components/run/screenshots";
 import { TracePane } from "@/components/run/trace";
 import { UsagePanel } from "@/components/run/usage";
@@ -779,6 +781,18 @@ export function OverviewPanel({
   const lockPhase =
     run.designLock === null ? null : designLockPhase(run.status, run.designLock);
 
+  /*
+   * THE OPEN-THE-SITE CONTROL LIVES HERE TOO — owner's finding, 2026-08-18:
+   * three separate hunts ended on the wrong tab. Overview is where the eye
+   * lands first, so the same one-click control the Result panel's Project card
+   * carries is repeated beside the run's name. Same hook, same SWR key, same
+   * dedupe — two mounts of one mechanism, not a second mechanism.
+   */
+  const projects = useProjects();
+  const projectControl = useProjectControl(async () => projects.mutate());
+  const project =
+    projects.data?.projects.find((candidate) => candidate.runId === run.runId) ?? null;
+
   return (
     <TabBody>
       <PanelSection title="this run" testId="overview-this-run">
@@ -820,6 +834,12 @@ export function OverviewPanel({
           </span>
         </p>
         <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint">{run.runId}</p>
+
+        {project !== null && (
+          <div className="mt-2" data-testid="overview-open-site">
+            <ProjectControls project={project} control={projectControl} />
+          </div>
+        )}
 
         {/*
          * THE ACTIONS SIT WITH THE STATUS THEY ACT ON. Cancel is offered on every
@@ -1124,7 +1144,16 @@ export function ResultPanel({ run }: { run: RunDetail }): ReactNode {
        */}
       <PublishedProjectPanel run={run} />
 
-      <CriteriaPanel criteria={run.criteria} />
+      {/*
+       * `machineChecks ?? null` FOR THE SAME REASON `designLock ?? null` AND
+       * `adversary ?? null` BELOW: `lib/api.ts` casts the response without
+       * validating it, and every run recorded before this field existed answers
+       * with a body that has no such key. `undefined` and `null` mean the same
+       * thing to the panel — this run has no gate result to show — and the
+       * flattening is done here rather than inside it so the component's own
+       * contract stays two-valued.
+       */}
+      <CriteriaPanel criteria={run.criteria} machineChecks={run.machineChecks ?? null} />
 
       {/*
        * `designLock` IS NULL FOR A RUN WITH NO DESIGN LANE, which is not the same
