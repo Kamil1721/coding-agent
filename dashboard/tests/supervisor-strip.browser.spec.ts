@@ -151,6 +151,14 @@ async function serve(page: Page, state: SupervisorState | "abort"): Promise<void
 }
 
 /** The badge's own painted colours, which is what "visually distinct" means. */
+async function openDetail(page: Page): Promise<void> {
+  const pane = page.locator('[data-testid="supervisor-detail"]');
+  if ((await pane.count()) === 0) {
+    await openDetail(page);
+    await expect(pane).toBeVisible();
+  }
+}
+
 async function paint(page: Page): Promise<{
   liveness: string;
   headline: string;
@@ -169,6 +177,16 @@ async function paint(page: Page): Promise<{
     "data-liveness",
     /running|idle|stuck|blocked|unreachable|malformed/,
   );
+  /*
+   * THE SENTENCE MOVED TO THE DETAIL PANE (owner's call, 2026-08-18: the row
+   * carries headline and cells only). Reading it therefore means opening the
+   * pane; the toggle is idempotent-checked so repeated paints do not close it.
+   */
+  const pane = page.locator('[data-testid="supervisor-detail"]');
+  if ((await pane.count()) === 0) {
+    await openDetail(page);
+    await expect(pane).toBeVisible();
+  }
   return strip.evaluate((node) => {
     const badge = node.querySelector('[data-testid="supervisor-liveness"] span');
     const because = node.querySelector('[data-testid="supervisor-because"]');
@@ -260,6 +278,7 @@ test.describe("the three states, and the fourth that is not one of them", () => 
     const strip = page.locator('[data-testid="supervisor-strip"]');
     await expect(strip).toHaveAttribute("data-liveness", "unreachable");
     await expect(strip).toHaveAttribute("data-stale", "true");
+    await openDetail(page);
     await expect(page.locator('[data-testid="supervisor-because"]')).toContainText(
       "history, not state",
     );
@@ -346,6 +365,7 @@ test("an unwired route is not rendered as a considered decision", async ({ page 
   await page.goto("/");
   const strip = page.locator('[data-testid="supervisor-strip"]');
   await expect(strip).toHaveAttribute("data-liveness", "unreachable");
+  await openDetail(page);
   await expect(page.locator('[data-testid="supervisor-because"]')).toContainText(
     "no supervisor is constructed in this process",
   );
@@ -368,7 +388,7 @@ test("the missing authoring trail is SAID, not rendered as an empty box", async 
    * resolves two elements there and dies on strict mode — a failure that would
    * have looked like this strip breaking the rail.
    */
-  await page.getByTestId("supervisor-detail-toggle").click();
+  await openDetail(page);
 
   const detail = page.locator('[data-testid="supervisor-detail"]');
   await expect(detail).toBeVisible();
@@ -480,7 +500,7 @@ test.describe("at 2000px — the strip cost the canvas 30px and nothing else", (
    * resolves two elements there and dies on strict mode — a failure that would
    * have looked like this strip breaking the rail.
    */
-  await page.getByTestId("supervisor-detail-toggle").click();
+  await openDetail(page);
     await expect(page.locator('[data-testid="supervisor-detail"]')).toBeVisible();
     const after = await page
       .locator(".react-flow")
@@ -564,10 +584,12 @@ test("a 200 on /api/supervisor whose body is a run detail leaves the page render
    * truncates.
    */
   await expect(strip).toHaveAttribute("data-liveness", "malformed");
+  await openDetail(page);
   await expect(page.locator('[data-testid="supervisor-because"]')).toContainText(
     "a body this page cannot read",
   );
   // The sentence NAMES the field, because "the wrong shape" at 3am is a dead end.
+  await openDetail(page);
   await expect(page.locator('[data-testid="supervisor-because"]')).toContainText("probe is absent");
 
   /*
@@ -861,7 +883,7 @@ test("the body the SERVER's own composer produces reads RUNNING in a real browse
        * this is where a mirror that expected a `summary` field printed
        * `undefined`. `probe.unsourced` is what makes the empty trail legible.
        */
-      await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+      await openDetail(page);
       const detail = page.locator('[data-testid="supervisor-detail"]');
       await expect(detail).toContainText("no patch has been applied");
       await expect(detail).toContainText("composed 2026-08-10T03:00:00.000Z");
@@ -886,7 +908,7 @@ test("the body the SERVER's own composer produces reads RUNNING in a real browse
  * Until 2026-08-10 the component read a module constant, `ATTEMPTS_NOT_ON_THE_WIRE =
  * []`, so FOUR THINGS WERE DEAD CODE: the `<ol data-testid="supervisor-attempts">`
  * branch, `formatClock(attempt.at)`, the `key` prop, and the `recurring.includes(...)`
- * red highlight. Arm 7 — `"looping, not converging"`, the ONLY arm that can catch
+ * red highlight. Arm 7 — `"retrying, not improving"`, the ONLY arm that can catch
  * a913c871, where three attempts inside a budget of three killed a run over 87
  * minutes while the screen said WORKING — was likewise unreachable from any live
  * body. Reading `snapshot.attempts` made all of it reachable in one edit, and a newly
@@ -929,15 +951,16 @@ test("the run that died reads STUCK with the field that came back named on scree
 
   const painted = await paint(page);
   expect(painted.liveness, `a non-converging loop painted ${painted.liveness}`).toBe("stuck");
-  expect(painted.headline).toContain("looping, not converging");
-  // THE FIELD IS NAMED ON THE ROW ITSELF, with no click: that is the five-second read.
+  expect(painted.headline).toContain("retrying, not improving");
+  // THE FIELD IS NAMED IN THE SENTENCE — which lives in the detail pane since
+  // the owner cut prose from the row (2026-08-18); `paint()` opens the pane.
   expect(painted.because).toContain("dataExpectations[0].id");
   expect(painted.because).toContain("another attempt is spend, not progress");
 
   const strip = page.locator('[data-testid="supervisor-strip"]');
   await strip.screenshot({ path: `${SHOT_DIR}/supervisor-strip-oscillating.png` });
 
-  await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+  await openDetail(page);
 
   /*
    * THE LIST, NOT THE HONEST BLANK. `unsourced: []` means the server sources the
@@ -982,7 +1005,7 @@ test("the run that died reads STUCK with the field that came back named on scree
   await page.unroute("**/api/supervisor");
   await serve(page, body({ ticket: TICKET, probe: { ...PROBE, unsourced: [] } }));
   await page.goto("/");
-  await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+  await openDetail(page);
   await expect(page.locator('[data-testid="supervisor-attempts-absent"]')).toContainText(
     "an empty list, not a missing one",
   );
@@ -1211,7 +1234,7 @@ test.describe("the render guard", () => {
     await expect(page.locator('[data-testid="render-guard"]')).toHaveAttribute("data-arm", "true");
     await expect(page.locator('[data-testid="render-guard-alarm"]')).toHaveCount(0);
 
-    await page.getByTestId("supervisor-detail-toggle").click();
+    await openDetail(page);
 
     /*
      * THE THREE THINGS A BLANK PAGE DOES NOT HAVE. The nav is asserted FIRST
@@ -1428,12 +1451,13 @@ test.describe("the readout the owner reads at 7am", () => {
     await page.goto(`/runs/${RUN_ID}`);
 
     // The 30px row carries it in the sentence…
+    await openDetail(page);
     await expect(page.locator('[data-testid="supervisor-because"]')).toContainText(
       "run tools/repair/cycle.mjs",
     );
 
-    // …and the detail pane carries the row it came from, with the failure class.
-    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    // …and the detail pane — already open from the read above — carries the
+    // row it came from, with the failure class.
     const failed = page.locator('[data-testid="supervisor-census-failed"]');
     await expect(failed).toContainText("t-2");
     await expect(failed).toContainText("blocked");
@@ -1450,7 +1474,7 @@ test.describe("the readout the owner reads at 7am", () => {
     await serve(page, IDLE());
     await serveCensus(page, { tickets: [{ ticketKey: "t-9", state: "blocked" }] });
     await page.goto(`/runs/${RUN_ID}`);
-    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    await openDetail(page);
     await expect(page.locator('[data-testid="supervisor-census-failed"]')).toContainText(
       "does not carry next_action",
     );
@@ -1482,7 +1506,7 @@ test.describe("the readout the owner reads at 7am", () => {
     );
     // The cell prints a word rather than a number, and never a zero.
     const cell = page.locator('[data-testid="supervisor-census"]');
-    await expect(cell).toHaveText(/census unread|no census/);
+    await expect(cell).toHaveText(/ticket list unread|no ticket list/);
     await expect(cell).not.toContainText("0 blocked");
     /*
      * RETARGETED 2026-08-10. This asserted "did not answer" on
@@ -1499,15 +1523,16 @@ test.describe("the readout the owner reads at 7am", () => {
      * AND THE NOTE LIVES IN THE DETAIL PANEL, so it has to be opened to be read —
      * found the hard way: asserting it on the collapsed strip failed with
      * "element(s) not found", which is a third distinct way this one assertion was
-     * wrong. The COLLAPSED row's job is the word above ("census unread" vs "no
+     * wrong. The COLLAPSED row's job is the word above ("ticket list unread" vs "no
      * census"); the SENTENCE naming the route is one gesture away, and both halves
      * are asserted rather than either being taken on trust.
      */
-    await page.getByTestId("supervisor-detail-toggle").click();
+    await openDetail(page);
     const note = page.locator('[data-testid="supervisor-census-note"]');
     await expect(note).toContainText("did not answer");
     await expect(note).toContainText("/api/supervisor/tickets");
     // And the headline sentence still speaks only about the loop, never about the census.
+    await openDetail(page);
     await expect(page.locator('[data-testid="supervisor-because"]')).not.toContainText(
       "did not answer",
     );
@@ -1555,7 +1580,7 @@ test.describe("the readout the owner reads at 7am", () => {
       await expect(cell, `${shape.name}: the outcome cell was blank`).not.toHaveText("");
       await expect(cell, `${shape.name}: a count was invented`).not.toContainText("done ·");
 
-      await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+      await openDetail(page);
       const note = page.locator('[data-testid="supervisor-census-note"]');
       await expect(note, `${shape.name}: the note does not name what is wrong`).toContainText(
         /tickets is|state is|nextAction is|the body is/,
@@ -1578,7 +1603,7 @@ test.describe("the readout the owner reads at 7am", () => {
     await serve(page, IDLE());
     await serveCensus(page, "notfound");
     await page.goto(`/runs/${RUN_ID}`);
-    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    await openDetail(page);
     const row = page.locator('[data-testid="supervisor-repair-cycle"]');
     // TODAY: the field is not on the wire at all.
     await expect(row).toHaveAttribute("data-cycle", "unreported");
@@ -1597,7 +1622,7 @@ test.describe("the readout the owner reads at 7am", () => {
       });
     });
     await page.goto(`/runs/${RUN_ID}`);
-    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    await openDetail(page);
     await expect(page.locator('[data-testid="supervisor-repair-cycle"]')).toHaveAttribute(
       "data-cycle",
       "null",
@@ -1625,7 +1650,7 @@ test.describe("the readout the owner reads at 7am", () => {
       });
     });
     await page.goto(`/runs/${RUN_ID}`);
-    await page.locator('[data-testid="supervisor-detail-toggle"]').click();
+    await openDetail(page);
     const applied = page.locator('[data-testid="supervisor-repair-cycle"]');
     await expect(applied).toHaveAttribute("data-cycle", "reported");
     await expect(applied).toContainText("NO ROLLBACK POINT WAS RECORDED");

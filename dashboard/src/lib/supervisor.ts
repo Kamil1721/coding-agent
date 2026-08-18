@@ -334,7 +334,7 @@ export interface SupervisorReadingInput {
    */
   readonly censusBody: unknown;
   /**
-   * Whatever the census fetch threw. TODAY'S EXPECTED VALUE IS A 404: the GET has
+   * Whatever the ticket list fetch threw. TODAY'S EXPECTED VALUE IS A 404: the GET has
    * no producer (measured 2026-08-10 — `dashboard/server/src` serves only the
    * POST), so the reading must degrade to a named absence rather than to an error
    * banner about a route the owner never asked for.
@@ -959,7 +959,7 @@ export interface CensusReading {
   /**
    * OPTIONAL COLUMNS THE ROUTE SENT ON NO ROW AT ALL, NAMED.
    *
-   * The client-side `probe.unsourced`: the census route may land carrying eight of
+   * The client-side `probe.unsourced`: the ticket list route may land carrying eight of
    * twelve columns, and the four it omits must read as *this build does not report
    * that* rather than as `null` or as an empty cell. A column present on SOME rows
    * is not listed — the route carries it and the row genuinely has no value.
@@ -1123,7 +1123,7 @@ function censusProbeNote(census: SupervisorTicketCensus): string {
      * sentence read as a benign build limitation, which is the `lastRunId` failure
      * inverted: a panel calmly describing as normal a field the wire has dropped.
      */
-    return "the census route sent NO arm check, and `ApiSupervisorTicketsResponse` always carries one — so a field has been dropped between the route and this page. Nothing states whether the route can see the rows it is counting, and the counts above are this page's arithmetic on whatever arrived.";
+    return "the ticket list route sent NO arm check, and `ApiSupervisorTicketsResponse` always carries one — so a field has been dropped between the route and this page. Nothing states whether the route can see the rows it is counting, and the counts above are this page's arithmetic on whatever arrived.";
   }
   const number = (value: number | null | undefined): string =>
     value === undefined || value === null ? "not reported" : String(value);
@@ -1156,7 +1156,7 @@ function censusProbeNote(census: SupervisorTicketCensus): string {
  * comes in and the validation happens here.
  *
  * THERE IS NO SECOND STALE CLOCK, AND THAT IS A DELIBERATE LIMIT. The state
- * reading is aged against its own receipt time; the census is not. If the census
+ * reading is aged against its own receipt time; the ticket list is not. If the ticket list
  * read FAILS this poll it is reported as unreachable rather than as last poll's
  * numbers — `useSupervisorTickets` turns `keepPreviousData` off for that reason —
  * so the failure mode a second clock would catch (a kept body rendered as
@@ -1224,7 +1224,7 @@ function readCensus(body: unknown, error: unknown): CensusReading {
     availability: "readable",
     note:
       counts.total === 0
-        ? "the census answered and holds no ticket rows at all."
+        ? "the ticket list answered and holds no ticket rows at all."
         : `${String(counts.total)} ticket row(s): ${String(counts.done)} done, ${String(
             counts.failed,
           )} blocked/abandoned, ${String(counts.backlog)} queued, ${String(
@@ -1265,7 +1265,7 @@ export function failedTicketAction(rows: readonly SupervisorTicketRow[]): string
     const anyKeyed = rows.some((row) => row.nextAction !== undefined);
     return anyKeyed
       ? `${rows[0]?.ticketKey ?? "the newest failed ticket"} carries no next_action text, so nothing on this page can say what to run by hand — the column is on the wire and empty.`
-      : "the census does not carry next_action, so the one sentence that says what to run by hand is still only in supervisor_tickets.next_action.";
+      : "the ticket list does not carry next_action, so the one sentence that says what to run by hand is still only in supervisor_tickets.next_action.";
   }
   const klass =
     typeof withAction.lastClass === "string" && withAction.lastClass.trim() !== ""
@@ -1624,7 +1624,7 @@ export function classifySupervisor(
     return {
       ...base,
       liveness: "stuck",
-      headline: "supervisor arm check failed",
+      headline: "supervisor self-check failed",
       because: `the supervisor route reports itself blind, so nothing it says about state can be trusted. ${snapshot.probe.armNote}`,
     };
   }
@@ -1674,7 +1674,7 @@ export function classifySupervisor(
      * a healthy backend was down). So in-flight rows do not produce a verdict; they
      * only DISQUALIFY the terminal claim, and the count is reported in the panel
      * with the disagreement stated in words. Catching a genuinely wedged `claimed`
-     * row needs an age on the census, which the route does not send.
+     * row needs an age on the ticket list, which the route does not send.
      */
     if (census.availability === "readable" && census.counts !== null) {
       const counts = census.counts;
@@ -1737,13 +1737,13 @@ export function classifySupervisor(
           ...base,
           liveness: "idle",
           headline: "idle, no tickets filed",
-          because: `the census holds no ticket rows at all, so this queue has not finished — it has never been given anything. ${snapshot.nextAction}${stopNote}`,
+          because: `No tickets have ever been filed, so there is nothing to do yet. ${snapshot.nextAction}${stopNote}`,
         };
       }
       /*
        * READABLE, NOT TERMINAL, AND NOTHING CLAIMED. Backlog with the supervisor
        * stopped, in-flight rows the state route does not corroborate, or a state
-       * this build cannot read. No verdict is available and the census's own note
+       * this build cannot read. No verdict is available and the ticket list's own note
        * says which of the three it is, so the fall-through below carries it into
        * the sentence instead of asserting anything.
        */
@@ -1805,7 +1805,7 @@ export function classifySupervisor(
       ...base,
       quietForMs,
       liveness: "stuck",
-      headline: "looping, not converging",
+      headline: "retrying, not improving",
       because:
         comparison.progress === "oscillating"
           ? `${attemptOf}: ${comparison.recurringPaths.join(
@@ -1822,7 +1822,7 @@ export function classifySupervisor(
     return {
       ...base,
       liveness: "stuck",
-      headline: "claimed, no run",
+      headline: "ticket taken, no run started",
       because: `${ticket.ticketKey} is ${ticket.state} and the supervisor names no run for it. ${snapshot.nextAction}`,
     };
   }
@@ -1832,7 +1832,7 @@ export function classifySupervisor(
     return {
       ...base,
       liveness: "stuck",
-      headline: "no progress clock",
+      headline: "no sign of progress",
       because: `${run.runId} is ${run.status} in ${
         run.phase ?? "an unnamed phase"
       } and the supervisor reports no time since its last event, so nothing here can show it is alive.`,
@@ -2075,7 +2075,7 @@ export function probeVerdict(
  * THREE MORE PROBES MEASURE DISTINCTIONS THAT DO NOT SHOW UP IN A LIVENESS. The
  * three idle endings ("finished", "never filed", "cannot tell") are compared as
  * `liveness · headline`, because a distinction that lives only in prose is one the
- * arm cannot see; the census reader's four availabilities are compared because a
+ * arm cannot see; the ticket list reader's four availabilities are compared because a
  * reader that could not tell a 404 from an empty queue would feed the arm above a
  * confident verdict built on nothing; and the repair cycle's `unreported`/`null`
  * pair is compared because printing "no repair was attempted" over "nothing
@@ -2236,7 +2236,7 @@ export function armSupervisorStrip(
     readCensus(CENSUS_ALL_DONE, null).availability,
   ];
   check(
-    "the census reader tells its four answers apart",
+    "the ticket list reader tells its four answers apart",
     "absent · unreachable · malformed · readable",
     availabilities.join(" · "),
   );
@@ -2313,7 +2313,7 @@ export function armSupervisorStrip(
         " · ",
       )} (${String(
         distinct,
-      )} distinct); it tells a FINISHED queue from an ALL-BLOCKED one and from one that was never given anything; the census reader tells absent/unreachable/malformed/readable apart and the repair cycle tells unreported from null; comparator escalates a913c871 at attempt ${String(
+      )} distinct); it tells a FINISHED queue from an ALL-BLOCKED one and from one that was never given anything; the ticket list reader tells absent/unreachable/malformed/readable apart and the repair cycle tells unreported from null; comparator escalates a913c871 at attempt ${String(
         oscillation.escalatesAtAttempt,
       )} and clears a shrinking sequence`
     : `ARM CHECK FAILED — THE SUPERVISOR STRIP IS BLIND: ${

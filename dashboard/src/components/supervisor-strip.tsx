@@ -134,9 +134,9 @@ function defectTitle(defect: SupervisorDefect | null, defectId: string | null): 
  * failures, and a percentage over two tickets is a number that hides the two.
  */
 function censusCell(census: CensusReading): string {
-  if (census.availability === "absent") return "no census";
-  if (census.availability === "unreachable") return "census unread";
-  if (census.availability === "malformed") return "census wrong body";
+  if (census.availability === "absent") return "no ticket list";
+  if (census.availability === "unreachable") return "ticket list unread";
+  if (census.availability === "malformed") return "ticket list unreadable";
   const counts = census.counts;
   if (counts === null || counts.total === 0) return "no tickets";
   return `${String(counts.done)} done · ${String(counts.failed)} blocked${
@@ -342,20 +342,13 @@ export function SupervisorStrip(): ReactNode {
         </span>
 
         {/*
-          NO `title` DUPLICATING THIS SENTENCE, deliberately. It would double
-          the block's word count against `prose-guard`'s 40-word budget, which
-          COUNTS `title` attributes, and the guard's own docblock makes the
-          stronger argument: prose in a `title` never appears on touch and is
-          not reachable from a keyboard, so moving a sentence there makes it
-          worse rather than shorter. The full sentence is the first line of the
-          detail pane, one click away and readable by everybody.
+          THE SENTENCE IS NOT IN THE ROW — owner's call, 2026-08-18: "remove the
+          explanatory sentences". `reading.because` still exists and the detail
+          pane renders it in full, one click away; the row carries the headline
+          and the cells only. The spacer keeps the cells right-aligned where the
+          sentence used to push them.
         */}
-        <span
-          data-testid="supervisor-because"
-          className="min-w-0 flex-1 truncate text-[11.5px] text-ink-dim"
-        >
-          {reading.because}
-        </span>
+        <span className="min-w-0 flex-1" aria-hidden />
 
         {/*
           THE OUTCOME CELL — THE ONE THING THE ROW COULD NOT SAY.
@@ -394,7 +387,7 @@ export function SupervisorStrip(): ReactNode {
                   : `time since the last event on ${snapshot.run.runId}, rate-limit frames excluded`
               }
             >
-              {reading.quietForMs === null ? "no clock" : formatDuration(reading.quietForMs)}
+              {reading.quietForMs === null ? "nothing running" : formatDuration(reading.quietForMs)}
             </Cell>
             {/* THE SIGNATURE IF THE ROUTE HAS ONE, THE ID IF THAT IS ALL IT HAS,
                 AND "none" ONLY WHEN THERE IS NEITHER. `lastDefect` has no producer
@@ -402,7 +395,7 @@ export function SupervisorStrip(): ReactNode {
                 would render a ticket with a recorded defect identically to one
                 that never failed. */}
             <Cell
-              label="defect"
+              label="problem"
               title={defectTitle(snapshot.lastDefect, snapshot.lastDefectId)}
             >
               {defectCell(snapshot.lastDefect, snapshot.lastDefectId)}
@@ -485,7 +478,9 @@ export function SupervisorStrip(): ReactNode {
           data-testid="supervisor-detail"
           className="absolute right-0 top-full z-30 mt-1 max-h-[60vh] w-[min(680px,92vw)] overflow-auto rounded border border-line bg-surface p-3 shadow-lg"
         >
-          <p className="text-[11px] leading-snug text-ink-dim">{reading.because}</p>
+          <p data-testid="supervisor-because" className="text-[11px] leading-snug text-ink-dim">
+            {reading.because}
+          </p>
 
           {snapshot !== null && (
             <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[11px]">
@@ -559,7 +554,7 @@ export function SupervisorStrip(): ReactNode {
             ─────────────────────────────────────────────────────────────────────
           */}
           <h3 className="mt-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-ink-dim">
-            ticket census — {reading.census.availability}
+            ticket list — {reading.census.availability}
           </h3>
           <p
             data-testid="supervisor-census-note"

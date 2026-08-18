@@ -199,7 +199,7 @@ test("a live run with a recent event is running — and the SAME run with the cl
 test("a run with NO progress clock is stuck, not running — absence is not health", () => {
   const blind = read(withRun(null));
   expect(blind.liveness).toBe("stuck");
-  expect(blind.headline).toBe("no progress clock");
+  expect(blind.headline).toBe("no sign of progress");
   expect(blind.because).toContain("nothing here can show it is alive");
 
   // The negative half: a clock reading ZERO seconds is the healthiest possible
@@ -211,7 +211,7 @@ test("a run with NO progress clock is stuck, not running — absence is not heal
 test("a claimed ticket with no run is stuck; an unclaimed queue-empty supervisor is idle", () => {
   const orphan = read(withRun(30, { run: null }));
   expect(orphan.liveness).toBe("stuck");
-  expect(orphan.headline).toBe("claimed, no run");
+  expect(orphan.headline).toBe("ticket taken, no run started");
 
   const idle = read(state({ desired: "running", ticket: null, queueDepth: 0 }));
   expect(idle.liveness).toBe("idle");
@@ -571,7 +571,7 @@ test("the route reporting its OWN arm check failed is stuck, not running", () =>
     }),
   );
   expect(blindRoute.liveness).toBe("stuck");
-  expect(blindRoute.headline).toBe("supervisor arm check failed");
+  expect(blindRoute.headline).toBe("supervisor self-check failed");
   expect(blindRoute.because).toContain("the same body for all three probes");
 
   // NEGATIVE HALF: the same healthy run with `armed: true` is running.
@@ -667,7 +667,7 @@ test("a live run whose trail has stopped shrinking reads STUCK even while events
   );
 
   expect(looping.liveness).toBe("stuck");
-  expect(looping.headline).toBe("looping, not converging");
+  expect(looping.headline).toBe("retrying, not improving");
   expect(looping.because).toContain("dataExpectations[0].id");
   expect(looping.escalatesAtAttempt).toBe(2);
   // The paths are PUBLISHED on the reading, because the panel paints those rows
@@ -770,7 +770,7 @@ test("the start-up arm check passes, and it passes by producing SIX DIFFERENT an
    * could not.
    */
   expect(report.line).toContain("tells a FINISHED queue from an ALL-BLOCKED one");
-  expect(report.line).toContain("census reader tells absent/unreachable/malformed/readable apart");
+  expect(report.line).toContain("ticket list reader tells absent/unreachable/malformed/readable apart");
   expect(report.line).toContain("repair cycle tells unreported from null");
   expect(report.line).toContain("escalates a913c871 at attempt 2");
   expect(report.line).toContain("clears a shrinking sequence");
@@ -797,7 +797,7 @@ test("the arm check's SIX probes are the liveness probes, and the census probes 
   ]);
   expect(report.probes.slice(6).map((probe) => probe.name)).toEqual([
     "the three idle endings do not read the same",
-    "the census reader tells its four answers apart",
+    "the ticket list reader tells its four answers apart",
     "the repair cycle tells unreported from null from reported",
     "comparator escalates a913c871 at attempt 2",
     "comparator clears a shrinking sequence",
@@ -1342,7 +1342,7 @@ test("an EMPTY census is 'never given anything', not 'finished'", () => {
   });
   expect(empty.liveness).toBe("idle");
   expect(empty.headline).toBe("idle, no tickets filed");
-  expect(empty.because).toContain("has never been given anything");
+  expect(empty.because).toContain("No tickets have ever been filed");
   // THE NEGATIVE HALF: zero tickets is not a finished queue and not a failure.
   expect(empty.headline).not.toContain("finished");
   expect(empty.liveness).not.toBe("blocked");
@@ -1593,7 +1593,7 @@ const WIRE_PROBE = {
   at: "2026-08-10T06:00:01.000Z",
 } as const;
 
-test("the census the ROUTE actually declares reads with zero absent columns — the mirror-drift detector", () => {
+test("the ticket list the ROUTE actually declares reads with zero absent columns — the mirror-drift detector", () => {
   const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
   const reading = read(settled, {
     censusBody: { tickets: [WIRE_ROW], probe: WIRE_PROBE },
@@ -1679,7 +1679,7 @@ test("a blocked ticket's own next_action reaches the reading — and its absence
     censusBody: census([{ ticketKey: "t-b", state: "blocked" }]),
   });
   expect(noColumn.liveness).toBe("blocked");
-  expect(noColumn.because).toContain("the census does not carry next_action");
+  expect(noColumn.because).toContain("the ticket list does not carry next_action");
   expect(noColumn.because).not.toContain("undefined");
 
   // AND THE THIRD ANSWER: the column IS on the wire and empty for this ticket.
@@ -1900,7 +1900,7 @@ test("a body that clears the census validator cannot make a consumer throw, what
   expect(reading.census.probeNote).toContain("sent NO arm check");
 });
 
-test("the census route's own probe is rendered when it sends one, and its ABSENCE never reads as armed", () => {
+test("the ticket list route's own probe is rendered when it sends one, and its ABSENCE never reads as armed", () => {
   const settled = state({ desired: "running", ticket: null, queueDepth: 0 });
 
   const noProbe = read(settled, { censusBody: census([DONE_ROW]) }).census;
@@ -1940,7 +1940,7 @@ test("the census route's own probe is rendered when it sends one, and its ABSENC
   expect(partial.probeNote).toContain("the route sent no arm note");
 });
 
-test("the census is read on EVERY arm, including the ones that never look at it", () => {
+test("the ticket list is read on EVERY arm, including the ones that never look at it", () => {
   /*
    * The census is a different route from the state, so a 404 on one says nothing
    * about the other — and a reading whose `census` were only filled on the arm that
