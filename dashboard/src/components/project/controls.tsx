@@ -55,7 +55,13 @@ export interface ProjectControl {
   readonly isPending: (slug: string) => boolean;
   /** The last refusal for this slug, or null. Cleared by the next attempt. */
   readonly failureOf: (slug: string) => string | null;
-  readonly start: (slug: string) => void;
+  /**
+   * `after` runs once the start SETTLES: with the fresh project on success —
+   * `startProject` resolves only when the port actually answers — or with null
+   * on refusal. It exists for the one-click "Start and open" flow, where a tab
+   * opened at click time needs a URL to point at, or needs closing.
+   */
+  readonly start: (slug: string, after?: (project: Project | null) => void) => void;
   readonly stop: (slug: string) => void;
 }
 
@@ -125,7 +131,20 @@ export function useProjectControl(
     (slug: string): string | null => failures.get(slug) ?? null,
     [failures],
   );
-  const start = useCallback((slug: string): void => run(slug, startProject), [run]);
+  const start = useCallback(
+    (slug: string, after?: (project: Project | null) => void): void =>
+      run(slug, async (target) => {
+        try {
+          const response = await startProject(target);
+          after?.(response.project);
+          return response;
+        } catch (cause) {
+          after?.(null);
+          throw cause;
+        }
+      }),
+    [run],
+  );
   const stop = useCallback((slug: string): void => run(slug, stopProject), [run]);
 
   return { isPending, failureOf, start, stop };
@@ -440,15 +459,40 @@ export function ProjectControls({
         startable && (
           <Button
             variant="primary"
-            onClick={() => control.start(project.slug)}
+            onClick={() => {
+              /*
+               * THE TAB IS OPENED AT CLICK TIME, BLANK, then aimed once the port
+               * answers. `window.open` after an await is what popup blockers
+               * exist to kill; inside the click it is allowed. If the blocker
+               * still refuses (tab === null), nothing is lost — the card shows
+               * its Open link once the poll sees the child running, one click.
+               */
+              const tab = window.open("about:blank", "_blank");
+              if (tab !== null) {
+                try {
+                  tab.document.write(
+                    "<title>Starting…</title><body style=\"font-family:sans-serif;padding:2rem;color:#444\">Starting the site — this tab will load it when the port answers.</body>",
+                  );
+                } catch {
+                  /* cross-origin-locked blank tab: it still navigates below */
+                }
+              }
+              control.start(project.slug, (started) => {
+                if (started !== null && started.process.state === "running" && tab !== null) {
+                  tab.location.href = started.process.url;
+                } else {
+                  tab?.close();
+                }
+              });
+            }}
             disabled={pending}
             title={
               pending
-                ? "Spawned. The link appears once its port answers, or the failure does."
-                : `Runs \`${project.startCommand ?? ""}\` in ${project.path}, on a loopback port of the dashboard's choosing.`
+                ? "Spawned. This opens in a new tab once its port answers, or the failure shows here."
+                : `Runs \`${project.startCommand ?? ""}\` in ${project.path}, then opens the site in a new tab.`
             }
           >
-            {pending ? "Starting…" : "Start"}
+            {pending ? "Starting…" : "Start and open"}
           </Button>
         )
       )}
