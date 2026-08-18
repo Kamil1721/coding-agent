@@ -604,7 +604,7 @@ export function RunRail({
         className={cx(
           "absolute inset-y-0 left-12 z-20 flex w-[min(400px,calc(100vw-48px))] flex-col",
           "border-r border-line bg-surface shadow-[24px_0_48px_-32px_rgba(0,0,0,0.9)]",
-          "min-[1120px]:static min-[1120px]:z-auto min-[1120px]:w-[400px] min-[1120px]:shrink-0 min-[1120px]:shadow-none",
+          "min-[1120px]:relative min-[1120px]:z-auto min-[1120px]:w-[400px] min-[1120px]:shrink-0 min-[1120px]:shadow-none",
         )}
         /* A dragged width wins over both stylesheet widths; `maxWidth` keeps a
            stored desktop width from covering a phone. */
@@ -644,8 +644,15 @@ export function RunRail({
           title="Drag to resize. Arrow keys resize, Home resets."
           onPointerDown={beginResize}
           onKeyDown={onResizeKeyDown}
-          className="absolute -right-[5px] inset-y-0 z-30 w-[10px] cursor-col-resize outline-none hover:bg-accent/20 focus-visible:bg-accent/30"
-        />
+          className="group absolute -right-[5px] inset-y-0 z-30 flex w-[10px] cursor-col-resize items-center justify-center outline-none"
+        >
+          {/* The grip is visible AT REST — an invisible handle is a rumour, and
+              the owner measured it as one ("I cant see the drag working"). */}
+          <span
+            aria-hidden
+            className="h-[44px] w-[3px] rounded-full bg-line-strong transition-colors group-hover:bg-accent group-focus-visible:bg-accent"
+          />
+        </div>
       </div>
     </>
   );
