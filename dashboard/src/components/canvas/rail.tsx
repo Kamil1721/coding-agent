@@ -607,7 +607,11 @@ export function RunRail({
         className={cx(
           "absolute inset-y-0 left-12 z-20 flex w-[min(400px,calc(100vw-48px))] flex-col overflow-x-hidden",
           "border-r border-line bg-surface shadow-[24px_0_48px_-32px_rgba(0,0,0,0.9)]",
-          "min-[1120px]:relative min-[1120px]:z-auto min-[1120px]:w-[400px] min-[1120px]:shrink-0 min-[1120px]:shadow-none",
+          "min-[1120px]:relative min-[1120px]:left-0 min-[1120px]:z-auto min-[1120px]:w-[400px] min-[1120px]:shrink-0 min-[1120px]:shadow-none",
+          /* ^ left-0 is load-bearing beside relative: the base left-12 positions
+             the OVERLAY, and on a relative box it becomes a 48px visual shift —
+             the panel slid under the canvas and painted as "cut off" (owner,
+             2026-08-18, twice). static had been neutralising it silently. */
         )}
         /* A dragged width wins over both stylesheet widths; `maxWidth` keeps a
            stored desktop width from covering a phone. */
