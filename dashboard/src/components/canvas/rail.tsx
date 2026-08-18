@@ -39,6 +39,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
   type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
@@ -302,6 +303,91 @@ export function RunRail({
   const buttons = useRef<Map<RailPanelId, HTMLButtonElement>>(new Map());
   const panel = useRef<HTMLDivElement | null>(null);
 
+  /*
+   * DRAG-TO-RESIZE — owner's ask, 2026-08-18: "I cant actually see the codebase"
+   * at a fixed 400px. The width is a number in state once the reader has ever
+   * dragged, and stays the stylesheet's own 400px until then, so nothing changes
+   * for anyone who never touches the handle.
+   *
+   * CLAMPED, AND BOTH ENDS ARE REASONED: 320 is the floor the file pane's own
+   * docblock already assumes ("must not assume a width above 320px" — the panel
+   * bodies were written against it); the ceiling leaves the canvas 480px,
+   * because a rail that can eat the whole screen is a second full-screen page
+   * wearing a resize handle.
+   *
+   * PERSISTED per machine, not per run — the reader's screen is the thing the
+   * number belongs to. Read lazily so SSR never touches localStorage.
+   */
+  const [railWidth, setRailWidth] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const stored = Number(window.localStorage.getItem("run-rail-width"));
+    return Number.isFinite(stored) && stored >= 320 ? stored : null;
+  });
+
+  const clampWidth = useCallback((px: number): number => {
+    const ceiling = Math.max(320, Math.min(960, window.innerWidth - 480));
+    return Math.min(ceiling, Math.max(320, px));
+  }, []);
+
+  const beginResize = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>): void => {
+      event.preventDefault();
+      const node = panel.current;
+      if (node === null) return;
+      const left = node.getBoundingClientRect().left;
+      const handle = event.currentTarget;
+      // Capture is an optimisation — the window listeners below do the real
+      // tracking — and it THROWS for a pointer the browser is not holding
+      // (synthetic events, some pen drivers). A resize that dies on that is a
+      // resize that works on exactly one input stack.
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch {
+        /* tracked by the window listeners */
+      }
+      const move = (ev: PointerEvent): void => {
+        setRailWidth(clampWidth(ev.clientX - left));
+      };
+      const up = (ev: PointerEvent): void => {
+        try {
+          handle.releasePointerCapture(ev.pointerId);
+        } catch {
+          /* never captured */
+        }
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        setRailWidth((width) => {
+          if (width !== null) window.localStorage.setItem("run-rail-width", String(width));
+          return width;
+        });
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    },
+    [clampWidth],
+  );
+
+  // Keyboard resize on the separator: arrows step 24px, Home returns to default.
+  const onResizeKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>): void => {
+      const step =
+        event.key === "ArrowRight" ? 24 : event.key === "ArrowLeft" ? -24 : null;
+      if (step !== null) {
+        event.preventDefault();
+        setRailWidth((width) => {
+          const next = clampWidth((width ?? 400) + step);
+          window.localStorage.setItem("run-rail-width", String(next));
+          return next;
+        });
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        window.localStorage.removeItem("run-rail-width");
+        setRailWidth(null);
+      }
+    },
+    [clampWidth],
+  );
+
   const present = ENTRIES.filter(
     (entry) => entry.id !== "questions" || showQuestions,
   );
@@ -520,6 +606,9 @@ export function RunRail({
           "border-r border-line bg-surface shadow-[24px_0_48px_-32px_rgba(0,0,0,0.9)]",
           "min-[1120px]:static min-[1120px]:z-auto min-[1120px]:w-[400px] min-[1120px]:shrink-0 min-[1120px]:shadow-none",
         )}
+        /* A dragged width wins over both stylesheet widths; `maxWidth` keeps a
+           stored desktop width from covering a phone. */
+        style={railWidth === null ? undefined : { width: railWidth, maxWidth: "calc(100vw - 48px)" }}
       >
         <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-2.5">
           <div className="min-w-0">
@@ -539,6 +628,24 @@ export function RunRail({
           </Button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+        {/*
+         * THE HANDLE: a 10px strip straddling the right border. `role=separator`
+         * with the panel as its control; arrows resize, Home resets — stated in
+         * the title because a resize handle with no affordance is a rumour.
+         */}
+        <div
+          data-testid="rail-resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-controls="rail-panel"
+          aria-valuenow={railWidth ?? 400}
+          aria-valuemin={320}
+          tabIndex={0}
+          title="Drag to resize. Arrow keys resize, Home resets."
+          onPointerDown={beginResize}
+          onKeyDown={onResizeKeyDown}
+          className="absolute -right-[5px] inset-y-0 z-30 w-[10px] cursor-col-resize outline-none hover:bg-accent/20 focus-visible:bg-accent/30"
+        />
       </div>
     </>
   );
