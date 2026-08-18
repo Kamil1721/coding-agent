@@ -321,12 +321,15 @@ export function RunRail({
   const [railWidth, setRailWidth] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const stored = Number(window.localStorage.getItem("run-rail-width"));
-    return Number.isFinite(stored) && stored >= 320 ? stored : null;
+    // Below the floor is not honoured: 320 was the old floor, and Safari CLIPS
+    // where Chromium wraps at that width — a stored 320 painted a cut-off panel
+    // on the owner's machine (measured 2026-08-18). Invalid falls back to 400.
+    return Number.isFinite(stored) && stored >= 360 ? stored : null;
   });
 
   const clampWidth = useCallback((px: number): number => {
-    const ceiling = Math.max(320, Math.min(960, window.innerWidth - 480));
-    return Math.min(ceiling, Math.max(320, px));
+    const ceiling = Math.max(360, Math.min(960, window.innerWidth - 480));
+    return Math.min(ceiling, Math.max(360, px));
   }, []);
 
   const beginResize = useCallback(
@@ -602,7 +605,7 @@ export function RunRail({
         aria-label={panelTitle}
         onKeyDown={onPanelKeyDown}
         className={cx(
-          "absolute inset-y-0 left-12 z-20 flex w-[min(400px,calc(100vw-48px))] flex-col",
+          "absolute inset-y-0 left-12 z-20 flex w-[min(400px,calc(100vw-48px))] flex-col overflow-x-hidden",
           "border-r border-line bg-surface shadow-[24px_0_48px_-32px_rgba(0,0,0,0.9)]",
           "min-[1120px]:relative min-[1120px]:z-auto min-[1120px]:w-[400px] min-[1120px]:shrink-0 min-[1120px]:shadow-none",
         )}
@@ -639,7 +642,7 @@ export function RunRail({
           aria-orientation="vertical"
           aria-controls="rail-panel"
           aria-valuenow={railWidth ?? 400}
-          aria-valuemin={320}
+          aria-valuemin={360}
           tabIndex={0}
           title="Drag to resize. Arrow keys resize, Home resets."
           onPointerDown={beginResize}
