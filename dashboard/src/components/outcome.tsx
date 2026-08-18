@@ -18,18 +18,18 @@ export function HeldOutBadge({
 }): ReactNode {
   if (heldOutPass === null) {
     return (
-      <Badge tone="neutral" title="The held-out suite has not returned a verdict.">
-        {compact ? "unscored" : "not scored"}
+      <Badge tone="neutral" title="The finished site has not been checked yet.">
+        not checked
       </Badge>
     );
   }
   return heldOutPass ? (
-    <Badge tone="pass" title="The frozen suite went green in the sealed container.">
-      held-out pass
+    <Badge tone="pass" title="It passed checks it had never seen.">
+      passed
     </Badge>
   ) : (
-    <Badge tone="fail" title="The frozen suite did not go green in the sealed container.">
-      held-out fail
+    <Badge tone="fail" title="It failed checks it had never seen.">
+      did not pass
     </Badge>
   );
 }
@@ -51,9 +51,9 @@ export function FalseFinishBadge({
     <Badge
       tone="fail"
       className="font-semibold uppercase tracking-wide"
-      title="The agent declared the work done and the held-out gate disagreed."
+      title="It said the work was done. The checks say otherwise."
     >
-      false finish
+      said done, not done
     </Badge>
   );
 }

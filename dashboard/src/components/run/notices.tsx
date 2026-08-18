@@ -270,7 +270,7 @@ export function FalseFinishNotice(): ReactNode {
      */
     <Notice
       tone="fail"
-      title="FALSE FINISH — it said it was done. The tests it never saw disagree."
+      title="SAID DONE, NOT DONE — it called the work finished. The tests it never saw disagree."
     >
       {/*
        * THE ONE SENTENCE THAT SURVIVES, AND IT IS KEPT INLINE RATHER THAN HIDDEN.
@@ -321,8 +321,8 @@ export function OutcomeNotice({ run }: { run: RunDetail }): ReactNode {
             <span className="whitespace-nowrap">
               shown
               <Explain about="how the tests were run" className="ml-1" testId="explain-held-out">
-                Every one of them passed in a sealed container, with no network and no
-                access to the build&rsquo;s own history.
+                Every one of them passed in a locked box: no network, and no sight
+                of how the site was built.
               </Explain>
             </span>
           </>

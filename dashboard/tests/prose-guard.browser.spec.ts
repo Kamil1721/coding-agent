@@ -164,7 +164,7 @@ import {
  * inflection the copy actually uses measures nothing.
  */
 const BANNED =
-  /\b(seats?|suites?|digests?|freezes?|freeze|frozen|verdicts?|traces?|env)\b/i;
+  /\b(seats?|suites?|digests?|freezes?|freeze|frozen|verdicts?|traces?|env|held-?outs?|sealed|false finish(es)?)\b/i;
 
 /**
  * BANNED WORDS THIS PASS FOUND AND MAY NOT FIX — a debt register, not an
@@ -183,30 +183,10 @@ const BANNED =
  * evidence that it is temporary.
  */
 const PENDING_OTHER_FILES: readonly { readonly where: string; readonly text: string }[] = [
-  {
-    where: "src/components/outcome.tsx:21 — HeldOutBadge, unscored branch, title",
-    text: "The held-out suite has not returned a verdict.",
-  },
-  {
-    where: "src/components/outcome.tsx:28 — HeldOutBadge, pass branch, title",
-    text: "The frozen suite went green in the sealed container.",
-  },
-  {
-    where: "src/components/outcome.tsx:31 — HeldOutBadge, fail branch, title",
-    text: "The frozen suite did not go green in the sealed container.",
-  },
-  {
-    where: "src/lib/presentation.ts:168 — phaseMeta('gate').blurb",
-    text: "Held-out suite running in a sealed container.",
-  },
-  {
-    where: "src/lib/presentation.ts:171 — phaseMeta('judge').blurb",
-    text: "Per-criterion verdicts.",
-  },
-  {
-    where: "src/lib/presentation.ts:203 — tierMeta('BLOCKING').note",
-    text: "All must pass. Builds, boots, suite runs, no protected path touched.",
-  },
+  // EMPTIED 2026-08-18: all six strings were rewritten in plain words
+  // (outcome.tsx titles + labels, presentation.ts blurbs). New entries need
+  // the same justification the originals carried: file, line, and why the
+  // owning lane could not fix it.
 ];
 
 /* ------------------------------------------------------------------ */

@@ -106,7 +106,7 @@ export function statusMeta(status: RunStatus): StatusMeta {
       return {
         label: "failed",
         tone: "fail",
-        meaning: "The run finished without passing the held-out gate.",
+        meaning: "The run finished, but the checks did not pass.",
         live: false,
       };
     case "cancelled":
@@ -164,11 +164,11 @@ export function phaseMeta(phase: RunPhase): PhaseMeta {
       return { label: "Build", blurb: "The agent is implementing." };
     case "gate":
       return {
-        label: "Gate",
-        blurb: "Held-out suite running in a sealed container.",
+        label: "Checking",
+        blurb: "Running checks the builder never saw.",
       };
     case "judge":
-      return { label: "Judge", blurb: "Per-criterion verdicts." };
+      return { label: "Scoring", blurb: "Each check gets a pass or fail." };
     case "done":
       return { label: "Done", blurb: "Finished." };
     default:
@@ -200,7 +200,7 @@ export function tierMeta(tier: CriterionTier): TierMeta {
       return {
         label: "Blocking",
         gating: true,
-        note: "All must pass. Builds, boots, suite runs, no protected path touched.",
+        note: "All must pass. It builds, it starts, and nothing protected was touched.",
       };
     case "FUNCTIONAL":
       return {
