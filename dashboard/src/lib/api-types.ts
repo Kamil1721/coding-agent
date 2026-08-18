@@ -100,6 +100,34 @@ export interface RunCriterion {
   readonly result: CriterionResult;
 }
 
+/**
+ * One of the twelve machine gates every run is put through, in plain words.
+ *
+ * NOT A `RunCriterion`, AND NEVER TO BE COUNTED WITH ONE. A criterion is a
+ * sentence written from the owner's own ticket; these twelve are identical on
+ * every run of every ticket and nobody wrote them. They were invisible until
+ * 2026-08-18 — the server recorded them and no table on this side held a row for
+ * them — which is how a run could show "8 of 8 must-pass checks green" while one
+ * of these was what failed it.
+ *
+ * `label` IS THE SERVER'S WORDS AND IS RENDERED AS SENT. It is composed in
+ * `server/src/machine-checks.ts` so that this panel and anything else that ever
+ * reports a gate say the same sentence. Do not restate it here.
+ *
+ * `detail` IS PRESENT ONLY WHERE IT IS BOTH ALLOWED AND USEFUL: a failed check
+ * whose detail comes from the artefact's own toolchain. The three gates whose
+ * details quote the held-out runner or name locked files always send `null`, and
+ * so does every passing check. Render it as a second line under a failed row, or
+ * not at all — never as the reason for a check that passed.
+ */
+export interface MachineCheck {
+  /** The grader's join key, e.g. `GATE:build`. Not for the screen. */
+  readonly id: string;
+  readonly label: string;
+  readonly passed: boolean;
+  readonly detail: string | null;
+}
+
 export interface TokenCounts {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -630,6 +658,22 @@ export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: RunPhase;
   readonly criteria: readonly RunCriterion[];
+  /**
+   * The twelve machine gates, or `null` when this run never reached them.
+   *
+   * `null` IS NOT `[]` AND MUST NOT RENDER LIKE IT. `null` is "the gate has not
+   * run" — queued, building, parked, cancelled before it, or a gate that could
+   * not run at all — and the panel says so in words. `[]` would mean a gate that
+   * ran and reported nothing, which never happens: a gate that runs produces all
+   * twelve. Twelve rows always arrive in the same order, so a missing check is
+   * still a row (a failed one) rather than a gap in the list.
+   *
+   * A BODY WITH NO KEY AT ALL IS ALSO REAL. `lib/api.ts` casts responses without
+   * validating them, and every run recorded before this field existed answers
+   * without it, so mount sites read `machineChecks ?? null` — the same
+   * flattening `designLock` and `adversary` get.
+   */
+  readonly machineChecks: readonly MachineCheck[] | null;
   readonly tokens: TokenCounts | null;
   /**
    * ALWAYS null for subscription runs — quota is consumed, not billed.

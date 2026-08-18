@@ -718,6 +718,7 @@ const DETAIL_SHAPES: readonly {
       "ticketText",
       "phase",
       "criteria",
+      "machineChecks",
       "tokens",
       "costUsd",
       "rateLimit",
@@ -753,6 +754,17 @@ const DETAIL_SHAPES: readonly {
     server: "ApiCriterion",
     client: "RunCriterion",
     fields: ["id", "statement", "tier", "result"],
+  },
+  {
+    // THE OTHER HALF OF THE GRADE, and the one that had no client declaration at
+    // all until 2026-08-18. `label` is the field this row is really guarding: it
+    // is composed SERVER-side precisely so that one gate has one sentence, and a
+    // client mirror that dropped it would push twelve renderers into inventing
+    // their own — which is the drift `contract-parity` exists to catch one layer
+    // up from where it usually happens.
+    server: "ApiMachineCheck",
+    client: "MachineCheck",
+    fields: ["id", "label", "passed", "detail"],
   },
   {
     server: "ApiTokens",
@@ -937,6 +949,36 @@ test("CONTRACT: the client's RunDetail declares the ticket's attachments, as lis
     /readonly documents: readonly Attachment\[\];/,
     "the client's RunDetail mirror has no `documents: readonly Attachment[]`: the owner's attached " +
       "scope or CV is serialised by the server and no panel can see it",
+  );
+});
+
+test("CONTRACT: the client's RunDetail declares the machine checks, nullable, as a list of MachineCheck", () => {
+  /*
+   * THE COMPANION TO THE FIELD-NAME CHECK, for the one distinction this field
+   * carries all of its meaning in. The whole-shape test above goes red if
+   * `machineChecks` is missing from either side — and it stays GREEN on a client
+   * that mirrored the name and typed it `readonly MachineCheck[]`, dropping the
+   * `| null`.
+   *
+   * WHY THAT NARROWING WOULD MATTER MORE THAN MOST. `null` is "this run never
+   * reached the gate" and `[]` is a state the server cannot produce: a gate that
+   * runs produces all twelve results. A client that cannot type the null has no
+   * way to render the difference, and the panel then draws a queued run exactly
+   * like a gated one — the conflation `heldOutPass: null` and `gateAttempts: 0`
+   * exist to refuse, arriving through the type instead of through the data.
+   */
+  const detail = region(
+    readClient(CLIENT_TYPES),
+    CLIENT_TYPES,
+    "export interface RunDetail extends RunSummary {",
+    "\nexport ",
+  );
+  assert.match(
+    detail,
+    /readonly machineChecks: readonly MachineCheck\[\] \| null;/,
+    "the client's RunDetail mirror has no `machineChecks: readonly MachineCheck[] | null`: either the " +
+      "twelve machine gates are serialised and no panel can see them, or the client narrowed away the " +
+      "null that distinguishes a run that was never gated from one that was",
   );
 });
 

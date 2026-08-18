@@ -74,6 +74,9 @@ function detail(over: Partial<RunDetail> = {}): RunDetail {
     ticketText: "build me a portfolio",
     phase: "done",
     criteria: [],
+    // `null`, not `[]`: this fixture asserts nothing about the twelve machine
+    // gates, and `[]` would claim the gate ran and reported none of them.
+    machineChecks: null,
     tokens: null,
     costUsd: null,
     rateLimit: null,

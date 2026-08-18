@@ -109,8 +109,19 @@ const ZERO_UNMET: Readonly<Record<CriterionTier, number>> = Object.freeze({
  * list, and deliberately: `GATE:suite-green` (quotes the held-out runner),
  * `GATE:suite-intact` (names frozen suite files) and
  * `GATE:no-protected-path-writes` (names the frozen file a copy matched).
+ *
+ * EXPORTED SINCE 2026-08-18, FOR A SECOND READER WITH THE SAME PROBLEM.
+ * `machine-checks.ts` puts the twelve gates on the OWNER-FACING wire, and the
+ * three gates excluded above are excluded there for reasons that do not change
+ * with the audience: `GATE:suite-green`'s detail is the held-out runner's own
+ * output tail, and the other two name frozen files. The owner may read them —
+ * but the browser is not a place a value stops, and a detail on the wire is a
+ * detail in a JSON body that a later feature, a screenshot, or a copied bug
+ * report carries somewhere else. One list, one place to reason about it: a gate
+ * nobody has thought about gets its outcome shown and its detail withheld,
+ * which is the direction that cannot silently reopen the boundary.
  */
-const DETAIL_ALLOWLIST: ReadonlySet<string> = new Set([
+export const DETAIL_ALLOWLIST: ReadonlySet<string> = new Set([
   GATE_IDS.build,
   GATE_IDS.typecheck,
   GATE_IDS.lint,

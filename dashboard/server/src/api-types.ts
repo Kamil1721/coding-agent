@@ -128,6 +128,52 @@ export interface ApiCriterion {
   readonly result: ApiCriterionResult;
 }
 
+/**
+ * ONE OF THE TWELVE MACHINE GATES, IN THE OWNER'S WORDS.
+ *
+ * WHY IT IS ON THE WIRE AT ALL. The gate scores two kinds of thing and the
+ * dashboard could only ever see one of them. `Orchestrator#gatePhase` walks the
+ * score record's `criteriaResults` and calls `store.setCriterionResult` for
+ * every entry — but the `criteria` table holds only the frozen suite's own
+ * `REQ-*` rows, so the twelve `GATE:*` results UPDATE nothing and are dropped
+ * without a word. A run whose build never compiled therefore reported "8 of 8
+ * must-pass checks green" on the panel headed Acceptance criteria, and NOTHING
+ * on the screen named the check that actually failed it. This field is that
+ * missing half.
+ *
+ * IT IS NOT A SECOND `ApiCriterion` AND MUST NOT BE MERGED INTO ONE. A
+ * criterion is a sentence the SPEC seat wrote from the owner's ticket; a machine
+ * check is the same twelve deterministic gates on every run of every ticket,
+ * with no author. Folding them into one list would move the acceptance panel's
+ * denominator, which is the number the owner reads as "how much of my ticket was
+ * delivered".
+ *
+ * `passed` IS THE VERDICT'S OWN ARITHMETIC, NOT A NEW READING OF THE GATE.
+ * `gateToCriterion` (bakeoff/src/scorer.ts) is what produced the boolean that
+ * `computeHeldOutPass` counted, and this field carries that same boolean
+ * through: `not_applicable` is `true` — the frozen manifest declared no such
+ * step, and the verdict counted it as satisfied — and `unknown` is `false`,
+ * because a gate that was never evaluated is not a pass. A third state here
+ * would be a panel that disagrees with the verdict printed above it.
+ *
+ * `detail` CROSSES BY ALLOWLIST, LIKE EVERY OTHER DETAIL IN THIS SYSTEM. Nine
+ * gates run the artefact's own toolchain and may say what went wrong;
+ * `GATE:suite-green`, `GATE:suite-intact` and `GATE:no-protected-path-writes`
+ * always report `null`, because their details quote the held-out runner or name
+ * frozen files. `gate-report.ts` owns the one list. It is also `null` on a check
+ * that PASSED: a passing gate's detail is the gate restating its own
+ * configuration, and there is nothing for a reader to do with it.
+ */
+export interface ApiMachineCheck {
+  /** The gate id, e.g. `GATE:build`. A join key for a verdict file, not a label. */
+  readonly id: string;
+  /** Composed server-side, in plain words. The ONE spelling both surfaces use. */
+  readonly label: string;
+  readonly passed: boolean;
+  /** Allowlisted, failed gates only. Bounded server-side. Never a test title. */
+  readonly detail: string | null;
+}
+
 export interface ApiTokens {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -959,6 +1005,29 @@ export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: ApiPhase;
   readonly criteria: readonly ApiCriterion[];
+  /**
+   * The twelve machine gates, or `null` when this run never reached them.
+   *
+   * `null` IS NOT `[]`, AND THE DIFFERENCE IS THE WHOLE POINT — the same refusal
+   * {@link RunDetail.gateAttempts} and `heldOutPass: null` make. `null` means no
+   * score record exists for this run: it is queued, building, parked, cancelled
+   * before the gate, or the gate could not run at all. `[]` would say the gate
+   * ran and had nothing to report, which is a state that does not exist — a gate
+   * that runs always produces twelve results. A renderer must say "not run yet"
+   * for `null` and must never draw it as twelve green ticks or twelve red ones.
+   *
+   * ALWAYS TWELVE ENTRIES WHEN IT IS NOT NULL, in {@link ALL_GATE_IDS} order, so
+   * the panel's rows do not reorder between runs and a gate the record never
+   * mentioned still appears — as `passed: false`, which is what "never
+   * evaluated" means everywhere else in this system.
+   *
+   * READ FROM THE RUN'S SCORE RECORD, SERVER-SIDE, per request — the same shape
+   * as {@link RunDetail.designLock} and {@link RunDetail.adversary}. The record
+   * is what `computeHeldOutPass` was computed FROM, so this list cannot disagree
+   * with the verdict beside it. `machine-checks.ts` owns the read; `results/` is
+   * not browsable and must not become browsable.
+   */
+  readonly machineChecks: readonly ApiMachineCheck[] | null;
   /**
    * THE BUILDER'S ROW, IN THE BUILDER'S VENDOR. NOT THE RUN'S SPEND.
    *

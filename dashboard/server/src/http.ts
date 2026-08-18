@@ -199,6 +199,7 @@ import { DESIGN_MOCKUP_COPY_PREFIX, DESIGN_MOCKUP_LABEL, readDesignLock } from "
 import type { DesignLockRecord } from "./design-lock.js";
 import { MAX_DESIGN_LOCK_TURNS, MAX_DESIGN_ON_DEMAND_RENDERS } from "./design-prompt.js";
 import { validateDesignReuseSource, writeDesignReuseMarker } from "./design-reuse.js";
+import { readMachineChecks } from "./machine-checks.js";
 import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
 import { describeError, silenceOf } from "./orchestrator.js";
@@ -701,6 +702,21 @@ function toDetail(
     ticketText: row.ticketText,
     phase: row.phase,
     criteria: store.listCriteria(row.runId),
+    /*
+     * THE OTHER HALF OF THE GRADE, AND IT HAD NO ROUTE TO THE SCREEN AT ALL.
+     *
+     * `listCriteria` above returns the frozen suite's `REQ-*` rows and nothing
+     * else — the twelve `GATE:*` results the scorer produces update no row and
+     * are dropped in `#gatePhase` (see `machine-checks.ts` for the measurement).
+     * So a run could print "8 of 8 must-pass checks green" while the check that
+     * failed it was one of the twelve, unnamed anywhere on the page.
+     *
+     * READ PER REQUEST FROM `results/scores/<runId>.json`, exactly like
+     * `readDesignLock` / `readAdversaryPass` / `readPublishedProject` below: one
+     * small JSON file, server-side, no cache, and `results/` stays unbrowsable.
+     * `null` is "this run never reached the gate" and is never `[]`.
+     */
+    machineChecks: readMachineChecks(paths, row.runId),
     tokens: row.tokens,
     // ALWAYS null. A subscription consumes quota and is not billed per token;
     // there is no dollar figure to report and none is invented. See

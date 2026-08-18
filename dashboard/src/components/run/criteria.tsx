@@ -27,7 +27,7 @@
 
 import { useMemo, type ReactNode } from "react";
 
-import type { RunCriterion } from "@/lib/api-types";
+import type { MachineCheck, RunCriterion } from "@/lib/api-types";
 import { criterionTone, tierMeta, TIER_ORDER, TONE_TEXT } from "@/lib/presentation";
 import { Explain } from "@/components/explain";
 import { Badge, EmptyState, Panel, cx } from "@/components/ui";
@@ -144,10 +144,147 @@ function groupCount(counts: Tally, gating: boolean): { node: ReactNode; title: s
   };
 }
 
+/**
+ * THE THIRD SECTION — the twelve checks nobody wrote, which were on no screen.
+ *
+ * WHY IT IS HERE AND NOT ITS OWN PANEL. The two sections above answer "did the
+ * run do what I asked"; this one answers "and does the thing actually work",
+ * which is the same question the same reader is asking in the same breath. It
+ * was also the missing half of the number in this panel's own header: the gate
+ * scores twelve machine gates AND the criteria, the criteria table holds rows
+ * only for the criteria, and so a run whose build never compiled could print "8
+ * of 8 must-pass checks green" here with nothing on the page naming what failed
+ * it.
+ *
+ * IT DOES NOT TOUCH THE HEADER'S COUNT, DELIBERATELY. That number means "how
+ * much of your ticket was delivered" and folding twelve identical machine gates
+ * into it would move a denominator the owner reads across runs. Two counts, each
+ * over one kind of thing, is what makes either one legible.
+ *
+ * `null` IS A SENTENCE, NOT AN EMPTY LIST. A run that has not reached the gate
+ * gets one line saying so — the same refusal as `heldOutPass: null` and
+ * `gateAttempts: 0`: a check that has not run must never be drawn like a check
+ * that passed, and twelve grey rows would be exactly that drawing.
+ *
+ * THE STATUS COLUMN IS WIDER THAN THE CRITERION ROWS' 34px and everything else
+ * about it is identical — same mono, same uppercase, same right alignment, same
+ * `TONE_TEXT` colours. "did not pass" does not fit in 34px, and the two words it
+ * replaces ("fail") say something subtly different here: these gates are the
+ * house's, so a red row is the machine reporting on itself rather than a verdict
+ * on the owner's ticket.
+ */
+function MachineChecksSection({
+  checks,
+}: {
+  checks: readonly MachineCheck[] | null;
+}): ReactNode {
+  const passed = checks === null ? 0 : checks.filter((check) => check.passed).length;
+
+  return (
+    <section data-testid="machine-checks">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-surface-raised/50 px-3 py-1">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+          Machine checks
+        </span>
+        {/*
+         * "ALWAYS ON" IS THE ONE FACT THAT SEPARATES THIS GROUP FROM THE TWO
+         * ABOVE IT: the criteria differ per ticket and these do not. It sits in
+         * the same badge slot the other sections use for "must pass", which is
+         * also true of these — and is said there, not here, because a reader who
+         * has read the two badges above already knows what this panel gates on.
+         */}
+        <Badge tone="neutral" title="The same twelve checks run on every ticket.">
+          always on
+        </Badge>
+        <span
+          /*
+           * "GATE" IS NOT IN EITHER SENTENCE, and a `title` is exactly where a
+           * term of art survives — this file's own rows demote the criterion id
+           * to one, and `prose-guard.browser.spec.ts` harvests attributes for
+           * the same reason. The word is precise in the code and means nothing
+           * to the reader; "once the build is finished" is the same fact.
+           */
+          title={
+            checks === null
+              ? "They run once the build is finished. This one did not get that far."
+              : "Every one of these has to pass for the run to pass."
+          }
+          className="ml-auto text-[11px] text-ink-faint"
+        >
+          {checks === null ? (
+            "not run yet"
+          ) : (
+            <>
+              <span className={cx("numeric", passed === checks.length && "text-pass")}>
+                {passed}
+              </span>{" "}
+              of <span className="numeric">{checks.length}</span> passing
+            </>
+          )}
+        </span>
+      </header>
+      {checks === null ? (
+        <p className="px-3 py-2 text-[12.5px] leading-snug text-ink-faint">
+          This run never got as far as these checks.
+        </p>
+      ) : (
+        <ul>
+          {checks.map((check) => (
+            /*
+             * NO `title={check.id}`, and that is the one place this row parts
+             * company with `CriterionRow` above. `REQ-013` is a key the owner can
+             * match against a verdict file; `GATE:suite-intact` is a key with a
+             * word on his own banned list in it, and a hover attribute is exactly
+             * where such words survive unread — `tests/prose-guard.browser.spec
+             * .ts` harvests `title` for that reason. The id stays on the wire,
+             * where a bug report can quote it.
+             */
+            <li
+              key={check.id}
+              className={cx(
+                "flex items-start gap-2.5 border-b border-line/70 px-3 py-1.5 last:border-b-0",
+                !check.passed && "bg-fail-dim/30",
+              )}
+            >
+              <span
+                className={cx(
+                  "mt-[3px] w-[72px] shrink-0 text-right font-mono text-[10.5px] uppercase",
+                  check.passed ? TONE_TEXT.pass : TONE_TEXT.fail,
+                )}
+              >
+                {check.passed ? "pass" : "did not pass"}
+              </span>
+              <span className="min-w-0 text-[12.5px] leading-snug text-ink-dim">
+                {check.label}
+                {/*
+                 * THE SECOND LINE IS THE MACHINE'S OWN WORDS, and it appears only
+                 * under a row that failed. The server sends it for nine of the
+                 * twelve — the ones whose detail is the artefact's own compiler,
+                 * linter or HTTP output — and `null` for the three whose detail
+                 * quotes the locked tests. A reader who cannot see it is not
+                 * missing a fact the server had; there was no sentence to show.
+                 */}
+                {check.detail !== null && (
+                  <span className="mt-0.5 block break-words font-mono text-[11px] leading-snug text-ink-faint">
+                    {check.detail}
+                  </span>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function CriteriaPanel({
   criteria,
+  machineChecks,
 }: {
   criteria: readonly RunCriterion[];
+  /** `null` = this run never reached the gate. NEVER the same as `[]`. */
+  machineChecks: readonly MachineCheck[] | null;
 }): ReactNode {
   const grouped = useMemo(() => {
     const known = TIER_ORDER.map((tier) => ({
@@ -264,6 +401,11 @@ export function CriteriaPanel({
         // any build starts" — is DELETED, not moved: the heading's `Explain`
         // directly above says it, and saying it twice on one panel is what this
         // pass exists to remove.
+        //
+        // THE MACHINE SECTION BELOW STILL RENDERS UNDER IT. A run with no
+        // criteria has usually not reached the gate either, and the honest
+        // rendering of that is a section saying so — not an absent section,
+        // which reads as "there are no such checks".
         <EmptyState>No criteria yet.</EmptyState>
       ) : (
         <div>
@@ -319,6 +461,13 @@ export function CriteriaPanel({
           })}
         </div>
       )}
+      {/*
+       * LAST, AND UNDER BOTH BRANCHES ABOVE. The two authored groups answer
+       * "did it do what I asked"; this one answers "does it run at all", which
+       * is the check a reader falls back on when the first answer is bad — and
+       * for months it was the one answer this panel could not give.
+       */}
+      <MachineChecksSection checks={machineChecks} />
     </Panel>
   );
 }
