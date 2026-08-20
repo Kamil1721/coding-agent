@@ -78,6 +78,7 @@ import {
   Orchestrator,
   abortReasonOf,
   designPostSegmentAction,
+  context7PilotEnabled,
   highestArchivedAttempt,
   recordedNetworkPolicy,
   renderEvidence,
@@ -95,6 +96,10 @@ import { renderRunVerdict } from "./run-report.js";
 import { ticketFromText } from "./ticket.js";
 import { zeroTokens } from "./tokens.js";
 import type { TokenTotals } from "./tokens.js";
+import { CONTEXT7_REVIEW_RECORD_FILE, readContext7ReviewRecord } from "./context7-review-record.js";
+import { expectedContext7ObligationHashes } from "./context7-review.js";
+import type { Context7ReviewOutcome, Context7ReviewRequest } from "./context7-review.js";
+import { captureContext7ReviewSource } from "./context7-pipeline.js";
 
 function harness(): {
   store: RunStore;
@@ -1233,7 +1238,7 @@ async function designRun(options: {
     ...options.env,
   };
 
-  const orchestrator = new Orchestrator({
+  const orchestrator: Orchestrator = new Orchestrator({
     store,
     bus,
     paths,
@@ -2314,6 +2319,357 @@ test("the archive slot and the READ slot move together, or attempt 3 reports att
     assert.equal(highestArchivedAttempt(paths, "r"), 10, "10 sorts after 2 numerically, not lexically");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the opted-in Context7 review runs once against the final post-gate tree", async () => {
+  assert.equal(context7PilotEnabled("coding-agent", "coding-agent"), true);
+  assert.equal(context7PilotEnabled("different-project", "coding-agent"), false);
+  const dir = mkdtempSync(join(tmpdir(), "dash-context7-order-"));
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  const paths = resolvePaths({ DASHBOARD_HOME: dir });
+  ensureDirs(paths);
+  const store = RunStore.open(paths.database);
+  const bus = new RunEventBus(store);
+  const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
+  const catalog = new FakeCatalog(auth, {}, async () => []);
+  const preview = new PreviewHost();
+  const runId = "run-context7-order";
+  let activeRunId = runId;
+  let abortReview = false;
+  let throwReview = false;
+  const ticketText = "Build a command line tool that prints a report to stdout.";
+  const ticket = ticketFromText(ticketText);
+  const order: string[] = [];
+  const reviewRequests: Context7ReviewRequest[] = [];
+  const workspace = () => runPathsFor(paths, activeRunId).workspace;
+  const builder = new FakeBuilder({
+    workspace,
+    pngCount: 0,
+    segmentTokens: [],
+    writeManifest: false,
+    animateRefs: false,
+    onRequest: () => {
+      order.push("build");
+      mkdirSync(join(workspace(), "src"), { recursive: true });
+      writeFileSync(join(workspace(), "package.json"), JSON.stringify({ dependencies: { next: "16.x" } }), "utf8");
+      writeFileSync(join(workspace(), "src", "index.ts"), "export const current = true;", "utf8");
+    },
+  });
+  const reviewScope = {
+    projectId: "coding-agent",
+    claims: [{
+      kind: "external" as const,
+      id: "EC-1",
+      package: "next",
+      versionOrRange: "16.x",
+      queryPurpose:
+        "Verify current public usage, configuration, version compatibility, and deprecations for next as used by the supplied source.",
+    }],
+  };
+  const obligationHash = expectedContext7ObligationHashes(reviewScope)[0];
+  assert.ok(obligationHash);
+  const outcome: Context7ReviewOutcome = {
+    status: "completed",
+    capabilityApplicability: "required",
+    code: null,
+    verdict: {
+      verdict: "pass",
+      summary: "The injected reviewer confirmed the current API.",
+      findings: [],
+      evidence: [{ claimId: "EC-1" }],
+    },
+    evidence: [
+      {
+        claimId: "EC-1",
+        package: "next",
+        versionOrRange: "16.x",
+        queryPurpose:
+          "Verify current public usage, configuration, version compatibility, and deprecations for next as used by the supplied source.",
+        success: true,
+        evidenceHash: "d".repeat(64),
+        seat: "independent_code_review",
+      },
+    ],
+    lifecycle: [
+      {
+        seat: "independent_code_review",
+        obligationHash,
+        claimId: null,
+        server: "context7",
+        tool: null,
+        state: "planned",
+        code: null,
+        producedArtefactHashes: [],
+      },
+      {
+        seat: "independent_code_review",
+        obligationHash,
+        claimId: null,
+        server: "context7",
+        tool: null,
+        state: "granted",
+        code: null,
+        producedArtefactHashes: [],
+      },
+      {
+        seat: "independent_code_review",
+        obligationHash,
+        claimId: null,
+        server: "context7",
+        tool: null,
+        state: "connected",
+        code: null,
+        producedArtefactHashes: [],
+      },
+      {
+        seat: "independent_code_review",
+        obligationHash,
+        claimId: "EC-1",
+        server: "context7",
+        tool: "mcp__context7__resolve-library-id",
+        state: "attempted",
+        code: null,
+        producedArtefactHashes: [],
+      },
+      {
+        seat: "independent_code_review",
+        obligationHash,
+        claimId: "EC-1",
+        server: "context7",
+        tool: "mcp__context7__resolve-library-id",
+        state: "succeeded",
+        code: null,
+        producedArtefactHashes: ["c".repeat(64)],
+      },
+      {
+        seat: "independent_code_review",
+        obligationHash,
+        claimId: "EC-1",
+        server: "context7",
+        tool: "mcp__context7__query-docs",
+        state: "attempted",
+        code: null,
+        producedArtefactHashes: [],
+      },
+      {
+        seat: "independent_code_review",
+        obligationHash,
+        claimId: "EC-1",
+        server: "context7",
+        tool: "mcp__context7__query-docs",
+        state: "succeeded",
+        code: null,
+        producedArtefactHashes: ["d".repeat(64)],
+      },
+      {
+        seat: "independent_code_review",
+        obligationHash,
+        claimId: null,
+        server: "context7",
+        tool: null,
+        state: "satisfied",
+        code: null,
+        producedArtefactHashes: ["d".repeat(64)],
+      },
+    ],
+  };
+  const orchestrator = new Orchestrator({
+    store,
+    bus,
+    paths,
+    catalog,
+    auth,
+    preview,
+    env: { HOME: home, [GATE_MAX_ATTEMPTS_ENV]: "1" },
+    makeBuilder: () => builder,
+    designRun: async () => ({ code: 0, stderr: "" }),
+    designCanWrite: () => true,
+    context7ReviewProjectId: "coding-agent",
+    context7ReviewActualProjectId: "coding-agent",
+    runContext7Review: async (request): Promise<Context7ReviewOutcome> => {
+      order.push("review");
+      reviewRequests.push(request);
+      if (abortReview) {
+        assert.equal(orchestrator.cancel(activeRunId), true);
+        await Promise.resolve();
+      }
+      if (throwReview) throw new Error("injected Context7 runner failure");
+      return outcome;
+    },
+    makeGate: async () => ({
+      scorerImageDigest: "sha256:" + "f".repeat(64),
+      score: async (run, suite) => {
+        order.push("gate");
+        writeFileSync(join(workspace(), "src", "index.ts"), "export const current = 'after-gate';", "utf8");
+        return {
+          schemaVersion: BAKEOFF_SCHEMA_VERSION,
+          runId: run.runId,
+          ticketId: run.ticketId,
+          acceptanceSuiteSha256: suite.sha256,
+          heldOutPass: true,
+          criteriaResults: suite.criteria.map((criterion) => ({
+            criterionId: criterion.id,
+            passed: true,
+            tier: criterion.tier,
+            detail: "the injected gate says yes to everything",
+            evidenceRefs: [],
+          })),
+          falseFinish: false,
+          agentDeclaredDone: run.agentDeclaredDone,
+          scoredAt: new Date().toISOString(),
+          scorerImageDigest: "sha256:" + "f".repeat(64),
+          suiteExecution: {
+            exitCode: 0,
+            durationMs: 1,
+            testsTotal: 2,
+            testsPassed: 2,
+            testsFailed: 0,
+            stdoutPath: null,
+            stderrPath: null,
+            reportProblem: null,
+          },
+          protectedPathViolations: [],
+          harnessErrors: [],
+        } as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>;
+      },
+    }),
+  });
+
+  freezeFor(ticketText, paths.acceptance);
+  store.createRun({
+    runId,
+    ticketId: ticket.id,
+    ticketTitle: "CLI report",
+    ticketText,
+    ticketSha256: ticket.sha256,
+    modelId: "default",
+    provider: "anthropic",
+    deploy: false,
+    startedAt: new Date().toISOString(),
+    queuePosition: 1,
+    designLock: null,
+    interactive: false,
+  });
+
+  try {
+    orchestrator.pump();
+    for (const deadline = Date.now() + 30_000; ; ) {
+      const row = store.getRun(runId);
+      if (row !== null && (isTerminal(row.status) || row.status === "awaiting_input")) break;
+      if (Date.now() > deadline) throw new Error(`the run never settled (${store.getRun(runId)?.status ?? "gone"})`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert.deepEqual(order.slice(0, 3), ["build", "gate", "review"]);
+    assert.equal(reviewRequests.length, 1);
+    assert.deepEqual(reviewRequests[0]?.scope.claims, [
+      {
+        kind: "external",
+        id: "EC-1",
+        package: "next",
+        versionOrRange: "16.x",
+        queryPurpose:
+          "Verify current public usage, configuration, version compatibility, and deprecations for next as used by the supplied source.",
+      },
+    ]);
+    assert.match(reviewRequests[0]?.source ?? "", /--- package\.json ---/u);
+    assert.match(reviewRequests[0]?.source ?? "", /--- src\/index\.ts ---/u);
+    assert.match(reviewRequests[0]?.source ?? "", /current = 'after-gate'/u);
+    assert.deepEqual(readContext7ReviewRecord(runPathsFor(paths, runId).results)?.outcome, outcome);
+    assert.equal(
+      readContext7ReviewRecord(runPathsFor(paths, runId).results)?.source.sourceHash,
+      captureContext7ReviewSource(workspace(), runId).sourceHash,
+    );
+
+    const abortRunId = "run-context7-aborted-review";
+    activeRunId = abortRunId;
+    abortReview = true;
+    store.createRun({
+      runId: abortRunId,
+      ticketId: ticket.id,
+      ticketTitle: "CLI report abort",
+      ticketText,
+      ticketSha256: ticket.sha256,
+      modelId: "default",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+      designLock: null,
+      interactive: false,
+    });
+    orchestrator.pump();
+    for (const deadline = Date.now() + 30_000; ; ) {
+      const row = store.getRun(abortRunId);
+      if (row !== null && isTerminal(row.status)) break;
+      if (Date.now() > deadline) throw new Error(`the aborted review run never settled (${row?.status ?? "gone"})`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(store.getRun(abortRunId)?.status, "cancelled");
+    assert.equal(existsSync(join(runPathsFor(paths, abortRunId).results, CONTEXT7_REVIEW_RECORD_FILE)), false);
+
+    const failedRunId = "run-context7-runner-threw";
+    activeRunId = failedRunId;
+    abortReview = false;
+    throwReview = true;
+    store.createRun({
+      runId: failedRunId,
+      ticketId: ticket.id,
+      ticketTitle: "CLI report review failure",
+      ticketText,
+      ticketSha256: ticket.sha256,
+      modelId: "default",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+      designLock: null,
+      interactive: false,
+    });
+    orchestrator.pump();
+    for (const deadline = Date.now() + 30_000; ; ) {
+      const row = store.getRun(failedRunId);
+      if (row !== null && isTerminal(row.status)) break;
+      if (Date.now() > deadline) throw new Error(`the failed review run never settled (${row?.status ?? "gone"})`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const failedReview = readContext7ReviewRecord(runPathsFor(paths, failedRunId).results);
+    assert.ok(failedReview, "the runner's thrown failure must remain readable through the API record projection");
+    assert.deepEqual(failedReview.outcome, {
+      status: "failed",
+      capabilityApplicability: "required",
+      code: "session_error",
+      verdict: null,
+      evidence: [],
+      lifecycle: [
+        {
+          seat: "independent_code_review",
+          obligationHash,
+          claimId: null,
+          server: "context7",
+          tool: null,
+          state: "planned",
+          code: null,
+          producedArtefactHashes: [],
+        },
+        {
+          seat: "independent_code_review",
+          obligationHash,
+          claimId: null,
+          server: "context7",
+          tool: null,
+          state: "failed",
+          code: "session_error",
+          producedArtefactHashes: [],
+        },
+      ],
+    });
+  } finally {
+    await orchestrator.shutdown();
+    store.close();
+    removeDesignTree(dir);
   }
 });
 
@@ -4795,6 +5151,7 @@ interface QuiescenceRun {
   readonly failureReason: string | null;
   readonly log: string;
   readonly verdict: string;
+  readonly context7RecordExists: boolean;
 }
 
 /**
@@ -4895,6 +5252,9 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
     designLock: null,
     interactive: false,
   });
+  const staleReviewPath = join(runPathsFor(paths, runId).results, CONTEXT7_REVIEW_RECORD_FILE);
+  mkdirSync(dirname(staleReviewPath), { recursive: true });
+  writeFileSync(staleReviewPath, '{"schemaVersion":1,"stale":true}\n', "utf8");
 
   try {
     orchestrator.pump();
@@ -4926,6 +5286,7 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
         .map((entry) => (entry.event.type === "log" ? entry.event.text : ""))
         .join(" | "),
       verdict: existsSync(verdictPath) ? readFileSync(verdictPath, "utf8") : "",
+      context7RecordExists: existsSync(staleReviewPath),
     };
   } finally {
     await orchestrator.shutdown();
@@ -4952,6 +5313,7 @@ test("5b: a builder that never wrote a self-report is NOT scored, and no verdict
   assert.match(run.verdict, /NO VERDICT/i);
   assert.match(run.verdict, /This run ended before the sealed gate produced a result/);
   assert.doesNotMatch(run.verdict, /DID NOT PASS/, "inventing a failing verdict is B1 pointed the other way");
+  assert.equal(run.context7RecordExists, false, "a stale Context7 record is removed before the missing-report exit");
 });
 
 test("5b: a self-report the reader CANNOT PARSE still reaches the gate — 052c6e02's real file", async () => {

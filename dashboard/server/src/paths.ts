@@ -20,7 +20,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 
@@ -31,6 +31,8 @@ export const DASHBOARD_ENV = Object.freeze({
   /** Interface to bind. Only 127.0.0.1 is accepted — see http.ts. */
   host: "DASHBOARD_HOST",
   port: "DASHBOARD_PORT",
+  /** Actual repository identity, independent of state-directory overrides. */
+  projectId: "DASHBOARD_PROJECT_ID",
   /**
    * How many runs may execute at once. Default 1 — the serial behaviour this
    * dashboard has always had. Raising it is the owner's call and costs quota in
@@ -59,6 +61,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** `dashboard/` — the parent of `dashboard/server`. */
 const DEFAULT_HOME = resolve(HERE, "..", "..");
+const DEFAULT_PROJECT_ID = basename(resolve(HERE, "..", "..", ".."));
+
+export function dashboardProjectId(env: NodeJS.ProcessEnv): string {
+  const configured = env[DASHBOARD_ENV.projectId]?.trim();
+  return configured === undefined || configured.length === 0 ? DEFAULT_PROJECT_ID : configured;
+}
 
 /** The bake-off tree this dashboard reuses. Read-only as far as we are concerned. */
 export const BAKEOFF_ROOT = resolve(DEFAULT_HOME, "..", "bakeoff");

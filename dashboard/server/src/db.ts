@@ -596,7 +596,7 @@ const RUN_STATUSES: readonly ApiRunStatus[] = [
  * a visible cost (an old run whose first recorded phase was `spec` renders as
  * though it completed a plan phase it never had).
  */
-const PHASES: readonly ApiPhase[] = ["plan", "spec", "build", "gate", "judge", "done"];
+const PHASES: readonly ApiPhase[] = ["plan", "spec", "build", "review", "gate", "judge", "done"];
 // "moonshot" and "deepseek" left this list on 2026-07-30 with the model rows the
 // owner removed. Nothing in this store can hold either: `POST /api/runs` refused
 // every metered id with 409 for as long as they existed, so no run row was ever

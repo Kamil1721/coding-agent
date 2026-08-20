@@ -385,7 +385,18 @@ test("successful marked query satisfies the review and persists only a hash proj
   const expectedHash = createHash("sha256")
     .update('{"content":"SECRET RAW DOC RESULT"}', "utf8")
     .digest("hex");
+  assert.equal(outcome.evidence[0]?.claimId, "sdk");
   assert.equal(outcome.evidence[0]?.evidenceHash, expectedHash);
+  assert.ok(
+    outcome.lifecycle
+      .filter((row) => row.tool !== null)
+      .every((row) => row.claimId === "sdk"),
+  );
+  assert.ok(
+    outcome.lifecycle
+      .filter((row) => row.tool === null)
+      .every((row) => row.claimId === null),
+  );
   assert.ok(
     outcome.lifecycle.some(
       (row) => row.state === "succeeded" && row.tool === CONTEXT7_QUERY_TOOL && row.producedArtefactHashes[0] === expectedHash,
@@ -393,6 +404,38 @@ test("successful marked query satisfies the review and persists only a hash proj
   );
   assert.doesNotMatch(JSON.stringify(outcome), /SECRET RAW DOC RESULT|transient raw documentation/u);
   assert.equal((record.hookAnswers[1] as { continue?: boolean } | undefined)?.continue, true);
+});
+
+test("duplicate structured evidence claim ids are rejected before completion", async () => {
+  const { factory } = scenarioFactory({
+    init: init(),
+    tools: [
+      {
+        name: CONTEXT7_RESOLVE_TOOL,
+        input: {
+          libraryName: "Next.js",
+          query: "[claim:sdk] Next.js@16.x: Verify the current route-handler configuration API.",
+        },
+        result: NEXT_RESOLUTION,
+      },
+      {
+        name: CONTEXT7_QUERY_TOOL,
+        input: {
+          libraryId: NEXT_16_ID,
+          query: "[claim:sdk] Next.js@16.x: Verify the current route-handler configuration API.",
+        },
+        result: { content: "Current route-handler documentation." },
+      },
+    ],
+    final: result(verdict(["sdk", "sdk"])),
+  });
+
+  const outcome = await runner(factory).review(request());
+
+  assert.equal(outcome.status, "unsatisfied");
+  assert.equal(outcome.code, "invalid_structured_output");
+  assert.equal(outcome.verdict, null);
+  assert.deepEqual(outcome.evidence, []);
 });
 
 test("query-docs is bound to an exact resolver candidate and matching version", async () => {
@@ -966,6 +1009,7 @@ test("SDK composition is strict, exact and strips a Context7 key from the child"
   assert.equal(options.strictMcpConfig, true);
   assert.equal(options.settingSources?.length, 0);
   assert.equal(options.permissionMode, "dontAsk");
+  assert.equal(options.persistSession, false);
   assert.deepEqual(options.tools, [CONTEXT7_QUERY_TOOL, CONTEXT7_RESOLVE_TOOL]);
   assert.deepEqual(options.allowedTools, [CONTEXT7_QUERY_TOOL, CONTEXT7_RESOLVE_TOOL]);
   assert.deepEqual(options.managedSettings?.allowedMcpServers, [{ serverName: "context7" }]);
@@ -974,6 +1018,36 @@ test("SDK composition is strict, exact and strips a Context7 key from the child"
   assert.equal(options.mcpServers?.["context7"]?.type, "http");
   assert.equal(options.mcpServers?.["context7"]?.url, CONTEXT7_URL);
   assert.equal(options.env?.["CONTEXT7_API_KEY"], undefined);
+  assert.equal(options.maxTurns, 8, "one dependency still receives the bounded minimum review budget");
+});
+
+test("the turn budget scales with the number of mandatory package claims and remains bounded", async () => {
+  const scope: ReviewScope = {
+    projectId: "pilot-project",
+    claims: Array.from({ length: 12 }, (_, index) => ({
+      kind: "external" as const,
+      id: `sdk-${String(index + 1)}`,
+      package: `package-${String(index + 1)}`,
+      versionOrRange: null,
+      queryPurpose: `Verify package ${String(index + 1)}.`,
+    })),
+  };
+  const { factory, record } = scenarioFactory({ init: init(), final: result(verdict([])) });
+
+  await runner(factory).review(request(scope));
+
+  assert.equal(record.options?.maxTurns, 32);
+});
+
+test("the run cancellation signal reaches the SDK abort controller", async () => {
+  const cancelled = new AbortController();
+  cancelled.abort("owner stopped the run");
+  const { factory, record } = scenarioFactory({ init: init(), final: result(verdict()) });
+
+  await runner(factory).review({ ...request(), signal: cancelled.signal });
+
+  assert.equal(record.options?.abortController?.signal.aborted, true);
+  assert.equal(record.options?.abortController?.signal.reason, "owner stopped the run");
 });
 
 test("external capability is fail-closed outside the single opted-in project", async () => {

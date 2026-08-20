@@ -82,7 +82,7 @@ export interface RunSummary {
  * it. A run recorded before this phase existed carries one of the original five
  * and renders exactly as it did.
  */
-export type RunPhase = "plan" | "spec" | "build" | "gate" | "judge" | "done";
+export type RunPhase = "plan" | "spec" | "build" | "review" | "gate" | "judge" | "done";
 
 /**
  * Gating tier, from `bakeoff/src/contracts.ts` and research doc 02 section 5.4.
@@ -508,6 +508,75 @@ export interface AdversaryPass {
   readonly findings: readonly AdversaryFinding[] | null;
 }
 
+export interface Context7Evidence {
+  readonly claimId: string;
+  readonly package: string;
+  readonly versionOrRange: string | null;
+  readonly queryPurpose: string;
+  readonly success: boolean;
+  readonly evidenceHash: string;
+  readonly seat: string;
+}
+
+export interface Context7Lifecycle {
+  readonly claimId: string | null;
+  readonly seat: string;
+  readonly obligationHash: string;
+  readonly server: string;
+  readonly tool: string | null;
+  readonly state: string;
+  readonly code: string | null;
+  readonly producedArtefactHashes: readonly string[];
+}
+
+export interface Context7Finding {
+  readonly claimId: string;
+  readonly severity: "info" | "warning" | "error";
+  readonly title: string;
+  readonly detail: string;
+}
+
+export interface Context7ClaimReference {
+  readonly claimId: string;
+}
+
+export interface Context7Verdict {
+  readonly verdict: "pass" | "fail";
+  readonly summary: string;
+  readonly findings: readonly Context7Finding[];
+  readonly evidence: readonly Context7ClaimReference[];
+}
+
+export interface Context7Package {
+  readonly package: string;
+  readonly versionOrRange: string | null;
+}
+
+export interface Context7Source {
+  readonly sourceHash: string;
+  readonly files: readonly string[];
+  readonly bytes: number;
+  readonly truncated: boolean;
+}
+
+/**
+ * Independent review evidence. It never changes heldOutPass.
+ * Unsatisfied means required documentation evidence was missing, so no review
+ * verdict was admitted.
+ */
+export interface Context7Review {
+  readonly startedAt: string;
+  readonly completedAt: string;
+  readonly status: "completed" | "capability_unavailable" | "unsatisfied" | "failed";
+  readonly capabilityApplicability: "not_applicable" | "suggested" | "required";
+  readonly code: string | null;
+  readonly packages: readonly Context7Package[];
+  readonly source: Context7Source;
+  readonly verdict: Context7Verdict | null;
+  readonly evidence: readonly Context7Evidence[];
+  readonly lifecycle: readonly Context7Lifecycle[];
+}
+
 /**
  * Something in the workspace that was NOT copied into the published project —
  * the server's `ApiProjectExclusion`, mirrored by hand.
@@ -835,6 +904,11 @@ export interface RunDetail extends RunSummary {
    * become browsable, because it holds held-out test titles.
    */
   readonly adversary: AdversaryPass | null;
+  /**
+   * The independent review record. Older runs and non-pilot servers omit it at
+   * runtime, so renderers must read context7Review ?? null.
+   */
+  readonly context7Review?: Context7Review | null;
   /**
    * How the page the owner named as a MOTION REFERENCE was observed to move, or
    * `null` when this ticket named none.
@@ -1589,6 +1663,7 @@ const RUN_PHASES: ReadonlySet<string> = new Set([
   "plan",
   "spec",
   "build",
+  "review",
   "gate",
   "judge",
   "done",

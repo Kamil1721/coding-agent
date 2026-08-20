@@ -143,6 +143,7 @@ export const PHASE_ORDER: readonly RunPhase[] = [
   "plan",
   "spec",
   "build",
+  "review",
   "gate",
   "judge",
   "done",
@@ -162,6 +163,8 @@ export function phaseMeta(phase: RunPhase): PhaseMeta {
       };
     case "build":
       return { label: "Build", blurb: "The agent is implementing." };
+    case "review":
+      return { label: "Review", blurb: "Checking code and current dependency documentation." };
     case "gate":
       return {
         label: "Checking",

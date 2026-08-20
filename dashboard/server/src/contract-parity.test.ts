@@ -736,6 +736,7 @@ const DETAIL_SHAPES: readonly {
       "failureReason",
       "designLock",
       "adversary",
+      "context7Review",
       "motion",
     ],
   },
@@ -824,6 +825,57 @@ const DETAIL_SHAPES: readonly {
     server: "ApiAdversaryFinding",
     client: "AdversaryFinding",
     fields: ["severity", "klass", "summary", "detail"],
+  },
+  {
+    server: "ApiContext7Review",
+    client: "Context7Review",
+    fields: [
+      "startedAt",
+      "completedAt",
+      "status",
+      "capabilityApplicability",
+      "code",
+      "packages",
+      "source",
+      "verdict",
+      "evidence",
+      "lifecycle",
+    ],
+  },
+  {
+    server: "ApiContext7Evidence",
+    client: "Context7Evidence",
+    fields: ["claimId", "package", "versionOrRange", "queryPurpose", "success", "evidenceHash", "seat"],
+  },
+  {
+    server: "ApiContext7Lifecycle",
+    client: "Context7Lifecycle",
+    fields: ["claimId", "seat", "obligationHash", "server", "tool", "state", "code", "producedArtefactHashes"],
+  },
+  {
+    server: "ApiContext7Finding",
+    client: "Context7Finding",
+    fields: ["claimId", "severity", "title", "detail"],
+  },
+  {
+    server: "ApiContext7Verdict",
+    client: "Context7Verdict",
+    fields: ["verdict", "summary", "findings", "evidence"],
+  },
+  {
+    server: "ApiContext7ClaimReference",
+    client: "Context7ClaimReference",
+    fields: ["claimId"],
+  },
+  {
+    server: "ApiContext7Package",
+    client: "Context7Package",
+    fields: ["package", "versionOrRange"],
+  },
+  {
+    server: "ApiContext7Source",
+    client: "Context7Source",
+    fields: ["sourceHash", "files", "bytes", "truncated"],
   },
   {
     // Carried by the `published: true` member of `PublishedProject`, which is

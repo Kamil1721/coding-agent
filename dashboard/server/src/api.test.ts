@@ -41,6 +41,9 @@ import { LOOPBACK_HOST, createDashboardServer, designLockInteractive } from "./h
 import type { RunController } from "./http.js";
 import { CODEX_DEFAULT_MODEL_ID, ModelCatalog } from "./models.js";
 import { planPolicy } from "./plan-record.js";
+import { writeContext7ReviewRecord } from "./context7-review-record.js";
+import type { Context7ReviewRecord } from "./context7-review-record.js";
+import { expectedContext7ObligationHashes } from "./context7-review.js";
 import type { DashboardPaths } from "./paths.js";
 import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
 
@@ -933,6 +936,90 @@ async function newRun(
   assert.equal(created.status, 201, JSON.stringify(created.body));
   return (created.body as CreateRunResponse).runId;
 }
+
+test("RunDetail projects the durable Context7 record without raw source or documentation", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = await newRun(harness, "a cli that reports its dependency versions");
+    const runPaths = runPathsFor(harness.paths, runId);
+    ensureRunDirs(runPaths);
+    let record: Context7ReviewRecord = {
+      schemaVersion: 1,
+      startedAt: "2026-08-20T08:00:00.000Z",
+      completedAt: "2026-08-20T08:00:02.000Z",
+      scope: {
+        projectId: "coding-agent",
+        claims: [
+          {
+            kind: "external",
+            id: "EC-1",
+            package: "next",
+            versionOrRange: "16.x",
+            queryPurpose: "Verify current Next.js usage.",
+          },
+        ],
+      },
+      source: { sourceHash: "a".repeat(64), files: ["package.json"], bytes: 128, truncated: false },
+      outcome: {
+        status: "unsatisfied",
+        capabilityApplicability: "required",
+        code: "required_evidence_missing",
+        verdict: null,
+        evidence: [],
+        lifecycle: [
+          {
+            seat: "independent_code_review",
+            obligationHash: "b".repeat(64),
+            claimId: null,
+            server: "context7",
+            tool: null,
+            state: "planned",
+            code: null,
+            producedArtefactHashes: [],
+          },
+          {
+            seat: "independent_code_review",
+            obligationHash: "b".repeat(64),
+            claimId: null,
+            server: "context7",
+            tool: null,
+            state: "unsatisfied",
+            code: "required_evidence_missing",
+            producedArtefactHashes: [],
+          },
+        ],
+      },
+    };
+    const obligationHash = expectedContext7ObligationHashes(record.scope)[0];
+    assert.ok(obligationHash);
+    record = {
+      ...record,
+      outcome: {
+        ...record.outcome,
+        lifecycle: record.outcome.lifecycle.map((row) => ({ ...row, obligationHash })),
+      },
+    };
+    writeContext7ReviewRecord(runPaths.results, record);
+
+    const detail = await detailOf(harness, runId);
+
+    assert.deepEqual(detail.context7Review, {
+      startedAt: record.startedAt,
+      completedAt: record.completedAt,
+      status: "unsatisfied",
+      capabilityApplicability: "required",
+      code: "required_evidence_missing",
+      packages: [{ package: "next", versionOrRange: "16.x" }],
+      source: record.source,
+      verdict: null,
+      evidence: [],
+      lifecycle: record.outcome.lifecycle,
+    });
+    assert.doesNotMatch(JSON.stringify(detail.context7Review), /export const|raw documentation/u);
+  } finally {
+    await harness.close();
+  }
+});
 
 /**
  * A run whose DESIGN lane has already happened, assembled from OUTSIDE the

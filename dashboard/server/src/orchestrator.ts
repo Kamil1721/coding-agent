@@ -42,7 +42,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -305,6 +305,17 @@ import type { PlanSeatCaller } from "./plan-seat.js";
 import { closePlan, openPlanState, openQuestions } from "./plan-state.js";
 import type { ClassifiedReply, PlanState } from "./plan-state.js";
 import type { PlanSeatReply } from "./plan-turn.js";
+import { captureContext7ReviewSource, compileContext7ReviewScope } from "./context7-pipeline.js";
+import {
+  Context7ReviewRunner,
+  compileReviewCapabilitySet,
+  context7SessionFailureOutcome,
+} from "./context7-review.js";
+import type {
+  Context7ReviewOutcome,
+  Context7ReviewRequest,
+} from "./context7-review.js";
+import { CONTEXT7_REVIEW_RECORD_FILE, writeContext7ReviewRecord } from "./context7-review-record.js";
 
 const exec = promisify(execFile);
 
@@ -610,6 +621,15 @@ export interface OrchestratorDeps {
     readonly images: readonly SeatImage[];
     readonly signal: AbortSignal;
   }) => PlanSeatCaller;
+  /**
+   * Explicit one-project opt-in for the isolated Context7 review pilot.
+   * Omitted means the phase does not exist for this orchestrator instance.
+   */
+  readonly context7ReviewProjectId?: string | null;
+  /** Independently derived identity of the repository this host is serving. */
+  readonly context7ReviewActualProjectId?: string | null;
+  /** Test seam at the review request boundary; production uses Context7ReviewRunner. */
+  readonly runContext7Review?: (request: Context7ReviewRequest) => Promise<Context7ReviewOutcome>;
 }
 
 /** The one thing `#adversaryPhase` cannot do without spending money. */
@@ -618,6 +638,10 @@ export type AdversarySpawner = (input: {
   readonly call: AdversaryCall;
   readonly signal: AbortSignal;
 }) => Promise<AdversarySpawnResult>;
+
+export function context7PilotEnabled(actualProjectId: string | null | undefined, allowedProjectId: string | null | undefined): boolean {
+  return actualProjectId != null && allowedProjectId != null && actualProjectId === allowedProjectId;
+}
 
 /**
  * What the build phase came back with.
@@ -2195,6 +2219,11 @@ export class Orchestrator {
     this.#reportNoCapture(runId, row0.ticketText, manifest);
     const log = new BuildLog(runPaths.buildLog);
 
+    // Configuration, source and dependency scope can change between attempts.
+    // Clear the previous independent review before any resumed plan/spec/build
+    // work or early exit can leave a stale final-tree record behind.
+    rmSync(join(runPaths.results, CONTEXT7_REVIEW_RECORD_FILE), { force: true });
+
     store.updateRun(runId, {
       status: "running",
       queuePosition: 0,
@@ -2553,7 +2582,17 @@ export class Orchestrator {
        */
       if (signal.aborted) return this.#aborted(runId, log, signal);
 
-      // ---- PHASE 4: the code-reading judge ----------------------------
+      // ---- PHASE 4: one non-gating review of the final tree ------------
+      // This deliberately runs after every gate/fix mutation and after the
+      // nonterminal rate-limit/cancel exits above. The sealed gate and judge
+      // remain tool-less authorities; Context7 informs only this review.
+      if (context7PilotEnabled(this.#deps.context7ReviewActualProjectId, this.#deps.context7ReviewProjectId)) {
+        this.#setPhase(runId, "review");
+        await this.#context7ReviewPhase(runId, runPaths, signal);
+        if (signal.aborted) return this.#aborted(runId, log, signal);
+      }
+
+      // ---- PHASE 5: the sealed code-reading judge ---------------------
       this.#setPhase(runId, "judge");
       await this.#judgePhase(runId, ticket, suite, runPaths, scored.container, signal);
 
@@ -2572,7 +2611,7 @@ export class Orchestrator {
       }
 
       await this.#maybePreview(runId, runPaths);
-      // ---- PHASE 5: the human-factors adversary (`/debugfix --web --max`) ----
+      // ---- PHASE 6: the human-factors adversary (`/debugfix --web --max`) ----
       //
       // HERE AND NOWHERE EARLIER, for one mechanical reason: `#maybePreview` on
       // the line above is where a `previewUrl` first exists, and a pass with no
@@ -6267,7 +6306,113 @@ export class Orchestrator {
     }
   }
 
-  /* ---- phase 4: the judge --------------------------------------------- */
+  /* ---- independent Context7 review ----------------------------------- */
+
+  async #context7ReviewPhase(runId: string, runPaths: RunPaths, signal: AbortSignal): Promise<string | null> {
+    if (signal.aborted) return null;
+    const projectId = this.#deps.context7ReviewProjectId;
+    const actualProjectId = this.#deps.context7ReviewActualProjectId;
+    if (!context7PilotEnabled(actualProjectId, projectId)) return null;
+    // Narrowed by context7PilotEnabled's value contract.
+    if (projectId == null || actualProjectId == null) return null;
+
+    // A previous hash can never remain authoritative while a refresh is in
+    // progress or after the refresh fails to commit.
+    rmSync(join(runPaths.results, CONTEXT7_REVIEW_RECORD_FILE), { force: true });
+
+    const scope = compileContext7ReviewScope({
+      projectId: actualProjectId,
+      workspace: runPaths.workspace,
+      runId,
+    });
+    const source = captureContext7ReviewSource(runPaths.workspace, runId);
+    const startedAt = new Date().toISOString();
+    const request: Context7ReviewRequest = {
+      scope,
+      source: source.text,
+      modelId: this.#usableSpecModel(runId),
+      effort: "high",
+      signal,
+    };
+    const externalCount = scope.claims.filter((claim) => claim.kind === "external").length;
+    this.#emitLog(
+      runId,
+      "info",
+      externalCount === 0
+        ? "independent review started without MCP: the compiled scope contains only repository-internal claims"
+        : `independent review started with Context7 REQUIRED for ${String(externalCount)} external package claim(s); ` +
+          "the reviewer cannot issue a verdict until every routed claim has successful documentation evidence",
+    );
+
+    let outcome: Context7ReviewOutcome;
+    const preflightCode = scope.scopeFailure ?? (source.files.length === 0 ? "source_unavailable" : source.truncated ? "source_incomplete" : null);
+    try {
+      const run =
+        this.#deps.runContext7Review ??
+        ((input: Context7ReviewRequest) =>
+          new Context7ReviewRunner({
+            cwd: this.#deps.paths.home,
+            optedInProjectId: projectId,
+            env: this.#deps.env,
+          }).review(input));
+      outcome = preflightCode === null
+        ? await run(request)
+        : {
+            status: "unsatisfied",
+            capabilityApplicability: compileReviewCapabilitySet(scope).applicability,
+            verdict: null,
+            evidence: [],
+            lifecycle: [],
+            code: preflightCode,
+          };
+    } catch (error) {
+      outcome = context7SessionFailureOutcome(scope);
+      this.#emitLog(runId, "warn", `independent review failed before it could record a verdict: ${describeError(error)}`);
+    }
+
+    if (signal.aborted) return null;
+
+    try {
+      writeContext7ReviewRecord(runPaths.results, {
+        schemaVersion: 1,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        scope: { projectId: scope.projectId, claims: scope.claims },
+        source: {
+          sourceHash: source.sourceHash,
+          files: source.files,
+          bytes: source.bytes,
+          truncated: source.truncated,
+        },
+        outcome,
+      });
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the independent review record could not be written: ${describeError(error)}`);
+      return null;
+    }
+
+    const satisfied = outcome.lifecycle.filter((entry) => entry.state === "satisfied").length;
+    const evidence = outcome.evidence.filter((entry) => entry.success).length;
+    const level = outcome.status === "completed" && outcome.verdict?.verdict !== "fail" ? "info" : "warn";
+    this.#emitLog(
+      runId,
+      level,
+      `independent review ${outcome.status}: applicability ${outcome.capabilityApplicability}, ` +
+        `${String(evidence)} evidence projection(s), ${String(satisfied)} satisfied obligation(s)` +
+        `${outcome.code === null ? "" : `, ${outcome.code}`}` +
+        `${outcome.verdict === null ? "; no verdict admitted" : `; ${outcome.verdict.verdict} - ${outcome.verdict.summary}`}`,
+    );
+    for (const finding of outcome.verdict?.findings ?? []) {
+      this.#emitLog(
+        runId,
+        finding.severity === "error" ? "warn" : "info",
+        `independent review finding [${finding.severity}] ${finding.claimId}: ${finding.title} - ${finding.detail}`,
+      );
+    }
+    return source.sourceHash;
+  }
+
+  /* ---- phase 5: the sealed judge ------------------------------------- */
 
   async #judgePhase(
     runId: string,

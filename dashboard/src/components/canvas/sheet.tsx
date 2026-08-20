@@ -83,6 +83,7 @@ import { Badge, Button, Dot, MonoPath, Panel, cx } from "@/components/ui";
 import { TicketAttachmentsPanel } from "@/components/run/attachments";
 import { CodeBrowser } from "@/components/run/code-browser";
 import { CriteriaPanel } from "@/components/run/criteria";
+import { Context7ReviewPanel } from "@/components/run/context7-review";
 import { MotionReadoutPanel } from "@/components/run/motion";
 import { OutcomeNotice } from "@/components/run/notices";
 import { PublishedProjectPanel } from "@/components/run/published-project";
@@ -1177,6 +1178,14 @@ export function ResultPanel({ run }: { run: RunDetail }): ReactNode {
         screenshots={run.screenshots}
         designLock={run.designLock ?? null}
       />
+
+      {/*
+       * INDEPENDENT DOCUMENTATION EVIDENCE, NOT A THIRTEENTH MACHINE CHECK.
+       * It cannot change `heldOutPass`, so it stays outside `CriteriaPanel` and
+       * names that boundary in its own subtitle. Older runs and non-pilot
+       * servers carry no record; `?? null` makes that absence render nothing.
+       */}
+      <Context7ReviewPanel review={run.context7Review ?? null} />
 
       {/*
        * LAST, UNDER THE CAPTURES OF THE THING IT IS JUDGING, and separated from

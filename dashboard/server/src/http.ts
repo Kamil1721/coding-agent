@@ -143,6 +143,7 @@ import { DEFAULT_PORT, LOOPBACK_HOST } from "./dashboard-url.js";
 import { ADVERSARY_RECORD_FILE, adversaryPassFromRecord } from "./adversary.js";
 import type {
   ApiAdversaryPass,
+  ApiContext7Review,
   ApiDesignLock,
   ApiDesignStage,
   ApiErrorResponse,
@@ -169,6 +170,7 @@ import type {
   RunGraphResponse,
   RunSummary,
 } from "./api-types.js";
+import { readContext7ReviewRecord } from "./context7-review-record.js";
 import { briefShape } from "./brief-shape.js";
 import type { BriefShapeFinding } from "./brief-shape.js";
 import {
@@ -597,6 +599,26 @@ function readAdversaryPass(resultsDir: string): ApiAdversaryPass | null {
   }
 }
 
+/** Hash-only Context7 review projection; the record never contains raw docs. */
+function readContext7Review(resultsDir: string): ApiContext7Review | null {
+  const record = readContext7ReviewRecord(resultsDir);
+  if (record === null) return null;
+  return {
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    status: record.outcome.status,
+    capabilityApplicability: record.outcome.capabilityApplicability,
+    code: record.outcome.code,
+    packages: record.scope.claims
+      .filter((claim) => claim.kind === "external")
+      .map((claim) => ({ package: claim.package, versionOrRange: claim.versionOrRange })),
+    source: record.source,
+    verdict: record.outcome.verdict,
+    evidence: record.outcome.evidence,
+    lifecycle: record.outcome.lifecycle,
+  };
+}
+
 /**
  * `design-lock.json`, as the panel needs it — READ FROM ONE FILE.
  *
@@ -822,6 +844,7 @@ function toDetail(
     // api-types.ts's ApiAdversaryPass for the full truth table before rendering
     // any of it.
     adversary: readAdversaryPass(results),
+    context7Review: readContext7Review(results),
   };
 }
 

@@ -114,7 +114,7 @@ export type ApiRunStatus =
  * read through a membership test, so an old row saying `spec` still reads. What
  * DOES move is the client's `PHASE_ORDER` index — see the note there.
  */
-export type ApiPhase = "plan" | "spec" | "build" | "gate" | "judge" | "done";
+export type ApiPhase = "plan" | "spec" | "build" | "review" | "gate" | "judge" | "done";
 
 export type ApiCriterionResult = "pass" | "fail" | "pending";
 
@@ -642,6 +642,79 @@ export interface ApiAdversaryPass {
   readonly stopDetail: string;
   /** `null` = no report to read; `[]` = a report that found nothing. See above. */
   readonly findings: readonly ApiAdversaryFinding[] | null;
+}
+
+/** A hash-only projection of one successful Context7 documentation result. */
+export interface ApiContext7Evidence {
+  readonly claimId: string;
+  readonly package: string;
+  readonly versionOrRange: string | null;
+  readonly queryPurpose: string;
+  readonly success: boolean;
+  readonly evidenceHash: string;
+  readonly seat: string;
+}
+
+/** One host-observed capability transition; never raw MCP output. */
+export interface ApiContext7Lifecycle {
+  readonly seat: string;
+  readonly obligationHash: string;
+  readonly claimId: string | null;
+  readonly server: string;
+  readonly tool: string | null;
+  readonly state: string;
+  readonly code: string | null;
+  readonly producedArtefactHashes: readonly string[];
+}
+
+export interface ApiContext7Finding {
+  readonly claimId: string;
+  readonly severity: "info" | "warning" | "error";
+  readonly title: string;
+  readonly detail: string;
+}
+
+export interface ApiContext7ClaimReference {
+  readonly claimId: string;
+}
+
+export interface ApiContext7Verdict {
+  readonly verdict: "pass" | "fail";
+  readonly summary: string;
+  readonly findings: readonly ApiContext7Finding[];
+  readonly evidence: readonly ApiContext7ClaimReference[];
+}
+
+export interface ApiContext7Package {
+  readonly package: string;
+  readonly versionOrRange: string | null;
+}
+
+export interface ApiContext7Source {
+  readonly sourceHash: string;
+  readonly files: readonly string[];
+  readonly bytes: number;
+  readonly truncated: boolean;
+}
+
+/**
+ * The independent code review's durable audit projection.
+ *
+ * This is deliberately non-gating. An unsatisfied status means the reviewer
+ * was not allowed to issue a verdict because required evidence was missing; it
+ * is neither a pass nor a failure of the built artefact.
+ */
+export interface ApiContext7Review {
+  readonly startedAt: string;
+  readonly completedAt: string;
+  readonly status: "completed" | "capability_unavailable" | "unsatisfied" | "failed";
+  readonly capabilityApplicability: "not_applicable" | "suggested" | "required";
+  readonly code: string | null;
+  readonly packages: readonly ApiContext7Package[];
+  readonly source: ApiContext7Source;
+  readonly verdict: ApiContext7Verdict | null;
+  readonly evidence: readonly ApiContext7Evidence[];
+  readonly lifecycle: readonly ApiContext7Lifecycle[];
 }
 
 /**
@@ -1311,6 +1384,11 @@ export interface RunDetail extends RunSummary {
    * carry a fact this response already carries.
    */
   readonly adversary: ApiAdversaryPass | null;
+  /**
+   * The independent code-review record, or null before/without the opted-in
+   * pilot. It is an audit surface, never a second acceptance verdict.
+   */
+  readonly context7Review?: ApiContext7Review | null;
   /**
    * How the page the owner named as a MOTION REFERENCE was observed to move, or
    * `null` when this ticket named none.

@@ -20,6 +20,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { subscriptionSubprocessEnv } from "./subprocess-env.js";
+import { isSupportedReviewVersionRange } from "./review-claims.js";
 
 export const CONTEXT7_SERVER = "context7";
 export const CONTEXT7_URL = "https://mcp.context7.com/mcp";
@@ -87,6 +88,7 @@ export interface ReviewCapabilitySet {
 export interface McpLifecycleEvent {
   readonly seat: typeof INDEPENDENT_REVIEW_SEAT;
   readonly obligationHash: string;
+  readonly claimId: string | null;
   readonly server: string;
   readonly tool: string | null;
   readonly state: McpLifecycle;
@@ -106,9 +108,13 @@ export type McpOutcomeCode =
   | "missing_structured_output"
   | "invalid_structured_output"
   | "raw_evidence_in_output"
-  | "required_evidence_missing";
+  | "required_evidence_missing"
+  | "source_unavailable"
+  | "source_incomplete"
+  | "scope_unavailable";
 
 export interface Context7EvidenceProjection {
+  readonly claimId: string;
   readonly package: string;
   readonly versionOrRange: string | null;
   readonly queryPurpose: string;
@@ -154,6 +160,8 @@ export interface Context7ReviewRequest {
   readonly source: string;
   readonly modelId: string;
   readonly effort?: Options["effort"];
+  /** The run's cancellation boundary, forwarded into the SDK subprocess. */
+  readonly signal?: AbortSignal;
 }
 
 export interface Context7ReviewSession extends AsyncIterable<SDKMessage> {
@@ -195,7 +203,7 @@ const REVIEW_OUTPUT_SCHEMA: Record<string, unknown> = {
   required: ["verdict", "summary", "findings", "evidence"],
   properties: {
     verdict: { enum: ["pass", "fail"] },
-    summary: { type: "string" },
+    summary: { type: "string", maxLength: 2_000 },
     findings: {
       type: "array",
       items: {
@@ -203,10 +211,10 @@ const REVIEW_OUTPUT_SCHEMA: Record<string, unknown> = {
         additionalProperties: false,
         required: ["claimId", "severity", "title", "detail"],
         properties: {
-          claimId: { type: "string" },
+          claimId: { type: "string", maxLength: 128 },
           severity: { enum: ["info", "warning", "error"] },
-          title: { type: "string" },
-          detail: { type: "string" },
+          title: { type: "string", maxLength: 300 },
+          detail: { type: "string", maxLength: 4_000 },
         },
       },
     },
@@ -216,7 +224,7 @@ const REVIEW_OUTPUT_SCHEMA: Record<string, unknown> = {
         type: "object",
         additionalProperties: false,
         required: ["claimId"],
-        properties: { claimId: { type: "string" } },
+        properties: { claimId: { type: "string", maxLength: 128 } },
       },
     },
   },
@@ -255,7 +263,11 @@ function validateReviewScope(scope: ReviewScope): void {
         throw new Error("external review packages containing a slash must use @scope/name syntax");
       }
     }
-    if (claim.kind === "external" && claim.versionOrRange !== null && !isSupportedVersionRange(claim.versionOrRange)) {
+    if (
+      claim.kind === "external" &&
+      claim.versionOrRange !== null &&
+      !isSupportedReviewVersionRange(claim.versionOrRange)
+    ) {
       throw new Error("external review versions must be exact semver, a major, a major/minor wildcard, or a ^/~ semver range");
     }
   }
@@ -325,16 +337,22 @@ function obligationHash(obligation: McpObligation): string {
   return sha256(obligation);
 }
 
+export function expectedContext7ObligationHashes(scope: ReviewScope): readonly string[] {
+  return compileReviewCapabilitySet(scope).obligations.map(obligationHash);
+}
+
 function event(
   obligation: McpObligation,
   state: McpLifecycle,
   tool: string | null = null,
   code: McpOutcomeCode | null = null,
   producedArtefactHashes: readonly string[] = [],
+  claimId: string | null = null,
 ): McpLifecycleEvent {
   return {
     seat: INDEPENDENT_REVIEW_SEAT,
     obligationHash: obligationHash(obligation),
+    claimId,
     server: obligation.server,
     tool,
     state,
@@ -404,6 +422,10 @@ function userMessage(content: string): SDKUserMessage {
   };
 }
 
+function requestAborted(request: Context7ReviewRequest): boolean {
+  return request.signal?.aborted ?? false;
+}
+
 async function* gatedReviewInput(
   request: Context7ReviewRequest,
   capabilities: ReviewCapabilitySet,
@@ -412,9 +434,18 @@ async function* gatedReviewInput(
   // A harmless first message starts streaming mode so the SDK can emit init.
   // The source is neither rendered nor written to the child until the host has
   // validated the exact MCP inventory and opened this gate.
+  if (requestAborted(request)) {
+    gate.resolve(false);
+    return;
+  }
   yield userMessage("Capability bootstrap. Wait for the next user message before producing a verdict.");
   if (!(await gate.wait)) return;
+  if (requestAborted(request)) {
+    gate.resolve(false);
+    return;
+  }
   gate.markSourceDelivered();
+  if (requestAborted(request)) return;
   yield userMessage(reviewPrompt(request, capabilities));
 }
 
@@ -478,14 +509,6 @@ function parseVersion(value: string): ParsedVersion | null {
   };
 }
 
-function isSupportedVersionRange(value: string): boolean {
-  const range = value.trim();
-  if (/^v?\d+$/u.test(range) || WILDCARD_VERSION.test(range) || EXACT_VERSION.test(range)) return true;
-  if (!range.startsWith("^") && !range.startsWith("~")) return false;
-  const version = parseVersion(range.slice(1));
-  return version !== null && version.prerelease === null;
-}
-
 function versionAtLeast(candidate: readonly [number, number, number], minimum: readonly [number, number, number]): boolean {
   for (let index = 0; index < candidate.length; index += 1) {
     const left = candidate[index] ?? 0;
@@ -531,45 +554,38 @@ function versionMatches(version: string, requested: string): boolean {
   return false;
 }
 
-function normalizedPackageForms(value: string): ReadonlySet<string> {
-  const normalized = value.trim().toLocaleLowerCase().replace(/[^a-z0-9]/gu, "");
-  const forms = new Set([normalized]);
-  // Common package/product spelling: `next` -> `Next.js`. Keep this narrow;
-  // arbitrary fuzzy resolver matches are not admitted.
-  if (normalized.length > 3 && normalized.endsWith("js")) forms.add(normalized.slice(0, -2));
-  return forms;
-}
+/** Pilot registry: resolver prose can select a version, never an identity. */
+const CONTEXT7_BASE_IDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  next: ["/vercel/next.js"],
+  "next.js": ["/vercel/next.js"],
+  react: ["/facebook/react"],
+  "react-dom": ["/facebook/react"],
+  "@playwright/test": ["/microsoft/playwright"],
+  tailwindcss: ["/tailwindlabs/tailwindcss"],
+  "@anthropic-ai/claude-agent-sdk": ["/websites/code_claude_en_agent-sdk"],
+  "@openai/codex-sdk": ["/openai/codex"],
+  swr: ["/vercel/swr"],
+  "@xyflow/react": ["/xyflow/xyflow"],
+  "lucide-react": ["/lucide-icons/lucide"],
+  motion: ["/websites/motion_dev_react"],
+  "framer-motion": ["/websites/motion_dev_react"],
+  vite: ["/vitejs/vite"],
+});
 
-function packageMatchesResolverCandidate(packageName: string, title: string, baseId: string): boolean {
-  const trimmedPackage = packageName.trim();
-  const packageSegments = trimmedPackage.split("/");
-  const scoped = trimmedPackage.startsWith("@") && packageSegments.length === 2;
-  const packageScope = scoped ? packageSegments[0]?.slice(1) : null;
-  const packageBasename = scoped ? packageSegments[1] ?? "" : packageSegments.at(-1) ?? packageName;
-  const requested = normalizedPackageForms(packageBasename);
-  const idSegments = baseId.split("/").filter((segment) => segment.length > 0);
-  const idOwner = idSegments[0] ?? "";
-  const idProject = idSegments[1] ?? "";
-  if (scoped) {
-    const canonicalScope = (packageScope ?? "").toLocaleLowerCase();
-    const canonicalOwner = idOwner.toLocaleLowerCase();
-    if (canonicalScope.length === 0 || canonicalScope !== canonicalOwner) return false;
-  }
-  const candidate = new Set([
-    ...normalizedPackageForms(title),
-    ...normalizedPackageForms(idProject),
-  ]);
-  return [...requested].some((form) => form.length > 0 && candidate.has(form));
+export function isCanonicalContext7Package(packageName: string): boolean {
+  const ids = CONTEXT7_BASE_IDS[packageName.toLocaleLowerCase()];
+  return ids !== undefined && ids.length === 1;
 }
 
 function resolvedLibraryIds(raw: unknown, claim: ExternalReviewClaim): readonly string[] {
+  const admittedBaseIds = CONTEXT7_BASE_IDS[claim.package.toLocaleLowerCase()];
+  if (admittedBaseIds === undefined || admittedBaseIds.length !== 1) return [];
   const text = rawTextParts(raw).join("\n");
   const candidates = text.split(/\n-{5,}\n/gu);
   const matches: { readonly ids: readonly string[]; readonly reputation: number; readonly benchmark: number }[] = [];
   for (const candidate of candidates) {
-    const title = /^-?\s*Title:\s*(.+)$/imu.exec(candidate)?.[1]?.trim();
     const baseId = /Context7-compatible library ID:\s*(\/[a-z0-9_.-]+\/[a-z0-9_.-]+)/iu.exec(candidate)?.[1];
-    if (title === undefined || baseId === undefined || !packageMatchesResolverCandidate(claim.package, title, baseId)) continue;
+    if (baseId === undefined || baseId !== admittedBaseIds[0]) continue;
     const reputationName = /^-?\s*Source Reputation:\s*(.+)$/imu.exec(candidate)?.[1]?.trim().toLocaleLowerCase();
     const reputation = reputationName === "high" ? 3 : reputationName === "medium" ? 2 : reputationName === "low" ? 1 : 0;
     const benchmark = Number(/^-?\s*Benchmark Score:\s*([\d.]+)$/imu.exec(candidate)?.[1] ?? 0);
@@ -614,8 +630,11 @@ function makeCapabilityHook(
           attempts.set(toolUseId ?? input.tool_use_id, { tool, claim: null });
           return { continue: true };
         }
+        const claim = exactQueryClaim(input.tool_input, capabilities.externalClaims);
         if (obligation === undefined || !allowlist.has(tool)) {
-          if (obligation !== undefined) lifecycle.push(event(obligation, "denied", tool, "tool_not_allowlisted"));
+          if (obligation !== undefined) {
+            lifecycle.push(event(obligation, "denied", tool, "tool_not_allowlisted", [], claim?.id ?? null));
+          }
           return {
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -624,14 +643,13 @@ function makeCapabilityHook(
             },
           };
         }
-        const claim = exactQueryClaim(input.tool_input, capabilities.externalClaims);
         const libraryId = requestedLibraryId(input.tool_input);
         const valid =
           tool === CONTEXT7_QUERY_TOOL
             ? claim !== null && libraryId !== null && resolvedIdsByClaim.get(claim.id)?.has(libraryId) === true
             : tool === CONTEXT7_RESOLVE_TOOL && resolvedPackage(input.tool_input, claim);
         if (!valid) {
-          lifecycle.push(event(obligation, "denied", tool, "claim_not_routed"));
+          lifecycle.push(event(obligation, "denied", tool, "claim_not_routed", [], claim?.id ?? null));
           return {
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -642,7 +660,7 @@ function makeCapabilityHook(
           };
         }
         attempts.set(toolUseId ?? input.tool_use_id, { tool, claim });
-        lifecycle.push(event(obligation, "attempted", tool));
+        lifecycle.push(event(obligation, "attempted", tool, null, [], claim?.id ?? null));
         return { continue: true };
       },
     ],
@@ -655,6 +673,7 @@ function composeOptions(
   env: NodeJS.ProcessEnv,
   cwd: string,
   hook: HookCallbackMatcher,
+  abortController: AbortController,
 ): Options {
   const obligations = capabilities.obligations;
   const toolAllowlist = obligations.flatMap((obligation) => [...obligation.toolAllowlist]);
@@ -673,11 +692,21 @@ function composeOptions(
   delete childEnv["CONTEXT7_API_KEY"];
   return {
     cwd,
+    abortController,
+    persistSession: false,
     model: request.modelId,
     ...(request.effort === undefined ? {} : { effort: request.effort }),
     systemPrompt:
       "You are an isolated independent code-review seat. Review only the supplied text. Never claim that a capability was used unless its evidence appears in your structured output.",
-    maxTurns: capabilities.applicability === "not_applicable" ? 1 : 8,
+    // Every external claim needs a routed resolve call and a query-docs call,
+    // plus room to synthesize the structured verdict. A fixed eight-turn cap
+    // made a normal framework manifest structurally unable to satisfy its own
+    // mandatory evidence contract. The upper bound still prevents an extreme
+    // manifest from turning one review into an unbounded session.
+    maxTurns:
+      capabilities.applicability === "not_applicable"
+        ? 1
+        : Math.min(32, Math.max(8, capabilities.externalClaims.length * 3 + 2)),
     permissionMode: "dontAsk",
     tools: toolAllowlist,
     allowedTools: toolAllowlist,
@@ -767,7 +796,7 @@ function parseVerdict(
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const shaped = value as Record<string, unknown>;
   if (shaped["verdict"] !== "pass" && shaped["verdict"] !== "fail") return null;
-  if (typeof shaped["summary"] !== "string" || !Array.isArray(shaped["findings"]) || !Array.isArray(shaped["evidence"])) {
+  if (typeof shaped["summary"] !== "string" || shaped["summary"].length > 2_000 || !Array.isArray(shaped["findings"]) || !Array.isArray(shaped["evidence"])) {
     return null;
   }
   const findings: ReviewFinding[] = [];
@@ -779,7 +808,7 @@ function parseVerdict(
       !findingClaimIds.has(finding["claimId"]) ||
       (finding["severity"] !== "info" && finding["severity"] !== "warning" && finding["severity"] !== "error") ||
       typeof finding["title"] !== "string" ||
-      typeof finding["detail"] !== "string"
+      typeof finding["detail"] !== "string" || finding["title"].length > 300 || finding["detail"].length > 4_000
     ) {
       return null;
     }
@@ -791,10 +820,18 @@ function parseVerdict(
     });
   }
   const evidence: { claimId: string }[] = [];
+  const seenEvidenceClaimIds = new Set<string>();
   for (const item of shaped["evidence"]) {
     if (item === null || typeof item !== "object" || Array.isArray(item)) return null;
     const claimId = (item as Record<string, unknown>)["claimId"];
-    if (typeof claimId !== "string" || !evidenceClaimIds.has(claimId)) return null;
+    if (
+      typeof claimId !== "string" ||
+      !evidenceClaimIds.has(claimId) ||
+      seenEvidenceClaimIds.has(claimId)
+    ) {
+      return null;
+    }
+    seenEvidenceClaimIds.add(claimId);
     evidence.push({ claimId });
   }
   return { verdict: shaped["verdict"], summary: shaped["summary"], findings, evidence };
@@ -817,8 +854,10 @@ function copiesRawEvidence(verdict: IndependentReviewVerdict, rawParts: readonly
     for (const source of raw) {
       if (value === source) return true;
       if (value.includes(source)) return true;
-      for (let offset = 0; offset + 40 <= source.length; offset += 1) {
-        if (value.includes(source.slice(offset, offset + 40))) return true;
+      // A 24-character normalized run is long enough to catch meaningful
+      // copied prose while allowing ordinary API names and short phrases.
+      for (let offset = 0; offset + 24 <= source.length; offset += 1) {
+        if (value.includes(source.slice(offset, offset + 24))) return true;
       }
     }
   }
@@ -847,6 +886,21 @@ function makeOutcome(
   };
 }
 
+/**
+ * Record a review invocation that failed before its runner could return an
+ * outcome. External scopes retain their obligation identity without claiming
+ * that MCP configuration or connection succeeded; internal scopes have no
+ * capability lifecycle to record.
+ */
+export function context7SessionFailureOutcome(scope: ReviewScope): Context7ReviewOutcome {
+  const capabilities = compileReviewCapabilitySet(scope);
+  const lifecycle = capabilities.obligations.map((obligation) => event(obligation, "planned"));
+  for (const obligation of capabilities.obligations) {
+    lifecycle.push(event(obligation, "failed", null, "session_error"));
+  }
+  return makeOutcome("failed", capabilities, lifecycle, "session_error");
+}
+
 export class Context7ReviewRunner {
   readonly #cwd: string;
   readonly #optedInProjectId: string | null;
@@ -861,6 +915,18 @@ export class Context7ReviewRunner {
   }
 
   async review(request: Context7ReviewRequest): Promise<Context7ReviewOutcome> {
+    const abortController = new AbortController();
+    const forwardAbort = () => abortController.abort(request.signal?.reason);
+    if (request.signal?.aborted === true) forwardAbort();
+    else request.signal?.addEventListener("abort", forwardAbort, { once: true });
+    try {
+      return await this.#review(request, abortController);
+    } finally {
+      request.signal?.removeEventListener("abort", forwardAbort);
+    }
+  }
+
+  async #review(request: Context7ReviewRequest, abortController: AbortController): Promise<Context7ReviewOutcome> {
     const capabilities = compileReviewCapabilitySet(request.scope);
     const lifecycle = capabilities.obligations.map((obligation) => event(obligation, "planned"));
     const required = capabilities.obligations.some((obligation) => obligation.applicability === "required");
@@ -879,7 +945,7 @@ export class Context7ReviewRunner {
     const hook = makeCapabilityHook(capabilities, lifecycle, attempts, resolvedIdsByClaim);
     let options: Options;
     try {
-      options = composeOptions(request, capabilities, this.#env, this.#cwd, hook);
+      options = composeOptions(request, capabilities, this.#env, this.#cwd, hook, abortController);
     } catch {
       for (const obligation of capabilities.obligations) {
         lifecycle.push(event(obligation, "unsatisfied", null, "tool_unavailable"));
@@ -966,17 +1032,18 @@ export class Context7ReviewRunner {
           if (obligation !== undefined) {
             const rawParts = rawTextParts(result.raw);
             if (result.failed || rawParts.length === 0) {
-              lifecycle.push(event(obligation, "failed", attempt.tool, "tool_error"));
+              lifecycle.push(event(obligation, "failed", attempt.tool, "tool_error", [], attempt.claim?.id ?? null));
             } else {
               admittedRawText.push(...rawParts);
               const evidenceHash = sha256(result.raw);
-              lifecycle.push(event(obligation, "succeeded", attempt.tool, null, [evidenceHash]));
+              lifecycle.push(event(obligation, "succeeded", attempt.tool, null, [evidenceHash], attempt.claim?.id ?? null));
               if (attempt.tool === CONTEXT7_RESOLVE_TOOL && attempt.claim !== null) {
                 const ids = resolvedIdsByClaim.get(attempt.claim.id) ?? new Set<string>();
                 for (const id of resolvedLibraryIds(result.raw, attempt.claim)) ids.add(id);
                 resolvedIdsByClaim.set(attempt.claim.id, ids);
               } else if (attempt.tool === CONTEXT7_QUERY_TOOL && attempt.claim !== null) {
                 successfulEvidence.set(attempt.claim.id, {
+                  claimId: attempt.claim.id,
                   package: attempt.claim.package,
                   versionOrRange: attempt.claim.versionOrRange,
                   queryPurpose: attempt.claim.queryPurpose,
@@ -1004,7 +1071,7 @@ export class Context7ReviewRunner {
                 new Set(capabilities.externalClaims.map((claim) => claim.id)),
               );
               if (verdict === null) terminalCode = "invalid_structured_output";
-              else if (copiesRawEvidence(verdict, admittedRawText)) {
+              else if (copiesRawEvidence(verdict, [...admittedRawText, request.source])) {
                 verdict = null;
                 terminalCode = "raw_evidence_in_output";
               }
