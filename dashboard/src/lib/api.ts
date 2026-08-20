@@ -4,7 +4,10 @@ import type {
   HealthState,
   ModelOption,
   OkResponse,
+  Project,
+  ProjectExit,
   ProjectLogs,
+  ProjectProcess,
   ProjectStartResponse,
   ProjectStopResponse,
   ProjectsResponse,
@@ -345,8 +348,78 @@ export function sendRunMessage(
 /* Published projects                                                  */
 /* ------------------------------------------------------------------ */
 
-export function listProjects(): Promise<ProjectsResponse> {
-  return request<ProjectsResponse>(KEY.projects);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isProjectExit(value: unknown): value is ProjectExit {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value["at"] === "string" &&
+    (value["code"] === null || typeof value["code"] === "number") &&
+    (value["signal"] === null || typeof value["signal"] === "string") &&
+    typeof value["requested"] === "boolean"
+  );
+}
+
+function isProjectProcess(value: unknown): value is ProjectProcess {
+  if (!isRecord(value)) return false;
+  switch (value["state"]) {
+    case "stopped":
+      return value["lastExit"] === null || isProjectExit(value["lastExit"]);
+    case "running":
+      return (
+        typeof value["url"] === "string" &&
+        typeof value["port"] === "number" &&
+        typeof value["pid"] === "number" &&
+        typeof value["startedAt"] === "string" &&
+        typeof value["readyAt"] === "string"
+      );
+    case "exited":
+      return (
+        typeof value["port"] === "number" &&
+        typeof value["startedAt"] === "string" &&
+        isProjectExit(value["exit"])
+      );
+    default:
+      return false;
+  }
+}
+
+function isProject(value: unknown): value is Project {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value["slug"] === "string" &&
+    typeof value["path"] === "string" &&
+    (value["startCommand"] === null || typeof value["startCommand"] === "string") &&
+    typeof value["hasRepository"] === "boolean" &&
+    (value["runId"] === null || typeof value["runId"] === "string") &&
+    isProjectProcess(value["process"])
+  );
+}
+
+function isProjectsResponse(value: unknown): value is ProjectsResponse {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as {
+    readonly projects?: unknown;
+    readonly portRange?: { readonly min?: unknown; readonly max?: unknown };
+  };
+  return (
+    Array.isArray(candidate.projects) &&
+    candidate.projects.every(isProject) &&
+    typeof candidate.portRange?.min === "number" &&
+    Number.isFinite(candidate.portRange.min) &&
+    typeof candidate.portRange.max === "number" &&
+    Number.isFinite(candidate.portRange.max)
+  );
+}
+
+export async function listProjects(): Promise<ProjectsResponse> {
+  const response = await request<unknown>(KEY.projects);
+  if (!isProjectsResponse(response)) {
+    throw new Error("Invalid projects response");
+  }
+  return response;
 }
 
 /**

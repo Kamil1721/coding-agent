@@ -153,10 +153,10 @@ async function serve(page: Page, state: SupervisorState | "abort"): Promise<void
 /** The badge's own painted colours, which is what "visually distinct" means. */
 async function openDetail(page: Page): Promise<void> {
   const pane = page.locator('[data-testid="supervisor-detail"]');
-  if ((await pane.count()) === 0) {
-    await openDetail(page);
-    await expect(pane).toBeVisible();
+  if (!(await pane.isVisible())) {
+    await page.getByTestId("supervisor-detail-toggle").click();
   }
+  await expect(pane).toBeVisible();
 }
 
 async function paint(page: Page): Promise<{
@@ -182,11 +182,7 @@ async function paint(page: Page): Promise<{
    * carries headline and cells only). Reading it therefore means opening the
    * pane; the toggle is idempotent-checked so repeated paints do not close it.
    */
-  const pane = page.locator('[data-testid="supervisor-detail"]');
-  if ((await pane.count()) === 0) {
-    await openDetail(page);
-    await expect(pane).toBeVisible();
-  }
+  await openDetail(page);
   return strip.evaluate((node) => {
     const badge = node.querySelector('[data-testid="supervisor-liveness"] span');
     const because = node.querySelector('[data-testid="supervisor-because"]');
@@ -621,12 +617,13 @@ test("a 200 on /api/supervisor whose body is a run detail leaves the page render
  *   `null`                   a 200 that parses to nothing at all
  *   a state minus `probe`    every other field right, one absent
  *   `<!doctype html>`        a 200 that is not JSON — a dev server or a proxy
- *   `lastDefectSignature`    a STRING field carrying an object: reaches
+ *   `lastDefectId`           a STRING field carrying an object: reaches
  *     as an object            `shortSignature()`, which calls `.slice` on it
+ *   `lastDefect.signature`   a nested string field carrying an object
  *   `ticket.ticketKey`       a nested string field carrying an object: reaches
  *     as an object            JSX as a child, which React refuses to render
  *
- * THE LAST TWO WERE FOUND BY READING THE COMPONENT, NOT BY WATCHING IT FAIL, and
+ * THE LAST THREE WERE FOUND BY READING THE COMPONENT, NOT BY WATCHING IT FAIL, and
  * they went red on the tree that had already been declared fixed: the shape arm
  * checked `probe`, `ticket`, `lastRepair`, `desired` and `queuedTickets` — the
  * fields the ARMS read plus the two the detail pane reads — and the strip's
@@ -740,7 +737,7 @@ const NOT_A_READING: readonly {
    */
 ];
 
-test("six bodies that are not a reading: each renders a state, and NONE of them throws", async ({
+test("seven bodies that are not a reading: each renders a state, and NONE of them throws", async ({
   page,
 }) => {
   for (const shape of NOT_A_READING) {
@@ -787,6 +784,7 @@ test("six bodies that are not a reading: each renders a state, and NONE of them 
     );
     await expect(strip).toHaveAttribute("data-stale", /^(true|false)$/);
 
+    await openDetail(page);
     const because = page.locator('[data-testid="supervisor-because"]');
     await expect(because, `${shape.name}: the strip said nothing`).not.toHaveText("");
     await expect(because, `${shape.name}: the sentence does not name what is wrong`).toContainText(
@@ -1234,7 +1232,12 @@ test.describe("the render guard", () => {
     await expect(page.locator('[data-testid="render-guard"]')).toHaveAttribute("data-arm", "true");
     await expect(page.locator('[data-testid="render-guard-alarm"]')).toHaveCount(0);
 
-    await openDetail(page);
+    /*
+     * This click is the fault injection. `openDetail` cannot be used here: its
+     * success condition is a visible pane, while the success condition of this
+     * test is the boundary replacing that pane before it can mount.
+     */
+    await page.getByTestId("supervisor-detail-toggle").click();
 
     /*
      * THE THREE THINGS A BLANK PAGE DOES NOT HAVE. The nav is asserted FIRST

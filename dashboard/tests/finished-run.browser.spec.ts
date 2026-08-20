@@ -191,7 +191,14 @@ test.describe("a finished run, opened cold", () => {
      * this test has always measured. Addressed by `data-testid` rather than by
      * accessible name because that name is the tooltip sentence, i.e. copy.
      */
-    await page.getByTestId("rail-activity").click();
+    /*
+     * Keep this on the keyboard path used by every other rail suite. `next dev`
+     * owns a bottom-left `<nextjs-portal>` target which can cover this last rail
+     * entry after earlier specs warm the dev server. A forced pointer click would
+     * hide product overlap; focus + Enter exercises the rail's real keyboard path.
+     */
+    await page.getByTestId("rail-activity").focus();
+    await page.keyboard.press("Enter");
     const trace = page.locator("#rail-panel");
 
     /*

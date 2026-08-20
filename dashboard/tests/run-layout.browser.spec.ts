@@ -61,7 +61,7 @@
  * number.
  *
  * WHETHER THE PANEL COUNTS IS READ OFF THE MECHANISM, NOT OFF THE WIDTH.
- * `rail.tsx:519-521` mounts it `absolute` and promotes it to `static` at
+ * `rail.tsx:608-610` mounts it `absolute` and promotes it to `relative` at
  * `min-[1120px]` — below that it OVERLAYS the canvas and subtracting it would be
  * wrong. So the sum reads `hidden` and the computed `position`, and only a panel
  * that is genuinely in the flex row is subtracted. Both widths measured here are
@@ -183,7 +183,7 @@ async function measure(page: Page): Promise<Frame> {
  * overlays the canvas and the canvas keeps the full remainder.
  */
 function chromeRight(frame: Frame): number {
-  const panelInRow = !frame.panelHidden && frame.panelPosition === "static";
+  const panelInRow = !frame.panelHidden && frame.panelPosition === "relative";
   return panelInRow ? frame.panelRight : frame.railRight;
 }
 
@@ -305,7 +305,7 @@ test.describe("at 2000px — wider than the cap that used to bind", () => {
     expect(
       frame.panelPosition,
       "the panel is overlaying the canvas at 2000px instead of sitting in the row",
-    ).toBe("static");
+    ).toBe("relative");
 
     // The three boxes are edge to edge with nothing between them.
     expect(frame.panelLeft, "a gap between the rail and the panel").toBe(frame.railRight);
@@ -420,7 +420,7 @@ test.describe("at 1440px — the control, where the old cap was invisible", () =
     const frame = await frameOf(page);
 
     // THE SAME ARITHMETIC, AT A SECOND WIDTH. 1440 - 48 - 400 = 992, and the
-    // panel is still `static` here because 1440 is above the 1120px switch.
+    // panel is `relative` here because 1440 is above the 1120px switch.
     expectNoGutter(frame, "1440px, panel open");
     expect(frame.flowWidth).toBe(992);
     expect(frame.clippedNodes).toEqual([]);

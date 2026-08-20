@@ -936,7 +936,7 @@ export default function RunPage(): ReactNode {
    * canvas's top-left at `left-3` (`orchestration-canvas.tsx`, "THE FLOATING
    * STACK. Top-left, over the flow"), which is where this chip goes. They do not
    * stack — both are absolutely positioned in the same corner of the same pane,
-   * so mounting both puts one card on top of the other. Two 360px cards in one
+   * so mounting both puts one card on top of the other. Two cards in one
    * corner is not a layout, and the chip is the one to yield.
    *
    * "AND NOTHING IT OFFERED IS LOST" WAS WRITTEN HERE AND IT WAS FALSE — the
@@ -1193,7 +1193,7 @@ export default function RunPage(): ReactNode {
               ? null
               : {
                   text: trace[trace.length - 1]?.text ?? "",
-                  atMs: trace[trace.length - 1]?.atMs ?? Date.now(),
+                  atMs: trace[trace.length - 1]?.atMs ?? nowMs,
                 }
           }
           /*
@@ -1237,15 +1237,15 @@ export default function RunPage(): ReactNode {
          * rail's panel is shut, which is the widest the pane ever is, and the
          * pane's `ResizeObserver` has just re-fitted the graph centred in it.
          *
-         * `w-[min(360px,calc(100vw-32px))]` IS THE WIDTH `run-hud.tsx`'s own
-         * docblock is written against — its title's truncation budget and
-         * `ticketLabel`'s character budget are both derived from it, so a
-         * different number here would silently invalidate both.
+         * `w-[min(400px,calc(100%_-_24px))]` IS THE WIDTH `run-hud.tsx`'s own
+         * docblock is written against. The percentage resolves against this pane,
+         * not the viewport, so the fixed rail cannot push the chip off-screen.
+         * Its title's truncation budget remains deliberately conservative.
          */}
         {hudMounted && (
           <div
             data-testid="run-chip"
-            className="pointer-events-none absolute left-3 top-3 z-10 w-[min(360px,calc(100vw-32px))]"
+            className="pointer-events-none absolute left-3 top-3 z-10 w-[min(400px,calc(100%_-_24px))]"
           >
             <div className="pointer-events-auto shadow-[0_18px_44px_-26px_rgba(0,0,0,0.95)]">
               <RunHud

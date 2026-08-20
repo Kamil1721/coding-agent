@@ -22,7 +22,7 @@
  * new number. Nothing measured it — badge row plus title plus meta line plus
  * `py-2` was already well over 44px before the type scale landed, and the run
  * title going 13.5px → 24px below only widened the gap. A stated pixel height
- * for a box whose content wraps at `min(360px, 100vw-32px)` is a constant that
+ * for a box whose content wraps at `min(400px, 100%-24px)` is a constant that
  * drifts silently, which is the exact failure `--run-chrome` was deleted from
  * `globals.css` for. `RunHeader` is unused because it has no importer, which is
  * a fact `grep` can check; the height was decoration on that argument.
@@ -102,7 +102,7 @@ export function RunHud({
      * of object.
      */
     <div className="rounded border border-line bg-surface/95 px-2.5 py-2 backdrop-blur">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5 [&>span]:h-7">
         <Badge tone={meta.tone} title={meta.meaning}>
           <Dot tone={meta.tone} pulse={meta.live} />
           {meta.label}
@@ -181,9 +181,9 @@ export function RunHud({
            * the escape hatch if the panel below cannot render.
            *
            * What it is NOT is what "Resume" sounds like, which is "carry on where
-           * you left off". Nothing here can rename a shared button per phase
-           * without the label wrapping in a 360px chip, so the sentence goes on
-           * the tooltip and the explicitly-labelled control lives in the panel.
+           * you left off". This shared button keeps its queue-level label; the
+           * phase-specific explanation stays on the tooltip and the explicitly
+           * labelled control lives in the panel.
            */}
           {(run.status === "rate_limited" ||
             (run.status === "awaiting_input" && lockPhase !== "pending")) && (
@@ -234,8 +234,8 @@ export function RunHud({
        * own line-height and tracking.
        *
        * IT TRUNCATES SOONER, AND THAT IS THE PRICE. This chip is
-       * `w-[min(360px,calc(100vw-32px))]` (`runs/[runId]/page.tsx`), so the
-       * content box is ~340px. Estimated rather than measured, because nothing
+       * `w-[min(400px,calc(100%_-_24px))]` (`runs/[runId]/page.tsx`), so the
+       * desktop content box is ~380px. Estimated rather than measured, because nothing
        * in this tree measures text: at 13.5px that is somewhere near 50
        * characters and at 24px somewhere near 30, both at an assumed ~0.5em
        * average advance. Treat those as orders of magnitude.

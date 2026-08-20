@@ -25,7 +25,7 @@
  * about.
  */
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { API_ORIGIN, FINISHED_RUN_ID, RUN_ID } from "./fixtures/config";
 
@@ -55,6 +55,23 @@ async function toggleRail(page: Page, entry: string): Promise<void> {
   const button = page.getByTestId(`rail-${entry}`);
   await button.focus();
   await page.keyboard.press("Enter");
+}
+
+async function boxOf(locator: Locator, label: string) {
+  const box = await locator.boundingBox();
+  expect(box, `${label} has no layout box`).not.toBeNull();
+  return box!;
+}
+
+function expectHorizontallyContained(
+  inner: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+  outer: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+  label: string,
+): void {
+  expect(inner.x, `${label} starts left of its container`).toBeGreaterThanOrEqual(outer.x);
+  expect(inner.x + inner.width, `${label} ends right of its container`).toBeLessThanOrEqual(
+    outer.x + outer.width,
+  );
 }
 
 test.describe("the run chip is the rail panel's complement", () => {
@@ -193,5 +210,67 @@ test.describe("the run chip is the rail panel's complement", () => {
     await expect(shown.getByRole("button", { name: "Cancel" })).toHaveCount(0);
     await expect(shown.getByText("failed", { exact: false }).first()).toBeVisible();
     await expect(shown.getByRole("button", { name: "overview" })).toBeVisible();
+  });
+
+  test("the full verdict row aligns and stays inside the run chip", async ({ page }) => {
+    const seed = await page.request.get(`${API_ORIGIN}/api/runs/${FINISHED_RUN_ID}`);
+    const body = (await seed.json()) as Record<string, unknown>;
+    body["falseFinish"] = true;
+    const payload = JSON.stringify(body);
+
+    await page.route(
+      (url) => url.pathname === `/api/runs/${FINISHED_RUN_ID}` && url.search === "",
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          headers: { "access-control-allow-origin": "*", "cache-control": "no-store" },
+          contentType: "application/json",
+          body: payload,
+        });
+      },
+    );
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openRun(page, FINISHED_RUN_ID);
+    await toggleRail(page, "overview");
+
+    const chip = page.getByTestId("run-chip");
+    await expect(chip).toBeVisible();
+    const items = [
+      chip.getByText("failed", { exact: true }),
+      chip.getByText("did not pass", { exact: true }),
+      chip.getByText("said done, not done", { exact: true }),
+      chip.getByRole("button", { name: "overview" }),
+    ] as const;
+
+    const chipBox = await boxOf(chip, "desktop run chip");
+    const itemBoxes = await Promise.all(
+      items.map((item, index) => boxOf(item, `desktop verdict item ${String(index + 1)}`)),
+    );
+    const overviewBox = itemBoxes.at(-1)!;
+    for (const [index, box] of itemBoxes.entries()) {
+      expect(Math.round(box.y), `verdict item ${String(index + 1)} top edge`).toBe(
+        Math.round(overviewBox.y),
+      );
+      expect(
+        Math.round(box.y + box.height),
+        `verdict item ${String(index + 1)} bottom edge`,
+      ).toBe(Math.round(overviewBox.y + overviewBox.height));
+      expectHorizontallyContained(box, chipBox, `desktop verdict item ${String(index + 1)}`);
+    }
+
+    for (const width of [375, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      const narrowChipBox = await boxOf(chip, `${String(width)}px run chip`);
+      const paneBox = await boxOf(chip.locator(".."), `${String(width)}px canvas pane`);
+      expectHorizontallyContained(narrowChipBox, paneBox, `${String(width)}px run chip`);
+      for (const [index, item] of items.entries()) {
+        expectHorizontallyContained(
+          await boxOf(item, `${String(width)}px verdict item ${String(index + 1)}`),
+          narrowChipBox,
+          `${String(width)}px verdict item ${String(index + 1)}`,
+        );
+      }
+    }
   });
 });

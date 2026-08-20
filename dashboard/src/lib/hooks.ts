@@ -9,7 +9,7 @@ import type {
   RunSummary,
   SupervisorState,
 } from "./api-types";
-import { KEY, swrFetcher } from "./api";
+import { KEY, listProjects, swrFetcher } from "./api";
 
 export function useRuns(): SWRResponse<readonly RunSummary[], unknown> {
   return useSWR<readonly RunSummary[]>(KEY.runs, swrFetcher, {
@@ -42,7 +42,7 @@ export function useModels(): SWRResponse<readonly ModelOption[], unknown> {
  * cheap enough to poll while a page is open.
  */
 export function useProjects(): SWRResponse<ProjectsResponse, unknown> {
-  return useSWR<ProjectsResponse>(KEY.projects, swrFetcher, {
+  return useSWR<ProjectsResponse>(KEY.projects, listProjects, {
     refreshInterval: 5_000,
     revalidateOnFocus: true,
     keepPreviousData: true,

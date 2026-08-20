@@ -3,7 +3,7 @@
  * ticket's own words. Pure, synchronous, no model call and no network.
  *
  * WHAT WAS ON SCREEN AND WHY IT WAS WRONG. The run chip rendered
- * `run.ticketTitle` into a 24px heading in a ~340px box with CSS `truncate`, and
+ * `run.ticketTitle` into a 24px heading in a ~380px box with CSS `truncate`, and
  * the owner's ticket came out as `I want you to make a copy of t…` — four words
  * of throat-clearing, then a cut mid-word. Nothing there is wrong exactly; every
  * character is the owner's. It is just that the first thirty characters of a
@@ -84,12 +84,12 @@ export const MAX_LABEL_WORDS = 6;
  * kept whatever its length — a label of nothing is not an improvement.
  *
  * WHERE 30 COMES FROM, AND HOW SOFT IT IS. The chip is
- * `w-[min(360px,calc(100vw-32px))]` with `px-2.5`, so ~340px of content, and the
- * heading is the 24px `text-title` rung at `-0.015em`. At the ~0.5em average
- * advance the run-hud docblock already assumes, that is ~29 characters. It is an
- * ESTIMATE — nothing in this tree measures text — so CSS `truncate` stays on the
- * heading as the backstop. The difference is that a clip now lands on a label
- * that is already whole words, instead of on `copy of t…`.
+ * `w-[min(400px,calc(100%_-_24px))]` with `px-2.5`, so ~380px of desktop content,
+ * and the heading is the 24px `text-title` rung at `-0.015em`. The 30-character
+ * budget stays conservative because the pane-relative width shrinks on narrow
+ * screens. It is an ESTIMATE — nothing in this tree measures text — so CSS
+ * `truncate` remains the backstop. The difference is that a clip now lands on a
+ * label that is already whole words, instead of on `copy of t…`.
  */
 export const MAX_LABEL_CHARS = 30;
 

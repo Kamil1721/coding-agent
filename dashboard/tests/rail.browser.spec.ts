@@ -307,6 +307,58 @@ test.describe("what each icon opens", () => {
     await expect(page.getByTestId("overview-this-run")).toContainText(RUN_ID);
   });
 
+  test("Overview survives a projects response with no projects list", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/projects", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    });
+    const projectsResponse = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/projects",
+    );
+
+    await openRun(page, RUN_ID);
+    await projectsResponse;
+    await page.locator("body").evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }),
+    );
+
+    await expect(page.getByTestId("overview-this-run")).toContainText(RUN_ID);
+    await expect(page.getByTestId("overview-open-site")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("Overview survives a projects response with a malformed project", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/projects", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ projects: [{}], portRange: { min: 4310, max: 4399 } }),
+      });
+    });
+    const projectsResponse = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/projects",
+    );
+
+    await openRun(page, RUN_ID);
+    await projectsResponse;
+    await page.locator("body").evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }),
+    );
+
+    await expect(page.getByTestId("overview-this-run")).toContainText(RUN_ID);
+    await expect(page.getByTestId("overview-open-site")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
   test("Files opens the workspace index, with the tree's own paths in it", async ({
     page,
   }) => {
