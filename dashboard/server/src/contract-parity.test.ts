@@ -737,6 +737,7 @@ const DETAIL_SHAPES: readonly {
       "designLock",
       "adversary",
       "context7Review",
+      "creative",
       "motion",
     ],
   },

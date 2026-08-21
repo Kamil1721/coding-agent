@@ -323,9 +323,9 @@ export function SupervisorStrip(): ReactNode {
       data-liveness={reading.liveness}
       data-stale={reading.stale ? "true" : "false"}
       data-armed={arm.armed ? "true" : "false"}
-      className="relative"
+      className="relative min-w-0 max-w-full"
     >
-      <div className="flex h-[30px] w-full items-center gap-3 overflow-hidden">
+      <div className="flex h-[30px] min-w-0 w-full items-center gap-1.5 overflow-hidden sm:gap-3">
         <span
           data-testid="supervisor-liveness"
           className="flex shrink-0 items-center gap-1.5"
@@ -336,7 +336,7 @@ export function SupervisorStrip(): ReactNode {
               {reading.liveness}
             </span>
           </Badge>
-          <span className="whitespace-nowrap text-[11.5px] text-ink">
+          <span className="hidden whitespace-nowrap text-[11.5px] text-ink sm:inline">
             {reading.headline}
           </span>
         </span>
@@ -367,55 +367,57 @@ export function SupervisorStrip(): ReactNode {
           paragraph in a `title` here would redden a guard on every route in the app
           and would still be invisible to half the readers.
         */}
-        <Cell label="outcome">
-          <span data-testid="supervisor-census">{censusCell(reading.census)}</span>
-        </Cell>
+        <span className="hidden sm:contents">
+          <Cell label="outcome">
+            <span data-testid="supervisor-census">{censusCell(reading.census)}</span>
+          </Cell>
 
-        {snapshot !== null && (
-          <>
-            {snapshot.ticket !== null && (
-              <Cell label="ticket" title={snapshot.ticket.title}>
-                {snapshot.ticket.ticketKey} · {String(snapshot.ticket.attemptNo)}/
-                {String(snapshot.ticket.maxAttempts)}
+          {snapshot !== null && (
+            <>
+              {snapshot.ticket !== null && (
+                <Cell label="ticket" title={snapshot.ticket.title}>
+                  {snapshot.ticket.ticketKey} · {String(snapshot.ticket.attemptNo)}/
+                  {String(snapshot.ticket.maxAttempts)}
+                </Cell>
+              )}
+              <Cell
+                label="quiet"
+                title={
+                  snapshot.run === null
+                    ? "there is no current run, so there is no clock"
+                    : `time since the last event on ${snapshot.run.runId}, rate-limit frames excluded`
+                }
+              >
+                {reading.quietForMs === null ? "nothing running" : formatDuration(reading.quietForMs)}
               </Cell>
-            )}
-            <Cell
-              label="quiet"
-              title={
-                snapshot.run === null
-                  ? "there is no current run, so there is no clock"
-                  : `time since the last event on ${snapshot.run.runId}, rate-limit frames excluded`
-              }
-            >
-              {reading.quietForMs === null ? "nothing running" : formatDuration(reading.quietForMs)}
-            </Cell>
-            {/* THE SIGNATURE IF THE ROUTE HAS ONE, THE ID IF THAT IS ALL IT HAS,
-                AND "none" ONLY WHEN THERE IS NEITHER. `lastDefect` has no producer
-                in this build and `lastDefectId` does, so reading only the first
-                would render a ticket with a recorded defect identically to one
-                that never failed. */}
-            <Cell
-              label="problem"
-              title={defectTitle(snapshot.lastDefect, snapshot.lastDefectId)}
-            >
-              {defectCell(snapshot.lastDefect, snapshot.lastDefectId)}
-            </Cell>
-            {/* ONE SENTENCE, COMPOSED IN `lib/supervisor.ts` — the wire carries no
-                `summary`, and two components inventing one is how they disagree. */}
-            <Cell label="repair" title={repairSummary(snapshot.lastRepair)}>
-              {snapshot.lastRepair?.patchId ?? snapshot.lastPatchId ?? "none"}
-            </Cell>
-            {/* TWO QUEUES, TWO QUESTIONS. STOP does not touch `queuedRuns`. */}
-            <Cell
-              label="queue"
-              title={`${String(snapshot.queueDepth)} supervisor ticket(s), ${String(
-                snapshot.queuedRuns,
-              )} queued run(s) — STOP does not touch the second number`}
-            >
-              {String(snapshot.queueDepth)}/{String(snapshot.queuedRuns)}
-            </Cell>
-          </>
-        )}
+              {/* THE SIGNATURE IF THE ROUTE HAS ONE, THE ID IF THAT IS ALL IT HAS,
+                  AND "none" ONLY WHEN THERE IS NEITHER. `lastDefect` has no producer
+                  in this build and `lastDefectId` does, so reading only the first
+                  would render a ticket with a recorded defect identically to one
+                  that never failed. */}
+              <Cell
+                label="problem"
+                title={defectTitle(snapshot.lastDefect, snapshot.lastDefectId)}
+              >
+                {defectCell(snapshot.lastDefect, snapshot.lastDefectId)}
+              </Cell>
+              {/* ONE SENTENCE, COMPOSED IN `lib/supervisor.ts` — the wire carries no
+                  `summary`, and two components inventing one is how they disagree. */}
+              <Cell label="repair" title={repairSummary(snapshot.lastRepair)}>
+                {snapshot.lastRepair?.patchId ?? snapshot.lastPatchId ?? "none"}
+              </Cell>
+              {/* TWO QUEUES, TWO QUESTIONS. STOP does not touch `queuedRuns`. */}
+              <Cell
+                label="queue"
+                title={`${String(snapshot.queueDepth)} supervisor ticket(s), ${String(
+                  snapshot.queuedRuns,
+                )} queued run(s) — STOP does not touch the second number`}
+              >
+                {String(snapshot.queueDepth)}/{String(snapshot.queuedRuns)}
+              </Cell>
+            </>
+          )}
+        </span>
 
         <span className="flex shrink-0 items-center gap-1.5">
           <Button
@@ -425,7 +427,7 @@ export function SupervisorStrip(): ReactNode {
               void run("start");
             }}
             title={disabledNote ?? "claim the oldest queued ticket, and keep claiming"}
-            className="px-2 py-[2px] text-[11px]"
+            className="px-1.5 py-[2px] text-[11px] sm:px-2"
           >
             {pending === "start" ? "starting…" : "start"}
           </Button>
@@ -446,7 +448,7 @@ export function SupervisorStrip(): ReactNode {
                parent. Three controls with paragraph tooltips is how this strip
                would redden a guard on every route in the app. */
             title={disabledNote ?? "drain: stop claiming new tickets; the run in flight finishes"}
-            className="px-2 py-[2px] text-[11px]"
+            className="px-1.5 py-[2px] text-[11px] sm:px-2"
           >
             {pending === "stop" ? "draining…" : "stop (drain)"}
           </Button>
@@ -457,7 +459,7 @@ export function SupervisorStrip(): ReactNode {
             }}
             data-testid="supervisor-detail-toggle"
             title="attempts, rejections, the arm check"
-            className="px-2 py-[2px] text-[11px]"
+            className="px-1.5 py-[2px] text-[11px] sm:px-2"
           >
             {open ? "hide" : "detail"}
           </Button>

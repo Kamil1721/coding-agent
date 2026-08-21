@@ -71,6 +71,13 @@ import type { SiteCapture } from "./site-capture.js";
 import type { MotionReading } from "./motion-types.js";
 
 const NO_MODELS: readonly ModelInfo[] = [];
+const DASHBOARD_OWNER_ORIGIN = `http://${LOOPBACK_HOST}:4319`;
+
+function ownerFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (!headers.has("origin")) headers.set("Origin", DASHBOARD_OWNER_ORIGIN);
+  return globalThis.fetch(url, { ...init, headers });
+}
 
 interface SupervisorCalls {
   /** Every `tick()` the router asked for. START nudges; nothing else may. */
@@ -247,7 +254,7 @@ test("GET /api/supervisor reports the machine state, and the three surfaces diff
     // has to be a separate number from the supervisor's own backlog.
     seedRun(wired.store, "run-2", "2026-08-10T03:25:00.000Z");
 
-    const running = (await (await fetch(`${wired.base}/api/supervisor`)).json()) as ApiSupervisorState;
+    const running = (await (await ownerFetch(`${wired.base}/api/supervisor`)).json()) as ApiSupervisorState;
     assert.equal(running.desired, "running");
     assert.equal(running.changedBy, "owner");
     assert.equal(running.reason, "the owner pressed START");
@@ -275,7 +282,7 @@ test("GET /api/supervisor reports the machine state, and the three surfaces diff
     // STATE TWO: wired, stopped, nothing queued. The sentence has to be its own.
     wired.store.updateSupervisorTicket("t-portfolio", { state: "done", currentRunId: null });
     wired.store.setSupervisorState("stopped", "owner", "the owner pressed STOP");
-    const idle = (await (await fetch(`${wired.base}/api/supervisor`)).json()) as ApiSupervisorState;
+    const idle = (await (await ownerFetch(`${wired.base}/api/supervisor`)).json()) as ApiSupervisorState;
     assert.equal(idle.desired, "stopped");
     assert.equal(idle.ticket, null);
     assert.equal(idle.run, null, "no ticket in flight means no run, and no clock");
@@ -285,7 +292,7 @@ test("GET /api/supervisor reports the machine state, and the three surfaces diff
     // STATE THREE: nothing behind the route at all. 200, NOT 503 — a 503 reads
     // to a client exactly like "the dashboard is down", and this is the one
     // state the owner most needs to be able to tell apart.
-    const response = await fetch(`${unwired.base}/api/supervisor`);
+    const response = await ownerFetch(`${unwired.base}/api/supervisor`);
     assert.equal(response.status, 200, "an unwired supervisor is an ANSWER, not a transport failure");
     const blind = (await response.json()) as ApiSupervisorState;
     assert.equal(blind.probe.wired, false);
@@ -324,7 +331,7 @@ test("the quiet clock ignores rate_limit frames, which is why a913c871 looked al
       harness.store.appendEvent("run-1", { type: "rate_limit", limited: false, retryAfterSec: null, seat: "spec" });
     }
 
-    const stalled = (await (await fetch(`${harness.base}/api/supervisor`)).json()) as ApiSupervisorState;
+    const stalled = (await (await ownerFetch(`${harness.base}/api/supervisor`)).json()) as ApiSupervisorState;
     assert.equal(stalled.probe.eventsSeen, 7, "the frames are there — the clock is ignoring them, not missing them");
     assert.ok(
       (stalled.run?.quietForMs ?? 0) > 5_000_000,
@@ -336,7 +343,7 @@ test("the quiet clock ignores rate_limit frames, which is why a913c871 looked al
     // useless as one that always returns a small one: one real frame now must
     // reset it.
     harness.store.appendEvent("run-1", { type: "log", level: "info", text: "spec seat — wrote a file" });
-    const alive = (await (await fetch(`${harness.base}/api/supervisor`)).json()) as ApiSupervisorState;
+    const alive = (await (await ownerFetch(`${harness.base}/api/supervisor`)).json()) as ApiSupervisorState;
     assert.ok(
       (alive.run?.quietForMs ?? 9_999_999) < 60_000,
       `a real frame just landed, so the clock must reset (read ${String(alive.run?.quietForMs)})`,
@@ -354,7 +361,7 @@ test("POST /api/supervisor/stop DRAINS: it writes `draining` and cancels nothing
     harness.store.updateRun("run-1", { status: "running", phase: "build" });
     seedActiveTicket(harness.store, "run-1");
 
-    const response = await fetch(`${harness.base}/api/supervisor/stop`, { method: "POST" });
+    const response = await ownerFetch(`${harness.base}/api/supervisor/stop`, { method: "POST" });
     assert.equal(response.status, 200);
     const body = (await response.json()) as ApiSupervisorCommandResponse;
     assert.equal(body.desired, "draining", "STOP is a drain, and `stopped` would be a lie while a run is live");
@@ -376,7 +383,7 @@ test("POST /api/supervisor/stop DRAINS: it writes `draining` and cancels nothing
     // happen: a strip that flashes "changed" on every click teaches the owner to
     // ignore it.
     const again = (await (
-      await fetch(`${harness.base}/api/supervisor/stop`, { method: "POST" })
+      await ownerFetch(`${harness.base}/api/supervisor/stop`, { method: "POST" })
     ).json()) as ApiSupervisorCommandResponse;
     assert.equal(again.changed, false);
     assert.match(again.note, /already draining/);
@@ -389,7 +396,7 @@ test("POST /api/supervisor/start writes `running` and nudges the loop once", asy
   const harness = await startHarness(true);
   try {
     const body = (await (
-      await fetch(`${harness.base}/api/supervisor/start`, { method: "POST" })
+      await ownerFetch(`${harness.base}/api/supervisor/start`, { method: "POST" })
     ).json()) as ApiSupervisorCommandResponse;
     assert.equal(body.desired, "running");
     assert.equal(body.changed, true);
@@ -402,8 +409,8 @@ test("POST /api/supervisor/start writes `running` and nudges the loop once", asy
     // THE NEGATIVE ARM: a GET must NOT advance the machine. A status read that
     // drove the loop would make the dashboard's own polling a driver of the
     // system it is watching.
-    await fetch(`${harness.base}/api/supervisor`);
-    await fetch(`${harness.base}/api/supervisor`);
+    await ownerFetch(`${harness.base}/api/supervisor`);
+    await ownerFetch(`${harness.base}/api/supervisor`);
     assert.equal(harness.calls.ticks, 1, "two polls, no extra ticks");
   } finally {
     await harness.close();
@@ -417,7 +424,7 @@ test("POST /api/supervisor/abort-now refuses without a confirm, and refuses hone
     harness.store.updateRun("run-1", { status: "running", phase: "build" });
     seedActiveTicket(harness.store, "run-1");
 
-    const refused = await fetch(`${harness.base}/api/supervisor/abort-now`, { method: "POST" });
+    const refused = await ownerFetch(`${harness.base}/api/supervisor/abort-now`, { method: "POST" });
     assert.equal(refused.status, 400);
     const error = (await refused.json()) as Record<string, unknown>;
     assert.equal(error["error"], "confirm_required");
@@ -428,7 +435,7 @@ test("POST /api/supervisor/abort-now refuses without a confirm, and refuses hone
      * `blocked` would leave the next START re-spending on the run the owner just
      * killed, and the ticket writer belongs to the loop. A 501 naming the
      * missing half beats a half-done abort. */
-    const confirmed = await fetch(`${harness.base}/api/supervisor/abort-now`, {
+    const confirmed = await ownerFetch(`${harness.base}/api/supervisor/abort-now`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ confirm: true }),
@@ -443,23 +450,23 @@ test("POST /api/supervisor/abort-now refuses without a confirm, and refuses hone
   }
 });
 
-test("the supervisor POSTs refuse a foreign Origin and allow an absent one", async () => {
+test("the supervisor POSTs require the exact dashboard owner origin", async () => {
   const harness = await startHarness(true);
   try {
-    const foreign = await fetch(`${harness.base}/api/supervisor/start`, {
-      method: "POST",
-      headers: { origin: "https://evil.example" },
-    });
-    assert.equal(foreign.status, 403);
-    assert.equal(((await foreign.json()) as Record<string, unknown>)["error"], "cross_origin_write");
-    assert.equal(harness.store.readSupervisorState().desired, "stopped", "a refused command changes nothing");
-    assert.equal(harness.calls.ticks, 0);
+    for (const origin of ["https://evil.example", "http://127.0.0.1:4321", null]) {
+      const refused = await globalThis.fetch(`${harness.base}/api/supervisor/start`, {
+        method: "POST",
+        ...(origin === null ? {} : { headers: { origin } }),
+      });
+      assert.equal(refused.status, 403, `accepted ${origin ?? "an absent origin"}`);
+      assert.equal(((await refused.json()) as Record<string, unknown>)["error"], "cross_origin_write");
+      assert.equal(harness.store.readSupervisorState().desired, "stopped", "a refused command changes nothing");
+      assert.equal(harness.calls.ticks, 0);
+    }
 
-    // BOTH ALLOWED ARMS, because a guard that refuses everything is as broken as
-    // one that refuses nothing: curl and the cron tick send no Origin at all,
-    // and the dashboard's own page sends a loopback one.
-    assert.equal((await fetch(`${harness.base}/api/supervisor/start`, { method: "POST" })).status, 200);
-    const own = await fetch(`${harness.base}/api/supervisor/stop`, {
+    // Positive arm: the exact dashboard UI origin still controls the machine.
+    assert.equal((await ownerFetch(`${harness.base}/api/supervisor/start`, { method: "POST" })).status, 200);
+    const own = await ownerFetch(`${harness.base}/api/supervisor/stop`, {
       method: "POST",
       headers: { origin: "http://127.0.0.1:4319" },
     });
@@ -470,11 +477,41 @@ test("the supervisor POSTs refuse a foreign Origin and allow an absent one", asy
   }
 });
 
+test("the supervisor ticket intake rejects preview-origin and non-JSON writes", async () => {
+  const harness = await startHarness(true);
+  try {
+    const body = JSON.stringify({ ticketText: "do not enqueue this", modelId: "opus[1m]" });
+    const preview = await globalThis.fetch(`${harness.base}/api/supervisor/tickets`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:4321" },
+      body,
+    });
+    assert.equal(preview.status, 403);
+
+    const noOrigin = await globalThis.fetch(`${harness.base}/api/supervisor/tickets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+    assert.equal(noOrigin.status, 403);
+
+    const plainText = await globalThis.fetch(`${harness.base}/api/supervisor/tickets`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", origin: DASHBOARD_OWNER_ORIGIN },
+      body,
+    });
+    assert.equal(plainText.status, 415);
+    assert.deepEqual(harness.store.listSupervisorTickets(), []);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("with no loop wired the commands refuse 503 and write nothing; the GET still answers 200", async () => {
   const harness = await startHarness(false);
   try {
     for (const action of ["start", "stop"]) {
-      const response = await fetch(`${harness.base}/api/supervisor/${action}`, { method: "POST" });
+      const response = await ownerFetch(`${harness.base}/api/supervisor/${action}`, { method: "POST" });
       assert.equal(response.status, 503, `${action} must not answer 200 when nothing can carry it out`);
       const body = (await response.json()) as Record<string, unknown>;
       assert.equal(body["error"], "supervisor_not_wired");
@@ -486,13 +523,13 @@ test("with no loop wired the commands refuse 503 and write nothing; the GET stil
 
     // The confirm is checked BEFORE the wiring, so a client discovering the
     // route learns it is destructive whether or not a loop is running.
-    const abort = await fetch(`${harness.base}/api/supervisor/abort-now`, { method: "POST" });
+    const abort = await ownerFetch(`${harness.base}/api/supervisor/abort-now`, { method: "POST" });
     assert.equal(abort.status, 400);
     assert.equal(((await abort.json()) as Record<string, unknown>)["error"], "confirm_required");
 
-    assert.equal((await fetch(`${harness.base}/api/supervisor`)).status, 200);
-    assert.equal((await fetch(`${harness.base}/api/supervisor/nonsense`, { method: "POST" })).status, 404);
-    assert.equal((await fetch(`${harness.base}/api/supervisor/start`)).status, 404, "GET is not a command");
+    assert.equal((await ownerFetch(`${harness.base}/api/supervisor`)).status, 200);
+    assert.equal((await ownerFetch(`${harness.base}/api/supervisor/nonsense`, { method: "POST" })).status, 404);
+    assert.equal((await ownerFetch(`${harness.base}/api/supervisor/start`)).status, 404, "GET is not a command");
   } finally {
     await harness.close();
   }
@@ -603,7 +640,7 @@ test("the boot ARM CHECK measures the composer and reads the live store", () => 
 test("POST /api/supervisor/tickets files a durable ticket the LOOP then claims", async () => {
   const h = await startHarness(true);
   try {
-    const before = await fetch(`${h.base}/api/supervisor/tickets`, {
+    const before = await ownerFetch(`${h.base}/api/supervisor/tickets`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ticketText: "build a portfolio site with a dark hero", modelId: "opus[1m]" }),
@@ -648,7 +685,7 @@ test("POST /api/supervisor/tickets files a durable ticket the LOOP then claims",
 test("a blank brief is refused with 400 and writes NO row; a duplicate brief is refused with 409", async () => {
   const h = await startHarness(true);
   const file = (body: unknown): Promise<Response> =>
-    fetch(`${h.base}/api/supervisor/tickets`, {
+    ownerFetch(`${h.base}/api/supervisor/tickets`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -695,7 +732,7 @@ test("a ticket can be filed against a server with NO loop — the row is durable
      * here would collapse "no loop is wired" into "there is no queue", which is
      * the exact conflation the whole strip exists to prevent.
      */
-    const answer = await fetch(`${h.base}/api/supervisor/tickets`, {
+    const answer = await ownerFetch(`${h.base}/api/supervisor/tickets`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ticketText: "file this while nothing is wired", modelId: "opus[1m]" }),
@@ -705,7 +742,7 @@ test("a ticket can be filed against a server with NO loop — the row is durable
 
     // NEGATIVE HALF: start/stop on the SAME unwired server still refuse, so this
     // is a considered difference between the two routes and not a lost guard.
-    const started = await fetch(`${h.base}/api/supervisor/start`, { method: "POST" });
+    const started = await ownerFetch(`${h.base}/api/supervisor/start`, { method: "POST" });
     assert.equal(started.status, 503);
   } finally {
     await h.close();
@@ -956,7 +993,7 @@ async function startCatalogHarness(enumerates: boolean): Promise<Harness> {
 }
 
 async function file(base: string, ticketText: string, modelId: string): Promise<Response> {
-  return fetch(`${base}/api/supervisor/tickets`, {
+  return ownerFetch(`${base}/api/supervisor/tickets`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ticketText, modelId }),
@@ -1023,7 +1060,7 @@ test("a model id that cannot run is refused at filing time, and NOTHING is queue
      * machine it has to work on, which is what the first version of it did.
      */
     assert.equal(
-      (await (await fetch(`${h.base}/api/models`)).json() as readonly { readonly id: string }[])
+      (await (await ownerFetch(`${h.base}/api/models`)).json() as readonly { readonly id: string }[])
         .some((model) => model.id === CATALOG_FALLBACK_MODEL_ID),
       true,
       "the fixture no longer reproduces the real CLI's `default` row, so the refusal above proves less",
@@ -1064,7 +1101,7 @@ test("with a catalog that could not enumerate, the SAME ids are filed rather tha
      * this test is not passing because the guard was deleted. One row, and its id is
      * the fallback id.
      */
-    const models = (await (await fetch(`${h.base}/api/models`)).json()) as readonly {
+    const models = (await (await ownerFetch(`${h.base}/api/models`)).json()) as readonly {
       readonly id: string;
     }[];
     assert.deepEqual(
@@ -1096,7 +1133,7 @@ function sha256Of(bytes: Buffer): string {
 }
 
 async function fileTicket(base: string, body: unknown): Promise<Response> {
-  return fetch(`${base}/api/supervisor/tickets`, {
+  return ownerFetch(`${base}/api/supervisor/tickets`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -1104,7 +1141,7 @@ async function fileTicket(base: string, body: unknown): Promise<Response> {
 }
 
 async function readQueue(base: string): Promise<ApiSupervisorTicketsResponse> {
-  const answer = await fetch(`${base}/api/supervisor/tickets`);
+  const answer = await ownerFetch(`${base}/api/supervisor/tickets`);
   assert.equal(answer.status, 200, `GET /api/supervisor/tickets answered ${String(answer.status)}`);
   return (await answer.json()) as ApiSupervisorTicketsResponse;
 }

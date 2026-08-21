@@ -20,7 +20,11 @@ function workspace(): string {
 
 test("actual project identity is independent of the dashboard state directory", () => {
   assert.equal(dashboardProjectId({ DASHBOARD_HOME: "/tmp/unrelated-state" }), "coding-agent");
-  assert.equal(dashboardProjectId({ DASHBOARD_HOME: "/tmp/unrelated-state", DASHBOARD_PROJECT_ID: "other" }), "other");
+  assert.equal(
+    dashboardProjectId({ DASHBOARD_HOME: "/tmp/unrelated-state", DASHBOARD_PROJECT_ID: "other" }),
+    "coding-agent",
+    "the actual project identity cannot be spoofed through the environment",
+  );
 });
 
 test("the finished manifest defines scope and planner-only identities are expectations", () => {

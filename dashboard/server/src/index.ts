@@ -30,6 +30,7 @@ import { RunEventBus } from "./bus.js";
 import { LOOPBACK_HOST, parsePort } from "./dashboard-url.js";
 import { RunStore } from "./db.js";
 import { CONTEXT7_PILOT_PROJECT_ID } from "./context7-pipeline.js";
+import { CREATIVE_PILOT_PROJECT_ID } from "./creative-pilot.js";
 import { assertLoopback, createDashboardServer } from "./http.js";
 import { ModelCatalog } from "./models.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -83,6 +84,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     env,
     context7ReviewProjectId: CONTEXT7_PILOT_PROJECT_ID,
     context7ReviewActualProjectId: dashboardProjectId(env),
+    creativePilotProjectId: CREATIVE_PILOT_PROJECT_ID,
+    creativePilotActualProjectId: dashboardProjectId(env),
     onRunSettled: () => {
       const loop = supervisorHolder.loop;
       if (loop === null) return;

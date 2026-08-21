@@ -165,13 +165,13 @@ test.describe("a fact that was moved is still reachable by a reader", () => {
    * rather than deleting. If this goes green while the trigger is missing, this
    * lane has deleted a fact and called it a cleanup.
    */
-  test("the timing fact is still reachable, and the composer never prints it", async ({
+  test("Send and Steer stay distinct without predicting delivery", async ({
     page,
   }) => {
     await openParkedChat(page);
 
-    const trigger = page.getByTestId("explain-timing");
-    const bubble = page.getByTestId("explain-timing-body");
+    const trigger = page.getByTestId("explain-send-mode");
+    const bubble = page.getByTestId("explain-send-mode-body");
 
     // NOT ON SCREEN AS PROSE. The words are in the accessibility tree at 1px;
     // what must not be true is that they are painted under the button again.
@@ -179,14 +179,15 @@ test.describe("a fact that was moved is still reachable by a reader", () => {
 
     await trigger.click();
 
-    await expect(bubble).toContainText(
-      "send it before you resume, or that prompt is composed without it",
-    );
-    // BOTH PATHS, WHICH IS THE HALF A SHORTER SENTENCE WOULD HAVE DROPPED: this
-    // composer is not told the run's status and renders on parked runs too.
-    await expect(bubble).toContainText("While the run is working it reads this at its next step");
-    await expect(bubble).toContainText("While it is stopped the message waits");
+    await expect(bubble).toContainText("Send joins the current conversation");
+    await expect(bubble).toContainText("Steer makes this the run's next instruction");
+    await expect(bubble).toContainText("either one creates a linked continuation");
     await expectPainted(bubble);
+
+    // Delivery is reported only after the server returns a disposition. The
+    // parked status itself must not manufacture a promise about where it lands.
+    await expect(page.getByTestId("explain-timing")).toHaveCount(0);
+    await expect(page.getByTestId("message-disposition")).toHaveCount(0);
   });
 
   test("what the run can be asked to change is still reachable", async ({ page }) => {
@@ -241,23 +242,18 @@ test.describe("a fact that was moved is still reachable by a reader", () => {
     await expectPainted(bubble);
   });
 
-  /**
-   * THE GLYPH IS NOT RENDERED WHERE IT COULD NOT BE OPENED, and this is the test
-   * that keeps that decision honest rather than letting it rot into an omission.
-   * Everything in the send row is inside `<fieldset disabled={runIsOver}>`, which
-   * disables descendant buttons — the trigger was on screen and inert until this
-   * was found by clicking it. On a finished run nothing can be sent, so WHEN a
-   * message is read is not a fact the reader can act on.
-   */
-  test("no dead trigger on a finished run, where nothing can be sent", async ({ page }) => {
+  /** A finished record remains readable while either action creates its successor. */
+  test("a finished run keeps both actions available for a linked continuation", async ({ page }) => {
     await page.goto(`/runs/${FINISHED_RUN_ID}`);
     await page.getByRole("button", { name: /^chat/i }).click();
     await expect(page.getByRole("button", { name: "send", exact: true })).toBeVisible();
 
-    await expect(page.getByTestId("explain-timing")).toHaveCount(0);
-    // AND THE REASON HE CANNOT SEND IS STILL STATED, in one sentence rather than
-    // the three-clause version that explained the server's refusal to him.
-    await expect(composer(page)).toContainText("This run has finished. Start a new run to use this.");
+    await expect(page.getByRole("button", { name: "send", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "steer", exact: true })).toBeEnabled();
+    await expect(page.getByTestId("explain-send-mode")).toBeEnabled();
+    await expect(composer(page)).toContainText(
+      "Your next message starts a linked continuation; this source run stays unchanged.",
+    );
   });
 });
 

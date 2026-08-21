@@ -61,6 +61,43 @@ test("a message pushed while parked wakes the iterator and is delivered", async 
   assert.match(String(delivered.value?.message.content), /make the hero warmer/);
 });
 
+test("delivery is acknowledged only when the iterator consumes the queued message", async () => {
+  const input = new LiveInput("build the thing");
+  const iterator = input[Symbol.asyncIterator]();
+  await iterator.next();
+  let consumed = 0;
+
+  assert.equal(
+    input.push({ text: "use the latest copy", images: [] }, "next", () => {
+      consumed += 1;
+    }),
+    true,
+  );
+  assert.equal(consumed, 0, "queue insertion is not delivery and must not stamp the durable row");
+
+  const delivered = await iterator.next();
+  assert.equal(delivered.done, false);
+  assert.equal(delivered.value.priority, "next");
+  assert.equal(consumed, 1, "the hand-off to the SDK acknowledges exactly once");
+  input.close();
+});
+
+test("replaying one durable message key cannot enqueue it twice", async () => {
+  const input = new LiveInput("go");
+  const iterator = input[Symbol.asyncIterator]();
+  await iterator.next();
+  let consumed = 0;
+  const acknowledge = (): void => {
+    consumed += 1;
+  };
+  assert.equal(input.push({ text: "same", images: [] }, "next", acknowledge, 7), true);
+  assert.equal(input.push({ text: "same", images: [] }, "next", acknowledge, 7), true);
+  await iterator.next();
+  assert.equal(consumed, 1);
+  assert.equal(input.pending, 0, "the replay key left no duplicate turn behind");
+  input.close();
+});
+
 test("close() is what ends the stream, and only close()", async () => {
   const input = new LiveInput("go");
   const iterator = input[Symbol.asyncIterator]();

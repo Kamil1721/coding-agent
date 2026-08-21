@@ -135,8 +135,8 @@
 
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, extname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { DEFAULT_PORT, LOOPBACK_HOST } from "./dashboard-url.js";
@@ -144,6 +144,8 @@ import { ADVERSARY_RECORD_FILE, adversaryPassFromRecord } from "./adversary.js";
 import type {
   ApiAdversaryPass,
   ApiContext7Review,
+  ApiCreativeDecisionResponse,
+  ApiCreativeStatus,
   ApiDesignLock,
   ApiDesignStage,
   ApiErrorResponse,
@@ -164,6 +166,8 @@ import type {
   ApiTicketManifestState,
   CreateRunResponse,
   HealthResponse,
+  MessageIntent,
+  SendMessageResponse,
   ModelOption,
   RunDetail,
   ApiScreenshot,
@@ -191,6 +195,7 @@ import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import { isTerminal } from "./db.js";
 import type {
+  MessageRequestReceipt,
   RunRow,
   RunStore,
   SupervisorState as StoredSupervisorState,
@@ -202,6 +207,12 @@ import type { DesignLockRecord } from "./design-lock.js";
 import { MAX_DESIGN_LOCK_TURNS, MAX_DESIGN_ON_DEMAND_RENDERS } from "./design-prompt.js";
 import { validateDesignReuseSource, writeDesignReuseMarker } from "./design-reuse.js";
 import { readMachineChecks } from "./machine-checks.js";
+import {
+  claimCreativeDecision,
+  pilotMayPublish,
+  readCreativePilotStatus,
+  writeCreativePilotStatus,
+} from "./creative-pilot.js";
 import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
 import { describeError, silenceOf } from "./orchestrator.js";
@@ -221,7 +232,7 @@ import {
   secretStoreFile,
 } from "./secret-intake.js";
 import type { SecretIntakeStatus } from "./secret-intake.js";
-import { briefHasContent, ticketWithReferences, titleFromBrief } from "./ticket.js";
+import { briefHasContent, ticketFromStoredReferences, ticketWithReferences, titleFromBrief } from "./ticket.js";
 import {
   MAX_REFERENCE_IMAGES,
   MAX_REFERENCE_IMAGE_BYTES,
@@ -249,6 +260,13 @@ import { captureMotion } from "./motion-capture.js";
 import type { MotionCaptureOptions } from "./motion-capture.js";
 import { normaliseMotion } from "./motion-spec.js";
 import type { MotionCaptureResult, MotionSpec } from "./motion-types.js";
+import {
+  copyContinuationReferences,
+  continuationBrief,
+  continuationRunId,
+  stageContinuationWorkspace,
+  writeContinuationRecord,
+} from "./run-continuation.js";
 
 /**
  * DECLARED IN `dashboard-url.ts`, RE-EXPORTED HERE.
@@ -347,16 +365,24 @@ export interface RunController {
    *
    * Returns false when there is no open segment — parked, queued, or between
    * segments — and the router then leaves the message pending for the boundary
-   * drain. `true` means the text is in the live session's input queue, so the
-   * router stamps it delivered.
+   * drain. `true` means the text is in the live input queue. The orchestrator's
+   * consumption callback stamps it only when the SDK iterator asks for it.
    */
-  pushLiveMessage(runId: string, message: { text: string; images: readonly string[] }): boolean;
+  pushLiveMessage(
+    runId: string,
+    message: {
+      text: string;
+      images: readonly string[];
+      seq: number;
+      delivery: "merge" | "next";
+    },
+  ): boolean;
   /**
    * Hand an owner message to a run parked in the PLAN dialogue.
    *
    * `true` means this run is waiting for an answer and will read the message as
    * one — a different fact from `pushLiveMessage`'s `true`, which means a live
-   * session took it. Both are false for a queued run and for one between
+   * session accepted it. Both are false for a queued run and for one between
    * segments, which is the case the boundary drain exists for.
    *
    * IT DOES NOT STAMP `delivered_at` AND THE ROUTER MUST NOT EITHER: the turn is
@@ -845,6 +871,34 @@ function toDetail(
     // any of it.
     adversary: readAdversaryPass(results),
     context7Review: readContext7Review(results),
+    creative: creativeStatusOf(results),
+  };
+}
+
+function creativeStatusOf(resultsDir: string): ApiCreativeStatus | null {
+  const status = readCreativePilotStatus(resultsDir);
+  if (status === null || !status.enabled) return null;
+  return {
+    applicable: status.applicable,
+    enabled: status.enabled,
+    contractHash: status.contractHash,
+    compileOutcome: status.compile.outcome,
+    compileFindings: status.compile.findings.map((finding) => ({
+      code: finding.code,
+      path: finding.path,
+      message: finding.message,
+    })),
+    renderManifestHash: status.renderManifestHash,
+    renderFresh: status.renderFresh,
+    renderProfiles: status.renderProfiles,
+    criticDisposition: status.criticDisposition,
+    criticFindings: status.criticFindings,
+    criticAttempt: status.criticAttempt,
+    reviewState: status.reviewState,
+    reviewStopReason: status.reviewStopReason,
+    ownerDecision: status.ownerDecision,
+    ownerDecisionReason: status.ownerDecisionReason,
+    ownerDecisionTargetRunId: status.ownerDecisionTargetRunId,
   };
 }
 
@@ -854,6 +908,10 @@ function toDetail(
  * so nothing else can be one.
  */
 const DASHBOARD_ORIGIN_HOSTS: readonly string[] = [LOOPBACK_HOST, "localhost"];
+const DASHBOARD_OWNER_ORIGINS: ReadonlySet<string> = new Set([
+  `http://${LOOPBACK_HOST}:4319`,
+  "http://localhost:4319",
+]);
 
 /**
  * Is this create-run request INTERACTIVE, in the sense spec §17.3 rule 2 leaves
@@ -1763,16 +1821,25 @@ async function fileSupervisorTicket(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  // THE SAME CROSS-ORIGIN REFUSAL start/stop MAKE. Filing is what start then
-  // spends the owner's quota on, so it is not a lesser write. An ABSENT `Origin`
-  // is allowed, because curl and the cron tick send none.
-  if (!originIsDashboard(request.headers.origin)) {
+  // Filing is owner authority: a preview on another loopback port must not be
+  // able to enqueue work that spends the owner's quota.
+  if (!originIsDashboardOwner(request.headers.origin)) {
     sendError(
       response,
       403,
       "cross_origin_write",
       "a supervisor ticket may only be filed from the dashboard's own page",
-      "Use the dashboard at http://127.0.0.1:4319, or send the request with no Origin header.",
+      "Use the dashboard at http://127.0.0.1:4319.",
+    );
+    return;
+  }
+  if (!requestIsJson(request)) {
+    sendError(
+      response,
+      415,
+      "unsupported_media_type",
+      "POST a JSON body with Content-Type: application/json",
+      "The supervisor ticket route accepts JSON from the dashboard only.",
     );
     return;
   }
@@ -2127,19 +2194,15 @@ async function supervisorCommand(
     sendError(response, 404, "not_found", `no route for POST /api/supervisor/${action}`, null);
     return;
   }
-  /* THE SAME CROSS-ORIGIN REFUSAL THE PROJECT AND SECRET ROUTES MAKE, and for a
-   * larger effect than either: these decide whether this machine spends the
-   * owner's subscription quota unattended for the next eight hours. A page the
-   * owner did not open cannot READ this API — no CORS header is ever set — but
-   * without a preflight it can still POST. An ABSENT `Origin` is allowed,
-   * because curl and the cron tick send none. */
-  if (!originIsDashboard(request.headers.origin)) {
+  /* These commands are owner authority: accepting any loopback port would let
+   * an artefact preview start or stop the unattended supervisor. */
+  if (!originIsDashboardOwner(request.headers.origin)) {
     sendError(
       response,
       403,
       "cross_origin_write",
       "the supervisor may only be started or stopped from the dashboard's own page",
-      "Use the dashboard at http://127.0.0.1:4319, or send the request with no Origin header.",
+      "Use the dashboard at http://127.0.0.1:4319.",
     );
     return;
   }
@@ -2363,20 +2426,15 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
     if (segments.length === 4) {
       const slug = segments[2] ?? "";
       const action = segments[3];
-      /* THE SAME CROSS-ORIGIN REFUSAL THE SECRET INTAKE MAKES, AND FOR A BIGGER
-       * REASON. A page the owner did not open cannot READ this API — no CORS
-       * header is ever set — but without a preflight it can still POST, and the
-       * effect of these two routes is not a stored value: it is a PROCESS
-       * SPAWNED or KILLED on the owner's machine. `originIsDashboard` allows an
-       * absent `Origin` (curl, the cron tick) and refuses a present one that is
-       * not loopback, including the literal "null" a sandboxed iframe sends. */
-      if (method === "POST" && !originIsDashboard(request.headers.origin)) {
+      /* Starting or stopping a process is owner authority. The exact UI origin
+       * prevents another loopback app or artefact preview from exercising it. */
+      if (method === "POST" && !originIsDashboardOwner(request.headers.origin)) {
         sendError(
           response,
           403,
           "cross_origin_write",
           "a project may only be started or stopped from the dashboard's own page",
-          "Use the dashboard at http://127.0.0.1:4319, or send the request with no Origin header.",
+          "Use the dashboard at http://127.0.0.1:4319.",
         );
         return;
       }
@@ -2616,12 +2674,24 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
    * The bytes are written under `runs/<id>/chat/` and the ROW STORES PATHS: the
    * builder needs a path to `Read`, and a 2MB PNG does not belong in SQLite. */
   if (segments.length === 4 && segments[3] === "messages" && method === "POST") {
+    if (!originIsDashboardOwner(request.headers.origin)) {
+      sendError(response, 403, "cross_origin_write", "a run message may only come from the dashboard", null);
+      return;
+    }
+    if (!requestIsJson(request)) {
+      sendError(response, 415, "unsupported_media_type", "POST a JSON body with Content-Type: application/json", null);
+      return;
+    }
     await postMessage(deps, runId, row, request, response);
     return;
   }
 
   // POST /api/runs/:id/cancel
   if (segments.length === 4 && segments[3] === "cancel" && method === "POST") {
+    if (!originIsDashboardOwner(request.headers.origin)) {
+      sendError(response, 403, "cross_origin_write", "a run may only be cancelled from the dashboard", null);
+      return;
+    }
     const cancelled = deps.orchestrator.cancel(runId);
     if (!cancelled) {
       sendError(
@@ -2644,10 +2714,18 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
   // it posts nothing; requiring a body would break resuming a rate-limited run
   // in order to add a feature that path has no opinion about.
   if (segments.length === 4 && segments[3] === "resume" && method === "POST") {
+    if (!originIsDashboardOwner(request.headers.origin)) {
+      sendError(response, 403, "cross_origin_write", "a run may only be resumed from the dashboard", null);
+      return;
+    }
     let chosenMockup: string | null = null;
     let chosenDirection: string | null = null;
     const text = await readBody(request);
     if (text.trim().length > 0) {
+      if (!requestIsJson(request)) {
+        sendError(response, 415, "unsupported_media_type", "POST a JSON body with Content-Type: application/json", null);
+        return;
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(text);
@@ -2695,6 +2773,187 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
     return;
   }
 
+  // POST /api/runs/:id/creative-decision
+  //
+  // The owner authority changes only its own durable column. Approval cannot
+  // waive either deterministic gate or a critic revision; a subjective waiver
+  // requires a bounded reason. A waiver may publish only when both deterministic
+  // authorities are green; the subjective exception remains recorded.
+  if (segments.length === 4 && segments[3] === "creative-decision" && method === "POST") {
+    if (!originIsDashboardOwner(request.headers.origin)) {
+      sendError(response, 403, "cross_origin_write", "a creative decision may only come from the dashboard", null);
+      return;
+    }
+    if (!requestIsJson(request)) {
+      sendError(response, 415, "unsupported_media_type", "POST a JSON body with Content-Type: application/json", null);
+      return;
+    }
+    const resultsDir = runPathsFor(deps.paths, runId).results;
+    const creative = readCreativePilotStatus(resultsDir);
+    if (creative === null || !creative.enabled || !creative.applicable) {
+      sendError(response, 409, "creative_pilot_not_applicable", "this run has no active creative pilot record", null);
+      return;
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(await readBody(request)); }
+    catch (error) {
+      sendError(response, 400, "invalid_body", describeError(error), "POST a JSON object with decision and optional reason.");
+      return;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      sendError(response, 400, "invalid_body", "the body must be a JSON object", null);
+      return;
+    }
+    const body = parsed as Record<string, unknown>;
+    const unknownKeys = Object.keys(body).filter((key) => key !== "decision" && key !== "reason");
+    if (unknownKeys.length > 0) {
+      sendError(response, 400, "unknown_creative_decision_field", `unknown field: ${unknownKeys[0] ?? "unknown"}`, null);
+      return;
+    }
+    const rawDecision = body["decision"];
+    const choices = ["approved", "revision_requested", "waived", "cancelled"] as const;
+    if (!choices.some((choice) => choice === rawDecision)) {
+      sendError(response, 400, "invalid_creative_decision", "decision must be approved, revision_requested, waived, or cancelled", null);
+      return;
+    }
+    const decision = rawDecision as (typeof choices)[number];
+    if (body["reason"] !== undefined && typeof body["reason"] !== "string") {
+      sendError(response, 400, "invalid_creative_reason", "reason must be a string when present", null);
+      return;
+    }
+    const reason = typeof body["reason"] === "string" ? body["reason"].trim() : "";
+    if (reason.length > 1_000) {
+      sendError(response, 400, "creative_reason_too_long", "reason must be at most 1000 characters", null);
+      return;
+    }
+    if ((decision === "waived" || decision === "revision_requested") && reason.length === 0) {
+      sendError(response, 400, "creative_reason_required", `${decision} requires a non-empty owner reason`, null);
+      return;
+    }
+    if (!isTerminal(row.status)) {
+      sendError(response, 409, "creative_decision_too_early", `${decision} is available only after the run is terminal and staged`, null);
+      return;
+    }
+
+    if (creative.ownerDecision !== null) {
+      if (creative.ownerDecision !== decision || (creative.ownerDecisionReason ?? "") !== reason) {
+        sendError(response, 409, "creative_decision_conflict", "this run already has a different closed owner decision", null);
+        return;
+      }
+      let existingPublish = readPublishedProject(resultsDir);
+      if (pilotMayPublish(creative) && existingPublish?.published !== true) {
+        republishProject({ run: row, paths: deps.paths });
+        existingPublish = readPublishedProject(resultsDir);
+      }
+      const receipt: ApiCreativeDecisionResponse = {
+        runId,
+        ownerDecision: decision,
+        mayPublish: pilotMayPublish(creative),
+        published: existingPublish?.published === true,
+        targetRunId: creative.ownerDecisionTargetRunId,
+      };
+      sendJson(response, 200, receipt);
+      return;
+    }
+
+    if (decision === "approved" && !(
+      creative.heldOutPass === true &&
+      creative.compile.outcome === "passed" &&
+      creative.criticDisposition === "accept" &&
+      creative.reviewState === "creative_ready"
+    )) {
+      sendError(response, 409, "creative_not_approvable", "approval requires functional and compiler green plus an accepting critic record", null);
+      return;
+    }
+    if (decision === "waived" && !(
+      creative.heldOutPass === true &&
+      creative.compile.outcome === "passed" &&
+      creative.criticDisposition === "revise" &&
+      creative.criticFindings.length > 0
+    )) {
+      sendError(response, 409, "creative_not_waivable", "only a subjective critic revision can be waived; functional/compiler red cannot", null);
+      return;
+    }
+
+    const claim = claimCreativeDecision(resultsDir, decision, reason.length === 0 ? null : reason);
+    if (claim.kind === "conflict") {
+      sendError(response, 409, "creative_decision_conflict", "a concurrent owner decision already won this run", null);
+      return;
+    }
+    if (claim.kind === "replay") {
+      const settled = readCreativePilotStatus(resultsDir);
+      if (settled?.ownerDecision !== null && settled?.ownerDecision !== undefined) {
+        const existingPublish = readPublishedProject(resultsDir);
+        const receipt: ApiCreativeDecisionResponse = {
+          runId,
+          ownerDecision: settled.ownerDecision,
+          mayPublish: pilotMayPublish(settled),
+          published: existingPublish?.published === true,
+          targetRunId: settled.ownerDecisionTargetRunId,
+        };
+        sendJson(response, 200, receipt);
+        return;
+      }
+      // The claim and all finalization below are synchronous within one request.
+      // A replay that observes an unsettled claim therefore means the claimant
+      // process stopped; resume its deterministic operation immediately.
+    }
+
+    let targetRunId: string | null = null;
+    if (decision === "revision_requested") {
+      const clientMessageId = `creative-decision-${createHash("sha256").update(`${decision}\n${reason}`).digest("hex")}`;
+      const begun = deps.store.beginMessageRequest({
+        runId,
+        clientMessageId,
+        payloadSha256: createHash("sha256").update(reason).digest("hex"),
+        intent: "steer",
+        text: reason,
+        images: [],
+        documents: [],
+      });
+      if (begun.kind === "conflict") {
+        sendError(response, 409, "creative_revision_conflict", "the durable revision request conflicts with its prior payload", null);
+        return;
+      }
+      const message = begun.receipt.message;
+      targetRunId = createTerminalContinuation(deps, row, message, []);
+      if (targetRunId === null) {
+        sendError(response, 409, "creative_revision_unavailable", "the terminal workspace could not be continued safely", null);
+        return;
+      }
+      deps.store.completeMessageRequest(runId, clientMessageId, "continuation_created", targetRunId);
+    }
+
+    const decided = {
+      ...creative,
+      ownerDecision: decision,
+      ownerDecisionReason: reason.length === 0 ? null : reason,
+      ownerDecisionTargetRunId: targetRunId,
+      updatedAt: new Date().toISOString(),
+    };
+    writeCreativePilotStatus(resultsDir, decided);
+    deps.bus.emit(runId, {
+      type: "log",
+      level: decision === "approved" ? "info" : "warn",
+      text: `owner creative decision recorded: ${decision}${targetRunId === null ? "" : `; continuation ${targetRunId}`}`,
+    });
+
+    let published = false;
+    if ((decision === "approved" || decision === "waived") && pilotMayPublish(decided)) {
+      published = republishProject({ run: row, paths: deps.paths }).published;
+    }
+    const receipt: ApiCreativeDecisionResponse = {
+      runId,
+      ownerDecision: decision,
+      mayPublish: pilotMayPublish(decided),
+      published,
+      targetRunId,
+    };
+    sendJson(response, 200, receipt);
+    deps.orchestrator.pump();
+    return;
+  }
+
   /* POST /api/runs/:id/publish  (additive; see the file header)
    *
    * KEYED ON THE RUN, NOT ON THE PROJECT FOLDER, because that is what
@@ -2711,13 +2970,13 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
     // It writes into `projects/`, commits, and can preserve the owner's own
     // uncommitted work under a machine-authored message. Same guard, same
     // reason as the two project routes above.
-    if (!originIsDashboard(request.headers.origin)) {
+    if (!originIsDashboardOwner(request.headers.origin)) {
       sendError(
         response,
         403,
         "cross_origin_write",
         "a run may only be published from the dashboard's own page",
-        "Use the dashboard at http://127.0.0.1:4319, or send the request with no Origin header.",
+        "Use the dashboard at http://127.0.0.1:4319.",
       );
       return;
     }
@@ -2820,10 +3079,9 @@ const MAX_CHAT_TEXT_CHARS = 8_000;
  * Accept one owner message, with optional images and documents, and queue it for
  * the run.
  *
- * REFUSED ON A TERMINAL RUN, and that refusal is the honest part. A finished run has
- * no further segment boundary to drain at, so accepting the message would store an
- * instruction nothing will ever read while showing the owner a sent message. Better
- * to say the run is over.
+ * A TERMINAL RUN IS NEVER REOPENED. Its message is the immutable anchor for a
+ * newly queued continuation run with a copied workspace and a newly derived
+ * ticket identity. The source verdict, suite and scored artefacts are untouched.
  *
  * WHAT A DOCUMENT ON THIS ROUTE DOES AND — TODAY — DOES NOT DO. The bytes are
  * decoded under the same rules as the ticket form's (one `document-intake.ts`,
@@ -2851,17 +3109,6 @@ async function postMessage(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  if (isTerminal(row.status)) {
-    sendError(
-      response,
-      409,
-      "run_finished",
-      `run ${runId} is ${row.status}, so it has no remaining segment to read a message at`,
-      "Start a new run with the revised brief instead.",
-    );
-    return;
-  }
-
   let payload: unknown;
   try {
     // THE ATTACHMENT CAP, because this route carries images AND documents. See
@@ -2901,19 +3148,58 @@ async function postMessage(
   const record = payload as Record<string, unknown>;
   const text = typeof record["text"] === "string" ? record["text"].trim() : "";
   const rawImages = Array.isArray(record["images"]) ? record["images"] : [];
+  const intent: MessageIntent = record["intent"] === "steer" ? "steer" : "send";
+  if (record["intent"] !== undefined && record["intent"] !== "send" && record["intent"] !== "steer") {
+    sendError(response, 400, "invalid_intent", 'intent must be "send" or "steer"', null);
+    return;
+  }
+  const clientMessageId = record["clientMessageId"];
+  if (
+    clientMessageId !== undefined &&
+    (typeof clientMessageId !== "string" ||
+      clientMessageId.length === 0 ||
+      clientMessageId.length > 128 ||
+      !/^[A-Za-z0-9._:-]+$/.test(clientMessageId))
+  ) {
+    sendError(
+      response,
+      400,
+      "invalid_client_message_id",
+      "clientMessageId must be 1-128 letters, digits, dots, underscores, colons or hyphens",
+      null,
+    );
+    return;
+  }
+  const requestId = typeof clientMessageId === "string" ? clientMessageId : null;
+  const payloadSha256 = createHash("sha256")
+    .update(JSON.stringify({ intent, text, images: rawImages, documents: record["documents"] ?? [] }))
+    .digest("hex");
+
+  const prior = requestId === null ? null : deps.store.messageRequest(runId, requestId);
+  if (prior !== null && prior.payloadSha256 !== payloadSha256) {
+    sendMessageRefusal(
+      response,
+      `clientMessageId ${requestId} was already used for different message bytes`,
+    );
+    return;
+  }
+  if (prior?.disposition !== null && prior?.disposition !== undefined) {
+    sendMessageReceipt(response, prior, runId, 200);
+    return;
+  }
 
   // THE SAME VALIDATION THE TICKET FORM USES, from the same function, because
   // two intakes with independently-editable rules is how one of them quietly
   // stops accepting what the other documents — the reason the image caps were
   // moved into `ticket-refs.ts` in the first place.
-  const documentIntake = readReferenceDocuments(record["documents"]);
-  if (!documentIntake.ok) {
+  const documentIntake = prior === null ? readReferenceDocuments(record["documents"]) : null;
+  if (documentIntake !== null && !documentIntake.ok) {
     sendError(response, documentIntake.status, documentIntake.code, documentIntake.message, documentIntake.remediation);
     return;
   }
-  const rawDocuments = documentIntake.documents;
+  const rawDocuments = documentIntake?.ok === true ? documentIntake.documents : [];
 
-  if (text === "" && rawImages.length === 0 && rawDocuments.length === 0) {
+  if (prior === null && text === "" && rawImages.length === 0 && rawDocuments.length === 0) {
     sendError(
       response,
       400,
@@ -2933,7 +3219,7 @@ async function postMessage(
     );
     return;
   }
-  if (rawImages.length > MAX_REFERENCE_IMAGES) {
+  if (prior === null && rawImages.length > MAX_REFERENCE_IMAGES) {
     sendError(
       response,
       400,
@@ -2944,32 +3230,35 @@ async function postMessage(
     return;
   }
 
-  // `runPathsFor` is how every other route resolves a run directory; there is no
-  // `paths.runDir`, and inventing a second way to join `runs/<id>` is how two
-  // places end up disagreeing about where a run lives.
-  const chatDir = join(deps.paths.runs, runId, "chat");
-  mkdirSync(chatDir, { recursive: true });
-
-  const written: string[] = [];
-  for (const [index, raw] of rawImages.entries()) {
-    const decoded = decodeReferenceDataUrl(raw);
-    if (decoded === null) {
+  let message = prior?.message ?? null;
+  let writtenDocuments = prior?.documents === undefined ? [] : [...prior.documents];
+  if (message === null) {
+    const decodedImages = rawImages.map((raw) => decodeReferenceDataUrl(raw));
+    const invalidImage = decodedImages.findIndex((decoded) => decoded === null);
+    if (invalidImage !== -1) {
       sendError(
         response,
         400,
         "invalid_image",
-        `image ${String(index + 1)} is not a base64 data URL of a supported type, or exceeds ${String(MAX_REFERENCE_IMAGE_BYTES)} bytes`,
+        `image ${String(invalidImage + 1)} is not a base64 data URL of a supported type, or exceeds ${String(MAX_REFERENCE_IMAGE_BYTES)} bytes`,
         "Supported: png, jpeg, webp, gif.",
       );
       return;
     }
-    // Named by message time and ordinal so the directory sorts chronologically and
-    // an owner uploading `Screenshot.png` twice cannot overwrite the first one.
-    const name = `${String(Date.now())}-${String(index + 1)}.${decoded.ext}`;
-    const path = join(chatDir, name);
-    writeFileSync(path, decoded.bytes);
-    written.push(path);
-  }
+
+    const chatDir = join(deps.paths.runs, runId, "chat");
+    mkdirSync(chatDir, { recursive: true });
+    const fileStamp =
+      requestId === null
+        ? String(Date.now())
+        : `${createHash("sha256").update(requestId).digest("hex").slice(0, 16)}-${payloadSha256.slice(0, 16)}`;
+    const written: string[] = [];
+    for (const [index, decoded] of decodedImages.entries()) {
+      if (decoded === null) continue;
+      const path = join(chatDir, `${fileStamp}-${String(index + 1)}.${decoded.ext}`);
+      writeFileSync(path, decoded.bytes);
+      written.push(path);
+    }
 
   /*
    * THE DOCUMENTS GO TO `runs/<id>/chat/`, NOT `runs/<id>/documents/`.
@@ -2986,14 +3275,67 @@ async function postMessage(
    * `-doc-` IS IN THE NAME so a directory listing distinguishes these from the
    * chat images, which use the same timestamp-and-ordinal scheme.
    */
-  const writtenDocuments: string[] = [];
-  for (const [index, decoded] of rawDocuments.entries()) {
-    const path = join(chatDir, `${String(Date.now())}-doc-${String(index + 1)}.${decoded.extension}`);
-    writeFileSync(path, decoded.bytes);
-    writtenDocuments.push(path);
+    writtenDocuments = [];
+    for (const [index, decoded] of rawDocuments.entries()) {
+      const path = join(chatDir, `${fileStamp}-doc-${String(index + 1)}.${decoded.extension}`);
+      writeFileSync(path, decoded.bytes);
+      writtenDocuments.push(path);
+    }
+
+    if (requestId === null) {
+      message = deps.store.appendMessage(runId, { role: "owner", text, images: written });
+    } else {
+      const begun = deps.store.beginMessageRequest({
+        runId,
+        clientMessageId: requestId,
+        payloadSha256,
+        intent,
+        text,
+        images: written,
+        documents: writtenDocuments,
+      });
+      if (begun.kind === "conflict") {
+        sendMessageRefusal(response, `clientMessageId ${requestId} was already used for different message bytes`);
+        return;
+      }
+      if (begun.receipt.disposition !== null) {
+        sendMessageReceipt(response, begun.receipt, runId, 200);
+        return;
+      }
+      message = begun.receipt.message;
+      writtenDocuments = [...begun.receipt.documents];
+    }
   }
 
-  const message = deps.store.appendMessage(runId, { role: "owner", text, images: written });
+  const current = deps.store.getRun(runId) ?? row;
+  if (isTerminal(current.status)) {
+    let targetRunId: string | null;
+    try {
+      targetRunId = createTerminalContinuation(deps, current, message, writtenDocuments);
+    } catch (error) {
+      sendMessageRefusal(response, `continuation creation failed: ${describeError(error)}`);
+      return;
+    }
+    if (targetRunId === null) {
+      sendMessageRefusal(response, `run ${runId} ended without a workspace that could be continued safely`);
+      return;
+    }
+    const completed =
+      requestId === null
+        ? null
+        : deps.store.completeMessageRequest(runId, requestId, "continuation_created", targetRunId);
+    const body: SendMessageResponse = {
+      disposition: "continuation_created",
+      message: completed?.message ?? message,
+      documents: completed?.documents ?? writtenDocuments,
+      targetRunId,
+      sourceRunId: runId,
+      sourceMessageSeq: message.seq,
+    };
+    sendJson(response, 202, body);
+    deps.orchestrator.pump();
+    return;
+  }
 
   /*
    * TRY THE LIVE SESSION FIRST — the switch away from boundary-only delivery.
@@ -3004,13 +3346,18 @@ async function postMessage(
    * agent's next turn rather than interrupt a tool call — the behaviour of typing into
    * the interactive CLI while it works.
    *
-   * STAMPED HERE ONLY IF IT LANDED. `pushLiveMessage` returns false for a parked,
-   * queued or between-segments run; the row then stays pending and the boundary drain
-   * carries it. Exactly one of the two paths stamps `delivered_at`, which is what
-   * makes delivery at-most-once across both.
+   * NOT STAMPED ON INSERTION. `pushLiveMessage` returns false for a parked,
+   * queued or between-segments run; the row then stays pending and the boundary
+   * drain carries it. For a live push, the orchestrator callback stamps only
+   * when the SDK iterator consumes the item. A process dying with it still
+   * queued therefore leaves the row available to the next boundary.
    */
-  const live = deps.orchestrator.pushLiveMessage(runId, { text, images: written });
-  if (live) deps.store.markMessagesDelivered(runId, [message.seq]);
+  const live = deps.orchestrator.pushLiveMessage(runId, {
+    text: message.text,
+    images: message.images,
+    seq: message.seq,
+    delivery: intent === "steer" ? "next" : "merge",
+  });
 
   /*
    * A RUN PARKED IN THE PLAN DIALOGUE READS THIS AS AN ANSWER, NOT AS A
@@ -3029,7 +3376,8 @@ async function postMessage(
    * here would lose an answer to a crash in between; leaving it pending costs at
    * worst a repeated turn.
    */
-  const planned = live ? false : (deps.orchestrator.deliverPlanReply?.(runId) ?? false);
+  const planned =
+    live || intent === "steer" ? false : (deps.orchestrator.deliverPlanReply?.(runId) ?? false);
 
   /*
    * THE THIRD RUNG, AND THE LAST. A run parked on a DESIGN CANVASS reads a
@@ -3053,7 +3401,21 @@ async function postMessage(
    * it to the build. `matchDirectionReference` in design-dialogue.ts is the whole
    * of that judgement and states the tie-break it turns on.
    */
-  const designed = live || planned ? false : (deps.orchestrator.deliverDesignRequest?.(runId) ?? false);
+  const designed =
+    live || planned || intent === "steer"
+      ? false
+      : (deps.orchestrator.deliverDesignRequest?.(runId) ?? false);
+  const disposition = live
+    ? "delivered_live"
+    : planned
+      ? "plan_reply"
+      : designed
+        ? "design_request"
+        : "queued_boundary";
+  const completed =
+    requestId === null || live
+      ? null
+      : deps.store.completeMessageRequest(runId, requestId, disposition, runId);
 
   /*
    * ON THE EVENT STREAM TOO, so the trace shows the redirection in the same
@@ -3065,15 +3427,15 @@ async function postMessage(
     level: "info",
     text:
       (live
-        ? "owner message delivered into the running session"
+        ? "owner message accepted by the running session input; durable delivery records when the SDK consumes it"
         : planned
           ? "owner message taken up by the plan dialogue, before any criteria are written"
           : designed
             ? "owner message taken up at the design park as a request to render a section in one of the " +
               "directions on offer"
             : "owner message queued for the next segment boundary") +
-      (written.length > 0 ? ` with ${String(written.length)} image(s)` : "") +
-      `: ${text.slice(0, 200)}`,
+      (message.images.length > 0 ? ` with ${String(message.images.length)} image(s)` : "") +
+      `: ${message.text.slice(0, 200)}`,
   });
 
   /*
@@ -3105,14 +3467,150 @@ async function postMessage(
     });
   }
 
-  // `live` lets the UI say "delivered now" instead of "waiting". Re-read so the
-  // response carries the stamp the push just wrote.
+  // `live` lets the UI say that the open SDK channel accepted the message. Its
+  // durable receipt remains open until LiveInput hands the item to the SDK; the
+  // consumption callback then stamps the message and closes the receipt in one
+  // transaction. A crash before that point therefore recovers as pending.
   //
   // `documents` IS ON THE RESPONSE AND NOT ON `message`. The stored row has no
   // such column, and inventing one on the way out would show the owner a message
   // that the next `GET /api/runs/:id/messages` does not agree with.
-  const stored = deps.store.messages(runId).find((m) => m.seq === message.seq) ?? message;
-  sendJson(response, 202, { message: stored, live, documents: writtenDocuments });
+  const body: SendMessageResponse = {
+    disposition,
+    message: completed?.message ?? message,
+    documents: completed?.documents ?? writtenDocuments,
+    targetRunId: runId,
+  };
+  sendJson(response, 202, body);
+}
+
+function sendMessageRefusal(response: ServerResponse, reason: string): void {
+  const body: SendMessageResponse = { disposition: "refused", reason, targetRunId: null };
+  sendJson(response, 409, body);
+}
+
+function sendMessageReceipt(
+  response: ServerResponse,
+  receipt: MessageRequestReceipt,
+  sourceRunId: string,
+  status: number,
+): void {
+  if (receipt.disposition === null || receipt.targetRunId === null) {
+    sendMessageRefusal(response, "the previous request was recorded but has no delivery disposition yet");
+    return;
+  }
+  const body: SendMessageResponse =
+    receipt.disposition === "continuation_created"
+      ? {
+          disposition: "continuation_created",
+          message: receipt.message,
+          documents: receipt.documents,
+          targetRunId: receipt.targetRunId,
+          sourceRunId,
+          sourceMessageSeq: receipt.message.seq,
+        }
+      : {
+          disposition: receipt.disposition,
+          message: receipt.message,
+          documents: receipt.documents,
+          targetRunId: receipt.targetRunId,
+        };
+  sendJson(response, status, body);
+}
+
+function createTerminalContinuation(
+  deps: HttpDeps,
+  source: RunRow,
+  message: MessageRequestReceipt["message"],
+  documents: readonly string[],
+): string | null {
+  const linked = deps.store.continuationFor(source.runId, message.seq);
+  if (linked !== null) return linked.targetRunId;
+
+  const targetRunId = continuationRunId(source.runId, message.seq);
+  if (deps.store.getRun(targetRunId) !== null) return null;
+  const sourcePaths = runPathsFor(deps.paths, source.runId);
+  const targetPaths = runPathsFor(deps.paths, targetRunId);
+  let durableTarget = false;
+  try {
+    if (!stageContinuationWorkspace(sourcePaths, targetPaths)) return null;
+
+    const sourceManifest = readReferenceManifest(referenceDirFor(deps.paths.runs, source.runId));
+    const manifest = copyContinuationReferences(
+      sourceManifest,
+      message.images,
+      documents.map((path) => ({ path, mediaType: continuationDocumentMediaType(path) })),
+      referenceDirFor(deps.paths.runs, targetRunId),
+      documentDirFor(deps.paths.runs, targetRunId),
+    );
+    if (manifest !== null) {
+      writeReferenceManifest(referenceDirFor(deps.paths.runs, targetRunId), manifest);
+    }
+    const targetFollowupDocuments =
+      documents.length === 0 ? [] : manifestDocuments(manifest).slice(-documents.length).map((entry) => entry.path);
+    const brief = continuationBrief(source.ticketText, source.runId, message.seq, message.text);
+    const ticket = ticketFromStoredReferences(brief, manifest);
+    const created = deps.store.createContinuationRun(source.runId, message.seq, {
+      runId: targetRunId,
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      ticketText: ticket.brief,
+      ticketSha256: ticket.sha256,
+      modelId: source.modelId,
+      provider: source.provider,
+      deploy: source.deploy,
+      startedAt: new Date().toISOString(),
+      queuePosition: deps.store.listQueued().length + 1,
+      designLock: source.designLock === "auto" || source.designLock === "ask" ? source.designLock : null,
+      interactive: true,
+    });
+    durableTarget = true;
+    if (created.created) {
+      deps.bus.emit(targetRunId, { type: "status", status: "queued" });
+      deps.bus.emit(targetRunId, { type: "phase", phase: "plan" });
+      deps.bus.emit(targetRunId, {
+        type: "log",
+        level: "info",
+        text: `linked continuation of terminal run ${source.runId}, anchored to owner message ${String(message.seq)}`,
+      });
+      if (targetFollowupDocuments.length > 0) {
+        deps.bus.emit(targetRunId, {
+          type: "log",
+          level: "warn",
+          text:
+            `${String(targetFollowupDocuments.length)} follow-up document(s) are recorded on this continuation ticket, but ` +
+            "the current chat delivery path does not place document bytes in an agent turn. Their target-owned paths are: " +
+            targetFollowupDocuments.join(", "),
+        });
+      }
+      writeContinuationRecord(targetPaths, {
+        sourceRunId: source.runId,
+        sourceMessageSeq: message.seq,
+        targetRunId,
+        createdAt: created.continuation.createdAt,
+      });
+    }
+    return created.continuation.targetRunId;
+  } catch (error) {
+    if (!durableTarget && deps.store.getRun(targetRunId) === null) {
+      rmSync(targetPaths.root, { recursive: true, force: true });
+    }
+    throw error;
+  }
+}
+
+function continuationDocumentMediaType(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case ".pdf": return "application/pdf";
+    case ".txt": return "text/plain";
+    case ".md": return "text/markdown";
+    case ".csv": return "text/csv";
+    case ".json": return "application/json";
+    case ".docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case ".doc": return "application/msword";
+    case ".rtf": return "application/rtf";
+    default: return "application/octet-stream";
+  }
 }
 
 function graphSnapshot(store: RunStore, runId: string): RunGraphResponse {
@@ -3998,6 +4496,20 @@ function originIsDashboard(origin: string | undefined): boolean {
   }
 }
 
+/** Owner-authority writes are browser actions and require the exact UI origin. */
+function originIsDashboardOwner(origin: string | undefined): boolean {
+  if (origin === undefined || origin.length === 0) return false;
+  try {
+    return DASHBOARD_OWNER_ORIGINS.has(new URL(origin).origin);
+  } catch {
+    return false;
+  }
+}
+
+function requestIsJson(request: IncomingMessage): boolean {
+  return (request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json");
+}
+
 /**
  * Store one credential.
  *
@@ -4086,6 +4598,17 @@ async function putSecretRoute(deps: HttpDeps, request: IncomingMessage, response
  * response body is the only place it is ever reported.
  */
 function republishRoute(deps: ResolvedHttpDeps, row: RunRow, response: ServerResponse): void {
+  const creative = readCreativePilotStatus(runPathsFor(deps.paths, row.runId).results);
+  if (creative?.enabled === true && creative.applicable && !pilotMayPublish(creative)) {
+    sendError(
+      response,
+      409,
+      "creative_owner_approval_required",
+      "WEB pilot publication requires functional/compiler green and either critic acceptance plus approval or a reasoned owner waiver of subjective findings",
+      "Record an approved or waived creative decision first.",
+    );
+    return;
+  }
   const record = republishProject({ run: row, paths: deps.paths });
   if (!record.published) {
     sendError(

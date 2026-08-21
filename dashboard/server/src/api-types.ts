@@ -35,6 +35,7 @@
  * contract changes: it still compiles to nothing and still describes only shapes.
  */
 import type { BriefShapeFinding } from "./brief-shape.js";
+import type { RenderProfileId } from "./render-manifest.js";
 
 /**
  * Providers the DASHBOARD knows about — deliberately NARROWER than `Provider` in
@@ -717,6 +718,54 @@ export interface ApiContext7Review {
   readonly lifecycle: readonly ApiContext7Lifecycle[];
 }
 
+export interface ApiCreativeCompileFinding {
+  readonly code: string;
+  readonly path: string;
+  readonly message: string;
+}
+
+export interface ApiCreativeCriticFinding {
+  readonly category: string;
+  readonly code: string;
+  readonly routeId: string;
+  readonly sectionIds: readonly string[];
+  readonly diagnosis: string;
+  readonly revision: string;
+}
+
+/** Closed, record-backed projection of the default-off rendered creative pilot. */
+export interface ApiCreativeStatus {
+  readonly applicable: boolean;
+  readonly enabled: boolean;
+  readonly contractHash: string | null;
+  readonly compileOutcome: "unknown" | "passed" | "failed" | "unavailable";
+  readonly compileFindings: readonly ApiCreativeCompileFinding[];
+  readonly renderManifestHash: string | null;
+  readonly renderFresh: boolean | null;
+  readonly renderProfiles: readonly {
+    readonly profileId: RenderProfileId;
+    readonly captureCount: number;
+    readonly complete: boolean;
+  }[] | null;
+  readonly criticDisposition: "accept" | "revise" | "unavailable" | null;
+  readonly criticFindings: readonly ApiCreativeCriticFinding[];
+  readonly criticAttempt: number | null;
+  readonly reviewState: "reviewing" | "creative_ready" | "creative_review_required" | "not_converging" | "failed" | null;
+  readonly reviewStopReason: string | null;
+  readonly ownerDecision: "approved" | "revision_requested" | "waived" | "cancelled" | null;
+  readonly ownerDecisionReason: string | null;
+  readonly ownerDecisionTargetRunId: string | null;
+}
+
+export interface ApiCreativeDecisionResponse {
+  readonly runId: string;
+  readonly ownerDecision: "approved" | "revision_requested" | "waived" | "cancelled";
+  /** True only when every publication authority is independently green. */
+  readonly mayPublish: boolean;
+  readonly published: boolean;
+  readonly targetRunId: string | null;
+}
+
 /**
  * Something in the workspace that was NOT copied into the published project,
  * and why.
@@ -1389,6 +1438,8 @@ export interface RunDetail extends RunSummary {
    * pilot. It is an audit surface, never a second acceptance verdict.
    */
   readonly context7Review?: ApiContext7Review | null;
+  /** Null for every non-pilot/legacy run; unknown facts remain null inside it. */
+  readonly creative?: ApiCreativeStatus | null;
   /**
    * How the page the owner named as a MOTION REFERENCE was observed to move, or
    * `null` when this ticket named none.
@@ -2585,11 +2636,63 @@ export interface CreateRunResponse {
  * without surfacing that warning is telling the owner something the server did
  * not do.
  */
+export type MessageIntent = "send" | "steer";
+
 export interface SendMessageRequest {
   readonly text?: string;
   readonly images?: readonly string[];
   readonly documents?: readonly string[];
+  /**
+   * `send` folds into the next safe turn; `steer` asks an active session to run
+   * the message as its next turn. Omitted is `send` for older clients.
+   */
+  readonly intent?: MessageIntent;
+  /** Stable per client action. Replaying the same id returns the same receipt. */
+  readonly clientMessageId?: string;
 }
+
+export type MessageDisposition =
+  | "delivered_live"
+  | "queued_boundary"
+  | "plan_reply"
+  | "design_request"
+  | "continuation_created"
+  | "refused";
+
+/** One durable owner↔run transcript row on the wire. */
+export interface ApiChatMessage {
+  readonly seq: number;
+  readonly at: string;
+  readonly role: "owner" | "run";
+  readonly text: string;
+  readonly images: readonly string[];
+  readonly deliveredAt: string | null;
+}
+
+export type SendMessageResponse =
+  | {
+      readonly disposition:
+        | "delivered_live"
+        | "queued_boundary"
+        | "plan_reply"
+        | "design_request";
+      readonly message: ApiChatMessage;
+      readonly documents: readonly string[];
+      readonly targetRunId: string;
+    }
+  | {
+      readonly disposition: "continuation_created";
+      readonly message: ApiChatMessage;
+      readonly documents: readonly string[];
+      readonly targetRunId: string;
+      readonly sourceRunId: string;
+      readonly sourceMessageSeq: number;
+    }
+  | {
+      readonly disposition: "refused";
+      readonly reason: string;
+      readonly targetRunId: null;
+    };
 
 export interface OkResponse {
   readonly ok: true;

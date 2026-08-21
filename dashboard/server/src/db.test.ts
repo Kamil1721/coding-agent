@@ -107,6 +107,39 @@ test("the lock policy and the interactive marker survive the round-trip", () => 
   }
 });
 
+test("a max-attempt creative review cannot terminalize while its latest owner message is pending", () => {
+  withStore("terminal-message-guard", (store) => {
+    seed(store, "run-late-message");
+    // This is the attempt-three boundary: creative mutation is exhausted and
+    // the run has reached the judge, but the owner's latest work is not consumed.
+    store.updateRun("run-late-message", { status: "running", phase: "judge" });
+    const message = store.appendMessage("run-late-message", {
+      role: "owner",
+      text: "Change the final heading before you finish.",
+      images: [],
+    });
+
+    const guarded = store.finishUnlessOwnerMessagePending("run-late-message", {
+      status: "passed",
+      endedAt: new Date().toISOString(),
+      heldOutPass: true,
+    });
+    assert.equal(guarded.requeued, true);
+    assert.equal(guarded.row.status, "queued");
+    assert.equal(guarded.row.endedAt, null);
+    assert.equal(store.pendingMessages("run-late-message")[0]?.seq, message.seq);
+
+    store.markMessagesDelivered("run-late-message", [message.seq]);
+    const finished = store.finishUnlessOwnerMessagePending("run-late-message", {
+      status: "passed",
+      endedAt: new Date().toISOString(),
+      heldOutPass: true,
+    });
+    assert.equal(finished.requeued, false);
+    assert.equal(finished.row.status, "passed");
+  });
+});
+
 test("a fresh run has NO gate outcome, and no-outcome is not a green gate", () => {
   // The distinction the whole pair exists for. A run that has not reached the
   // gate must not be readable as one that passed it: `heldOutPass: null` makes
@@ -707,6 +740,105 @@ test("re-stamping an already-delivered message does not move its delivery time",
 
     store.markMessagesDelivered("run-idem", [message.seq]);
     assert.equal(store.messages("run-idem")[0]?.deliveredAt, firstStamp);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a replay key creates one message and its first closed disposition wins", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-message-request-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-request");
+    const input = {
+      runId: "run-request",
+      clientMessageId: "client-1",
+      payloadSha256: "a".repeat(64),
+      intent: "steer" as const,
+      text: "use the latest message",
+      images: [] as readonly string[],
+      documents: [] as readonly string[],
+    };
+    const first = store.beginMessageRequest(input);
+    const replay = store.beginMessageRequest(input);
+    assert.equal(first.kind, "created");
+    assert.equal(replay.kind, "replay");
+    assert.equal(replay.receipt.message.seq, first.receipt.message.seq);
+    assert.equal(store.messages("run-request").length, 1, "the replay did not append a second message");
+
+    const conflict = store.beginMessageRequest({ ...input, payloadSha256: "b".repeat(64) });
+    assert.equal(conflict.kind, "conflict");
+    store.completeMessageRequest("run-request", "client-1", "queued_boundary", "run-request");
+    store.completeMessageRequest("run-request", "client-1", "delivered_live", "run-request");
+    assert.equal(
+      store.messageRequest("run-request", "client-1")?.disposition,
+      "queued_boundary",
+      "a late replay cannot rewrite what the first request actually did",
+    );
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("live consumption stamps the message and closes its receipt atomically", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-live-request-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-live-request");
+    const begun = store.beginMessageRequest({
+      runId: "run-live-request",
+      clientMessageId: "client-live",
+      payloadSha256: "e".repeat(64),
+      intent: "steer",
+      text: "take this next",
+      images: [],
+      documents: [],
+    });
+    assert.equal(begun.receipt.disposition, null, "queue insertion has not consumed the message");
+    assert.equal(begun.receipt.message.deliveredAt, null);
+
+    store.markLiveMessageDelivered("run-live-request", begun.receipt.message.seq);
+
+    const receipt = store.messageRequest("run-live-request", "client-live");
+    assert.equal(receipt?.disposition, "delivered_live");
+    assert.equal(receipt?.targetRunId, "run-live-request");
+    assert.ok(receipt?.message.deliveredAt !== null, "the same durable read sees both facts");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("one terminal owner message can create exactly one linked continuation run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-db-continuation-"));
+  const store = RunStore.open(join(dir, "runs.db"));
+  try {
+    seed(store, "run-source");
+    const message = store.appendMessage("run-source", { role: "owner", text: "continue", images: [] });
+    const continuation = {
+      runId: "run-cont-target",
+      ticketId: "t-cont",
+      ticketTitle: "continuation",
+      ticketText: "continue the project",
+      ticketSha256: "d".repeat(64),
+      modelId: "default",
+      provider: "anthropic" as const,
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 2,
+    };
+    const first = store.createContinuationRun("run-source", message.seq, continuation);
+    const replay = store.createContinuationRun("run-source", message.seq, {
+      ...continuation,
+      runId: "run-must-not-exist",
+    });
+    assert.equal(first.created, true);
+    assert.equal(replay.created, false);
+    assert.equal(replay.run.runId, "run-cont-target");
+    assert.equal(store.getRun("run-must-not-exist"), null);
+    assert.equal(store.continuationFor("run-source", message.seq)?.targetRunId, "run-cont-target");
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

@@ -46,6 +46,12 @@ export interface LiveMessage {
  */
 export type Delivery = "merge" | "next";
 
+interface PendingInput {
+  readonly message: SDKUserMessage;
+  readonly consumed?: () => void;
+  readonly key?: string | number;
+}
+
 /** Wrap text and image paths as an `SDKUserMessage`. */
 export function userMessage(
   text: string,
@@ -94,23 +100,37 @@ export function liveMessageText(message: LiveMessage): string {
  * promise instead, so "no messages right now" is a WAIT, never an end.
  */
 export class LiveInput {
-  readonly #pending: SDKUserMessage[] = [];
+  readonly #pending: PendingInput[] = [];
+  readonly #accepted = new Set<string | number>();
   #wake: (() => void) | null = null;
   #closed = false;
 
   /** The first message the session receives. */
   constructor(firstPrompt: string) {
     this.#pending.push({
-      type: "user",
-      message: { role: "user", content: firstPrompt },
-      parent_tool_use_id: null,
+      message: {
+        type: "user",
+        message: { role: "user", content: firstPrompt },
+        parent_tool_use_id: null,
+      },
     });
   }
 
   /** Push an owner message into the live session. No-op once closed. */
-  push(message: LiveMessage, delivery: Delivery = "merge"): boolean {
+  push(
+    message: LiveMessage,
+    delivery: Delivery = "merge",
+    consumed?: () => void,
+    key?: string | number,
+  ): boolean {
     if (this.#closed) return false;
-    this.#pending.push(userMessage(liveMessageText(message), delivery));
+    if (key !== undefined && this.#accepted.has(key)) return true;
+    if (key !== undefined) this.#accepted.add(key);
+    this.#pending.push({
+      message: userMessage(liveMessageText(message), delivery),
+      ...(consumed === undefined ? {} : { consumed }),
+      ...(key === undefined ? {} : { key }),
+    });
     this.#wake?.();
     return true;
   }
@@ -148,7 +168,15 @@ export class LiveInput {
     for (;;) {
       const next = this.#pending.shift();
       if (next !== undefined) {
-        yield next;
+        // The stamp belongs here, at the iterator hand-off. Queue insertion is
+        // not consumption: a process can die with an item still waiting.
+        try {
+          next.consumed?.();
+        } catch (error) {
+          if (next.key !== undefined) this.#accepted.delete(next.key);
+          throw error;
+        }
+        yield next.message;
         continue;
       }
       if (this.#closed) return;

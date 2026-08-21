@@ -1,4 +1,6 @@
 import type {
+  CreativeDecisionRequest,
+  CreativeDecisionResponse,
   CreateRunRequest,
   CreateRunResponse,
   HealthState,
@@ -13,8 +15,14 @@ import type {
   ProjectsResponse,
   RunDetail,
   RunSummary,
+  MessageIntent,
+  SendMessageRequest,
+  SendMessageResponse,
   SupervisorCommandResponse,
 } from "./api-types";
+
+export type { ChatMessage } from "./api-types";
+import type { ChatMessage } from "./api-types";
 
 /**
  * THE single place the API origin is read.
@@ -58,6 +66,8 @@ export const KEY = {
    */
   file: (runId: string, path: string): string =>
     `/api/runs/${encodeURIComponent(runId)}/files?path=${encodeURIComponent(path)}`,
+  creativeDecision: (runId: string): string =>
+    `/api/runs/${encodeURIComponent(runId)}/creative-decision`,
   models: "/api/models",
   health: "/api/health",
   /** Every folder under `projects/`, with the process serving each. */
@@ -139,7 +149,11 @@ function messageFromBody(body: unknown, fallback: string): string {
   return fallback;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  acceptErrorBody?: (status: number, body: unknown) => boolean,
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch(apiUrl(path), {
@@ -172,7 +186,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
   }
 
-  if (!response.ok) {
+  if (!response.ok && !(acceptErrorBody?.(response.status, parsed) ?? false)) {
     throw new ApiError(
       response.status,
       messageFromBody(parsed, `${response.status} ${response.statusText}`),
@@ -195,6 +209,16 @@ export function listRuns(): Promise<readonly RunSummary[]> {
 
 export function getRun(runId: string): Promise<RunDetail> {
   return request<RunDetail>(KEY.run(runId));
+}
+
+export function decideCreativeReview(
+  runId: string,
+  body: CreativeDecisionRequest,
+): Promise<CreativeDecisionResponse> {
+  return request<CreativeDecisionResponse>(KEY.creativeDecision(runId), {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function listModels(): Promise<readonly ModelOption[]> {
@@ -308,17 +332,6 @@ export function resumeWithDirection(
   });
 }
 
-/** One message on the owner↔run channel. Mirrors the server's `ChatMessage`. */
-export interface ChatMessage {
-  readonly seq: number;
-  readonly at: string;
-  readonly role: "owner" | "run";
-  readonly text: string;
-  readonly images: readonly string[];
-  /** Null while waiting; on a finished run, null means it was never read. */
-  readonly deliveredAt: string | null;
-}
-
 export function runMessages(runId: string): Promise<{ messages: readonly ChatMessage[] }> {
   return request<{ messages: readonly ChatMessage[] }>(
     `/api/runs/${encodeURIComponent(runId)}/messages`,
@@ -337,10 +350,25 @@ export function sendRunMessage(
   runId: string,
   text: string,
   images: readonly string[],
-): Promise<{ message: ChatMessage }> {
-  return request<{ message: ChatMessage }>(
+  options: {
+    readonly intent?: MessageIntent;
+    readonly clientMessageId?: string;
+    readonly documents?: readonly string[];
+  } = {},
+): Promise<SendMessageResponse> {
+  const body: SendMessageRequest = {
+    text,
+    images,
+    ...options,
+  };
+  return request<SendMessageResponse>(
     `/api/runs/${encodeURIComponent(runId)}/messages`,
-    { method: "POST", body: JSON.stringify({ text, images }) },
+    { method: "POST", body: JSON.stringify(body) },
+    (status, parsed) =>
+      status === 409 &&
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>)["disposition"] === "refused",
   );
 }
 

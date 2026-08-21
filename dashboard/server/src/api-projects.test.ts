@@ -72,6 +72,7 @@ const TEST_OPTIONS = { timeout: 90_000 } as const;
 
 /** Per request in this file. See {@link ask}. */
 const FETCH_TIMEOUT_MS = 10_000;
+const DASHBOARD_ORIGIN = `http://${LOOPBACK_HOST}:4319`;
 
 /**
  * A request that cannot hang.
@@ -81,7 +82,9 @@ const FETCH_TIMEOUT_MS = 10_000;
  * like. Everything on loopback here answers in milliseconds.
  */
 function ask(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const headers = new Headers(init.headers);
+  if (!headers.has("origin")) headers.set("Origin", DASHBOARD_ORIGIN);
+  return fetch(url, { ...init, headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 }
 
 interface Harness {
@@ -311,6 +314,30 @@ test("a cross-origin POST cannot start, stop or publish — the routes that spaw
       assert.equal(response.status, 403, `${path} answered ${String(response.status)}`);
       assert.equal(((await response.json()) as ApiErrorResponse).error, "cross_origin_write");
     }
+    for (const path of [`/api/projects/shop/start`, `/api/projects/shop/stop`]) {
+      for (const origin of ["http://127.0.0.1:4321", undefined]) {
+        const init: RequestInit = {
+          method: "POST",
+          ...(origin === undefined ? {} : { headers: { Origin: origin } }),
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        };
+        const response =
+          origin === undefined ? await fetch(`${harness.base}${path}`, init) : await ask(`${harness.base}${path}`, init);
+        assert.equal(response.status, 403, `${path} accepted ${origin ?? "an absent origin"}`);
+      }
+    }
+    for (const origin of ["http://127.0.0.1:4321", undefined]) {
+      const init: RequestInit = {
+        method: "POST",
+        ...(origin === undefined ? {} : { headers: { Origin: origin } }),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      };
+      const response =
+        origin === undefined
+          ? await fetch(`${harness.base}/api/runs/${runId}/publish`, init)
+          : await ask(`${harness.base}/api/runs/${runId}/publish`, init);
+      assert.equal(response.status, 403, `publish accepted owner impersonation from ${origin ?? "no origin"}`);
+    }
 
     // NOTHING HAPPENED. No child, and no folder was published — a 403 that
     // arrived after the side effect would be worse than no check at all.
@@ -318,9 +345,12 @@ test("a cross-origin POST cannot start, stop or publish — the routes that spaw
     assert.equal(listed.projects.find((project) => project.slug === "shop")?.process.state, "stopped");
     assert.equal(existsSync(join(runPathsFor(harness.paths, runId).results, "project-publish.json")), false);
 
-    // …and the same requests with no Origin (curl, the cron tick) still work.
-    const allowed = await ask(`${harness.base}/api/runs/${runId}/publish`, { method: "POST" });
-    assert.equal(allowed.status, 200, "an absent Origin is not a browser and is not refused");
+    // Owner-authority publication requires the exact dashboard UI origin.
+    const allowed = await ask(`${harness.base}/api/runs/${runId}/publish`, {
+      method: "POST",
+      headers: { Origin: DASHBOARD_ORIGIN },
+    });
+    assert.equal(allowed.status, 200);
   } finally {
     await harness.close();
   }
@@ -358,7 +388,10 @@ test("POST /api/runs/:id/publish gives a finished run's folder a repository, and
     seedFinishedRun(harness, runId, "A shop that sells nothing");
     harness.store.updateRun(runId, { status: "failed", endedAt: new Date().toISOString() });
 
-    const response = await ask(`${harness.base}/api/runs/${runId}/publish`, { method: "POST" });
+    const response = await ask(`${harness.base}/api/runs/${runId}/publish`, {
+      method: "POST",
+      headers: { Origin: DASHBOARD_ORIGIN },
+    });
     assert.equal(response.status, 200);
     const body = (await response.json()) as ApiRepublishResponse;
     assert.equal(body.runId, runId);
@@ -395,7 +428,10 @@ test("POST /api/runs/:id/publish refuses a run that is still going, and an id th
     seedFinishedRun(harness, runId, "Still building");
     harness.store.updateRun(runId, { status: "running" });
 
-    const response = await ask(`${harness.base}/api/runs/${runId}/publish`, { method: "POST" });
+    const response = await ask(`${harness.base}/api/runs/${runId}/publish`, {
+      method: "POST",
+      headers: { Origin: DASHBOARD_ORIGIN },
+    });
     assert.equal(response.status, 409);
     const body = (await response.json()) as ApiErrorResponse;
     assert.equal(body.error, "run_not_terminal");

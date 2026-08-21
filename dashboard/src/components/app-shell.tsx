@@ -174,7 +174,9 @@ export function AppShell({ children }: { children: ReactNode }): ReactNode {
     <div
       className={cx(
         "flex flex-col",
-        fullBleed ? "h-dvh overflow-hidden" : "min-h-full",
+        fullBleed
+          ? "h-dvh overflow-hidden"
+          : "min-h-full overflow-x-clip sm:overflow-x-visible",
       )}
     >
       <header className="sticky top-0 z-20 shrink-0 border-b border-line bg-canvas/95 backdrop-blur">
@@ -187,11 +189,11 @@ export function AppShell({ children }: { children: ReactNode }): ReactNode {
           */}
         <div
           className={cx(
-            "flex h-11 w-full items-center gap-4 px-4",
+            "flex min-h-11 w-full flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:h-11 sm:flex-nowrap sm:gap-y-0 sm:py-0",
             capped ? "mx-auto max-w-[1440px]" : "",
           )}
         >
-          <Link href="/" className="flex items-center gap-2">
+          <Link href="/" className="flex shrink-0 items-center gap-2">
             <span className="text-[13px] font-semibold tracking-tight text-ink">
               agent console
             </span>
@@ -199,12 +201,12 @@ export function AppShell({ children }: { children: ReactNode }): ReactNode {
               local
             </span>
           </Link>
-          <nav className="flex items-center gap-1">
+          <nav className="order-3 flex basis-full items-center gap-1 sm:order-none sm:basis-auto">
             {NAV.map((item) => (
               <NavLink key={item.href} href={item.href} label={item.label} />
             ))}
           </nav>
-          <div className="ml-auto">
+          <div className="ml-auto shrink-0">
             <AuthGlance />
           </div>
         </div>
@@ -238,7 +240,7 @@ export function AppShell({ children }: { children: ReactNode }): ReactNode {
           */}
         <div
           className={cx(
-            "w-full border-t border-line px-4",
+            "min-w-0 w-full border-t border-line px-4",
             capped ? "mx-auto max-w-[1440px]" : "",
           )}
         >

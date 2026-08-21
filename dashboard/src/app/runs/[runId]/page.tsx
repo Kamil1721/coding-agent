@@ -143,127 +143,14 @@ import {
 import { OrchestratorChat } from "@/components/canvas/orchestrator-chat";
 import { findModel } from "@/lib/cost";
 import { useModels } from "@/lib/hooks";
-import { isTerminalStatus, type RunDetail } from "@/lib/api-types";
+import {
+  isTerminalStatus,
+  type RunDetail,
+  type MessageIntent,
+  type SendMessageResponse,
+} from "@/lib/api-types";
 import { designLockPhase } from "@/lib/mockups";
 import { useLiveRun, useNow } from "@/lib/use-run-stream";
-
-/**
- * What actually happens to a message typed RIGHT NOW — or null when
- * `OrchestratorChat`'s own copy already covers this state correctly.
- *
- * TWO FIELDS SINCE 2026-08-05, AND THE SPLIT IS THE POINT. `text` is the one line
- * that changes what the reader does next — whether it is worth typing at all —
- * and is on screen. `detail` is the mechanism behind it and lives behind the
- * `Explain` glyph at the call site: a reader who never opens it has been told
- * nothing false, and a reader who wants to know why gets the whole reason. The
- * three states used to spend 137 words on this paragraph permanently; they now
- * spend 41 on screen and keep every fact.
- *
- * READ OUT OF THE SERVER AT THE TWO SITES THAT DECIDE IT, because it is not
- * guessable from the status alone and this dashboard's worst habit is copy that
- * promises more than the mechanism:
- *
- *   · LIVE delivery needs an open input channel, and `#liveInputs.set` has
- *     exactly ONE call site (`server/src/orchestrator.ts`, inside the design/build
- *     segment run). Everywhere else `pushLiveMessage` returns false, the row keeps
- *     `delivered_at` NULL and the message is merely stored.
- *   · The QUEUE is drained at exactly one site too: `ownerMessageBlock(pending)`
- *     is appended to the design-segment and build-segment prompts inside
- *     `#buildPhase`, and the rows are stamped only after that prompt is on disk.
- *     The gate's fix rounds and the judge compose their own prompts and never
- *     read a pending message.
- *
- * WHY IT IS WRITTEN HERE. `OrchestratorChat` states both paths in general terms
- * and cannot state which one applies: it is handed `runIsOver` and a message list
- * rather than the run, and its own header says an `isParked` prop would be a
- * caller change and refuses to fake one with a default. This is that caller. Only
- * the states its general paragraph leaves open get a sentence — a running build
- * segment, a park and a terminal run are already described accurately there and
- * get nothing added, because four restatements of one fact is the defect this
- * screen has been cutting all week.
- *
- * IT PREDICTS NOTHING ABOUT A GIVEN MESSAGE. A run can be cancelled before it
- * composes another prompt, and `resume` requeues rather than guaranteeing a
- * segment. The only truthful record of one message's fate is the per-message state
- * line the component renders under it (queued / read at T / never read).
- */
-interface DeliveryNote {
-  /** On screen, above the composer. One line, and it decides whether to type. */
-  readonly text: string;
-  /** Behind the glyph. Why the line above is true. */
-  readonly detail: string;
-  /** The glyph's accessible name: "Explain: <about>". */
-  readonly about: string;
-}
-
-function chatDeliveryNote(run: RunDetail): DeliveryNote | null {
-  if (isTerminalStatus(run.status)) return null;
-  if (run.status === "queued") {
-    return {
-      // "the queue is serial" MOVED INTO THE DETAIL AND LOST THE WORD: a reader
-      // who has not been told this app runs one build at a time cannot use
-      // "serial", and what he can use is "waiting for the run ahead of it".
-      text: "This run has not started yet, so anything you send is stored, not delivered.",
-      detail:
-        "It is waiting for the run ahead of it. What you send is added to the " +
-        "instructions the first design or build agent gets, which is the earliest " +
-        "anything you say can change what gets built.",
-      about: "messages on a run that has not started",
-    };
-  }
-  switch (run.phase) {
-    case "spec":
-      return {
-        /*
-         * "THE TESTS FOR THIS TICKET ARE BEING WRITTEN" — 2026-08-05, replacing
-         * "The acceptance suite is being written". `suite` is on the owner's
-         * banned list; the fact the sentence exists to carry is that the run is
-         * in the phase BEFORE any agent is building, which is why a message
-         * cannot be delivered live. The stage card for this phase already reads
-         * "Writing the tests from your ticket, before any code exists"
-         * (`server/src/graph.ts`), so this is the same phase named the same way
-         * in both places.
-         *
-         * "no build session to push into" WENT WITH THE SAME PASS. It named the
-         * `#liveInputs` channel in the vocabulary of the code that owns it; what
-         * a reader can act on is that nothing is building yet, which is the
-         * first line of the detail.
-         */
-        text: "The tests are still being written, so a message is stored rather than delivered.",
-        detail:
-          "No agent is building yet. What you send is added to the instructions the " +
-          "first design or build agent gets, which is the earliest anything you say " +
-          "can change what gets built.",
-        about: "messages while the tests are being written",
-      };
-    case "gate":
-    case "judge":
-      return {
-        /*
-         * "PAST THE BUILD AND INTO TESTING" RATHER THAN "THE BUILD SEGMENTS ARE
-         * OVER", and the wording is careful for a reason the shorter version got
-         * wrong: the gate's FIX ROUNDS still change code, so "the building is
-         * over" would be false. The run is past the build SEGMENTS — the ones
-         * that read a stored message — which is what makes the warning true.
-         *
-         * "the gate's fix rounds and the judge" IS THE JARGON THIS SENTENCE WAS
-         * CARRYING. Both are seat names from the orchestrator; on screen they are
-         * "the test-fixing rounds" and "the final review", which is what they do.
-         */
-        text: "This run is past the build, so a message now will most likely never be read.",
-        detail:
-          "Only the design and build agents are given stored messages. The " +
-          "test-fixing rounds and the final review write their own instructions and " +
-          "read none.",
-        about: "messages after the build",
-      };
-    default:
-      // `build` (running, parked or between segments) and the momentary `done`
-      // before a run turns terminal. The component's own two-path paragraph is
-      // accurate for all of them.
-      return null;
-  }
-}
 
 function useRunIdParam(): string | null {
   const params = useParams();
@@ -390,13 +277,30 @@ export default function RunPage(): ReactNode {
   }, [runId]);
 
   const onSendMessage = useCallback(
-    async (text: string, images: readonly string[]): Promise<void> => {
-      if (runId === null) return;
-      await sendRunMessage(runId, text, images);
+    async (
+      text: string,
+      images: readonly string[],
+      documents: readonly string[],
+      intent: MessageIntent,
+      clientMessageId: string,
+    ): Promise<SendMessageResponse> => {
+      if (runId === null) {
+        return {
+          disposition: "refused",
+          reason: "This run is not available.",
+          targetRunId: null,
+        };
+      }
+      const response = await sendRunMessage(runId, text, images, {
+        documents,
+        intent,
+        clientMessageId,
+      });
       loadMessages();
       // The queued message also lands on the event stream, so pull the trace forward
       // rather than waiting for the next tick to explain the change in behaviour.
       refresh();
+      return response;
     },
     [runId, loadMessages, refresh],
   );
@@ -729,10 +633,6 @@ export default function RunPage(): ReactNode {
   }
 
   const model = findModel(models, run.modelId);
-  // Cheap, pure and read off the run this render is already drawing — never a
-  // second copy of the run's state that could disagree with the badge above it.
-  const deliveryNote = chatDeliveryNote(run);
-
   /*
    * WHICH KIND OF `awaiting_input` THIS IS, WHICH IS THE ONLY REASON THE NOTICE
    * BELOW IS CONDITIONAL.
@@ -1102,25 +1002,12 @@ export default function RunPage(): ReactNode {
          * NOTHING ELSE IS WORTH IT. `CodeBrowser` in particular fetches on mount
          * and must not, so Files renders only while Files is open.
          *
-         * THE STATE-SPECIFIC SENTENCE ABOVE THE COMPOSER is the one thing the
-         * component cannot write for itself: `chatDeliveryNote` (top of this file)
-         * returns null for every state `OrchestratorChat`'s own copy already
-         * describes accurately, so this is usually just the composer.
+         * DELIVERY COPY DOES NOT LIVE HERE. The POST receipt distinguishes a
+         * live delivery from a boundary queue; phase and status cannot. The
+         * composer renders that receipt after the server has decided.
          */}
         {chatMounted && (
         <div hidden={openPanel !== "chat"}>
-          {deliveryNote !== null && (
-            <p className="border-b border-line bg-canvas/40 px-3 py-2 text-[11.5px] leading-relaxed text-ink-dim">
-              {deliveryNote.text}
-              <Explain
-                about={deliveryNote.about}
-                className="ml-1"
-                testId="explain-delivery"
-              >
-                {deliveryNote.detail}
-              </Explain>
-            </p>
-          )}
           <OrchestratorChat
             messages={messages}
             runIsOver={isTerminalStatus(run.status)}

@@ -11,7 +11,8 @@
  */
 
 import { strict as assert } from "node:assert";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -26,6 +27,7 @@ import type {
   RunDetail,
   RunGraphResponse,
   RunSummary,
+  SendMessageResponse,
   SseEvent,
 } from "./api-types.js";
 import { foldGraph, foldGraphAll } from "./graph.js";
@@ -44,8 +46,16 @@ import { planPolicy } from "./plan-record.js";
 import { writeContext7ReviewRecord } from "./context7-review-record.js";
 import type { Context7ReviewRecord } from "./context7-review-record.js";
 import { expectedContext7ObligationHashes } from "./context7-review.js";
+import { claimCreativeDecision, initialCreativePilotStatus, statusAfterCompile, writeCreativePilotStatus } from "./creative-pilot.js";
 import type { DashboardPaths } from "./paths.js";
 import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
+import {
+  digestBytes,
+  documentDirFor,
+  readReferenceManifest,
+  referenceDirFor,
+  writeReferenceManifest,
+} from "./ticket-refs.js";
 
 const FAKE_MODELS: readonly ModelInfo[] = [
   {
@@ -59,6 +69,11 @@ const FAKE_MODELS: readonly ModelInfo[] = [
   { value: "haiku", displayName: "Haiku", description: "", supportsEffort: false },
 ];
 
+const DASHBOARD_WRITE_HEADERS = {
+  "Content-Type": "application/json",
+  Origin: `http://${LOOPBACK_HOST}:4319`,
+} as const;
+
 interface ResumeCall {
   readonly runId: string;
   readonly chosenMockup: string | null;
@@ -69,7 +84,12 @@ interface Harness {
   readonly store: RunStore;
   readonly bus: RunEventBus;
   readonly paths: DashboardPaths;
-  readonly calls: { pump: number; cancelled: string[]; resumed: ResumeCall[] };
+  readonly calls: {
+    pump: number;
+    cancelled: string[];
+    resumed: ResumeCall[];
+    pushed: Array<{ runId: string; delivery: "merge" | "next"; seq: number }>;
+  };
   close(): Promise<void>;
 }
 
@@ -97,7 +117,12 @@ async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
   const bus = new RunEventBus(store);
   const auth = new AuthProbe({ claudeBin, codexBin, env: process.env });
   const catalog = new ModelCatalog(auth, {}, async () => FAKE_MODELS);
-  const calls = { pump: 0, cancelled: [] as string[], resumed: [] as ResumeCall[] };
+  const calls = {
+    pump: 0,
+    cancelled: [] as string[],
+    resumed: [] as ResumeCall[],
+    pushed: [] as Array<{ runId: string; delivery: "merge" | "next"; seq: number }>,
+  };
   const orchestrator: RunController = {
     pump: () => {
       calls.pump += 1;
@@ -126,7 +151,10 @@ async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
       return store.listScreenshots(runId).some((shot) => shot.path === chosenMockup);
     },
     // No live segment in a routing test, so every message falls to the queue.
-    pushLiveMessage: () => false,
+    pushLiveMessage: (runId, message) => {
+      calls.pushed.push({ runId, delivery: message.delivery, seq: message.seq });
+      return false;
+    },
   };
 
   const server = createDashboardServer({
@@ -246,7 +274,7 @@ test("the Codex row still RESOLVES, and says it is out of scope rather than unau
     // instead of 400 "unknown model", which would read as a typo.
     const response = await fetch(`${harness.base}/api/runs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: DASHBOARD_WRITE_HEADERS,
       body: JSON.stringify({ ticketText: "anything", modelId: CODEX_DEFAULT_MODEL_ID }),
     });
     assert.equal(response.status, 409, "resolvable, therefore not unknown_model");
@@ -299,7 +327,7 @@ test("POST /api/runs creates a queued run; costUsd is null and heldOutPass undet
   try {
     const created = await fetch(`${harness.base}/api/runs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: DASHBOARD_WRITE_HEADERS,
       body: JSON.stringify({ ticketText: "# Portfolio\n\nBuild a one-page portfolio site.", modelId: "opus[1m]" }),
     });
     assert.equal(created.status, 201);
@@ -344,7 +372,7 @@ test("POST /api/runs refuses an unavailable model rather than queueing work that
   try {
     const response = await fetch(`${loggedOut.base}/api/runs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: DASHBOARD_WRITE_HEADERS,
       body: JSON.stringify({ ticketText: "anything", modelId: "default" }),
     });
     assert.equal(response.status, 409);
@@ -372,7 +400,7 @@ test("POST /api/runs refuses an unavailable model rather than queueing work that
 
     const unknown = await fetch(`${harness.base}/api/runs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: DASHBOARD_WRITE_HEADERS,
       body: JSON.stringify({ ticketText: "anything", modelId: "gpt-9000" }),
     });
     assert.equal(unknown.status, 400);
@@ -380,7 +408,7 @@ test("POST /api/runs refuses an unavailable model rather than queueing work that
 
     const empty = await fetch(`${harness.base}/api/runs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: DASHBOARD_WRITE_HEADERS,
       body: JSON.stringify({ ticketText: "   ", modelId: "opus[1m]" }),
     });
     assert.equal(empty.status, 400);
@@ -400,17 +428,304 @@ test("cancel and resume answer honestly, including when they refuse", async () =
       })
     ).json()) as { runId: string };
 
-    const cancelled = await fetch(`${harness.base}/api/runs/${runId}/cancel`, { method: "POST" });
+    const foreignCancel = await fetch(`${harness.base}/api/runs/${runId}/cancel`, {
+      method: "POST",
+      headers: { Origin: "https://evil.example" },
+    });
+    assert.equal(foreignCancel.status, 403);
+    assert.deepEqual(harness.calls.cancelled, []);
+
+    const cancelled = await fetch(`${harness.base}/api/runs/${runId}/cancel`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+    });
     assert.equal(cancelled.status, 200);
     assert.deepEqual(await cancelled.json(), { ok: true });
     assert.deepEqual(harness.calls.cancelled, [runId]);
 
-    const resumed = await fetch(`${harness.base}/api/runs/${runId}/resume`, { method: "POST" });
+    const foreignResume = await fetch(`${harness.base}/api/runs/${runId}/resume`, {
+      method: "POST",
+      headers: { Origin: "http://127.0.0.1:4321" },
+    });
+    assert.equal(foreignResume.status, 403);
+
+    const resumed = await fetch(`${harness.base}/api/runs/${runId}/resume`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+    });
     assert.equal(resumed.status, 409, "a finished run is not resumable");
     assert.match(String(((await resumed.json()) as Record<string, unknown>)["remediation"]), /new run/);
 
     const missing = await fetch(`${harness.base}/api/runs/does-not-exist`);
     assert.equal(missing.status, 404);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Send and Steer are explicit, and a parked Steer stays pending for a safe boundary", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-message-intent";
+    harness.store.createRun({
+      runId,
+      ticketId: "t-message-intent",
+      ticketTitle: "message intent",
+      ticketText: "build the current project",
+      ticketSha256: "a".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+    });
+
+    const previewOrigin = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
+      method: "POST",
+      headers: { ...DASHBOARD_WRITE_HEADERS, Origin: "http://127.0.0.1:4321" },
+      body: JSON.stringify({ text: "impersonate owner", intent: "steer", clientMessageId: "blocked-preview" }),
+    });
+    assert.equal(previewOrigin.status, 403);
+    const simpleBody = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
+      method: "POST",
+      headers: { ...DASHBOARD_WRITE_HEADERS, "Content-Type": "text/plain" },
+      body: JSON.stringify({ text: "simple browser post", intent: "steer", clientMessageId: "blocked-plain" }),
+    });
+    assert.equal(simpleBody.status, 415);
+    assert.equal(harness.store.messages(runId).length, 0);
+
+    const steer = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ text: "move onto the latest request", intent: "steer", clientMessageId: "m-1" }),
+    });
+    assert.equal(steer.status, 202);
+    const steerBody = (await steer.json()) as SendMessageResponse;
+    assert.equal(steerBody.disposition, "queued_boundary");
+    assert.equal(steerBody.targetRunId, runId);
+    assert.equal(harness.calls.pushed[0]?.delivery, "next", "Steer crosses the seam as SDK priority next");
+    assert.equal(
+      harness.store.messages(runId)[0]?.deliveredAt,
+      null,
+      "a refused live push does not stamp a message that no consumer took",
+    );
+
+    const send = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ text: "ordinary note", intent: "send", clientMessageId: "m-2" }),
+    });
+    assert.equal(send.status, 202);
+    assert.equal(harness.calls.pushed[1]?.delivery, "merge");
+
+    const invalid = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ text: "ambiguous", intent: "later" }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(harness.store.messages(runId).length, 2, "an invalid intent stores nothing");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a terminal follow-up creates one linked run, replays idempotently, and never mutates the source verdict", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-terminal-source";
+    harness.store.createRun({
+      runId,
+      ticketId: "t-terminal-source",
+      ticketTitle: "terminal source",
+      ticketText: "build the original project",
+      ticketSha256: "b".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: "2026-08-20T10:00:00.000Z",
+      queuePosition: 1,
+    });
+    harness.store.updateRun(runId, {
+      status: "passed",
+      endedAt: "2026-08-20T11:00:00.000Z",
+      heldOutPass: true,
+      suiteSha256: "c".repeat(64),
+      verdictPath: "/immutable/verdict.md",
+    });
+    const sourcePaths = runPathsFor(harness.paths, runId);
+    ensureRunDirs(sourcePaths);
+    writeFileSync(join(sourcePaths.workspace, "index.html"), "<h1>original</h1>", "utf8");
+    const sourceImage = join(referenceDirFor(harness.paths.runs, runId), "source.png");
+    const sourceDocument = join(documentDirFor(harness.paths.runs, runId), "source.pdf");
+    const sourceImageBytes = Buffer.from("source-image");
+    const sourceDocumentBytes = Buffer.from("%PDF-source-document");
+    mkdirSync(referenceDirFor(harness.paths.runs, runId), { recursive: true });
+    mkdirSync(documentDirFor(harness.paths.runs, runId), { recursive: true });
+    writeFileSync(sourceImage, sourceImageBytes);
+    writeFileSync(sourceDocument, sourceDocumentBytes);
+    writeReferenceManifest(referenceDirFor(harness.paths.runs, runId), {
+      images: [{ path: sourceImage, sha256: digestBytes(sourceImageBytes), bytes: sourceImageBytes.byteLength }],
+      capture: null,
+      documents: [{
+        path: sourceDocument,
+        sha256: digestBytes(sourceDocumentBytes),
+        bytes: sourceDocumentBytes.byteLength,
+        mediaType: "application/pdf",
+      }],
+      motion: null,
+    });
+    const before = harness.store.getRun(runId);
+    const sourceEvents = harness.store.eventsSince(runId, 0).length;
+    const requestBody = {
+      text: "make the hero warmer and keep the working page",
+      intent: "steer",
+      clientMessageId: "terminal-follow-up-1",
+      images: [`data:image/png;base64,${Buffer.from("follow-up-image").toString("base64")}`],
+      documents: [`data:application/pdf;base64,${Buffer.from("%PDF-follow-up").toString("base64")}`],
+    };
+
+    const first = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify(requestBody),
+    });
+    assert.equal(first.status, 202);
+    const firstBody = (await first.json()) as SendMessageResponse;
+    assert.equal(firstBody.disposition, "continuation_created");
+    if (firstBody.disposition !== "continuation_created") return;
+    assert.notEqual(firstBody.targetRunId, runId);
+    assert.equal(firstBody.sourceRunId, runId);
+    assert.equal(firstBody.sourceMessageSeq, firstBody.message.seq);
+    const requestPayloadSha = createHash("sha256")
+      .update(JSON.stringify({
+        intent: requestBody.intent,
+        text: requestBody.text,
+        images: requestBody.images,
+        documents: requestBody.documents,
+      }))
+      .digest("hex");
+    const requestIdSha = createHash("sha256").update(requestBody.clientMessageId).digest("hex");
+    assert.equal(
+      basename(firstBody.message.images[0] ?? ""),
+      `${requestIdSha.slice(0, 16)}-${requestPayloadSha.slice(0, 16)}-1.png`,
+      "attachment publication is namespaced by both replay key and payload bytes",
+    );
+
+    const target = harness.store.getRun(firstBody.targetRunId);
+    assert.equal(target?.status, "queued");
+    assert.notEqual(target?.ticketId, before?.ticketId, "the amended brief gets its own frozen suite identity");
+    assert.equal(target?.suiteSha256, null, "the source's sealed suite is never attached to the continuation");
+    assert.match(target?.ticketText ?? "", /make the hero warmer/);
+    assert.equal(
+      readFileSync(join(runPathsFor(harness.paths, firstBody.targetRunId).workspace, "index.html"), "utf8"),
+      "<h1>original</h1>",
+      "the new identity starts from a copy of the latest terminal workspace",
+    );
+    const targetManifest = readReferenceManifest(referenceDirFor(harness.paths.runs, firstBody.targetRunId));
+    assert.equal(targetManifest?.images.length, 2);
+    assert.equal(targetManifest?.documents?.length, 2);
+    for (const reference of [...(targetManifest?.images ?? []), ...(targetManifest?.documents ?? [])]) {
+      assert.ok(
+        reference.path.startsWith(runPathsFor(harness.paths, firstBody.targetRunId).root),
+        "every continuation reference belongs to the target identity",
+      );
+      assert.equal(digestBytes(readFileSync(reference.path)), reference.sha256);
+    }
+    assert.deepEqual(harness.store.getRun(runId), before, "the terminal source row and verdict stay immutable");
+    assert.equal(
+      harness.store.eventsSince(runId, 0).length,
+      sourceEvents,
+      "the terminal source stream is not extended after its terminal status",
+    );
+
+    const replay = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify(requestBody),
+    });
+    assert.equal(replay.status, 200);
+    const replayBody = (await replay.json()) as SendMessageResponse;
+    assert.equal(replayBody.disposition, "continuation_created");
+    assert.equal(replayBody.targetRunId, firstBody.targetRunId);
+    assert.equal(harness.store.messages(runId).length, 1, "the replay did not duplicate the anchor message");
+    assert.equal(
+      harness.store.listRuns().filter((entry) => entry.runId.startsWith("run-cont-")).length,
+      1,
+      "the replay did not branch a second continuation",
+    );
+
+    const conflicting = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ ...requestBody, text: "different bytes" }),
+    });
+    assert.equal(conflicting.status, 409);
+    assert.deepEqual(await conflicting.json(), {
+      disposition: "refused",
+      reason: "clientMessageId terminal-follow-up-1 was already used for different message bytes",
+      targetRunId: null,
+    });
+  } finally {
+    await harness.close();
+  }
+});
+
+test("terminal message and creative revision refuse a source with no workspace", async () => {
+  const harness = await startHarness(true);
+  try {
+    const createTerminal = (runId: string): void => {
+      harness.store.createRun({
+        runId,
+        ticketId: `ticket-${runId}`,
+        ticketTitle: "Missing workspace",
+        ticketText: "Continue the existing page.",
+        ticketSha256: "9".repeat(64),
+        modelId: "opus[1m]",
+        provider: "anthropic",
+        deploy: false,
+        startedAt: new Date().toISOString(),
+        queuePosition: 1,
+      });
+      harness.store.updateRun(runId, { status: "passed", endedAt: new Date().toISOString(), heldOutPass: true });
+    };
+
+    const messageRunId = "run-terminal-no-workspace";
+    createTerminal(messageRunId);
+    const messageResponse = await fetch(`${harness.base}/api/runs/${messageRunId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ text: "continue this", intent: "steer", clientMessageId: "missing-workspace" }),
+    });
+    assert.equal(messageResponse.status, 409);
+
+    const creativeRunId = "run-creative-no-workspace";
+    createTerminal(creativeRunId);
+    const paths = runPathsFor(harness.paths, creativeRunId);
+    writeCreativePilotStatus(paths.results, {
+      ...statusAfterCompile(initialCreativePilotStatus(true, true), {
+        outcome: "passed", contractHash: "8".repeat(64), findings: [], checkedAt: new Date().toISOString(),
+      }),
+      heldOutPass: true,
+      criticDisposition: "revise",
+      criticFindings: [{
+        category: "hierarchy", code: "HIERARCHY_FLAT", routeId: "home", sectionIds: ["hero"],
+        diagnosis: "The hierarchy is generic.", revision: "Use the admitted hierarchy.",
+      }],
+      criticAttempt: 1,
+      reviewState: "creative_review_required",
+    });
+    const creativeResponse = await fetch(`${harness.base}/api/runs/${creativeRunId}/creative-decision`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision: "revision_requested", reason: "Revise the hierarchy." }),
+    });
+    assert.equal(creativeResponse.status, 409);
+    assert.equal(
+      harness.store.listRuns().some((run) => run.runId.startsWith("run-cont-")),
+      false,
+      "a missing source workspace never creates a continuation identity",
+    );
   } finally {
     await harness.close();
   }
@@ -914,7 +1229,7 @@ async function postJson(
 ): Promise<JsonResponse> {
   const response = await fetch(`${harness.base}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...headers },
+    headers: { ...DASHBOARD_WRITE_HEADERS, ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
@@ -1321,9 +1636,10 @@ test("resume refuses a chosenMockup that is not a string, and a body that is not
 
     const notJson = await fetch(`${harness.base}/api/runs/${runId}/resume`, {
       method: "POST",
+      headers: { Origin: DASHBOARD_WRITE_HEADERS.Origin, "Content-Type": "text/plain" },
       body: "{not json",
     });
-    assert.equal(notJson.status, 400);
+    assert.equal(notJson.status, 415);
     assert.deepEqual(harness.calls.resumed, [], "a body that never parsed must not reach the orchestrator");
   } finally {
     await harness.close();
@@ -1682,6 +1998,165 @@ test("POST /api/runs still accepts a brief whose promises are kept, and returns 
       body.briefWarnings.every((w) => !w.blocking),
       "a blocking finding was returned on a 201, which means it did not block",
     );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("creative decision is closed, idempotent, projected from records, and approval publishes only a green staged pilot", async () => {
+  const harness = await startHarness(true);
+  const runId = "run-creative-decision";
+  try {
+    harness.store.createRun({
+      runId,
+      ticketId: "ticket-creative",
+      ticketTitle: "Creative pilot",
+      ticketText: "Build a responsive portfolio website.",
+      ticketSha256: "a".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+    });
+    const paths = runPathsFor(harness.paths, runId);
+    ensureRunDirs(paths);
+    writeFileSync(join(paths.workspace, "index.html"), "<!doctype html><title>Ready</title>", "utf8");
+    harness.store.updateRun(runId, {
+      status: "passed",
+      phase: "done",
+      endedAt: new Date().toISOString(),
+      heldOutPass: true,
+      artifactPath: paths.workspace,
+    });
+    const base = statusAfterCompile(initialCreativePilotStatus(true, true), {
+      outcome: "passed",
+      contractHash: "b".repeat(64),
+      findings: [],
+      checkedAt: new Date().toISOString(),
+    });
+    writeCreativePilotStatus(paths.results, {
+      ...base,
+      heldOutPass: true,
+      renderManifestHash: "c".repeat(64),
+      renderFresh: true,
+      renderProfiles: [
+        { profileId: "desktop", captureCount: 3, complete: true },
+        { profileId: "mobile", captureCount: 3, complete: true },
+        { profileId: "reduced_motion", captureCount: 3, complete: true },
+        { profileId: "no_media", captureCount: 3, complete: true },
+      ],
+      criticDisposition: "accept",
+      criticAttempt: 1,
+      reviewState: "creative_ready",
+    });
+
+    const detail = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
+    assert.equal(detail.creative?.renderFresh, true);
+    assert.deepEqual(detail.creative?.renderProfiles, [
+      { profileId: "desktop", captureCount: 3, complete: true },
+      { profileId: "mobile", captureCount: 3, complete: true },
+      { profileId: "reduced_motion", captureCount: 3, complete: true },
+      { profileId: "no_media", captureCount: 3, complete: true },
+    ]);
+
+    const previewOrigin = await fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: { ...DASHBOARD_WRITE_HEADERS, Origin: "http://127.0.0.1:4321" },
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    assert.equal(previewOrigin.status, 403);
+    const simpleBody = await fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: { ...DASHBOARD_WRITE_HEADERS, "Content-Type": "text/plain" },
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    assert.equal(simpleBody.status, 415);
+
+    const unknown = await fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision: "approved", extra: true }),
+    });
+    assert.equal(unknown.status, 400);
+
+    const approve = async (decision = "approved") => fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision }),
+    });
+    const first = await approve();
+    assert.equal(first.status, 200);
+    const receipt = await first.json() as { mayPublish: boolean; published: boolean; ownerDecision: string };
+    assert.deepEqual(receipt, { runId, mayPublish: true, ownerDecision: "approved", published: true, targetRunId: null });
+
+    const replay = await approve();
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), receipt);
+    const conflict = await approve("cancelled");
+    assert.equal(conflict.status, 409);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a revision decision replay recovers an abandoned claim with one message and one linked continuation", async () => {
+  const harness = await startHarness(true);
+  const runId = "run-creative-crash-recovery";
+  const reason = "Use the more restrained editorial hierarchy from the owner reference.";
+  try {
+    harness.store.createRun({
+      runId,
+      ticketId: "ticket-recovery",
+      ticketTitle: "Recovery",
+      ticketText: "Build a responsive editorial website.",
+      ticketSha256: "d".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+    });
+    const paths = runPathsFor(harness.paths, runId);
+    ensureRunDirs(paths);
+    writeFileSync(join(paths.workspace, "index.html"), "<!doctype html><title>Staged</title>", "utf8");
+    harness.store.updateRun(runId, {
+      status: "passed", phase: "done", endedAt: new Date().toISOString(), heldOutPass: true, artifactPath: paths.workspace,
+    });
+    const base = statusAfterCompile(initialCreativePilotStatus(true, true), {
+      outcome: "passed", contractHash: "e".repeat(64), findings: [], checkedAt: new Date().toISOString(),
+    });
+    writeCreativePilotStatus(paths.results, {
+      ...base,
+      heldOutPass: true,
+      criticDisposition: "revise",
+      criticFindings: [{
+        category: "hierarchy", code: "HIERARCHY_FLAT", routeId: "home", sectionIds: ["hero"],
+        diagnosis: "The hierarchy is generic.", revision: "Use the admitted editorial hierarchy.",
+      }],
+      criticAttempt: 1,
+      reviewState: "creative_review_required",
+    });
+    claimCreativeDecision(paths.results, "revision_requested", reason);
+
+    const request = () => fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision: "revision_requested", reason }),
+    });
+    const recovered = await request();
+    assert.equal(recovered.status, 200);
+    const first = await recovered.json() as { targetRunId: string | null };
+    assert.match(first.targetRunId ?? "", /^run-cont-/u);
+    const replay = await request();
+    assert.equal(replay.status, 200);
+    assert.equal((await replay.json() as { targetRunId: string | null }).targetRunId, first.targetRunId);
+    const detail = await (await fetch(`${harness.base}/api/runs/${runId}`)).json() as RunDetail;
+    assert.equal(detail.creative?.ownerDecisionTargetRunId, first.targetRunId);
+    assert.equal(detail.creative?.ownerDecisionReason, reason);
+    const ownerMessages = harness.store.messages(runId).filter((message) => message.role === "owner");
+    assert.equal(ownerMessages.length, 1);
+    assert.equal(harness.store.continuationFor(runId, ownerMessages[0]?.seq ?? -1)?.targetRunId, first.targetRunId);
   } finally {
     await harness.close();
   }

@@ -444,7 +444,7 @@ test("a document-sized body is admitted here, and refused on a route that did no
      */
     const refused = await fetch(`${harness.base}/api/runs/${runId}/resume`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Origin: "http://127.0.0.1:4319" },
       body: JSON.stringify({ chosenMockup: "x".repeat(2 * 1024 * 1024) }),
     });
     assert.equal(refused.status, 500);
@@ -463,7 +463,7 @@ test("a document-sized body is admitted here, and refused on a route that did no
 async function sendMessage(harness: Harness, runId: string, body: Record<string, unknown>): Promise<Response> {
   return await fetch(`${harness.base}/api/runs/${runId}/messages`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Origin: "http://127.0.0.1:4319" },
     body: JSON.stringify(body),
   });
 }

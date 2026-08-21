@@ -32,7 +32,6 @@ export const DASHBOARD_ENV = Object.freeze({
   host: "DASHBOARD_HOST",
   port: "DASHBOARD_PORT",
   /** Actual repository identity, independent of state-directory overrides. */
-  projectId: "DASHBOARD_PROJECT_ID",
   /**
    * How many runs may execute at once. Default 1 — the serial behaviour this
    * dashboard has always had. Raising it is the owner's call and costs quota in
@@ -63,9 +62,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_HOME = resolve(HERE, "..", "..");
 const DEFAULT_PROJECT_ID = basename(resolve(HERE, "..", "..", ".."));
 
-export function dashboardProjectId(env: NodeJS.ProcessEnv): string {
-  const configured = env[DASHBOARD_ENV.projectId]?.trim();
-  return configured === undefined || configured.length === 0 ? DEFAULT_PROJECT_ID : configured;
+export function dashboardProjectId(_env: NodeJS.ProcessEnv): string {
+  // This is the observed project identity, not an opt-in switch. Keeping it
+  // anchored to the module location means an environment variable cannot make
+  // an unrelated checkout impersonate the exact-project pilots.
+  return DEFAULT_PROJECT_ID;
 }
 
 /** The bake-off tree this dashboard reuses. Read-only as far as we are concerned. */

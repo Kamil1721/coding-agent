@@ -1520,7 +1520,7 @@ test("A REAL CLICK LOCKS THE RUN: the wire path, through the real router, ends t
     const post = async (chosenMockup: string): Promise<{ status: number; body: unknown }> => {
       const response = await fetch(`${api.base}/api/runs/${h.runId}/resume`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Origin: "http://127.0.0.1:4319" },
         body: JSON.stringify({ chosenMockup }),
       });
       return { status: response.status, body: await response.json() };
@@ -3319,7 +3319,7 @@ test("THE OWNER CHOOSES A DIRECTION over HTTP, the run expands it, and the hero 
     try {
       const response = await fetch(`${server.base}/api/runs/${h.runId}/resume`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:4319" },
         body: JSON.stringify({ chosenDirection: "warm-stack" }),
       });
       assert.equal(response.status, 200);
@@ -3343,7 +3343,7 @@ test("THE OWNER CHOOSES A DIRECTION over HTTP, the run expands it, and the hero 
       try {
         const bad = await fetch(`${srv.base}/api/runs/${second.runId}/resume`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", origin: "http://127.0.0.1:4319" },
           body: JSON.stringify({ chosenDirection: "no-such-direction" }),
         });
         assert.equal(bad.status, 409, "a refused choice is a 409, not a silent proceed");
@@ -3369,7 +3369,7 @@ test("A CLICK ON A CANVASS CARD NAMES ITS DIRECTION — the published path is th
     try {
       const response = await fetch(`${server.base}/api/runs/${h.runId}/resume`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:4319" },
         body: JSON.stringify({ chosenMockup: card.path }),
       });
       assert.equal(response.status, 200);
@@ -3652,7 +3652,7 @@ test("THE OWNER CLICKS ONE DIRECTION AND GETS THAT ONE — a canvass park is nev
     try {
       const response = await fetch(`${server.base}/api/runs/${h.runId}/resume`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:4319" },
         body: JSON.stringify({ chosenDirection: "quiet-grid" }),
       });
       assert.equal(response.status, 200);

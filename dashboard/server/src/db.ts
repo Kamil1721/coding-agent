@@ -37,6 +37,8 @@ import type {
   ApiCriterionResult,
   ApiCriterionTier,
   ApiMeteredSpend,
+  MessageDisposition,
+  MessageIntent,
   ApiPhase,
   ApiProvider,
   ApiRunSpend,
@@ -356,6 +358,27 @@ export interface ChatMessage {
    * (`orchestrator-chat.tsx`), which is where the rule is enforced today.
    */
   readonly deliveredAt: string | null;
+}
+
+export interface MessageRequestReceipt {
+  readonly clientMessageId: string;
+  readonly payloadSha256: string;
+  readonly intent: MessageIntent;
+  readonly message: ChatMessage;
+  readonly documents: readonly string[];
+  readonly disposition: Exclude<MessageDisposition, "refused"> | null;
+  readonly targetRunId: string | null;
+}
+
+export type BeginMessageRequest =
+  | { readonly kind: "created" | "replay"; readonly receipt: MessageRequestReceipt }
+  | { readonly kind: "conflict"; readonly receipt: MessageRequestReceipt };
+
+export interface RunContinuation {
+  readonly sourceRunId: string;
+  readonly ownerMessageSeq: number;
+  readonly targetRunId: string;
+  readonly createdAt: string;
 }
 
 /* -------------------------------------------------------------------------
@@ -807,6 +830,35 @@ CREATE TABLE IF NOT EXISTS messages (
   images       TEXT NOT NULL DEFAULT '',
   delivered_at TEXT,
   PRIMARY KEY (run_id, seq)
+) WITHOUT ROWID;
+
+/*
+ * IDEMPOTENCY RECEIPTS FOR CHAT INTAKE. The owner message remains in messages;
+ * this table binds one client action to that row and to the closed disposition
+ * returned by the route. A null disposition is a crash-recovery state: the row
+ * was committed, but delivery was not yet decided.
+ */
+CREATE TABLE IF NOT EXISTS message_requests (
+  run_id            TEXT NOT NULL,
+  client_message_id TEXT NOT NULL,
+  payload_sha256    TEXT NOT NULL,
+  message_seq       INTEGER NOT NULL,
+  intent            TEXT NOT NULL,
+  documents         TEXT NOT NULL DEFAULT '',
+  disposition       TEXT,
+  target_run_id     TEXT,
+  created_at        TEXT NOT NULL,
+  PRIMARY KEY (run_id, client_message_id)
+) WITHOUT ROWID;
+
+/* A terminal run never reopens. Its follow-up is a new run linked to exactly
+ * one durable owner message; the composite primary key is the identity anchor. */
+CREATE TABLE IF NOT EXISTS run_continuations (
+  source_run_id    TEXT NOT NULL,
+  owner_message_seq INTEGER NOT NULL,
+  target_run_id    TEXT NOT NULL UNIQUE,
+  created_at       TEXT NOT NULL,
+  PRIMARY KEY (source_run_id, owner_message_seq)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS seat_spend (
@@ -1371,6 +1423,36 @@ export class RunStore {
     return updated;
   }
 
+  /**
+   * Terminal transition guard for the interactive creative pilot.
+   *
+   * The pending-message check and the row transition share one IMMEDIATE
+   * transaction, so a message insert cannot land in the gap between "none
+   * pending" and a terminal status. The loser waits, then observes either a
+   * queued source it can steer or a terminal source it must continue under a
+   * new identity.
+   */
+  finishUnlessOwnerMessagePending(
+    runId: string,
+    terminalPatch: RunPatch,
+  ): { readonly row: RunRow; readonly requeued: boolean } {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const pending = this.#db
+        .prepare("SELECT COUNT(*) AS count FROM messages WHERE run_id = ? AND role = 'owner' AND delivered_at IS NULL")
+        .get(runId);
+      const count = pending === undefined ? 0 : num(pending, "count");
+      const row = count > 0
+        ? this.updateRun(runId, { status: "queued", queuePosition: null, endedAt: null })
+        : this.updateRun(runId, terminalPatch);
+      this.#db.exec("COMMIT");
+      return { row, requeued: count > 0 };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   /* ---- the attempt ledger -------------------------------------------- */
 
   /**
@@ -1538,6 +1620,202 @@ export class RunStore {
   }
 
   /**
+   * Insert one owner message and its replay key in the same transaction.
+   * Reusing a key with different bytes is a conflict, never a second message.
+   */
+  beginMessageRequest(input: {
+    readonly runId: string;
+    readonly clientMessageId: string;
+    readonly payloadSha256: string;
+    readonly intent: MessageIntent;
+    readonly text: string;
+    readonly images: readonly string[];
+    readonly documents: readonly string[];
+  }): BeginMessageRequest {
+    const existing = this.messageRequest(input.runId, input.clientMessageId);
+    if (existing !== null) {
+      return {
+        kind: existing.payloadSha256 === input.payloadSha256 ? "replay" : "conflict",
+        receipt: existing,
+      };
+    }
+
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      // A second process may have inserted after the optimistic read.
+      const raced = this.messageRequest(input.runId, input.clientMessageId);
+      if (raced !== null) {
+        this.#db.exec("COMMIT");
+        return {
+          kind: raced.payloadSha256 === input.payloadSha256 ? "replay" : "conflict",
+          receipt: raced,
+        };
+      }
+      const message = this.appendMessage(input.runId, {
+        role: "owner",
+        text: input.text,
+        images: input.images,
+      });
+      this.#db
+        .prepare(
+          `INSERT INTO message_requests
+             (run_id, client_message_id, payload_sha256, message_seq, intent, documents, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.runId,
+          input.clientMessageId,
+          input.payloadSha256,
+          message.seq,
+          input.intent,
+          input.documents.join("\n"),
+          new Date().toISOString(),
+        );
+      this.#db.exec("COMMIT");
+      return {
+        kind: "created",
+        receipt: {
+          clientMessageId: input.clientMessageId,
+          payloadSha256: input.payloadSha256,
+          intent: input.intent,
+          message,
+          documents: [...input.documents],
+          disposition: null,
+          targetRunId: null,
+        },
+      };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  messageRequest(runId: string, clientMessageId: string): MessageRequestReceipt | null {
+    const row = this.#db
+      .prepare(
+        `SELECT client_message_id, payload_sha256, message_seq, intent, documents,
+                disposition, target_run_id
+           FROM message_requests WHERE run_id = ? AND client_message_id = ?`,
+      )
+      .get(runId, clientMessageId);
+    if (row === undefined) return null;
+    const messageSeq = num(row, "message_seq");
+    const message = this.messages(runId).find((entry) => entry.seq === messageSeq);
+    if (message === undefined) {
+      throw new BakeoffError(
+        "invalid_usage_shape",
+        `message request ${clientMessageId} on ${runId} points to absent message ${String(messageSeq)}`,
+        "Restore the messages row or remove the orphaned idempotency receipt.",
+      );
+    }
+    const rawDisposition = strOrNull(row, "disposition");
+    const dispositions: readonly Exclude<MessageDisposition, "refused">[] = [
+      "delivered_live",
+      "queued_boundary",
+      "plan_reply",
+      "design_request",
+      "continuation_created",
+    ];
+    return {
+      clientMessageId: str(row, "client_message_id"),
+      payloadSha256: str(row, "payload_sha256"),
+      intent: oneOf(["send", "steer"] as const, str(row, "intent"), "message intent"),
+      message,
+      documents: str(row, "documents") === "" ? [] : str(row, "documents").split("\n"),
+      disposition:
+        rawDisposition === null ? null : oneOf(dispositions, rawDisposition, "message disposition"),
+      targetRunId: strOrNull(row, "target_run_id"),
+    };
+  }
+
+  completeMessageRequest(
+    runId: string,
+    clientMessageId: string,
+    disposition: Exclude<MessageDisposition, "refused">,
+    targetRunId: string,
+  ): MessageRequestReceipt {
+    this.#db
+      .prepare(
+        `UPDATE message_requests SET disposition = ?, target_run_id = ?
+          WHERE run_id = ? AND client_message_id = ? AND disposition IS NULL`,
+      )
+      .run(disposition, targetRunId, runId, clientMessageId);
+    const receipt = this.messageRequest(runId, clientMessageId);
+    if (receipt === null) {
+      throw new BakeoffError(
+        "invalid_usage_shape",
+        `message request ${clientMessageId} on ${runId} vanished before completion`,
+        "Retry the message.",
+      );
+    }
+    return receipt;
+  }
+
+  continuationFor(sourceRunId: string, ownerMessageSeq: number): RunContinuation | null {
+    const row = this.#db
+      .prepare(
+        `SELECT source_run_id, owner_message_seq, target_run_id, created_at
+           FROM run_continuations WHERE source_run_id = ? AND owner_message_seq = ?`,
+      )
+      .get(sourceRunId, ownerMessageSeq);
+    return row === undefined
+      ? null
+      : {
+          sourceRunId: str(row, "source_run_id"),
+          ownerMessageSeq: num(row, "owner_message_seq"),
+          targetRunId: str(row, "target_run_id"),
+          createdAt: str(row, "created_at"),
+        };
+  }
+
+  /** Atomically create a new run and bind it to a terminal owner message. */
+  createContinuationRun(
+    sourceRunId: string,
+    ownerMessageSeq: number,
+    run: NewRun,
+  ): { readonly continuation: RunContinuation; readonly run: RunRow; readonly created: boolean } {
+    const existing = this.continuationFor(sourceRunId, ownerMessageSeq);
+    if (existing !== null) {
+      const target = this.getRun(existing.targetRunId);
+      if (target === null) {
+        throw new BakeoffError(
+          "invalid_usage_shape",
+          `continuation from ${sourceRunId} message ${String(ownerMessageSeq)} points to absent run ${existing.targetRunId}`,
+          "Restore the target run or remove the orphaned continuation link.",
+        );
+      }
+      return { continuation: existing, run: target, created: false };
+    }
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const raced = this.continuationFor(sourceRunId, ownerMessageSeq);
+      if (raced !== null) {
+        const target = this.getRun(raced.targetRunId);
+        if (target === null) throw new Error(`continuation target ${raced.targetRunId} is absent`);
+        this.#db.exec("COMMIT");
+        return { continuation: raced, run: target, created: false };
+      }
+      const target = this.createRun(run);
+      const createdAt = new Date().toISOString();
+      this.#db
+        .prepare(
+          `INSERT INTO run_continuations (source_run_id, owner_message_seq, target_run_id, created_at)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(sourceRunId, ownerMessageSeq, target.runId, createdAt);
+      this.#db.exec("COMMIT");
+      return {
+        continuation: { sourceRunId, ownerMessageSeq, targetRunId: target.runId, createdAt },
+        run: target,
+        created: true,
+      };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
    * Every message on a run, oldest first. What the chat panel renders.
    *
    * MODEL ANNOTATION MARKUP IS STRIPPED FROM `run` ROWS HERE, ON THE WAY OUT.
@@ -1592,6 +1870,32 @@ export class RunStore {
       "UPDATE messages SET delivered_at = ? WHERE run_id = ? AND seq = ? AND delivered_at IS NULL",
     );
     for (const seq of seqs) update.run(at, runId, seq);
+  }
+
+  /**
+   * Acknowledge one message handed to the live SDK and close its replay receipt
+   * in the same transaction. Queue acceptance alone is not delivery.
+   */
+  markLiveMessageDelivered(runId: string, seq: number): void {
+    const at = new Date().toISOString();
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db
+        .prepare(
+          "UPDATE messages SET delivered_at = ? WHERE run_id = ? AND seq = ? AND delivered_at IS NULL",
+        )
+        .run(at, runId, seq);
+      this.#db
+        .prepare(
+          `UPDATE message_requests SET disposition = 'delivered_live', target_run_id = ?
+            WHERE run_id = ? AND message_seq = ? AND disposition IS NULL`,
+        )
+        .run(runId, runId, seq);
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /**

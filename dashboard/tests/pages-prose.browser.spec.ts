@@ -423,57 +423,14 @@ test("the deleted paragraphs are gone from the DOM, and the kept facts are not",
 
 /* ───────────────────────────── THE RUN VIEW ──────────────────────────────── */
 
-test("the chat note is one line on screen, and the mechanism is one click behind it", async ({
+test("the chat does not predict delivery from the run phase", async ({
   page,
 }) => {
   await serveSpecPhaseRun(page);
 
-  // ON THE GLASS: one sentence, and it is the one that decides whether typing is
-  // worth it at all. M5 puts the 60-word paragraph back.
-  const box = await paintedBox(
-    page,
-    "The tests are still being written, so a message is stored rather than delivered.",
-  );
-  expect(box).not.toBeNull();
-  expect(box?.hits).toBe(true);
-
-  /*
-   * AND THE WHOLE NOTE IS THAT SENTENCE, measured as the paragraph's own height
-   * rather than as a word count.
-   *
-   * THE RANGE'S HEIGHT IS NOT ENOUGH AND THE MUTATION IS WHY: M5b appended the
-   * old mechanism clause to the same paragraph, and the range around the FIRST
-   * sentence still measured short — the paragraph grew underneath it. The block
-   * is what a reader sees, so the block is what is asserted. The rail panel is
-   * ~324px wide: this sentence wraps to two lines there, the shipped paragraph
-   * wrapped to five.
-   */
-  const noteHeight = await page
-    .getByTestId("explain-delivery")
-    .evaluate((el: Element) => el.closest("p")?.getBoundingClientRect().height ?? 0);
-  expect(noteHeight).toBeGreaterThan(0);
-  expect(noteHeight).toBeLessThan(80);
-
-  // NOT IN THE NOTE AT ALL — neither painted nor `sr-only` — is the vocabulary
-  // the paragraph used to carry. SCOPED TO THIS NOTE rather than to the
-  // document: "segment" and "suite" appear in surfaces five other lanes own, and
-  // a document-wide assertion here would go red on their edits and tell this
-  // lane nothing.
-  const note = await page
-    .getByTestId("explain-delivery")
-    .evaluate((el: Element) => el.closest("p")?.textContent ?? "");
-  expect(note).not.toMatch(/segment/i);
-  expect(note).not.toMatch(/suite/i);
-  expect(note).not.toMatch(/build session/i);
-  expect(note).not.toMatch(/prompt/i);
-
-  // BEHIND THE GLYPH: why the line above is true, and the fact that a message
-  // sent now reaches the first design or build agent — which is what makes
-  // sending early worth doing (M6 deletes it).
-  const bubble = await bubbleOf(page, /^Explain: messages while the tests/);
-  await page.getByTestId("explain-delivery").click();
-  await expect(bubble).toContainText(/no agent is building yet/i);
-  await expect(bubble).toContainText(/first design or build agent/i);
-  const rect = await bubble.boundingBox();
-  expect(rect?.width ?? 0).toBeGreaterThan(150);
+  await expect(page.getByTestId("explain-delivery")).toHaveCount(0);
+  await expect(page.getByTestId("message-disposition")).toHaveCount(0);
+  await expect(page.getByText(/stored rather than delivered/i)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "send", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "steer", exact: true })).toBeVisible();
 });

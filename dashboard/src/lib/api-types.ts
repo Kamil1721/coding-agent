@@ -577,6 +577,78 @@ export interface Context7Review {
   readonly lifecycle: readonly Context7Lifecycle[];
 }
 
+export interface CreativeCompileFinding {
+  readonly code: string;
+  readonly path: string;
+  readonly message: string;
+}
+
+export interface CreativeCriticFinding {
+  readonly category: string;
+  readonly code: string;
+  readonly routeId: string;
+  readonly sectionIds: readonly string[];
+  readonly diagnosis: string;
+  readonly revision: string;
+}
+
+/**
+ * The rendered creative pilot's record-backed audit projection.
+ *
+ * None of these fields is a substitute for `RunDetail.heldOutPass`. The
+ * compiler, rendered critic, and owner decision are independent authorities;
+ * a renderer must preserve unknown/null values instead of promoting them from
+ * a neighbouring result.
+ */
+export interface CreativeStatus {
+  readonly applicable: boolean;
+  readonly enabled: boolean;
+  readonly contractHash: string | null;
+  readonly compileOutcome: "unknown" | "passed" | "failed" | "unavailable";
+  readonly compileFindings: readonly CreativeCompileFinding[];
+  readonly renderManifestHash: string | null;
+  readonly renderFresh: boolean | null;
+  readonly renderProfiles: readonly {
+    readonly profileId: string;
+    readonly captureCount: number;
+    readonly complete: boolean;
+  }[] | null;
+  readonly criticDisposition: "accept" | "revise" | "unavailable" | null;
+  readonly criticFindings: readonly CreativeCriticFinding[];
+  readonly criticAttempt: number | null;
+  readonly reviewState:
+    | "reviewing"
+    | "creative_ready"
+    | "creative_review_required"
+    | "not_converging"
+    | "failed"
+    | null;
+  readonly reviewStopReason: string | null;
+  readonly ownerDecision:
+    | "approved"
+    | "revision_requested"
+    | "waived"
+    | "cancelled"
+    | null;
+  readonly ownerDecisionReason: string | null;
+  readonly ownerDecisionTargetRunId: string | null;
+}
+
+export type CreativeOwnerDecision = Exclude<CreativeStatus["ownerDecision"], null>;
+
+export interface CreativeDecisionRequest {
+  readonly decision: CreativeOwnerDecision;
+  readonly reason?: string;
+}
+
+export interface CreativeDecisionResponse {
+  readonly runId: string;
+  readonly ownerDecision: CreativeOwnerDecision;
+  readonly mayPublish: boolean;
+  readonly published: boolean;
+  readonly targetRunId: string | null;
+}
+
 /**
  * Something in the workspace that was NOT copied into the published project —
  * the server's `ApiProjectExclusion`, mirrored by hand.
@@ -910,6 +982,11 @@ export interface RunDetail extends RunSummary {
    */
   readonly context7Review?: Context7Review | null;
   /**
+   * The default-off rendered creative audit. Older and non-pilot runs omit it
+   * at runtime, so renderers must read `creative ?? null`.
+   */
+  readonly creative?: CreativeStatus | null;
+  /**
    * How the page the owner named as a MOTION REFERENCE was observed to move, or
    * `null` when this ticket named none.
    *
@@ -1141,7 +1218,64 @@ export interface SendMessageRequest {
   readonly text?: string;
   readonly images?: readonly string[];
   readonly documents?: readonly string[];
+  /** Omitted is the backwards-compatible ordinary send path. */
+  readonly intent?: MessageIntent;
+  /** Stable across a retry so an ambiguous network failure cannot duplicate the turn. */
+  readonly clientMessageId?: string;
 }
+
+export type MessageIntent = "send" | "steer";
+
+export type MessageDisposition =
+  | "delivered_live"
+  | "queued_boundary"
+  | "plan_reply"
+  | "design_request"
+  | "continuation_created"
+  | "refused";
+
+/** One durable row on the owner↔run channel. */
+export interface ApiChatMessage {
+  readonly seq: number;
+  readonly at: string;
+  readonly role: "owner" | "run";
+  readonly text: string;
+  readonly images: readonly string[];
+  readonly deliveredAt: string | null;
+}
+
+/** Existing client name retained for transcript consumers. */
+export type ChatMessage = ApiChatMessage;
+
+interface AcceptedMessageResponse {
+  readonly message: ApiChatMessage;
+  readonly documents: readonly string[];
+  /** The run that will next act on this message. */
+  readonly targetRunId: string;
+}
+
+/**
+ * The server's receipt is the only delivery truth the client renders. A run's
+ * phase or status cannot distinguish a live input from a boundary queue.
+ */
+export type SendMessageResponse =
+  | (AcceptedMessageResponse & {
+      readonly disposition:
+        | "delivered_live"
+        | "queued_boundary"
+        | "plan_reply"
+        | "design_request";
+    })
+  | (AcceptedMessageResponse & {
+      readonly disposition: "continuation_created";
+      readonly sourceRunId: string;
+      readonly sourceMessageSeq: number;
+    })
+  | {
+      readonly disposition: "refused";
+      readonly reason: string;
+      readonly targetRunId: null;
+    };
 
 export interface OkResponse {
   readonly ok: true;

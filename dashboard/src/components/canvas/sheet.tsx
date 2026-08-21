@@ -84,6 +84,7 @@ import { TicketAttachmentsPanel } from "@/components/run/attachments";
 import { CodeBrowser } from "@/components/run/code-browser";
 import { CriteriaPanel } from "@/components/run/criteria";
 import { Context7ReviewPanel } from "@/components/run/context7-review";
+import { CreativeReviewPanel } from "@/components/run/creative-review";
 import { MotionReadoutPanel } from "@/components/run/motion";
 import { OutcomeNotice } from "@/components/run/notices";
 import { PublishedProjectPanel } from "@/components/run/published-project";
@@ -1177,6 +1178,13 @@ export function ResultPanel({ run }: { run: RunDetail }): ReactNode {
         runId={run.runId}
         screenshots={run.screenshots}
         designLock={run.designLock ?? null}
+      />
+
+      <CreativeReviewPanel
+        key={run.runId}
+        runId={run.runId}
+        heldOutPass={run.heldOutPass}
+        review={run.creative ?? null}
       />
 
       {/*

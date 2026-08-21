@@ -159,7 +159,7 @@ test("and the guard is not a blanket refusal — a 128k model passes", () => {
  * four strings it already knows about stays green through it.
  * ---------------------------------------------------------------------- */
 
-test("every seat in the orchestrator takes its model from #seat — all four of them", () => {
+test("every seat in the orchestrator takes its model from #seat — all six of them", () => {
   const source = readFileSync(join(import.meta.dirname, "..", "src", "orchestrator.ts"), "utf8");
   // Two regexes for one pattern, deliberately: a `/g` regex carries `lastIndex`
   // across `.test()` calls, so filtering with the same object that counts would
@@ -181,8 +181,8 @@ test("every seat in the orchestrator takes its model from #seat — all four of 
 
   assert.equal(
     uses.length,
-    4,
-    "the orchestrator builds four seats — plan, spec, audit, judge. This number changed, so a seat was " +
+    6,
+    "the orchestrator builds six seats — plan, spec, audit, judge, creative author, creative critic. This number changed, so a seat was " +
       `added or removed: ${JSON.stringify(uses.map((use) => `${String(use.number)}: ${use.line.trim()}`))}`,
   );
   for (const { line, number } of uses) {
@@ -192,7 +192,7 @@ test("every seat in the orchestrator takes its model from #seat — all four of 
       wired,
       occurrences,
       `orchestrator.ts:${String(number)} builds a seat WITHOUT the pin — "${line.trim()}". Every seat has ` +
-        "to go through #seat, or DASHBOARD_SPEC_MODEL governs three seats out of four and the fourth runs " +
+        "to go through #seat, or DASHBOARD_SPEC_MODEL governs only some seats while another runs " +
         "on whatever bakeoff/config.ts froze into the constant.",
     );
   }

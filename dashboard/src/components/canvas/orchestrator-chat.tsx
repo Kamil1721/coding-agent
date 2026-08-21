@@ -150,6 +150,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import Link from "next/link";
 
 import { formatTimeOnly } from "@/lib/format";
 import { AttachmentChips } from "@/components/attachment-chips";
@@ -164,35 +165,11 @@ import {
   type HeldAttachment,
   type IntakePolicy,
 } from "@/lib/attachments";
-
-/**
- * Mirrors the server's `ChatMessage` (`dashboard/server/src/db.ts:255`).
- *
- * IT IS THE THIRD COPY OF THIS SHAPE AND THAT IS WORTH KNOWING BEFORE EDITING IT.
- * The server owns it, `src/lib/api.ts:245` mirrors it for the fetch layer, and this
- * one is what the panel renders. `runs/[runId]/page.tsx` imports the api.ts one and
- * passes it here, so the two client copies meet only STRUCTURALLY — a field added
- * to one and not the other compiles clean and simply never arrives. NOTHING CHECKED
- * ON 2026-07-31 COMPARES THEM: `contract-parity.test.ts` does read `src/lib/api.ts`
- * as text, but only the `createRun` region for the design-lock policy, and neither
- * api-types file declares a chat message at all; no test reads this file. That is a
- * statement about the two files that were read, not a proof about the whole suite.
- *
- * `role` IS A DIRECTION, NOT AN AUTHOR: `run` is text the agent itself produced, and
- * the server refuses to write a row of its own composition under it.
- */
-export interface ChatMessage {
-  readonly seq: number;
-  readonly at: string;
-  readonly role: "owner" | "run";
-  readonly text: string;
-  readonly images: readonly string[];
-  /**
-   * OWNER ROWS ONLY. Always null on a `run` row, where it means nothing — see the
-   * file header, and do not render a delivery line from it there.
-   */
-  readonly deliveredAt: string | null;
-}
+import type {
+  ChatMessage,
+  MessageIntent,
+  SendMessageResponse,
+} from "@/lib/api-types";
 
 /**
  * The conversation is waiting on a reply that may never come.
@@ -486,6 +463,55 @@ function ReplyGapRow({ gap }: { gap: ReplyGap }): ReactNode {
   );
 }
 
+const DELIVERY_LABEL: Readonly<
+  Record<
+    Exclude<SendMessageResponse["disposition"], "refused" | "continuation_created">,
+    string
+  >
+> = {
+  delivered_live: "Delivered live. The run will take this at its next step.",
+  queued_boundary: "Queued for the next work boundary.",
+  plan_reply: "Delivered to the planning conversation.",
+  design_request: "Delivered to the design review.",
+};
+
+function DeliveryReceipt({ receipt }: { receipt: SendMessageResponse }): ReactNode {
+  if (receipt.disposition === "refused") {
+    return (
+      <p
+        role="alert"
+        data-testid="message-disposition"
+        className="rounded-sm border border-fail/35 bg-fail-dim px-2 py-1.5 text-[11px] leading-relaxed text-fail"
+      >
+        Not sent — {receipt.reason}
+      </p>
+    );
+  }
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="message-disposition"
+      className="rounded-sm border border-pass/30 bg-pass/5 px-2 py-1.5 text-[11px] leading-relaxed text-pass"
+    >
+      {receipt.disposition === "continuation_created" ? (
+        <>
+          Continued in a new run. The finished source stays unchanged.{" "}
+          <Link
+            href={`/runs/${encodeURIComponent(receipt.targetRunId)}`}
+            className="font-medium underline underline-offset-2 hover:text-ink"
+          >
+            Open run {receipt.targetRunId}
+          </Link>
+        </>
+      ) : (
+        DELIVERY_LABEL[receipt.disposition]
+      )}
+    </div>
+  );
+}
+
 export function OrchestratorChat({
   messages,
   runIsOver,
@@ -507,7 +533,9 @@ export function OrchestratorChat({
     text: string,
     images: readonly string[],
     documents: readonly string[],
-  ) => Promise<void>;
+    intent: MessageIntent,
+    clientMessageId: string,
+  ) => Promise<SendMessageResponse>;
   /**
    * May this composer take documents? DEFAULT FALSE.
    *
@@ -520,9 +548,14 @@ export function OrchestratorChat({
 }): ReactNode {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<readonly HeldAttachment[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<MessageIntent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<SendMessageResponse | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const retryRequest = useRef<{
+    readonly intent: MessageIntent;
+    readonly clientMessageId: string;
+  } | null>(null);
 
   /**
    * THE OBJECT URLS DIE WITH THIS PANEL. It is mounted inside the run sheet, which
@@ -563,6 +596,8 @@ export function OrchestratorChat({
   const addFiles = useCallback(
     (files: readonly File[]): void => {
       setError(null);
+      setReceipt(null);
+      retryRequest.current = null;
       if (files.length === 0) return;
       const plan = planAttachmentIntake(files, attachments, {
         // Rebuilt here rather than closed over: an object literal in the render
@@ -595,13 +630,15 @@ export function OrchestratorChat({
       const doomed = attachments[index];
       if (doomed !== undefined) releaseAttachments([doomed]);
       setAttachments((previous) => previous.filter((_unused, i) => i !== index));
+      setReceipt(null);
+      retryRequest.current = null;
     },
     [attachments],
   );
 
-  const send = useCallback((): void => {
+  const send = useCallback((intent: MessageIntent): void => {
     const trimmed = text.trim();
-    if (busy) return;
+    if (busy !== null) return;
     if (trimmed === "" && attachments.length === 0) return;
     /*
      * WHAT IS BEING SENT, PINNED HERE, AND EVERY LINE BELOW IS ABOUT THIS LIST
@@ -619,11 +656,30 @@ export function OrchestratorChat({
      * document. Measured in Chromium; `chat-attachments.browser.spec.ts`.
      */
     const sent = attachments;
-    setBusy(true);
+    const sentText = text;
+    const clientMessageId =
+      retryRequest.current?.intent === intent
+        ? retryRequest.current.clientMessageId
+        : crypto.randomUUID();
+    retryRequest.current = { intent, clientMessageId };
+    setBusy(intent);
     setError(null);
-    void onSend(trimmed, dataUrlsOfKind(sent, "image"), dataUrlsOfKind(sent, "document"))
-      .then(() => {
-        setText("");
+    setReceipt(null);
+    void onSend(
+      trimmed,
+      dataUrlsOfKind(sent, "image"),
+      dataUrlsOfKind(sent, "document"),
+      intent,
+      clientMessageId,
+    )
+      .then((response) => {
+        setReceipt(response);
+        if (response.disposition === "refused") return;
+        // Text typed while this request was in flight belongs to the next turn,
+        // just like an attachment added during upload. Clear only the exact
+        // draft this request captured.
+        setText((current) => (current === sentText ? "" : current));
+        retryRequest.current = null;
         // HANDED BACK BEFORE THE STATE FORGETS THEM, and OUTSIDE the updater for
         // the reason `releaseAttachments` states — React re-invokes updaters, and
         // a side effect in one is how a thumbnail goes blank unreproducibly. Only
@@ -640,7 +696,7 @@ export function OrchestratorChat({
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
-        setBusy(false);
+        setBusy(null);
       });
   }, [text, attachments, busy, onSend]);
 
@@ -696,42 +752,33 @@ export function OrchestratorChat({
       )}
 
       {/*
-        * THE COMPOSER IS ALWAYS RENDERED — CORRECTED 2026-07-30.
-        *
-        * The first version replaced it with a single sentence on a terminal run, on
-        * the reasoning that a control which cannot act should not be shown. That was
-        * wrong in practice for a reason worth recording: the owner's only run had
-        * FINISHED, so the sentence was all there was, and the verdict was "i dont see
-        * any chat anywhere". A feature that is invisible in the one state the reader
-        * happens to be in is not a tidy feature, it is a missing one.
-        *
-        * So the box stays, disabled, with the reason ON it. The reader can see what
-        * the chat is, that it takes images, and why it is not accepting one right now.
+        * ALWAYS AVAILABLE. On an active run the server decides whether this
+        * lands live or waits for a boundary. On a finished run it creates a
+        * linked continuation and leaves the source record immutable.
         */}
       <div className="mt-1.5 space-y-1.5">
-        {/*
-          * ONE SENTENCE, AND THE MOVE IS THE HALF THAT SURVIVED. It said "the
-          * server refuses a message to a terminal run rather than queueing it
-          * into nothing" — the mechanism behind a box that is already visibly
-          * disabled, and "terminal run" is not a phrase the owner uses. What is
-          * left is the state and the way out of it, which is all a reader can
-          * act on here.
-          */}
         {runIsOver && (
           <p className="rounded-sm border border-dashed border-line-strong px-2 py-1.5 text-[11.5px] leading-relaxed text-ink-dim">
-            This run has finished. Start a new run to use this.
+            This run is finished. Your next message starts a linked continuation;
+            this source run stays unchanged.
           </p>
         )}
-        <fieldset disabled={runIsOver} className="space-y-1.5 disabled:opacity-50">
+        {receipt !== null && <DeliveryReceipt receipt={receipt} />}
+        <fieldset className="space-y-1.5">
           <textarea
             value={text}
-            onChange={(event) => setText(event.target.value.slice(0, MAX_TEXT_CHARS))}
+            aria-label="Message the orchestrator"
+            onChange={(event) => {
+              setText(event.target.value.slice(0, MAX_TEXT_CHARS));
+              setReceipt(null);
+              retryRequest.current = null;
+            }}
             onKeyDown={(event) => {
               // Enter sends, Shift+Enter is a newline — the convention every chat
               // uses, so it needs no label.
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                send();
+                send("send");
               }
             }}
             onPaste={(event) => {
@@ -774,60 +821,22 @@ export function OrchestratorChat({
 
           {error !== null && <p className="text-[11px] text-fail">{error}</p>}
 
-          <div className="flex items-center gap-2">
-            <Button variant="primary" onClick={send} disabled={busy}>
-              {busy ? "sending…" : "send"}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              onClick={() => send("send")}
+              disabled={busy !== null}
+            >
+              {busy === "send" ? "sending…" : "send"}
             </Button>
-            {/*
-              * THE TIMING FACT, ON THE CONTROL IT IS ABOUT — MOVED HERE
-              * 2026-08-05 out of the first permanent paragraph under this row.
-              * It is the one clause in either paragraph that changes the ORDER
-              * of two things the reader is about to do, so it is hidden and not
-              * deleted; `explain.tsx` names it as the type specimen.
-              *
-              * IT STILL DESCRIBES BOTH PATHS, WHICH IS THE PART THAT MAY NOT BE
-              * CUT. `pushLiveMessage` refuses when there is no open segment and
-              * the row sits pending until a resume composes the next prompt;
-              * this composer renders on parked runs too and is not told the
-              * status (see the file header), so a bubble describing only the
-              * live path would be a false claim on exactly the runs where he
-              * most needs to type.
-              *
-              * WHAT WAS DELETED AROUND IT: "goes into the open session", "there
-              * is no session to push into", "folded into the next prompt" —
-              * three ways of naming a mechanism whose OUTCOME is already
-              * reported per message, under the message, as `queued — not read
-              * yet` or `read at 14:02`.
-              */}
-            {/*
-              * `-ml-1` PULLS IT ONTO THE SEND BUTTON. The row is `gap-2` with
-              * "attach images" on the other side, and at an even gap the glyph
-              * reads as belonging to whichever control the eye reaches first.
-              * Half the gap on the left and the full gap on the right is what
-              * binds it to `send`, which is the control it is about.
-              *
-              * NOT RENDERED ON A FINISHED RUN, AND THAT WAS FOUND BY CLICKING
-              * IT RATHER THAN BY READING IT. Everything in this row lives inside
-              * `<fieldset disabled={runIsOver}>`, which disables a <button>
-              * DESCENDANT — so on a terminal run the trigger was on screen,
-              * greyed, and refused every pointer and keyboard event: a fact
-              * moved behind a control nobody can open is a fact deleted with
-              * extra steps. The fact is about WHEN A MESSAGE IS READ, and on a
-              * finished run no message can be sent at all — the dashed notice
-              * above says so — so the honest fix is no glyph rather than a dead
-              * one.
-              */}
-            {!runIsOver && (
-              <Explain
-                about="when the run reads this"
-                testId="explain-timing"
-                className="-ml-1"
-              >
-                While the run is working it reads this at its next step. While it is
-                stopped the message waits — send it before you resume, or that prompt is
-                composed without it.
-              </Explain>
-            )}
+            <Button onClick={() => send("steer")} disabled={busy !== null}>
+              {busy === "steer" ? "steering…" : "steer"}
+            </Button>
+            <Explain about="send and steer" testId="explain-send-mode" className="-ml-1">
+              Send joins the current conversation. Steer makes this the run&apos;s next
+              instruction when it is working. If this run has finished, either one
+              creates a linked continuation.
+            </Explain>
             <button
               type="button"
               onClick={() => fileInput.current?.click()}

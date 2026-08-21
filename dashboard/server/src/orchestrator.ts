@@ -102,6 +102,7 @@ import type { BacklogInput } from "./backlog.js";
 import { graphResumeState, makeSegmentRemap, nextBuildSegment } from "./build-segment.js";
 import { emptyGraph, foldGraph, scrubHostPaths } from "./graph.js";
 import { LiveInput } from "./live-input.js";
+import type { Delivery } from "./live-input.js";
 import { AgentReplyWatch, ownerMessageBlock } from "./owner-message.js";
 import {
   canWriteDir,
@@ -198,6 +199,35 @@ import type { AuthProbe } from "./auth.js";
 import { truncate } from "./claude-common.js";
 import type { RateLimitState } from "./claude-common.js";
 import { dashboardBuilderPrompt, resumeBuilderPrompt } from "./build-prompt.js";
+import { authorCreativeContract } from "./creative-contract-author.js";
+import type { CreativeContractAuthorRequest, CreativeContractAuthorResult } from "./creative-contract-author.js";
+import { advanceCreativeReview, initialCreativeReviewState } from "./creative-review-loop.js";
+import type { CreativeReviewState } from "./creative-review-loop.js";
+import {
+  CREATIVE_RENDER_DIRECTORY,
+  authorInputFor,
+  creativeContractPrompt,
+  creativePilotEnabled,
+  creativeRevisionPrompt,
+  freshCreativeContract,
+  hashCreativeArtifact,
+  initialCreativePilotStatus,
+  persistCreativeAuthorResult,
+  pilotMayPublish,
+  readCreativePilotStatus,
+  statusAfterCompile,
+  statusAfterRender,
+  statusAfterReview,
+  statusBeforeCreativeMutation,
+  webCreativeApplicable,
+  writeCreativePilotStatus,
+  writeCreativeRenderManifest,
+} from "./creative-pilot.js";
+import type { FreshCreativeContract } from "./creative-pilot.js";
+import { buildCreativeTastePromptInput, captureCreativeRender } from "./creative-render.js";
+import type { CreativeRenderOptions, CreativeRenderResult } from "./creative-render.js";
+import { readRenderedTasteCriticRecord, runRenderedTasteCritic, writeRenderedTasteCriticRecord } from "./rendered-taste-critic.js";
+import type { RenderedTasteCriticRecord, RenderedTasteCriticRequest } from "./rendered-taste-critic.js";
 import { canonicaliseForDecision, ClaudeSubscriptionBuilder } from "./builders/claude-builder.js";
 import { CodexSubscriptionBuilder } from "./builders/codex-builder.js";
 import type { BuildEventSink, BuildOutcome, SubscriptionBuilder } from "./builders/types.js";
@@ -621,6 +651,20 @@ export interface OrchestratorDeps {
     readonly images: readonly SeatImage[];
     readonly signal: AbortSignal;
   }) => PlanSeatCaller;
+  /** Explicit one-project opt-in. Omitted means the creative pilot does not run. */
+  readonly creativePilotProjectId?: string | null;
+  /** Independently derived identity of the repository this host is serving. */
+  readonly creativePilotActualProjectId?: string | null;
+  /** Test seam at the one-turn, tool-less author boundary. */
+  readonly runCreativeContractAuthor?: (
+    request: CreativeContractAuthorRequest,
+  ) => Promise<CreativeContractAuthorResult>;
+  /** Test seam at the host-owned browser capture boundary. */
+  readonly captureCreativeRender?: (options: CreativeRenderOptions) => Promise<CreativeRenderResult>;
+  /** Test seam at the independent, tool-less critic boundary. */
+  readonly runRenderedTasteCritic?: (
+    request: RenderedTasteCriticRequest,
+  ) => Promise<RenderedTasteCriticRecord>;
   /**
    * Explicit one-project opt-in for the isolated Context7 review pilot.
    * Omitted means the phase does not exist for this orchestrator instance.
@@ -659,6 +703,11 @@ type BuildPhaseResult =
   | { readonly kind: "outcome"; readonly outcome: BuildOutcome; readonly laneMode: DesignLaneMode }
   | { readonly kind: "cancelled" }
   | { readonly kind: "parked" };
+
+interface CreativePhaseResult {
+  readonly scored: GateOutcome;
+  readonly rateLimit: RateLimitState | null;
+}
 
 /** No preflight was run, because the pure surface gate already said "off". */
 const NO_PREFLIGHT: DesignPreflight = { checks: [], ok: true, blockers: [] };
@@ -1409,18 +1458,20 @@ export class Orchestrator {
    */
   pushLiveMessage(
     runId: string,
-    message: { text: string; images: readonly string[] },
+    message: { text: string; images: readonly string[]; seq: number; delivery: Delivery },
   ): boolean {
     const channel = this.#liveInputs.get(runId);
     if (channel === undefined || channel.closed) return false;
-    const pushed = channel.push(message);
-    /*
-     * ARM THE REPLY ONLY IF THE MESSAGE ACTUALLY LANDED. A refused push is not a
-     * question the agent ever saw, and owing a reply for it would attribute the
-     * agent's next unrelated sentence to a message it never received.
-     */
-    if (pushed) this.#replyWatches.get(runId)?.expectReply(this.#deps.store, runId);
-    return pushed;
+    return channel.push(message, message.delivery, () => {
+      /*
+       * STAMP AND ARM ONLY WHEN THE SDK ASKS FOR THIS ITEM. Queue insertion is
+       * not delivery: a process can die before the iterator consumes it. The
+       * durable row then remains pending and the next boundary/restart can take
+       * it up safely.
+       */
+      this.#deps.store.markLiveMessageDelivered(runId, message.seq);
+      this.#replyWatches.get(runId)?.expectReply(this.#deps.store, runId);
+    }, message.seq);
   }
 
   /**
@@ -2304,6 +2355,21 @@ export class Orchestrator {
       if (signal.aborted) return this.#aborted(runId, log, signal);
       ticket = planned.ticket;
 
+      // The WEB pilot authors and freezes its creative criteria before the
+      // acceptance suite, design lane, media generation or builder can observe
+      // an implementation. A refusal parks the run; it never falls through to
+      // an unconstrained build.
+      if (!(await this.#creativeContractPhase(runId, ticket, runPaths, signal))) {
+        this.#deps.store.closeAttempt(runId, {
+          endedAt: new Date().toISOString(),
+          endClass: "parked",
+          endDetail: "creative contract authoring did not produce a valid compiled contract",
+          phaseReached: "plan",
+        });
+        log.close();
+        return;
+      }
+
       // ---- PHASE 1: the sealed acceptance suite ------------------------
       this.#setPhase(runId, "spec");
       let suite: AcceptanceSuite;
@@ -2547,7 +2613,7 @@ export class Orchestrator {
       // ---- PHASE 3: the sealed gate, then the bounded fix loop ---------
       this.#setPhase(runId, "gate");
       const loop = await this.#gateFixLoop(runId, ticket, suite, runPaths, log, declaredDone, laneMode, signal);
-      const scored = loop.scored;
+      let scored = loop.scored;
 
       // A fix round that ran into the provider's window is not a failed run.
       // The workspace, the session and the frozen suite are intact, exactly as
@@ -2581,6 +2647,31 @@ export class Orchestrator {
        * closes the log itself, so it is not closed here.
        */
       if (signal.aborted) return this.#aborted(runId, log, signal);
+
+      // The host-rendered creative loop runs only for the explicit WEB pilot.
+      // It receives the functional boolean, never the sealed findings. Any
+      // revision resumes the same builder session and is re-gated before the
+      // next capture. Context7 therefore remains one pass over the final tree.
+      if (this.#creativePilotApplies(ticket)) {
+        this.#setPhase(runId, "review");
+        const creative = await this.#creativeReviewPhase(
+          runId,
+          ticket,
+          suite,
+          runPaths,
+          log,
+          declaredDone,
+          scored,
+          signal,
+        );
+        scored = creative.scored;
+        if (creative.rateLimit !== null) {
+          log.close();
+          this.#rateLimited(runId, creative.rateLimit, this.#deps.store.getRun(runId)?.builderSessionId ?? null);
+          return;
+        }
+        if (signal.aborted) return this.#aborted(runId, log, signal);
+      }
 
       // ---- PHASE 4: one non-gating review of the final tree ------------
       // This deliberately runs after every gate/fix mutation and after the
@@ -3758,6 +3849,351 @@ export class Orchestrator {
    * prompt and the shortlist it had before this phase existed — `designHandoffSection`
    * returns "" for `off`, so a cli/api/library run's prompt is byte-identical.
    */
+  #creativePilotApplies(ticket: Ticket): boolean {
+    return creativePilotEnabled(
+      this.#deps.creativePilotActualProjectId,
+      this.#deps.creativePilotProjectId,
+    ) && webCreativeApplicable(classifySurface(ticketProse(stripPlanBlock(ticket.brief))));
+  }
+
+  async #creativeContractPhase(
+    runId: string,
+    ticket: Ticket,
+    runPaths: RunPaths,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const enabled = creativePilotEnabled(
+      this.#deps.creativePilotActualProjectId,
+      this.#deps.creativePilotProjectId,
+    );
+    const applicable = webCreativeApplicable(classifySurface(ticketProse(stripPlanBlock(ticket.brief))));
+    if (!enabled) return true;
+
+    let status = readCreativePilotStatus(runPaths.results) ?? initialCreativePilotStatus(applicable, enabled);
+    writeCreativePilotStatus(runPaths.results, status);
+    if (!applicable) return true;
+
+    const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
+    const authored = authorInputFor(ticket, manifest);
+    const existing = freshCreativeContract(runPaths.results, authored.resolver);
+    if (existing.fresh !== null) {
+      status = statusAfterCompile(status, existing.compile);
+      writeCreativePilotStatus(runPaths.results, status);
+      this.#emitLog(runId, "info", `reusing compiled creative contract ${existing.fresh.contractHash.slice(0, 12)}…`);
+      return true;
+    }
+
+    this.#emitLog(runId, "info", "authoring the WEB pilot's creative contract before suite, design, media, or code");
+    const run = this.#deps.runCreativeContractAuthor ?? authorCreativeContract;
+    const result = await run({
+      input: authored.input,
+      evidenceResolver: authored.resolver,
+      seat: this.#seat(runId, SPEC_SEAT),
+      budget: DASHBOARD_BUDGET,
+      cwd: this.#deps.paths.home,
+      env: this.#deps.env,
+      signal,
+      ...(this.#deps.seatQuery === undefined ? {} : { startQuery: this.#deps.seatQuery }),
+    });
+    const compile = persistCreativeAuthorResult(runPaths.results, result);
+    status = statusAfterCompile(status, compile);
+    writeCreativePilotStatus(runPaths.results, status);
+    if (result.tokens !== null && result.tokens.callCount > 0) {
+      this.#emitLog(runId, "info", `creative contract author — ${describeTokens(result.tokens)}`);
+    }
+    if (result.rateLimit?.limited === true) this.#noteRateLimit(runId, result.rateLimit);
+    if (result.status === "compiled" && result.contract !== null && result.contractHash !== null) {
+      this.#emitLog(runId, "info", `creative contract compiled and frozen at ${result.contractHash}`);
+      return true;
+    }
+
+    const reason = `creative contract ${result.status}: ${result.detail}`;
+    this.#deps.store.updateRun(runId, {
+      status: "awaiting_input",
+      failureReason: reason,
+      queuePosition: null,
+    });
+    this.#emitLog(runId, "warn", `${reason}. The WEB pilot is parked; no design, media or code was started.`);
+    this.#emit(runId, { type: "status", status: "awaiting_input" });
+    return false;
+  }
+
+  #freshCreativePrompt(
+    runId: string,
+    ticket: Ticket,
+    runPaths: RunPaths,
+    manifest: ReferenceManifest | null,
+  ): string {
+    if (!this.#creativePilotApplies(ticket)) return "";
+    const authored = authorInputFor(ticket, manifest);
+    const checked = freshCreativeContract(runPaths.results, authored.resolver);
+    const previous = readCreativePilotStatus(runPaths.results) ?? initialCreativePilotStatus(true, true);
+    writeCreativePilotStatus(runPaths.results, statusAfterCompile(previous, checked.compile));
+    if (checked.fresh === null) {
+      throw new BakeoffError(
+        "invalid_usage_shape",
+        "the WEB pilot's creative contract failed its mutation-boundary freshness compile",
+        "Inspect creative-compile.json. The builder was not allowed to mutate the workspace.",
+      );
+    }
+    this.#emitLog(runId, "info", `creative contract freshness check green (${checked.fresh.contractHash.slice(0, 12)}…)`);
+    return creativeContractPrompt(checked.fresh);
+  }
+
+  async #creativeReviewPhase(
+    runId: string,
+    ticket: Ticket,
+    suite: AcceptanceSuite,
+    runPaths: RunPaths,
+    log: BuildLog,
+    declaredDone: boolean,
+    initialScore: GateOutcome,
+    signal: AbortSignal,
+  ): Promise<CreativePhaseResult> {
+    const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
+    const authored = authorInputFor(ticket, manifest);
+    let checked = freshCreativeContract(runPaths.results, authored.resolver);
+    let status = readCreativePilotStatus(runPaths.results) ?? initialCreativePilotStatus(true, true);
+    status = statusAfterCompile(status, checked.compile);
+    let scored = initialScore;
+    let review: CreativeReviewState = initialCreativeReviewState({
+      heldOutPass: scored.record?.heldOutPass ?? null,
+      creativeCompilePass: checked.compile.outcome === "passed" ? true : checked.compile.outcome === "failed" ? false : null,
+    });
+    const priorCritics = [0, 1, 2]
+      .map((iteration) => readRenderedTasteCriticRecord(runPaths.results, iteration))
+      .filter((record): record is RenderedTasteCriticRecord => record !== null);
+    if (review.status === "reviewing") {
+      for (const critic of priorCritics) review = advanceCreativeReview(review, critic);
+      const pendingAfterAcceptedCritic = this.#deps.store.pendingMessages(runId);
+      if (review.status === "creative_ready" && pendingAfterAcceptedCritic.length > 0) {
+        review = priorCritics.length < 3
+          ? { ...review, status: "reviewing", stopReason: null }
+          : { ...review, status: "creative_review_required", stopReason: "attempts_exhausted" };
+      }
+    }
+    const lastCritic = priorCritics.at(-1) ?? null;
+    status = statusAfterReview(status, review, lastCritic, lastCritic?.renderManifestHash ?? null);
+    writeCreativePilotStatus(runPaths.results, status);
+    if (review.status !== "reviewing" || checked.fresh === null) {
+      this.#emitLog(runId, "warn", `creative review stopped before capture: ${review.stopReason ?? "contract unavailable"}`);
+      return { scored, rateLimit: null };
+    }
+    if (priorCritics.length >= 3) {
+      review = { ...review, status: "creative_review_required", stopReason: "attempts_exhausted" };
+      writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, priorCritics.at(-1) ?? null, status.renderManifestHash));
+      this.#emitLog(runId, "warn", "creative review has exhausted its three durable critic attempts");
+      return { scored, rateLimit: null };
+    }
+
+    let preview;
+    try {
+      const url = await this.#deps.preview.serve(runId, runPaths.workspace);
+      this.#deps.store.updateRun(runId, { previewUrl: url });
+      preview = this.#deps.preview.activeFor(runId);
+    } catch (error) {
+      this.#emitLog(runId, "warn", `creative render host unavailable: ${describeError(error)}`);
+      review = { ...review, status: "creative_review_required", stopReason: "critic_unavailable" };
+      writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+      return { scored, rateLimit: null };
+    }
+    if (preview === null) {
+      review = { ...review, status: "creative_review_required", stopReason: "critic_unavailable" };
+      writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+      return { scored, rateLimit: null };
+    }
+
+    for (let attempt = priorCritics.length + 1; attempt <= 3; attempt += 1) {
+      checked = freshCreativeContract(runPaths.results, authored.resolver);
+      status = statusAfterCompile(status, checked.compile);
+      if (checked.fresh === null) {
+        review = { ...review, creativeCompilePass: false, status: "failed", stopReason: "compiler_red" };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, status.renderManifestHash));
+        return { scored, rateLimit: null };
+      }
+
+      const iteration = attempt - 1;
+      const outputDir = join(runPaths.results, CREATIVE_RENDER_DIRECTORY, String(iteration));
+      const treeHash = hashCreativeArtifact(runPaths.workspace, outputDir);
+      const capture = this.#deps.captureCreativeRender ?? captureCreativeRender;
+      const rendered = await capture({
+        preview,
+        binding: { contract: checked.fresh.contract, contractHash: checked.fresh.contractHash, artifactHash: treeHash },
+        iteration,
+        outputDir,
+      });
+      if (!rendered.ok) {
+        this.#emitLog(runId, "warn", `creative render iteration ${String(iteration)} refused: ${rendered.reason}`);
+        review = { ...review, status: "creative_review_required", stopReason: "critic_unavailable" };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+        return { scored, rateLimit: null };
+      }
+      if (
+        rendered.output.manifest.contractHash !== checked.fresh.contractHash ||
+        rendered.output.manifest.artifactHash !== treeHash ||
+        rendered.output.manifest.iteration !== iteration
+      ) {
+        this.#emitLog(runId, "warn", "creative render returned evidence with stale contract/tree/iteration bindings");
+        review = { ...review, status: "creative_review_required", stopReason: "invalid_attempt" };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+        return { scored, rateLimit: null };
+      }
+      writeCreativeRenderManifest(outputDir, rendered.output.canonicalJson);
+      status = statusAfterRender(status, rendered.output);
+      writeCreativePilotStatus(runPaths.results, status);
+
+      const criticImages = seatImagesFor(rendered.output.files.map((file) => ({
+        path: join(outputDir, file.relativePath),
+        sha256: file.sha256,
+        bytes: file.bytes,
+      })));
+      const criticRun = this.#deps.runRenderedTasteCritic ?? runRenderedTasteCritic;
+      const critic = await criticRun({
+        attempt,
+        iteration,
+        treeHash,
+        prompt: buildCreativeTastePromptInput(rendered.output, checked.fresh.contract),
+        images: criticImages,
+        seat: this.#seat(runId, JUDGE_SEAT),
+        budget: DASHBOARD_BUDGET,
+        cwd: this.#deps.paths.home,
+        env: this.#deps.env,
+        signal,
+        ...(this.#deps.seatQuery === undefined ? {} : { startQuery: this.#deps.seatQuery }),
+      });
+      writeRenderedTasteCriticRecord(runPaths.results, critic);
+      if (critic.tokens !== null && critic.tokens.callCount > 0) {
+        this.#emitLog(runId, "info", `rendered taste critic — ${describeTokens(critic.tokens)}`);
+      }
+      review = advanceCreativeReview(review, critic);
+      status = statusAfterReview(status, review, critic, rendered.output.renderManifestHash);
+      writeCreativePilotStatus(runPaths.results, status);
+      this.#emitLog(runId, critic.criticDisposition === "accept" ? "info" : "warn", `creative critic attempt ${String(attempt)}: ${critic.criticDisposition}`);
+      if (critic.rateLimit?.limited === true) return { scored, rateLimit: critic.rateLimit };
+      const lateOwnerMessages = this.#deps.store.pendingMessages(runId);
+      if (critic.criticDisposition === "accept" && lateOwnerMessages.length > 0) {
+        review = attempt < 3
+          ? { ...review, status: "reviewing", stopReason: null }
+          : { ...review, status: "creative_review_required", stopReason: "attempts_exhausted" };
+        status = statusAfterReview(status, review, critic, rendered.output.renderManifestHash);
+        writeCreativePilotStatus(runPaths.results, status);
+        this.#emitLog(
+          runId,
+          attempt < 3 ? "info" : "warn",
+          `${String(lateOwnerMessages.length)} latest owner message(s) arrived before creative acceptance closed; ` +
+            (attempt < 3
+              ? "re-entering the same-session mutation boundary"
+              : "the three-attempt ceiling is exhausted, so acceptance remains closed and the atomic terminal guard will requeue the pending owner work"),
+        );
+      }
+      if (review.status !== "reviewing") {
+        if (review.status === "creative_ready" && status.ownerDecision === null) {
+          this.#emitLog(runId, "info", `creative evidence is ready at ${runPaths.results}; awaiting owner approval before project publication`);
+        }
+        return { scored, rateLimit: null };
+      }
+
+      status = statusBeforeCreativeMutation(status);
+      writeCreativePilotStatus(runPaths.results, status);
+      const revision = await this.#runCreativeRevision(
+        runId,
+        ticket,
+        runPaths,
+        log,
+        checked.fresh,
+        critic,
+        signal,
+      );
+      if (revision.rateLimit !== null) return { scored, rateLimit: revision.rateLimit };
+      if (!revision.completed) {
+        review = { ...review, status: "creative_review_required", stopReason: "invalid_attempt" };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, critic, rendered.output.renderManifestHash));
+        return { scored, rateLimit: null };
+      }
+
+      checked = freshCreativeContract(runPaths.results, authored.resolver);
+      status = statusAfterCompile(status, checked.compile);
+      if (checked.fresh === null) {
+        review = { ...review, creativeCompilePass: false, status: "failed", stopReason: "compiler_red" };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, critic, rendered.output.renderManifestHash));
+        return { scored, rateLimit: null };
+      }
+      scored = await this.#gatePhase(
+        runId,
+        ticket,
+        suite,
+        runPaths,
+        declaredDone,
+        signal,
+        highestArchivedAttempt(this.#deps.paths, runId) + 1,
+      );
+      const heldOutPass = scored.record?.heldOutPass ?? null;
+      if (heldOutPass !== true) {
+        review = {
+          ...review,
+          heldOutPass,
+          status: heldOutPass === false ? "failed" : "creative_review_required",
+          stopReason: heldOutPass === false ? "functional_red" : "prerequisite_unknown",
+        };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, critic, rendered.output.renderManifestHash));
+        return { scored, rateLimit: null };
+      }
+      review = { ...review, heldOutPass: true, creativeCompilePass: true };
+    }
+    return { scored, rateLimit: null };
+  }
+
+  async #runCreativeRevision(
+    runId: string,
+    ticket: Ticket,
+    runPaths: RunPaths,
+    log: BuildLog,
+    contract: FreshCreativeContract,
+    critic: RenderedTasteCriticRecord,
+    signal: AbortSignal,
+  ): Promise<{ readonly completed: boolean; readonly rateLimit: RateLimitState | null }> {
+    const row = this.#deps.store.getRun(runId);
+    if (row === null || row.builderSessionId === null) return { completed: false, rateLimit: null };
+    const entry = await this.#deps.catalog.resolve(row.modelId);
+    if (entry === null || !entry.option.available) return { completed: false, rateLimit: null };
+
+    const pending = this.#deps.store.pendingMessages(runId);
+    const boundary = ownerMessageBlock(pending);
+    const prompt = creativeRevisionPrompt(contract, critic) + boundary;
+    const promptPath = join(runPaths.results, `creative-revision-${String(critic.attempt)}.txt`);
+    writeFileSync(promptPath, redactForPersistence(prompt), "utf8");
+    if (pending.length > 0) {
+      this.#deps.store.markMessagesDelivered(runId, pending.map((message) => message.seq));
+      this.#emitLog(runId, "info", `${String(pending.length)} owner message(s) consumed at the persisted creative revision boundary`);
+    }
+
+    const builder = this.#builderFor(entry.option.provider);
+    const outcome = await builder.build({
+      runId,
+      prompt,
+      workspace: runPaths.workspace,
+      sealedRoots: [this.#deps.paths.acceptance, resultsRoot(this.#deps.paths)],
+      allowedAgents: shortlistFor(classifySurface(ticketProse(stripPlanBlock(ticket.brief))), "off"),
+      modelId: row.modelId,
+      effort: entry.effort,
+      resumeSessionId: row.builderSessionId,
+      signal,
+      sink: this.#sink(runId, log, row.tokens),
+      env: this.#deps.env,
+    });
+    if (outcome.sessionId !== null) this.#deps.store.updateRun(runId, { builderSessionId: outcome.sessionId });
+    if (outcome.tokens.callCount > 0) {
+      this.#deps.store.updateRun(runId, { tokens: mergeTokenTotals(row.tokens, toApiTokens(outcome.tokens)) });
+      this.#recordSpend(runId, "fix", row.modelId, outcome.tokens);
+    }
+    if (outcome.rateLimit.limited) return { completed: false, rateLimit: outcome.rateLimit };
+    if (outcome.cancelled || outcome.failure !== null) {
+      if (outcome.failure !== null) this.#emitLog(runId, "warn", `creative revision did not complete cleanly: ${outcome.failure}`);
+      return { completed: false, rateLimit: null };
+    }
+    return { completed: true, rateLimit: null };
+  }
+
   async #buildPhase(
     runId: string,
     ticket: Ticket,
@@ -4052,8 +4488,11 @@ export class Orchestrator {
        * the reason there is no `if` here to forget.
        */
       const references = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
+      // Fresh compilation is immediately adjacent to the mutation boundary.
+      // A contract file changed after authoring cannot silently become advisory.
+      const creativeContract = this.#freshCreativePrompt(runId, ticket, runPaths, references);
 
-      const prompt = designSegment
+      const phasePrompt = designSegment
         ? designSegmentPrompt({
             ticketText: ticket.brief,
             workspace: runPaths.workspace,
@@ -4080,6 +4519,7 @@ export class Orchestrator {
           builderReferenceSection(references) +
           (videoPrompt === "" ? "" : `\n\n${videoPrompt}\n`) +
           ownerNote;
+      const prompt = creativeContract === "" ? phasePrompt : `${phasePrompt}\n\n${creativeContract}`;
       // REDACTED ON THE WAY TO DISK. The prompt embeds the ticket text, and here
       // the ticket text is FREE-FORM OWNER INPUT typed into a web form — not a
       // frozen, harness-authored brief as in the bake-off. Every other persisted
@@ -7670,7 +8110,26 @@ export class Orchestrator {
    * goes out, so the revalidation finds `publishedProject` too.
    */
   #finish(runId: string, status: ApiRunStatus, patch: Parameters<RunStore["updateRun"]>[1]): void {
-    const row = this.#deps.store.updateRun(runId, { ...patch, status });
+    const creative = readCreativePilotStatus(runPathsFor(this.#deps.paths, runId).results);
+    const guarded = status !== "cancelled" && creative?.enabled === true && creative.applicable
+      ? this.#deps.store.finishUnlessOwnerMessagePending(runId, { ...patch, status })
+      : { row: this.#deps.store.updateRun(runId, { ...patch, status }), requeued: false };
+    const row = guarded.row;
+    if (guarded.requeued) {
+      this.#deps.store.closeAttempt(runId, {
+        endedAt: new Date().toISOString(),
+        endClass: "parked",
+        endDetail: "a latest owner message arrived at the terminal boundary; re-entering the mutation/review path",
+        phaseReached: row.phase,
+      });
+      this.#emitLog(
+        runId,
+        "info",
+        "a latest owner message arrived during review; the terminal transition was atomically refused and the run was requeued",
+      );
+      this.#emit(runId, { type: "status", status: "queued" });
+      return;
+    }
     // THIS RUN'S PREVIEW DIES WITH THIS RUN, and that is what makes a per-run
     // PreviewHost safe to keep. The singleton it replaced freed its port on the
     // NEXT deploy, so a finished run kept 4321 until someone else wanted it —
@@ -7854,6 +8313,19 @@ export class Orchestrator {
   #publishProject(runId: string, row: RunRow): void {
     const runPaths = runPathsFor(this.#deps.paths, runId);
     try {
+      const creative = readCreativePilotStatus(runPaths.results);
+      if (creative?.enabled === true && creative.applicable) {
+        if (!pilotMayPublish(creative)) {
+          this.#emitLog(
+            runId,
+            "warn",
+            `WEB pilot publication is suppressed until functional and compiler gates are green, the critic ` +
+              `accepts and the owner approves, or the owner records a reasoned waiver of subjective critic findings. ` +
+              `The inspectable run workspace remains at ${runPaths.workspace}.`,
+          );
+          return;
+        }
+      }
       const record = publishProject({
         runId,
         ticketTitle: row.ticketTitle,
