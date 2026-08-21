@@ -1,26 +1,7 @@
 /**
- * plan-dialogue.ts — the plan park, read off the wire the plan park actually has.
+ * plan-dialogue.ts — the plan transcript joined to its durable current state.
  *
- * =========================================================================
- * THERE IS NO `RunDetail.plan`, AND THIS FILE DOES NOT INVENT ONE
- * =========================================================================
- *
- * The server's plan phase keeps its whole state in `runs/<id>/results/plan.json`
- * — every question, its `ifUnanswered`, the two candidate criteria that earned it
- * its place, the park instant, the turn count. NONE of that is on the API.
- * `RunDetail` gained exactly one thing from the plan phase: `phase` can now read
- * `"plan"` (`server/src/api-types.ts`, `ApiPhase`). Checked, not assumed —
- * `grep -n plan server/src/api-types.ts` on 2026-08-02 returns the union and two
- * comments, and there is no `/api/runs/:id/plan` route in `http.ts`.
- *
- * Adding a `plan` field to this package's hand-copied mirror would have made the
- * panel render beautifully against a fixture and never once against the server.
- * `design-lock.tsx` already refused the same trade for the same reason, in
- * writing: "there is no countdown, because the deadline is not on the wire …
- * a clock invented in the browser would be a number the owner could plan around
- * and be wrong about."
- *
- * SO EVERYTHING HERE COMES OFF TWO CHANNELS THE PARK GENUINELY USES:
+ * The words still come from the two channels the dialogue genuinely uses:
  *
  *   1. THE CHAT. `Orchestrator#planPhase` posts the seat's short plan as one
  *      `run` row and then `questionText(open)` as a second — literally
@@ -34,7 +15,7 @@
  *      and one `PQ-n was never answered, so the run is assuming: …` per expiry.
  *
  * =========================================================================
- * THE OPEN SET IS THE NEWEST QUESTION BLOCK. IT IS A CONTRACT, NOT A SCRAPE
+ * LEGACY OPEN SET: THE NEWEST QUESTION BLOCK
  * =========================================================================
  *
  * `#reask` re-posts the open set verbatim after every turn, so the newest block
@@ -44,11 +25,16 @@
  * reply AND the same questions re-posted, so they stay visibly open without this
  * file deciding anything.
  *
- * IT IS GATED ON THE RUN STILL BEING PARKED. When the last question is answered
- * the driver does NOT re-ask — there is nothing to re-ask — so the newest block
- * is then a list of questions that have all been settled. `phase === "plan" &&
- * status === "awaiting_input"` is the only thing that separates those two
- * readings, and it is why {@link planDialogueFrom} takes both.
+ * New responses also carry `RunDetail.plan`, a closed projection of `plan.json`.
+ * That record is authoritative for current open/closed state, question outcomes,
+ * and the deadline. This matters because `phase === "plan" && status ===
+ * "awaiting_input"` is not unique to the plan dialogue: a later creative failure
+ * can reuse the tuple after the plan has folded. Without the durable projection,
+ * the historical newest block reopens and its old trace line mints a stale clock.
+ *
+ * A missing or null projection is a response from before the field existed and
+ * keeps the legacy tuple/newest-block behaviour byte-for-byte. A present but
+ * malformed projection fails CLOSED: no answer controls and no countdown.
  *
  * =========================================================================
  * WHAT THIS FILE STILL CANNOT SHOW, NAMED RATHER THAN FAKED
@@ -64,7 +50,13 @@
  */
 
 import type { ChatMessage } from "./api";
-import type { RunPhase, RunStatus } from "./api-types";
+import type {
+  RunPhase,
+  RunPlanClosureReason,
+  RunPlanProjection,
+  RunPlanState,
+  RunStatus,
+} from "./api-types";
 import type { TraceEntry } from "./use-run-stream";
 
 /* -------------------------------------------------------------------------
@@ -268,6 +260,134 @@ function readTrace(trace: readonly TraceEntry[]): PlanTraceRead {
   return { recorded, parkedAtMs, windowMin, closedNote };
 }
 
+type DurablePlanRead =
+  | { readonly kind: "legacy" }
+  | { readonly kind: "invalid" }
+  | { readonly kind: "current"; readonly plan: RunPlanState };
+
+const DURABLE_QUESTION_STATES = new Set(["open", "answered", "declined", "expired"]);
+const DURABLE_CLOSURE_REASONS = new Set([
+  "answered",
+  "declined",
+  "turn cap",
+  "window expired",
+  "nothing to ask",
+]);
+
+/**
+ * Narrow the unvalidated HTTP body before it can produce an answer control.
+ *
+ * `api.ts` casts JSON rather than validating it. Missing/null means an older
+ * server and deliberately takes the legacy path; any PRESENT shape that is not
+ * the complete projection is unsafe to act on and therefore reads as invalid.
+ */
+function readDurablePlan(value: unknown): DurablePlanRead {
+  if (value === null || value === undefined) return { kind: "legacy" };
+  if (typeof value !== "object" || Array.isArray(value)) return { kind: "invalid" };
+  const record = value as Record<string, unknown>;
+  if (record["kind"] === "unreadable") return { kind: "invalid" };
+  if (typeof record["awaiting"] !== "boolean" || typeof record["folded"] !== "boolean") {
+    return { kind: "invalid" };
+  }
+  const deadlineAt = record["deadlineAt"];
+  if (deadlineAt !== null && typeof deadlineAt !== "string") return { kind: "invalid" };
+
+  const rawClosed = record["closed"];
+  let closed: RunPlanState["closed"] = null;
+  if (rawClosed !== null) {
+    if (typeof rawClosed !== "object" || Array.isArray(rawClosed)) return { kind: "invalid" };
+    const closure = rawClosed as Record<string, unknown>;
+    const reason = closure["reason"];
+    const detail = closure["detail"];
+    if (
+      typeof reason !== "string" ||
+      !DURABLE_CLOSURE_REASONS.has(reason) ||
+      typeof detail !== "string"
+    ) {
+      return { kind: "invalid" };
+    }
+    closed = { reason: reason as RunPlanClosureReason, detail };
+  }
+
+  const rawQuestions = record["questions"];
+  if (!Array.isArray(rawQuestions)) return { kind: "invalid" };
+  const questions: RunPlanState["questions"][number][] = [];
+  const ids = new Set<string>();
+  for (const rawQuestion of rawQuestions) {
+    if (typeof rawQuestion !== "object" || rawQuestion === null || Array.isArray(rawQuestion)) {
+      return { kind: "invalid" };
+    }
+    const question = rawQuestion as Record<string, unknown>;
+    const id = question["id"];
+    const status = question["status"];
+    const recorded = question["recorded"];
+    if (
+      typeof id !== "string" ||
+      id.trim().length === 0 ||
+      ids.has(id) ||
+      typeof status !== "string" ||
+      !DURABLE_QUESTION_STATES.has(status) ||
+      (recorded !== null && typeof recorded !== "string") ||
+      (status === "open" && recorded !== null) ||
+      (status !== "open" && (typeof recorded !== "string" || recorded.trim().length === 0))
+    ) {
+      return { kind: "invalid" };
+    }
+    ids.add(id);
+    questions.push({
+      id,
+      status: status as RunPlanState["questions"][number]["status"],
+      recorded,
+    });
+  }
+
+  const awaiting = record["awaiting"];
+  const folded = record["folded"];
+  const openCount = questions.filter((question) => question.status === "open").length;
+  if (awaiting) {
+    const deadlineMs = typeof deadlineAt === "string" ? Date.parse(deadlineAt) : Number.NaN;
+    if (
+      folded || closed !== null || openCount === 0 || !Number.isFinite(deadlineMs) ||
+      new Date(deadlineMs).toISOString() !== deadlineAt
+    ) return { kind: "invalid" };
+  } else if (deadlineAt !== null || openCount > 0) {
+    return { kind: "invalid" };
+  }
+
+  return {
+    kind: "current",
+    plan: {
+      awaiting,
+      folded,
+      deadlineAt,
+      closed,
+      questions,
+    },
+  };
+}
+
+/** Whether the run is stopped on the PLAN dialogue specifically. */
+export function planParkedFrom(input: {
+  readonly phase: RunPhase;
+  readonly status: RunStatus;
+  readonly plan?: RunPlanProjection | null | undefined;
+}): boolean {
+  const durable = readDurablePlan(input.plan);
+  return planIsParked(durable, input.phase, input.status);
+}
+
+function planIsParked(
+  durable: DurablePlanRead,
+  phase: RunPhase,
+  status: RunStatus,
+): boolean {
+  if (durable.kind === "legacy") {
+    return phase === "plan" && status === "awaiting_input";
+  }
+  if (durable.kind === "invalid") return false;
+  return durable.plan.awaiting && !durable.plan.folded;
+}
+
 /**
  * The dialogue, or `null` when this run never had one.
  *
@@ -282,6 +402,7 @@ export function planDialogueFrom(input: {
   readonly trace: readonly TraceEntry[];
   readonly phase: RunPhase;
   readonly status: RunStatus;
+  readonly plan?: RunPlanProjection | null | undefined;
 }): PlanDialogue | null {
   /*
    * A RUNTIME GUARD OVER A TYPE THAT SAYS IT CANNOT HAPPEN, and it is here
@@ -314,8 +435,17 @@ export function planDialogueFrom(input: {
   if (newest === undefined) return null;
   const supersededBlocks = new Set(blocks.slice(0, -1).map((block) => block.seq));
 
-  const parked = input.phase === "plan" && input.status === "awaiting_input";
-  const openIds = new Set(parked ? newest.questions.map((question) => question.id) : []);
+  const durable = readDurablePlan(input.plan);
+  const parked = planIsParked(durable, input.phase, input.status);
+  const openIds = new Set(
+    durable.kind === "legacy" && parked
+      ? newest.questions.map((question) => question.id)
+      : [],
+  );
+  const durableQuestions =
+    durable.kind === "current"
+      ? new Map(durable.plan.questions.map((question) => [question.id, question]))
+      : null;
   const read = readTrace(trace);
 
   /*
@@ -328,17 +458,40 @@ export function planDialogueFrom(input: {
   for (const block of blocks) {
     for (const question of block.questions) {
       if (seen.has(question.id)) continue;
-      const outcome = read.recorded.get(question.id);
-      const state: PlanQuestionState = openIds.has(question.id)
-        ? "open"
-        : (outcome?.state ?? "settled");
+      const traceOutcome = read.recorded.get(question.id);
+      const durableQuestion = durableQuestions?.get(question.id);
+      const durableState: PlanQuestionState =
+        durableQuestion?.status === "answered"
+          ? "answered"
+          : durableQuestion?.status === "declined"
+            ? "declined"
+            : durableQuestion?.status === "expired"
+              ? "assumed"
+              : durableQuestion?.status === "open" && parked
+                ? "open"
+                : "settled";
+      const state: PlanQuestionState =
+        durable.kind === "current"
+          ? durableState
+          : durable.kind === "invalid"
+            ? "settled"
+            : openIds.has(question.id)
+              ? "open"
+              : (traceOutcome?.state ?? "settled");
       seen.set(question.id, {
         id: question.id,
         text: question.text,
         // A question that is open again has no current outcome to print, whatever
         // the log said about an earlier turn.
         state,
-        recorded: state === "open" ? null : (outcome?.recorded ?? null),
+        recorded:
+          state === "open"
+            ? null
+            : durable.kind === "current"
+              ? (durableQuestion?.recorded ?? null)
+              : durable.kind === "invalid"
+                ? null
+                : (traceOutcome?.recorded ?? null),
       });
     }
   }
@@ -372,17 +525,30 @@ export function planDialogueFrom(input: {
     });
   }
 
+  const durableDeadline =
+    durable.kind === "current" && parked && durable.plan.deadlineAt !== null
+      ? Date.parse(durable.plan.deadlineAt)
+      : Number.NaN;
   return {
     plan,
     items,
     questions: [...seen.values()],
     parked,
     deadlineMs:
-      read.parkedAtMs === null || read.windowMin === null
-        ? null
-        : read.parkedAtMs + read.windowMin * 60_000,
-    windowMin: read.windowMin,
-    closedNote: read.closedNote,
+      durable.kind === "current"
+        ? Number.isFinite(durableDeadline)
+          ? durableDeadline
+          : null
+        : durable.kind === "invalid" || !parked || read.parkedAtMs === null || read.windowMin === null
+          ? null
+          : read.parkedAtMs + read.windowMin * 60_000,
+    windowMin: parked ? read.windowMin : null,
+    closedNote:
+      durable.kind === "current"
+        ? (durable.plan.closed?.detail ?? null)
+        : durable.kind === "invalid"
+          ? null
+          : read.closedNote,
   };
 }
 

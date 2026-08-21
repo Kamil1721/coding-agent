@@ -51,6 +51,7 @@
 import { expect, test } from "@playwright/test";
 
 import type { ChatMessage } from "@/lib/api";
+import type { RunPlanState } from "@/lib/api-types";
 import {
   DECLINE_ALL,
   composeAnswer,
@@ -103,6 +104,20 @@ const PARK_LINE =
   "the run proceeds on what it assumed, and the assumptions are recorded.";
 
 const RECORDED_LINE = "recorded against PQ-2 (answered, addressed): one page is enough";
+
+function durablePlan(overrides: Partial<RunPlanState> = {}): RunPlanState {
+  return {
+    awaiting: true,
+    folded: false,
+    deadlineAt: new Date(T0 + 12 * 60_000).toISOString(),
+    closed: null,
+    questions: [
+      { id: "PQ-1", status: "open", recorded: null },
+      { id: "PQ-2", status: "answered", recorded: "one page is enough" },
+    ],
+    ...overrides,
+  };
+}
 
 test("a question asked back stays OPEN, and the one he answered does not", () => {
   const dialogue = planDialogueFrom({
@@ -169,6 +184,122 @@ test("a closed dialogue has nothing open, however the last block reads", () => {
   });
   expect(dialogue?.parked).toBe(false);
   expect(dialogue?.questions.some((question) => question.state === "open")).toBe(false);
+});
+
+test("a folded durable plan stays closed inside a later plan-shaped park", () => {
+  const dialogue = planDialogueFrom({
+    messages: ASKED_BACK,
+    trace: [line(PARK_LINE)],
+    // This is the live collision: creative-contract failure reused the tuple
+    // after the plan had already folded. The durable plan, not the tuple or old
+    // park log, is the authority for what can still be answered.
+    phase: "plan",
+    status: "awaiting_input",
+    plan: durablePlan({
+      awaiting: false,
+      folded: true,
+      deadlineAt: null,
+      closed: { reason: "answered", detail: "all plan questions were answered" },
+      questions: [
+        { id: "PQ-1", status: "answered", recorded: "six" },
+        { id: "PQ-2", status: "answered", recorded: "one page is enough" },
+      ],
+    }),
+  });
+
+  expect(dialogue?.parked).toBe(false);
+  expect(dialogue?.deadlineMs).toBeNull();
+  expect(dialogue?.questions.map((question) => question.state)).toEqual([
+    "answered",
+    "answered",
+  ]);
+  expect(dialogue?.closedNote).toBe("all plan questions were answered");
+});
+
+test("an awaiting durable plan owns the open set and deadline", () => {
+  const durableDeadline = T0 + 12 * 60_000;
+  const dialogue = planDialogueFrom({
+    messages: ASKED_BACK,
+    // The trace deadline would be 20 minutes. The projected twelve-minute
+    // deadline must win, proving the old announcement is no longer the clock.
+    trace: [line(PARK_LINE)],
+    phase: "plan",
+    status: "awaiting_input",
+    plan: durablePlan(),
+  });
+
+  expect(dialogue?.parked).toBe(true);
+  expect(dialogue?.deadlineMs).toBe(durableDeadline);
+  expect(dialogue?.questions.find((question) => question.id === "PQ-1")?.state).toBe("open");
+  expect(dialogue?.questions.find((question) => question.id === "PQ-2")?.state).toBe("answered");
+});
+
+test("a present malformed durable projection fails closed", () => {
+  const dialogue = planDialogueFrom({
+    messages: ASKED_BACK,
+    trace: [line(PARK_LINE)],
+    phase: "plan",
+    status: "awaiting_input",
+    // Reproduce what `api.ts` can hand us: JSON is cast to RunDetail without
+    // runtime validation, so a partial object can sit behind the complete type.
+    plan: { awaiting: true } as RunPlanState,
+  });
+
+  expect(dialogue?.parked).toBe(false);
+  expect(dialogue?.deadlineMs).toBeNull();
+  expect(dialogue?.questions.some((question) => question.state === "open")).toBe(false);
+
+  const legacyNull = planDialogueFrom({
+    messages: ASKED_BACK,
+    trace: [line(PARK_LINE)],
+    phase: "plan",
+    status: "awaiting_input",
+    plan: null,
+  });
+  expect(legacyNull?.parked).toBe(true);
+  expect(legacyNull?.questions.find((question) => question.id === "PQ-1")?.state).toBe("open");
+});
+
+test("structurally complete contradictory durable projections fail closed", () => {
+  const contradictions: readonly RunPlanState[] = [
+    durablePlan({ folded: true }),
+    durablePlan({ closed: { reason: "answered", detail: "contradictory active closure" } }),
+    durablePlan({ deadlineAt: "not-an-iso-instant" }),
+    durablePlan({ questions: [{ id: "PQ-1", status: "answered", recorded: "six" }] }),
+    durablePlan({
+      questions: [
+        { id: "PQ-1", status: "open", recorded: null },
+        { id: "PQ-1", status: "answered", recorded: "duplicate" },
+      ],
+    }),
+    durablePlan({ questions: [{ id: "PQ-1", status: "open", recorded: "must be null" }] }),
+    durablePlan({ questions: [{ id: "PQ-1", status: "answered", recorded: null }] }),
+    durablePlan({ awaiting: false, deadlineAt: new Date(T0).toISOString() }),
+    durablePlan({ awaiting: false, deadlineAt: null }),
+  ];
+
+  for (const plan of contradictions) {
+    const dialogue = planDialogueFrom({
+      messages: ASKED_BACK,
+      trace: [line(PARK_LINE)],
+      phase: "plan",
+      status: "awaiting_input",
+      plan,
+    });
+    expect(dialogue?.parked).toBe(false);
+    expect(dialogue?.deadlineMs).toBeNull();
+    expect(dialogue?.questions.some((question) => question.state === "open")).toBe(false);
+  }
+
+  const unreadable = planDialogueFrom({
+    messages: ASKED_BACK,
+    trace: [line(PARK_LINE)],
+    phase: "plan",
+    status: "awaiting_input",
+    plan: { kind: "unreadable", detail: "the durable plan record exists but cannot be read safely" },
+  });
+  expect(unreadable?.parked).toBe(false);
+  expect(unreadable?.deadlineMs).toBeNull();
 });
 
 test("a run that never planned has no dialogue at all", () => {

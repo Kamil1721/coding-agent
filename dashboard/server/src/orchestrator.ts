@@ -3875,10 +3875,12 @@ export class Orchestrator {
 
     const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
     const authored = authorInputFor(ticket, manifest);
+    for (const warning of authored.warnings) this.#emitLog(runId, "warn", warning);
     const existing = freshCreativeContract(runPaths.results, authored.resolver);
     if (existing.fresh !== null) {
       status = statusAfterCompile(status, existing.compile);
       writeCreativePilotStatus(runPaths.results, status);
+      this.#deps.store.updateRun(runId, { failureReason: null });
       this.#emitLog(runId, "info", `reusing compiled creative contract ${existing.fresh.contractHash.slice(0, 12)}…`);
       return true;
     }
@@ -3903,6 +3905,7 @@ export class Orchestrator {
     }
     if (result.rateLimit?.limited === true) this.#noteRateLimit(runId, result.rateLimit);
     if (result.status === "compiled" && result.contract !== null && result.contractHash !== null) {
+      this.#deps.store.updateRun(runId, { failureReason: null });
       this.#emitLog(runId, "info", `creative contract compiled and frozen at ${result.contractHash}`);
       return true;
     }
@@ -3926,6 +3929,7 @@ export class Orchestrator {
   ): string {
     if (!this.#creativePilotApplies(ticket)) return "";
     const authored = authorInputFor(ticket, manifest);
+    for (const warning of authored.warnings) this.#emitLog(runId, "warn", warning);
     const checked = freshCreativeContract(runPaths.results, authored.resolver);
     const previous = readCreativePilotStatus(runPaths.results) ?? initialCreativePilotStatus(true, true);
     writeCreativePilotStatus(runPaths.results, statusAfterCompile(previous, checked.compile));
@@ -3952,6 +3956,7 @@ export class Orchestrator {
   ): Promise<CreativePhaseResult> {
     const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
     const authored = authorInputFor(ticket, manifest);
+    for (const warning of authored.warnings) this.#emitLog(runId, "warn", warning);
     let checked = freshCreativeContract(runPaths.results, authored.resolver);
     let status = readCreativePilotStatus(runPaths.results) ?? initialCreativePilotStatus(true, true);
     status = statusAfterCompile(status, checked.compile);

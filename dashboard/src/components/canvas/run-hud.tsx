@@ -49,6 +49,7 @@ import type { ModelOption, RunDetail } from "@/lib/api-types";
 import { isTerminalStatus } from "@/lib/api-types";
 import { elapsedBetween, formatDuration } from "@/lib/format";
 import { designLockPhase } from "@/lib/mockups";
+import { planParkedFrom } from "@/lib/plan-dialogue";
 import { phaseMeta, statusMeta } from "@/lib/presentation";
 import { ticketLabel, ticketTooltip } from "@/lib/ticket-title";
 import { FalseFinishBadge, HeldOutBadge } from "@/components/outcome";
@@ -90,6 +91,7 @@ export function RunHud({
    */
   const lockPhase =
     run.designLock === null ? null : designLockPhase(run.status, run.designLock);
+  const planParked = planParkedFrom(run);
 
   return (
     /*
@@ -192,7 +194,7 @@ export function RunHud({
               onClick={onResume}
               disabled={busy}
               title={
-                run.phase === "plan" && run.status === "awaiting_input"
+                run.status === "awaiting_input" && planParked
                   ? "Stop asking and carry on. Every question still open is recorded as an assumption — the same place the run lands if the window simply closes."
                   : "Put this run back in the queue."
               }

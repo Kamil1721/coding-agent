@@ -40,6 +40,13 @@ export const REPLAY_RUN_ID = "harness-replay-run";
 export const PLAN_RUN_ID = "harness-plan-run";
 
 /**
+ * A folded plan whose run later parked again after a creative-contract failure.
+ * It deliberately reuses `phase: plan` + `awaiting_input`: only the durable plan
+ * projection can distinguish it from {@link PLAN_RUN_ID}.
+ */
+export const STALE_PLAN_RUN_ID = "harness-stale-plan-run";
+
+/**
  * THE PAIR THAT DIFFERS ONLY IN STATUS — a live build and the same build after
  * it ended. Both are served from ONE event list in `build-run-fixture.ts`.
  *

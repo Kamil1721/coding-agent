@@ -1123,9 +1123,50 @@ export interface ApiMotionSpec {
   readonly respectsReducedMotion: boolean;
 }
 
+/** Safe current-state projection of the durable plan record. */
+export type ApiRunPlanQuestionStatus = "open" | "answered" | "declined" | "expired";
+
+export type ApiRunPlanClosureReason =
+  | "answered"
+  | "declined"
+  | "turn cap"
+  | "window expired"
+  | "nothing to ask";
+
+export interface ApiRunPlanQuestion {
+  readonly id: string;
+  readonly status: ApiRunPlanQuestionStatus;
+  /** Answer text, or the default recorded for a declined/expired question. */
+  readonly recorded: string | null;
+}
+
+export interface ApiRunPlanClosure {
+  readonly reason: ApiRunPlanClosureReason;
+  readonly detail: string;
+}
+
+export interface ApiRunPlanState {
+  readonly awaiting: boolean;
+  readonly folded: boolean;
+  /** End of the original plan window; null when the dialogue is not awaiting input. */
+  readonly deadlineAt: string | null;
+  readonly closed: ApiRunPlanClosure | null;
+  readonly questions: readonly ApiRunPlanQuestion[];
+}
+
+/** A plan file exists, but its bytes cannot be trusted as current state. */
+export interface ApiRunPlanUnreadable {
+  readonly kind: "unreadable";
+  readonly detail: string;
+}
+
+export type ApiRunPlanProjection = ApiRunPlanState | ApiRunPlanUnreadable;
+
 export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: ApiPhase;
+  /** Missing/null for legacy runs without a readable durable plan record. */
+  readonly plan?: ApiRunPlanProjection | null;
   readonly criteria: readonly ApiCriterion[];
   /**
    * The twelve machine gates, or `null` when this run never reached them.
@@ -2643,6 +2684,12 @@ export interface SendMessageRequest {
   readonly images?: readonly string[];
   readonly documents?: readonly string[];
   /**
+   * Terminal runs only: start the linked continuation with this catalog model.
+   * Omitted inherits the terminal source run's model. Active runs reject this
+   * field instead of silently ignoring a selection that cannot apply to them.
+   */
+  readonly continuationModelId?: string;
+  /**
    * `send` folds into the next safe turn; `steer` asks an active session to run
    * the message as its next turn. Omitted is `send` for older clients.
    */
@@ -2685,6 +2732,8 @@ export type SendMessageResponse =
       readonly message: ApiChatMessage;
       readonly documents: readonly string[];
       readonly targetRunId: string;
+      /** The catalog-resolved model persisted on the linked target run. */
+      readonly continuationModelId: string;
       readonly sourceRunId: string;
       readonly sourceMessageSeq: number;
     }

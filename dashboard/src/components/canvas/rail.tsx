@@ -178,6 +178,9 @@ const ENTRIES: readonly RailEntry[] = [
   },
 ];
 
+const TERMINAL_CHAT_HINT =
+  "Chat — start a linked continuation with a message or reference image.";
+
 /** Looked up by the page so a panel header and its rail button cannot drift. */
 export const RAIL_LABEL: Readonly<Record<RailPanelId, string>> = Object.fromEntries(
   ENTRIES.map((entry) => [entry.id, entry.label]),
@@ -284,6 +287,8 @@ export interface RailProps {
   readonly showQuestions: boolean;
   readonly statusDot: RailDot;
   readonly questionsDot: RailDot;
+  /** A settled run's Chat action creates a linked successor rather than steering it. */
+  readonly runIsOver: boolean;
   /** The panel's header. Title is the label; eyebrow is the run's own word. */
   readonly panelTitle: string;
   readonly panelEyebrow: string;
@@ -296,6 +301,7 @@ export function RunRail({
   showQuestions,
   statusDot,
   questionsDot,
+  runIsOver,
   panelTitle,
   panelEyebrow,
   children,
@@ -393,6 +399,10 @@ export function RunRail({
 
   const present = ENTRIES.filter(
     (entry) => entry.id !== "questions" || showQuestions,
+  ).map((entry) =>
+    entry.id === "chat" && runIsOver
+      ? { ...entry, hint: TERMINAL_CHAT_HINT }
+      : entry,
   );
 
   /*
@@ -605,7 +615,7 @@ export function RunRail({
         aria-label={panelTitle}
         onKeyDown={onPanelKeyDown}
         className={cx(
-          "absolute inset-y-0 left-12 z-20 flex w-[min(400px,calc(100vw-48px))] flex-col overflow-x-hidden",
+          "absolute inset-y-0 left-12 z-20 flex w-[min(400px,calc(100vw-48px))] flex-col overflow-x-clip",
           "border-r border-line bg-surface shadow-[24px_0_48px_-32px_rgba(0,0,0,0.9)]",
           "min-[1120px]:relative min-[1120px]:left-0 min-[1120px]:z-auto min-[1120px]:w-[400px] min-[1120px]:shrink-0 min-[1120px]:shadow-none",
           /* ^ left-0 is load-bearing beside relative: the base left-12 positions

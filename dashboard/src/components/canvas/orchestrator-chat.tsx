@@ -149,7 +149,7 @@
  * describes a consequence of an action he has not taken, is deleted instead.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 
 import { formatTimeOnly } from "@/lib/format";
@@ -168,6 +168,7 @@ import {
 import type {
   ChatMessage,
   MessageIntent,
+  ModelOption,
   SendMessageResponse,
 } from "@/lib/api-types";
 
@@ -242,6 +243,37 @@ export function replyGap(
 }
 
 const MAX_TEXT_CHARS = 8_000;
+
+interface CanonicalMessageCore {
+  readonly text: string;
+  readonly images: readonly string[];
+  readonly documents: readonly string[];
+}
+
+function canonicalMessageCore(
+  text: string,
+  attachments: readonly HeldAttachment[],
+): CanonicalMessageCore {
+  return {
+    text: text.trim(),
+    images: dataUrlsOfKind(attachments, "image"),
+    documents: dataUrlsOfKind(attachments, "document"),
+  };
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length && left.every((value, index) => value === right[index])
+  );
+}
+
+function sameMessageCore(left: CanonicalMessageCore, right: CanonicalMessageCore): boolean {
+  return (
+    left.text === right.text &&
+    sameStrings(left.images, right.images) &&
+    sameStrings(left.documents, right.documents)
+  );
+}
 
 /*
  * THE IMAGE CAPS AND THE READER MOVED TO `@/lib/attachments`, and one of them was
@@ -475,7 +507,13 @@ const DELIVERY_LABEL: Readonly<
   design_request: "Delivered to the design review.",
 };
 
-function DeliveryReceipt({ receipt }: { receipt: SendMessageResponse }): ReactNode {
+function DeliveryReceipt({
+  receipt,
+  models,
+}: {
+  receipt: SendMessageResponse;
+  models: readonly ModelOption[] | undefined;
+}): ReactNode {
   if (receipt.disposition === "refused") {
     return (
       <p
@@ -488,6 +526,19 @@ function DeliveryReceipt({ receipt }: { receipt: SendMessageResponse }): ReactNo
     );
   }
 
+  const continuationModel =
+    receipt.disposition === "continuation_created"
+      ? models?.find((model) => model.id === receipt.continuationModelId) ?? null
+      : null;
+  const continuationModelName =
+    receipt.disposition === "continuation_created"
+      ? continuationModel === null
+        ? receipt.continuationModelId
+        : continuationModel.label.includes(continuationModel.id)
+          ? continuationModel.label
+          : `${continuationModel.label} (${continuationModel.id})`
+      : null;
+
   return (
     <div
       role="status"
@@ -497,7 +548,8 @@ function DeliveryReceipt({ receipt }: { receipt: SendMessageResponse }): ReactNo
     >
       {receipt.disposition === "continuation_created" ? (
         <>
-          Continued in a new run. The finished source stays unchanged.{" "}
+          Continued with {continuationModelName} in a new run. The finished source stays
+          unchanged.{" "}
           <Link
             href={`/runs/${encodeURIComponent(receipt.targetRunId)}`}
             className="font-medium underline underline-offset-2 hover:text-ink"
@@ -515,11 +567,15 @@ function DeliveryReceipt({ receipt }: { receipt: SendMessageResponse }): ReactNo
 export function OrchestratorChat({
   messages,
   runIsOver,
+  models,
+  sourceModelId,
   onSend,
   canAttachDocuments = false,
 }: {
   messages: readonly ChatMessage[];
   runIsOver: boolean;
+  models: readonly ModelOption[] | undefined;
+  sourceModelId: string;
   /**
    * Rejects with a message the panel shows verbatim.
    *
@@ -535,6 +591,7 @@ export function OrchestratorChat({
     documents: readonly string[],
     intent: MessageIntent,
     clientMessageId: string,
+    continuationModelId?: string,
   ) => Promise<SendMessageResponse>;
   /**
    * May this composer take documents? DEFAULT FALSE.
@@ -551,11 +608,69 @@ export function OrchestratorChat({
   const [busy, setBusy] = useState<MessageIntent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<SendMessageResponse | null>(null);
+  const [chosenContinuationModelId, setChosenContinuationModelId] = useState<string | null>(
+    null,
+  );
+  const continuationModelControlId = useId();
   const fileInput = useRef<HTMLInputElement | null>(null);
   const retryRequest = useRef<{
     readonly intent: MessageIntent;
     readonly clientMessageId: string;
+    /**
+     * Captured rather than re-resolved from the catalogue: an ambiguous failed
+     * response may already have committed this exact continuation server-side.
+     */
+    readonly continuationModel: ModelOption | null;
+    readonly core: CanonicalMessageCore;
   } | null>(null);
+
+  const currentCore = canonicalMessageCore(text, attachments);
+  const selectableModels = models?.filter((model) => model.available) ?? [];
+  const payloadRetry =
+    retryRequest.current !== null && sameMessageCore(retryRequest.current.core, currentCore)
+      ? retryRequest.current
+      : null;
+  const retryModelChoiceMatches =
+    payloadRetry !== null &&
+    (payloadRetry.continuationModel === null
+      ? chosenContinuationModelId === null
+      : chosenContinuationModelId === null ||
+        chosenContinuationModelId === payloadRetry.continuationModel.id);
+  const matchingRetry = retryModelChoiceMatches ? payloadRetry : null;
+  const retryContinuationModel = runIsOver
+    ? (matchingRetry?.continuationModel ?? null)
+    : null;
+  const legacyRetryAvailable =
+    runIsOver && payloadRetry !== null && payloadRetry.continuationModel === null;
+  const legacyRetrySelected = legacyRetryAvailable && chosenContinuationModelId === null;
+  const selectedContinuationModel =
+    legacyRetrySelected
+      ? null
+      : retryContinuationModel ??
+        selectableModels.find((model) => model.id === chosenContinuationModelId) ??
+        selectableModels.find((model) => model.id === sourceModelId) ??
+        selectableModels[0] ??
+        null;
+  const payloadRetryModel = runIsOver ? payloadRetry?.continuationModel : null;
+  const retryModelIsUnavailable =
+    payloadRetryModel !== null &&
+    payloadRetryModel !== undefined &&
+    !selectableModels.some((model) => model.id === payloadRetryModel.id);
+  const sourceModel = models?.find((model) => model.id === sourceModelId) ?? null;
+  const retryOnlyIntent: MessageIntent | null =
+    runIsOver &&
+    payloadRetry !== null &&
+    (legacyRetrySelected || (matchingRetry !== null && retryModelIsUnavailable))
+      ? payloadRetry.intent
+      : null;
+  const retryActionLabel = retryOnlyIntent === "send" ? "Send" : "Steer";
+  const actionsDisabled =
+    busy !== null ||
+    (runIsOver && selectedContinuationModel === null && !legacyRetrySelected);
+  const sendDisabled =
+    actionsDisabled || (retryOnlyIntent !== null && retryOnlyIntent !== "send");
+  const steerDisabled =
+    actionsDisabled || (retryOnlyIntent !== null && retryOnlyIntent !== "steer");
 
   /**
    * THE OBJECT URLS DIE WITH THIS PANEL. It is mounted inside the run sheet, which
@@ -597,7 +712,6 @@ export function OrchestratorChat({
     (files: readonly File[]): void => {
       setError(null);
       setReceipt(null);
-      retryRequest.current = null;
       if (files.length === 0) return;
       const plan = planAttachmentIntake(files, attachments, {
         // Rebuilt here rather than closed over: an object literal in the render
@@ -631,15 +745,29 @@ export function OrchestratorChat({
       if (doomed !== undefined) releaseAttachments([doomed]);
       setAttachments((previous) => previous.filter((_unused, i) => i !== index));
       setReceipt(null);
-      retryRequest.current = null;
     },
     [attachments],
   );
 
   const send = useCallback((intent: MessageIntent): void => {
-    const trimmed = text.trim();
     if (busy !== null) return;
-    if (trimmed === "" && attachments.length === 0) return;
+    if (retryOnlyIntent !== null && intent !== retryOnlyIntent) {
+      setError(
+        `${retryActionLabel} is the only safe retry. Choose an available model to start a new request with either action.`,
+      );
+      return;
+    }
+    if (
+      currentCore.text === "" &&
+      currentCore.images.length === 0 &&
+      currentCore.documents.length === 0
+    ) {
+      return;
+    }
+    if (runIsOver && selectedContinuationModel === null && !legacyRetrySelected) {
+      setError("No available model can start a continuation.");
+      return;
+    }
     /*
      * WHAT IS BEING SENT, PINNED HERE, AND EVERY LINE BELOW IS ABOUT THIS LIST
      * AND NOT ABOUT `attachments`.
@@ -657,20 +785,31 @@ export function OrchestratorChat({
      */
     const sent = attachments;
     const sentText = text;
+    const continuationModel =
+      runIsOver && !legacyRetrySelected ? selectedContinuationModel : null;
+    const previous = retryRequest.current;
     const clientMessageId =
-      retryRequest.current?.intent === intent
-        ? retryRequest.current.clientMessageId
+      previous?.intent === intent &&
+      sameMessageCore(previous.core, currentCore) &&
+      previous.continuationModel?.id === continuationModel?.id
+        ? previous.clientMessageId
         : crypto.randomUUID();
-    retryRequest.current = { intent, clientMessageId };
+    retryRequest.current = {
+      intent,
+      clientMessageId,
+      continuationModel,
+      core: currentCore,
+    };
     setBusy(intent);
     setError(null);
     setReceipt(null);
     void onSend(
-      trimmed,
-      dataUrlsOfKind(sent, "image"),
-      dataUrlsOfKind(sent, "document"),
+      currentCore.text,
+      currentCore.images,
+      currentCore.documents,
       intent,
       clientMessageId,
+      continuationModel?.id,
     )
       .then((response) => {
         setReceipt(response);
@@ -698,7 +837,18 @@ export function OrchestratorChat({
       .finally(() => {
         setBusy(null);
       });
-  }, [text, attachments, busy, onSend]);
+  }, [
+    text,
+    attachments,
+    busy,
+    onSend,
+    runIsOver,
+    selectedContinuationModel,
+    legacyRetrySelected,
+    retryOnlyIntent,
+    retryActionLabel,
+    currentCore,
+  ]);
 
   return (
     <section className="border-b border-line px-3 py-2.5">
@@ -758,12 +908,92 @@ export function OrchestratorChat({
         */}
       <div className="mt-1.5 space-y-1.5">
         {runIsOver && (
-          <p className="rounded-sm border border-dashed border-line-strong px-2 py-1.5 text-[11.5px] leading-relaxed text-ink-dim">
-            This run is finished. Your next message starts a linked continuation;
-            this source run stays unchanged.
-          </p>
+          <div className="space-y-1.5 rounded-sm border border-dashed border-line-strong px-2 py-1.5">
+            <p className="text-[11.5px] leading-relaxed text-ink-dim">
+              This run is finished. Your next message starts a linked continuation
+              {selectedContinuationModel === null
+                ? ""
+                : ` with ${selectedContinuationModel.label}`}
+              ; this source run stays unchanged.
+            </p>
+            <label
+              htmlFor={continuationModelControlId}
+              className="block text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-faint"
+            >
+              Continuation model
+            </label>
+            <select
+              id={continuationModelControlId}
+              aria-describedby={`${continuationModelControlId}-status`}
+              value={selectedContinuationModel?.id ?? ""}
+              onChange={(event) => {
+                setChosenContinuationModelId(event.target.value === "" ? null : event.target.value);
+                setError(null);
+              }}
+              disabled={
+                busy !== null ||
+                models === undefined ||
+                (selectedContinuationModel === null && !legacyRetrySelected)
+              }
+              className="block min-w-0 w-full max-w-full rounded-sm border border-line bg-canvas px-2 py-1.5 font-mono text-[11px] text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+            >
+              {legacyRetryAvailable && (
+                <option value="">Original active request · retry without model override</option>
+              )}
+              {selectedContinuationModel === null && !legacyRetryAvailable && (
+                <option value="">
+                  {models === undefined ? "Loading available models…" : "No model available"}
+                </option>
+              )}
+              {retryModelIsUnavailable && payloadRetryModel !== null && payloadRetryModel !== undefined && (
+                <option value={payloadRetryModel.id}>
+                  {payloadRetryModel.label} — {payloadRetryModel.id} · no longer
+                  available, retry only
+                </option>
+              )}
+              {selectableModels.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label} — {model.id}
+                </option>
+              ))}
+            </select>
+            <p
+              id={`${continuationModelControlId}-status`}
+              role={
+                models !== undefined &&
+                (legacyRetrySelected ||
+                  (matchingRetry !== null && retryModelIsUnavailable) ||
+                  (selectedContinuationModel === null && !legacyRetrySelected))
+                  ? "alert"
+                  : undefined
+              }
+              className={cx(
+                "min-w-0 break-words text-[10.5px] leading-relaxed",
+                models !== undefined &&
+                  (legacyRetrySelected ||
+                    (matchingRetry !== null && retryModelIsUnavailable) ||
+                    (selectedContinuationModel === null && !legacyRetrySelected))
+                  ? "text-warn"
+                  : "text-ink-faint",
+              )}
+            >
+              {models === undefined
+                ? "Loading the models that can start a continuation."
+                : legacyRetrySelected
+                  ? `No receipt yet. ${retryActionLabel} retries the original request with the same request ID and no model override. Choose an available model to start a new request with either action.`
+                  : matchingRetry !== null && retryModelIsUnavailable
+                  ? `No receipt yet. ${retryActionLabel} retries ${retryContinuationModel?.label ?? retryContinuationModel?.id} with the same request ID. Choose an available model to start a new request with either action.`
+                  : selectedContinuationModel === null
+                  ? "No available model can start a continuation."
+                  : sourceModel !== null && !sourceModel.available
+                    ? `The source model is unavailable. ${selectedContinuationModel?.label ?? selectedContinuationModel?.id} will be used instead.`
+                    : `The linked continuation will use ${selectedContinuationModel?.label ?? selectedContinuationModel?.id}.`}
+            </p>
+          </div>
         )}
-        {receipt !== null && <DeliveryReceipt receipt={receipt} />}
+        {receipt !== null && (
+          <DeliveryReceipt receipt={receipt} models={models} />
+        )}
         <fieldset className="space-y-1.5">
           <textarea
             value={text}
@@ -771,7 +1001,6 @@ export function OrchestratorChat({
             onChange={(event) => {
               setText(event.target.value.slice(0, MAX_TEXT_CHARS));
               setReceipt(null);
-              retryRequest.current = null;
             }}
             onKeyDown={(event) => {
               // Enter sends, Shift+Enter is a newline — the convention every chat
@@ -825,11 +1054,14 @@ export function OrchestratorChat({
             <Button
               variant="primary"
               onClick={() => send("send")}
-              disabled={busy !== null}
+              disabled={sendDisabled}
             >
               {busy === "send" ? "sending…" : "send"}
             </Button>
-            <Button onClick={() => send("steer")} disabled={busy !== null}>
+            <Button
+              onClick={() => send("steer")}
+              disabled={steerDisabled}
+            >
               {busy === "steer" ? "steering…" : "steer"}
             </Button>
             <Explain about="send and steer" testId="explain-send-mode" className="-ml-1">

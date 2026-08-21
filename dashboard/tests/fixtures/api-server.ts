@@ -28,7 +28,14 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 
 import type { ChatMessage } from "../../src/lib/api";
 import type { RunEvent } from "../../src/lib/api-types";
-import { BUILD_RUN_ID, FINISHED_RUN_ID, PLAN_RUN_ID, REPLAY_RUN_ID, RUN_ID } from "./config";
+import {
+  BUILD_RUN_ID,
+  FINISHED_RUN_ID,
+  PLAN_RUN_ID,
+  REPLAY_RUN_ID,
+  RUN_ID,
+  STALE_PLAN_RUN_ID,
+} from "./config";
 import {
   BUILD_DETAIL,
   BUILD_ECHO_SEQ,
@@ -53,6 +60,10 @@ import {
   REPLAY_DETAIL,
   RUN_DETAIL,
   RUN_LIST,
+  STALE_PLAN_DETAIL,
+  STALE_PLAN_EVENTS,
+  STALE_PLAN_GRAPH,
+  STALE_PLAN_MESSAGES,
   TAIL_MARKER,
   TAIL_SEQ,
   planEvents,
@@ -316,6 +327,29 @@ export function startFixtureApi(port: number): Promise<FixtureApi> {
       // and not merely in the fixture file.
       openStream(response);
       planEvents(Date.now()).forEach((event, index) => {
+        writeFrame(response, index + 1, event);
+      });
+      request.on("close", () => streams.delete(response));
+      return;
+    }
+
+    const stalePlan = `/api/runs/${encodeURIComponent(STALE_PLAN_RUN_ID)}`;
+
+    if (path === stalePlan) {
+      sendJson(response, 200, STALE_PLAN_DETAIL);
+      return;
+    }
+    if (path === `${stalePlan}/graph`) {
+      sendJson(response, 200, STALE_PLAN_GRAPH);
+      return;
+    }
+    if (path === `${stalePlan}/messages`) {
+      sendJson(response, 200, { messages: STALE_PLAN_MESSAGES });
+      return;
+    }
+    if (path === `${stalePlan}/events`) {
+      openStream(response);
+      STALE_PLAN_EVENTS.forEach((event, index) => {
         writeFrame(response, index + 1, event);
       });
       request.on("close", () => streams.delete(response));

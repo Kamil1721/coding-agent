@@ -287,6 +287,18 @@ export function isOutputOverflowFrame(message: SDKMessage): boolean {
   return (message as { error?: unknown }).error === SDK_OVERFLOW_ERROR;
 }
 
+/** The API stop reason carried inside a completed assistant frame. */
+function assistantStopReason(message: SDKMessage): string | null {
+  if (message.type !== "assistant") return null;
+  const reason = (message as { message?: { stop_reason?: unknown } }).message?.stop_reason;
+  return typeof reason === "string" ? reason : null;
+}
+
+/** Whether the SDK explicitly resumed a preceding thinking-only truncation. */
+function resumedFromIncompleteThinking(message: SDKMessage): boolean {
+  return message.type === "assistant" && message.resumed_from_incomplete_thinking === true;
+}
+
 /**
  * The shapes a reset instant arrives in when the refusal comes back as PROSE.
  *
@@ -1719,6 +1731,18 @@ export interface SubscriptionCallerOptions {
   /** Notified whenever the provider reports rate-limit state. */
   readonly onRateLimit?: (state: RateLimitState) => void;
   readonly abortController?: AbortController;
+  /** Per-caller override for bounded transformation seats. Absent inherits the seat. */
+  readonly effort?: Options["effort"];
+  /** Per-caller thinking policy. Absent preserves the SDK/CLI default. */
+  readonly thinking?: Options["thinking"];
+  /** Per-caller turn cap. Absent preserves {@link seatMaxTurns}. */
+  readonly maxTurns?: number;
+  /**
+   * Treat an assistant `stop_reason=max_tokens` frame as terminal instead of
+   * allowing the SDK to continue incomplete thinking. Only bounded one-turn
+   * callers that cannot use that continuation should enable this.
+   */
+  readonly terminateOnAssistantMaxTokens?: boolean;
   /**
    * Documents EVERY call this seat makes will carry. Absent means the
    * pre-document path, byte for byte.
@@ -1771,6 +1795,10 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
   readonly #env: NodeJS.ProcessEnv;
   readonly #onRateLimit: ((state: RateLimitState) => void) | null;
   readonly #abortController: AbortController | null;
+  readonly #effort: Options["effort"];
+  readonly #thinking: Options["thinking"];
+  readonly #maxTurns: number | null;
+  readonly #terminateOnAssistantMaxTokens: boolean;
   readonly #plan: SeatDocumentPlan;
   readonly #imagePlan: SeatImagePlan;
   readonly #startQuery: SeatSessionFactory;
@@ -1797,6 +1825,13 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
     this.#env = subscriptionSubprocessEnv(base);
     this.#onRateLimit = options.onRateLimit ?? null;
     this.#abortController = options.abortController ?? null;
+    this.#effort = options.effort ?? seat.effort;
+    this.#thinking = options.thinking;
+    if (options.maxTurns !== undefined && (!Number.isInteger(options.maxTurns) || options.maxTurns <= 0)) {
+      throw new Error("subscription caller maxTurns must be a positive integer");
+    }
+    this.#maxTurns = options.maxTurns ?? null;
+    this.#terminateOnAssistantMaxTokens = options.terminateOnAssistantMaxTokens ?? false;
     this.#plan = planSeatDocuments(
       options.documents ?? [],
       options.nativeBudgetBase64Chars ?? DEFAULT_SEAT_NATIVE_BASE64_CHARS,
@@ -1951,11 +1986,12 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
       abortController,
       cwd: this.#cwd,
       model: this.seat.modelId,
-      effort: this.seat.effort,
+      ...(this.#effort === undefined ? {} : { effort: this.#effort }),
       systemPrompt: request.system,
       tools: [],
       settingSources: [],
-      maxTurns: seatMaxTurns(this.#env),
+      maxTurns: this.#maxTurns ?? seatMaxTurns(this.#env),
+      ...(this.#thinking === undefined ? {} : { thinking: this.#thinking }),
       // ON ONLY WHEN SOMEONE IS LISTENING. This was hardcoded `false`, which is
       // why the spec phase was a 51-minute black box: a seat with `tools: []`
       // emits no tool call, and without partial messages the SDK yields exactly
@@ -1980,6 +2016,8 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
     // (1) and (2) are the ones the SDK's own types promise and which a future
     // CLI is more likely to keep than it is to keep the wording of a sentence.
     let overflowed = false;
+    let provisionalAssistantOverflow = false;
+    let resumedIncompleteThinking = false;
     let overflowDetail = "";
 
     // BUILT PER CALL, NOT PER CALLER. An async generator is single-use; a
@@ -2030,7 +2068,33 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
           // on the synthetic assistant frame it emits when the API stream stops
           // on max_tokens, and the SDK forwards that field verbatim. Preferred
           // over the prose, per the rule that a structured field beats English.
-          if (isOutputOverflowFrame(message)) overflowed = true;
+          if (isOutputOverflowFrame(message)) {
+            overflowed = true;
+            provisionalAssistantOverflow = true;
+            resumedIncompleteThinking = false;
+          }
+          if (resumedFromIncompleteThinking(message)) resumedIncompleteThinking = true;
+          /*
+           * A completed thinking-only frame can carry stop_reason=max_tokens
+           * before the CLI emits a result. The SDK normally continues incomplete
+           * thinking, so only callers that explicitly disable that continuation
+           * may treat the frame as terminal. For those callers, preserve usage,
+           * close the one-shot iterator, and return the same typed overflow result
+           * as the result-frame path.
+           */
+          if (
+            this.#terminateOnAssistantMaxTokens &&
+            assistantStopReason(message) === OVERFLOW_STOP_REASON
+          ) {
+            overflowed = true;
+            const usage = (message as { message?: { usage?: unknown } }).message?.usage;
+            if (typeof usage === "object" && usage !== null) {
+              tokens = extractTokens(usage as Parameters<typeof extractTokens>[0]);
+              thinkingTokens = readThinkingTokens(usage);
+            }
+            overflowDetail = "assistant turn reached its output ceiling before producing a result";
+            break;
+          }
         } else if (message.type === "rate_limit_event") {
           this.#noteRateLimit(rateLimitFrom(message.rate_limit_info));
         } else if (message.type === "result") {
@@ -2053,6 +2117,16 @@ export class SubscriptionSeatCaller extends AnthropicSeatCaller {
             if (message.is_error && isOutputOverflowText(message.result)) {
               overflowed = true;
               overflowDetail = message.result;
+            }
+            if (
+              provisionalAssistantOverflow &&
+              resumedIncompleteThinking &&
+              !message.is_error &&
+              stopReason !== OVERFLOW_STOP_REASON
+            ) {
+              overflowed = false;
+              provisionalAssistantOverflow = false;
+              overflowDetail = "";
             }
           } else {
             failure = `${message.subtype}: ${resultErrorText(message)}`;

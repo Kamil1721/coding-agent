@@ -80,7 +80,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { PLAN_RUN_ID } from "./fixtures/config";
+import { PLAN_RUN_ID, STALE_PLAN_RUN_ID } from "./fixtures/config";
 
 const SHOT_DIR =
   "/private/tmp/claude-501/-Users-kamilborzecki-Projects-coding-agent/3c01d874-1540-48f7-843f-5e9c0f3adc14/scratchpad";
@@ -167,9 +167,37 @@ test("the generic park notice is out of the way", async ({ page }) => {
     page.getByTestId("overview-this-run").getByText("awaiting input"),
     "the run is not actually parked, so the notice above was suppressed for nothing",
   ).toBeVisible();
+  await expect(
+    page.getByTestId("overview-this-run").getByRole("button", { name: "Resume", exact: true }),
+  ).toHaveAttribute("title", /Every open question is recorded as an assumption/);
   // And the notice does not come back merely because Overview is the open panel:
   // it floats over the canvas and is gated on the dialogue, not on the panel.
   await expect(page.getByText("Waiting on input")).toHaveCount(0);
+});
+
+test("a later creative park cannot reopen the folded plan", async ({ page }) => {
+  await page.goto(`/runs/${STALE_PLAN_RUN_ID}`);
+
+  // The durable graph and durable plan agree that planning finished, even though
+  // the row later reused the old plan/awaiting-input tuple.
+  await expect(page.getByTestId("stage-card-plan")).toHaveAttribute("data-state", "done");
+
+  // This is now a generic resumable park. Questions do not auto-open and do not
+  // suppress the only action that can continue the failed creative boundary.
+  const genericPark = page.getByText("Waiting on input").locator("../..");
+  await expect(genericPark).toBeVisible();
+  await expect(genericPark.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
+  await expect(
+    page.getByTestId("overview-this-run").getByRole("button", { name: "Resume", exact: true }),
+  ).toHaveAttribute("title", "Put this run back in the queue.");
+
+  await page.getByTestId("rail-questions").click();
+  await expect(page.getByRole("heading", { name: "Plan", exact: true })).toBeVisible();
+  await expect(page.getByText("answered", { exact: true })).toHaveCount(3);
+  await expect(page.getByText("open", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: /^Answer PQ-/ })).toHaveCount(0);
+  await expect(page.getByText(/minutes left|window has closed/i)).toHaveCount(0);
+  await expect(page.getByText("Waiting on input")).toBeVisible();
 });
 
 test("the clock says how long, and that running out is not a failure", async ({ page }) => {

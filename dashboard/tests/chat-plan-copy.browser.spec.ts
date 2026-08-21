@@ -245,14 +245,20 @@ test.describe("a fact that was moved is still reachable by a reader", () => {
   /** A finished record remains readable while either action creates its successor. */
   test("a finished run keeps both actions available for a linked continuation", async ({ page }) => {
     await page.goto(`/runs/${FINISHED_RUN_ID}`);
-    await page.getByRole("button", { name: /^chat/i }).click();
+    const chatButton = page.getByTestId("rail-chat");
+    const terminalHint =
+      "Chat — start a linked continuation with a message or reference image.";
+    await expect(chatButton).toHaveAttribute("aria-label", terminalHint);
+    await expect(chatButton).toHaveAttribute("title", terminalHint);
+
+    await chatButton.click();
     await expect(page.getByRole("button", { name: "send", exact: true })).toBeVisible();
 
     await expect(page.getByRole("button", { name: "send", exact: true })).toBeEnabled();
     await expect(page.getByRole("button", { name: "steer", exact: true })).toBeEnabled();
     await expect(page.getByTestId("explain-send-mode")).toBeEnabled();
     await expect(composer(page)).toContainText(
-      "Your next message starts a linked continuation; this source run stays unchanged.",
+      /Your next message starts a linked continuation(?: with [^;]+)?; this source run stays unchanged\./,
     );
   });
 });

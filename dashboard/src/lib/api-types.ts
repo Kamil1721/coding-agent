@@ -795,9 +795,65 @@ export interface ApiMotionSpec {
   readonly respectsReducedMotion: boolean;
 }
 
+/**
+ * The small, safe projection of the durable plan record served with a run.
+ *
+ * The transcript still owns the words of the plan and its questions. This
+ * projection owns only CURRENT state: whether the dialogue is waiting, when its
+ * original window ends, and what the arbiter recorded for each question. That
+ * separation prevents a later, unrelated `awaiting_input` state from turning an
+ * old `PQ-*` transcript block back into an open form.
+ */
+export type RunPlanQuestionStatus = "open" | "answered" | "declined" | "expired";
+
+export type RunPlanClosureReason =
+  | "answered"
+  | "declined"
+  | "turn cap"
+  | "window expired"
+  | "nothing to ask";
+
+export interface RunPlanQuestion {
+  readonly id: string;
+  readonly status: RunPlanQuestionStatus;
+  /** Answer text, or the default recorded for a declined/expired question. */
+  readonly recorded: string | null;
+}
+
+export interface RunPlanClosure {
+  readonly reason: RunPlanClosureReason;
+  readonly detail: string;
+}
+
+export interface RunPlanState {
+  /** True only while this dialogue is waiting for the owner. */
+  readonly awaiting: boolean;
+  /** True once the exchange has been folded into the brief. */
+  readonly folded: boolean;
+  /** The end of the original park window, or null outside an active park. */
+  readonly deadlineAt: string | null;
+  readonly closed: RunPlanClosure | null;
+  readonly questions: readonly RunPlanQuestion[];
+}
+
+/** A plan file exists, but the server could not safely project its state. */
+export interface RunPlanUnreadable {
+  readonly kind: "unreadable";
+  readonly detail: string;
+}
+
+export type RunPlanProjection = RunPlanState | RunPlanUnreadable;
+
 export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: RunPhase;
+  /**
+   * Current durable plan state. `null` means this run has no readable plan
+   * record; the key is also absent on responses recorded before this projection
+   * existed, so consumers preserve the transcript-based legacy fallback for
+   * both shapes.
+   */
+  readonly plan?: RunPlanProjection | null;
   readonly criteria: readonly RunCriterion[];
   /**
    * The twelve machine gates, or `null` when this run never reached them.
@@ -1218,6 +1274,11 @@ export interface SendMessageRequest {
   readonly text?: string;
   readonly images?: readonly string[];
   readonly documents?: readonly string[];
+  /**
+   * Model for a linked continuation of a terminal run. Omitted for live-run
+   * messages, which stay in the source run's existing session.
+   */
+  readonly continuationModelId?: string;
   /** Omitted is the backwards-compatible ordinary send path. */
   readonly intent?: MessageIntent;
   /** Stable across a retry so an ambiguous network failure cannot duplicate the turn. */
@@ -1270,6 +1331,8 @@ export type SendMessageResponse =
       readonly disposition: "continuation_created";
       readonly sourceRunId: string;
       readonly sourceMessageSeq: number;
+      /** Server-authoritative model recorded on the durable target run. */
+      readonly continuationModelId: string;
     })
   | {
       readonly disposition: "refused";

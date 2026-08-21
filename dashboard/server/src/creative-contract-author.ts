@@ -29,23 +29,32 @@ import {
   VISUAL_KINDS,
   ACTION_INTENTS,
   ACTION_PRIORITIES,
+  CREATIVE_CONTRACT_V1_AUTHOR_INVARIANTS,
+  CREATIVE_CONTRACT_V1_JSON_SCHEMA,
   REDUCED_MOTION_FALLBACKS,
   canonicalJson,
-  compileCreativeContract,
+  compileCreativeContractAuthorOutput,
   sha256Hex,
 } from "./creative-contract.js";
 import type {
   CreativeCompileError,
   CreativeContractV1,
+  CreativeContractSafeRepair,
   CreativeEvidenceRef,
   CreativeEvidenceResolver,
 } from "./creative-contract.js";
-import { SubscriptionSeatCaller } from "./subscription-caller.js";
+import {
+  DEFAULT_SEAT_CALL_MAX_TURNS,
+  SubscriptionSeatCaller,
+} from "./subscription-caller.js";
 import type { SeatSessionFactory } from "./subscription-caller.js";
 import type { TokenTotals } from "./tokens.js";
 
 export const CREATIVE_CONTRACT_AUTHOR_SCHEMA_VERSION = 1 as const;
 export const CREATIVE_CONTRACT_AUTHOR_MAX_OUTPUT_TOKENS = 24_000;
+export const CREATIVE_CONTRACT_AUTHOR_MAX_TURNS = DEFAULT_SEAT_CALL_MAX_TURNS;
+export const CREATIVE_CONTRACT_AUTHOR_EFFORT = "low" as const;
+export const CREATIVE_CONTRACT_AUTHOR_THINKING = { type: "disabled" } as const;
 export const MAX_CREATIVE_AUTHOR_FACTS = 80;
 export const MAX_CREATIVE_AUTHOR_PROMPT_CHARS = 45_000;
 
@@ -115,6 +124,7 @@ export interface CreativeContractAuthorResult {
   readonly contract: CreativeContractV1 | null;
   readonly errors: readonly CreativeAuthorError[];
   readonly compileErrors: readonly CreativeCompileError[];
+  readonly repairs: readonly CreativeContractSafeRepair[];
   readonly detail: string;
   readonly tokens: TokenTotals | null;
   readonly rateLimit: RateLimitState | null;
@@ -277,19 +287,25 @@ function buildPrompt(input: CreativeContractAuthorInput): string {
     designFacts: input.designFacts,
     referenceFacts: input.referenceFacts,
   };
+  const compilerInvariants = CREATIVE_CONTRACT_V1_AUTHOR_INVARIANTS
+    .map((invariant) => `- ${invariant.guidance}`)
+    .join("\n");
   const prompt = `AUTHORING RULES
 
 - Copy contractId exactly. Use only evidence objects present in HOST FACTS. Never invent or alter a locator or digest.
 - State one project-specific design read: audience, vibe, aesthetic family, honest design system, display style, palette, theme and thesis. Derive the three 1-10 dials from the facts, not a universal preset.
 - Turn supported claims into contentProof entries and authorize only their actual uses. Every section needs one focused job and evidence-linked content.
 - Use concrete copy. Do not use generic filler, fake metrics, startup placeholder names, em-dashes, decorative section numbers, scroll cues, version labels or mock-poetic micro-labels.
-- Give each route one first-position hero. Keep hero body within 20 words and actions to one primary plus at most one secondary.
-- Use eyebrows no more than once per three sections with two sections between them. Keep one action label per intent.
+- Give each route exactly one hero. Keep hero body within 20 words and actions to one primary plus at most one secondary.
+- Use eyebrows no more than once per three sections with two sections between them.
 - Choose section layouts because their jobs differ. Do not repeat a layout family, use more than two consecutive split-media sections, or add more than one marquee unless an evidence-backed intentional exception applies.
-- Specify every mobile content order and collapse. Multi-column and asymmetric layouts cannot merely preserve their desktop form.
+- Specify a mobile collapse strategy for every section. Multi-column and asymmetric layouts cannot merely preserve their desktop form.
 - Motion is optional at intensity 1-4. Above 4, include only motivated hierarchy, storytelling, feedback or state-transition motion. Animate only opacity and transform. Every motion entry needs reduced-motion and no-media fallbacks. Scroll-progress needs intensity 8-10 unless an evidence-backed dial exception applies.
-- Intentional exceptions are not defects. Add one only when an admitted owner/reference fact supports that exact closed rule, scope and rationale. Do not add prophylactic or unused exceptions.
 - Real visuals are expected unless an admitted fact justifies TEXT_ONLY_PAGE. Do not prescribe one visual aesthetic across unrelated projects.
+
+DETERMINISTIC COMPILER INVARIANTS
+
+${compilerInvariants}
 
 OUTPUT SHAPE
 
@@ -303,8 +319,15 @@ HOST FACTS END.`;
   return prompt;
 }
 
-function baseResult(authorBy: string, status: CreativeContractAuthorStatus, ran: boolean, inputHash: string | null, promptHash: string | null): Omit<CreativeContractAuthorResult, "contractHash" | "contract" | "errors" | "compileErrors" | "detail" | "tokens" | "rateLimit"> {
-  return { schemaVersion: CREATIVE_CONTRACT_AUTHOR_SCHEMA_VERSION, status, ran, inputHash, promptHash, authorBy };
+function baseResult(
+  authorBy: string,
+  status: CreativeContractAuthorStatus,
+  ran: boolean,
+  inputHash: string | null,
+  promptHash: string | null,
+  repairs: readonly CreativeContractSafeRepair[] = [],
+): Omit<CreativeContractAuthorResult, "contractHash" | "contract" | "errors" | "compileErrors" | "detail" | "tokens" | "rateLimit"> {
+  return { schemaVersion: CREATIVE_CONTRACT_AUTHOR_SCHEMA_VERSION, status, ran, inputHash, promptHash, repairs, authorBy };
 }
 
 /** All failures are closed result data. No exception crosses this boundary. */
@@ -328,13 +351,17 @@ export async function authorCreativeContract(request: CreativeContractAuthorRequ
       cwd: request.cwd,
       env: request.env,
       abortController: abortControllerFor(request.signal),
+      effort: CREATIVE_CONTRACT_AUTHOR_EFFORT,
+      thinking: CREATIVE_CONTRACT_AUTHOR_THINKING,
+      maxTurns: CREATIVE_CONTRACT_AUTHOR_MAX_TURNS,
+      terminateOnAssistantMaxTokens: true,
       ...(request.startQuery === undefined ? {} : { startQuery: request.startQuery }),
     });
     const call = await caller.call({
       system: AUTHOR_SYSTEM_PROMPT,
       userTurns: [prompt],
       maxOutputTokens: CREATIVE_CONTRACT_AUTHOR_MAX_OUTPUT_TOKENS,
-      jsonSchema: null,
+      jsonSchema: CREATIVE_CONTRACT_V1_JSON_SCHEMA,
       purpose: `creative contract author ${validated.input.ticket.id}`,
     });
     caller.assertUnused();
@@ -350,23 +377,27 @@ export async function authorCreativeContract(request: CreativeContractAuthorRequ
       errors: [{ code: "INVALID_MODEL_OUTPUT", path: "/", message: "author output contained material that cannot be persisted" }],
       compileErrors: [], detail: "creative author output was rejected", tokens: caller.tokens, rateLimit: caller.rateLimit,
     };
-    const compiled = compileCreativeContract(call.text, admittedResolver(validated.facts, request.evidenceResolver));
+    const outcome = compileCreativeContractAuthorOutput(call.text, admittedResolver(validated.facts, request.evidenceResolver));
+    const compiled = outcome.compiled;
     if (!compiled.ok) return {
-      ...baseResult(authorBy, "invalid", true, inputHash, promptHash),
+      ...baseResult(authorBy, "invalid", true, inputHash, promptHash, outcome.repairs),
       contractHash: null, contract: null,
       errors: [{ code: compiled.errors[0]?.code === "INVALID_JSON" ? "INVALID_MODEL_OUTPUT" : "COMPILE_REJECTED", path: "/", message: "author output failed the CreativeContractV1 compiler" }],
       compileErrors: compiled.errors, detail: "creative author output did not compile", tokens: caller.tokens, rateLimit: caller.rateLimit,
     };
     if (compiled.contract.contractId !== validated.input.contractId) return {
-      ...baseResult(authorBy, "invalid", true, inputHash, promptHash),
+      ...baseResult(authorBy, "invalid", true, inputHash, promptHash, outcome.repairs),
       contractHash: null, contract: null,
       errors: [{ code: "COMPILE_REJECTED", path: "/contractId", message: "compiled contractId does not match the admitted author request" }],
       compileErrors: [], detail: "creative author output targeted a different contract", tokens: caller.tokens, rateLimit: caller.rateLimit,
     };
     return {
-      ...baseResult(authorBy, "compiled", true, inputHash, promptHash),
+      ...baseResult(authorBy, "compiled", true, inputHash, promptHash, outcome.repairs),
       contractHash: compiled.contractHash, contract: compiled.contract, errors: [], compileErrors: [],
-      detail: "creative contract compiled", tokens: caller.tokens, rateLimit: caller.rateLimit,
+      detail: outcome.repairs.length === 0
+        ? "creative contract compiled"
+        : `creative contract compiled after ${String(outcome.repairs.length)} conservative authority-link repairs`,
+      tokens: caller.tokens, rateLimit: caller.rateLimit,
     };
   } catch (cause) {
     return {

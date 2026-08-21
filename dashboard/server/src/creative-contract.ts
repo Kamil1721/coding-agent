@@ -6,6 +6,7 @@ export const MAX_CREATIVE_SECTIONS = 80;
 export const MAX_CONTENT_PROOFS = 200;
 export const MAX_CREATIVE_MOTIONS = 80;
 export const MAX_CREATIVE_EXCEPTIONS = 20;
+export const MAX_ACTION_LABEL_WORDS = 4;
 
 export const PAGE_KINDS = ["saas_landing", "consumer_landing", "agency_landing", "event_landing", "portfolio", "editorial"] as const;
 export type PageKind = (typeof PAGE_KINDS)[number];
@@ -192,6 +193,272 @@ export interface CreativeContractV1 {
   readonly intentionalExceptions: readonly IntentionalExceptionV1[];
 }
 
+type JsonSchema = Readonly<Record<string, unknown>>;
+
+function closedSchema(
+  properties: Readonly<Record<string, JsonSchema>>,
+): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: Object.keys(properties),
+    properties,
+  };
+}
+
+function textSchema(maxLength: number, pattern = "\\S"): JsonSchema {
+  return { type: "string", minLength: 1, maxLength, pattern };
+}
+
+function nullableTextSchema(maxLength: number, pattern = "\\S"): JsonSchema {
+  return { type: ["string", "null"], minLength: 1, maxLength, pattern };
+}
+
+function enumSchema(values: readonly string[]): JsonSchema {
+  return { type: "string", minLength: 1, maxLength: 64, enum: values };
+}
+
+function arrayEnumSchema(values: readonly string[]): JsonSchema {
+  return { type: "string", minLength: 1, maxLength: 128, enum: values };
+}
+
+function arraySchema(items: JsonSchema, minItems: number, maxItems: number, uniqueItems = false): JsonSchema {
+  return { type: "array", items, minItems, maxItems, ...(uniqueItems ? { uniqueItems: true } : {}) };
+}
+
+const ID_SCHEMA = textSchema(128, "^[A-Za-z0-9][A-Za-z0-9._:-]*$");
+const NULLABLE_ID_SCHEMA = nullableTextSchema(128, "^[A-Za-z0-9][A-Za-z0-9._:-]*$");
+const HASH_SCHEMA = textSchema(64, "^[a-f0-9]{64}$");
+const EVIDENCE_SCHEMA = closedSchema({
+  kind: enumSchema(EVIDENCE_KINDS),
+  locator: textSchema(512),
+  sha256: HASH_SCHEMA,
+  excerptSha256: HASH_SCHEMA,
+});
+const CONTENT_REF_SCHEMA = closedSchema({
+  proofId: ID_SCHEMA,
+  use: enumSchema(CONTENT_USES),
+});
+const ACTION_SCHEMA = closedSchema({
+  id: ID_SCHEMA,
+  label: textSchema(60),
+  intent: enumSchema(ACTION_INTENTS),
+  priority: enumSchema(ACTION_PRIORITIES),
+  href: textSchema(512),
+  proofId: NULLABLE_ID_SCHEMA,
+});
+const MOBILE_SCHEMA = closedSchema({
+  strategy: enumSchema(MOBILE_STRATEGIES),
+  contentOrder: arraySchema(arrayEnumSchema(MOBILE_CONTENT_SLOTS), 1, MOBILE_CONTENT_SLOTS.length, true),
+});
+const MOTION_FALLBACK_SCHEMA = closedSchema({
+  reducedMotion: enumSchema(REDUCED_MOTION_FALLBACKS),
+  noMedia: enumSchema(NO_MEDIA_FALLBACKS),
+});
+
+/**
+ * Structured-output boundary for the model author. The deterministic compiler
+ * below remains authoritative for cross-reference and semantic rules; this
+ * schema prevents the seat from inventing a different structural dialect.
+ */
+export const CREATIVE_CONTRACT_V1_JSON_SCHEMA: JsonSchema = Object.freeze(closedSchema({
+  schemaVersion: { type: "integer", const: CREATIVE_CONTRACT_SCHEMA_VERSION },
+  contractId: ID_SCHEMA,
+  designRead: closedSchema({
+    pageKind: enumSchema(PAGE_KINDS),
+    audience: textSchema(300),
+    vibe: textSchema(200),
+    aestheticFamily: enumSchema(AESTHETIC_FAMILIES),
+    designSystem: enumSchema(DESIGN_SYSTEMS),
+    displayStyle: enumSchema(DISPLAY_STYLES),
+    paletteFamily: enumSchema(PALETTE_FAMILIES),
+    theme: enumSchema(THEME_BEHAVIORS),
+    thesis: textSchema(500),
+  }),
+  dials: closedSchema({
+    designVariance: { type: "integer", minimum: 1, maximum: 10 },
+    motionIntensity: { type: "integer", minimum: 1, maximum: 10 },
+    visualDensity: { type: "integer", minimum: 1, maximum: 10 },
+  }),
+  contentProof: arraySchema(closedSchema({
+    id: ID_SCHEMA,
+    claim: textSchema(800),
+    status: enumSchema(CONTENT_PROOF_STATUSES),
+    evidence: EVIDENCE_SCHEMA,
+    allowedUses: arraySchema(arrayEnumSchema(CONTENT_USES), 1, CONTENT_USES.length, true),
+  }), 1, MAX_CONTENT_PROOFS),
+  routes: arraySchema(closedSchema({
+    id: ID_SCHEMA,
+    path: textSchema(256, "^/(?:[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*)?$"),
+    sectionIds: arraySchema(ID_SCHEMA, 1, MAX_CREATIVE_SECTIONS, true),
+  }), 1, MAX_CREATIVE_ROUTES),
+  sections: arraySchema(closedSchema({
+    id: ID_SCHEMA,
+    routeId: ID_SCHEMA,
+    order: { type: "integer", minimum: 0, maximum: MAX_CREATIVE_SECTIONS - 1 },
+    kind: enumSchema(SECTION_KINDS),
+    job: textSchema(400),
+    contentRefs: arraySchema(CONTENT_REF_SCHEMA, 1, 20),
+    eyebrow: nullableTextSchema(80),
+    headline: textSchema(160),
+    body: nullableTextSchema(500),
+    actions: arraySchema(ACTION_SCHEMA, 0, 4),
+    layoutFamily: enumSchema(LAYOUT_FAMILIES),
+    visualKind: enumSchema(VISUAL_KINDS),
+    mobile: MOBILE_SCHEMA,
+    requiredStates: arraySchema(arrayEnumSchema(REQUIRED_RENDER_STATES), 1, REQUIRED_RENDER_STATES.length, true),
+  }), 1, MAX_CREATIVE_SECTIONS),
+  motion: arraySchema(closedSchema({
+    id: ID_SCHEMA,
+    routeId: ID_SCHEMA,
+    sectionId: ID_SCHEMA,
+    target: textSchema(200),
+    purpose: enumSchema(MOTION_PURPOSES),
+    trigger: enumSchema(MOTION_TRIGGERS),
+    implementation: enumSchema(MOTION_IMPLEMENTATIONS),
+    properties: arraySchema(arrayEnumSchema(MOTION_PROPERTIES), 1, MOTION_PROPERTIES.length, true),
+    rationale: textSchema(400),
+    fallback: MOTION_FALLBACK_SCHEMA,
+    sourceStillKind: enumSchema(SOURCE_STILL_KINDS),
+    simulationAuthorized: { type: "boolean" },
+  }), 0, MAX_CREATIVE_MOTIONS),
+  intentionalExceptions: arraySchema(closedSchema({
+    rule: enumSchema(INTENTIONAL_EXCEPTION_RULES),
+    routeId: NULLABLE_ID_SCHEMA,
+    sectionIds: arraySchema(ID_SCHEMA, 0, 8, true),
+    rationale: textSchema(400),
+    evidence: EVIDENCE_SCHEMA,
+  }), 0, MAX_CREATIVE_EXCEPTIONS),
+}));
+
+export type CreativeCompilerConstraint =
+  | { readonly type: "object"; readonly required: readonly string[]; readonly additionalProperties: false }
+  | { readonly type: "array"; readonly minItems: number; readonly maxItems: number; readonly uniqueItems: boolean }
+  | {
+      readonly type: "string"; readonly nullable: boolean; readonly minLength: number; readonly maxLength: number;
+      readonly pattern: string | null; readonly enum: readonly string[] | null;
+    }
+  | { readonly type: "integer"; readonly minimum: number | null; readonly maximum: number | null; readonly constValue: number | null }
+  | { readonly type: "boolean" };
+
+const compilerObject = (...required: readonly string[]): CreativeCompilerConstraint =>
+  ({ type: "object", required, additionalProperties: false });
+const compilerArray = (minItems: number, maxItems: number, uniqueItems = false): CreativeCompilerConstraint =>
+  ({ type: "array", minItems, maxItems, uniqueItems });
+const compilerString = (
+  maxLength: number,
+  options: { readonly nullable?: boolean; readonly pattern?: string; readonly enum?: readonly string[] } = {},
+): CreativeCompilerConstraint => ({
+  type: "string", nullable: options.nullable === true, minLength: 1, maxLength,
+  pattern: options.pattern ?? (options.enum === undefined ? "\\S" : null), enum: options.enum ?? null,
+});
+const compilerEnum = (values: readonly string[], maxLength = 64): CreativeCompilerConstraint =>
+  compilerString(maxLength, { enum: values });
+const compilerInteger = (minimum: number | null, maximum: number | null, constValue: number | null = null): CreativeCompilerConstraint =>
+  ({ type: "integer", minimum, maximum, constValue });
+
+const compilerEvidence = (prefix: string): Readonly<Record<string, CreativeCompilerConstraint>> => ({
+  [prefix]: compilerObject("kind", "locator", "sha256", "excerptSha256"),
+  [`${prefix}/kind`]: compilerEnum(EVIDENCE_KINDS),
+  [`${prefix}/locator`]: compilerString(512),
+  [`${prefix}/sha256`]: compilerString(64, { pattern: "^[a-f0-9]{64}$" }),
+  [`${prefix}/excerptSha256`]: compilerString(64, { pattern: "^[a-f0-9]{64}$" }),
+});
+
+/**
+ * Compiler-owned structural manifest. Unlike the author schema, this table is
+ * intentionally flat and names every compiler constraint so parity tests run in
+ * both directions: deleting a schema constraint cannot delete its own test.
+ */
+export const CREATIVE_CONTRACT_V1_COMPILER_CONSTRAINTS: Readonly<Record<string, CreativeCompilerConstraint>> = Object.freeze({
+  "/": compilerObject("schemaVersion", "contractId", "designRead", "dials", "contentProof", "routes", "sections", "motion", "intentionalExceptions"),
+  "/schemaVersion": compilerInteger(null, null, CREATIVE_CONTRACT_SCHEMA_VERSION),
+  "/contractId": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/designRead": compilerObject("pageKind", "audience", "vibe", "aestheticFamily", "designSystem", "displayStyle", "paletteFamily", "theme", "thesis"),
+  "/designRead/pageKind": compilerEnum(PAGE_KINDS),
+  "/designRead/audience": compilerString(300),
+  "/designRead/vibe": compilerString(200),
+  "/designRead/aestheticFamily": compilerEnum(AESTHETIC_FAMILIES),
+  "/designRead/designSystem": compilerEnum(DESIGN_SYSTEMS),
+  "/designRead/displayStyle": compilerEnum(DISPLAY_STYLES),
+  "/designRead/paletteFamily": compilerEnum(PALETTE_FAMILIES),
+  "/designRead/theme": compilerEnum(THEME_BEHAVIORS),
+  "/designRead/thesis": compilerString(500),
+  "/dials": compilerObject("designVariance", "motionIntensity", "visualDensity"),
+  "/dials/designVariance": compilerInteger(1, 10),
+  "/dials/motionIntensity": compilerInteger(1, 10),
+  "/dials/visualDensity": compilerInteger(1, 10),
+  "/contentProof": compilerArray(1, MAX_CONTENT_PROOFS),
+  "/contentProof/*": compilerObject("id", "claim", "status", "evidence", "allowedUses"),
+  "/contentProof/*/id": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/contentProof/*/claim": compilerString(800),
+  "/contentProof/*/status": compilerEnum(CONTENT_PROOF_STATUSES),
+  ...compilerEvidence("/contentProof/*/evidence"),
+  "/contentProof/*/allowedUses": compilerArray(1, CONTENT_USES.length, true),
+  "/contentProof/*/allowedUses/*": compilerEnum(CONTENT_USES, 128),
+  "/routes": compilerArray(1, MAX_CREATIVE_ROUTES),
+  "/routes/*": compilerObject("id", "path", "sectionIds"),
+  "/routes/*/id": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/routes/*/path": compilerString(256, { pattern: "^/(?:[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*)?$" }),
+  "/routes/*/sectionIds": compilerArray(1, MAX_CREATIVE_SECTIONS, true),
+  "/routes/*/sectionIds/*": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/sections": compilerArray(1, MAX_CREATIVE_SECTIONS),
+  "/sections/*": compilerObject("id", "routeId", "order", "kind", "job", "contentRefs", "eyebrow", "headline", "body", "actions", "layoutFamily", "visualKind", "mobile", "requiredStates"),
+  "/sections/*/id": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/sections/*/routeId": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/sections/*/order": compilerInteger(0, MAX_CREATIVE_SECTIONS - 1),
+  "/sections/*/kind": compilerEnum(SECTION_KINDS),
+  "/sections/*/job": compilerString(400),
+  "/sections/*/contentRefs": compilerArray(1, 20),
+  "/sections/*/contentRefs/*": compilerObject("proofId", "use"),
+  "/sections/*/contentRefs/*/proofId": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/sections/*/contentRefs/*/use": compilerEnum(CONTENT_USES),
+  "/sections/*/eyebrow": compilerString(80, { nullable: true }),
+  "/sections/*/headline": compilerString(160),
+  "/sections/*/body": compilerString(500, { nullable: true }),
+  "/sections/*/actions": compilerArray(0, 4),
+  "/sections/*/actions/*": compilerObject("id", "label", "intent", "priority", "href", "proofId"),
+  "/sections/*/actions/*/id": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/sections/*/actions/*/label": compilerString(60),
+  "/sections/*/actions/*/intent": compilerEnum(ACTION_INTENTS),
+  "/sections/*/actions/*/priority": compilerEnum(ACTION_PRIORITIES),
+  "/sections/*/actions/*/href": compilerString(512),
+  "/sections/*/actions/*/proofId": compilerString(128, { nullable: true, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/sections/*/layoutFamily": compilerEnum(LAYOUT_FAMILIES),
+  "/sections/*/visualKind": compilerEnum(VISUAL_KINDS),
+  "/sections/*/mobile": compilerObject("strategy", "contentOrder"),
+  "/sections/*/mobile/strategy": compilerEnum(MOBILE_STRATEGIES),
+  "/sections/*/mobile/contentOrder": compilerArray(1, MOBILE_CONTENT_SLOTS.length, true),
+  "/sections/*/mobile/contentOrder/*": compilerEnum(MOBILE_CONTENT_SLOTS, 128),
+  "/sections/*/requiredStates": compilerArray(1, REQUIRED_RENDER_STATES.length, true),
+  "/sections/*/requiredStates/*": compilerEnum(REQUIRED_RENDER_STATES, 128),
+  "/motion": compilerArray(0, MAX_CREATIVE_MOTIONS),
+  "/motion/*": compilerObject("id", "routeId", "sectionId", "target", "purpose", "trigger", "implementation", "properties", "rationale", "fallback", "sourceStillKind", "simulationAuthorized"),
+  "/motion/*/id": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/motion/*/routeId": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/motion/*/sectionId": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/motion/*/target": compilerString(200),
+  "/motion/*/purpose": compilerEnum(MOTION_PURPOSES),
+  "/motion/*/trigger": compilerEnum(MOTION_TRIGGERS),
+  "/motion/*/implementation": compilerEnum(MOTION_IMPLEMENTATIONS),
+  "/motion/*/properties": compilerArray(1, MOTION_PROPERTIES.length, true),
+  "/motion/*/properties/*": compilerEnum(MOTION_PROPERTIES, 128),
+  "/motion/*/rationale": compilerString(400),
+  "/motion/*/fallback": compilerObject("reducedMotion", "noMedia"),
+  "/motion/*/fallback/reducedMotion": compilerEnum(REDUCED_MOTION_FALLBACKS),
+  "/motion/*/fallback/noMedia": compilerEnum(NO_MEDIA_FALLBACKS),
+  "/motion/*/sourceStillKind": compilerEnum(SOURCE_STILL_KINDS),
+  "/motion/*/simulationAuthorized": { type: "boolean" },
+  "/intentionalExceptions": compilerArray(0, MAX_CREATIVE_EXCEPTIONS),
+  "/intentionalExceptions/*": compilerObject("rule", "routeId", "sectionIds", "rationale", "evidence"),
+  "/intentionalExceptions/*/rule": compilerEnum(INTENTIONAL_EXCEPTION_RULES),
+  "/intentionalExceptions/*/routeId": compilerString(128, { nullable: true, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/intentionalExceptions/*/sectionIds": compilerArray(0, 8, true),
+  "/intentionalExceptions/*/sectionIds/*": compilerString(128, { pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+  "/intentionalExceptions/*/rationale": compilerString(400),
+  ...compilerEvidence("/intentionalExceptions/*/evidence"),
+});
+
 export type CreativeCompileErrorCode =
   | "INVALID_JSON" | "INVALID_ROOT" | "UNKNOWN_KEY" | "MISSING_KEY" | "INVALID_TYPE" | "INVALID_VALUE" | "LIMIT_EXCEEDED"
   | "DUPLICATE_ID" | "DUPLICATE_VALUE" | "DANGLING_ROUTE" | "DANGLING_SECTION" | "DANGLING_CONTENT_PROOF"
@@ -203,6 +470,76 @@ export type CreativeCompileErrorCode =
   | "MOTION_PROPERTY_FORBIDDEN" | "MOTION_FALLBACK_INVALID" | "UI_SIMULATION_UNAUTHORIZED" | "EXCEPTION_SCOPE_INVALID"
   | "EXCEPTION_REQUIRED" | "EXCEPTION_UNUSED" | "VISUAL_REQUIRED";
 
+/**
+ * Semantic constraints the author must satisfy before the deterministic
+ * compiler sees its first draft. Kept with the compiler so prompt wording does
+ * not independently reinterpret these branches.
+ */
+export const CREATIVE_CONTRACT_V1_AUTHOR_INVARIANTS = [
+  {
+    id: "content-proof-coverage",
+    errorSites: [{ code: "CONTENT_PROOF_UNUSED", pathPattern: "/contentProof/*" }],
+    guidance:
+      "Before output, audit every contentProof id: each id must appear in at least one sections[].contentRefs[].proofId or actions[].proofId; omit every unreferenced contentProof entry.",
+  },
+  {
+    id: "action-labels",
+    errorSites: [
+      { code: "LIMIT_EXCEEDED", pathPattern: "/sections/*/actions/*/label" },
+      { code: "ACTION_INTENT_LABEL_DRIFT", pathPattern: "/sections/*/actions/*/label" },
+    ],
+    guidance:
+      `Keep every actions[].label to at most ${String(MAX_ACTION_LABEL_WORDS)} whitespace-delimited words. Reuse the exact same case-sensitive label only when the same action intent targets the same trimmed href; different destinations may use specific labels.`,
+  },
+  {
+    id: "action-proof-authorization",
+    errorSites: [{ code: "CONTENT_USE_NOT_ALLOWED", pathPattern: "/sections/*/actions/*/proofId" }],
+    guidance:
+      "Set actions[].proofId to null or to a contentProof id whose allowedUses includes action.",
+  },
+  {
+    id: "content-ref-rendered-slot",
+    errorSites: [{ code: "CONTENT_USE_NOT_ALLOWED", pathPattern: "/sections/*/contentRefs/*/use" }],
+    guidance:
+      "Match each sections[].contentRefs[].use to content the section renders: for this slot check headline, alt, metric and quote count as present; eyebrow only when eyebrow is non-null; body only when body is non-null; action only when actions is non-empty. Put evidence for a specific action on that actions[].proofId.",
+  },
+  {
+    id: "ui-still-simulation",
+    errorSites: [{ code: "UI_SIMULATION_UNAUTHORIZED", pathPattern: "/motion/*/simulationAuthorized" }],
+    guidance:
+      "Set simulationAuthorized true whenever a motion entry has sourceStillKind ui.",
+  },
+  {
+    id: "intentional-exception-consumption",
+    errorSites: [
+      { code: "EXCEPTION_SCOPE_INVALID", pathPattern: "/intentionalExceptions/*" },
+      { code: "EXCEPTION_SCOPE_INVALID", pathPattern: "/intentionalExceptions/*/sectionIds/*" },
+      { code: "EXCEPTION_UNUSED", pathPattern: "/intentionalExceptions/*" },
+    ],
+    guidance:
+      "Default intentionalExceptions to []. Active predicates are exactly: SERIF_DISPLAY only when displayStyle is serif AND pageKind is not editorial AND aestheticFamily is not editorial; PURPLE_PALETTE when paletteFamily is purple; WARM_CRAFT_PALETTE when paletteFamily is warm_craft; THEME_SWITCH when theme is section_switch; DIAL_DEVIATION when a motion trigger is scroll_progress AND motionIntensity is below 8; CENTERED_HERO when a route hero layoutFamily is centered_hero AND pageKind is neither editorial nor event_landing; LAYOUT_FAMILY_REPEAT when one layoutFamily occurs more than once on a route; SECOND_MARQUEE when a route has more than one marquee; TEXT_ONLY_PAGE when a route has no section whose visualKind is outside none and type_only. After drafting, add an exception only for an active predicate it will waive. The five global rules require routeId null and sectionIds []; route rules require an existing routeId and only sectionIds from that route, including every affected section the predicate checks. Omit every inactive exception; in particular, an editorial aesthetic needs no SERIF_DISPLAY exception.",
+  },
+  {
+    id: "hero-order",
+    errorSites: [{ code: "HERO_ORDER", pathPattern: "/sections/*/order" }],
+    guidance:
+      "For every route, put its one hero section id first in route.sectionIds and set that hero section order to 0.",
+  },
+  {
+    id: "mobile-visible-slots",
+    errorSites: [{ code: "MOBILE_ORDER_INVALID", pathPattern: "/sections/*/mobile/contentOrder" }],
+    guidance:
+      "Set each section mobile.contentOrder to every visible slot exactly once and no others: headline always; eyebrow iff eyebrow is non-null; body iff body is non-null; visual iff visualKind is not none; actions iff actions is non-empty.",
+  },
+] as const satisfies readonly {
+  readonly id: string;
+  readonly errorSites: readonly {
+    readonly code: CreativeCompileErrorCode;
+    readonly pathPattern: `/${string}`;
+  }[];
+  readonly guidance: string;
+}[];
+
 export interface CreativeCompileError {
   readonly code: CreativeCompileErrorCode;
   readonly path: string;
@@ -212,6 +549,38 @@ export interface CreativeCompileError {
 export type CreativeCompileResult =
   | { readonly ok: true; readonly contract: CreativeContractV1; readonly canonicalJson: string; readonly contractHash: string }
   | { readonly ok: false; readonly errors: readonly CreativeCompileError[] };
+
+export type CreativeContractSafeRepair =
+  | {
+      readonly code: "EXCEPTION_UNUSED";
+      readonly path: string;
+      readonly action: "delete_unused_exception";
+      readonly before: IntentionalExceptionV1;
+    }
+  | {
+      readonly code: "CONTENT_USE_NOT_ALLOWED";
+      readonly path: string;
+      readonly action: "remove_unauthorized_content_ref";
+      readonly before: SectionContentRefV1;
+    }
+  | {
+      readonly code: "CONTENT_USE_NOT_ALLOWED";
+      readonly path: string;
+      readonly action: "null_unauthorized_action_proof_id";
+      readonly before: string;
+    }
+  | {
+      readonly code: "ACTION_INTENT_LABEL_DRIFT";
+      readonly path: string;
+      readonly action: "reuse_prior_action_label";
+      readonly before: string;
+      readonly after: string;
+    };
+
+export interface CreativeContractAuthorCompileResult {
+  readonly compiled: CreativeCompileResult;
+  readonly repairs: readonly CreativeContractSafeRepair[];
+}
 
 type JsonRecord = Record<string, unknown>;
 interface Context { readonly errors: CreativeCompileError[]; }
@@ -512,7 +881,7 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
   if (contract.designRead.paletteFamily === "warm_craft" && !useException("WARM_CRAFT_PALETTE", null)) error(ctx, "EXCEPTION_REQUIRED", "/designRead/paletteFamily", "warm-craft palette requires an evidence-backed exception");
   if (contract.designRead.theme === "section_switch" && !useException("THEME_SWITCH", null)) error(ctx, "EXCEPTION_REQUIRED", "/designRead/theme", "section theme switching requires an evidence-backed exception");
 
-  const intentLabels = new Map<string, string>();
+  const destinationLabelsByIntent = new Map<string, Map<string, string>>();
   for (const [index, section] of contract.sections.entries()) {
     if (!routes.has(section.routeId)) error(ctx, "DANGLING_ROUTE", `/sections/${String(index)}/routeId`, "section route does not exist");
     if (copyIsBanned(section.headline)) error(ctx, "BANNED_COPY", `/sections/${String(index)}/headline`, "visible copy contains a forbidden generic phrase or dash character");
@@ -539,15 +908,18 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
       actionIds.add(action.id);
       if (action.priority === "primary") primaryCount += 1;
       if (copyIsBanned(action.label)) error(ctx, "BANNED_COPY", `/sections/${String(index)}/actions/${String(position)}/label`, "action copy contains a forbidden generic phrase or dash character");
-      if (wordCount(action.label) > 3) error(ctx, "LIMIT_EXCEEDED", `/sections/${String(index)}/actions/${String(position)}/label`, "action label must be at most three words");
+      if (wordCount(action.label) > MAX_ACTION_LABEL_WORDS) error(ctx, "LIMIT_EXCEEDED", `/sections/${String(index)}/actions/${String(position)}/label`, `action label must be at most ${String(MAX_ACTION_LABEL_WORDS)} words`);
       if (action.proofId !== null && !proofs.has(action.proofId)) error(ctx, "DANGLING_CONTENT_PROOF", `/sections/${String(index)}/actions/${String(position)}/proofId`, "action proof does not exist");
       if (action.proofId !== null) {
         proofUse.set(action.proofId, (proofUse.get(action.proofId) ?? 0) + 1);
         if (proofs.get(action.proofId)?.allowedUses.includes("action") !== true) error(ctx, "CONTENT_USE_NOT_ALLOWED", `/sections/${String(index)}/actions/${String(position)}/proofId`, "proof does not authorize action use");
       }
-      const prior = intentLabels.get(action.intent);
-      if (prior !== undefined && prior !== action.label) error(ctx, "ACTION_INTENT_LABEL_DRIFT", `/sections/${String(index)}/actions/${String(position)}/label`, "one action intent must use one label across the contract");
-      else intentLabels.set(action.intent, action.label);
+      const destinationLabels = destinationLabelsByIntent.get(action.intent) ?? new Map<string, string>();
+      destinationLabelsByIntent.set(action.intent, destinationLabels);
+      const destination = action.href.trim();
+      const prior = destinationLabels.get(destination);
+      if (prior !== undefined && prior !== action.label) error(ctx, "ACTION_INTENT_LABEL_DRIFT", `/sections/${String(index)}/actions/${String(position)}/label`, "one action intent and destination must use one label across the contract");
+      else destinationLabels.set(destination, action.label);
     }
     if (primaryCount > 1) error(ctx, "ACTION_PRIMARY_LIMIT", `/sections/${String(index)}/actions`, "section may have at most one primary action");
     const requiredSlots: MobileContentSlot[] = ["headline"];
@@ -648,4 +1020,129 @@ export function compileCreativeContract(text: string, resolver: CreativeEvidence
   if (ctx.errors.length > 0) return { ok: false, errors: sorted(ctx.errors) };
   const result = canonicalJson(contract);
   return { ok: true, contract, canonicalJson: result, contractHash: sha256Hex(result) };
+}
+
+type SafeRepairTarget =
+  | { readonly kind: "exception"; readonly index: number; readonly error: CreativeCompileError }
+  | { readonly kind: "contentRef"; readonly sectionIndex: number; readonly index: number; readonly error: CreativeCompileError }
+  | { readonly kind: "actionProof"; readonly sectionIndex: number; readonly index: number; readonly error: CreativeCompileError }
+  | { readonly kind: "actionLabel"; readonly sectionIndex: number; readonly index: number; readonly error: CreativeCompileError };
+
+function safeRepairTarget(error: CreativeCompileError): SafeRepairTarget | null {
+  let match: RegExpExecArray | null;
+  if (error.code === "EXCEPTION_UNUSED" && (match = /^\/intentionalExceptions\/(\d+)$/u.exec(error.path)) !== null) {
+    return { kind: "exception", index: Number(match[1]), error };
+  }
+  if (error.code === "ACTION_INTENT_LABEL_DRIFT" &&
+    (match = /^\/sections\/(\d+)\/actions\/(\d+)\/label$/u.exec(error.path)) !== null) {
+    return { kind: "actionLabel", sectionIndex: Number(match[1]), index: Number(match[2]), error };
+  }
+  if (error.code !== "CONTENT_USE_NOT_ALLOWED") return null;
+  if ((match = /^\/sections\/(\d+)\/contentRefs\/(\d+)\/use$/u.exec(error.path)) !== null) {
+    return { kind: "contentRef", sectionIndex: Number(match[1]), index: Number(match[2]), error };
+  }
+  if ((match = /^\/sections\/(\d+)\/actions\/(\d+)\/proofId$/u.exec(error.path)) !== null) {
+    return { kind: "actionProof", sectionIndex: Number(match[1]), index: Number(match[2]), error };
+  }
+  return null;
+}
+
+/**
+ * Author-boundary repair policy owned beside the deterministic compiler.
+ * It can only remove invalid authority links or reuse one unambiguous earlier
+ * action label; any other finding prevents the pass, and the fully repaired
+ * candidate must still compile from scratch.
+ */
+export function compileCreativeContractAuthorOutput(
+  text: string,
+  resolver: CreativeEvidenceResolver,
+): CreativeContractAuthorCompileResult {
+  const initial = compileCreativeContract(text, resolver);
+  if (initial.ok) return { compiled: initial, repairs: [] };
+  const targets: SafeRepairTarget[] = [];
+  for (const error of initial.errors) {
+    const target = safeRepairTarget(error);
+    if (target === null) return { compiled: initial, repairs: [] };
+    targets.push(target);
+  }
+
+  let contract: CreativeContractV1;
+  try { contract = JSON.parse(text.trim()) as CreativeContractV1; }
+  catch { return { compiled: initial, repairs: [] }; }
+  const candidate = structuredClone(contract) as unknown as {
+    intentionalExceptions: IntentionalExceptionV1[];
+    sections: Array<{
+      contentRefs: SectionContentRefV1[];
+      actions: Array<{ label: string; intent: ActionIntent; href: string; proofId: string | null }>;
+    }>;
+  };
+  const uniqueTargets = new Map<string, SafeRepairTarget>();
+  for (const target of targets) {
+    const key = `${target.kind}:${target.error.path}`;
+    if (!uniqueTargets.has(key)) uniqueTargets.set(key, target);
+  }
+
+  const repairs: CreativeContractSafeRepair[] = [];
+  const labelAfter = new Map<string, string>();
+  for (const target of uniqueTargets.values()) {
+    if (target.kind === "exception") {
+      const before = candidate.intentionalExceptions[target.index];
+      if (before === undefined) return { compiled: initial, repairs: [] };
+      repairs.push({ code: "EXCEPTION_UNUSED", path: target.error.path, action: "delete_unused_exception", before: structuredClone(before) });
+      continue;
+    }
+    const section = candidate.sections[target.sectionIndex];
+    if (section === undefined) return { compiled: initial, repairs: [] };
+    if (target.kind === "contentRef") {
+      const before = section.contentRefs[target.index];
+      if (before === undefined) return { compiled: initial, repairs: [] };
+      repairs.push({ code: "CONTENT_USE_NOT_ALLOWED", path: target.error.path, action: "remove_unauthorized_content_ref", before: structuredClone(before) });
+      continue;
+    }
+    const action = section.actions[target.index];
+    if (action === undefined) return { compiled: initial, repairs: [] };
+    if (target.kind === "actionProof") {
+      if (typeof action.proofId !== "string") return { compiled: initial, repairs: [] };
+      repairs.push({ code: "CONTENT_USE_NOT_ALLOWED", path: target.error.path, action: "null_unauthorized_action_proof_id", before: action.proofId });
+      continue;
+    }
+    const predecessors = candidate.sections.flatMap((priorSection, sectionIndex) =>
+      sectionIndex > target.sectionIndex
+        ? []
+        : priorSection.actions.slice(0, sectionIndex === target.sectionIndex ? target.index : undefined)
+          .filter((prior) => prior.intent === action.intent && prior.href.trim() === action.href.trim()));
+    if (predecessors.length !== 1 || predecessors[0]!.label === action.label) return { compiled: initial, repairs: [] };
+    repairs.push({
+      code: "ACTION_INTENT_LABEL_DRIFT",
+      path: target.error.path,
+      action: "reuse_prior_action_label",
+      before: action.label,
+      after: predecessors[0]!.label,
+    });
+    labelAfter.set(target.error.path, predecessors[0]!.label);
+  }
+
+  const mutationTargets = [...uniqueTargets.values()];
+  for (const target of mutationTargets) {
+    if (target.kind === "actionProof") candidate.sections[target.sectionIndex]!.actions[target.index]!.proofId = null;
+    else if (target.kind === "actionLabel") {
+      const after = labelAfter.get(target.error.path);
+      if (after === undefined) return { compiled: initial, repairs: [] };
+      candidate.sections[target.sectionIndex]!.actions[target.index]!.label = after;
+    }
+  }
+  for (const target of mutationTargets
+    .filter((item): item is Extract<SafeRepairTarget, { readonly kind: "contentRef" }> => item.kind === "contentRef")
+    .sort((left, right) => right.sectionIndex - left.sectionIndex || right.index - left.index)) {
+    candidate.sections[target.sectionIndex]!.contentRefs.splice(target.index, 1);
+  }
+  for (const target of mutationTargets
+    .filter((item): item is Extract<SafeRepairTarget, { readonly kind: "exception" }> => item.kind === "exception")
+    .sort((left, right) => right.index - left.index)) {
+    candidate.intentionalExceptions.splice(target.index, 1);
+  }
+  return {
+    compiled: compileCreativeContract(canonicalJson(candidate), resolver),
+    repairs,
+  };
 }

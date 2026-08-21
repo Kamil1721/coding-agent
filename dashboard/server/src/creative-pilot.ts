@@ -28,7 +28,8 @@ import type { CreativeRenderOutput } from "./creative-render.js";
 import { RENDER_PROFILE_IDS } from "./render-manifest.js";
 import type { RenderProfileId } from "./render-manifest.js";
 import type { ReferenceManifest } from "./ticket-refs.js";
-import { manifestDocuments } from "./ticket-refs.js";
+import { manifestDocuments, ticketProse } from "./ticket-refs.js";
+import { PLAN_BLOCK_BEGIN, PLAN_BLOCK_END, stripPlanBlock } from "./plan-brief.js";
 import { TASTE_CATEGORIES, TASTE_CODE_CATEGORY, TASTE_FINDING_CODES } from "./taste-policy.js";
 
 export const CREATIVE_CONTRACT_FILE = "creative-contract.json";
@@ -305,12 +306,105 @@ export function readCreativePilotStatus(resultsDir: string): CreativePilotStatus
   }
 }
 
+function boundedFactStatements(label: string, value: string, maximum: number): readonly string[] {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length === 0 || maximum <= 0) return [];
+  const payloadLimit = Math.max(100, 470 - label.length);
+  const parts: string[] = [];
+  let rest = normalized;
+  while (rest.length > 0) {
+    if (rest.length <= payloadLimit) {
+      parts.push(rest);
+      break;
+    }
+    const candidate = rest.slice(0, payloadLimit + 1);
+    const boundary = candidate.lastIndexOf(" ");
+    const take = boundary >= Math.floor(payloadLimit / 2) ? boundary : payloadLimit;
+    parts.push(rest.slice(0, take).trim());
+    rest = rest.slice(take).trim();
+  }
+  const render = (part: string, index: number): string =>
+    `${label}${parts.length > 1 ? ` (part ${String(index + 1)} of ${String(parts.length)})` : ""}: ${part}`;
+  if (parts.length <= maximum) return parts.map(render);
+
+  const omitted = parts.length - maximum + 1;
+  const notice = `${label} projection notice: ${String(omitted)} middle part(s) were omitted to keep the trusted fact packet bounded; the beginning and end are preserved.`;
+  if (maximum === 1) {
+    const budget = Math.max(20, 500 - notice.length - 9);
+    const head = normalized.slice(0, Math.floor(budget / 2)).trim();
+    const tail = normalized.slice(-Math.ceil(budget / 2)).trim();
+    return [`${notice} ${head} […] ${tail}`];
+  }
+  if (maximum === 2) {
+    const tailBudget = Math.max(20, 500 - notice.length - 7);
+    return [render(parts[0] ?? "", 0), `${notice} Tail: ${normalized.slice(-tailBudget).trim()}`];
+  }
+  const contentSlots = maximum - 1;
+  const headCount = Math.ceil(contentSlots / 2);
+  const tailCount = contentSlots - headCount;
+  return [
+    ...parts.slice(0, headCount).map(render),
+    notice,
+    ...parts.slice(parts.length - tailCount).map((part, offset) => render(part, parts.length - tailCount + offset)),
+  ];
+}
+
+function foldedPlanAnswerStatements(brief: string): readonly string[] {
+  const start = brief.lastIndexOf(PLAN_BLOCK_BEGIN);
+  if (start < 0) return [];
+  const end = brief.indexOf(PLAN_BLOCK_END, start + PLAN_BLOCK_BEGIN.length);
+  const block = brief.slice(start, end < 0 ? brief.length : end);
+  const statements: string[] = [];
+  let question: string | null = null;
+  for (const rawLine of block.split("\n")) {
+    const line = rawLine.trim();
+    if (line.endsWith("[ANSWERED BY THE OWNER]")) {
+      question = line.slice(0, -"[ANSWERED BY THE OWNER]".length).trim();
+      continue;
+    }
+    if (question !== null && line.startsWith("he answered:")) {
+      const answer = line.slice("he answered:".length).trim();
+      statements.push(...boundedFactStatements("Planning answer", `${question} ${answer}`, 2));
+      question = null;
+      continue;
+    }
+    if (/\[(?:LEFT TO THE DASHBOARD|NEVER ANSWERED|STILL OPEN)/u.test(line)) question = null;
+  }
+  return statements;
+}
+
+type UnknownRecord = Readonly<Record<string, unknown>>;
+
+function recordOf(value: unknown): UnknownRecord | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as UnknownRecord
+    : null;
+}
+
+function stringListOf(value: unknown): readonly string[] | null {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : null;
+}
+
+function finiteNumberOrNull(value: unknown): number | null | undefined {
+  return value === null ? null : typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function boundedWarning(warnings: string[], code: string, detail: string): void {
+  if (warnings.length >= 6) return;
+  warnings.push(`Creative author reference warning [${code}]: ${detail}`.slice(0, 300));
+}
+
 export function authorInputFor(
   ticket: Ticket,
   manifest: ReferenceManifest | null,
-): { readonly input: CreativeContractAuthorInput; readonly resolver: CreativeEvidenceResolver } {
+): {
+  readonly input: CreativeContractAuthorInput;
+  readonly resolver: CreativeEvidenceResolver;
+  readonly warnings: readonly string[];
+} {
   const facts: CreativeAuthorFact[] = [];
   const resolutions = new Map<string, { readonly sha256: string; readonly excerptSha256: string }>();
+  const warnings: string[] = [];
   const add = (
     id: string,
     kind: CreativeAuthorFact["kind"],
@@ -332,14 +426,31 @@ export function authorInputFor(
     return fact;
   };
 
-  const ticketFact = add(
-    "ticket.goal",
-    "goal",
-    ticket.brief,
-    "owner_message",
-    `ticket:${ticket.id}`,
-    ticket.sha256,
-  );
+  const ticketFacts: CreativeAuthorFact[] = [];
+  const ownerProse = ticketProse(stripPlanBlock(ticket.brief));
+  // Reserve ten ticket-fact slots for late plan answers and enough prompt room
+  // for the closed vocabularies plus the twenty reference-fact ceiling.
+  for (const [index, statement] of boundedFactStatements("Owner brief", ownerProse, 18).entries()) {
+    ticketFacts.push(add(
+      `ticket.goal.${String(index + 1)}`,
+      "goal",
+      statement,
+      "owner_message",
+      `ticket:${ticket.id}:brief:${String(index + 1)}`,
+      ticket.sha256,
+    ));
+  }
+  const answerStatements = foldedPlanAnswerStatements(ticket.brief);
+  for (const [index, statement] of answerStatements.slice(0, 10).entries()) {
+    ticketFacts.push(add(
+      `ticket.plan-answer.${String(index + 1)}`,
+      "constraint",
+      statement,
+      "owner_message",
+      `ticket:${ticket.id}:plan-answer:${String(index + 1)}`,
+      ticket.sha256,
+    ));
+  }
   const designFact = add(
     "host.web-surface",
     "technical_constraint",
@@ -349,34 +460,182 @@ export function authorInputFor(
     ticket.sha256,
   );
   const referenceFacts: CreativeAuthorFact[] = [];
-  for (const [index, image] of (manifest?.images ?? []).entries()) {
-    referenceFacts.push(add(
+  const pushReference = (
+    id: string,
+    kind: CreativeAuthorFact["kind"],
+    statement: string,
+    locator: string,
+    sha256 = ticket.sha256,
+  ): void => {
+    if (referenceFacts.length >= 20) return;
+    referenceFacts.push(add(id, kind, statement, "brief_artifact", locator, sha256));
+  };
+  const rawCapture = manifest?.capture as unknown;
+  if (rawCapture !== null && rawCapture !== undefined) {
+    const capture = recordOf(rawCapture);
+    const outline = recordOf(capture?.["outline"]);
+    let malformed = capture === null || outline === null;
+    const outlineUrl = typeof outline?.["url"] === "string"
+      ? outline["url"]
+      : typeof capture?.["url"] === "string" ? capture["url"] : null;
+    const outlineTitle = typeof outline?.["title"] === "string" ? outline["title"] : null;
+    if (outlineUrl !== null) {
+      pushReference(
+        "reference.capture.overview",
+        "reference_copy",
+        `Captured page address: ${outlineUrl}. Captured page title: ${outlineTitle || "No title was extracted."}`,
+        `ticket:${ticket.id}:capture:overview`,
+      );
+    } else {
+      malformed = true;
+    }
+    const rawHeadings = outline?.["headings"];
+    const headings = Array.isArray(rawHeadings)
+      ? rawHeadings.flatMap((value) => {
+          const heading = recordOf(value);
+          return heading !== null && Number.isInteger(heading["level"]) && typeof heading["text"] === "string"
+            ? [{ level: heading["level"] as number, text: heading["text"] }]
+            : [];
+        })
+      : [];
+    if (!Array.isArray(rawHeadings) || headings.length !== rawHeadings.length) malformed = true;
+    for (const [index, statement] of boundedFactStatements(
+      "Captured headings in document order",
+      headings.map((heading) => `h${String(heading.level)}: ${heading.text}`).join("; "),
+      3,
+    ).entries()) {
+      pushReference(
+        `reference.capture.headings.${String(index + 1)}`,
+        "reference_layout",
+        statement,
+        `ticket:${ticket.id}:capture:headings:${String(index + 1)}`,
+      );
+    }
+    const links = stringListOf(outline?.["links"]);
+    if (links === null) malformed = true;
+    for (const [index, statement] of boundedFactStatements(
+      "Captured link labels",
+      (links ?? []).join("; "),
+      1,
+    ).entries()) {
+      pushReference(
+        `reference.capture.links.${String(index + 1)}`,
+        "reference_copy",
+        statement,
+        `ticket:${ticket.id}:capture:links:${String(index + 1)}`,
+      );
+    }
+    const palette = stringListOf(outline?.["palette"]);
+    if (palette === null) malformed = true;
+    if ((palette?.length ?? 0) > 0) {
+      pushReference(
+        "reference.capture.palette",
+        "reference_color",
+        `Colours extracted from the captured page markup, most used first: ${(palette ?? []).join(", ")}`,
+        `ticket:${ticket.id}:capture:palette`,
+      );
+    }
+    if (malformed) {
+      boundedWarning(warnings, "capture-partial", "malformed optional capture fields or entries were skipped");
+    }
+  }
+  const rawMotion = manifest?.motion as unknown;
+  if (rawMotion !== null && rawMotion !== undefined) {
+    const motion = recordOf(rawMotion);
+    let malformed = motion === null;
+    const motionUrl = typeof motion?.["url"] === "string" ? motion["url"] : null;
+    const libraries = stringListOf(motion?.["libraries"]);
+    const respectsReducedMotion = typeof motion?.["respectsReducedMotion"] === "boolean"
+      ? motion["respectsReducedMotion"]
+      : null;
+    if (motionUrl !== null && libraries !== null && respectsReducedMotion !== null) {
+      pushReference(
+        "reference.motion.overview",
+        "reference_motion",
+        `Motion reference address: ${motionUrl}. Detected libraries: ${libraries.join(", ") || "none"}. Reduced-motion respected: ${respectsReducedMotion ? "yes" : "no"}.`,
+        `ticket:${ticket.id}:motion:overview`,
+      );
+    } else {
+      malformed = true;
+    }
+    const rawEntries = motion?.["entries"];
+    const validEntries = Array.isArray(rawEntries)
+      ? rawEntries.flatMap((value) => {
+          const entry = recordOf(value);
+          const props = stringListOf(entry?.["props"]);
+          const durationMs = finiteNumberOrNull(entry?.["durationMs"]);
+          const staggerMs = finiteNumberOrNull(entry?.["staggerMs"]);
+          const iterations = finiteNumberOrNull(entry?.["iterations"]);
+          const scrollRatio = finiteNumberOrNull(entry?.["scrollRatio"]);
+          const easing = entry?.["easing"];
+          if (
+            entry === null || typeof entry["family"] !== "string" || typeof entry["role"] !== "string" ||
+            props === null || durationMs === null || durationMs === undefined || staggerMs === undefined ||
+            (easing !== null && typeof easing !== "string") || iterations === undefined || scrollRatio === undefined ||
+            typeof entry["parity"] !== "boolean"
+          ) return [];
+          return [{
+            family: entry["family"], role: entry["role"], props, durationMs, staggerMs,
+            easing, iterations, scrollRatio, parity: entry["parity"],
+          }];
+        })
+      : [];
+    if (!Array.isArray(rawEntries) || validEntries.length !== rawEntries.length) malformed = true;
+    const entries = validEntries.map((entry) =>
+      `${entry.family} on ${entry.role}; properties ${entry.props.join("+")}; duration ${String(entry.durationMs)}ms; ` +
+      `stagger ${entry.staggerMs === null ? "none" : `${String(entry.staggerMs)}ms`}; easing ${entry.easing ?? "unspecified"}; ` +
+      `iterations ${entry.iterations === null ? "unspecified" : String(entry.iterations)}; ` +
+      `scroll ratio ${entry.scrollRatio === null ? "none" : String(entry.scrollRatio)}; parity ${entry.parity ? "required" : "presence-only"}`
+    ).join(". ");
+    for (const [index, statement] of boundedFactStatements("Observed reference motion", entries, 3).entries()) {
+      pushReference(
+        `reference.motion.entries.${String(index + 1)}`,
+        "reference_motion",
+        statement,
+        `ticket:${ticket.id}:motion:entries:${String(index + 1)}`,
+      );
+    }
+    if (malformed) {
+      boundedWarning(warnings, "motion-partial", "malformed optional motion fields or entries were skipped");
+    }
+  }
+  for (const [index, value] of (manifest?.images ?? []).entries()) {
+    const image = recordOf(value);
+    if (image === null || typeof image["path"] !== "string" || typeof image["sha256"] !== "string") {
+      boundedWarning(warnings, "image-partial", "a malformed optional reference image entry was skipped");
+      continue;
+    }
+    pushReference(
       `reference.image.${String(index + 1)}`,
       "reference_imagery",
-      `The owner attached reference image ${basename(image.path)}; its bytes are identified by the admitted digest.`,
-      "brief_artifact",
+      `The owner attached reference image ${basename(image["path"])}; its bytes are identified by the admitted digest.`,
       `reference:image:${String(index + 1)}`,
-      image.sha256,
-    ));
+      image["sha256"],
+    );
   }
-  for (const [index, document] of manifestDocuments(manifest).entries()) {
-    referenceFacts.push(add(
+  for (const [index, value] of manifestDocuments(manifest).entries()) {
+    const document = recordOf(value);
+    if (document === null || typeof document["mediaType"] !== "string" || typeof document["sha256"] !== "string") {
+      boundedWarning(warnings, "document-partial", "a malformed optional reference document entry was skipped");
+      continue;
+    }
+    pushReference(
       `reference.document.${String(index + 1)}`,
       "content_claim",
-      `The owner attached a ${document.mediaType} reference document identified by the admitted digest.`,
-      "brief_artifact",
+      `The owner attached a ${document["mediaType"]} reference document identified by the admitted digest.`,
       `reference:document:${String(index + 1)}`,
-      document.sha256,
-    ));
+      document["sha256"],
+    );
   }
   return {
     input: {
       contractId: `creative-${ticket.id}`,
-      ticket: { id: ticket.id, sha256: ticket.sha256, facts: [ticketFact] },
+      ticket: { id: ticket.id, sha256: ticket.sha256, facts: ticketFacts },
       designFacts: [designFact],
       referenceFacts,
     },
     resolver: { resolve(reference) { return resolutions.get(canonicalJson(reference)) ?? null; } },
+    warnings,
   };
 }
 

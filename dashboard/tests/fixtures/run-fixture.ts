@@ -36,7 +36,7 @@ import type {
 } from "../../src/lib/api-types";
 import type { ChatMessage } from "../../src/lib/api";
 import { foldGraphAll } from "../../src/lib/graph";
-import { PLAN_RUN_ID, REPLAY_RUN_ID, RUN_ID } from "./config";
+import { PLAN_RUN_ID, REPLAY_RUN_ID, RUN_ID, STALE_PLAN_RUN_ID } from "./config";
 
 export const MODEL_ID = "claude-sonnet-4-6";
 
@@ -209,6 +209,10 @@ export const RUN_DETAIL: RunDetail = {
       result: "pending",
     },
   ],
+  // NULL, NOT `[]`. This run is still building, so the gate has produced no
+  // score record — and `[]` would say it ran and reported none of the twelve
+  // gates, a state the server cannot produce. The panel renders the difference.
+  machineChecks: null,
   tokens: null,
   costUsd: null,
   rateLimit: null,
@@ -306,6 +310,9 @@ export const PLAN_DETAIL: RunDetail = {
   // NO CRITERIA, AND THAT IS THE POINT OF THE PHASE. The suite is authored after
   // the dialogue folds into the brief; a parked plan run has none yet.
   criteria: [],
+  // And no machine checks either, for the same reason one phase further on: a
+  // run parked in `plan` has not been built, let alone gated.
+  machineChecks: null,
   tokens: null,
   costUsd: null,
   rateLimit: null,
@@ -440,10 +447,99 @@ export const PLAN_MESSAGES: readonly ChatMessage[] = [
   },
 ];
 
+/* -------------------------------------------------------------------------
+ * A LATER PARK COLLIDING WITH THE HISTORICAL PLAN TUPLE
+ *
+ * The transcript still contains the original three-question block and its old
+ * park line. The durable projection says all three were answered and folded;
+ * the run then stopped for an unrelated creative-contract failure while its row
+ * again read `phase: plan` + `awaiting_input`. This is the live screenshot's
+ * contradiction, made deterministic for the browser.
+ * ---------------------------------------------------------------------- */
+
+export const STALE_PLAN_MESSAGES: readonly ChatMessage[] = [
+  PLAN_MESSAGES[0]!,
+  PLAN_MESSAGES[1]!,
+  {
+    seq: 3,
+    at: new Date("2026-08-02T09:01:40.000Z").toISOString(),
+    role: "owner",
+    text: "PQ-1: six. PQ-2: one page. PQ-3: use the first image.",
+    images: [],
+    deliveredAt: new Date("2026-08-02T09:01:41.000Z").toISOString(),
+  },
+];
+
+export const STALE_PLAN_EVENTS: readonly RunEvent[] = [
+  { type: "phase", phase: "plan", at: "2026-08-02T09:00:10.000Z" },
+  {
+    type: "log",
+    level: "info",
+    at: "2026-08-02T09:00:12.000Z",
+    text:
+      "the planning seat proposed 3 question(s) and 3 earned a place. The run is waiting for an " +
+      `answer in the chat; POST /api/runs/${STALE_PLAN_RUN_ID}/messages carries one. With no answer ` +
+      "inside 20 minutes the run proceeds on what it assumed, and the assumptions are recorded.",
+  },
+  {
+    type: "log",
+    level: "info",
+    at: "2026-08-02T09:01:42.000Z",
+    text: "recorded against PQ-1 (answered, addressed): six",
+  },
+  {
+    type: "log",
+    level: "info",
+    at: "2026-08-02T09:01:42.000Z",
+    text: "recorded against PQ-2 (answered, addressed): one page",
+  },
+  {
+    type: "log",
+    level: "info",
+    at: "2026-08-02T09:01:42.000Z",
+    text: "recorded against PQ-3 (answered, addressed): use the first image",
+  },
+  {
+    type: "log",
+    level: "info",
+    at: "2026-08-02T09:01:45.000Z",
+    text: "the plan dialogue is folded into the brief and this run's ticket is now t-new (was t-old).",
+  },
+  {
+    type: "log",
+    level: "error",
+    at: "2026-08-02T09:02:00.000Z",
+    text: "creative contract author failed; the run is parked for a generic resume decision.",
+  },
+];
+
+export const STALE_PLAN_DETAIL: RunDetail = {
+  ...PLAN_DETAIL,
+  runId: STALE_PLAN_RUN_ID,
+  failureReason: "creative contract author failed after the plan dialogue folded",
+  plan: {
+    awaiting: false,
+    folded: true,
+    deadlineAt: null,
+    closed: { reason: "answered", detail: "all three plan questions were answered" },
+    questions: [
+      { id: "PQ-1", status: "answered", recorded: "six" },
+      { id: "PQ-2", status: "answered", recorded: "one page" },
+      { id: "PQ-3", status: "answered", recorded: "use the first image" },
+    ],
+  },
+};
+
+export const STALE_PLAN_GRAPH: RunGraphResponse = {
+  ...foldGraphAll(STALE_PLAN_EVENTS),
+  atSeq: STALE_PLAN_EVENTS.length,
+};
+
 export const RUN_LIST: readonly RunSummary[] = [
   SUMMARY,
   { ...SUMMARY, runId: REPLAY_RUN_ID },
   PLAN_SUMMARY,
+  { ...PLAN_SUMMARY, runId: STALE_PLAN_RUN_ID },
 ];
 
 export const MODELS: readonly ModelOption[] = [

@@ -277,6 +277,44 @@ test("the SDK's own max_output_tokens marker is enough on its own", async () => 
   assert.equal(result.text, "here is the first half of the suite");
 });
 
+test("a default caller accepts an explicitly resumed incomplete-thinking success", async () => {
+  const { factory } = replaying([
+    envelope({
+      type: "assistant",
+      error: "max_output_tokens",
+      message: {
+        role: "assistant",
+        stop_reason: "max_tokens",
+        content: [{ type: "thinking", thinking: "", signature: "encrypted" }],
+        usage: USAGE,
+      },
+    }),
+    envelope({
+      type: "assistant",
+      resumed_from_incomplete_thinking: true,
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "resumed and completed" }],
+        usage: USAGE,
+      },
+    }),
+    envelope({
+      type: "result",
+      subtype: "success",
+      stop_reason: "end_turn",
+      is_error: false,
+      result: "resumed and completed",
+      usage: USAGE,
+    }),
+  ]);
+
+  const result = await callerWith(factory).call(request());
+
+  assert.equal(result.stopReason, "end_turn");
+  assert.equal(result.text, "resumed and completed");
+});
+
 /* -------------------------------------------------------------------------
  * 3. Everything else still throws — the control for the controls
  * ---------------------------------------------------------------------- */

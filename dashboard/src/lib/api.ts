@@ -354,6 +354,7 @@ export function sendRunMessage(
     readonly intent?: MessageIntent;
     readonly clientMessageId?: string;
     readonly documents?: readonly string[];
+    readonly continuationModelId?: string;
   } = {},
 ): Promise<SendMessageResponse> {
   const body: SendMessageRequest = {

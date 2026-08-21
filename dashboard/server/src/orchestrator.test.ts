@@ -100,6 +100,10 @@ import { CONTEXT7_REVIEW_RECORD_FILE, readContext7ReviewRecord } from "./context
 import { expectedContext7ObligationHashes } from "./context7-review.js";
 import type { Context7ReviewOutcome, Context7ReviewRequest } from "./context7-review.js";
 import { captureContext7ReviewSource } from "./context7-pipeline.js";
+import { compileCreativeContract } from "./creative-contract.js";
+import type { CreativeContractV1 } from "./creative-contract.js";
+import type { CreativeContractAuthorRequest, CreativeContractAuthorResult } from "./creative-contract-author.js";
+import { CREATIVE_AUTHOR_FILE, CREATIVE_CONTRACT_FILE } from "./creative-pilot.js";
 
 function harness(): {
   store: RunStore;
@@ -1147,6 +1151,71 @@ function freezeFor(ticketText: string, acceptanceRoot: string): void {
   );
 }
 
+function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest): CreativeContractAuthorResult {
+  const evidence = request.input.ticket.facts[0]?.evidence;
+  assert.ok(evidence !== undefined, "the host author packet must admit at least one owner fact");
+  const sections: CreativeContractV1["sections"] = [
+    {
+      id: "hero", routeId: "home", order: 0, kind: "hero", job: "Introduce the consultancy and its evidence.",
+      contentRefs: [{ proofId: "owner-brief", use: "headline" }], eyebrow: null,
+      headline: "Accountable work for consequential decisions", body: "Inspect the evidence, approach and next action.",
+      actions: [{ id: "contact", label: "Start a conversation", intent: "contact", priority: "primary", href: "#contact", proofId: null }],
+      layoutFamily: "asymmetric_split", visualKind: "generated_image",
+      mobile: { strategy: "stack", contentOrder: ["headline", "body", "visual", "actions"] },
+      requiredStates: ["default", "interaction"],
+    },
+    {
+      id: "proof", routeId: "home", order: 1, kind: "proof", job: "Show evidence supporting the offer.",
+      contentRefs: [{ proofId: "owner-brief", use: "headline" }], eyebrow: null,
+      headline: "Evidence before assertion", body: null, actions: [], layoutFamily: "bento", visualKind: "brand_asset",
+      mobile: { strategy: "stack", contentOrder: ["headline", "visual"] }, requiredStates: ["default"],
+    },
+    {
+      id: "footer", routeId: "home", order: 2, kind: "footer", job: "Close with the direct contact route.",
+      contentRefs: [{ proofId: "owner-brief", use: "headline" }], eyebrow: null,
+      headline: "Start with the decision that matters", body: null, actions: [], layoutFamily: "footer_columns", visualKind: "none",
+      mobile: { strategy: "preserve", contentOrder: ["headline"] }, requiredStates: ["default"],
+    },
+  ];
+  const contract: CreativeContractV1 = {
+    schemaVersion: 1,
+    contractId: request.input.contractId,
+    designRead: {
+      pageKind: "agency_landing", audience: "Leaders responsible for consequential delivery.",
+      vibe: "Editorial, direct and evidence-led.", aestheticFamily: "editorial", designSystem: "native",
+      displayStyle: "serif", paletteFamily: "custom", theme: "light",
+      thesis: "Pair an editorial reading rhythm with direct evidence and an unambiguous route to action.",
+    },
+    dials: { designVariance: 6, motionIntensity: 3, visualDensity: 4 },
+    contentProof: [{
+      id: "owner-brief", claim: "The owner requested this browser-visible experience.", status: "owner_required",
+      evidence, allowedUses: ["headline"],
+    }],
+    routes: [{ id: "home", path: "/", sectionIds: sections.map((section) => section.id) }],
+    sections,
+    motion: [],
+    intentionalExceptions: [],
+  };
+  const compiled = compileCreativeContract(JSON.stringify(contract), request.evidenceResolver);
+  assert.equal(compiled.ok, true, JSON.stringify(compiled));
+  return {
+    schemaVersion: 1,
+    status: "compiled",
+    ran: true,
+    inputHash: "a".repeat(64),
+    promptHash: "b".repeat(64),
+    contractHash: compiled.contractHash,
+    contract: compiled.contract,
+    errors: [],
+    compileErrors: [],
+    repairs: [],
+    detail: "creative contract compiled",
+    tokens: null,
+    rateLimit: null,
+    authorBy: "test/creative-author",
+  };
+}
+
 async function designRun(options: {
   ticket?: string;
   designLock?: "auto" | "ask" | null;
@@ -1182,6 +1251,9 @@ async function designRun(options: {
    * `designPreflight` runs through this same injected runner.
    */
   duringRender?: () => void;
+  runCreativeContractAuthor?: (
+    request: CreativeContractAuthorRequest,
+  ) => Promise<CreativeContractAuthorResult>;
 }): Promise<DesignHarness> {
   const dir = mkdtempSync(join(tmpdir(), "dash-design-"));
   const home = join(dir, "home");
@@ -1267,6 +1339,13 @@ async function designRun(options: {
       return { code: 0, stderr: "" };
     },
     designCanWrite: () => true,
+    ...(options.runCreativeContractAuthor === undefined
+      ? {}
+      : {
+          creativePilotProjectId: "coding-agent",
+          creativePilotActualProjectId: "coding-agent",
+          runCreativeContractAuthor: options.runCreativeContractAuthor,
+        }),
   });
 
   freezeFor(ticketText, paths.acceptance);
@@ -1368,6 +1447,77 @@ async function designRun(options: {
   }
   return harness;
 }
+
+test("an explicitly resumed invalid creative author record reruns, compiles, clears its stale failure and proceeds", async () => {
+  let calls = 0;
+  let failureAtBuilderStart: string | null | undefined;
+  let activeHarness: DesignHarness | null = null;
+  let releaseSecond!: () => void;
+  const secondMayFinish = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  const h = await designRun({
+    autoStart: false,
+    designLock: "auto",
+    onRequest: () => {
+      if (failureAtBuilderStart === undefined) {
+        failureAtBuilderStart = activeHarness?.store.getRun("run-design")?.failureReason;
+      }
+    },
+    runCreativeContractAuthor: async (request) => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          schemaVersion: 1, status: "invalid", ran: true,
+          inputHash: "a".repeat(64), promptHash: "b".repeat(64), contractHash: null, contract: null,
+          errors: [{ code: "COMPILE_REJECTED", path: "/", message: "obsolete dialect" }],
+          compileErrors: [{ code: "INVALID_VALUE", path: "/schemaVersion", message: "schemaVersion must equal 1" }],
+          repairs: [],
+          detail: "creative author output did not compile", tokens: null, rateLimit: null, authorBy: "test/creative-author",
+        };
+      }
+      await secondMayFinish;
+      return compiledCreativeAuthorResult(request);
+    },
+  });
+  activeHarness = h;
+  let api: Awaited<ReturnType<DesignHarness["serve"]>> | null = null;
+  try {
+    h.orchestrator.pump();
+    await h.waitFor(() => h.status() === "awaiting_input", 10_000, "the invalid author did not park the run");
+    const results = runPathsFor(h.paths, h.runId).results;
+    const firstAuthor = JSON.parse(readFileSync(join(results, CREATIVE_AUTHOR_FILE), "utf8")) as { status?: string };
+    assert.equal(firstAuthor.status, "invalid");
+    assert.equal(existsSync(join(results, CREATIVE_CONTRACT_FILE)), false, "invalid model output must not become a contract");
+    const firstFailure = h.store.getRun(h.runId)?.failureReason;
+    assert.match(firstFailure ?? "", /creative contract invalid/u);
+
+    api = await h.serve();
+    const resume = await fetch(`${api.base}/api/runs/${h.runId}/resume`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:4319" },
+      body: "{}",
+    });
+    assert.equal(resume.status, 200, "the explicit resume endpoint must requeue the creative-author park");
+    await h.waitFor(() => calls === 2, 10_000, "resume did not rerun the creative author");
+    assert.equal(
+      h.store.getRun(h.runId)?.failureReason,
+      firstFailure,
+      "resume alone must not erase the durable creative failure before a compiler-green contract exists",
+    );
+    releaseSecond();
+    await h.waitFor(
+      () => existsSync(join(results, CREATIVE_CONTRACT_FILE)) && h.builderCalls.length > 0,
+      10_000,
+      "the compiler-green author result did not proceed to the builder",
+    );
+    assert.equal(calls, 2, "the invalid durable author record must be retried exactly once on this resume");
+    assert.equal(failureAtBuilderStart, null, "compiler-green must clear the stale creative failure before the builder proceeds");
+    assert.equal(JSON.parse(readFileSync(join(results, CREATIVE_AUTHOR_FILE), "utf8")).status, "compiled");
+  } finally {
+    releaseSecond();
+    await api?.close();
+    await h.cleanup();
+  }
+});
 
 test("an ASK run parks at awaiting_input with its mockups visible", async () => {
   const h = await designRun({ designLock: "ask" });

@@ -113,7 +113,7 @@ import { DesignLockPanel } from "@/components/run/design-lock";
 import { PlanDialoguePanel } from "@/components/run/plan-dialogue";
 import { PreBuildPanel } from "@/components/run/prebuild-panel";
 import { ticketLabel, ticketTooltip } from "@/lib/ticket-title";
-import { planDialogueFrom } from "@/lib/plan-dialogue";
+import { planDialogueFrom, planParkedFrom } from "@/lib/plan-dialogue";
 import {
   ApiDownNotice,
   AwaitingInputNotice,
@@ -283,6 +283,7 @@ export default function RunPage(): ReactNode {
       documents: readonly string[],
       intent: MessageIntent,
       clientMessageId: string,
+      continuationModelId?: string,
     ): Promise<SendMessageResponse> => {
       if (runId === null) {
         return {
@@ -295,6 +296,7 @@ export default function RunPage(): ReactNode {
         documents,
         intent,
         clientMessageId,
+        ...(continuationModelId === undefined ? {} : { continuationModelId }),
       });
       loadMessages();
       // The queued message also lands on the event stream, so pull the trace forward
@@ -379,12 +381,11 @@ export default function RunPage(): ReactNode {
   }, []);
 
   /*
-   * THE PLAN PARK, DERIVED FROM THE TWO CHANNELS IT ACTUALLY USES.
+   * THE PLAN PARK, JOINING THE TRANSCRIPT TO ITS DURABLE CURRENT STATE.
    *
-   * There is no `RunDetail.plan` — `lib/plan-dialogue.ts` opens with the check
-   * and the reason a client-side mirror was refused — so the questions come out
-   * of the chat rows and their outcomes out of the trace. Both are already in
-   * this component's hands, which is why this is one pure call and not a fetch.
+   * The words still come out of chat rows. Current open/closed state, recorded
+   * outcomes and the deadline come from `RunDetail.plan` when the server exposes
+   * it, so an unrelated later park cannot reopen a historical question block.
    *
    * `null` FOR EVERY RUN THAT NEVER PLANNED, including every run recorded before
    * the phase existed, and it falls out of the mechanism rather than a version
@@ -399,12 +400,12 @@ export default function RunPage(): ReactNode {
             trace,
             phase: run.phase,
             status: run.status,
+            plan: run.plan,
           }),
     [messages, trace, run],
   );
 
-  const planParked =
-    run !== undefined && run.phase === "plan" && run.status === "awaiting_input";
+  const planParked = run !== undefined && planParkedFrom(run);
 
   /**
    * The park is not merely open — there is a panel on screen offering the answer.
@@ -982,6 +983,7 @@ export default function RunPage(): ReactNode {
         // Only while the run is actually stopped on the question. A settled
         // dialogue is a record, and a record does not need attention.
         questionsDot={planAnswerable || lockIsBlocking ? "warn" : null}
+        runIsOver={isTerminalStatus(run.status)}
         panelTitle={RAIL_LABEL[openPanel ?? "overview"]}
         panelEyebrow="run"
       >
@@ -1011,6 +1013,8 @@ export default function RunPage(): ReactNode {
           <OrchestratorChat
             messages={messages}
             runIsOver={isTerminalStatus(run.status)}
+            models={models}
+            sourceModelId={run.modelId}
             onSend={onSendMessage}
           />
         </div>

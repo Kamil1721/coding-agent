@@ -75,6 +75,7 @@ import type { StreamState, TraceEntry } from "@/lib/use-run-stream";
 import { isTerminalStatus } from "@/lib/api-types";
 import { elapsedBetween, formatDuration } from "@/lib/format";
 import { designLockPhase } from "@/lib/mockups";
+import { planParkedFrom } from "@/lib/plan-dialogue";
 import { TONE_TEXT, phaseMeta, statusMeta, type Tone } from "@/lib/presentation";
 import { ticketLabel, ticketTooltip } from "@/lib/ticket-title";
 import { Explain } from "@/components/explain";
@@ -782,6 +783,7 @@ export function OverviewPanel({
    */
   const lockPhase =
     run.designLock === null ? null : designLockPhase(run.status, run.designLock);
+  const planParked = planParkedFrom(run);
 
   /*
    * THE OPEN-THE-SITE CONTROL LIVES HERE TOO — owner's finding, 2026-08-18:
@@ -884,7 +886,7 @@ export function OverviewPanel({
                  * warning in full, inline, and floats over the canvas.
                  */
                 title={
-                  run.phase === "plan" && run.status === "awaiting_input"
+                  run.status === "awaiting_input" && planParked
                     ? "Carry on without answering. Every open question is recorded as an assumption."
                     : "Put this run back in the queue."
                 }

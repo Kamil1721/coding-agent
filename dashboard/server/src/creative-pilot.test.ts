@@ -111,20 +111,141 @@ test("host author packet admits bounded ticket/design facts and digest-only refe
   }
 });
 
+test("host author packet preserves late plan answers plus captured page and motion facts beyond 500 characters", () => {
+  const lateAnswer = "Use a warm editorial canvas and keep the readiness summary visible beside the contact state.";
+  const amended: Ticket = {
+    ...TICKET,
+    brief: [
+      "Build the requested browser experience. ".repeat(40),
+      "--- WHAT THE DASHBOARD ASKED BEFORE ANY CRITERIA WERE WRITTEN ---",
+      "",
+      `PQ-1 — asked: \"Which visual direction should lead?\" [ANSWERED BY THE OWNER]`,
+      `  he answered: \"${lateAnswer}\"`,
+      "",
+      "--- END OF THE PLANNING EXCHANGE ---",
+    ].join("\n"),
+  };
+  const packet = authorInputFor(amended, {
+    images: [],
+    documents: [],
+    capture: {
+      url: "https://example.com/",
+      capturedAt: "2026-08-21T00:00:00.000Z",
+      shots: [],
+      outline: {
+        url: "https://example.com/",
+        title: "Reference consultancy",
+        headings: [{ level: 2, text: "GLOBO production proof" }],
+        links: ["Run the readiness check"],
+        palette: ["#f5f2ec", "#202020"],
+      },
+    },
+    motion: {
+      url: "https://example.com/",
+      capturedAt: "2026-08-21T00:00:00.000Z",
+      entries: [{
+        family: "scroll-reveal",
+        role: "section.proof",
+        props: ["opacity", "transform"],
+        durationMs: 700,
+        staggerMs: 0,
+        easing: "ease-out",
+        iterations: 1,
+        scrollRatio: null,
+        parity: true,
+      }],
+      libraries: ["motion"],
+      respectsReducedMotion: true,
+    },
+  });
+  const serialized = JSON.stringify(packet.input);
+  assert.match(serialized, new RegExp(lateAnswer, "u"));
+  assert.match(serialized, /GLOBO production proof/u);
+  assert.match(serialized, /scroll-reveal/u);
+  assert.ok(packet.input.ticket.facts.length > 1, "the owner brief must be projected as bounded facts, not one truncated fact");
+  assert.ok(packet.input.ticket.facts.every((fact) => fact.statement.length <= 500));
+  assert.ok(packet.input.referenceFacts.every((fact) => fact.statement.length <= 500));
+  assert.ok(packet.input.ticket.facts.length <= 40);
+  assert.ok(packet.input.referenceFacts.length <= 20);
+});
+
+test("owner projection preserves the bounded head and tail with an admitted omission notice", () => {
+  const tailConstraint = "TAIL-CONSTRAINT: keep the readiness result beside the final contact action.";
+  const long: Ticket = {
+    ...TICKET,
+    brief: `${Array.from({ length: 260 }, (_, index) => `Owner requirement ${String(index)} must remain concrete and testable.`).join(" ")} ${tailConstraint}`,
+  };
+  const packet = authorInputFor(long, null);
+  const statements = packet.input.ticket.facts.map((fact) => fact.statement);
+  assert.equal(statements.length, 18);
+  assert.match(statements[0] ?? "", /Owner requirement 0/u);
+  assert.match(statements.join("\n"), /projection notice/u);
+  assert.match(statements.at(-1) ?? "", new RegExp(tailConstraint, "u"));
+  assert.ok(statements.every((statement) => statement.length <= 500));
+});
+
+test("partial historical capture and motion subtrees are narrowed without throwing", () => {
+  const partialManifest = {
+    images: [],
+    documents: [],
+    capture: {
+      url: "https://example.com/",
+      outline: {
+        title: "Historical capture",
+        headings: [{ level: 2, text: "Preserved historical heading" }, null],
+        links: "not-an-array",
+        palette: ["#202020"],
+      },
+    },
+    motion: {
+      url: "https://example.com/",
+      libraries: ["motion"],
+      respectsReducedMotion: true,
+      entries: [
+        {
+          family: "scroll-reveal", role: "section.proof", props: ["opacity"], durationMs: 600,
+          staggerMs: null, easing: null, iterations: 1, scrollRatio: null, parity: true,
+        },
+        { family: "historical-entry-with-missing-fields" },
+      ],
+    },
+  } as unknown as NonNullable<Parameters<typeof authorInputFor>[1]>;
+
+  const packet = authorInputFor(TICKET, partialManifest);
+  const facts = JSON.stringify(packet.input.referenceFacts);
+  assert.match(facts, /Preserved historical heading/u);
+  assert.match(facts, /scroll-reveal/u);
+  assert.deepEqual(packet.warnings, [
+    "Creative author reference warning [capture-partial]: malformed optional capture fields or entries were skipped",
+    "Creative author reference warning [motion-partial]: malformed optional motion fields or entries were skipped",
+  ]);
+  assert.ok(packet.warnings.every((warning) => warning.length <= 300));
+});
+
 test("compiled author result is atomically durable and freshness compilation fails closed after tampering", () => {
   const results = mkdtempSync(join(tmpdir(), "creative-pilot-"));
   const input = authorInputFor(TICKET, null);
   const contract = validContract(input);
   const compiled = compileCreativeContract(JSON.stringify(contract), input.resolver);
   assert.equal(compiled.ok, true, JSON.stringify(compiled));
+  const repairs = [{
+    code: "CONTENT_USE_NOT_ALLOWED",
+    path: "/sections/0/actions/0/proofId",
+    action: "null_unauthorized_action_proof_id",
+    before: "proof",
+  }] as const;
   const result: CreativeContractAuthorResult = {
     schemaVersion: 1, status: "compiled", ran: true, inputHash: HASH, promptHash: HASH,
-    contractHash: compiled.contractHash, contract: compiled.contract, errors: [], compileErrors: [], detail: "ok",
+    contractHash: compiled.contractHash, contract: compiled.contract, errors: [], compileErrors: [], repairs, detail: "ok",
     tokens: null, rateLimit: null, authorBy: "test",
   };
   const compile = persistCreativeAuthorResult(results, result);
   assert.equal(compile.outcome, "passed");
   assert.equal(existsSync(join(results, CREATIVE_AUTHOR_FILE)), true);
+  assert.deepEqual(
+    (JSON.parse(readFileSync(join(results, CREATIVE_AUTHOR_FILE), "utf8")) as CreativeContractAuthorResult).repairs,
+    repairs,
+  );
   assert.equal(existsSync(join(results, CREATIVE_CONTRACT_FILE)), true);
   assert.equal(existsSync(join(results, CREATIVE_COMPILE_FILE)), true);
   assert.equal(freshCreativeContract(results, input.resolver).fresh?.contractHash, compiled.contractHash);

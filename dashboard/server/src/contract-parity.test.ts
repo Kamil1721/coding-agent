@@ -94,6 +94,7 @@ const SERVER_TYPES = join(import.meta.dirname, "..", "src", "api-types.ts");
 const SERVER_FOLD = join(import.meta.dirname, "..", "src", "graph.ts");
 const CLIENT_LIB = join(CLIENT_SRC, "lib");
 const CLIENT_TYPES = join(CLIENT_LIB, "api-types.ts");
+const CLIENT_PLAN_DIALOGUE = join(CLIENT_LIB, "plan-dialogue.ts");
 const CLIENT_STREAM = join(CLIENT_LIB, "use-run-stream.ts");
 /** Where the browser rebuilds the snapshot before folding the live tail onto it. */
 const CLIENT_GRAPH_HOOK = join(CLIENT_LIB, "use-run-graph.ts");
@@ -717,6 +718,7 @@ const DETAIL_SHAPES: readonly {
     fields: [
       "ticketText",
       "phase",
+      "plan",
       "criteria",
       "machineChecks",
       "tokens",
@@ -751,6 +753,26 @@ const DETAIL_SHAPES: readonly {
     server: "ApiScreenshot",
     client: "Screenshot",
     fields: ["path", "label", "capturedAt"],
+  },
+  {
+    server: "ApiRunPlanState",
+    client: "RunPlanState",
+    fields: ["awaiting", "folded", "deadlineAt", "closed", "questions"],
+  },
+  {
+    server: "ApiRunPlanQuestion",
+    client: "RunPlanQuestion",
+    fields: ["id", "status", "recorded"],
+  },
+  {
+    server: "ApiRunPlanClosure",
+    client: "RunPlanClosure",
+    fields: ["reason", "detail"],
+  },
+  {
+    server: "ApiRunPlanUnreadable",
+    client: "RunPlanUnreadable",
+    fields: ["kind", "detail"],
   },
   {
     server: "ApiCriterion",
@@ -944,6 +966,25 @@ test("CONTRACT: the client mirrors every field of RunDetail and its nested shape
         "server sends that the client never declares is serialised, delivered and never rendered.",
     );
   }
+});
+
+test("CONTRACT: durable plan status and closure literals match server, client and runtime parser", () => {
+  const server = readSource(SERVER_TYPES, "this package's own api-types.ts");
+  const client = readClient(CLIENT_TYPES);
+  const runtime = readClient(CLIENT_PLAN_DIALOGUE);
+  const union = (source: string, file: string, name: string): readonly string[] =>
+    literals(region(source, file, `export type ${name} =`, ";"), /"([^"]+)"/gu);
+  const runtimeSet = (name: string): readonly string[] =>
+    literals(region(runtime, CLIENT_PLAN_DIALOGUE, `const ${name} = new Set([`, "]);"), /"([^"]+)"/gu);
+  const statuses = ["open", "answered", "declined", "expired"];
+  const reasons = ["answered", "declined", "turn cap", "window expired", "nothing to ask"];
+
+  assert.deepEqual(sorted(union(server, SERVER_TYPES, "ApiRunPlanQuestionStatus")), sorted(statuses));
+  assert.deepEqual(sorted(union(client, CLIENT_TYPES, "RunPlanQuestionStatus")), sorted(statuses));
+  assert.deepEqual(sorted(runtimeSet("DURABLE_QUESTION_STATES")), sorted(statuses));
+  assert.deepEqual(sorted(union(server, SERVER_TYPES, "ApiRunPlanClosureReason")), sorted(reasons));
+  assert.deepEqual(sorted(union(client, CLIENT_TYPES, "RunPlanClosureReason")), sorted(reasons));
+  assert.deepEqual(sorted(runtimeSet("DURABLE_CLOSURE_REASONS")), sorted(reasons));
 });
 
 test("CONTRACT: the client's attachment fields carry the server's types, and the URL is the browser's only handle", () => {

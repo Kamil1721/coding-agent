@@ -521,6 +521,10 @@ export const BUILD_DETAIL: RunDetail = {
       result: "pending",
     },
   ],
+  // NULL WHILE THE RUN IS LIVE. The twelve machine gates run at the gate, which
+  // this run has not reached; `[]` would claim it had been there and found
+  // nothing to report.
+  machineChecks: null,
   tokens: null,
   costUsd: null,
   rateLimit: null,
@@ -595,6 +599,54 @@ export const FINISHED_DETAIL: RunDetail = {
       statement: "The pre-build stages stay on screen once the build starts.",
       tier: "FUNCTIONAL",
       result: "fail",
+    },
+  ],
+  /*
+   * THE TWELVE MACHINE GATES, AS THE SERVER COMPOSES THEM — the only fixture
+   * that carries them, because it is the only one that reached the gate.
+   *
+   * EVERY FIELD IS THE SHAPE ITS PRODUCER EMITS. The ids and their order are
+   * `ALL_GATE_IDS` (`bakeoff/src/scorer-protocol.ts:156`); the labels are
+   * `MACHINE_CHECK_LABELS` (`dashboard/server/src/machine-checks.ts`), which is
+   * the one place they are spelled; `passed` is `gateToCriterion`'s boolean, the
+   * same one `computeHeldOutPass` counted.
+   *
+   * TWO FAILURES, CHOSEN TO EXERCISE BOTH HALVES OF THE DETAIL RULE and to agree
+   * with the run they sit on — this run's `heldOutPass` is false and its
+   * `failureReason` is the gate's own sentence about the check run:
+   *
+   *   · `GATE:data-present` is ALLOWLISTED, so its failure carries the
+   *     artefact's own words, bounded to 200 characters server-side.
+   *   · `GATE:suite-green` is NOT, because its detail is up to 4,000 characters
+   *     of the locked runner's output — test titles verbatim. It fails with
+   *     `detail: null`, and a fixture that gave it one would be asserting the
+   *     opposite of the rule the server enforces.
+   *
+   * The other ten pass with `detail: null`, which is what the server sends for
+   * EVERY passing gate whatever its allowlist status.
+   */
+  machineChecks: [
+    { id: "GATE:suite-intact", label: "The checks were not tampered with", passed: true, detail: null },
+    { id: "GATE:no-protected-path-writes", label: "Nothing protected was touched", passed: true, detail: null },
+    { id: "GATE:build", label: "It builds", passed: true, detail: null },
+    { id: "GATE:typecheck", label: "Types check", passed: true, detail: null },
+    { id: "GATE:lint", label: "Lint is clean", passed: true, detail: null },
+    { id: "GATE:boot", label: "It starts", passed: true, detail: null },
+    { id: "GATE:routes", label: "Every page answers", passed: true, detail: null },
+    { id: "GATE:no-stub-markers", label: "No placeholder stubs", passed: true, detail: null },
+    { id: "GATE:no-reward-hack-exploits", label: "No faked passes", passed: true, detail: null },
+    {
+      id: "GATE:data-present",
+      label: "The real content is on the page",
+      passed: false,
+      detail: "api-projects-seeded: http /api/projects: observed 0 row(s), required >= 6.",
+    },
+    { id: "GATE:screenshots-present", label: "Screenshots captured", passed: true, detail: null },
+    {
+      id: "GATE:suite-green",
+      label: "The full check run came back green",
+      passed: false,
+      detail: null,
     },
   ],
   tokens: {

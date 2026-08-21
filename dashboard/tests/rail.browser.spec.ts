@@ -53,7 +53,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { PLAN_RUN_ID, RUN_ID } from "./fixtures/config";
+import { FINISHED_RUN_ID, PLAN_RUN_ID, RUN_ID } from "./fixtures/config";
 
 /**
  * The rail's accessible names, in rail order, on a run with no dialogue.
@@ -125,6 +125,11 @@ test.describe("the rail's interface", () => {
       expect(label, `${entry} has no sentence on its accessible name`).toContain(" — ");
       expect(title, `${entry}'s tooltip does not match its accessible name`).toBe(label);
     }
+
+    await expect(page.getByTestId("rail-chat")).toHaveAttribute(
+      "aria-label",
+      "Chat — send this run an instruction or a reference image.",
+    );
 
     /*
      * AND THE PANEL EACH ONE OPENS IS TITLED WITH THE SAME WORD. The array above
@@ -277,6 +282,68 @@ test.describe("the rail's interface", () => {
         banned,
       );
     }
+  });
+});
+
+test.describe("the rail at a short viewport", () => {
+  test("keeps the finished-run Chat header fixed while only its content scrolls", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 640, height: 360 });
+    await openRun(page, FINISHED_RUN_ID);
+    await openPanel(page, "chat");
+
+    const panel = page.getByTestId("rail-panel");
+    const content = panel.locator(":scope > div").first();
+    const attach = content.getByRole("button", { name: "attach images", exact: true });
+
+    const controlIsInsideContent = async (): Promise<boolean> => {
+      const [controlBox, contentBox] = await Promise.all([
+        attach.boundingBox(),
+        content.boundingBox(),
+      ]);
+      if (controlBox === null || contentBox === null) return false;
+      return (
+        controlBox.y >= contentBox.y &&
+        controlBox.y + controlBox.height <= contentBox.y + contentBox.height
+      );
+    };
+
+    await expect(panel.locator(":scope > header h2")).toHaveText("Chat");
+    await expect(content.getByRole("textbox").first()).toBeVisible();
+
+    const overflow = await panel.evaluate((outer) => {
+      const body = outer.querySelector<HTMLElement>(":scope > div");
+      if (body === null) throw new Error("rail content body is missing");
+      const outerStyle = getComputedStyle(outer);
+      return {
+        outerX: outerStyle.overflowX,
+        outerY: outerStyle.overflowY,
+        bodyY: getComputedStyle(body).overflowY,
+      };
+    });
+    expect(overflow).toEqual({ outerX: "clip", outerY: "visible", bodyY: "auto" });
+
+    const before = await content.evaluate((body) => ({
+      scrollTop: body.scrollTop,
+      scrollHeight: body.scrollHeight,
+      clientHeight: body.clientHeight,
+    }));
+    expect(before.scrollHeight).toBeGreaterThan(before.clientHeight);
+    expect(await controlIsInsideContent()).toBe(false);
+
+    const contentBox = await content.boundingBox();
+    if (contentBox === null) throw new Error("rail content body has no painted box");
+    await page.mouse.move(contentBox.x + contentBox.width / 2, contentBox.y + 20);
+    await page.mouse.wheel(0, 1_200);
+
+    await expect(panel.locator(":scope > header h2")).toBeVisible();
+    await expect(content.getByRole("textbox").first()).toBeVisible();
+    await expect
+      .poll(async () => content.evaluate((body) => body.scrollTop))
+      .toBeGreaterThan(before.scrollTop);
+    expect(await panel.evaluate((outer) => outer.scrollTop)).toBe(0);
+    await expect.poll(controlIsInsideContent).toBe(true);
   });
 });
 

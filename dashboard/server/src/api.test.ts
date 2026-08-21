@@ -21,6 +21,7 @@ import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ApiDesignLock,
   ApiErrorResponse,
+  ApiRunPlanState,
   CreateRunResponse,
   GraphState,
   ModelOption,
@@ -42,7 +43,7 @@ import { GateProbe } from "./health-gate.js";
 import { LOOPBACK_HOST, createDashboardServer, designLockInteractive } from "./http.js";
 import type { RunController } from "./http.js";
 import { CODEX_DEFAULT_MODEL_ID, ModelCatalog } from "./models.js";
-import { planPolicy } from "./plan-record.js";
+import { PLAN_RECORD_FILE, planPolicy, writePlanRecord } from "./plan-record.js";
 import { writeContext7ReviewRecord } from "./context7-review-record.js";
 import type { Context7ReviewRecord } from "./context7-review-record.js";
 import { expectedContext7ObligationHashes } from "./context7-review.js";
@@ -77,6 +78,13 @@ const DASHBOARD_WRITE_HEADERS = {
 interface ResumeCall {
   readonly runId: string;
   readonly chosenMockup: string | null;
+}
+
+function readablePlan(plan: RunDetail["plan"]): ApiRunPlanState {
+  if (plan === null || plan === undefined || "kind" in plan) {
+    assert.fail("expected a readable durable plan projection");
+  }
+  return plan;
 }
 
 interface Harness {
@@ -353,10 +361,146 @@ test("POST /api/runs creates a queued run; costUsd is null and heldOutPass undet
     // with it. Leaving `spec` here would have every queued run render one phase
     // ahead of where it actually starts.
     assert.equal(detail.phase, "plan");
+    assert.equal(detail.plan, null, "a legacy/no-record run has no invented plan state");
     assert.deepEqual(detail.criteria, []);
     assert.deepEqual(detail.screenshots, []);
     assert.equal(detail.previewUrl, null);
     assert.deepEqual(detail.rateLimit, { limited: false, retryAfterSec: null });
+  } finally {
+    await harness.close();
+  }
+});
+
+test("run detail projects durable plan state so a later creative park cannot reopen historic questions", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-plan-projection";
+    harness.store.createRun({
+      runId,
+      ticketId: "t-plan-projection",
+      ticketTitle: "Plan projection",
+      ticketText: "Build a browser-visible page.",
+      ticketSha256: "a".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: "2026-08-21T10:00:00.000Z",
+      queuePosition: 1,
+      interactive: true,
+    });
+    const results = runPathsFor(harness.paths, runId).results;
+    ensureRunDirs(runPathsFor(harness.paths, runId));
+    const question = (id: string) => ({
+      id,
+      text: `Question ${id}?`,
+      ifUnanswered: `Default ${id}`,
+      criterionIfDefault: `Default criterion ${id}`,
+      criterionIfAnswered: `Answered criterion ${id}`,
+      tier: "FUNCTIONAL" as const,
+    });
+    const parkedAt = "2026-08-21T10:05:00.000Z";
+    writePlanRecord(results, {
+      awaiting: true,
+      parkedAt,
+      folded: false,
+      askedAfterSeq: 0,
+      state: {
+        plan: ["Build the page."],
+        questions: ["PQ-1", "PQ-2", "PQ-3"].map((id) => ({
+          question: question(id), status: "open" as const, answer: null, assumed: null,
+        })),
+        clarifications: [], dropped: [], proposed: 3, turnsUsed: 0, closed: null,
+      },
+    });
+    harness.store.updateRun(runId, { status: "awaiting_input", phase: "plan", queuePosition: null });
+    const active = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
+    const activePlan = readablePlan(active.plan);
+    assert.equal(activePlan.awaiting, true);
+    assert.equal(activePlan.folded, false);
+    assert.equal(activePlan.deadlineAt, "2026-08-21T10:25:00.000Z");
+    assert.deepEqual(activePlan.questions.map(({ id, status, recorded }) => ({ id, status, recorded })), [
+      { id: "PQ-1", status: "open", recorded: null },
+      { id: "PQ-2", status: "open", recorded: null },
+      { id: "PQ-3", status: "open", recorded: null },
+    ]);
+
+    writePlanRecord(results, {
+      awaiting: false,
+      parkedAt,
+      folded: true,
+      askedAfterSeq: 0,
+      state: {
+        plan: ["Build the page."],
+        questions: [
+          {
+            question: question("PQ-1"), status: "answered" as const,
+            answer: {
+              text: "Use the warm editorial direction.", quoted: "Use the warm editorial direction.",
+              at: "2026-08-21T10:08:00.000Z", attribution: "structural" as const, paraphrased: false,
+            },
+            assumed: null,
+          },
+          { question: question("PQ-2"), status: "declined" as const, answer: null, assumed: "Default PQ-2" },
+          { question: question("PQ-3"), status: "expired" as const, answer: null, assumed: "Default PQ-3" },
+        ],
+        clarifications: [], dropped: [], proposed: 3, turnsUsed: 1,
+        closed: { reason: "answered", at: "2026-08-21T10:09:00.000Z", detail: "the owner answered the remaining question" },
+      },
+    });
+    harness.store.updateRun(runId, {
+      status: "awaiting_input",
+      phase: "plan",
+      failureReason: "creative contract invalid: author output did not compile",
+    });
+    const creativePark = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
+    assert.equal(creativePark.status, "awaiting_input");
+    assert.equal(creativePark.phase, "plan", "this is the tuple that previously reopened the old question transcript");
+    const closedPlan = readablePlan(creativePark.plan);
+    assert.equal(closedPlan.awaiting, false);
+    assert.equal(closedPlan.folded, true);
+    assert.equal(closedPlan.deadlineAt, null, "a closed plan must never revive its old countdown");
+    assert.deepEqual(closedPlan.closed, {
+      reason: "answered",
+      detail: "the owner answered the remaining question",
+    });
+    assert.deepEqual(closedPlan.questions, [
+      { id: "PQ-1", status: "answered", recorded: "Use the warm editorial direction." },
+      { id: "PQ-2", status: "declined", recorded: "Default PQ-2" },
+      { id: "PQ-3", status: "expired", recorded: "Default PQ-3" },
+    ]);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("run detail exposes a corrupt durable plan as unreadable instead of legacy absence", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-plan-unreadable";
+    harness.store.createRun({
+      runId,
+      ticketId: "t-plan-unreadable",
+      ticketTitle: "Unreadable plan",
+      ticketText: "Build a browser-visible page.",
+      ticketSha256: "c".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: "2026-08-21T11:00:00.000Z",
+      queuePosition: 1,
+      interactive: true,
+    });
+    const paths = runPathsFor(harness.paths, runId);
+    ensureRunDirs(paths);
+    writeFileSync(join(paths.results, PLAN_RECORD_FILE), '{"awaiting":true', "utf8");
+    harness.store.updateRun(runId, { status: "awaiting_input", phase: "plan", queuePosition: null });
+
+    const detail = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
+    assert.deepEqual(detail.plan, {
+      kind: "unreadable",
+      detail: "the durable plan record exists but cannot be read safely",
+    });
+    assert.notEqual(detail.plan, null, "only a truly absent record may take the legacy fallback");
   } finally {
     await harness.close();
   }
@@ -530,6 +674,146 @@ test("Send and Steer are explicit, and a parked Steer stays pending for a safe b
   }
 });
 
+test("a terminal follow-up without an override inherits the source model", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = "run-terminal-model-default";
+    harness.store.createRun({
+      runId,
+      ticketId: "t-terminal-model-default",
+      ticketTitle: "terminal model default",
+      ticketText: "build with haiku",
+      ticketSha256: "d".repeat(64),
+      modelId: "haiku",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+    });
+    harness.store.updateRun(runId, { status: "passed", endedAt: new Date().toISOString(), heldOutPass: true });
+    const sourcePaths = runPathsFor(harness.paths, runId);
+    ensureRunDirs(sourcePaths);
+    writeFileSync(join(sourcePaths.workspace, "index.html"), "<h1>haiku source</h1>", "utf8");
+
+    const request = {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ text: "continue with the same model", clientMessageId: "terminal-default-model" }),
+    } as const;
+    const responses = await Promise.all([
+      fetch(`${harness.base}/api/runs/${runId}/messages`, request),
+      fetch(`${harness.base}/api/runs/${runId}/messages`, request),
+    ]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 202]);
+    const bodies = await Promise.all(responses.map(async (response) => (await response.json()) as SendMessageResponse));
+    for (const body of bodies) {
+      assert.equal(body.disposition, "continuation_created");
+      if (body.disposition !== "continuation_created") return;
+      assert.equal(body.continuationModelId, "haiku");
+    }
+    const targetRunIds = bodies.flatMap((body) => body.disposition === "continuation_created" ? [body.targetRunId] : []);
+    assert.equal(new Set(targetRunIds).size, 1, "concurrent retries receive the same linked continuation");
+    const target = harness.store.getRun(targetRunIds[0] ?? "");
+    assert.equal(target?.modelId, "haiku");
+    assert.equal(target?.provider, "anthropic");
+    assert.equal(harness.store.messages(runId).length, 1);
+    assert.equal(harness.store.listRuns().filter((run) => run.runId.startsWith("run-cont-")).length, 1);
+    assert.equal(harness.calls.pump, 1, "only the request that created the continuation pumps the queue");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("continuation model overrides reject invalid selections and active runs before storing a message", async () => {
+  const harness = await startHarness(true);
+  try {
+    const activeRunId = "run-active-model-override";
+    harness.store.createRun({
+      runId: activeRunId,
+      ticketId: "t-active-model-override",
+      ticketTitle: "active model override",
+      ticketText: "still running",
+      ticketSha256: "e".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+    });
+    const active = await fetch(`${harness.base}/api/runs/${activeRunId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({
+        text: "this must not be silently ignored",
+        continuationModelId: "haiku",
+        clientMessageId: "active-model-override",
+      }),
+    });
+    assert.equal(active.status, 409);
+    assert.equal(((await active.json()) as ApiErrorResponse).error, "continuation_model_requires_terminal_run");
+    assert.equal(harness.store.messages(activeRunId).length, 0);
+
+    const terminalRunId = "run-terminal-model-refusals";
+    harness.store.createRun({
+      runId: terminalRunId,
+      ticketId: "t-terminal-model-refusals",
+      ticketTitle: "terminal model refusals",
+      ticketText: "finished source",
+      ticketSha256: "f".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+    });
+    harness.store.updateRun(terminalRunId, {
+      status: "passed",
+      endedAt: new Date().toISOString(),
+      heldOutPass: true,
+    });
+
+    const invalid = await fetch(`${harness.base}/api/runs/${terminalRunId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ text: "invalid shape", continuationModelId: "", clientMessageId: "invalid-model" }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(((await invalid.json()) as ApiErrorResponse).error, "invalid_model");
+
+    const unknown = await fetch(`${harness.base}/api/runs/${terminalRunId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({
+        text: "unknown model",
+        continuationModelId: "not-in-the-catalog",
+        clientMessageId: "unknown-model",
+      }),
+    });
+    assert.equal(unknown.status, 400);
+    assert.equal(((await unknown.json()) as ApiErrorResponse).error, "unknown_model");
+
+    const unavailable = await fetch(`${harness.base}/api/runs/${terminalRunId}/messages`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({
+        text: "unavailable model",
+        continuationModelId: CODEX_DEFAULT_MODEL_ID,
+        clientMessageId: "unavailable-model",
+      }),
+    });
+    assert.equal(unavailable.status, 409);
+    assert.equal(((await unavailable.json()) as ApiErrorResponse).error, "model_unavailable");
+    assert.equal(harness.store.messages(terminalRunId).length, 0);
+    assert.equal(
+      harness.store.listRuns().some((run) => run.runId.startsWith("run-cont-")),
+      false,
+      "model refusals happen before a continuation row or workspace is created",
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
 test("a terminal follow-up creates one linked run, replays idempotently, and never mutates the source verdict", async () => {
   const harness = await startHarness(true);
   try {
@@ -541,7 +825,9 @@ test("a terminal follow-up creates one linked run, replays idempotently, and nev
       ticketText: "build the original project",
       ticketSha256: "b".repeat(64),
       modelId: "opus[1m]",
-      provider: "anthropic",
+      // Deliberately inconsistent historical provenance: the override must take
+      // its provider from the selected catalog row, never copy this value.
+      provider: "openai",
       deploy: false,
       startedAt: "2026-08-20T10:00:00.000Z",
       queuePosition: 1,
@@ -581,6 +867,7 @@ test("a terminal follow-up creates one linked run, replays idempotently, and nev
       text: "make the hero warmer and keep the working page",
       intent: "steer",
       clientMessageId: "terminal-follow-up-1",
+      continuationModelId: "haiku",
       images: [`data:image/png;base64,${Buffer.from("follow-up-image").toString("base64")}`],
       documents: [`data:application/pdf;base64,${Buffer.from("%PDF-follow-up").toString("base64")}`],
     };
@@ -603,6 +890,7 @@ test("a terminal follow-up creates one linked run, replays idempotently, and nev
         text: requestBody.text,
         images: requestBody.images,
         documents: requestBody.documents,
+        continuationModelId: requestBody.continuationModelId,
       }))
       .digest("hex");
     const requestIdSha = createHash("sha256").update(requestBody.clientMessageId).digest("hex");
@@ -614,6 +902,9 @@ test("a terminal follow-up creates one linked run, replays idempotently, and nev
 
     const target = harness.store.getRun(firstBody.targetRunId);
     assert.equal(target?.status, "queued");
+    assert.equal(firstBody.continuationModelId, "haiku");
+    assert.equal(target?.modelId, "haiku");
+    assert.equal(target?.provider, "anthropic", "provider comes from the selected catalog entry");
     assert.notEqual(target?.ticketId, before?.ticketId, "the amended brief gets its own frozen suite identity");
     assert.equal(target?.suiteSha256, null, "the source's sealed suite is never attached to the continuation");
     assert.match(target?.ticketText ?? "", /make the hero warmer/);
@@ -648,6 +939,9 @@ test("a terminal follow-up creates one linked run, replays idempotently, and nev
     const replayBody = (await replay.json()) as SendMessageResponse;
     assert.equal(replayBody.disposition, "continuation_created");
     assert.equal(replayBody.targetRunId, firstBody.targetRunId);
+    if (replayBody.disposition === "continuation_created") {
+      assert.equal(replayBody.continuationModelId, "haiku", "replay reads the durable target model");
+    }
     assert.equal(harness.store.messages(runId).length, 1, "the replay did not duplicate the anchor message");
     assert.equal(
       harness.store.listRuns().filter((entry) => entry.runId.startsWith("run-cont-")).length,
@@ -658,7 +952,7 @@ test("a terminal follow-up creates one linked run, replays idempotently, and nev
     const conflicting = await fetch(`${harness.base}/api/runs/${runId}/messages`, {
       method: "POST",
       headers: DASHBOARD_WRITE_HEADERS,
-      body: JSON.stringify({ ...requestBody, text: "different bytes" }),
+      body: JSON.stringify({ ...requestBody, continuationModelId: "opus[1m]" }),
     });
     assert.equal(conflicting.status, 409);
     assert.deepEqual(await conflicting.json(), {

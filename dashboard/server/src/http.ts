@@ -154,6 +154,7 @@ import type {
   ApiProjectStopResponse,
   ApiProjectsResponse,
   ApiRepublishResponse,
+  ApiRunPlanProjection,
   ApiSupervisorCommandResponse,
   ApiSupervisorDesired,
   ApiSupervisorProbe,
@@ -207,6 +208,7 @@ import type { DesignLockRecord } from "./design-lock.js";
 import { MAX_DESIGN_LOCK_TURNS, MAX_DESIGN_ON_DEMAND_RENDERS } from "./design-prompt.js";
 import { validateDesignReuseSource, writeDesignReuseMarker } from "./design-reuse.js";
 import { readMachineChecks } from "./machine-checks.js";
+import { planTimeoutMin, readPlanRecordOutcome } from "./plan-record.js";
 import {
   claimCreativeDecision,
   pilotMayPublish,
@@ -732,6 +734,40 @@ function publishedCopyOf(refPath: string | null, screenshots: readonly ApiScreen
   return screenshots.find((shot) => basename(shot.path) === wanted)?.path ?? null;
 }
 
+function planStateOf(resultsDir: string, env: NodeJS.ProcessEnv): ApiRunPlanProjection | null {
+  const outcome = readPlanRecordOutcome(resultsDir);
+  if (outcome.kind === "none") return null;
+  if (outcome.kind === "unreadable") {
+    return {
+      kind: "unreadable",
+      detail: "the durable plan record exists but cannot be read safely",
+    };
+  }
+  const record = outcome.record;
+  const parkedAt = Date.parse(record.parkedAt);
+  const deadlineAt = record.awaiting && Number.isFinite(parkedAt)
+    ? new Date(parkedAt + planTimeoutMin(env) * 60_000).toISOString()
+    : null;
+  return {
+    awaiting: record.awaiting,
+    folded: record.folded,
+    deadlineAt,
+    closed: record.state.closed === null
+      ? null
+      : { reason: record.state.closed.reason, detail: record.state.closed.detail },
+    questions: record.state.questions.map((entry) => ({
+      id: entry.question.id,
+      status: entry.status,
+      recorded:
+        entry.status === "answered"
+          ? entry.answer?.text ?? null
+          : entry.status === "declined" || entry.status === "expired"
+            ? entry.assumed
+            : null,
+    })),
+  };
+}
+
 function toDetail(
   row: RunRow,
   store: RunStore,
@@ -749,6 +785,7 @@ function toDetail(
     ...toSummary(row),
     ticketText: row.ticketText,
     phase: row.phase,
+    plan: planStateOf(results, env),
     criteria: store.listCriteria(row.runId),
     /*
      * THE OTHER HALF OF THE GRADE, AND IT HAD NO ROUTE TO THE SCREEN AT ALL.
@@ -2916,7 +2953,10 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
         return;
       }
       const message = begun.receipt.message;
-      targetRunId = createTerminalContinuation(deps, row, message, []);
+      targetRunId = createTerminalContinuation(deps, row, message, [], {
+        id: row.modelId,
+        provider: row.provider,
+      });
       if (targetRunId === null) {
         sendError(response, 409, "creative_revision_unavailable", "the terminal workspace could not be continued safely", null);
         return;
@@ -3171,12 +3211,76 @@ async function postMessage(
     return;
   }
   const requestId = typeof clientMessageId === "string" ? clientMessageId : null;
+  const rawContinuationModelId = record["continuationModelId"];
+  if (
+    rawContinuationModelId !== undefined &&
+    (typeof rawContinuationModelId !== "string" ||
+      rawContinuationModelId.length === 0 ||
+      rawContinuationModelId.length > 256)
+  ) {
+    sendError(
+      response,
+      400,
+      "invalid_model",
+      "continuationModelId must be a 1-256 character string when present",
+      "GET /api/models lists every id this dashboard accepts.",
+    );
+    return;
+  }
+
+  /*
+   * THE MODEL CHOICE BELONGS ONLY TO A NEW RUN. A live message cannot change
+   * the model of the process that is already running, so accepting the field
+   * here would be a successful-looking no-op. Read the durable row again: the
+   * router's row may have been fetched just before a terminal transition.
+   */
+  const intakeRun = deps.store.getRun(runId) ?? row;
+  const terminalAtIntake = isTerminal(intakeRun.status);
+  if (rawContinuationModelId !== undefined && !terminalAtIntake) {
+    sendError(
+      response,
+      409,
+      "continuation_model_requires_terminal_run",
+      "continuationModelId can only be used when messaging a terminal run",
+      "Remove continuationModelId for this active run, or wait until it finishes.",
+    );
+    return;
+  }
+
+  const replayMaterial = {
+    intent,
+    text,
+    images: rawImages,
+    documents: record["documents"] ?? [],
+  };
+  const selectedContinuationModelId = terminalAtIntake
+    ? (rawContinuationModelId ?? intakeRun.modelId)
+    : null;
   const payloadSha256 = createHash("sha256")
-    .update(JSON.stringify({ intent, text, images: rawImages, documents: record["documents"] ?? [] }))
+    .update(JSON.stringify(
+      selectedContinuationModelId === null
+        ? replayMaterial
+        : { ...replayMaterial, continuationModelId: selectedContinuationModelId },
+    ))
     .digest("hex");
+  /*
+   * RECEIPTS WRITTEN BEFORE `continuationModelId` existed hashed only the four
+   * original fields. An omitted override — or an explicit selection equal to
+   * the source model the old server necessarily used — still means the same
+   * continuation, so that one legacy byte identity remains replayable. A real
+   * override never receives this compatibility path.
+   */
+  const legacyPayloadSha256 = terminalAtIntake &&
+    (rawContinuationModelId === undefined || rawContinuationModelId === intakeRun.modelId)
+    ? createHash("sha256").update(JSON.stringify(replayMaterial)).digest("hex")
+    : null;
 
   const prior = requestId === null ? null : deps.store.messageRequest(runId, requestId);
-  if (prior !== null && prior.payloadSha256 !== payloadSha256) {
+  if (
+    prior !== null &&
+    prior.payloadSha256 !== payloadSha256 &&
+    (legacyPayloadSha256 === null || prior.payloadSha256 !== legacyPayloadSha256)
+  ) {
     sendMessageRefusal(
       response,
       `clientMessageId ${requestId} was already used for different message bytes`,
@@ -3184,8 +3288,38 @@ async function postMessage(
     return;
   }
   if (prior?.disposition !== null && prior?.disposition !== undefined) {
-    sendMessageReceipt(response, prior, runId, 200);
+    sendMessageReceipt(deps, response, prior, runId, 200);
     return;
+  }
+  // A crash-recovery replay must continue using the digest already persisted.
+  const durablePayloadSha256 = prior?.payloadSha256 ?? payloadSha256;
+
+  let continuationModel: Pick<ModelOption, "id" | "provider"> | null = null;
+  if (selectedContinuationModelId !== null) {
+    const entry = await deps.catalog.resolve(selectedContinuationModelId);
+    if (entry === null) {
+      sendError(
+        response,
+        400,
+        "unknown_model",
+        `${selectedContinuationModelId} is not in the catalog`,
+        "GET /api/models lists every id this dashboard accepts.",
+      );
+      return;
+    }
+    if (!entry.option.available) {
+      sendError(
+        response,
+        409,
+        "model_unavailable",
+        `${selectedContinuationModelId} is not available: ${entry.option.reason ?? "no reason recorded"}`,
+        isOfferedProvider(entry.option.provider)
+          ? "Authenticate the provider's CLI in a terminal, then try again. No API key is required."
+          : "Pick a Claude model. GET /api/models lists every id that can actually run.",
+      );
+      return;
+    }
+    continuationModel = { id: entry.option.id, provider: entry.option.provider };
   }
 
   // THE SAME VALIDATION THE TICKET FORM USES, from the same function, because
@@ -3251,7 +3385,7 @@ async function postMessage(
     const fileStamp =
       requestId === null
         ? String(Date.now())
-        : `${createHash("sha256").update(requestId).digest("hex").slice(0, 16)}-${payloadSha256.slice(0, 16)}`;
+        : `${createHash("sha256").update(requestId).digest("hex").slice(0, 16)}-${durablePayloadSha256.slice(0, 16)}`;
     const written: string[] = [];
     for (const [index, decoded] of decodedImages.entries()) {
       if (decoded === null) continue;
@@ -3288,7 +3422,7 @@ async function postMessage(
       const begun = deps.store.beginMessageRequest({
         runId,
         clientMessageId: requestId,
-        payloadSha256,
+        payloadSha256: durablePayloadSha256,
         intent,
         text,
         images: written,
@@ -3299,7 +3433,7 @@ async function postMessage(
         return;
       }
       if (begun.receipt.disposition !== null) {
-        sendMessageReceipt(response, begun.receipt, runId, 200);
+        sendMessageReceipt(deps, response, begun.receipt, runId, 200);
         return;
       }
       message = begun.receipt.message;
@@ -3309,9 +3443,13 @@ async function postMessage(
 
   const current = deps.store.getRun(runId) ?? row;
   if (isTerminal(current.status)) {
+    if (continuationModel === null) {
+      sendMessageRefusal(response, "continuation creation failed: no catalog model was selected");
+      return;
+    }
     let targetRunId: string | null;
     try {
-      targetRunId = createTerminalContinuation(deps, current, message, writtenDocuments);
+      targetRunId = createTerminalContinuation(deps, current, message, writtenDocuments, continuationModel);
     } catch (error) {
       sendMessageRefusal(response, `continuation creation failed: ${describeError(error)}`);
       return;
@@ -3329,6 +3467,7 @@ async function postMessage(
       message: completed?.message ?? message,
       documents: completed?.documents ?? writtenDocuments,
       targetRunId,
+      continuationModelId: continuationModel.id,
       sourceRunId: runId,
       sourceMessageSeq: message.seq,
     };
@@ -3490,6 +3629,7 @@ function sendMessageRefusal(response: ServerResponse, reason: string): void {
 }
 
 function sendMessageReceipt(
+  deps: HttpDeps,
   response: ServerResponse,
   receipt: MessageRequestReceipt,
   sourceRunId: string,
@@ -3499,22 +3639,30 @@ function sendMessageReceipt(
     sendMessageRefusal(response, "the previous request was recorded but has no delivery disposition yet");
     return;
   }
-  const body: SendMessageResponse =
-    receipt.disposition === "continuation_created"
-      ? {
-          disposition: "continuation_created",
-          message: receipt.message,
-          documents: receipt.documents,
-          targetRunId: receipt.targetRunId,
-          sourceRunId,
-          sourceMessageSeq: receipt.message.seq,
-        }
-      : {
-          disposition: receipt.disposition,
-          message: receipt.message,
-          documents: receipt.documents,
-          targetRunId: receipt.targetRunId,
-        };
+  if (receipt.disposition === "continuation_created") {
+    const continuation = deps.store.getRun(receipt.targetRunId);
+    if (continuation === null) {
+      sendMessageRefusal(response, "the previous continuation receipt points to a missing target run");
+      return;
+    }
+    const body: SendMessageResponse = {
+      disposition: "continuation_created",
+      message: receipt.message,
+      documents: receipt.documents,
+      targetRunId: receipt.targetRunId,
+      continuationModelId: continuation.modelId,
+      sourceRunId,
+      sourceMessageSeq: receipt.message.seq,
+    };
+    sendJson(response, status, body);
+    return;
+  }
+  const body: SendMessageResponse = {
+    disposition: receipt.disposition,
+    message: receipt.message,
+    documents: receipt.documents,
+    targetRunId: receipt.targetRunId,
+  };
   sendJson(response, status, body);
 }
 
@@ -3523,6 +3671,7 @@ function createTerminalContinuation(
   source: RunRow,
   message: MessageRequestReceipt["message"],
   documents: readonly string[],
+  model: Pick<ModelOption, "id" | "provider">,
 ): string | null {
   const linked = deps.store.continuationFor(source.runId, message.seq);
   if (linked !== null) return linked.targetRunId;
@@ -3556,8 +3705,8 @@ function createTerminalContinuation(
       ticketTitle: ticket.title,
       ticketText: ticket.brief,
       ticketSha256: ticket.sha256,
-      modelId: source.modelId,
-      provider: source.provider,
+      modelId: model.id,
+      provider: model.provider,
       deploy: source.deploy,
       startedAt: new Date().toISOString(),
       queuePosition: deps.store.listQueued().length + 1,
