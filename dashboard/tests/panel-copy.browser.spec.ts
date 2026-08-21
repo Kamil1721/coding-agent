@@ -270,8 +270,7 @@ const SWEEP: readonly {
      * described is already printed under every message as `queued — not read
      * yet` or `read at 14:02`.
      *
-     * ITS REPLACEMENT IS THE HALF OF THAT PARAGRAPH THAT SURVIVED, moved onto the
-     * send button as `explain-timing` (`orchestrator-chat.tsx:826`). It qualifies
+     * ITS REPLACEMENT IS THE SEND/STEER EXPLANATION on the composer. It qualifies
      * on all three counts this list requires: it is a sentence THIS PRODUCT
      * writes, it appears in no fixture body (so the subtraction cannot supply
      * it), and it is rendered only by the composer — a Chat panel that drew
@@ -285,7 +284,7 @@ const SWEEP: readonly {
      * two independent panels fail together.
      */
     entry: "chat",
-    canary: "While the run is working it reads this at its next step.",
+    canary: "Send joins the current conversation.",
   },
   {
     run: RUN_ID,
