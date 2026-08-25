@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -17,10 +17,13 @@ import {
   CREATIVE_PILOT_PROJECT_ID,
   authorInputFor,
   claimCreativeDecision,
+  creativeAuthorAttemptFile,
+  creativeAuthorAttemptTextFile,
   creativeContractPrompt,
   creativePilotEnabled,
   freshCreativeContract,
   initialCreativePilotStatus,
+  persistCreativeAuthorAttempt,
   persistCreativeAuthorResult,
   pilotMayPublish,
   readCreativePilotStatus,
@@ -257,6 +260,108 @@ test("compiled author result is atomically durable and freshness compilation fai
   assert.equal(stale.compile.outcome, "failed");
   assert.match(stale.compile.findings[0]?.message ?? "", /frozen authored contract/u);
   assert.notEqual(readFileSync(join(results, CREATIVE_COMPILE_FILE), "utf8"), "");
+});
+
+/**
+ * Per-attempt author files (2026-08-25, run run-2026-08-25T10-30-39-122Z-d728ab79:
+ * one author record on disk, nothing to show what a second attempt was told).
+ * They sit beside the canonical record and never decide freshness, in BOTH
+ * directions: an invalid attempt file next to a compiled canonical record is
+ * still fresh, and a compiled attempt file next to an invalid canonical record
+ * is not.
+ */
+test("per-attempt author files are durable beside the canonical record and never decide freshness — both directions", () => {
+  const input = authorInputFor(TICKET, null);
+  const contract = validContract(input);
+  const compiled = compileCreativeContract(JSON.stringify(contract), input.resolver);
+  assert.equal(compiled.ok, true, JSON.stringify(compiled));
+  const compiledResult: CreativeContractAuthorResult = {
+    schemaVersion: 1, status: "compiled", ran: true, inputHash: HASH, promptHash: HASH,
+    contractHash: compiled.contractHash, contract: compiled.contract, errors: [], compileErrors: [], repairs: [],
+    detail: "creative contract compiled", tokens: null, rateLimit: null, authorBy: "test",
+  };
+  const invalidResult: CreativeContractAuthorResult = {
+    schemaVersion: 1, status: "invalid", ran: true, inputHash: HASH, promptHash: "b".repeat(64),
+    contractHash: null, contract: null,
+    errors: [{ code: "COMPILE_REJECTED", path: "/", message: "author output failed the CreativeContractV1 compiler" }],
+    compileErrors: [{ code: "MOTION_FALLBACK_INVALID", path: "/motion/1/trigger", message: "interaction motion requires an interaction render state on its section" }],
+    repairs: [], detail: "creative author output did not compile", tokens: null, rateLimit: null, authorBy: "test",
+  };
+  assert.equal(creativeAuthorAttemptFile(3), "creative-contract-author-attempt-3.json");
+
+  // Direction 1: compiled canonical record, invalid attempt-2 file beside it → fresh.
+  const fresh = mkdtempSync(join(tmpdir(), "creative-pilot-attempt-"));
+  persistCreativeAuthorResult(fresh, compiledResult);
+  persistCreativeAuthorAttempt(fresh, 2, invalidResult);
+  const attemptPath = join(fresh, creativeAuthorAttemptFile(2));
+  assert.equal(existsSync(attemptPath), true);
+  assert.equal((JSON.parse(readFileSync(attemptPath, "utf8")) as CreativeContractAuthorResult).status, "invalid");
+  assert.equal(readdirSync(fresh).filter((name) => name.endsWith(".tmp")).length, 0, "the atomic write leaves no temporary file");
+  assert.equal((JSON.parse(readFileSync(join(fresh, CREATIVE_AUTHOR_FILE), "utf8")) as CreativeContractAuthorResult).status, "compiled", "the canonical record is untouched");
+  assert.equal(freshCreativeContract(fresh, input.resolver).fresh?.contractHash, compiled.contractHash, "an attempt file does not stale a compiled canonical record");
+
+  // Direction 2 (THE CONTROL): invalid canonical record, compiled attempt-1 file beside it → NOT fresh,
+  // and the attempt writer never produced a contract file.
+  const stale = mkdtempSync(join(tmpdir(), "creative-pilot-attempt-"));
+  persistCreativeAuthorResult(stale, invalidResult);
+  persistCreativeAuthorAttempt(stale, 1, compiledResult);
+  assert.equal(existsSync(join(stale, creativeAuthorAttemptFile(1))), true);
+  assert.equal(existsSync(join(stale, CREATIVE_CONTRACT_FILE)), false, "an attempt file never writes the contract");
+  const checked = freshCreativeContract(stale, input.resolver);
+  assert.equal(checked.fresh, null, "a compiled attempt file does not make an invalid canonical record fresh");
+  assert.equal(checked.compile.outcome, "unavailable");
+});
+
+/**
+ * The model's output text lives in a `.txt` beside the attempt JSON, never
+ * inside it (2026-08-25, run run-2026-08-25T10-30-39-122Z-d728ab79: three
+ * rejected attempts and no record of what was written). Both directions: a
+ * non-empty `rawText` produces the `.txt` and a JSON without the key; a null
+ * one produces no `.txt` and removes a stale one for the same attempt number.
+ */
+test("persistCreativeAuthorAttempt writes the output text beside the JSON and never inside it — both directions", () => {
+  const token = ["ghp", "AbCdEfGh0123456789JkLmNo"].join("_");
+  const rawText = `{"schemaVersion":1,"note":"${token}","pad":"${"x".repeat(4_000)}"}`;
+  const invalidResult: CreativeContractAuthorResult = {
+    schemaVersion: 1, status: "invalid", ran: true, inputHash: HASH, promptHash: "b".repeat(64),
+    contractHash: null, contract: null,
+    errors: [{ code: "COMPILE_REJECTED", path: "/", message: "author output failed the CreativeContractV1 compiler" }],
+    compileErrors: [{ code: "UNKNOWN_KEY", path: "/note", message: "key is outside the closed schema" }],
+    repairs: [], detail: "creative author output did not compile", tokens: null, rateLimit: null, authorBy: "test",
+    rawText,
+  };
+  assert.equal(creativeAuthorAttemptTextFile(3), "creative-contract-author-attempt-3.txt");
+
+  const results = mkdtempSync(join(tmpdir(), "creative-pilot-raw-"));
+  persistCreativeAuthorAttempt(results, 1, invalidResult);
+  const record = JSON.parse(readFileSync(join(results, creativeAuthorAttemptFile(1)), "utf8")) as Record<string, unknown>;
+  assert.equal("rawText" in record, false, "the JSON record never carries the output text");
+  assert.equal(record["status"], "invalid");
+  assert.deepEqual(record["compileErrors"], invalidResult.compileErrors);
+  const textPath = join(results, creativeAuthorAttemptTextFile(1));
+  assert.equal(existsSync(textPath), true, "the .txt sits beside the JSON");
+  const text = readFileSync(textPath, "utf8");
+  assert.ok(text.startsWith("{\"schemaVersion\":1,\"note\":\""), text.slice(0, 60));
+  assert.ok(!text.includes(token), "the credential never reaches disk");
+  assert.ok(text.includes("[REDACTED:"), text.slice(0, 120));
+  assert.equal(readdirSync(results).filter((name) => name.endsWith(".tmp")).length, 0, "both writes are atomic");
+  assert.equal(existsSync(join(results, CREATIVE_CONTRACT_FILE)), false, "an attempt file never writes the contract");
+
+  // THE CONTROL: rawText null → no .txt for that attempt; and a same-numbered re-run without output removes the stale one.
+  persistCreativeAuthorAttempt(results, 2, { ...invalidResult, rawText: null });
+  assert.equal(existsSync(join(results, creativeAuthorAttemptFile(2))), true);
+  assert.equal(existsSync(join(results, creativeAuthorAttemptTextFile(2))), false, "null output writes no .txt");
+  persistCreativeAuthorAttempt(results, 3, { ...invalidResult, rawText: "" });
+  assert.equal(existsSync(join(results, creativeAuthorAttemptTextFile(3))), false, "empty output writes no .txt");
+  persistCreativeAuthorAttempt(results, 1, { ...invalidResult, rawText: null });
+  assert.equal(existsSync(textPath), false, "a resumed entry's attempt 1 without output leaves no stale text from the previous entry");
+  assert.equal(readdirSync(results).filter((name) => name.endsWith(".txt")).length, 0);
+
+  // The canonical record is written without the key too — it is read by every freshness check and the UI.
+  persistCreativeAuthorResult(results, invalidResult);
+  const canonical = JSON.parse(readFileSync(join(results, CREATIVE_AUTHOR_FILE), "utf8")) as Record<string, unknown>;
+  assert.equal("rawText" in canonical, false);
+  assert.equal(canonical["status"], "invalid");
 });
 
 test("builder projection binds the hash and all host capture markers", () => {

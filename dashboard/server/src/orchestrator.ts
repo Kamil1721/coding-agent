@@ -199,8 +199,8 @@ import type { AuthProbe } from "./auth.js";
 import { truncate } from "./claude-common.js";
 import type { RateLimitState } from "./claude-common.js";
 import { dashboardBuilderPrompt, resumeBuilderPrompt } from "./build-prompt.js";
-import { authorCreativeContract } from "./creative-contract-author.js";
-import type { CreativeContractAuthorRequest, CreativeContractAuthorResult } from "./creative-contract-author.js";
+import { CREATIVE_CONTRACT_AUTHOR_MAX_ATTEMPTS, authorCreativeContract, boundedRepairFindings, creativeAuthorStep } from "./creative-contract-author.js";
+import type { CreativeAuthorRepairFinding, CreativeContractAuthorRequest, CreativeContractAuthorResult } from "./creative-contract-author.js";
 import { advanceCreativeReview, initialCreativeReviewState } from "./creative-review-loop.js";
 import type { CreativeReviewState } from "./creative-review-loop.js";
 import {
@@ -212,6 +212,7 @@ import {
   freshCreativeContract,
   hashCreativeArtifact,
   initialCreativePilotStatus,
+  persistCreativeAuthorAttempt,
   persistCreativeAuthorResult,
   pilotMayPublish,
   readCreativePilotStatus,
@@ -757,6 +758,31 @@ type AbortReason = typeof ABORT_CANCELLED | typeof ABORT_SHUTDOWN;
  */
 export function abortReasonOf(signal: AbortSignal): AbortReason {
   return signal.reason === ABORT_SHUTDOWN ? ABORT_SHUTDOWN : ABORT_CANCELLED;
+}
+
+/**
+ * `CODE at /path` for the first six creative-author findings, joined by "; ",
+ * so a warn line and the park sentence stay one line each. Written for the
+ * `failureReason` the dashboard shows verbatim: on 2026-08-25 (run
+ * run-2026-08-25T10-30-39-122Z-d728ab79) that column read "creative contract
+ * invalid: creative author output did not compile", which names neither the
+ * finding (`MOTION_FALLBACK_INVALID` at `/motion/1/trigger`) nor how many
+ * attempts were made.
+ *
+ * The list is projected through `boundedRepairFindings` first (closed,
+ * deduplicated, sorted, capped), the same projection the author's prompt block
+ * renders, so the sentence names exactly what the model was shown and "and N
+ * more" counts what it saw: measured 2026-08-25, the compiler's `UNKNOWN_KEY`
+ * path carried the model's own key verbatim (a newline-led "IGNORE ALL PREVIOUS
+ * INSTRUCTIONS" key; a 60,001-character path), and this column is shown by the
+ * dashboard as it is.
+ */
+function summarizeCreativeFindings(findings: readonly CreativeAuthorRepairFinding[]): string {
+  const bounded = boundedRepairFindings(findings);
+  if (bounded.length === 0) return "no findings were reported";
+  const shown = bounded.slice(0, 6).map((finding) => `${finding.code} at ${finding.path}`);
+  const rest = bounded.length - shown.length;
+  return rest > 0 ? `${shown.join("; ")}; and ${String(rest)} more` : shown.join("; ");
 }
 
 /**
@@ -2360,6 +2386,15 @@ export class Orchestrator {
       // an implementation. A refusal parks the run; it never falls through to
       // an unconstrained build.
       if (!(await this.#creativeContractPhase(runId, ticket, runPaths, signal))) {
+        // ROUTE ON THE SIGNAL BEFORE RECORDING A PARK. `authorCreativeContract`
+        // never throws: a cancel or server stop during the call comes back as a
+        // closed `unavailable` result, and the phase returns `false` for it
+        // WITHOUT writing a park (see the loop's abort check). Without this line
+        // the run was closed "parked" — `cancel()` had already answered true,
+        // `#active` is cleared in `finally`, and the row was never finished
+        // `cancelled`; a shutdown abort lost the `running` row the boot sweep
+        // relies on. Same check as the spec and build phases below.
+        if (signal.aborted) return this.#aborted(runId, log, signal);
         this.#deps.store.closeAttempt(runId, {
           endedAt: new Date().toISOString(),
           endClass: "parked",
@@ -3885,32 +3920,107 @@ export class Orchestrator {
       return true;
     }
 
-    this.#emitLog(runId, "info", "authoring the WEB pilot's creative contract before suite, design, media, or code");
     const run = this.#deps.runCreativeContractAuthor ?? authorCreativeContract;
-    const result = await run({
-      input: authored.input,
-      evidenceResolver: authored.resolver,
-      seat: this.#seat(runId, SPEC_SEAT),
-      budget: DASHBOARD_BUDGET,
-      cwd: this.#deps.paths.home,
-      env: this.#deps.env,
-      signal,
-      ...(this.#deps.seatQuery === undefined ? {} : { startQuery: this.#deps.seatQuery }),
-    });
-    const compile = persistCreativeAuthorResult(runPaths.results, result);
-    status = statusAfterCompile(status, compile);
-    writeCreativePilotStatus(runPaths.results, status);
-    if (result.tokens !== null && result.tokens.callCount > 0) {
-      this.#emitLog(runId, "info", `creative contract author — ${describeTokens(result.tokens)}`);
-    }
-    if (result.rateLimit?.limited === true) this.#noteRateLimit(runId, result.rateLimit);
-    if (result.status === "compiled" && result.contract !== null && result.contractHash !== null) {
-      this.#deps.store.updateRun(runId, { failureReason: null });
-      this.#emitLog(runId, "info", `creative contract compiled and frozen at ${result.contractHash}`);
-      return true;
+    /*
+     * THE BOUNDED REPAIR LOOP. Up to CREATIVE_CONTRACT_AUTHOR_MAX_ATTEMPTS
+     * author calls per phase ENTRY; attempts 2 and 3 carry the previous
+     * attempt's compiler findings as `repairFindings`.
+     *
+     * Measured 2026-08-25, run run-2026-08-25T10-30-39-122Z-d728ab79: one
+     * call, one compiler rejection (`MOTION_FALLBACK_INVALID` at
+     * `/motion/1/trigger`), and the run parked `awaiting_input` with the plan
+     * dialogue already settled. The dashboard showed the plan-question script
+     * and the owner answered a question nothing had asked. The finding was
+     * never shown to the model that could have fixed it.
+     *
+     * WHO COUNTS THE ATTEMPTS (recovery.ts, "the caller must be able to name
+     * the line"): the `for` header below is the cap, and the only per-attempt
+     * side effect is `findings = step.findings`, reached only after a result
+     * that RAN and came back `invalid` has been persisted as a durable attempt
+     * file. `creativeAuthorStep` (creative-contract-author.ts) decides which
+     * shapes consume an attempt: a result that did not run (refused by the
+     * provider, aborted, host packet failed admission) or was `unavailable`
+     * (truncated) consumes nothing and ENDS the loop, because a byte-identical
+     * retry is futile (recovery.ts, `structural`) and the default is stop.
+     * Resume hands the next entry a fresh three; that is bounded because the
+     * park arms no timer, `reconcileOnBoot` skips it, and the only re-entries
+     * are an owner's Resume (`resumeCount + 1`, a human press each time) or the
+     * boot requeue of a `running` row, itself capped by AUTO_CONTINUE_MAX. The
+     * two levels never count the same thing.
+     */
+    let findings: readonly CreativeAuthorRepairFinding[] = [];
+    let parkReason: string | null = null;
+    for (let attempt = 1; attempt <= CREATIVE_CONTRACT_AUTHOR_MAX_ATTEMPTS; attempt += 1) {
+      const label = `${String(attempt)} of ${String(CREATIVE_CONTRACT_AUTHOR_MAX_ATTEMPTS)}`;
+      this.#emitLog(runId, "info", attempt === 1
+        ? "authoring the WEB pilot's creative contract before suite, design, media, or code"
+        : `re-authoring the creative contract (attempt ${label}) with ${String(findings.length)} compile finding(s) fed back`);
+      const result = await run({
+        input: authored.input,
+        evidenceResolver: authored.resolver,
+        seat: this.#seat(runId, SPEC_SEAT),
+        budget: DASHBOARD_BUDGET,
+        cwd: this.#deps.paths.home,
+        env: this.#deps.env,
+        signal,
+        ...(this.#deps.seatQuery === undefined ? {} : { startQuery: this.#deps.seatQuery }),
+        ...(findings.length === 0 ? {} : { repairFindings: findings }),
+      });
+      // ABORT FIRST, BEFORE ANY WRITE. The author converts an abort into a
+      // closed `unavailable` result with `rateLimit.limited: false`; persisting
+      // it and parking would write a creative `failureReason` onto a run the
+      // owner cancelled (or the server stopped). Return `false` with nothing
+      // written; the call site checks the signal before it records a park.
+      if (signal.aborted) return false;
+      persistCreativeAuthorAttempt(runPaths.results, attempt, result);
+      const compile = persistCreativeAuthorResult(runPaths.results, result);
+      status = statusAfterCompile(status, compile);
+      writeCreativePilotStatus(runPaths.results, status);
+      if (result.tokens !== null && result.tokens.callCount > 0) {
+        this.#emitLog(runId, "info", `creative contract author attempt ${String(attempt)} — ${describeTokens(result.tokens)}`);
+      }
+      // THE WINDOW GOES ON THE ROW WHATEVER THE RESULT WAS. `limited: true`
+      // arrives on a refused call and on `compiled` and `invalid` results that
+      // ran under a `rejected` frame alike (see `creativeAuthorStep` for the
+      // two routes) — measured 2026-08-25 at the author boundary with a
+      // recorded `rate_limit_event`.
+      if (result.rateLimit?.limited === true) this.#noteRateLimit(runId, result.rateLimit);
+      // Which shapes proceed, stop, or consume an attempt is decided by
+      // `creativeAuthorStep` (creative-contract-author.ts), beside the shape.
+      const step = creativeAuthorStep(result);
+      if (step.kind === "proceed") {
+        this.#deps.store.updateRun(runId, { failureReason: null });
+        this.#emitLog(runId, "info", `creative contract compiled and frozen at ${step.contractHash} on author attempt ${label}`);
+        return true;
+      }
+      if (step.kind === "stop") {
+        parkReason = `creative contract ${step.status} on author attempt ${label} (attempt not consumed): ${step.detail}`;
+        break;
+      }
+      // THE CONSUMED ATTEMPT. A durable `invalid` attempt that ran is on disk
+      // above; its findings are what the next call is told.
+      findings = step.findings;
+      // THE REPAIRS THE BOUNDARY APPLIED ARE NAMED ON THE SAME LINE, so the
+      // residual findings read as what was left AFTER them. Measured
+      // 2026-08-25, run run-2026-08-25T10-30-39-122Z-d728ab79, resume #2 at
+      // 15:42:18: three rejected attempts logged their findings and nothing
+      // else, and `repairs: []` on each was only discoverable from the attempt
+      // files. The exhaustion and park sentences below are unchanged (pinned).
+      const repaired = result.repairs.length === 0
+        ? ""
+        : ` (${String(result.repairs.length)} finding(s) repaired in place: ${result.repairs.map((repair) => repair.action).join(", ")})`;
+      this.#emitLog(runId, "warn", `creative contract author attempt ${label} did not compile: ${summarizeCreativeFindings(findings)}${repaired}`);
     }
 
-    const reason = `creative contract ${result.status}: ${result.detail}`;
+    // `parkReason` is null exactly when every attempt was consumed, so the
+    // count in the exhaustion sentence is the cap itself. The dashboard keys on
+    // `failureReason !== null`, never on the sentence (dashboard
+    // src/lib/awaiting-input.ts); the resume test (orchestrator.test.ts, "an
+    // explicitly resumed invalid creative author record…") matches the
+    // "creative contract invalid" prefix, which this sentence keeps. It names
+    // the count and the last findings, which the one-call sentence on
+    // 2026-08-25 did not.
+    const reason = parkReason ?? `creative contract invalid after ${String(CREATIVE_CONTRACT_AUTHOR_MAX_ATTEMPTS)} author attempts; last findings: ${summarizeCreativeFindings(findings)}`;
     this.#deps.store.updateRun(runId, {
       status: "awaiting_input",
       failureReason: reason,

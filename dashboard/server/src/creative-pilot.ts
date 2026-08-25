@@ -1,7 +1,7 @@
 /** Durable, default-off host policy for the rendered creative-review pilot. */
 
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { redactForPersistence } from "bakeoff/dist/redact.js";
 import type { Ticket } from "bakeoff/dist/contracts.js";
@@ -37,6 +37,31 @@ export const CREATIVE_CONTRACT_FILE = "creative-contract.json";
 export const CREATIVE_PILOT_PROJECT_ID = "coding-agent";
 export const CREATIVE_COMPILE_FILE = "creative-compile.json";
 export const CREATIVE_AUTHOR_FILE = "creative-contract-author.json";
+/**
+ * One file per author attempt within a phase entry, beside the canonical
+ * CREATIVE_AUTHOR_FILE (which keeps the LAST result and is the only file
+ * `freshCreativeContract` and the UI read). Name pattern follows
+ * `creative-revision-N.txt`. Measured 2026-08-25, run
+ * run-2026-08-25T10-30-39-122Z-d728ab79: the results directory held exactly one
+ * author record, so when the repair loop was added there was nothing on disk to
+ * show what attempt 2 was told or what it answered.
+ */
+export function creativeAuthorAttemptFile(attempt: number): string {
+  return `creative-contract-author-attempt-${String(attempt)}.json`;
+}
+/**
+ * The model's output text for one attempt, beside its JSON record. A `.txt`
+ * and not a key in the JSON: `rawText` is up to 256 KiB (`MAX_CREATIVE_AUTHOR_RAW_TEXT_CHARS`),
+ * and a JSON record carrying it would be that large for every reader that
+ * only wants `status` and `compileErrors`. Written only when the author
+ * returned output that did not compile; a compiled attempt's output is the
+ * canonical contract file. Measured 2026-08-25, run
+ * run-2026-08-25T10-30-39-122Z-d728ab79, resume #2 at 15:42:18: three
+ * rejected attempts, `repairs: []` on each, and no record of what was written.
+ */
+export function creativeAuthorAttemptTextFile(attempt: number): string {
+  return `creative-contract-author-attempt-${String(attempt)}.txt`;
+}
 export const CREATIVE_STATUS_FILE = "creative-status.json";
 export const CREATIVE_DECISION_FILE = "creative-owner-decision.json";
 export const CREATIVE_RENDER_DIRECTORY = "creative-render";
@@ -132,11 +157,24 @@ export function webCreativeApplicable(surface: string): boolean {
   return surface === "web-ui" || surface === "fullstack";
 }
 
-function atomicJson(path: string, value: unknown): void {
+function atomicText(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(redactForPersistence(value), null, 2)}\n`, "utf8");
+  writeFileSync(temporary, text, "utf8");
   renameSync(temporary, path);
+}
+
+function atomicJson(path: string, value: unknown): void {
+  atomicText(path, `${JSON.stringify(redactForPersistence(value), null, 2)}\n`);
+}
+
+/**
+ * The author result without its `rawText`, which is persisted as its own
+ * `.txt` (see `creativeAuthorAttemptTextFile`) and never inside a JSON record.
+ */
+function authorRecordWithoutRawText(result: CreativeContractAuthorResult): Omit<CreativeContractAuthorResult, "rawText"> {
+  const { rawText: _rawText, ...record } = result;
+  return record;
 }
 
 function unavailableCompileRecord(): CreativeCompileRecord {
@@ -643,7 +681,7 @@ export function persistCreativeAuthorResult(
   resultsDir: string,
   result: CreativeContractAuthorResult,
 ): CreativeCompileRecord {
-  atomicJson(join(resultsDir, CREATIVE_AUTHOR_FILE), result);
+  atomicJson(join(resultsDir, CREATIVE_AUTHOR_FILE), authorRecordWithoutRawText(result));
   const compile: CreativeCompileRecord = {
     outcome: result.status === "compiled" ? "passed" : result.status === "invalid" ? "failed" : "unavailable",
     contractHash: result.contractHash,
@@ -653,6 +691,37 @@ export function persistCreativeAuthorResult(
   if (result.contract !== null) atomicJson(join(resultsDir, CREATIVE_CONTRACT_FILE), result.contract);
   atomicJson(join(resultsDir, CREATIVE_COMPILE_FILE), compile);
   return compile;
+}
+
+/**
+ * Durable record of ONE author attempt (see `creativeAuthorAttemptFile`). Lives
+ * here because `atomicJson` is private to this module. Writes nothing else: the
+ * canonical author, contract and compile files are `persistCreativeAuthorResult`'s,
+ * so an invalid attempt file beside a compiled canonical record leaves
+ * `freshCreativeContract` fresh, and a compiled attempt file beside an invalid
+ * canonical record does not make it fresh.
+ *
+ * PER PHASE ENTRY, ON PURPOSE. A resumed entry's attempt 1 overwrites the
+ * previous entry's attempt 1: Resume hands the author a fresh three-attempt
+ * budget (an owner pressed it), and the count that was spent is in the event
+ * log and the park sentence, not in a counter this file carries forward.
+ *
+ * THE OUTPUT TEXT GOES BESIDE THE RECORD, NOT IN IT. A non-empty `rawText`
+ * is written as `creativeAuthorAttemptTextFile(attempt)` and stripped from
+ * the JSON; a null or empty one writes no `.txt`, and a stale `.txt` from a
+ * previous entry's same-numbered attempt is removed so the pair on disk
+ * always describes one call. Redacted again on the way out (idempotent) so
+ * this writer has the same chokepoint as `atomicJson`.
+ */
+export function persistCreativeAuthorAttempt(
+  resultsDir: string,
+  attempt: number,
+  result: CreativeContractAuthorResult,
+): void {
+  atomicJson(join(resultsDir, creativeAuthorAttemptFile(attempt)), authorRecordWithoutRawText(result));
+  const textPath = join(resultsDir, creativeAuthorAttemptTextFile(attempt));
+  if (typeof result.rawText === "string" && result.rawText.length > 0) atomicText(textPath, redactForPersistence(result.rawText));
+  else if (existsSync(textPath)) unlinkSync(textPath);
 }
 
 export function freshCreativeContract(
