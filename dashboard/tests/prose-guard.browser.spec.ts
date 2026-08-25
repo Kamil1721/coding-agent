@@ -143,6 +143,7 @@ import {
   PLAN_RUN_ID,
   RUN_ID,
 } from "./fixtures/config";
+import { STALE_PLAN_DETAIL } from "./fixtures/run-fixture";
 
 /* ------------------------------------------------------------------ */
 /* Rule 1: the vocabulary                                              */
@@ -604,6 +605,41 @@ const SWEEP: readonly {
     entries: ["result"],
     floor: 220,
     patch: { status: "awaiting_input" },
+  },
+  {
+    // ADDED 2026-08-25 for the check-park body of `AwaitingInputNotice` — the
+    // "nothing to type" sentence plus the "Last recorded cause" block, which
+    // run `run-2026-08-25T10-30-39-122Z-d728ab79` was the first to need. The
+    // reason is READ OFF `STALE_PLAN_DETAIL`, the fixture that declares itself
+    // the single source for what that run wrote, rather than retyped; it
+    // arrives through `patchDetail`'s `introduced`, so the `pre` is data and
+    // scores 0 and the sentence is what is measured. The entry above
+    // (`RUN_DETAIL` has `failureReason: null`) covers the reasonless branch.
+    name: "stopped by a check, with the cause recorded",
+    run: RUN_ID,
+    entries: ["result"],
+    floor: 220,
+    patch: { status: "awaiting_input", failureReason: STALE_PLAN_DETAIL.failureReason },
+  },
+  {
+    // ADDED 2026-08-25, later the same day, for the `question` branch — the
+    // answer-first script and its order glyph (`explain-answer-order`). No
+    // other entry reaches it any more: `RUN_DETAIL` parked bare reads
+    // `unexplained` (`lib/awaiting-input.ts`), and `PLAN_RUN_ID` is an
+    // ANSWERABLE plan park, on which `page.tsx`'s gate (`genericParkOpen`)
+    // does not mount the notice at all. Here `RUN_ID` is parked in the plan
+    // phase with no `plan` projection — `planParkedFrom` takes its legacy
+    // `phase: plan` + `awaiting_input` read — and no `/messages` body (the
+    // fixture API answers 404 and the page reads an empty list), so
+    // `planDialogueFrom` is null, `planAnswerable` is false, and the notice
+    // mounts on the `question` kind: the crash-window park `page.tsx`
+    // documents. FLOOR PROVISIONAL — the siblings' 220, set before this entry
+    // was run in a browser; measure and replace.
+    name: "stopped on a question, with no dialogue to answer it in",
+    run: RUN_ID,
+    entries: ["result"],
+    floor: 220,
+    patch: { status: "awaiting_input", phase: "plan" },
   },
   {
     name: "a false finish",

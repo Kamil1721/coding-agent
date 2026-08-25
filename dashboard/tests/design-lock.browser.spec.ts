@@ -517,6 +517,13 @@ test.describe("a run that is not awaiting a design choice", () => {
     // That run has no mockups and no question a card can answer, and its notice
     // is the only thing on the page naming its two moves.
     await expect(genericNotice(page)).toBeVisible();
+    // And with no cause recorded (`RUN_DETAIL` carries `failureReason: null`,
+    // which is also `reconcileOnBoot`'s shape on the wire) there is no `pre` to
+    // fill: the reasonless kind shows no cause block — 2026-08-25. The other
+    // direction, a recorded cause IS shown, is `plan-dialogue.browser.spec.ts`
+    // "a later creative park cannot reopen the folded plan".
+    await expect(page.getByText("Last recorded cause")).toHaveCount(0);
+    await expect(page.getByTestId("awaiting-input-cause")).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Design lock" })).toHaveCount(0);
     await expect(cards(page)).toHaveCount(0);
   });

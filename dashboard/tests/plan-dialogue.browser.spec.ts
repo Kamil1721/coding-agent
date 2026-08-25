@@ -60,6 +60,19 @@
  *     (it still refreshes, so the panel behaves as though something happened).
  *     "`you decide` posts a decline the server can read as one" goes red: nothing
  *     reaches the wire and the fixture's transcript never grows.
+ * M17 `lib/awaiting-input.ts` — `awaitingInputKind` returns `"question"`
+ *     unconditionally, which is what the notice did before 2026-08-25. "a later
+ *     creative park cannot reopen the folded plan" goes red on
+ *     `/Type your answer/` count 1 and `Last recorded cause` count 0: the exact
+ *     screen that sent the owner typing into a chat no session would read.
+ *     NOT WATCHED IN A BROWSER on 2026-08-25 — this lane had one browser
+ *     invocation; the same mutation was run against
+ *     `awaiting-input.unit.spec.ts` and watched fail there, see its ledger.
+ * M18 `lib/awaiting-input.ts` — the `planParkedFrom` read dropped, so every
+ *     park with no cause is `"unexplained"`. "a park with no questions in the
+ *     chat still says the run is stopped" goes red on `/Type your answer in the/`
+ *     and on `/nothing to type/` count 0: the crash-window plan park told there
+ *     is nothing to say. Same caveat as M17; the unit ledger has the run.
  *
  * ─── WHAT MOVED UNDER THIS FILE — 2026-08-05 ───
  *
@@ -81,6 +94,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { PLAN_RUN_ID, STALE_PLAN_RUN_ID } from "./fixtures/config";
+import { STALE_PLAN_DETAIL } from "./fixtures/run-fixture";
 
 const SHOT_DIR =
   "/private/tmp/claude-501/-Users-kamilborzecki-Projects-coding-agent/3c01d874-1540-48f7-843f-5e9c0f3adc14/scratchpad";
@@ -187,6 +201,31 @@ test("a later creative park cannot reopen the folded plan", async ({ page }) => 
   const genericPark = page.getByText("Waiting on input").locator("../..");
   await expect(genericPark).toBeVisible();
   await expect(genericPark.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
+
+  /*
+   * THE NOTICE KNOWS NOTHING WAS ASKED — 2026-08-25. On run
+   * `run-2026-08-25T10-30-39-122Z-d728ab79` this exact park (plan settled,
+   * `failureReason` written by `#creativeContractPhase`) rendered the
+   * plan-question script, and the owner typed "what is your question?" into a
+   * Chat that no session would ever read. The body must say there is nothing to
+   * type and must show the cause the row recorded; the answer-first script and
+   * its order glyph must be gone. The other direction — a plan park KEEPS the
+   * script — is "a park with no questions in the chat still says the run is
+   * stopped" below.
+   */
+  await expect(genericPark.getByText(/nothing to type/)).toBeVisible();
+  await expect(genericPark.getByText(/Type your answer/)).toHaveCount(0);
+  await expect(genericPark.getByTestId("explain-answer-order")).toHaveCount(0);
+  await expect(genericPark.getByText("Last recorded cause")).toBeVisible();
+  // `toHaveText` on the `pre` reads the SERVED bytes back — the whole reason it
+  // is a `pre`: machine text reaches the screen unparaphrased. The fixture's
+  // string is the one run `run-2026-08-25T10-30-39-122Z-d728ab79` recorded
+  // (its comment in `fixtures/run-fixture.ts` names the producer form and that
+  // the form is now historic); it is read back from the constant rather than
+  // retyped, so a rewording on either side goes red here.
+  const cause = STALE_PLAN_DETAIL.failureReason;
+  expect(cause, "the fixture must carry a recorded cause for this check to mean anything").not.toBeNull();
+  await expect(genericPark.getByTestId("awaiting-input-cause").locator("pre")).toHaveText(cause ?? "");
   await expect(
     page.getByTestId("overview-this-run").getByRole("button", { name: "Resume", exact: true }),
   ).toHaveAttribute("title", "Put this run back in the queue.");
@@ -575,6 +614,23 @@ test("a park with no questions in the chat still says the run is stopped", async
   // POSITIVE CONTROL: with no questions there is no panel, so the notice is
   // standing in for one rather than doubling it up.
   await expect(page.getByRole("heading", { name: "Plan", exact: true })).toHaveCount(0);
+
+  /*
+   * NEGATIVE CONTROL FOR THE CHECK-PARK COPY — 2026-08-25. This is a PLAN park
+   * (`PLAN_RUN_ID` has no `plan` key, so `planParkedFrom` reads the legacy
+   * `phase: plan` + `awaiting_input` tuple) with no cause recorded, and the
+   * owner's next move really is to type: the answer-first script must stay, the
+   * order glyph with it, and the "nothing to type" body and its cause block must
+   * not appear. Without this, a kind function that returned `"check"` or
+   * `"unexplained"` for everything would pass "a later creative park cannot
+   * reopen the folded plan" and strand this park with a notice telling the owner
+   * there is nothing to say.
+   */
+  await expect(page.getByText(/Type your answer in the/)).toBeVisible();
+  await expect(page.getByTestId("explain-answer-order")).toHaveCount(1);
+  await expect(page.getByText(/nothing to type/)).toHaveCount(0);
+  await expect(page.getByText("Last recorded cause")).toHaveCount(0);
+  await expect(page.getByTestId("awaiting-input-cause")).toHaveCount(0);
 });
 
 test("screenshot: the parked run as the owner sees it", async ({ page }) => {

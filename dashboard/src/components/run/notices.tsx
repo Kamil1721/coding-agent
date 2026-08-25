@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import type { RunDetail } from "@/lib/api-types";
+import { awaitingInputKind } from "@/lib/awaiting-input";
 import { formatCountdown } from "@/lib/format";
 import { useNow } from "@/lib/use-run-stream";
 import { Explain } from "@/components/explain";
@@ -177,16 +178,54 @@ export function RateLimitNotice({
  * THE ORDER FACT IS BEHIND THE `Explain` RATHER THAN DELETED. See the block at
  * the call site: it changes the ORDER of the two things the reader is about to
  * do, which is the one category the glyph exists for.
+ *
+ * IT USED TO SCRIPT THE PLAN-QUESTION ANSWER FOR EVERY NON-DESIGN PARK, AND
+ * THAT WAS WRONG — 2026-08-25, run `run-2026-08-25T10-30-39-122Z-d728ab79`.
+ * A machine check parks too: `#creativeContractPhase`
+ * (`server/src/orchestrator.ts`), in the one-call form it had that morning,
+ * wrote `status: "awaiting_input"` with `failureReason: "creative contract
+ * invalid: creative author output did not compile"` after ONE creative-author
+ * call whose output the compiler rejected (`MOTION_FALLBACK_INVALID` at
+ * `/motion/1/trigger`), and asked nothing. (Historic bytes: later that day the
+ * producer became a three-attempt loop with a longer park sentence; this
+ * notice branches on `failureReason !== null`, not on the bytes — see
+ * `lib/awaiting-input.ts`.) That run's plan dialogue was already settled (`plan.awaiting=false`,
+ * `closed.reason="answered"`); this notice still said "Type your answer in the
+ * Chat panel, then press Resume", the owner typed "what is your question?" into
+ * Chat, and it stayed "queued — not read yet" because a parked run has no live
+ * session and `resume`'s generic tail only requeues the run. Nothing had asked
+ * a question. The body now branches on `awaitingInputKind(run)`
+ * (`lib/awaiting-input.ts`, where the order of its predicates is argued): the
+ * answer-first script renders only for an open plan park; the other two kinds
+ * say there is nothing to type, and the one with a recorded cause shows it
+ * through the same `RecordedCause` the Failed notice renders. `run` is read the
+ * way `RateLimitNotice` reads it. The title paragraph below is unchanged.
  */
 export function AwaitingInputNotice({
+  run,
   onResume,
   onCancel,
   busy,
 }: {
+  run: RunDetail;
   onResume: () => void;
   onCancel: () => void;
   busy: boolean;
 }): ReactNode {
+  /*
+   * MEMOISED ON `run` IDENTITY — 2026-08-25. `RunPage` ticks `useNow(1_000)`
+   * for the whole life of a park, so this notice re-renders once a second, and
+   * `awaitingInputKind` walks the plan projection on every call
+   * (`planParkedFrom` → `readDurablePlan`: the closure shape, every question
+   * row, a Set of ids). `run` is raw SWR `data` (`use-run-stream.ts`, `run:
+   * data`), which only changes identity when a revalidation returns new
+   * content, so the same `useMemo` `page.tsx` keeps for `planDialogue` skips
+   * the walk on every tick that changed nothing. The call keeps its
+   * `awaitingInputKind(RunDetail)` shape — `awaiting-input.unit.spec.ts` and
+   * its M4 mutation are measured against it — rather than taking `page.tsx`'s
+   * `planParked` as a prop.
+   */
+  const kind = useMemo(() => awaitingInputKind(run), [run]);
   return (
     <Notice
       tone="warn"
@@ -195,14 +234,20 @@ export function AwaitingInputNotice({
        * "Stopped — it is waiting for you" was written, screenshotted and
        * reverted: it is plainer, but "Waiting on input" carries none of the
        * banned vocabulary and is not what the owner objected to. Renaming it
-       * costs three existing assertions
-       * (`design-lock.browser.spec.ts:512,524`, `plan-dialogue.browser.spec.ts:250`
-       * all read `getByText("Waiting on input")`, one of them `exact`) and — the
-       * part that matters — it would silently VOID two more:
-       * `design-lock.browser.spec.ts:465` and `plan-dialogue.browser.spec.ts:112`
-       * assert this notice is ABSENT by that string, so a rename leaves them
-       * green over a screen that renders it. A cosmetic title is not worth two
-       * checks that can no longer go red.
+       * costs five existing assertions that read `getByText("Waiting on input")`
+       * (`design-lock.browser.spec.ts:450`'s `genericNotice`, `exact`, used at
+       * :519 and :542; `plan-dialogue.browser.spec.ts:201`, :239 and :613) and —
+       * the part that matters — it would silently VOID three more:
+       * `design-lock.browser.spec.ts:507`, `plan-dialogue.browser.spec.ts:159`
+       * and :189 assert this notice is ABSENT by that string, so a rename leaves
+       * them green over a screen that renders it. A cosmetic title is not worth
+       * three checks that can no longer go red. (Anchors re-read 2026-08-25.)
+       *
+       * AND IT STAYS A BARE STRING, NOT AN ELEMENT — 2026-08-25.
+       * `plan-dialogue.browser.spec.ts:201` climbs `.locator("../..")` from the
+       * title's `<p>` to the notice's flex row and looks for Resume inside it;
+       * wrapping the title in a `<span>` or a fragment moves where that climb
+       * starts and loses the button. The body forks on `kind`; the title does not.
        */
       title="Waiting on input"
       actions={
@@ -234,20 +279,109 @@ export function AwaitingInputNotice({
        * type specimen from `explain.tsx`'s docblock — knowing it changes the
        * order of two things the reader is about to do, so the paragraph may be
        * hidden and the fact may not be dropped.
+       *
+       * ONLY FOR AN OPEN PLAN PARK — 2026-08-25. The line and its glyph are the
+       * `question` branch; the bytes are the ones measured before the fork.
        */}
-      <p>
-        Type your answer in the <strong className="text-ink">Chat</strong> panel, then
-        press <strong className="text-ink">Resume</strong> — in that{" "}
-        <span className="whitespace-nowrap">
-          order.
-          <Explain about="answering before you resume" className="ml-1" testId="explain-answer-order">
-            A message sent to a stopped run is held, not delivered; Resume is what
-            hands it over. Resume first and the next prompt is written without your
-            answer.
-          </Explain>
-        </span>
-      </p>
+      {kind === "question" ? (
+        <p>
+          Type your answer in the <strong className="text-ink">Chat</strong> panel, then
+          press <strong className="text-ink">Resume</strong> — in that{" "}
+          <span className="whitespace-nowrap">
+            order.
+            <Explain about="answering before you resume" className="ml-1" testId="explain-answer-order">
+              A message sent to a stopped run is held, not delivered; Resume is what
+              hands it over. Resume first and the next prompt is written without your
+              answer.
+            </Explain>
+          </span>
+        </p>
+      ) : (
+        <>
+          {/*
+           * NOTHING WAS ASKED, AND THE LINE SAYS SO FIRST — 2026-08-25, run
+           * `run-2026-08-25T10-30-39-122Z-d728ab79`. The owner's first act on
+           * that screen was to type a reply to a question nobody had asked, so
+           * the sentence opens with the fact that closes the chat as an option
+           * and then names the two buttons by their labels. "Back in the queue"
+           * is the product's existing sentence for this exact click (Overview's
+           * Resume `title`, `canvas/sheet.tsx`) and what `Orchestrator.resume`'s
+           * generic tail does (`status: "queued"`, `pump()`); "the stopped step
+           * runs again" is `#creativeContractPhase` re-authoring on the next
+           * `#start` because nothing fresh was recorded. 26 words, no `Explain`:
+           * there is no second fact behind it that changes what the reader does.
+           *
+           * NO ORDER GLYPH HERE, ON PURPOSE. `explain-answer-order` says a message
+           * is handed over on Resume; on this park no message is read at all
+           * (`authorInputFor(ticket, manifest)` takes no chat), so the glyph
+           * would be stating an order for a step that does not exist.
+           */}
+          <p>
+            Nothing was asked, so there is nothing to type.{" "}
+            <strong className="text-ink">Resume</strong> puts the run back in the queue and
+            the stopped step runs again; <strong className="text-ink">Cancel</strong> ends it.
+          </p>
+          {/*
+           * THE CAUSE, ONLY WHEN ONE WAS RECORDED. It is the Failed notice's
+           * `RecordedCause` — one label, one class string, one overflow rule
+           * for one field, held equal by construction rather than by a copy
+           * only a reviewer's eye kept equal (the WHY of each is on the
+           * component). The `unexplained` kind renders nothing here —
+           * `reconcileOnBoot`'s park writes no reason, and an empty box under
+           * this label would claim a record the row does not hold. `?? ""` is
+           * for the type alone: `check` is defined as `failureReason !== null`
+           * (`lib/awaiting-input.ts`), so it never fires. The `data-testid` is
+           * this surface's only — `plan-dialogue.browser.spec.ts` reads the
+           * `pre` through it, and `design-lock`, `chat-parked` and
+           * `plan-dialogue` count it to zero where this branch must not render.
+           */}
+          {kind === "check" && (
+            <RecordedCause reason={run.failureReason ?? ""} testId="awaiting-input-cause" />
+          )}
+        </>
+      )}
     </Notice>
+  );
+}
+
+/**
+ * THE "LAST RECORDED CAUSE" BLOCK, ONE ELEMENT FOR TWO NOTICES — 2026-08-25.
+ * `OutcomeNotice`'s Failed branch had it first; `AwaitingInputNotice`'s
+ * `check` kind copied it, class string and label included, "so the reader
+ * learns one word for one field and the same overflow rule keeps the stack
+ * from widening" — which is an argument for one source, and a copy did not
+ * enforce it: the next tweak to either `pre` would have forked the two
+ * notices in silence. The two call sites keep the WHY of their own gates.
+ *
+ * "LAST", NOT "THE": one column, five writers — see the `failureReason`
+ * docblock in `lib/api-types.ts`. A run whose design lane failed and which
+ * then reached the gate reports the gate's answer and nothing about the lane,
+ * and after a settled design lock or a later crash the string can be stale,
+ * so this is the last cause recorded, not a history and not necessarily the
+ * worst thing that happened. Never "why it stopped" (`lib/awaiting-input.ts`).
+ *
+ * SCROLLED AND WRAPPED because the string is unbounded and provably contains
+ * newlines (`describeError` returns `[CODE] message\nfix: remediation` for a
+ * `BakeoffError`), and an unwrapped `pre` inside a notice's `min-w-0` column
+ * would push the whole floating stack sideways. It is MACHINE TEXT, so it is
+ * a mono `pre` and not prose dressed up as a sentence.
+ *
+ * `testId` IS OPTIONAL AND ONLY THE AWAITING SURFACE PASSES ONE.
+ * `awaiting-input-cause` is what the specs count on that screen, and the
+ * Failed notice has never carried it; sharing it would let a count meant for
+ * one surface match the other. `undefined` omits the attribute, so the Failed
+ * bytes are unchanged.
+ */
+function RecordedCause({ reason, testId }: { reason: string; testId?: string }): ReactNode {
+  return (
+    <div className="mt-2" data-testid={testId}>
+      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+        Last recorded cause
+      </div>
+      <pre className="mt-1 max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-sm border border-line bg-surface-raised px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink-dim">
+        {reason}
+      </pre>
+    </div>
   );
 }
 
@@ -376,26 +510,11 @@ export function OutcomeNotice({ run }: { run: RunDetail }): ReactNode {
          * of what the server wrote, a restatement reads as provenance rather than
          * repetition.
          *
-         * "LAST", NOT "THE": one column, five writers — see the `failureReason`
-         * docblock in `lib/api-types.ts`. A run whose design lane failed and which
-         * then reached the gate reports the gate's answer and nothing about the lane,
-         * so this is the last cause recorded, not a history and not necessarily the
-         * worst thing that happened.
-         *
-         * SCROLLED AND WRAPPED because the string is unbounded and provably contains
-         * newlines (the `\nfix:` above), and an unwrapped `pre` inside this notice's
-         * `min-w-0` column would push the whole HUD sideways.
+         * THE LABEL'S WORDING AND THE `pre`'S OVERFLOW RULE ARE ARGUED ON
+         * `RecordedCause`, which this and `AwaitingInputNotice` both render; the
+         * `\nfix:` above is the newline the wrap exists for.
          */}
-        {run.failureReason !== null && (
-          <div className="mt-2">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
-              Last recorded cause
-            </div>
-            <pre className="mt-1 max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-sm border border-line bg-surface-raised px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink-dim">
-              {run.failureReason}
-            </pre>
-          </div>
-        )}
+        {run.failureReason !== null && <RecordedCause reason={run.failureReason} />}
       </Notice>
     );
   }

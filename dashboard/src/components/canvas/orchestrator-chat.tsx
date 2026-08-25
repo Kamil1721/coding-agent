@@ -28,19 +28,38 @@
  * not read until someone resumes. Exactly one of the two stamps `deliveredAt`, which
  * is what keeps delivery at-most-once.
  *
- * THIS COMPONENT CANNOT TELL THE TWO APART BEFORE THE FACT. It is handed `runIsOver`
- * and a message list, not the run's status, so the send button's "i" describes both
- * paths (it was a permanent paragraph under the composer until 2026-08-05).
- * The per-message state line does NOT disambiguate them either: `deliveredAt` is a
- * single stamp written by whichever path took the message, so "read at 14:02" means
- * "it reached a prompt", not "it went down the live channel". An `isParked` prop from
- * `runs/[runId]/page.tsx` would let the promise name the single path that applies;
- * that is a caller change, and is deliberately not faked here with a default.
+ * THIS COMPONENT IS TOLD WHEN THE LIVE PATH IS SHUT — `runParked`, SINCE 2026-08-25.
+ * Until then it was handed `runIsOver` and a message list, not the run's status, so
+ * the state line under a message could only say "queued — not read yet" over a run
+ * that was not moving at all. Run `run-2026-08-25T10-30-39-122Z-d728ab79` parked
+ * `awaiting_input` after ONE creative-author call whose output the compiler rejected
+ * (`MOTION_FALLBACK_INVALID` at `/motion/1/trigger`); its plan dialogue was already
+ * settled (`plan.awaiting=false`, `closed.reason="answered"`); the floating notice
+ * still scripted "Type your answer in the Chat panel, then press Resume"; the owner
+ * typed "what is your question?" here and it sat under "queued — not read yet",
+ * because a parked run has no live session. Nothing had asked a question, and this
+ * panel had no way to say so. `runParked` is the caller change the previous version
+ * of this paragraph deferred: `runs/[runId]/page.tsx` passes the SAME value that
+ * mounts `AwaitingInputNotice` (`awaiting_input`, not a design park, not an
+ * answerable plan park), so the stamp under a message and the notice over the graph
+ * cannot disagree. It is false on an ANSWERABLE plan park — the dialogue panel is on
+ * screen and reads chat without Resume — and on a DESIGN park, which consumes a
+ * direction-naming message; on both, "nothing is running to read it" would be
+ * untrue. A plan park in the first-paint or questions-missing window (`planDialogue`
+ * null, so no panel yet) has it TRUE: the gate is `!planAnswerable`, not
+ * `!planParked` (`page.tsx`, `genericParkOpen`), and there the generic notice stands
+ * in and Resume is the move. It is REQUIRED, not defaulted, so a caller
+ * cannot get the old ambiguity back by omission. What it does NOT change:
+ * `deliveredAt` is still a single stamp written by whichever path took the message,
+ * so "read at 14:02" still means "it reached a prompt", not "it went down the live
+ * channel"; and the send button's "i" still describes both paths.
  *
- * THE THREE STATES A MESSAGE CAN BE IN ARE ALL RENDERED, because collapsing them is
+ * THE FOUR STATES A MESSAGE CAN BE IN ARE ALL RENDERED, because collapsing them is
  * how a tool lies to its owner:
  *
  *   - waiting     — sent, not yet picked up;
+ *   - held        — sent to a PARKED run: nothing is running to read it and only
+ *                   Resume hands it over (`deliveryStamp`, 2026-08-25);
  *   - read at T   — the instant, off the server's own stamp;
  *   - never read  — the run ended first. This one MUST be visible: the owner
  *                   otherwise believes a redirection landed that no builder read.
@@ -173,11 +192,79 @@ import type {
 } from "@/lib/api-types";
 
 /**
+ * The two facts about the run that decide what a null `deliveredAt` means.
+ *
+ * `runIsOver` — `isTerminalStatus` at the caller; nothing more will be written.
+ * `runParked` — the generic `awaiting_input` park, and ONLY that: the caller
+ * passes the value that mounts `AwaitingInputNotice`, false on a plan park (the
+ * dialogue reads chat without Resume) and on a design park (a direction-naming
+ * message is consumed). Both true is a caller bug — `RunStatus` is one field, so
+ * a run cannot be terminal and `awaiting_input` at once — and every consumer
+ * below resolves it the same way: `runIsOver` wins, because "never read — the
+ * run ended first" is the final, non-recoverable fact and a parked promise
+ * ("Resume hands it over") would be a lie about a run `resume()` refuses.
+ */
+export interface RunLifecycle {
+  readonly runIsOver: boolean;
+  readonly runParked: boolean;
+}
+
+export interface DeliveryStamp {
+  readonly label: string;
+  readonly tone: "text-pass" | "text-warn" | "text-ink-faint";
+}
+
+/**
+ * The line under an OWNER message: what the record says happened to it.
+ *
+ * FOUR RUNGS, IN THIS ORDER, AND THE ORDER IS THE CONTRACT:
+ *   1. a stamp beats every flag — "read at T" is the server's own fact;
+ *   2. `runIsOver` — never read, and nothing will read it now;
+ *   3. `runParked` — held: nothing is running, and only Resume hands it over;
+ *   4. otherwise queued — a live run whose next step may take it.
+ *
+ * WHY THE THIRD RUNG EXISTS — 2026-08-25, run
+ * `run-2026-08-25T10-30-39-122Z-d728ab79`. The owner typed "what is your
+ * question?" into a run parked by a compiler rejection with no question open,
+ * and this line said "queued — not read yet" — true, and useless: the only
+ * thing that would read it was a Resume the notice above was telling him to
+ * press AFTER typing an answer. "held until Resume; nothing is running to read
+ * it" names the one path that applies. The tone is `text-warn` because the
+ * reader has something to do about it, but the words carry the distinction —
+ * the label must stay unambiguous on a greyscale screenshot.
+ *
+ * WHAT IT DOES NOT SAY: "reopen this tab". After Resume the status flips to
+ * `queued`/`running` over SSE, `runParked` goes false and this line reverts to
+ * "queued — not read yet" while `deliveredAt` is still null until `#buildPhase`
+ * stamps it; the "read at" only appears once the list is refetched. The reply
+ * row below carries the reopen instruction; this line states the record.
+ *
+ * PURE AND EXPORTED so `dashboard/tests/chat-reply.unit.spec.ts` can prove all
+ * four rungs and their order without a DOM.
+ */
+export function deliveryStamp(message: ChatMessage, run: RunLifecycle): DeliveryStamp {
+  if (message.deliveredAt !== null) {
+    return { label: `read at ${formatTimeOnly(message.deliveredAt)}`, tone: "text-pass" };
+  }
+  if (run.runIsOver) return { label: "never read — the run ended first", tone: "text-warn" };
+  if (run.runParked) {
+    return {
+      label: "queued — held until Resume; nothing is running to read it",
+      tone: "text-warn",
+    };
+  }
+  return { label: "queued — not read yet", tone: "text-ink-faint" };
+}
+
+/**
  * The conversation is waiting on a reply that may never come.
  *
- * TWO KINDS, AND THE DIFFERENCE IS WHETHER ANYTHING CAN STILL CHANGE:
- * `waiting` is a live run (a reply may yet be recorded, or may not), `unanswered`
- * is a terminal one — nothing more will be written, so the gap is final.
+ * THREE KINDS, AND THE DIFFERENCE IS WHETHER ANYTHING CAN STILL CHANGE, AND WHAT
+ * HAS TO HAPPEN FIRST: `waiting` is a live run (a reply may yet be recorded, or
+ * may not); `parked` (2026-08-25) is a run nothing is stepping — a reply cannot
+ * be recorded until someone presses Resume, and what was sent is not read until
+ * then either; `unanswered` is a terminal one — nothing more will be written, so
+ * the gap is final. Precedence between the flags is {@link RunLifecycle}'s.
  *
  * `read` IS TRUE IF **ANY** OWNER MESSAGE SINCE THE LAST REPLY WAS DELIVERED, not
  * just the newest one, and that is a correctness fix rather than a nicety. Take the
@@ -192,6 +279,7 @@ import type {
  */
 export type ReplyGap =
   | { readonly kind: "waiting"; readonly read: boolean }
+  | { readonly kind: "parked"; readonly read: boolean }
   | { readonly kind: "unanswered"; readonly read: boolean };
 
 /**
@@ -212,13 +300,14 @@ export type ReplyGap =
  * would answer a NEW question with an OLD reply, which is the case a test has to
  * cover.
  *
- * EXPORTED FOR A UNIT SPEC, which does not exist yet: this component's files were
- * the whole of the change that added it, so `dashboard/tests/chat-reply.unit.spec.ts`
- * is a handoff and the rule below is currently unwatched.
+ * EXPORTED FOR A UNIT SPEC — `dashboard/tests/chat-reply.unit.spec.ts`, which
+ * landed 2026-08-25 with the `parked` kind and watches the rule below in both
+ * directions (an old `run` row followed by a new queued owner row is `read:
+ * false`, and a delivered owner row after it is `read: true`).
  */
 export function replyGap(
   messages: readonly ChatMessage[],
-  runIsOver: boolean,
+  run: RunLifecycle,
 ): ReplyGap | null {
   const last = messages[messages.length - 1];
   // An empty conversation and one that ends in a reply are both "nothing to say".
@@ -239,7 +328,11 @@ export function replyGap(
     if (message.deliveredAt !== null) read = true;
   }
 
-  return runIsOver ? { kind: "unanswered", read } : { kind: "waiting", read };
+  // `runIsOver` before `runParked`: the terminal fact is the one that may never
+  // be softened, and both true is a caller bug (see `RunLifecycle`).
+  if (run.runIsOver) return { kind: "unanswered", read };
+  if (run.runParked) return { kind: "parked", read };
+  return { kind: "waiting", read };
 }
 
 const MAX_TEXT_CHARS = 8_000;
@@ -313,20 +406,21 @@ const DOCUMENTS_NOT_WIRED =
  * rule the server points at (`db.ts:268-274`) in a file where a reply row could
  * later be built without it.
  *
- * `runIsOver` is what turns a null stamp from "waiting" into "never seen", and it is
- * a prop rather than derived here because only the caller knows the run's status. It
- * says nothing about a `run` row, which carries no delivery state at all.
+ * `run` ({@link RunLifecycle}) is what turns a null stamp from "waiting" into "held"
+ * or "never seen", and it is a prop rather than derived here because only the caller
+ * knows the run's status. It says nothing about a `run` row, which carries no
+ * delivery state at all.
  */
 function Message({
   message,
-  runIsOver,
+  run,
 }: {
   message: ChatMessage;
-  runIsOver: boolean;
+  run: RunLifecycle;
 }): ReactNode {
   const mine = message.role === "owner";
   /*
-   * THREE STATES, AND THE MIDDLE ONE IS WHY `deliveredAt` EXISTS.
+   * FOUR STATES, AND THE TWO UNSTAMPED LIVE ONES ARE WHY `runParked` EXISTS.
    *
    * A stamp means the text reached a prompt — either pushed straight into the running
    * session (streaming input) or folded in at a segment boundary. No stamp on a live
@@ -334,22 +428,16 @@ function Message({
    * and saying "sent" there would be the tool lying about the one thing the owner
    * needs to know.
    *
-   * THE MIDDLE LABEL SAYS "QUEUED", NOT "waiting for the agent's next step", CHANGED
-   * 2026-07-30. `runIsOver` is the only run state this component is given, so the
-   * not-yet-delivered case covers both a running segment (where the next step really
-   * is what picks it up) and a PARKED run, where nothing is stepping and the message
-   * waits for a resume. The old wording promised imminent pickup on a run that was
-   * not moving at all; "queued — not read yet" is true in both.
+   * THE QUEUED LABEL USED TO COVER THE PARK TOO, AND SINCE 2026-08-25 IT DOES NOT.
+   * From 2026-07-30 `runIsOver` was the only run state this component was given, so
+   * "queued — not read yet" was chosen as the one sentence true of both a running
+   * segment and a parked run. Run `run-2026-08-25T10-30-39-122Z-d728ab79` is where
+   * that neutrality cost something: the owner's "what is your question?" sat under
+   * it on a run nothing was stepping, with a notice above telling him Resume came
+   * AFTER his answer. The rungs and their order live in `deliveryStamp`, which is
+   * pure so the unit spec can hold them.
    */
-  const state =
-    message.deliveredAt !== null
-      ? { label: `read at ${formatTimeOnly(message.deliveredAt)}`, tone: "text-pass" }
-      : runIsOver
-        ? {
-            label: "never read — the run ended first",
-            tone: "text-warn",
-          }
-        : { label: "queued — not read yet", tone: "text-ink-faint" };
+  const state = deliveryStamp(message, run);
 
   return (
     /*
@@ -428,6 +516,67 @@ function Message({
 }
 
 /**
+ * THE SIX SENTENCES `ReplyGapRow` CAN SHOW, ONE PER (kind, read) — 2026-08-25.
+ * A `switch` over the union, not the three-level ternary it replaced: it is
+ * exhaustive, so a fourth `ReplyGap` kind is a compile error here rather than
+ * a silent fall-through to the waiting pair, and each string sits under the
+ * state it belongs to instead of at a `?`/`:` depth the reader has to count.
+ * The bytes are unchanged and pinned by `chat-parked.browser.spec.ts`.
+ *
+ * THE SENTENCES SAY "WHAT YOU SENT", NOT "YOUR MESSAGE". `gap.read` describes the
+ * whole unanswered run of owner messages, which can be more than one and can be
+ * mixed — read and queued — so a singular possessive would name a specific row the
+ * row above may be contradicting. Each message's own state stays under it.
+ *
+ * ALL FOUR TRIMMED 2026-08-05, AND ALL FOUR STAYED INLINE. `ReplyGapRow` is the
+ * one place an ABSENCE is stated; hiding it behind an "i" would put the
+ * silence back to being a gap the reader sits and waits through, which is the
+ * defect the row was built for. What went was the mechanism behind each
+ * sentence, not its claim:
+ *
+ *   · "Nothing more can arrive" — the row's own label already reads THE RUN
+ *     DID NOT ANSWER on a run that has ended, in the past tense.
+ *   · "One is stored when a build segment ends, and only if the agent
+ *     produced text" — the first half survives in plain words ("when the run
+ *     next stops"), the second is what the `run` row's own "i" says.
+ *
+ * "REOPEN THIS TAB" SURVIVES IN EVERY NON-FINAL SENTENCE and is the reason
+ * they are not shorter still: nothing refetches while this panel sits open
+ * (`page.tsx`, `loadMessages` runs on mount, on send and on opening Chat), so
+ * a reader who is not told to reopen waits on an arrival this component
+ * cannot observe.
+ *
+ * THE PARKED PAIR — 2026-08-25, run `run-2026-08-25T10-30-39-122Z-d728ab79`.
+ * The unread sentence is the one the owner actually saw under "what is your
+ * question?": "Not read yet, so there is nothing to answer — reopen this tab
+ * to check", on a run where reopening the tab could never change anything
+ * because nothing was running. It now names the one thing that does — Resume
+ * — and says WHEN the run reads it, in the same words the POST receipt uses
+ * ("work boundary", `DELIVERY_LABEL.queued_boundary`; never "segment" or
+ * "session", the words the 2026-08-05 cut removed from this screen). The read
+ * sentence says "stopped" rather than "ended": true of every park, because
+ * `AgentReplyWatch.record` fires once per stretch of work and the stretch that
+ * read it has finished, and a reply nobody recorded then will not appear on
+ * its own. The label stays "no reply yet" and faint — the park is not final.
+ */
+function gapSentence(gap: ReplyGap): string {
+  switch (gap.kind) {
+    case "unanswered":
+      return gap.read
+        ? "It was read, and no reply was recorded before the run ended."
+        : "The run ended before reading it, so there was nothing to answer.";
+    case "parked":
+      return gap.read
+        ? "It was read, and no reply was recorded before the run stopped."
+        : "Nothing is running to read what you sent. Resume hands it to the run at its next work boundary — reopen this tab after that to check.";
+    case "waiting":
+      return gap.read
+        ? "It reached the run. A reply is only stored when the run next stops — reopen this tab to check."
+        : "Not read yet, so there is nothing to answer — reopen this tab to check.";
+  }
+}
+
+/**
  * The row that stands where a reply would be — the point of the whole feature.
  *
  * IT IS AN ABSENCE DRAWN AS A ROW, so it is dashed, carries the label NO REPLY
@@ -435,7 +584,8 @@ function Message({
  * read as the run speaking: it is this panel's statement about the record, not a
  * message.
  *
- * EVERY SENTENCE BELOW IS ABOUT WHAT WAS RECORDED, NEVER ABOUT WHAT THE AGENT DID.
+ * EVERY SENTENCE `gapSentence` RETURNS IS ABOUT WHAT WAS RECORDED, NEVER ABOUT WHAT
+ * THE AGENT DID.
  * The client cannot tell a segment that produced no assistant text from a run that
  * went terminal before the reply was written, so "no reply was recorded" is the
  * strongest true form. "The agent said nothing" would be a diagnosis from the one
@@ -447,38 +597,11 @@ function Message({
  * refetches while it sits open.
  */
 function ReplyGapRow({ gap }: { gap: ReplyGap }): ReactNode {
-  /*
-   * THE SENTENCES SAY "WHAT YOU SENT", NOT "YOUR MESSAGE". `gap.read` describes the
-   * whole unanswered run of owner messages, which can be more than one and can be
-   * mixed — read and queued — so a singular possessive would name a specific row the
-   * row above may be contradicting. Each message's own state stays under it.
-   */
-  /*
-   * ALL FOUR TRIMMED 2026-08-05, AND ALL FOUR STAYED INLINE. This row is the
-   * one place an ABSENCE is stated; hiding it behind an "i" would put the
-   * silence back to being a gap the reader sits and waits through, which is the
-   * defect the row was built for. What went was the mechanism behind each
-   * sentence, not its claim:
-   *
-   *   · "Nothing more can arrive" — the badge above already reads THE RUN DID
-   *     NOT ANSWER on a run that has ended, in the past tense.
-   *   · "One is stored when a build segment ends, and only if the agent
-   *     produced text" — the first half survives in plain words ("when the run
-   *     next stops"), the second is what the `run` row's own "i" says.
-   *
-   * "REOPEN THIS TAB" SURVIVES IN BOTH LIVE SENTENCES and is the reason they
-   * are not shorter still: nothing refetches while this panel sits open
-   * (`page.tsx:314-340`), so a reader who is not told to reopen waits on an
-   * arrival this component cannot observe.
-   */
+  // Only the terminal kind changes the label and its colour: a park is not
+  // final (THE PARKED PAIR on `gapSentence`), so it and a wait both read
+  // "no reply yet", faint.
   const final = gap.kind === "unanswered";
-  const sentence = final
-    ? gap.read
-      ? "It was read, and no reply was recorded before the run ended."
-      : "The run ended before reading it, so there was nothing to answer."
-    : gap.read
-      ? "It reached the run. A reply is only stored when the run next stops — reopen this tab to check."
-      : "Not read yet, so there is nothing to answer — reopen this tab to check.";
+  const sentence = gapSentence(gap);
 
   return (
     <li className="mr-5 rounded-sm border border-dashed border-line-strong px-2 py-1.5">
@@ -567,6 +690,7 @@ function DeliveryReceipt({
 export function OrchestratorChat({
   messages,
   runIsOver,
+  runParked,
   models,
   sourceModelId,
   onSend,
@@ -574,6 +698,15 @@ export function OrchestratorChat({
 }: {
   messages: readonly ChatMessage[];
   runIsOver: boolean;
+  /**
+   * The generic `awaiting_input` park is open: nothing is running to read a
+   * message, and only Resume will. REQUIRED, with no default — see the file
+   * header for the run that showed why, and {@link RunLifecycle} for what the
+   * caller must and must not pass. It changes the two record lines under the
+   * message list and nothing else: the composer, the continuation UI and the
+   * POST receipt still run off `runIsOver` and the server's disposition.
+   */
+  runParked: boolean;
   models: readonly ModelOption[] | undefined;
   sourceModelId: string;
   /**
@@ -688,7 +821,8 @@ export function OrchestratorChat({
   }, [attachments]);
   useEffect(() => () => releaseAttachments(held.current), []);
 
-  const gap = replyGap(messages, runIsOver);
+  const lifecycle: RunLifecycle = { runIsOver, runParked };
+  const gap = replyGap(messages, lifecycle);
 
   /**
    * ONE FIELD CARRIES BOTH THE POLICY AND THE SENTENCE — `null` accepts
@@ -889,7 +1023,7 @@ export function OrchestratorChat({
       {messages.length > 0 && (
         <ul className="mt-1.5 max-h-[220px] space-y-1.5 overflow-y-auto">
           {messages.map((message) => (
-            <Message key={message.seq} message={message} runIsOver={runIsOver} />
+            <Message key={message.seq} message={message} run={lifecycle} />
           ))}
           {/*
             * LAST IN THE LIST, WHERE THE MISSING REPLY WOULD BE. Derived on every
@@ -1140,7 +1274,10 @@ export function OrchestratorChat({
             *     session"; "there is no session to push into"; "it is queued and
             *     folded into the next prompt". The OUTCOME of all three is
             *     already printed under each message as `queued — not read yet`,
-            *     `read at 14:02` or `never read — the run ended first`.
+            *     `read at 14:02` or `never read — the run ended first` — and,
+            *     since 2026-08-25, `queued — held until Resume; nothing is
+            *     running to read it` for the parked run "there is no session to
+            *     push into" was describing (`deliveryStamp`).
             *   DELETED — "Images are read before it acts on them." A promise
             *     about a consequence of an action he has not taken yet, next to
             *     a placeholder already inviting him to drop one.

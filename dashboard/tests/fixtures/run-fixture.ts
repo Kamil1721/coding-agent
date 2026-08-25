@@ -447,6 +447,32 @@ export const PLAN_MESSAGES: readonly ChatMessage[] = [
   },
 ];
 
+/**
+ * One owner row, queued and unread, as `GET /api/runs/:id/messages` serves it
+ * while nothing is stepping the run.
+ *
+ * THE BYTES ARE THE OBSERVED RUN'S — 2026-08-25,
+ * `run-2026-08-25T10-30-39-122Z-d728ab79`: the owner typed "what is your
+ * question?" into Chat on a park nothing had asked a question on, and the row
+ * sat with `deliveredAt: null` for the length of the park.
+ * `chat-reply.unit.spec.ts` proves the record line under it and
+ * `chat-parked.browser.spec.ts` routes it onto five pages; both used to hold
+ * their own copy of the row, and `orchestrator-steer.browser.spec.ts` still
+ * does (its `message`, seq 17 — folding it in is a follow-up). A field added
+ * to `ChatMessage` is one edit here rather than three.
+ *
+ * `seq` is a parameter because the row is appended to whatever transcript the
+ * page already serves — `PLAN_MESSAGES` on the answerable plan park — and
+ * `seq` is the 1-based index, the relationship every list in this file keeps.
+ */
+export function ownerMessage(
+  text: string,
+  seq = 1,
+  at = "2026-08-25T10:41:00.000Z",
+): ChatMessage {
+  return { seq, at, role: "owner", text, images: [], deliveredAt: null };
+}
+
 /* -------------------------------------------------------------------------
  * A LATER PARK COLLIDING WITH THE HISTORICAL PLAN TUPLE
  *
@@ -516,7 +542,30 @@ export const STALE_PLAN_EVENTS: readonly RunEvent[] = [
 export const STALE_PLAN_DETAIL: RunDetail = {
   ...PLAN_DETAIL,
   runId: STALE_PLAN_RUN_ID,
-  failureReason: "creative contract author failed after the plan dialogue folded",
+  // THE BYTES THE RUN RECORDED, per this file's rule above — quoted from the
+  // server, not invented. Run `run-2026-08-25T10-30-39-122Z-d728ab79` parked on
+  // exactly this string: `orchestrator.ts#creativeContractPhase`, in the
+  // one-call form it had that morning, wrote `creative contract
+  // ${result.status}: ${result.detail}`, with `result.detail` the author's
+  // "creative author output did not compile" (`creative-contract-author.ts`,
+  // the `!compiled.ok` branch). Replaced 2026-08-25 from the invented
+  // "creative contract author failed after the plan dialogue folded"; the
+  // notice that renders the cause is measured against this constant
+  // (`plan-dialogue.browser.spec.ts` reads it back rather than retyping it).
+  //
+  // HISTORIC, NOT LIVE — 2026-08-25, later the same day. The producer became a
+  // three-attempt repair loop and no code path emits the one-call sentence any
+  // more: a park now reads `creative contract ${status} on author attempt N of
+  // 3 (attempt not consumed): ${detail}` or `creative contract invalid after N
+  // author attempts; last findings: …`. The string stays because it is what the
+  // run wrote and what the defect was measured on, and nothing keys on its
+  // bytes: the notice branches on `failureReason !== null`
+  // (`lib/awaiting-input.ts`), never on a prefix. Line numbers into the
+  // server file are deliberately not cited here — it was under concurrent
+  // edit, and the three numbers the lane's reviewer read from it (:3976,
+  // :3985, :3997) had moved again (:4002, :4006, :4021) by the time this
+  // comment was written.
+  failureReason: "creative contract invalid: creative author output did not compile",
   plan: {
     awaiting: false,
     folded: true,

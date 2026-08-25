@@ -644,6 +644,13 @@ export default function RunPage(): ReactNode {
    * cancel, which is what `AwaitingInputNotice` says. Only a DESIGN park may
    * replace it: there, the notice's "this dashboard has no channel to answer a
    * mid-run question" is false, and the cards are the channel.
+   *
+   * SINCE 2026-08-25 THE NOTICE ALSO READS `awaitingInputKind(run)`
+   * (`lib/awaiting-input.ts`) to choose its body: the answer-first script for
+   * an open plan park, "nothing to type" plus the last recorded cause for a
+   * machine-check park such as `run-2026-08-25T10-30-39-122Z-d728ab79`'s. The
+   * design/plan suppression here is unchanged and is NOT duplicated inside that
+   * function.
    */
   const lockPhase =
     run.designLock === null ? null : designLockPhase(run.status, run.designLock);
@@ -784,15 +791,37 @@ export default function RunPage(): ReactNode {
    * important rather than less: this is precisely the state where the answer
    * surface has NOT rendered, so an icon the reader has to know about would be the
    * only thing between a stopped run and a reader who cannot tell why.
+   *
+   * WHAT THE NOTICE SAYS IS DECIDED INSIDE IT, NOT HERE — 2026-08-25. It reads
+   * `awaitingInputKind(run)` to pick its body, so the crash-window plan park
+   * above still gets "type your answer, then Resume" (the legacy `phase: plan`
+   * read in `planParkedFrom`) and a check park with a recorded cause and no
+   * question gets "nothing to type". This gate is unchanged; M7/M14 in
+   * `plan-dialogue.browser.spec.ts` were measured against this line.
+   *
+   * NAMED ONCE, READ TWICE — 2026-08-25, run
+   * `run-2026-08-25T10-30-39-122Z-d728ab79`. The chat's `runParked` prop is
+   * this same value, not a second copy of the condition: on that run the
+   * notice said "type your answer, then press Resume" while the owner's
+   * message sat under "queued — not read yet", and two surfaces that describe
+   * the same park from two hand-written predicates can drift into exactly
+   * that contradiction again. One boolean cannot. The condition itself is the
+   * line M7/M14 were measured against, unchanged; an ANSWERABLE plan park (the
+   * dialogue panel is on screen and reads chat without Resume) and a DESIGN
+   * park (a direction-naming message is consumed) are false here, so the chat
+   * never says "nothing is running to read it" under a message something IS
+   * reading. A plan park in the first-paint or questions-missing window above
+   * (`planDialogue` null) is TRUE here — the gate is `!planAnswerable`, not
+   * `!planParked` — which is exactly the window the paragraph above hands to
+   * the generic notice.
    */
-  if (
-    run.status === "awaiting_input" &&
-    lockPhase !== "pending" &&
-    !planAnswerable
-  ) {
+  const genericParkOpen =
+    run.status === "awaiting_input" && lockPhase !== "pending" && !planAnswerable;
+  if (genericParkOpen) {
     floating.push(
       <AwaitingInputNotice
         key="awaiting-input"
+        run={run}
         onResume={onResume}
         onCancel={onCancel}
         busy={busy}
@@ -1005,14 +1034,27 @@ export default function RunPage(): ReactNode {
          * and must not, so Files renders only while Files is open.
          *
          * DELIVERY COPY DOES NOT LIVE HERE. The POST receipt distinguishes a
-         * live delivery from a boundary queue; phase and status cannot. The
-         * composer renders that receipt after the server has decided.
+         * live delivery from a boundary queue; phase and status cannot tell
+         * those two apart, and the composer renders that receipt after the
+         * server has decided. WHAT STATUS DOES SAY — 2026-08-25 — is when the
+         * live path is shut until somebody presses Resume: `pushLiveMessage`
+         * refuses a parked run outright (`server/src/orchestrator.ts`, "Returns
+         * false when this run has no open segment"), and that one fact is
+         * `runParked`, read off `genericParkOpen` above so the record line
+         * under a message and `AwaitingInputNotice` can never disagree. On run
+         * `run-2026-08-25T10-30-39-122Z-d728ab79` they did. THE TWO EXCLUSIONS
+         * ARE WATCHED AT THIS LINE, NOT ONLY AT THE NOTICE — fix round 1,
+         * 2026-08-25: `tests/chat-parked.browser.spec.ts` opens the chat on
+         * `PLAN_RUN_ID` (dialogue on screen) and on a pending design lock and
+         * asserts the held copy is absent on both; a mount rewired to bare
+         * `awaiting_input` is the mutation those two pages exist to catch.
          */}
         {chatMounted && (
         <div hidden={openPanel !== "chat"}>
           <OrchestratorChat
             messages={messages}
             runIsOver={isTerminalStatus(run.status)}
+            runParked={genericParkOpen}
             models={models}
             sourceModelId={run.modelId}
             onSend={onSendMessage}
