@@ -24,18 +24,22 @@ import type { FixTask } from "./fix-triage.js";
 import type { FailureClass, FixableFailure } from "./gate-report.js";
 import type { StopReason } from "./gate-fix-loop.js";
 
+export type BacklogReason = StopReason;
+
 export interface BacklogInput {
-  readonly reason: StopReason;
+  readonly reason: BacklogReason;
   readonly attempts: number;
   readonly remaining: readonly FixableFailure[];
   readonly heldOutUnmet: Readonly<Record<CriterionTier, number>>;
   /** Planned work this run's shortlist would not permit. Recorded, not dropped. */
   readonly denied?: readonly FixTask[];
   readonly infraFailure?: string | null;
+  /** A terminal artifact mutation after at least one measured gate attempt. */
+  readonly terminalDetail?: string | null;
 }
 
 /** Why the loop stopped, in the owner's terms rather than the enum's. */
-const REASONS: Readonly<Record<StopReason, string>> = Object.freeze({
+const REASONS: Readonly<Record<BacklogReason, string>> = Object.freeze({
   green: "the gate went green — every tier-0 gate passed and every acceptance criterion was satisfied.",
   "retry-cap": "the fix loop hit its attempt cap. Work below is real and unfinished, not unknown.",
   "not-converging":
@@ -45,6 +49,8 @@ const REASONS: Readonly<Record<StopReason, string>> = Object.freeze({
     "the gate did not complete, so THIS IS NOT A VERDICT ABOUT THE BUILD. Nothing below is evidence " +
     "about the artefact.",
   cancelled: "the run was cancelled. Whatever is below was true at the last gate it completed.",
+  "artifact-contract":
+    "the built artifact does not satisfy its frozen execution prerequisite, so no current valid scorer verdict exists.",
 });
 
 /** The next concrete action per class. Named agent included — it is delegable. */
@@ -59,13 +65,23 @@ const NEXT_ACTION: Readonly<Record<FailureClass, string>> = Object.freeze({
   visual: "re-render the flow and fix what makes the screenshot blank, overflowing or unstyled",
 });
 
-function renderRemaining(remaining: readonly FixableFailure[], measured: boolean): readonly string[] {
+function renderRemaining(
+  remaining: readonly FixableFailure[],
+  measured: boolean,
+  reason: BacklogReason,
+): readonly string[] {
   // THE TRAP THIS BRANCH EXISTS FOR, caught by its own test rather than in
   // production: with no failures to list, an unmeasured run rendered "Nothing
   // deferred: no gate failure was left open" — a build the scorer never scored,
   // reading exactly like a clean one. "The gate could not run" and "the gate
   // passed" must not look alike at any level of this program.
   if (!measured) {
+    if (reason === "artifact-contract") {
+      return [
+        "UNKNOWN — the artifact failed its frozen execution prerequisite before any gate was constructed. " +
+          "This is not a claim that the build is clean; it is the absence of a scorer verdict.",
+      ];
+    }
     return [
       "UNKNOWN — the gate did not complete, so nothing here has been measured. This is not a claim that " +
         "the build is clean; it is the absence of a claim.",
@@ -83,17 +99,34 @@ function renderRemaining(remaining: readonly FixableFailure[], measured: boolean
   return lines;
 }
 
-function renderHeldOut(unmet: Readonly<Record<CriterionTier, number>>, measured: boolean): readonly string[] {
+function renderHeldOut(
+  unmet: Readonly<Record<CriterionTier, number>>,
+  measured: boolean,
+  reason: BacklogReason,
+  historical: boolean,
+): readonly string[] {
   if (!measured) {
+    if (reason === "artifact-contract") {
+      return [
+        "UNKNOWN — no sealed scorer was constructed, so no criterion has a result. `heldOutPass` stays " +
+          "NULL for this run.",
+      ];
+    }
     return [
       "UNKNOWN — the frozen suite did not run, so no criterion has a result. `heldOutPass` stays NULL for " +
         "this run, which is what a run with no verdict looks like.",
     ];
   }
   const total = unmet.BLOCKING + unmet.FUNCTIONAL + unmet.QUALITY;
-  if (total === 0) return ["Every acceptance criterion the sealed suite checks was satisfied."];
+  if (total === 0) {
+    return [historical
+      ? "At the last completed gate attempt, every acceptance criterion the sealed suite checked was satisfied. " +
+        "That historical result is not a verdict on the artifact after its later mutation."
+      : "Every acceptance criterion the sealed suite checks was satisfied."];
+  }
   return [
-    `${String(unmet.BLOCKING)} BLOCKING, ${String(unmet.FUNCTIONAL)} FUNCTIONAL and ` +
+    `${historical ? "At the last completed gate attempt: " : ""}${String(unmet.BLOCKING)} BLOCKING, ` +
+      `${String(unmet.FUNCTIONAL)} FUNCTIONAL and ` +
       `${String(unmet.QUALITY)} QUALITY criteria were not satisfied.`,
     "",
     "WHICH criteria, and what they assert, is not recorded here and was not shown to any fixing agent. " +
@@ -105,6 +138,7 @@ function renderHeldOut(unmet: Readonly<Record<CriterionTier, number>>, measured:
 
 export function renderBacklog(input: BacklogInput): string {
   const infraFailure = input.infraFailure ?? null;
+  const terminalDetail = input.terminalDetail ?? null;
   /** Did a gate run to completion? An infra stop means no, and says so. */
   const measured = input.reason !== "infra" && infraFailure === null;
   const lines: string[] = [
@@ -119,11 +153,24 @@ export function renderBacklog(input: BacklogInput): string {
     // A run that stopped before the gate is not an infrastructure failure of the
     // scorer, and labelling it as one would file the owner's own cancel under
     // "the machine broke".
-    lines.push("", `**${input.reason === "infra" ? "Infrastructure failure" : "Why nothing was measured"}:** ${infraFailure}`);
+    const label = input.reason === "infra"
+      ? "Infrastructure failure"
+      : input.reason === "artifact-contract"
+        ? "Artifact execution contract failure"
+        : "Why nothing was measured";
+    lines.push("", `**${label}:** ${infraFailure}`);
   }
 
-  lines.push("", "## Still broken", "", ...renderRemaining(input.remaining, measured));
-  lines.push("", "## Held-out acceptance suite", "", ...renderHeldOut(input.heldOutUnmet, measured));
+  if (terminalDetail !== null) {
+    lines.push(
+      "",
+      `**Artifact execution contract invalidated after the last completed gate attempt:** ${terminalDetail}`,
+    );
+  }
+
+  const historical = input.reason === "artifact-contract" && terminalDetail !== null;
+  lines.push("", historical ? "## Still broken at the last completed gate attempt" : "## Still broken", "", ...renderRemaining(input.remaining, measured, input.reason));
+  lines.push("", historical ? "## Held-out acceptance suite at the last completed gate attempt" : "## Held-out acceptance suite", "", ...renderHeldOut(input.heldOutUnmet, measured, input.reason, historical));
 
   const denied = input.denied ?? [];
   if (denied.length > 0) {

@@ -12,8 +12,9 @@
  * the environment section below states it about the ARTEFACT and not about the
  * agent writing it. So the WORDING that is
  * load-bearing is reproduced and the environment facts are corrected, with
- * `WORKSPACE` and `STATIC_SERVE_PORT` imported rather than retyped so the
- * self-report path and the static port cannot drift from the harness.
+ * `WORKSPACE` is imported rather than retyped so the self-report path cannot
+ * drift from the harness. The frozen execution contract is projected by the
+ * server and passed in; this file never guesses a port or artifact mode.
  *
  * THE THREE PROPERTIES THAT MUST SURVIVE THE REWRITE:
  *
@@ -135,9 +136,9 @@
  */
 
 import { WORKSPACE, type SelfReportStatus } from "bakeoff/dist/runner.js";
-import { STATIC_SERVE_PORT } from "bakeoff/dist/scorer-protocol.js";
 import { DELIVERY_LANES, type Lane } from "./agent-shortlist.js";
 import { GEMINI_IMAGE_SCRIPT } from "./design-capability.js";
+import type { ArtifactExecutionContract } from "./execution-contract.js";
 
 /**
  * THE STATUS VOCABULARY, AS ONE RUNTIME VALUE, BECAUSE THE PROMPT AND THE READER
@@ -187,6 +188,8 @@ export interface BuilderPromptRequest {
   readonly ticketText: string;
   /** The run's workspace. The build may not write outside it. */
   readonly workspaceDir: string;
+  /** The narrow projection of the frozen scorer boot contract. */
+  readonly executionContract: ArtifactExecutionContract;
   /**
    * The delegation shortlist — EXACTLY the array the guard allowlists, and the
    * guard is the `PreToolUse` hook in builders/delegation-hook.ts. NOT
@@ -386,27 +389,33 @@ function harnessEnvironmentSection(): readonly string[] {
     // the repository `project-handover.ts` publishes from it afterwards.
     "  That file governs the repository published from this work, not what the judge runs — a",
     "  vendored node_modules still ships in the workspace.",
-    // MOVED HERE 2026-08-02 FROM `dashboardBuilderPrompt`, WHERE A DESIGN-LANE RUN
-    // NEVER SAW IT. Segment 1 of such a run is `designSegmentPrompt` and segment 2
-    // RESUMES that session, so `#buildSegmentPrompt` takes its
-    // `builderSessionId !== null` branch on the first BUILD turn and the
-    // first-turn prompt is never sent. Measured on the run that motivated this
-    // section: `grep -c 3000` on
-    // `runs/run-2026-07-30T20-16-40-242Z-052c6e02/results/prompt.txt` is 0, and
-    // `grep -ci listen` is 0 — that build was told it could not open a port and
-    // never told which one to serve on. It is a harness fact, so it belongs with
-    // the harness facts, where both prompts inherit it from one definition.
-    //
-    // "UNLESS THE TICKET NAMES ONE" IS NOT PADDING. `spec-agent.ts` authors the
-    // manifest with "Declare the port as 3000 unless the ticket names one", and
-    // `scorer-container.ts` starts the artefact with `artifactEnv(null)` — NO PORT
-    // in the environment — while probing `execution.port`. So a ticket naming 8080
-    // yields a gate that probes 8080 against a server told a flat 3000. Defaulting
-    // to the declared port rather than reading PORT is what actually boots.
-    `- If the work needs a server, it must listen on port ${String(STATIC_SERVE_PORT)} — or on the port the`,
-    "  ticket names, if it names one — and bind 127.0.0.1 or 0.0.0.0, never \"localhost\" only. Honour a",
-    "  PORT environment variable if one is set, but DEFAULT to that port: the judge starts the artefact",
-    "  with no PORT set and probes the port the frozen manifest declares.",
+  ];
+}
+
+/** The exact boot contract, shared by fresh and resumed BUILD prompts. */
+function executionContractSection(contract: ArtifactExecutionContract): readonly string[] {
+  if (contract.mode === "static") {
+    return [
+      "",
+      "ARTIFACT EXECUTION CONTRACT — REQUIRED",
+      "- Mode: STATIC.",
+      "- The scorer serves the workspace as files. It runs no artifact start command.",
+      '- `/` must resolve to a direct, regular, non-symlink `index.html` at the workspace root,',
+      "  and that file must contain non-whitespace content.",
+      "- Do not rely on a server. A package.json start script or server file does not change this mode.",
+    ];
+  }
+  return [
+    "",
+    "ARTIFACT EXECUTION CONTRACT — REQUIRED",
+    "- Mode: SERVER.",
+    `- Exact start command: ${JSON.stringify(contract.start)}`,
+    `- Exact port: ${String(contract.port)}`,
+    `- Exact health path: ${JSON.stringify(contract.healthPath)}`,
+    "- Preserve those exact values. The scorer starts that command and probes that port and path.",
+    `- Bind to 127.0.0.1 or 0.0.0.0 (or otherwise literal loopback), never rely on the hostname`,
+    `  "localhost". Honour PORT if one is set, but default to exactly ${String(contract.port)}: the scorer`,
+    "  supplies no PORT environment variable and probes the frozen port above.",
   ];
 }
 
@@ -605,6 +614,7 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
     // between the two makes that sentence false about its own prompt — the one
     // class of edit this file is least allowed to make.
     ...harnessEnvironmentSection(),
+    ...executionContractSection(request.executionContract),
     ...ownerAuthoritySection(),
     "",
     // THE HEADING USED TO READ "SHIP THE SIMPLEST THING THE TICKET ACTUALLY ASKS
@@ -633,13 +643,11 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
     "  form says what went wrong in words, focus is visible, a page says where you are. Make them,",
     "  and make them well. If you find yourself thinking \"the ticket did not ask for it\" about",
     "  something a reader would notice was missing, build it.",
-    "- Put the entry document at the root of your workspace, named index.html, so the site is",
-    "  openable as it stands. Reference assets by relative path.",
-    // The port contract used to sit here. It is now the last bullet of
-    // `harnessEnvironmentSection`, because a design-lane run never reaches this
-    // function at all and was shipping a server with no port instruction — see the
-    // comment on that bullet for the measurement. Not duplicated back: two
-    // spellings of one contract is how the two drift.
+    // The old generic root-index and port advice lived here. The frozen
+    // execution contract now owns both facts in `executionContractSection`,
+    // which both fresh and resumed builds receive. Not duplicated back: generic
+    // advice would contradict SERVER or STATIC as soon as the manifest says the
+    // other one.
     // AFTER the simplicity clause on purpose. A list of 26 specialists is an
     // invitation to build a pipeline; the model should read "ship the simplest
     // thing" first and take delegation as a way to do that well, not as a bar to
@@ -676,7 +684,7 @@ export function dashboardBuilderPrompt(request: BuilderPromptRequest): string {
  * The repeat costs a few hundred tokens on an interrupted build that did see the
  * first turn. Not repeating it costs every design-lane run the facts entirely.
  */
-export function resumeBuilderPrompt(reason: string): string {
+export function resumeBuilderPrompt(reason: string, executionContract: ArtifactExecutionContract): string {
   return [
     `Your previous turn ended early: ${reason}`,
     "",
@@ -689,6 +697,7 @@ export function resumeBuilderPrompt(reason: string): string {
     ...selfReportSection(),
     ...craftSection(),
     ...harnessEnvironmentSection(),
+    ...executionContractSection(executionContract),
     // THE SAME EXCEPTION, FOR THE SAME MEASURED REASON AS THE ENVIRONMENT ABOVE.
     // `orchestrator.ts` appends `builderReferenceSection(references)` to the build
     // segment's prompt on BOTH branches — first turn and resume alike — so a

@@ -54,17 +54,23 @@ import { partitionByPermission, planFixes } from "./fix-triage.js";
 import type { FixTask } from "./fix-triage.js";
 import { buildFixPrompt } from "./fix-prompt.js";
 
-export type StopReason = "green" | "retry-cap" | "not-converging" | "infra" | "cancelled";
+export type StopReason =
+  | "green"
+  | "retry-cap"
+  | "not-converging"
+  | "infra"
+  | "cancelled"
+  | "artifact-contract";
 
 /**
  * WHY THE LOOP STOPPED, at the resolution the loop actually knows.
  *
  * `StopReason` is the PERSISTED vocabulary: `db.ts` types `RunPatch.gateStopReason`
  * as it, `backlog.ts` keys a TOTAL `Record<StopReason, string>` of owner-facing
- * headings off it, and `orchestrator.ts` writes it to the run row. Five members
+ * headings off it, and `orchestrator.ts` writes it to the run row. Six members
  * is what every one of those files was built around.
  *
- * THREE OF THOSE FIVE COVER TWO SITUATIONS EACH, and each pair reads as the
+ * THREE OF THOSE SIX COVER TWO SITUATIONS EACH, and each pair reads as the
  * wrong one of the two (2026-08-05-design-fidelity-gate.md §6.2):
  *
  *   `cancelled`       — the owner stopped this run  /  a provider rate limit did.
@@ -92,6 +98,7 @@ export type StopCause =
   | "identical-report"
   | "no-permitted-fixer"
   | "infra"
+  | "artifact-contract"
   | "owner-cancelled"
   | "rate-limited";
 
@@ -114,6 +121,7 @@ const REASON_OF: Readonly<Record<StopCause, StopReason>> = Object.freeze({
   "identical-report": "not-converging",
   "no-permitted-fixer": "not-converging",
   infra: "infra",
+  "artifact-contract": "artifact-contract",
   "owner-cancelled": "cancelled",
   "rate-limited": "cancelled",
 });
@@ -156,6 +164,14 @@ export const GATE_TIME_BUDGET_ENV = "DASHBOARD_GATE_TIME_BUDGET_MIN";
 export const NO_PROGRESS_WINDOW = 3;
 
 export interface GateFixLoopRequest {
+  /**
+   * Validate the artifact immediately before the next gate is counted or
+   * constructed. A refusal is an artifact prerequisite result, never scorer
+   * infrastructure, and preserves the last completed gate report.
+   */
+  readonly preGate?: (
+    nextAttempt: number,
+  ) => Promise<{ readonly cause: "artifact-contract"; readonly detail: string } | null>;
   /** Run the sealed gate for `attempt` and return its container result. */
   readonly gate: (attempt: number) => Promise<ContainerResult | null>;
   /** Spawn `task.agent` with exactly `prompt` and nothing else about the gate. */
@@ -200,6 +216,8 @@ export interface GateFixLoopResult {
   readonly report: AgentVisibleReport;
   /** Work that was planned and could not be run — for the backlog. */
   readonly deniedTasks: readonly FixTask[];
+  /** Additional terminal context supplied by a pre-gate refusal. */
+  readonly detail: string | null;
 }
 
 /**
@@ -352,6 +370,7 @@ export async function runGateFixLoop(request: GateFixLoopRequest): Promise<GateF
   let previous: string | null = null;
   let report: AgentVisibleReport = EMPTY_REPORT;
   let denied: readonly FixTask[] = [];
+  let detail: string | null = null;
   const progress: ProgressPair[] = [];
 
   const stop = (cause: StopCause): GateFixLoopResult => ({
@@ -361,6 +380,7 @@ export async function runGateFixLoop(request: GateFixLoopRequest): Promise<GateF
     cause,
     report,
     deniedTasks: denied,
+    detail,
   });
 
   /**
@@ -389,6 +409,15 @@ export async function runGateFixLoop(request: GateFixLoopRequest): Promise<GateF
      * What this does bound is the thing it can see: no NEW gate and no NEW fix
      * round begins once the budget is spent.
      */
+    const preflight = await request.preGate?.(attempt + 1) ?? null;
+    if (preflight !== null) {
+      detail = preflight.detail;
+      log(
+        "error",
+        `gate preflight stopped before attempt ${String(attempt + 1)}: ${preflight.detail}`,
+      );
+      return stop(preflight.cause);
+    }
     if (outOfTime()) {
       log(
         "warn",

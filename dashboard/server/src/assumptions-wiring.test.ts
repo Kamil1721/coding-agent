@@ -81,7 +81,7 @@ import type { AcceptanceSuite } from "bakeoff/dist/contracts.js";
 import { JUDGE_SEAT, SPEC_SEAT } from "bakeoff/dist/config.js";
 import { acceptanceSuiteDigest, sha256Hex } from "bakeoff/dist/hash.js";
 import { freezeSuite, verifySuiteIntact } from "bakeoff/dist/spec-freeze.js";
-import { criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
+import { SUITE_MANIFEST_PATH, criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
 import type { SuiteDraft } from "bakeoff/dist/spec-types.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
@@ -179,6 +179,33 @@ function draftFor(
       },
     ],
     files: [
+      {
+        path: SUITE_MANIFEST_PATH,
+        visibility: "holdout",
+        runner: "node-test",
+        description: "the scorer execution contract",
+        expectedTestIds: [],
+        criterionIds: [],
+        source: JSON.stringify({
+          manifestVersion: 1,
+          ticketId,
+          target: "web",
+          execution: {
+            install: null,
+            build: null,
+            typecheck: null,
+            lint: null,
+            start: null,
+            port: null,
+            healthPath: null,
+            bootTimeoutMs: null,
+            commandTimeoutMs: null,
+          },
+          sourceDirs: ["."],
+          uiFlows: [],
+          dataExpectations: [],
+        }),
+      },
       {
         path: "visible/smoke.test.mjs",
         visibility: "visible",

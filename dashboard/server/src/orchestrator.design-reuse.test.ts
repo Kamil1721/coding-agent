@@ -45,7 +45,7 @@ import { JUDGE_SEAT, SPEC_SEAT } from "bakeoff/dist/config.js";
 import { acceptanceSuiteDigest, sha256Hex } from "bakeoff/dist/hash.js";
 import { freezeSuite, verifySuiteIntact } from "bakeoff/dist/spec-freeze.js";
 import { WORKSPACE } from "bakeoff/dist/runner.js";
-import { criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
+import { SUITE_MANIFEST_PATH, criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
 import type { SuiteDraft } from "bakeoff/dist/spec-types.js";
 import type { SseEvent } from "./api-types.js";
 import { AuthProbe } from "./auth.js";
@@ -180,7 +180,9 @@ class DrawingBuilder implements SubscriptionBuilder {
   }
 
   #declareDone(): void {
-    const reportPath = join(this.#workspace(), WORKSPACE.selfReport);
+    const workspace = this.#workspace();
+    writeFileSync(join(workspace, "index.html"), "<!doctype html><title>fixture</title>", "utf8");
+    const reportPath = join(workspace, WORKSPACE.selfReport);
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, JSON.stringify({ status: "done", reason: "the fake builder finished" }), "utf8");
   }
@@ -204,6 +206,33 @@ function freezeFor(ticketText: string, acceptanceRoot: string): void {
       },
     ],
     files: [
+      {
+        path: SUITE_MANIFEST_PATH,
+        visibility: "holdout",
+        runner: "node-test",
+        description: "the scorer execution contract",
+        expectedTestIds: [],
+        criterionIds: [],
+        source: JSON.stringify({
+          manifestVersion: 1,
+          ticketId: ticket.id,
+          target: "web",
+          execution: {
+            install: null,
+            build: null,
+            typecheck: null,
+            lint: null,
+            start: null,
+            port: null,
+            healthPath: null,
+            bootTimeoutMs: null,
+            commandTimeoutMs: null,
+          },
+          sourceDirs: ["."],
+          uiFlows: [],
+          dataExpectations: [],
+        }),
+      },
       {
         path: "visible/smoke.test.mjs",
         visibility: "visible",

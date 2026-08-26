@@ -15,7 +15,7 @@
 
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -26,7 +26,7 @@ import { JUDGE_SEAT, SPEC_SEAT } from "bakeoff/dist/config.js";
 import { acceptanceSuiteDigest, sha256Hex } from "bakeoff/dist/hash.js";
 import { freezeSuite, verifySuiteIntact } from "bakeoff/dist/spec-freeze.js";
 import { WORKSPACE } from "bakeoff/dist/runner.js";
-import { criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
+import { SUITE_MANIFEST_PATH, criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
 import type { SuiteDraft } from "bakeoff/dist/spec-types.js";
 import type {
   ApiErrorResponse,
@@ -36,6 +36,7 @@ import type {
   GraphSseEvent,
   RunDetail,
 } from "./api-types.js";
+import { ADVERSARY_AGENT, ADVERSARY_DISALLOWED_TOOLS } from "./adversary.js";
 import { GATE_MAX_ATTEMPTS_ENV } from "./gate-fix-loop.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
@@ -102,10 +103,19 @@ import { CONTEXT7_REVIEW_RECORD_FILE, readContext7ReviewRecord } from "./context
 import { expectedContext7ObligationHashes } from "./context7-review.js";
 import type { Context7ReviewOutcome, Context7ReviewRequest } from "./context7-review.js";
 import { captureContext7ReviewSource } from "./context7-pipeline.js";
-import { compileCreativeContract } from "./creative-contract.js";
+import { canonicalJson, compileCreativeContract } from "./creative-contract.js";
 import type { CreativeCompileError, CreativeContractSafeRepair, CreativeContractV1 } from "./creative-contract.js";
 import type { CreativeAuthorRepairFinding, CreativeContractAuthorRequest, CreativeContractAuthorResult } from "./creative-contract-author.js";
-import { CREATIVE_AUTHOR_FILE, CREATIVE_CONTRACT_FILE, creativeAuthorAttemptFile } from "./creative-pilot.js";
+import {
+  CREATIVE_AUTHOR_FILE,
+  CREATIVE_CONTRACT_FILE,
+  creativeAuthorAttemptFile,
+  readCreativePilotStatus,
+} from "./creative-pilot.js";
+import { buildTasteEvidenceIndex, buildTastePromptFacts } from "./creative-render.js";
+import type { CreativeRenderOutput } from "./creative-render.js";
+import { REQUIRED_RENDER_PROFILES } from "./render-manifest.js";
+import type { RenderManifestV1 } from "./render-manifest.js";
 
 function harness(): {
   store: RunStore;
@@ -649,6 +659,16 @@ interface FakeBuilderOptions {
    * to be a fixture arm, not an argument.
    */
   readonly selfReportStatus?: string;
+  /** The artifact shape written by the BUILD segment; static-ready is the normal fixture. */
+  readonly artifactShape?: "static-ready" | "static-missing" | "static-empty" | "static-symlink" | "server-only";
+  /** Optional mutation made only by a gate fix. By default a fix leaves the current artifact alone. */
+  readonly fixArtifactShape?: FakeBuilderOptions["artifactShape"];
+  /** Optional mutation made only by a creative revision. */
+  readonly creativeRevisionArtifactShape?: FakeBuilderOptions["artifactShape"];
+  /** Optional provider failure after a creative revision may have partially mutated the tree. */
+  readonly creativeRevisionFailure?: string;
+  /** Test-only mutation at the creative builder boundary. */
+  readonly creativeRevisionMutation?: () => void;
 }
 
 class FakeBuilder implements SubscriptionBuilder {
@@ -704,6 +724,29 @@ class FakeBuilder implements SubscriptionBuilder {
     });
 
     const design = request.prompt.startsWith("DESIGN LANE — art direction");
+    const fix = request.prompt.includes("did not pass its gate. You are fixing it.");
+    const creativeRevision = request.prompt.startsWith("CREATIVE REVISION BOUNDARY");
+    if (creativeRevision) this.#options.creativeRevisionMutation?.();
+    if (!design) {
+      const workspace = this.#options.workspace();
+      const shape = fix
+        ? this.#options.fixArtifactShape
+        : creativeRevision
+          ? this.#options.creativeRevisionArtifactShape
+          : this.#options.artifactShape ?? "static-ready";
+      if (shape !== undefined) rmSync(join(workspace, "index.html"), { force: true });
+      if (shape === "static-ready") {
+        writeFileSync(join(workspace, "index.html"), "<!doctype html><title>fixture</title>", "utf8");
+      } else if (shape === "static-empty") {
+        writeFileSync(join(workspace, "index.html"), " \n\t", "utf8");
+      } else if (shape === "static-symlink") {
+        writeFileSync(join(workspace, "other.html"), "<!doctype html><title>elsewhere</title>", "utf8");
+        symlinkSync("other.html", join(workspace, "index.html"));
+      } else if (shape === "server-only") {
+        writeFileSync(join(workspace, "package.json"), JSON.stringify({ scripts: { start: "node server.mjs" } }), "utf8");
+        writeFileSync(join(workspace, "server.mjs"), "export const ready = true;", "utf8");
+      }
+    }
     // THE SELF-REPORT, ON THE BUILD SEGMENT, THE WAY THE PROMPT ASKS FOR IT.
     // Not on the DESIGN segment: `build-prompt.ts` asks for it at the end of the
     // build, and writing it in the design lane would declare a run done before
@@ -747,6 +790,7 @@ class FakeBuilder implements SubscriptionBuilder {
       env: request.env,
     });
     const refused = (this.#options.limitCalls ?? []).includes(index);
+    const failure = creativeRevision ? this.#options.creativeRevisionFailure ?? null : null;
     return {
       sessionId: this.#session,
       tokens,
@@ -758,9 +802,9 @@ class FakeBuilder implements SubscriptionBuilder {
             utilization: null,
           }
         : NOT_RATE_LIMITED,
-      completed: !refused,
+      completed: !refused && failure === null,
       cancelled: false,
-      failure: null,
+      failure,
     };
   }
 
@@ -1092,7 +1136,11 @@ function removeDesignTree(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
 }
 
-function freezeFor(ticketText: string, acceptanceRoot: string): void {
+function freezeFor(
+  ticketText: string,
+  acceptanceRoot: string,
+  execution: { readonly start: string; readonly port: number; readonly healthPath: string } | null = null,
+): void {
   const ticket = ticketFromText(ticketText);
   const visible = ['import test from "node:test";', 'test("T-1 the document responds", () => {});', ""].join("\n");
   const heldOut = ['import test from "node:test";', 'test("T-2 the page renders", () => {});', ""].join("\n");
@@ -1111,6 +1159,33 @@ function freezeFor(ticketText: string, acceptanceRoot: string): void {
       },
     ],
     files: [
+      {
+        path: SUITE_MANIFEST_PATH,
+        visibility: "holdout",
+        runner: "node-test",
+        description: "the scorer execution contract",
+        expectedTestIds: [],
+        criterionIds: [],
+        source: JSON.stringify({
+          manifestVersion: 1,
+          ticketId: ticket.id,
+          target: "web",
+          execution: {
+            install: null,
+            build: null,
+            typecheck: null,
+            lint: null,
+            start: execution?.start ?? null,
+            port: execution?.port ?? null,
+            healthPath: execution?.healthPath ?? null,
+            bootTimeoutMs: null,
+            commandTimeoutMs: null,
+          },
+          sourceDirs: ["."],
+          uiFlows: [],
+          dataExpectations: [],
+        }),
+      },
       {
         path: "visible/smoke.test.mjs",
         visibility: "visible",
@@ -3787,6 +3862,9 @@ test("a run with NO lane: the single build segment carries the harness facts", a
     assert.match(p, /NO NETWORK/, "the container the artefact is judged in");
     assert.match(p, /node:sqlite/, "and what needs no install");
     assert.match(p, /README\.md/);
+    assert.match(p, /Mode: STATIC/);
+    assert.match(p, /runs no artifact start command/i);
+    assert.doesNotMatch(p, /suite\.manifest\.json|sourceDirs|uiFlows|dataExpectations/);
   } finally {
     await h.cleanup();
   }
@@ -3805,6 +3883,9 @@ test("A LANE RUN'S BUILD SEGMENT CARRIES THEM TOO — the arm the first-turn pro
     assert.match(p, /NO NETWORK/);
     assert.match(p, /node:sqlite/);
     assert.match(p, /README\.md/);
+    assert.match(p, /Mode: STATIC/);
+    assert.match(p, /runs no artifact start command/i);
+    assert.doesNotMatch(p, /suite\.manifest\.json|sourceDirs|uiFlows|dataExpectations/);
   } finally {
     await h.cleanup();
   }
@@ -5840,6 +5921,7 @@ test("visualGateInputFor: the fence root, the capture directory, and blank captu
 
 interface QuiescenceRun {
   readonly gateCalls: number;
+  readonly builderPrompt: string;
   /**
    * What `Orchestrator.resume` answered for this run once it had stopped, or
    * `null` if it was never asked because the run had not reached a terminal
@@ -5865,6 +5947,11 @@ interface QuiescenceRun {
   readonly failureReason: string | null;
   readonly log: string;
   readonly verdict: string;
+  readonly backlog: string;
+  readonly creativeStopReason: string | null;
+  readonly gateAttempts: number;
+  readonly gateStopReason: string | null;
+  readonly adversaryCalls: number;
   readonly context7RecordExists: boolean;
 }
 
@@ -5877,7 +5964,19 @@ interface QuiescenceRun {
  * finished, which is the same defect as 052c6e02's published FAIL, in the
  * direction that is harder to notice.
  */
-async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): Promise<QuiescenceRun> {
+async function quiescenceRun(
+  declaresDone: boolean,
+  selfReportStatus?: string,
+  options: {
+    readonly artifactShape?: FakeBuilderOptions["artifactShape"];
+    readonly execution?: { readonly start: string; readonly port: number; readonly healthPath: string } | null;
+    readonly creativeRevisionArtifactShape?: FakeBuilderOptions["artifactShape"];
+    readonly creativeRevisionFailure?: string;
+    readonly creativeRevisionCompilerRed?: boolean;
+    readonly archivedAttempt?: "continue" | "refuse-build" | "refuse-visual";
+    readonly adversaryFinding?: boolean;
+  } = {},
+): Promise<QuiescenceRun> {
   const dir = mkdtempSync(join(tmpdir(), "dash-quiesce-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
@@ -5889,7 +5988,9 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
   const catalog = new FakeCatalog(auth, {}, async () => []);
   const preview = new PreviewHost();
   const runId = "run-quiesce";
-  const ticketText = "Build a portfolio site. No design lane.";
+  const ticketText = options.archivedAttempt === "refuse-visual"
+    ? "Build a command line tool that prints a report to stdout."
+    : "Build a portfolio site. No design lane.";
   const ticket = ticketFromText(ticketText);
   const builder = new FakeBuilder({
     workspace: () => runPathsFor(paths, runId).workspace,
@@ -5898,10 +5999,42 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
     writeManifest: false,
     animateRefs: false,
     declaresDone,
+    ...(options.artifactShape === undefined ? {} : { artifactShape: options.artifactShape }),
+    ...(options.creativeRevisionArtifactShape === undefined
+      ? {}
+      : { creativeRevisionArtifactShape: options.creativeRevisionArtifactShape }),
+    ...(options.creativeRevisionFailure === undefined
+      ? {}
+      : { creativeRevisionFailure: options.creativeRevisionFailure }),
+    ...(options.creativeRevisionCompilerRed === true
+      ? {
+          creativeRevisionMutation: () => {
+            writeFileSync(
+              join(runPathsFor(paths, runId).results, CREATIVE_CONTRACT_FILE),
+              "{not valid creative contract JSON",
+              "utf8",
+            );
+          },
+        }
+      : {}),
     ...(selfReportStatus === undefined ? {} : { selfReportStatus }),
   });
 
   let gateCalls = 0;
+  let adversaryCalls = 0;
+  if (options.adversaryFinding === true) {
+    const agentDir = join(home, ".claude", "agents");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, `${ADVERSARY_AGENT}.md`),
+      `---\ndisallowedTools: ${ADVERSARY_DISALLOWED_TOOLS.join(", ")}\n---\n`,
+      "utf8",
+    );
+  }
+  const creativePilot =
+    options.creativeRevisionArtifactShape !== undefined ||
+    options.creativeRevisionFailure !== undefined ||
+    options.creativeRevisionCompilerRed === true;
   const orchestrator = new Orchestrator({
     store,
     bus,
@@ -5914,45 +6047,136 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
     makeBuilder: () => builder,
     designRun: async () => ({ code: 0, stderr: "" }),
     designCanWrite: () => true,
-    makeGate: async () => ({
-      scorerImageDigest: "sha256:" + "b".repeat(64),
-      score: async (run, suite) => {
-        gateCalls += 1;
-        return {
-          schemaVersion: BAKEOFF_SCHEMA_VERSION,
-          runId: run.runId,
-          ticketId: run.ticketId,
-          acceptanceSuiteSha256: suite.sha256,
-          heldOutPass: true,
-          criteriaResults: suite.criteria.map((criterion) => ({
-            criterionId: criterion.id,
-            passed: true,
-            tier: criterion.tier,
-            detail: "the injected gate says yes to everything",
-            evidenceRefs: [],
-          })),
-          falseFinish: false,
-          agentDeclaredDone: run.agentDeclaredDone,
-          scoredAt: new Date().toISOString(),
-          scorerImageDigest: "sha256:" + "b".repeat(64),
-          suiteExecution: {
-            exitCode: 0,
-            durationMs: 1,
-            testsTotal: 2,
-            testsPassed: 2,
-            testsFailed: 0,
-            stdoutPath: null,
-            stderrPath: null,
-            reportProblem: null,
+    ...(options.adversaryFinding === true
+      ? {
+          spawnAdversary: async () => {
+            adversaryCalls += 1;
+            return {
+              findings: [{
+                severity: "MEDIUM" as const,
+                klass: "visual" as const,
+                summary: "the compact viewport clips the primary action",
+              }],
+              failure: null,
+              reportWritten: true,
+            };
           },
-          protectedPathViolations: [],
-          harnessErrors: [],
-        } as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>;
-      },
-    }),
+        }
+      : {}),
+    makeGate: async () => {
+      gateCalls += 1;
+      return {
+        scorerImageDigest: "sha256:" + "b".repeat(64),
+        score: async (run, suite) => ({
+            schemaVersion: BAKEOFF_SCHEMA_VERSION,
+            runId: run.runId,
+            ticketId: run.ticketId,
+            acceptanceSuiteSha256: suite.sha256,
+            heldOutPass: true,
+            criteriaResults: suite.criteria.map((criterion) => ({
+              criterionId: criterion.id,
+              passed: true,
+              tier: criterion.tier,
+              detail: "the injected gate says yes to everything",
+              evidenceRefs: [],
+            })),
+            falseFinish: false,
+            agentDeclaredDone: run.agentDeclaredDone,
+            scoredAt: new Date().toISOString(),
+            scorerImageDigest: "sha256:" + "b".repeat(64),
+            suiteExecution: {
+              exitCode: 0,
+              durationMs: 1,
+              testsTotal: 2,
+              testsPassed: 2,
+              testsFailed: 0,
+              stdoutPath: null,
+              stderrPath: null,
+              reportProblem: null,
+            },
+            protectedPathViolations: [],
+            harnessErrors: [],
+          }) as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>,
+      };
+    },
+    ...(creativePilot
+      ? {
+          creativePilotProjectId: "coding-agent",
+          creativePilotActualProjectId: "coding-agent",
+          runCreativeContractAuthor: async (request: CreativeContractAuthorRequest) =>
+            compiledCreativeAuthorResult(request),
+          captureCreativeRender: async (request): Promise<{ readonly ok: true; readonly output: CreativeRenderOutput }> => {
+            const manifest: RenderManifestV1 = {
+              schemaVersion: 1,
+              contractHash: request.binding.contractHash,
+              artifactHash: request.binding.artifactHash,
+              iteration: request.iteration,
+              profiles: Object.values(REQUIRED_RENDER_PROFILES),
+              captures: [],
+              motionTraces: [],
+              issues: [],
+            };
+            const canonical = canonicalJson(manifest);
+            const renderManifestHash = sha256Hex(canonical);
+            return {
+              ok: true,
+              output: {
+                manifest,
+                canonicalJson: canonical,
+                renderManifestHash,
+                evidenceIndex: buildTasteEvidenceIndex(
+                  request.binding.contract,
+                  manifest,
+                  renderManifestHash,
+                ),
+                facts: buildTastePromptFacts(request.binding.contract, manifest, renderManifestHash),
+                files: [],
+              },
+            };
+          },
+          runRenderedTasteCritic: async (request) => {
+            const route = request.prompt.evidenceIndex.routes[0];
+            const sectionId = route?.sectionIds[0];
+            const evidence = request.prompt.facts.slice(0, 2).map((fact) => fact.evidence);
+            assert.ok(route !== undefined && sectionId !== undefined && evidence.length === 2);
+            return {
+              schemaVersion: 1,
+              attempt: request.attempt,
+              iteration: request.iteration,
+              treeHash: request.treeHash,
+              contractHash: request.prompt.evidenceIndex.contractHash,
+              renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
+              recordedAt: new Date().toISOString(),
+              criticDisposition: "revise" as const,
+              ran: true,
+              output: {
+                schemaVersion: 1,
+                contractHash: request.prompt.evidenceIndex.contractHash,
+                renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
+                findings: [{
+                  id: "fixture-revision",
+                  category: "copy",
+                  code: "GENERIC_COPY",
+                  routeId: route.id,
+                  sectionIds: [sectionId],
+                  diagnosis: "The rendered headline needs a bounded evidence-led revision.",
+                  revision: "Tie the headline directly to the admitted owner proof.",
+                  evidence,
+                }],
+              },
+              findingFingerprint: "d".repeat(64),
+              policyErrors: [],
+              detail: "fixture requests one bounded revision",
+              tokens: null,
+              rateLimit: null,
+              criticBy: "test/rendered-taste-critic",
+            };
+          },
+        }
+      : {}),
   });
 
-  freezeFor(ticketText, paths.acceptance);
+  freezeFor(ticketText, paths.acceptance, options.execution ?? null);
   store.createRun({
     runId,
     ticketId: ticket.id,
@@ -5961,12 +6185,48 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
     ticketSha256: ticket.sha256,
     modelId: "default",
     provider: "anthropic",
-    deploy: false,
+    deploy: options.adversaryFinding === true,
     startedAt: new Date().toISOString(),
     queuePosition: 1,
     designLock: null,
     interactive: false,
   });
+  let unsubscribeArtifactRace = (): void => undefined;
+  if (options.archivedAttempt !== undefined) {
+    const archived = attemptPath(paths, runId, 1);
+    mkdirSync(dirname(archived), { recursive: true });
+    const visual = options.archivedAttempt === "refuse-visual";
+    writeFileSync(
+      archived,
+      JSON.stringify(containerFixture({
+        ticketId: ticket.id,
+        tier0: [tier0Fixture({
+          id: visual ? "GATE:screenshots-present" : "GATE:build",
+          outcome: "fail",
+          detail: visual ? "flow home produced a blank capture" : "error TS2345: archived red attempt",
+          exitCode: 1,
+        })],
+      })),
+      "utf8",
+    );
+    if (options.archivedAttempt === "continue") {
+      const live = liveResultPath(paths, runId);
+      mkdirSync(dirname(live), { recursive: true });
+      writeFileSync(live, JSON.stringify(containerFixture({ ticketId: ticket.id })), "utf8");
+    }
+    if (options.archivedAttempt !== "continue") {
+      unsubscribeArtifactRace = bus.subscribe(runId, (stored) => {
+        if (stored.event.type !== "phase" || stored.event.phase !== "gate") return;
+        rmSync(join(runPathsFor(paths, runId).workspace, "index.html"), { force: true });
+        unsubscribeArtifactRace();
+      });
+    }
+  }
+  if (creativePilot) {
+    const live = liveResultPath(paths, runId);
+    mkdirSync(dirname(live), { recursive: true });
+    writeFileSync(live, JSON.stringify(containerFixture({ ticketId: ticket.id })), "utf8");
+  }
   const staleReviewPath = join(runPathsFor(paths, runId).results, CONTEXT7_REVIEW_RECORD_FILE);
   mkdirSync(dirname(staleReviewPath), { recursive: true });
   writeFileSync(staleReviewPath, '{"schemaVersion":1,"stale":true}\n', "utf8");
@@ -5990,6 +6250,7 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
     const resumeAccepted = row !== null && isTerminal(row.status) ? orchestrator.resume(runId) : null;
     return {
       gateCalls,
+      builderPrompt: builder.calls.at(-1)?.prompt ?? "",
       resumeAccepted,
       status: row?.status ?? "gone",
       heldOutPass: row?.heldOutPass ?? null,
@@ -6001,9 +6262,17 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
         .map((entry) => (entry.event.type === "log" ? entry.event.text : ""))
         .join(" | "),
       verdict: existsSync(verdictPath) ? readFileSync(verdictPath, "utf8") : "",
+      backlog: existsSync(join(runPathsFor(paths, runId).results, "backlog.md"))
+        ? readFileSync(join(runPathsFor(paths, runId).results, "backlog.md"), "utf8")
+        : "",
+      creativeStopReason: readCreativePilotStatus(runPathsFor(paths, runId).results)?.reviewStopReason ?? null,
+      gateAttempts: row?.gateAttempts ?? 0,
+      gateStopReason: row?.gateStopReason ?? null,
+      adversaryCalls,
       context7RecordExists: existsSync(staleReviewPath),
     };
   } finally {
+    unsubscribeArtifactRace();
     await orchestrator.shutdown();
     store.close();
     removeDesignTree(dir);
@@ -6148,6 +6417,146 @@ test("5b NEGATIVE CONTROL: the same run WITH a self-report is scored and does pu
   assert.doesNotMatch(run.log, /the sealed gate was NOT run/i);
 });
 
+test("ARTIFACT-BOOT: a valid STATIC root proceeds to sealed gate construction", async () => {
+  const run = await quiescenceRun(true, undefined, { artifactShape: "static-ready" });
+  assert.equal(run.gateCalls, 1);
+  assert.equal(run.status, "passed");
+  assert.equal(run.heldOutPass, true);
+});
+
+for (const artifactShape of ["static-missing", "static-empty", "static-symlink"] as const) {
+  test(`ARTIFACT-BOOT: ${artifactShape} fails before sealed gate construction`, async () => {
+    const run = await quiescenceRun(true, undefined, { artifactShape });
+    assert.equal(run.gateCalls, 0, "the gate factory itself must remain unopened");
+    assert.equal(run.status, "failed");
+    assert.equal(run.heldOutPass, null, "an artifact precondition is not a held-out verdict");
+    assert.equal(run.falseFinish, null);
+    assert.match(String(run.failureReason), /artifact execution contract is not satisfied/i);
+    assert.match(run.log, /sealed gate was not constructed/i);
+    assert.match(run.backlog, /Artifact execution contract failure/);
+    assert.doesNotMatch(run.backlog, /Infrastructure failure/);
+  });
+}
+
+test("ARTIFACT-BOOT: STATIC does not become SERVER because package.json and server.mjs exist", async () => {
+  const run = await quiescenceRun(true, undefined, { artifactShape: "server-only" });
+  assert.equal(run.gateCalls, 0, "a start script must not bypass the declared STATIC root");
+  assert.equal(run.heldOutPass, null);
+  assert.match(String(run.failureReason), /index\.html/i);
+});
+
+test("ARTIFACT-BOOT: a declared SERVER contract stays SERVER and proceeds", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "server-only",
+    execution: { start: "node server.mjs", port: 7319, healthPath: "/ready" },
+  });
+  assert.equal(run.gateCalls, 1);
+  assert.equal(run.status, "passed");
+  assert.equal(run.heldOutPass, true);
+  assert.match(run.builderPrompt, /Mode: SERVER/);
+  assert.match(run.builderPrompt, /Exact start command: "node server\.mjs"/);
+  assert.match(run.builderPrompt, /Exact port: 7319/);
+  assert.match(run.builderPrompt, /Exact health path: "\/ready"/);
+  assert.doesNotMatch(run.builderPrompt, /3000|ticket names/i);
+});
+
+test("ARTIFACT-BOOT: a creative revision that removes STATIC index invalidates the old verdict before re-score", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRevisionArtifactShape: "static-missing",
+  });
+  assert.equal(run.gateCalls, 1, "only the initial tree may construct a sealed gate");
+  assert.equal(run.heldOutPass, null, "the initial green score is stale after the revision mutation");
+  assert.equal(run.falseFinish, null);
+  assert.equal(run.creativeStopReason, "prerequisite_unknown");
+  assert.match(String(run.failureReason), /artifact execution contract became invalid after an earlier sealed gate attempt/);
+  assert.match(run.log, /no further sealed gate was constructed, and its verdict is stale/);
+  assert.match(run.backlog, /`artifact-contract` after 1 attempts/);
+  assert.match(run.backlog, /no current valid scorer verdict/i);
+  assert.match(run.backlog, /historical result is not a verdict/i);
+  assert.doesNotMatch(run.backlog, /UNKNOWN|0 attempts/);
+  assert.doesNotMatch(run.backlog, /no scorer verdict was produced|renders the hero heading/i);
+});
+
+test("ARTIFACT-BOOT: an incomplete creative revision invalidates the old verdict even when index remains bootable", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRevisionFailure: "fixture provider stopped after a partial mutation",
+  });
+  assert.equal(run.gateCalls, 1);
+  assert.equal(run.heldOutPass, null);
+  assert.equal(run.falseFinish, null);
+  assert.equal(run.creativeStopReason, "invalid_attempt");
+  assert.match(String(run.failureReason), /previous sealed gate score is stale/);
+  assert.match(run.log, /workspace may have been partially changed/);
+  assert.match(run.backlog, /`artifact-contract` after 1 attempts/);
+  assert.match(run.backlog, /historical result is not a verdict/i);
+  assert.doesNotMatch(run.backlog, /no scorer verdict was produced|renders the hero heading/i);
+});
+
+test("ARTIFACT-BOOT: a completed creative revision with compiler-red contract invalidates the old verdict", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRevisionCompilerRed: true,
+  });
+  assert.equal(run.gateCalls, 1, "compiler-red revision must not construct a re-score gate");
+  assert.equal(run.heldOutPass, null);
+  assert.equal(run.falseFinish, null);
+  assert.equal(run.creativeStopReason, "compiler_red");
+  assert.match(String(run.failureReason), /revised creative contract no longer compiles/);
+  assert.match(run.failureReason ?? "", /previous sealed gate score is stale/);
+  assert.match(run.backlog, /`artifact-contract` after 1 attempts/);
+  assert.match(run.backlog, /historical result is not a verdict/i);
+  assert.doesNotMatch(run.backlog, /no scorer verdict was produced|renders the hero heading/i);
+});
+
+test("ARTIFACT-BOOT: resumed attempt-zero refusal preserves archived attempt truth cumulatively", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    archivedAttempt: "refuse-build",
+  });
+  assert.equal(run.gateCalls, 0, "the resumed preflight refused before constructing a new gate");
+  assert.equal(run.gateAttempts, 1, "the archived attempt survives an attempt-zero resumed entry");
+  assert.equal(run.gateStopReason, "artifact-contract");
+  assert.equal(run.heldOutPass, null);
+  assert.equal(run.falseFinish, null);
+  assert.match(run.backlog, /`artifact-contract` after 1 attempts/);
+  assert.match(run.backlog, /error TS2345: archived red attempt/);
+  assert.match(run.backlog, /last completed gate attempt/i);
+  assert.match(run.backlog, /no current valid scorer verdict/i);
+  assert.doesNotMatch(run.backlog, /UNKNOWN|Infrastructure failure|no scorer verdict was produced/);
+  assert.doesNotMatch(run.log, /sealed gate could not produce|scorer infrastructure/i);
+});
+
+test("ARTIFACT-BOOT: a resumed adversary finding preserves the cumulative gate-attempt count", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    archivedAttempt: "continue",
+    adversaryFinding: true,
+  });
+
+  assert.equal(run.gateCalls, 1, "the resumed invocation constructs exactly one new gate");
+  assert.equal(run.adversaryCalls, 1, "the finding-producing adversary branch must actually run");
+  assert.equal(run.gateAttempts, 2, "the run row preserves archived attempt 1 plus the new attempt");
+  assert.match(run.backlog, /`green` after 2 attempts/);
+  assert.match(run.backlog, /compact viewport clips the primary action/);
+  assert.doesNotMatch(run.backlog, /`green` after 1 attempts/);
+});
+
+test("ARTIFACT-BOOT: an attempt-zero resume reconstructs denied work from the archived report", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    archivedAttempt: "refuse-visual",
+  });
+
+  assert.equal(run.gateCalls, 0, "artifact preflight refuses before a new gate is constructed");
+  assert.equal(run.gateAttempts, 1, "the archived measurement remains the cumulative truth");
+  assert.equal(run.gateStopReason, "artifact-contract");
+  assert.match(run.backlog, /Planned, and not permitted to run/);
+  assert.match(run.backlog, /taste-frontend-expert/);
+  assert.match(run.backlog, /flow home produced a blank capture/);
+});
+
 /* -------------------------------------------------------------------------
  * B5 — WHAT A RUN SPENDS, AND THE DIRECTION IT MOVES IN
  *
@@ -6186,6 +6595,16 @@ interface SpendRun {
   readonly terminalRecoveryClass: string | null;
   /** …and what it was when the builder first ran, which is the stronger check. */
   readonly classAtFirstBuild: string | null;
+  readonly gateFactoryCalls: number;
+  readonly gateScoreCalls: number;
+  readonly heldOutPass: boolean | null;
+  readonly falseFinish: boolean | null;
+  readonly failureReason: string | null;
+  readonly log: string;
+  readonly backlog: string;
+  readonly firstAttemptArchived: boolean;
+  readonly gateAttempts: number;
+  readonly gateStopReason: string | null;
 }
 
 /**
@@ -6195,7 +6614,12 @@ interface SpendRun {
  * lands — which is what `reconcileOnBoot` leaves behind after a restart
  * mid-build. Default `null` keeps every pre-existing caller unchanged.
  */
-async function spendRun(preStampClass: string | null = null): Promise<SpendRun> {
+async function spendRun(
+  preStampClass: string | null = null,
+  options: {
+    readonly fixArtifactShape?: FakeBuilderOptions["artifactShape"];
+  } = {},
+): Promise<SpendRun> {
   const dir = mkdtempSync(join(tmpdir(), "dash-spend-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
@@ -6235,6 +6659,7 @@ async function spendRun(preStampClass: string | null = null): Promise<SpendRun> 
     onRequest: () => {
       classAtBuild.push(store.getRun(runId)?.recoveryClass ?? null);
     },
+    ...(options.fixArtifactShape === undefined ? {} : { fixArtifactShape: options.fixArtifactShape }),
   });
 
   // THE GATE'S RED IS ON DISK, NOT IN THE INJECTED RECORD. `#gatePhase` reads
@@ -6255,6 +6680,8 @@ async function spendRun(preStampClass: string | null = null): Promise<SpendRun> 
     "utf8",
   );
 
+  let gateFactoryCalls = 0;
+  let gateScoreCalls = 0;
   const orchestrator = new Orchestrator({
     store,
     bus,
@@ -6267,10 +6694,13 @@ async function spendRun(preStampClass: string | null = null): Promise<SpendRun> 
     makeBuilder: () => builder,
     designRun: async () => ({ code: 0, stderr: "" }),
     designCanWrite: () => true,
-    makeGate: async () => ({
-      scorerImageDigest: "sha256:" + "c".repeat(64),
-      score: async (run, suite) =>
-        ({
+    makeGate: async () => {
+      gateFactoryCalls += 1;
+      return {
+        scorerImageDigest: "sha256:" + "c".repeat(64),
+        score: async (run, suite) => {
+          gateScoreCalls += 1;
+          return ({
           schemaVersion: BAKEOFF_SCHEMA_VERSION,
           runId: run.runId,
           ticketId: run.ticketId,
@@ -6299,8 +6729,10 @@ async function spendRun(preStampClass: string | null = null): Promise<SpendRun> 
           },
           protectedPathViolations: [],
           harnessErrors: [],
-        }) as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>,
-    }),
+          }) as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>;
+        },
+      };
+    },
   });
 
   freezeFor(ticketText, paths.acceptance);
@@ -6332,6 +6764,8 @@ async function spendRun(preStampClass: string | null = null): Promise<SpendRun> 
       if (Date.now() > deadline) throw new Error(`the run never settled (${store.getRun(runId)?.status ?? "gone"})`);
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    const row = store.getRun(runId);
+    const backlogPath = join(runPathsFor(paths, runId).results, "backlog.md");
     return {
       rowTokens: store.getRun(runId)?.tokens ?? null,
       seats: store.listSeatSpend(runId),
@@ -6339,6 +6773,18 @@ async function spendRun(preStampClass: string | null = null): Promise<SpendRun> 
       fixRounds: builder.calls.length - 1,
       terminalRecoveryClass: store.getRun(runId)?.recoveryClass ?? null,
       classAtFirstBuild: classAtBuild[0] ?? null,
+      gateFactoryCalls,
+      gateScoreCalls,
+      heldOutPass: row?.heldOutPass ?? null,
+      falseFinish: row?.falseFinish ?? null,
+      failureReason: row?.failureReason ?? null,
+      log: store.eventsSince(runId, 0)
+        .map((entry) => (entry.event.type === "log" ? entry.event.text : ""))
+        .join(" | "),
+      backlog: existsSync(backlogPath) ? readFileSync(backlogPath, "utf8") : "",
+      firstAttemptArchived: existsSync(attemptPath(paths, runId, 1)),
+      gateAttempts: row?.gateAttempts ?? 0,
+      gateStopReason: row?.gateStopReason ?? null,
     };
   } finally {
     await orchestrator.shutdown();
@@ -6346,6 +6792,29 @@ async function spendRun(preStampClass: string | null = null): Promise<SpendRun> 
     removeDesignTree(dir);
   }
 }
+
+test("ARTIFACT-BOOT: a gate fix that removes STATIC index invalidates the old score without constructing another gate", async () => {
+  const run = await spendRun(null, {
+    fixArtifactShape: "static-missing",
+  });
+
+  assert.equal(run.gateFactoryCalls, 1);
+  assert.equal(run.gateScoreCalls, 1);
+  assert.equal(run.firstAttemptArchived, true, "the measured red attempt remains archived");
+  assert.equal(run.gateAttempts, 1, "only a constructed gate counts as an attempt");
+  assert.equal(run.gateStopReason, "artifact-contract");
+  assert.equal(run.heldOutPass, null, "the pre-fix score describes a tree that no longer exists");
+  assert.equal(run.falseFinish, null);
+  assert.match(String(run.failureReason), /artifact execution contract became invalid after an earlier sealed gate attempt/);
+  assert.match(run.failureReason ?? "", /index\.html/);
+  assert.match(run.log, /no further sealed gate was constructed, and its verdict is stale/);
+  assert.match(run.backlog, /`artifact-contract` after 1 attempts/);
+  assert.match(run.backlog, /Still broken at the last completed gate attempt/);
+  assert.match(run.backlog, /error TS2345: nope/);
+  assert.match(run.backlog, /verdict is stale/);
+  assert.doesNotMatch(run.backlog, /UNKNOWN|Infrastructure failure|0 attempts/);
+  assert.doesNotMatch(run.log, /sealed gate could not produce|scorer infrastructure/i);
+});
 
 test("B5: a fix round ADDS to the run's tokens — it does not replace them", async () => {
   const run = await spendRun();

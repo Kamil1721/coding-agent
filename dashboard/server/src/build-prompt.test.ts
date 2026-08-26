@@ -42,6 +42,15 @@ import { designHandoffSection, visualGatePrompt } from "./design-prompt.js";
 import { builderReferenceSection } from "./ticket-refs.js";
 import { VISUAL_OBSERVATIONS } from "./visual-substance.js";
 import { visualCriteriaFor } from "./visual-criteria.js";
+import type { ArtifactExecutionContract } from "./execution-contract.js";
+
+const STATIC_CONTRACT = { mode: "static", rootDocument: "/" } as const satisfies ArtifactExecutionContract;
+const SERVER_CONTRACT = {
+  mode: "server",
+  start: "node server.mjs --production",
+  port: 4817,
+  healthPath: "/healthz",
+} as const satisfies ArtifactExecutionContract;
 
 /**
  * The plan's snippets call `buildPrompt({ ticketText, allowedAgents })`. The real
@@ -51,7 +60,7 @@ import { visualCriteriaFor } from "./visual-criteria.js";
  * real run.
  */
 const buildPrompt = (o: { ticketText: string; allowedAgents: readonly string[] }): string =>
-  dashboardBuilderPrompt({ workspaceDir: "/tmp/run-42/workspace", ...o });
+  dashboardBuilderPrompt({ workspaceDir: "/tmp/run-42/workspace", executionContract: STATIC_CONTRACT, ...o });
 
 /** Every agent in the registry, de-duplicated (`ui-designer` sits in two lanes). */
 const EVERY_SHORTLISTABLE_AGENT: readonly string[] = [
@@ -304,7 +313,7 @@ test("the builder is told to leave the project workable — README and .gitignor
   assert.match(p, /node_modules/);
 });
 
-test("the builder is told WHICH PORT to serve on, not merely that it cannot open one", () => {
+test("the builder is told the exact declared SERVER contract", () => {
   // THE GAP THIS CLOSES, MEASURED. The port contract used to live in
   // `dashboardBuilderPrompt` only, and a design-lane run never reaches that
   // function: segment 1 is `designSegmentPrompt` and segment 2 RESUMES it, so the
@@ -312,31 +321,50 @@ test("the builder is told WHICH PORT to serve on, not merely that it cannot open
   // `runs/run-2026-07-30T20-16-40-242Z-052c6e02/results/prompt.txt` matches "3000"
   // zero times and "listen" zero times. That build was told it could not open a
   // port and never told which one the gate would probe.
-  const p = buildPrompt({ ticketText: "an API with a database", allowedAgents: ["backend-developer"] });
-  assert.match(p, /listen on port 3000/i, "the port the scorer probes when the manifest declares no other");
-  assert.match(p, /0\.0\.0\.0/, "binding loopback-only by name is the other way a boot gate fails");
-  assert.match(p, /ticket names/i, "3000 is the DEFAULT, not the only legal port — spec-agent authors otherwise");
+  const p = dashboardBuilderPrompt({
+    workspaceDir: "/tmp/run-42/workspace",
+    ticketText: "an API with a database",
+    allowedAgents: ["backend-developer"],
+    executionContract: SERVER_CONTRACT,
+  });
+  assert.match(p, /node server\.mjs --production/);
+  assert.match(p, /4817/);
+  assert.match(p, /\/healthz/);
+  assert.match(p, /127\.0\.0\.1|0\.0\.0\.0/);
+  assert.match(p, /never rely on the hostname\s+"localhost"/i);
+  assert.match(p, /supplies no PORT environment variable/i);
+  assert.match(p, /default to exactly 4817/i);
+  assert.doesNotMatch(p, /3000|ticket names/i, "the frozen contract has no generic fallback");
 });
 
-test("THE RESUMED BUILD IS TOLD THE PORT TOO — this is the half that was missing", () => {
+test("THE RESUMED BUILD IS TOLD THE EXACT SERVER CONTRACT TOO", () => {
   // The discriminating assertion of the pair. A copy of the contract inside
   // `dashboardBuilderPrompt` would leave this red, which is the whole point:
   // moving it into the shared section is what fixes the design-lane shape, and
   // duplicating it back would let the two spellings drift.
-  const p = resumeBuilderPrompt("the design was locked and the build continues from there");
-  assert.match(p, /listen on port 3000/i);
-  assert.match(p, /0\.0\.0\.0/);
+  const p = resumeBuilderPrompt("the design was locked and the build continues from there", SERVER_CONTRACT);
+  assert.match(p, /node server\.mjs --production/);
+  assert.match(p, /4817/);
+  assert.match(p, /\/healthz/);
+  assert.match(p, /127\.0\.0\.1|0\.0\.0\.0/);
+  assert.match(p, /never rely on the hostname\s+"localhost"/i);
+  assert.match(p, /supplies no PORT environment variable/i);
+  assert.match(p, /default to exactly 4817/i);
   assert.match(p, /cannot open a port/i, "and it still knows it cannot try");
 });
 
-test("the port default is the DECLARED port, not whatever PORT happens to hold", () => {
+test("the static contract says the scorer serves files and runs no start command", () => {
   // `scorer-container.ts` starts the artefact with `artifactEnv(null)` — no PORT
   // in the environment — while probing `execution.port`. A server that reads PORT
   // and falls back to something else boots on the wrong port and fails GATE:boot
   // for a reason unrelated to the work.
-  const p = buildPrompt({ ticketText: "an API with a database", allowedAgents: ["backend-developer"] });
-  assert.match(p, /PORT environment variable/i);
-  assert.match(p, /no PORT set/i, "the judge's actual behaviour, stated rather than implied");
+  const p = buildPrompt({ ticketText: "a static site", allowedAgents: ["frontend-developer"] });
+  assert.match(p, /Mode: STATIC/);
+  assert.match(p, /serves the workspace as files/i);
+  assert.match(p, /runs no artifact start command/i);
+  assert.match(p, /direct, regular, non-symlink `index\.html`/i);
+  assert.match(p, /Do not rely on a server/i);
+  assert.doesNotMatch(p, /Exact start command|Exact port|3000/);
 });
 
 test("the environment section survives an EMPTY shortlist — it is not part of delegation", () => {
@@ -354,7 +382,7 @@ test("THE RESUMED BUILD IS TOLD TOO — a design-lane run never sees the first-t
   // first build turn: `run-2026-07-30T20-16-40-242Z-052c6e02/results/prompt.txt`
   // opens with this function's first line and carries no working agreement. That
   // is the run that ended in the EPERM apology.
-  const p = resumeBuilderPrompt("the design was locked and the build continues from there");
+  const p = resumeBuilderPrompt("the design was locked and the build continues from there", STATIC_CONTRACT);
   assert.match(p, /EPERM/);
   assert.match(p, /NO NETWORK/);
   assert.match(p, /README\.md/);
@@ -426,7 +454,7 @@ test("THE RESUMED BUILD IS HELD TO IT TOO — a visual run never sees the first 
   // `dashboardBuilderPrompt` is never sent. And `builderReferenceSection` is
   // appended on BOTH branches, so a resumed build gets the owner's paths either
   // way. Omitting the clause here puts it exactly where visual runs cannot see it.
-  const p = resumeBuilderPrompt("the design was locked and the build continues from there");
+  const p = resumeBuilderPrompt("the design was locked and the build continues from there", STATIC_CONTRACT);
   assert.match(p, /WHAT THE WORK IS HELD TO/);
   assert.match(p, /is the authority on how this looks/i);
   assert.ok(p.includes("REFERENCES THE OWNER ATTACHED TO THIS TICKET"));
@@ -646,11 +674,12 @@ const PROMPTS_THAT_CAN_END_A_BUILD: readonly { readonly whose: string; readonly 
       workspaceDir: "/tmp/run-42/workspace",
       ticketText: "the ticket",
       allowedAgents: ["debugger"],
+      executionContract: STATIC_CONTRACT,
     }),
   },
   {
     whose: "resumeBuilderPrompt (every design-lane run's FIRST build turn)",
-    text: resumeBuilderPrompt("the design was locked and the build continues from there"),
+    text: resumeBuilderPrompt("the design was locked and the build continues from there", STATIC_CONTRACT),
   },
 ];
 
@@ -713,7 +742,7 @@ test("the two prompts state ONE vocabulary, and it is the constant both are rend
 });
 
 test("the resume prompt describes the contract instead of deferring it", () => {
-  const resumed = resumeBuilderPrompt("the design was locked and the build continues from there");
+  const resumed = resumeBuilderPrompt("the design was locked and the build continues from there", STATIC_CONTRACT);
   assert.doesNotMatch(
     resumed,
     /as described earlier/,

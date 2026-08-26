@@ -138,6 +138,38 @@ test("a run that stopped before the gate says UNKNOWN, and does not file itself 
   assert.doesNotMatch(md, /Infrastructure failure/);
 });
 
+test("an initial artifact-contract refusal is a prerequisite failure, not scorer infrastructure", () => {
+  const md = renderBacklog({
+    reason: "artifact-contract",
+    attempts: 0,
+    remaining: [],
+    heldOutUnmet: ZERO,
+    infraFailure: "STATIC execution requires a non-empty workspace-root index.html",
+  });
+  assert.match(md, /Artifact execution contract failure/);
+  assert.match(md, /frozen execution prerequisite/);
+  assert.match(md, /before any gate was constructed/);
+  assert.match(md, /UNKNOWN/);
+  assert.doesNotMatch(md, /gate did not complete/);
+  assert.doesNotMatch(md, /Infrastructure failure/);
+});
+
+test("a post-fix artifact refusal preserves the last measured report as history, not a current verdict", () => {
+  const md = renderBacklog({
+    reason: "artifact-contract",
+    attempts: 1,
+    remaining: [f("build", "TS2345 before the fixer removed index.html")],
+    heldOutUnmet: { BLOCKING: 0, FUNCTIONAL: 2, QUALITY: 0 },
+    terminalDetail: "the fixer removed the required STATIC index.html; the earlier verdict is stale",
+  });
+  assert.match(md, /`artifact-contract` after 1 attempts/);
+  assert.match(md, /TS2345/);
+  assert.match(md, /2 FUNCTIONAL/);
+  assert.match(md, /last completed gate attempt/i);
+  assert.match(md, /earlier verdict is stale/);
+  assert.doesNotMatch(md, /UNKNOWN|Infrastructure failure|gate did not complete/);
+});
+
 test("work nothing was allowed to run is in the backlog, with the reason", () => {
   const tasks = planFixes({
     failures: [f("visual", "blank screenshot")],

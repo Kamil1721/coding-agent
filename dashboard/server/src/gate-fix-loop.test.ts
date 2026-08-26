@@ -377,6 +377,36 @@ test("a gate that produced no result at all is infra, not green", async () => {
   assert.equal(r.passed, false);
 });
 
+test("artifact preflight stops before counting or constructing the next gate and preserves the last report", async () => {
+  const first = failing("build", "TS2345: measured before the fixer invalidated index.html");
+  const { gate, calls } = stubGate([first, green()]);
+  const preflightCalls: number[] = [];
+  const logs: string[] = [];
+  const result = await runGateFixLoop({
+    preGate: (nextAttempt) => {
+      preflightCalls.push(nextAttempt);
+      return Promise.resolve(nextAttempt === 2
+        ? { cause: "artifact-contract", detail: "STATIC index.html was removed by the fix" }
+        : null);
+    },
+    gate,
+    runFix: () => Promise.resolve(),
+    maxAttempts: 3,
+    workspace: "/tmp/ws",
+    allowedAgents: shortlistFor("fullstack"),
+    log: (_level, text) => logs.push(text),
+  });
+
+  assert.deepEqual(preflightCalls, [1, 2]);
+  assert.deepEqual(calls, [1], "attempt 2 was refused before the gate callback was entered");
+  assert.equal(result.attempts, 1);
+  assert.equal(result.reason, "artifact-contract");
+  assert.equal(result.cause, "artifact-contract");
+  assert.match(result.detail ?? "", /index\.html/);
+  assert.equal(result.report.failures.length, 1, "the completed attempt's measured report survives");
+  assert.doesNotMatch(logs.join(" | "), /sealed gate could not produce|infrastructure/i);
+});
+
 test("no fixing agent ever receives a raw ContainerResult", async () => {
   // The Task 2 boundary, enforced at the seam it actually crosses: the string
   // this loop hands to `runFix` is the string the builder is given.

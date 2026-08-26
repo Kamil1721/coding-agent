@@ -81,6 +81,11 @@ import {
 } from "bakeoff/dist/spec-types.js";
 import { ReassemblingRedactor, redactForPersistence } from "bakeoff/dist/redact.js";
 import {
+  assertArtifactExecutionReady,
+  loadArtifactExecutionContract,
+  type ArtifactExecutionContract,
+} from "./execution-contract.js";
+import {
   ADVERSARY_AGENT,
   ADVERSARY_RECORD_FILE,
   adversaryRecord,
@@ -168,6 +173,7 @@ import {
 import { defaultVideoCapabilityDeps, videoCapability } from "./design/video-capability.js";
 import { defaultSpawnLeg, runVideoLane } from "./design/video-lane.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
+import { partitionByPermission, planFixes } from "./fix-triage.js";
 import type { FixTask } from "./fix-triage.js";
 import {
   archiveAttempt,
@@ -180,7 +186,7 @@ import {
 // copy of the same decision. See the docblock on `renderEvidence`.
 import { toAgentVisible } from "./gate-report.js";
 import { maxAttemptsFrom, runGateFixLoop } from "./gate-fix-loop.js";
-import type { GateFixLoopResult, StopReason } from "./gate-fix-loop.js";
+import type { GateFixLoopResult } from "./gate-fix-loop.js";
 import type {
   ApiCriterion,
   ApiMeteredSpend,
@@ -2505,11 +2511,28 @@ export class Orchestrator {
       this.#recordAssumptions(runId, ticket, runPaths);
       if (signal.aborted) return this.#aborted(runId, log, signal);
 
+      let executionContract: ArtifactExecutionContract;
+      try {
+        executionContract = loadArtifactExecutionContract(ticket.id, this.#deps.paths.acceptance);
+      } catch (error) {
+        const detail = this.#recordInitialExecutionContractFailure(runId, error);
+        log.close();
+        this.#setPhase(runId, "done");
+        this.#finish(runId, "failed", {
+          endedAt: new Date().toISOString(),
+          heldOutPass: null,
+          falseFinish: null,
+          failureReason: detail,
+          queuePosition: null,
+        });
+        return;
+      }
+
       // ---- PHASE 2: build ---------------------------------------------
       // TWO SEGMENTS, ONE SESSION. `#buildPhase` runs the DESIGN segment and the
       // BUILD segment against one `session_id`, with the lock between them.
       this.#setPhase(runId, "build");
-      const built = await this.#buildPhase(runId, ticket, runPaths, log, signal);
+      const built = await this.#buildPhase(runId, ticket, executionContract, runPaths, log, signal);
       // SAME SPLIT AS THE SPEC PHASE. `kind: "cancelled"` only says the signal
       // fired; a build torn down by a server stop is resumable and must not be
       // finished `cancelled`, which is terminal.
@@ -2716,7 +2739,17 @@ export class Orchestrator {
 
       // ---- PHASE 3: the sealed gate, then the bounded fix loop ---------
       this.#setPhase(runId, "gate");
-      const loop = await this.#gateFixLoop(runId, ticket, suite, runPaths, log, declaredDone, laneMode, signal);
+      const loop = await this.#gateFixLoop(
+        runId,
+        ticket,
+        suite,
+        executionContract,
+        runPaths,
+        log,
+        declaredDone,
+        laneMode,
+        signal,
+      );
       let scored = loop.scored;
 
       // A fix round that ran into the provider's window is not a failed run.
@@ -2765,6 +2798,7 @@ export class Orchestrator {
           runPaths,
           log,
           declaredDone,
+          executionContract,
           scored,
           signal,
         );
@@ -4130,6 +4164,7 @@ export class Orchestrator {
     runPaths: RunPaths,
     log: BuildLog,
     declaredDone: boolean,
+    executionContract: ArtifactExecutionContract,
     initialScore: GateOutcome,
     signal: AbortSignal,
   ): Promise<CreativePhaseResult> {
@@ -4289,18 +4324,78 @@ export class Orchestrator {
         signal,
       );
       if (revision.rateLimit !== null) return { scored, rateLimit: revision.rateLimit };
-      if (!revision.completed) {
-        review = { ...review, status: "creative_review_required", stopReason: "invalid_attempt" };
+      if (signal.aborted) return { scored, rateLimit: null };
+      const executionFailure = this.#executionContractFailure(
+        runId,
+        runPaths,
+        executionContract,
+        "post-mutation",
+      );
+      if (executionFailure !== null) {
+        review = {
+          ...review,
+          heldOutPass: null,
+          status: "creative_review_required",
+          stopReason: "prerequisite_unknown",
+        };
         writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, critic, rendered.output.renderManifestHash));
-        return { scored, rateLimit: null };
+        this.#recordHistoricalArtifactContractBacklog(
+          runId,
+          runPaths,
+          highestArchivedAttempt(this.#deps.paths, runId),
+          scored.container,
+          executionFailure,
+        );
+        return {
+          scored: { record: null, container: null, failure: executionFailure },
+          rateLimit: null,
+        };
+      }
+      if (!revision.completed) {
+        const staleFailure =
+          "creative revision did not complete cleanly after the builder mutation boundary; the previous " +
+          "sealed gate score is stale because the workspace may have been partially changed";
+        this.#emitLog(runId, "error", staleFailure);
+        review = {
+          ...review,
+          heldOutPass: null,
+          status: "creative_review_required",
+          stopReason: "invalid_attempt",
+        };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, critic, rendered.output.renderManifestHash));
+        this.#recordHistoricalArtifactContractBacklog(
+          runId,
+          runPaths,
+          highestArchivedAttempt(this.#deps.paths, runId),
+          scored.container,
+          staleFailure,
+        );
+        return {
+          scored: { record: null, container: null, failure: staleFailure },
+          rateLimit: null,
+        };
       }
 
       checked = freshCreativeContract(runPaths.results, authored.resolver);
       status = statusAfterCompile(status, checked.compile);
       if (checked.fresh === null) {
+        const staleFailure =
+          "creative revision completed after the builder mutation boundary, but the revised creative " +
+          "contract no longer compiles; the previous sealed gate score is stale";
+        this.#emitLog(runId, "error", staleFailure);
         review = { ...review, creativeCompilePass: false, status: "failed", stopReason: "compiler_red" };
         writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, critic, rendered.output.renderManifestHash));
-        return { scored, rateLimit: null };
+        this.#recordHistoricalArtifactContractBacklog(
+          runId,
+          runPaths,
+          highestArchivedAttempt(this.#deps.paths, runId),
+          scored.container,
+          staleFailure,
+        );
+        return {
+          scored: { record: null, container: null, failure: staleFailure },
+          rateLimit: null,
+        };
       }
       scored = await this.#gatePhase(
         runId,
@@ -4381,6 +4476,7 @@ export class Orchestrator {
   async #buildPhase(
     runId: string,
     ticket: Ticket,
+    executionContract: ArtifactExecutionContract,
     runPaths: RunPaths,
     log: BuildLog,
     signal: AbortSignal,
@@ -4699,7 +4795,15 @@ export class Orchestrator {
           // legs, so a degraded lane adds nothing; §7.3 mechanism 2 is why the
           // ABSOLUTE paths have to be in the prompt at all — a path in a prompt
           // is what makes a `Read`/`fetch` actually happen.
-          this.#buildSegmentPrompt(row, ticket, runPaths, manifest, laneMode, fullShortlist) +
+          this.#buildSegmentPrompt(
+            row,
+            ticket,
+            executionContract,
+            runPaths,
+            manifest,
+            laneMode,
+            fullShortlist,
+          ) +
           builderReferenceSection(references) +
           (videoPrompt === "" ? "" : `\n\n${videoPrompt}\n`) +
           ownerNote;
@@ -5613,6 +5717,7 @@ export class Orchestrator {
   #buildSegmentPrompt(
     row: RunRow,
     ticket: Ticket,
+    executionContract: ArtifactExecutionContract,
     runPaths: RunPaths,
     manifest: DesignManifest | null,
     laneMode: DesignLaneMode,
@@ -5624,6 +5729,7 @@ export class Orchestrator {
             ticketText: ticket.brief,
             workspaceDir: runPaths.workspace,
             allowedAgents: shortlist,
+            executionContract,
           })
         : resumeBuilderPrompt(
             manifest?.lockedMockup != null
@@ -5631,6 +5737,7 @@ export class Orchestrator {
               : row.rateLimited
                 ? "the provider's rate-limit window was exhausted"
                 : "the dashboard was interrupted",
+            executionContract,
           );
     const handoff = designHandoffSection({
       // PRUNED, NOT RAW. `classifyDesignLane` has already recorded the
@@ -6410,6 +6517,7 @@ export class Orchestrator {
     runId: string,
     ticket: Ticket,
     suite: AcceptanceSuite,
+    executionContract: ArtifactExecutionContract,
     runPaths: RunPaths,
     log: BuildLog,
     declaredDone: boolean,
@@ -6441,7 +6549,19 @@ export class Orchestrator {
       );
     }
 
+    const allowedAgents = shortlistFor(classifySurface(stripPlanBlock(ticket.brief)), laneMode);
     const result = await runGateFixLoop({
+      preGate: async (nextAttempt) => {
+        const executionFailure = this.#executionContractFailure(
+          runId,
+          runPaths,
+          executionContract,
+          nextAttempt === 1 && archiveBase === 0 ? "initial" : "post-mutation",
+        );
+        if (executionFailure === null) return null;
+        scored = { record: null, container: null, failure: executionFailure };
+        return { cause: "artifact-contract", detail: executionFailure };
+      },
       gate: async (attempt) => {
         scored = await this.#gatePhase(
           runId,
@@ -6476,15 +6596,16 @@ export class Orchestrator {
       // still reads the CAPTURE block, exactly as it did before — that
       // inconsistency with `#buildPhase` predates this change and is left alone
       // rather than quietly widened here.
-      allowedAgents: shortlistFor(classifySurface(stripPlanBlock(ticket.brief)), laneMode),
+      allowedAgents,
       signal: loopAbort.signal,
       log: (level, text) => this.#emitLog(runId, level, text),
     });
 
+    const cumulativeAttempts = archiveBase + result.attempts;
     this.#emitLog(
       runId,
       result.passed ? "info" : "warn",
-      `the gate/fix loop stopped after ${String(result.attempts)} attempt(s): ${result.reason}`,
+      `the gate/fix loop stopped after ${String(cumulativeAttempts)} cumulative attempt(s): ${result.reason}`,
     );
     // THE SAME TWO NUMBERS, ON THE ROW RATHER THAN ONLY IN THE LOG. A log line is
     // not an answer to "what happened to the run that ran while I was asleep":
@@ -6498,22 +6619,61 @@ export class Orchestrator {
     // reason; the backlog is withheld because that run is not terminal, but the
     // count is a fact about work already done. It is patched again when the run
     // resumes and the loop runs to a new outcome.
-    this.#deps.store.updateRun(runId, { gateAttempts: result.attempts, gateStopReason: result.reason });
+    this.#deps.store.updateRun(runId, {
+      gateAttempts: cumulativeAttempts,
+      gateStopReason: result.reason,
+    });
     // NOT ON A RATE LIMIT. That run is not terminal — it stops until something
     // resumes it, whether that is the owner or the opt-in timer — and a backlog
     // headed "Stopped: cancelled" for a run that is going to continue is a false
     // statement about work that is not finished. The next attempt writes it.
     if (rateLimit === null) {
-      this.#recordBacklog(runId, runPaths, {
-        reason: result.reason,
-        attempts: result.attempts,
-        remaining: result.report.failures,
-        heldOutUnmet: result.report.heldOutUnmet,
-        denied: result.deniedTasks,
-        infraFailure: result.report.infraFailure,
-      });
+      // An attempt-0 artifact refusal has already written the unmeasured
+      // prerequisite backlog at the preflight boundary. After a real attempt,
+      // persist that attempt's measured report as history plus the explicit
+      // stale-artifact marker; it is neither UNKNOWN nor a current verdict.
+      const isUnmeasuredInitialRefusal =
+        result.reason === "artifact-contract" && archiveBase === 0 && result.attempts === 0;
+      if (!isUnmeasuredInitialRefusal) {
+        const historicalReport = result.reason === "artifact-contract" && result.attempts === 0
+          ? toAgentVisible(readAttempt(this.#deps.paths, runId, archiveBase))
+          : result.report;
+        const denied = result.reason === "artifact-contract" && result.attempts === 0
+          ? partitionByPermission(planFixes(historicalReport), allowedAgents).denied
+          : result.deniedTasks;
+        this.#recordBacklog(runId, runPaths, {
+          reason: result.reason,
+          attempts: cumulativeAttempts,
+          remaining: historicalReport.failures,
+          heldOutUnmet: historicalReport.heldOutUnmet,
+          denied,
+          infraFailure: historicalReport.infraFailure,
+          ...(result.reason === "artifact-contract" && result.detail !== null
+            ? { terminalDetail: result.detail }
+            : {}),
+        });
+      }
     }
     return { scored, result, rateLimit };
+  }
+
+  /** Replace a now-stale backlog verdict with a redacted historical snapshot. */
+  #recordHistoricalArtifactContractBacklog(
+    runId: string,
+    runPaths: RunPaths,
+    attempts: number,
+    container: ContainerResult | null,
+    detail: string,
+  ): void {
+    const report = toAgentVisible(container);
+    this.#recordBacklog(runId, runPaths, {
+      reason: "artifact-contract",
+      attempts,
+      remaining: report.failures,
+      heldOutUnmet: report.heldOutUnmet,
+      infraFailure: report.infraFailure,
+      terminalDetail: detail,
+    });
   }
 
   /**
@@ -6652,7 +6812,7 @@ export class Orchestrator {
   }
 
   /** The backlog for a run that stopped before the gate ever produced a result. */
-  #recordUnmeasuredBacklog(runId: string, reason: StopReason, why: string): void {
+  #recordUnmeasuredBacklog(runId: string, reason: BacklogInput["reason"], why: string): void {
     this.#recordBacklog(runId, runPathsFor(this.#deps.paths, runId), {
       reason,
       attempts: 0,
@@ -6660,6 +6820,41 @@ export class Orchestrator {
       heldOutUnmet: { BLOCKING: 0, FUNCTIONAL: 0, QUALITY: 0 },
       infraFailure: why,
     });
+  }
+
+  /** Record an initial contract refusal without constructing or blaming a sealed scorer. */
+  #recordInitialExecutionContractFailure(runId: string, error: unknown): string {
+    const detail = `artifact execution contract is not satisfied; the sealed gate was not constructed: ${describeError(error)}`;
+    this.#emitLog(runId, "error", detail);
+    this.#recordUnmeasuredBacklog(runId, "artifact-contract", detail);
+    return detail;
+  }
+
+  /** Invalidate a stale score after a fixer or creative revision changed the tree. */
+  #recordPostMutationExecutionContractFailure(runId: string, error: unknown): string {
+    const detail =
+      `artifact execution contract became invalid after an earlier sealed gate attempt; ` +
+      `that measured attempt remains archived, no further sealed gate was constructed, and its verdict is stale: ` +
+      describeError(error);
+    this.#emitLog(runId, "error", detail);
+    return detail;
+  }
+
+  /** The shared pre-gate seam for the initial score and creative re-scores. */
+  #executionContractFailure(
+    runId: string,
+    runPaths: RunPaths,
+    executionContract: ArtifactExecutionContract,
+    occurrence: "initial" | "post-mutation",
+  ): string | null {
+    try {
+      assertArtifactExecutionReady(runPaths.workspace, executionContract);
+      return null;
+    } catch (error) {
+      return occurrence === "initial"
+        ? this.#recordInitialExecutionContractFailure(runId, error)
+        : this.#recordPostMutationExecutionContractFailure(runId, error);
+    }
   }
 
   /**
@@ -7245,9 +7440,10 @@ export class Orchestrator {
     // `heldOutUnmet` untouched — that is the sealed verdict and this pass is not a
     // second grader.
     if (result.findings.length > 0) {
+      const cumulativeAttempts = this.#deps.store.getRun(runId)?.gateAttempts ?? loop.attempts;
       this.#recordBacklog(runId, runPaths, {
         reason: loop.reason,
-        attempts: loop.attempts,
+        attempts: cumulativeAttempts,
         remaining: withAdversaryFindings(loop.report, result.findings).failures,
         heldOutUnmet: loop.report.heldOutUnmet,
         denied: loop.deniedTasks,
