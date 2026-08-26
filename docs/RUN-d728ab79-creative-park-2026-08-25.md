@@ -1,5 +1,27 @@
 # RUN `d728ab79` — a compiler rejection parked the run behind a question nobody asked
 
+> [!IMPORTANT]
+> **Final status update — 2026-08-26:** the compiler park described below was an
+> intermediate state, not this run's terminal outcome. The run later completed its
+> planning, design, and build work, then **failed before the sealed scorer ran** when
+> `docker image inspect bakeoff-scorer:1` returned an invalid usage shape / exit `-1`.
+> [`results/verdict.md`](../dashboard/runs/run-2026-08-25T10-30-39-122Z-d728ab79/results/verdict.md)
+> therefore says **NO VERDICT WAS REACHED**, and
+> [`results/creative-status.json`](../dashboard/runs/run-2026-08-25T10-30-39-122Z-d728ab79/results/creative-status.json)
+> records `heldOutPass: null`. No sealed score or Taste Critic result exists for this
+> run. At `ba8ae81`, executable scorer readiness is verified by tests and a live
+> Chromium launch/close under the sealed scorer image. Gate-only recovery remains
+> unimplemented, and no controlled replacement has run; the readiness barrier does
+> not retroactively establish a pass or verdict.
+> The readiness evidence is scorer-runtime `9/9`, dashboard readiness/pre-spend
+> `14/14`, and a live smoke at the exact digest recorded in [STATE.md](STATE.md),
+> with fail-closed admission before direct writes/capture/spend and a fresh queue check.
+>
+> The remainder of this report preserves the measured earlier park and the local
+> fixes it motivated. Phrases such as “still parked at the time of writing” are
+> historical observations, not the current run state. For current repository state,
+> start with [STATE.md](STATE.md).
+
 2026-08-25. The WEB pilot's creative-contract author was called once, the deterministic
 compiler rejected its output, and the run parked `awaiting_input`. The dashboard then told the
 owner to type an answer into Chat and press Resume. There was no question. He typed one back,

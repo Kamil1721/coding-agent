@@ -1,12 +1,28 @@
 # HANDOVER — read this first
 
-> **SUPERSEDED FOR CURRENT WORK, 2026-08-16.** This file is the map of the
+> **CURRENT SOURCE OF TRUTH — 2026-08-26:** start with
+> **[`STATE.md`](STATE.md)**, then [CAPABILITIES.md](CAPABILITIES.md) and
+> [BACKLOG.md](BACKLOG.md). This handover is retained for historical measurements and
+> operational lessons; it is not the authority for the current commit, dirty tree,
+> latest run outcome, or implementation status.
+
+> **VERIFIED CODE BASELINE `ba8ae81`:** executable scorer readiness is verified in
+> tests and a live sealed Chromium smoke;
+> machine-check result surfaces are verified `8/8`. The latest real run remains
+> `d728ab79`, **NO VERDICT**, `heldOutPass: null`. The stable next step is
+> `BACKLOG.md` `SCORE-001`: a strict gate-recovery child or controlled replacement
+> with immutable source, the exact frozen suite/snapshot, and no builder/model/fixer
+> spend. Gate-only recovery is not implemented; the Taste Critic chain is unproven;
+> Enhancement Scout remains design-only. The pre-documentation measurement was five
+> commits ahead of `origin/main`; verify current branch/upstream state live rather than
+> carrying that number forward.
+
+> **HISTORICAL ROUTE, 2026-08-16; SUPERSEDED FOR CURRENT WORK.** This file is the map of the
 > 2026-07-30 session and is kept for its measurements, not for its state — its
 > test counts and its open list are both stale by two weeks. The live handoff is
-> **[`HANDOFF-2026-08-16-repair-lane.md`](HANDOFF-2026-08-16-repair-lane.md)**,
-> which carries the current baseline, the open decision that blocks the repair
-> lane, and the findings still outstanding. Read that one first; come back here
-> for the July measurements it does not repeat.
+> **[`HANDOFF-2026-08-16-repair-lane.md`](HANDOFF-2026-08-16-repair-lane.md)**.
+> That dated handoff is also historical; use it only for measurements not repeated
+> in the living documents above.
 
 
 Written 2026-07-30 at the end of a three-day session. **Its job is to stop the next
