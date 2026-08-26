@@ -844,6 +844,14 @@ export interface RunPlanUnreadable {
 
 export type RunPlanProjection = RunPlanState | RunPlanUnreadable;
 
+export interface GateRecoveryProjection {
+  readonly sourceRunId: string;
+  readonly state: "prepared" | "staging" | "ready_to_score" | "scoring" | "finalizing" | "completed" | "infra_failed";
+  readonly artifactSha256: string | null;
+  readonly artifactDigestSemantics: "recovery-time-scorer-visible-snapshot";
+  readonly tasteCritic: "not_run_gate_only";
+}
+
 export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: RunPhase;
@@ -854,6 +862,8 @@ export interface RunDetail extends RunSummary {
    * both shapes.
    */
   readonly plan?: RunPlanProjection | null;
+  /** Present only for a controller-owned gate-only recovery child. */
+  readonly gateRecovery?: GateRecoveryProjection | null;
   readonly criteria: readonly RunCriterion[];
   /**
    * The twelve machine gates, or `null` when this run never reached them.

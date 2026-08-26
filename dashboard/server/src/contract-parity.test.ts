@@ -719,6 +719,7 @@ const DETAIL_SHAPES: readonly {
       "ticketText",
       "phase",
       "plan",
+      "gateRecovery",
       "criteria",
       "machineChecks",
       "tokens",
@@ -773,6 +774,11 @@ const DETAIL_SHAPES: readonly {
     server: "ApiRunPlanUnreadable",
     client: "RunPlanUnreadable",
     fields: ["kind", "detail"],
+  },
+  {
+    server: "ApiGateRecoveryProjection",
+    client: "GateRecoveryProjection",
+    fields: ["sourceRunId", "state", "artifactSha256", "artifactDigestSemantics", "tasteCritic"],
   },
   {
     server: "ApiCriterion",

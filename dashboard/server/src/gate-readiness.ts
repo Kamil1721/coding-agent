@@ -34,6 +34,8 @@ export interface GateReadinessResult {
   readonly detail: string;
   readonly remediation: string;
   readonly checkedAt: string | null;
+  /** Exact daemon-resolved image identity. Present only on a successful measured probe. */
+  readonly scorerImageDigest?: string;
 }
 
 /** A fresh-check port shared by HTTP and the orchestrator. */
@@ -134,6 +136,7 @@ export class FreshGateReadiness implements GateReadiness {
           `Playwright ${result.smoke.playwrightVersion}`,
         remediation: "No action required.",
         checkedAt: this.#now().toISOString(),
+        scorerImageDigest: result.imageDigest,
       };
     } catch (error) {
       if (signal?.aborted) throw signal.reason ?? error;

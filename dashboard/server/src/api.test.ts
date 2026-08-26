@@ -609,6 +609,48 @@ test("cancel and resume answer honestly, including when they refuse", async () =
   }
 });
 
+test("gate recovery rejects cross-origin, non-JSON, and malformed JSON requests before recovery work", async () => {
+  const harness = await startHarness(true);
+  try {
+    const runId = "gate-recovery-boundary";
+    harness.store.createRun({
+      runId,
+      ticketId: "t-gate-recovery-boundary",
+      ticketTitle: "gate recovery boundary",
+      ticketText: "exercise only the HTTP boundary",
+      ticketSha256: "a".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+    });
+    const endpoint = `${harness.base}/api/runs/${runId}/gate-recovery`;
+    const crossOrigin = await fetch(endpoint, {
+      method: "POST",
+      headers: { ...DASHBOARD_WRITE_HEADERS, Origin: "http://127.0.0.1:4321" },
+      body: JSON.stringify({ clientRequestId: "boundary-1" }),
+    });
+    assert.equal(crossOrigin.status, 403);
+    const plain = await fetch(endpoint, {
+      method: "POST",
+      headers: { ...DASHBOARD_WRITE_HEADERS, "Content-Type": "text/plain" },
+      body: JSON.stringify({ clientRequestId: "boundary-1" }),
+    });
+    assert.equal(plain.status, 415);
+    const malformed = await fetch(endpoint, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: '{"clientRequestId":',
+    });
+    assert.equal(malformed.status, 400);
+    assert.equal(((await malformed.json()) as ApiErrorResponse).error, "invalid_body");
+    assert.equal(harness.store.gateRecovery(runId, "boundary-1"), null);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("Send and Steer are explicit, and a parked Steer stays pending for a safe boundary", async () => {
   const harness = await startHarness(true);
   try {

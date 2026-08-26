@@ -30,6 +30,7 @@ import { RunEventBus } from "./bus.js";
 import { LOOPBACK_HOST, parsePort } from "./dashboard-url.js";
 import { RunStore } from "./db.js";
 import { FreshGateReadiness } from "./gate-readiness.js";
+import { GateRecoveryController } from "./gate-recovery.js";
 import { CONTEXT7_PILOT_PROJECT_ID } from "./context7-pipeline.js";
 import { CREATIVE_PILOT_PROJECT_ID } from "./creative-pilot.js";
 import { assertLoopback, createDashboardServer } from "./http.js";
@@ -64,6 +65,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // wait. Sharing the adapter keeps both checks on the same paths, environment
   // and configured scorer image while each call still performs fresh work.
   const gateReadiness = new FreshGateReadiness({ paths, env });
+  const gateRecovery = new GateRecoveryController({ store, paths, readiness: gateReadiness, env });
   const catalog = new ModelCatalog(auth, env);
   const preview = new PreviewHost();
   /*
@@ -220,6 +222,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // every started project alive after this process exits.
   const projects = new ProjectRunner({ paths, env });
 
+  // Reconcile controller-owned recovery children before opening the HTTP
+  // listener. Otherwise a replay can race boot recovery through the same CAS.
+  await gateRecovery.reconcileOnBoot();
+
   const server = createDashboardServer({
     store,
     bus,
@@ -229,6 +235,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     paths,
     env,
     gateReadiness,
+    gateRecovery,
     projects,
     // WITHOUT THIS FIELD EVERY `POST /api/supervisor/*` ANSWERS 503 AND EVERY GET
     // ANSWERS `probe.wired: false`. It is the evidence that something on this

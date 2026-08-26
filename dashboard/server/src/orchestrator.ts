@@ -1496,6 +1496,7 @@ export class Orchestrator {
     runId: string,
     message: { text: string; images: readonly string[]; seq: number; delivery: Delivery },
   ): boolean {
+    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
     const channel = this.#liveInputs.get(runId);
     if (channel === undefined || channel.closed) return false;
     return channel.push(message, message.delivery, () => {
@@ -1526,6 +1527,7 @@ export class Orchestrator {
    * that very answer.
    */
   deliverPlanReply(runId: string): boolean {
+    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
     return this.#plan.deliver(runId);
   }
 
@@ -1546,6 +1548,7 @@ export class Orchestrator {
    * `matchDirectionReference` stopped reading one as a direction.
    */
   deliverDesignRequest(runId: string): boolean {
+    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
     return this.#design.deliver(runId);
   }
 
@@ -1728,6 +1731,7 @@ export class Orchestrator {
    * before any of it.
    */
   cancel(runId: string): boolean {
+    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
     this.#plan.clearTimer(runId);
@@ -1759,6 +1763,7 @@ export class Orchestrator {
    * different conditions.
    */
   resume(runId: string, chosenMockup: string | null = null, chosenDirection: string | null = null): boolean {
+    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
     // SAME SHAPE, SAME SILENCE. Passing this guard on a running row requeues it
@@ -1955,6 +1960,10 @@ export class Orchestrator {
    */
   reconcileOnBoot(): void {
     for (const row of this.#deps.store.listByStatus("running")) {
+      // Gate-recovery children are owned by GateRecoveryController's durable
+      // protocol and were reconciled before this method. Requeueing one would
+      // invoke the normal builder/fixer path and violate the gate-only boundary.
+      if (this.#deps.store.isGateRecoveryTarget(row.runId)) continue;
       /*
        * THE INTERRUPTED CLASS, AND THE LARGEST "NOT SELF-MAINTAINING" HOLE IN
        * THIS SYSTEM UNTIL 2026-08-05.
@@ -2031,6 +2040,7 @@ export class Orchestrator {
     // exit, and the run waits for a click that a cron submission was never going
     // to produce.
     for (const row of this.#deps.store.listByStatus("awaiting_input")) {
+      if (this.#deps.store.isGateRecoveryTarget(row.runId)) continue;
       const paths = runPathsFor(this.#deps.paths, row.runId);
       /*
        * THE PLAN PARK IS RECONCILED FIRST, AND WITHOUT THIS BRANCH IT IS AN
@@ -2072,6 +2082,7 @@ export class Orchestrator {
     // refusal-time path, where the off-reason IS the thing worth saying.
     if (this.#recoveryEnabled("throttled")) {
       for (const row of this.#deps.store.listByStatus("rate_limited")) {
+        if (this.#deps.store.isGateRecoveryTarget(row.runId)) continue;
         /*
          * RE-ARMED FOR THE REMAINDER: the row's ORIGINAL `rateLimitedAt` goes in,
          * so a dashboard that restarts every few minutes cannot push the deadline

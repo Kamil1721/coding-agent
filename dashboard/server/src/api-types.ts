@@ -1162,11 +1162,23 @@ export interface ApiRunPlanUnreadable {
 
 export type ApiRunPlanProjection = ApiRunPlanState | ApiRunPlanUnreadable;
 
+/** Durable provenance for an ordinary run row owned by gate-only recovery. */
+export interface ApiGateRecoveryProjection {
+  readonly sourceRunId: string;
+  readonly state: "prepared" | "staging" | "ready_to_score" | "scoring" | "finalizing" | "completed" | "infra_failed";
+  /** Recovery-time scorer-visible snapshot digest; never a terminal-time claim. */
+  readonly artifactSha256: string | null;
+  readonly artifactDigestSemantics: "recovery-time-scorer-visible-snapshot";
+  readonly tasteCritic: "not_run_gate_only";
+}
+
 export interface RunDetail extends RunSummary {
   readonly ticketText: string;
   readonly phase: ApiPhase;
   /** Missing/null for legacy runs without a readable durable plan record. */
   readonly plan?: ApiRunPlanProjection | null;
+  /** Null on every ordinary run; present on the controller-owned recovery child. */
+  readonly gateRecovery?: ApiGateRecoveryProjection | null;
   readonly criteria: readonly ApiCriterion[];
   /**
    * The twelve machine gates, or `null` when this run never reached them.

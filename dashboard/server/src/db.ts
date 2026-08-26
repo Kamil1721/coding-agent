@@ -381,6 +381,79 @@ export interface RunContinuation {
   readonly createdAt: string;
 }
 
+/** One durable idempotency receipt for an isolated gate-only recovery. */
+export type GateRecoveryState =
+  | "prepared"
+  | "staging"
+  | "ready_to_score"
+  | "scoring"
+  | "finalizing"
+  | "completed"
+  | "infra_failed";
+
+/** Initial recovery plus one fresh-key retry after an attributable infrastructure failure. */
+export const GATE_RECOVERY_MAX_ATTEMPTS_PER_SOURCE = 2;
+
+export interface GateRecoveryRow {
+  readonly sourceRunId: string;
+  readonly clientRequestId: string;
+  readonly payloadSha256: string;
+  readonly targetRunId: string;
+  /** Recovery-time scorer-visible workspace digest, never a terminal-time claim. */
+  readonly sourceArtifactSha256: string | null;
+  readonly targetArtifactSha256: string | null;
+  readonly ticketSha256: string;
+  readonly suiteSha256: string;
+  readonly state: GateRecoveryState;
+  readonly protocolVersion: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly scoringStartedAt: string | null;
+  readonly completedAt: string | null;
+  readonly terminalError: string | null;
+}
+
+export type GateRecoveryClaim =
+  | { readonly kind: "created"; readonly recovery: GateRecoveryRow; readonly target: RunRow }
+  | { readonly kind: "replay"; readonly recovery: GateRecoveryRow; readonly target: RunRow }
+  | { readonly kind: "conflict"; readonly recovery: GateRecoveryRow; readonly target: RunRow }
+  | { readonly kind: "source_blocked"; readonly recovery: GateRecoveryRow; readonly target: RunRow };
+
+export interface NewGateRecovery {
+  readonly sourceRunId: string;
+  readonly clientRequestId: string;
+  readonly payloadSha256: string;
+  readonly target: NewRun;
+  readonly targetArtifactPath: string;
+  readonly ticketSha256: string;
+  readonly suiteSha256: string;
+  /** Criteria read from the just-verified frozen suite, never from mutable source projections. */
+  readonly criteria: readonly {
+    readonly id: string;
+    readonly statement: string;
+    readonly tier: ApiCriterion["tier"];
+  }[];
+  readonly createdAt: string;
+}
+
+export interface GateRecoveryFinalize {
+  readonly targetRunId: string;
+  readonly state: "completed" | "infra_failed";
+  readonly endedAt: string;
+  readonly status: "passed" | "failed";
+  readonly heldOutPass: boolean | null;
+  readonly falseFinish: boolean | null;
+  readonly failureReason: string | null;
+  readonly verdictPath: string | null;
+  readonly gateStopReason: StopReason;
+  readonly criteria: readonly {
+    readonly criterionId: string;
+    readonly result: ApiCriterionResult;
+    readonly detail: string | null;
+  }[];
+  readonly screenshots: readonly ApiScreenshot[];
+}
+
 /* -------------------------------------------------------------------------
  * Narrowing helpers
  *
@@ -628,6 +701,18 @@ const PHASES: readonly ApiPhase[] = ["plan", "spec", "build", "review", "gate", 
 const PROVIDERS: readonly ApiProvider[] = ["anthropic", "openai"];
 const TIERS: readonly ApiCriterionTier[] = ["BLOCKING", "FUNCTIONAL", "QUALITY"];
 const CRITERION_RESULTS: readonly ApiCriterionResult[] = ["pass", "fail", "pending"];
+const GATE_RECOVERY_STATES: readonly GateRecoveryState[] = [
+  "prepared",
+  "staging",
+  "ready_to_score",
+  "scoring",
+  "finalizing",
+  "completed",
+  "infra_failed",
+];
+const GATE_RECOVERY_SELECT_COLUMNS = `source_run_id, client_request_id, payload_sha256, target_run_id,
+  source_artifact_sha256, target_artifact_sha256, ticket_sha256, suite_sha256, state,
+  protocol_version, created_at, updated_at, scoring_started_at, completed_at, terminal_error`;
 /**
  * THE SEAT VOCABULARY IS IMPORTED, NOT RETYPED — the one list above that is.
  *
@@ -859,6 +944,28 @@ CREATE TABLE IF NOT EXISTS run_continuations (
   target_run_id    TEXT NOT NULL UNIQUE,
   created_at       TEXT NOT NULL,
   PRIMARY KEY (source_run_id, owner_message_seq)
+) WITHOUT ROWID;
+
+/* Gate-only recovery has its own identity and lineage. It deliberately does
+ * not overload chat continuations: no owner message, builder, or reopened
+ * source exists on this path. */
+CREATE TABLE IF NOT EXISTS gate_recoveries (
+  source_run_id          TEXT NOT NULL,
+  client_request_id      TEXT NOT NULL CHECK (length(client_request_id) BETWEEN 1 AND 128),
+  payload_sha256         TEXT NOT NULL CHECK (length(payload_sha256) = 64 AND payload_sha256 NOT GLOB '*[^0-9a-f]*'),
+  target_run_id          TEXT NOT NULL UNIQUE,
+  source_artifact_sha256 TEXT CHECK (source_artifact_sha256 IS NULL OR (length(source_artifact_sha256) = 64 AND source_artifact_sha256 NOT GLOB '*[^0-9a-f]*')),
+  target_artifact_sha256 TEXT CHECK (target_artifact_sha256 IS NULL OR (length(target_artifact_sha256) = 64 AND target_artifact_sha256 NOT GLOB '*[^0-9a-f]*')),
+  ticket_sha256          TEXT NOT NULL CHECK (length(ticket_sha256) = 64 AND ticket_sha256 NOT GLOB '*[^0-9a-f]*'),
+  suite_sha256           TEXT NOT NULL CHECK (length(suite_sha256) = 64 AND suite_sha256 NOT GLOB '*[^0-9a-f]*'),
+  state                  TEXT NOT NULL CHECK (state IN ('prepared','staging','ready_to_score','scoring','finalizing','completed','infra_failed')),
+  protocol_version       INTEGER NOT NULL CHECK (protocol_version = 1),
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  scoring_started_at     TEXT,
+  completed_at           TEXT,
+  terminal_error         TEXT,
+  PRIMARY KEY (source_run_id, client_request_id)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS seat_spend (
@@ -1260,6 +1367,309 @@ export class RunStore {
     return created;
   }
 
+  /* ---- isolated gate recovery -------------------------------------- */
+
+  gateRecovery(sourceRunId: string, clientRequestId: string): GateRecoveryRow | null {
+    const row = this.#db
+      .prepare(
+        `SELECT ${GATE_RECOVERY_SELECT_COLUMNS}
+         FROM gate_recoveries WHERE source_run_id = ? AND client_request_id = ?`,
+      )
+      .get(sourceRunId, clientRequestId);
+    return row === undefined ? null : toGateRecoveryRow(row);
+  }
+
+  gateRecoveryForTarget(targetRunId: string): GateRecoveryRow | null {
+    const row = this.#db
+      .prepare(
+        `SELECT ${GATE_RECOVERY_SELECT_COLUMNS}
+         FROM gate_recoveries WHERE target_run_id = ?`,
+      )
+      .get(targetRunId);
+    return row === undefined ? null : toGateRecoveryRow(row);
+  }
+
+  listRunningGateRecoveries(): readonly { readonly recovery: GateRecoveryRow; readonly target: RunRow }[] {
+    const recoveries = this.#db
+      .prepare(
+        `SELECT g.source_run_id, g.client_request_id, g.payload_sha256, g.target_run_id,
+           g.source_artifact_sha256, g.target_artifact_sha256, g.ticket_sha256, g.suite_sha256,
+           g.state, g.protocol_version, g.created_at, g.updated_at, g.scoring_started_at,
+           g.completed_at, g.terminal_error
+         FROM gate_recoveries g WHERE EXISTS
+           (SELECT 1 FROM runs r WHERE r.run_id = g.target_run_id AND r.status = 'running')`,
+      )
+      .all()
+      .map(toGateRecoveryRow);
+    return recoveries.map((recovery) => {
+      const target = this.getRun(recovery.targetRunId);
+      if (target === null) throw new Error(`gate recovery target ${recovery.targetRunId} vanished`);
+      return { recovery, target };
+    });
+  }
+
+  listIncompleteGateRecoveries(): readonly { readonly recovery: GateRecoveryRow; readonly target: RunRow }[] {
+    const recoveries = this.#db
+      .prepare(
+        `SELECT g.source_run_id, g.client_request_id, g.payload_sha256, g.target_run_id,
+           g.source_artifact_sha256, g.target_artifact_sha256, g.ticket_sha256, g.suite_sha256,
+           g.state, g.protocol_version, g.created_at, g.updated_at, g.scoring_started_at,
+           g.completed_at, g.terminal_error
+         FROM gate_recoveries g
+         WHERE g.state NOT IN ('completed', 'infra_failed')
+         ORDER BY g.created_at ASC`,
+      )
+      .all()
+      .map(toGateRecoveryRow);
+    return recoveries.map((recovery) => {
+      const target = this.getRun(recovery.targetRunId);
+      if (target === null) throw new Error(`gate recovery target ${recovery.targetRunId} vanished`);
+      return { recovery, target };
+    });
+  }
+
+  isGateRecoveryTarget(runId: string): boolean {
+    return this.#db.prepare("SELECT 1 AS found FROM gate_recoveries WHERE target_run_id = ?").get(runId) !== undefined;
+  }
+
+  /** Compare-and-swap the durable protocol state. */
+  transitionGateRecovery(
+    targetRunId: string,
+    from: GateRecoveryState,
+    to: GateRecoveryState,
+    at: string,
+    patch: {
+      readonly sourceArtifactSha256?: string;
+      readonly targetArtifactSha256?: string;
+      readonly scoringStartedAt?: string;
+      readonly completedAt?: string;
+      readonly terminalError?: string | null;
+    } = {},
+  ): GateRecoveryRow | null {
+    const sets = ["state = ?", "updated_at = ?"];
+    const values: SQLInputValue[] = [to, at];
+    const add = (column: string, value: SQLInputValue): void => {
+      sets.push(`${column} = ?`);
+      values.push(value);
+    };
+    if (patch.sourceArtifactSha256 !== undefined) add("source_artifact_sha256", patch.sourceArtifactSha256);
+    if (patch.targetArtifactSha256 !== undefined) add("target_artifact_sha256", patch.targetArtifactSha256);
+    if (patch.scoringStartedAt !== undefined) add("scoring_started_at", patch.scoringStartedAt);
+    if (patch.completedAt !== undefined) add("completed_at", patch.completedAt);
+    if (patch.terminalError !== undefined) {
+      add("terminal_error", patch.terminalError === null ? null : redactForPersistence(patch.terminalError));
+    }
+    values.push(targetRunId, from);
+    const result = this.#db
+      .prepare(`UPDATE gate_recoveries SET ${sets.join(", ")} WHERE target_run_id = ? AND state = ?`)
+      .run(...values);
+    return result.changes === 1 ? this.gateRecoveryForTarget(targetRunId) : null;
+  }
+
+  /** The only durable transition that grants permission to invoke gate.score. */
+  claimGateRecoveryScoring(targetRunId: string, at: string): GateRecoveryRow | null {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const changed = this.#db
+        .prepare(
+          `UPDATE gate_recoveries SET state = 'scoring', scoring_started_at = ?, updated_at = ?
+           WHERE target_run_id = ? AND state = 'ready_to_score'`,
+        )
+        .run(at, at, targetRunId);
+      if (changed.changes !== 1) {
+        this.#db.exec("COMMIT");
+        return null;
+      }
+      this.updateRun(targetRunId, { gateAttempts: 1 });
+      const recovery = this.gateRecoveryForTarget(targetRunId);
+      this.#db.exec("COMMIT");
+      return recovery;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Claim one recovery and create its child in one IMMEDIATE transaction.
+   *
+   * The child is born RUNNING in GATE, never QUEUED. The ordinary orchestrator
+   * therefore has no observable state in which it can claim this row. Frozen
+   * criteria are inserted under the same lock so every later score update is
+   * child-owned and does not trust a mutable source projection.
+   */
+  claimGateRecovery(input: NewGateRecovery): GateRecoveryClaim {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.gateRecovery(input.sourceRunId, input.clientRequestId);
+      if (existing !== null) {
+        const target = this.getRun(existing.targetRunId);
+        if (target === null) {
+          throw new BakeoffError(
+            "invalid_usage_shape",
+            `gate recovery target ${existing.targetRunId} is missing`,
+            "Do not create another child under the same idempotency key; repair the database lineage first.",
+          );
+        }
+        this.#db.exec("COMMIT");
+        return {
+          kind: existing.payloadSha256 === input.payloadSha256 ? "replay" : "conflict",
+          recovery: existing,
+          target,
+        };
+      }
+
+      const priorRecoveries = this.#db.prepare(
+        `SELECT ${GATE_RECOVERY_SELECT_COLUMNS}
+         FROM gate_recoveries WHERE source_run_id = ?
+         ORDER BY created_at DESC`,
+      ).all(input.sourceRunId).map(toGateRecoveryRow);
+      const blockingRecovery = priorRecoveries.find((row) => row.state !== "infra_failed") ??
+        (priorRecoveries.length >= GATE_RECOVERY_MAX_ATTEMPTS_PER_SOURCE ? priorRecoveries[0] : undefined);
+      if (blockingRecovery !== undefined) {
+        const recovery = blockingRecovery;
+        const target = this.getRun(recovery.targetRunId);
+        if (target === null) throw new Error(`gate recovery target ${recovery.targetRunId} vanished`);
+        this.#db.exec("COMMIT");
+        return { kind: "source_blocked", recovery, target };
+      }
+
+      const source = this.getRun(input.sourceRunId);
+      if (
+        source === null || source.status !== "failed" || source.heldOutPass !== null ||
+        source.falseFinish !== null || source.gateStopReason !== "infra" ||
+        !source.agentDeclaredDone || source.ticketSha256 !== input.ticketSha256 ||
+        source.suiteSha256 !== input.suiteSha256
+      ) {
+        throw new BakeoffError(
+          "invalid_usage_shape",
+          `source run ${input.sourceRunId} changed before the gate recovery could be claimed`,
+          "Re-read the source run. Recovery is allowed only while its failed/no-verdict infra identity is unchanged.",
+        );
+      }
+
+      this.createRun(input.target);
+      const target = this.updateRun(input.target.runId, {
+        status: "running",
+        phase: "gate",
+        queuePosition: null,
+        agentDeclaredDone: true,
+        artifactPath: input.targetArtifactPath,
+        suiteSha256: input.suiteSha256,
+        gateAttempts: 0,
+        gateStopReason: "infra",
+      });
+      const insertCriterion = this.#db.prepare(
+        `INSERT INTO criteria (run_id, criterion_id, ordinal, statement, tier, result, detail)
+         VALUES (?, ?, ?, ?, ?, 'pending', NULL)`,
+      );
+      for (const [ordinal, criterion] of input.criteria.entries()) {
+        insertCriterion.run(input.target.runId, criterion.id, ordinal, criterion.statement, criterion.tier);
+      }
+      this.#db
+        .prepare(
+          `INSERT INTO gate_recoveries
+             (source_run_id, client_request_id, payload_sha256, target_run_id, ticket_sha256,
+              suite_sha256, state, protocol_version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'prepared', 1, ?, ?)`,
+        )
+        .run(
+          input.sourceRunId,
+          input.clientRequestId,
+          input.payloadSha256,
+          input.target.runId,
+          input.ticketSha256,
+          input.suiteSha256,
+          input.createdAt,
+          input.createdAt,
+        );
+      const recovery = this.gateRecovery(input.sourceRunId, input.clientRequestId);
+      if (recovery === null) throw new Error("gate recovery vanished after insert");
+      this.appendEvent(input.target.runId, { type: "phase", phase: "gate" });
+      this.appendEvent(input.target.runId, {
+        type: "log",
+        level: "info",
+        text:
+          `gate-only recovery child of ${input.sourceRunId}; copied recovery-time snapshot only. ` +
+          "No builder, fixer, model, critic, Context7, judge, adversary, or publisher is allowed on this run.",
+      });
+      this.appendEvent(input.target.runId, { type: "status", status: "running" });
+      this.#db.exec("COMMIT");
+      return { kind: "created", recovery, target };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Recovery-specific terminal commit. Files are written before this call;
+   * every child-owned DB surface and the lineage terminal state move together.
+   * The terminal status event is appended last.
+   */
+  finalizeGateRecovery(input: GateRecoveryFinalize): RunRow {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const recovery = this.gateRecoveryForTarget(input.targetRunId);
+      if (recovery === null || recovery.state !== "finalizing") {
+        throw new BakeoffError(
+          "invalid_usage_shape",
+          `gate recovery ${input.targetRunId} is not ready to finalize`,
+          "Only the recovery controller that owns finalizing may commit a terminal child.",
+        );
+      }
+      for (const criterion of input.criteria) {
+        this.setCriterionResult(input.targetRunId, criterion.criterionId, criterion.result, criterion.detail);
+        this.appendEvent(input.targetRunId, {
+          type: "criterion",
+          id: criterion.criterionId,
+          result: criterion.result,
+        });
+      }
+      for (const shot of input.screenshots) {
+        this.addScreenshot(input.targetRunId, shot);
+        this.appendEvent(input.targetRunId, { type: "screenshot", path: shot.path, label: shot.label });
+      }
+      this.appendEvent(input.targetRunId, {
+        type: "log",
+        level: input.state === "completed" ? "info" : "error",
+        text: input.state === "completed"
+          ? "gate-only recovery finished; Taste Critic was not run because this path makes no model calls"
+          : `gate-only recovery ended with no held-out verdict: ${input.failureReason ?? "no error recorded"}`,
+      });
+      if (input.verdictPath !== null) {
+        this.appendEvent(input.targetRunId, {
+          type: "verdict",
+          verdictPath: input.verdictPath,
+          inferredCriteria: 0,
+        });
+      }
+      const target = this.updateRun(input.targetRunId, {
+        status: input.status,
+        phase: "done",
+        queuePosition: null,
+        endedAt: input.endedAt,
+        heldOutPass: input.heldOutPass,
+        falseFinish: input.falseFinish,
+        failureReason: input.failureReason,
+        ...(input.verdictPath === null ? {} : { verdictPath: input.verdictPath }),
+        gateStopReason: input.gateStopReason,
+      });
+      const changed = this.transitionGateRecovery(input.targetRunId, "finalizing", input.state, input.endedAt, {
+        completedAt: input.endedAt,
+        terminalError: input.failureReason,
+      });
+      if (changed === null) throw new Error("gate recovery terminal transition lost its finalizing claim");
+      // LAST: clients reacting to terminal status already observe every surface above.
+      this.appendEvent(input.targetRunId, { type: "status", status: input.status });
+      this.#db.exec("COMMIT");
+      return target;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   getRun(runId: string): RunRow | null {
     const row = this.#db.prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE run_id = ?`).get(runId);
     return row === undefined ? null : toRunRow(row);
@@ -1338,7 +1748,12 @@ export class RunStore {
   /** Queued runs, oldest first — the order they will be executed in. */
   listQueued(): readonly RunRow[] {
     const rows = this.#db
-      .prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE status = 'queued' ORDER BY started_at ASC, rowid ASC`)
+      .prepare(
+        `SELECT ${RUN_COLUMNS} FROM runs
+         WHERE status = 'queued'
+           AND NOT EXISTS (SELECT 1 FROM gate_recoveries g WHERE g.target_run_id = runs.run_id)
+         ORDER BY started_at ASC, rowid ASC`,
+      )
       .all();
     return rows.map(toRunRow);
   }
@@ -2484,6 +2899,26 @@ function toMeteredSpendRow(row: Row): ApiMeteredSpend {
     // `numOrNull`, and the null is the field's meaning rather than a missing
     // value: an image call is billed per call and has no duration at all.
     deliveredSecondsFloor: numOrNull(row, "delivered_seconds_floor"),
+  };
+}
+
+function toGateRecoveryRow(row: Row): GateRecoveryRow {
+  return {
+    sourceRunId: str(row, "source_run_id"),
+    clientRequestId: str(row, "client_request_id"),
+    payloadSha256: str(row, "payload_sha256"),
+    targetRunId: str(row, "target_run_id"),
+    sourceArtifactSha256: strOrNull(row, "source_artifact_sha256"),
+    targetArtifactSha256: strOrNull(row, "target_artifact_sha256"),
+    ticketSha256: str(row, "ticket_sha256"),
+    suiteSha256: str(row, "suite_sha256"),
+    state: oneOf(GATE_RECOVERY_STATES, str(row, "state"), "gate recovery state"),
+    protocolVersion: num(row, "protocol_version"),
+    createdAt: str(row, "created_at"),
+    updatedAt: str(row, "updated_at"),
+    scoringStartedAt: strOrNull(row, "scoring_started_at"),
+    completedAt: strOrNull(row, "completed_at"),
+    terminalError: strOrNull(row, "terminal_error"),
   };
 }
 

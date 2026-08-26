@@ -194,6 +194,11 @@ import type { AuthProbe } from "./auth.js";
 import { GateProbe } from "./health-gate.js";
 import { FreshGateReadiness, checkGateReadinessFresh } from "./gate-readiness.js";
 import type { GateReadiness, GateReadinessResult } from "./gate-readiness.js";
+import {
+  GateRecoveryController,
+  GateRecoveryRefusal,
+  validateGateRecoveryRequest,
+} from "./gate-recovery.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import { isTerminal } from "./db.js";
@@ -499,6 +504,8 @@ export interface HttpDeps {
    * queued start can recheck after an arbitrary wait.
    */
   readonly gateReadiness?: GateReadiness;
+  /** Isolated scorer-only lane; production passes the boot-reconciled instance. */
+  readonly gateRecovery?: GateRecoveryController;
   /**
    * How a page named in a ticket gets captured. Defaults to real chromium.
    *
@@ -568,6 +575,7 @@ export interface HttpDeps {
 interface ResolvedHttpDeps extends HttpDeps {
   readonly gate: GateProbe;
   readonly gateReadiness: GateReadiness;
+  readonly gateRecovery: GateRecoveryController;
   readonly projects: ProjectRunner;
   /** The boot arm check's verdict, carried onto every supervisor response. */
   readonly supervisorArm: { readonly armed: boolean; readonly armNote: string };
@@ -798,6 +806,18 @@ function toDetail(
     ticketText: row.ticketText,
     phase: row.phase,
     plan: planStateOf(results, env),
+    gateRecovery: (() => {
+      const recovery = store.gateRecoveryForTarget(row.runId);
+      return recovery === null
+        ? null
+        : {
+            sourceRunId: recovery.sourceRunId,
+            state: recovery.state,
+            artifactSha256: recovery.targetArtifactSha256,
+            artifactDigestSemantics: "recovery-time-scorer-visible-snapshot" as const,
+            tasteCritic: "not_run_gate_only" as const,
+          };
+    })(),
     criteria: store.listCriteria(row.runId),
     /*
      * THE OTHER HALF OF THE GRADE, AND IT HAD NO ROUTE TO THE SCREEN AT ALL.
@@ -2368,14 +2388,19 @@ async function supervisorCommand(
 
 
 export function createDashboardServer(deps: HttpDeps): Server {
+  const gateReadiness = deps.gateReadiness ?? new FreshGateReadiness({ paths: deps.paths, env: deps.env ?? process.env });
   const resolved: ResolvedHttpDeps = {
     ...deps,
     gate:
       deps.gate ??
       new GateProbe({ paths: deps.paths, env: deps.env ?? process.env }),
-    gateReadiness:
-      deps.gateReadiness ??
-      new FreshGateReadiness({ paths: deps.paths, env: deps.env ?? process.env }),
+    gateReadiness,
+    gateRecovery: deps.gateRecovery ?? new GateRecoveryController({
+      store: deps.store,
+      paths: deps.paths,
+      readiness: gateReadiness,
+      env: deps.env ?? process.env,
+    }),
     // A DEFAULT RUNNER SPAWNS NOTHING until a route asks it to, so building one
     // for a server that never serves `/api/projects` costs an object.
     projects: deps.projects ?? new ProjectRunner({ paths: deps.paths, env: deps.env ?? process.env }),
@@ -2713,6 +2738,19 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
     return;
   }
 
+  /* Recovery children are controller-owned. No public write may reopen,
+   * relabel, message, design, cancel, resume, or publish one. */
+  if (method === "POST" && segments[3] !== "gate-recovery" && deps.store.isGateRecoveryTarget(runId)) {
+    sendError(
+      response,
+      409,
+      "gate_recovery_target_controller_owned",
+      `run ${runId} is a gate-only recovery child and cannot accept ordinary run commands`,
+      "Use the source run's gate-recovery endpoint with the same clientRequestId to read its durable result.",
+    );
+    return;
+  }
+
   /* POST /api/runs/:id/messages — say something to a run that is already going.
    *
    * Accepts `{ text, images?, documents? }` as JSON, both arrays of data URLs.
@@ -2735,6 +2773,42 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
       return;
     }
     await postMessage(deps, runId, row, request, response);
+    return;
+  }
+
+  // POST /api/runs/:sourceRunId/gate-recovery
+  if (segments.length === 4 && segments[3] === "gate-recovery" && method === "POST") {
+    if (!originIsDashboardOwner(request.headers.origin)) {
+      sendError(
+        response,
+        403,
+        "cross_origin_write",
+        "gate recovery may only come from the dashboard's exact origin",
+        null,
+      );
+      return;
+    }
+    if (!requestIsJson(request)) {
+      sendError(response, 415, "unsupported_media_type", "POST a JSON body with Content-Type: application/json", null);
+      return;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await readBody(request));
+    } catch {
+      sendError(response, 400, "invalid_body", "the body is not valid JSON", "POST {\"clientRequestId\":\"…\"}.");
+      return;
+    }
+    try {
+      const result = await deps.gateRecovery.recover(runId, validateGateRecoveryRequest(payload));
+      sendJson(response, result.replayed ? 200 : 201, result);
+    } catch (error) {
+      if (error instanceof GateRecoveryRefusal) {
+        sendError(response, error.status, error.code, error.message, error.remediation);
+        return;
+      }
+      throw error;
+    }
     return;
   }
 
