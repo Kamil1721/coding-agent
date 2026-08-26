@@ -51,19 +51,27 @@
 
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { get } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
+import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
+import {
+  SCORER_IMAGE_INSPECT_TIMEOUT_MS,
+  SCORER_RUNTIME_PROBE_TIMEOUT_MS,
+} from "bakeoff/dist/scorer.js";
 import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { createDashboardServer } from "./http.js";
 import type { RunController } from "./http.js";
 import { ModelCatalog } from "./models.js";
+import { MOTION_BUDGET_MS, MOTION_PHASE_MS } from "./motion-capture.js";
 import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
+import { CAPTURE_BUDGET_MS } from "./site-capture.js";
 
 /**
  * The run whose workspace holds a site written the way THE OWNER'S BUILDS WRITE
@@ -85,11 +93,34 @@ const INDEX_MARKER = "PREVIEW_NEXT_INDEX_MARKER:the workshop hero";
 const CSS_MARKER = "PREVIEW_NEXT_CSS_MARKER";
 const JS_MARKER = "PREVIEW_NEXT_JS_MARKER";
 
+const FAKE_MODELS: readonly ModelInfo[] = [
+  {
+    value: "opus[1m]",
+    resolvedModel: "claude-opus-5[1m]",
+    displayName: "Opus (1M context)",
+    description: "",
+    supportsEffort: true,
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+  },
+];
+
 /** A PNG signature plus a few bytes, so an image can be compared byte-for-byte. */
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x0d, 0x49, 0x48]);
 
 /** `dashboard/`, from `dashboard/server/<outDir>/` at run time. */
 const DASHBOARD_DIR = join(import.meta.dirname, "..", "..");
+
+/**
+ * Read the setting out of the same config the child Next process evaluates.
+ * Keeping this source-level avoids a second 286-second integration wait while
+ * still making an undersized configured ceiling fail immediately.
+ */
+function configuredProxyTimeoutMs(): number {
+  const source = readFileSync(join(DASHBOARD_DIR, "next.config.ts"), "utf8");
+  const match = /proxyTimeout:\s*([\d_]+)/u.exec(source);
+  assert.ok(match?.[1] !== undefined, "next.config.ts has no numeric proxyTimeout");
+  return Number(match[1].replaceAll("_", ""));
+}
 
 /* -------------------------------------------------------------------------
  * The backend, exactly as `index.ts` wires it
@@ -98,6 +129,7 @@ const DASHBOARD_DIR = join(import.meta.dirname, "..", "..");
 interface Backend {
   readonly origin: string;
   readonly bus: RunEventBus;
+  readonly store: RunStore;
   close(): Promise<void>;
 }
 
@@ -174,10 +206,10 @@ async function startBackend(): Promise<Backend> {
   });
 
   const claudeBin = join(dir, "claude-stub");
-  writeFileSync(claudeBin, "#!/bin/sh\nexit 1\n", "utf8");
+  writeFileSync(claudeBin, '#!/bin/sh\necho \'{"loggedIn":true,"authMethod":"claude.ai"}\'\n', "utf8");
   chmodSync(claudeBin, 0o755);
   const auth = new AuthProbe({ claudeBin, codexBin: claudeBin, env: {} });
-  const catalog = new ModelCatalog(auth, {}, async () => []);
+  const catalog = new ModelCatalog(auth, {}, async () => FAKE_MODELS);
   const orchestrator: RunController = {
     pump: () => undefined,
     cancel: () => false,
@@ -185,7 +217,19 @@ async function startBackend(): Promise<Backend> {
     pushLiveMessage: () => false,
   };
 
-  const server = createDashboardServer({ store, bus, orchestrator, catalog, auth, paths });
+  const server = createDashboardServer({
+    store,
+    bus,
+    orchestrator,
+    catalog,
+    auth,
+    paths,
+    gateReadiness: READY_GATE_READINESS,
+    captureSite: async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 31_000));
+      return { ok: false, reason: "injected fail-soft capture after the proxy default" };
+    },
+  });
   await new Promise<void>((done) => {
     server.listen({ host: "127.0.0.1", port: 0 }, () => done());
   });
@@ -194,6 +238,7 @@ async function startBackend(): Promise<Backend> {
   return {
     origin: `http://127.0.0.1:${String(address.port)}`,
     bus,
+    store,
     close: async (): Promise<void> => {
       await new Promise<void>((done) => {
         server.closeAllConnections();
@@ -614,6 +659,46 @@ test("the rewrite still carries the ordinary API: a JSON route, and a refusal th
   assert.match(unknown.contentType, /^application\/json/, unknown.contentType);
   assert.equal((JSON.parse(unknown.body) as { error: string }).error, "unknown_run");
 });
+
+test("the proxy ceiling covers the named synchronous intake budget plus headroom", () => {
+  const namedSlowSuccessMs =
+    SCORER_IMAGE_INSPECT_TIMEOUT_MS +
+    SCORER_RUNTIME_PROBE_TIMEOUT_MS +
+    CAPTURE_BUDGET_MS +
+    MOTION_BUDGET_MS +
+    MOTION_PHASE_MS;
+  const requiredHeadroomMs = 60_000;
+  const configuredMs = configuredProxyTimeoutMs();
+
+  assert.ok(
+    configuredMs >= namedSlowSuccessMs + requiredHeadroomMs,
+    `${String(configuredMs)} ms does not cover ${String(namedSlowSuccessMs)} ms plus headroom`,
+  );
+});
+
+test(
+  "POST /api/runs can outlive Next's 30-second proxy default and still create its run",
+  { timeout: 45_000 },
+  async () => {
+    const { next } = origins();
+    assert.ok(backend !== null);
+    const startedAt = Date.now();
+    const response = await fetch(`${next}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticketText: "Build a page inspired by https://example.com/slow-reference.",
+        modelId: "opus[1m]",
+      }),
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.ok(elapsedMs > 30_000, `the injected capture returned too soon: ${String(elapsedMs)} ms`);
+    assert.equal(response.status, 201);
+    const { runId } = (await response.json()) as { runId: string };
+    assert.ok(backend.store.getRun(runId) !== null, `run ${runId} was not persisted`);
+  },
+);
 
 /**
  * The SSE stream, and TWO events rather than one, because of something this test

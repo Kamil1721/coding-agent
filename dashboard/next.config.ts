@@ -62,6 +62,17 @@ const distDir = process.env["NEXT_TEST_DIST_DIR"] ?? ".next";
 const nextConfig: NextConfig = {
   distDir,
 
+  experimental: {
+    // A live POST /api/runs performs scorer readiness, then site capture and
+    // motion capture sequentially. Their named slow-success bounds approach
+    // five minutes, so Next's 30,000 ms proxy default cannot carry the request.
+    // Six minutes keeps the wait finite while leaving headroom for overhead.
+    // Next applies this value to every external rewrite, so an accepted-but-
+    // silent API request also takes up to six minutes to fail. That is the
+    // narrow recovery trade-off until run intake acknowledges before capture.
+    proxyTimeout: 360_000,
+  },
+
   /**
    * THE PREVIEW LINK IS A DIRECTORY URL, AND NEXT USED TO EAT ITS TRAILING SLASH.
    *

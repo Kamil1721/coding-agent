@@ -947,7 +947,7 @@ async function resolveImageIdentityWithRunner(
     outcome = await runner(
       spec.dockerBin,
       ["image", "inspect", spec.imageRef, "--format", "{{.Id}}\t{{json .RepoDigests}}\t{{json .RepoTags}}"],
-      120_000,
+      SCORER_IMAGE_INSPECT_TIMEOUT_MS,
       dockerCliEnv(env),
       undefined,
       undefined,
@@ -970,7 +970,7 @@ async function resolveImageIdentityWithRunner(
   if (outcome.timedOut) {
     throw new BakeoffError(
       "invalid_usage_shape",
-      `docker image inspect ${spec.imageRef} exceeded its 120000 ms boundary`,
+      `docker image inspect ${spec.imageRef} exceeded its ${String(SCORER_IMAGE_INSPECT_TIMEOUT_MS)} ms boundary`,
       "Check that the Docker daemon is reachable and responsive, then retry. No scoring container was started.",
     );
   }
@@ -1002,6 +1002,9 @@ async function resolveImageIdentityWithRunner(
   }
   return { id, repoDigests: parseList(repoDigestsJson), repoTags: parseList(repoTagsJson) };
 }
+
+/** The named Docker image-inspection bound used by fresh scorer readiness. */
+export const SCORER_IMAGE_INSPECT_TIMEOUT_MS = 120_000;
 
 export const SCORER_RUNTIME_PROBE_TIMEOUT_MS = 30_000;
 
