@@ -15,6 +15,7 @@ not substitutes for this file.
 - Repository: `/Users/kamilborzecki/Projects/coding-agent`
 - Verified code baseline: `ba8ae81` on `main`.
 - Immediate predecessor: `e53f9f1`.
+- Documentation checkpoint: `31ea136`, pushed to `origin/main` on 2026-08-26.
 - Code-baseline commit chain, newest first:
   - `ba8ae81` — `fix(runtime): gate spend on executable scorer readiness`
   - `e53f9f1` — `test(dashboard): cover machine-check result surfaces`
