@@ -40,6 +40,7 @@ import { DESIGN_MOCKUP_LABEL, designLockPolicy, emptyDesignLockRecord, writeDesi
 import type { DesignLockRecord } from "./design-lock.js";
 import type { DesignLockedBy } from "./design-manifest.js";
 import { GateProbe } from "./health-gate.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { LOOPBACK_HOST, createDashboardServer, designLockInteractive } from "./http.js";
 import type { RunController } from "./http.js";
 import { CODEX_DEFAULT_MODEL_ID, ModelCatalog } from "./models.js";
@@ -181,6 +182,7 @@ async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
       paths,
       makeGate: () => Promise.reject(new Error("no docker in a routing test")),
     }),
+    gateReadiness: READY_GATE_READINESS,
   });
   await new Promise<void>((resolve) => server.listen({ host: LOOPBACK_HOST, port: 0 }, resolve));
   const address = server.address() as AddressInfo;

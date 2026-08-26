@@ -87,6 +87,7 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import type { MotionSpec } from "./motion-types.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
@@ -132,7 +133,7 @@ function harness(): Harness {
   const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
   const catalog = new ModelCatalog(auth, {}, async () => []);
   const preview = new PreviewHost();
-  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env: {} });
+  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env: {}, gateReadiness: READY_GATE_READINESS });
   return { dir, store, orchestrator, paths, cleanup: () => { store.close(); removeTree(dir); } };
 }
 

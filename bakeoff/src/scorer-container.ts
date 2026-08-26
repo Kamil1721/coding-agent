@@ -86,6 +86,11 @@ import {
   walkFiles,
 } from "./tier0.js";
 import type { DataExpectationResult, StartedProcess, StaticServer, WalkedFile } from "./tier0.js";
+import {
+  SCORER_RUNTIME_SMOKE_ARG,
+  formatScorerRuntimeSmoke,
+  runScorerRuntimeSmoke,
+} from "./scorer-runtime.js";
 
 /** Where the scorer's own pinned Playwright and config live inside the image. */
 const SCORER_HOME = "/opt/bakeoff-scorer";
@@ -1862,6 +1867,16 @@ function writeResult(result: ContainerResult): void {
 }
 
 async function main(): Promise<number> {
+  const entrypointArgs = process.argv.slice(2);
+  if (entrypointArgs.length > 0) {
+    if (entrypointArgs.length !== 1 || entrypointArgs[0] !== SCORER_RUNTIME_SMOKE_ARG) {
+      throw new Error(`unsupported scorer-container arguments: ${JSON.stringify(entrypointArgs)}`);
+    }
+    const payload = await runScorerRuntimeSmoke();
+    process.stdout.write(`${formatScorerRuntimeSmoke(payload)}\n`);
+    return 0;
+  }
+
   assertRunningInsideSealedContainer();
   const startedAt = new Date().toISOString();
   mkdirSync(CONTAINER_PATHS.out, { recursive: true });

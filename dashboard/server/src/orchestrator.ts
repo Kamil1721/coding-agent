@@ -347,6 +347,8 @@ import type {
   Context7ReviewRequest,
 } from "./context7-review.js";
 import { CONTEXT7_REVIEW_RECORD_FILE, writeContext7ReviewRecord } from "./context7-review-record.js";
+import { UNKNOWN_GATE_READINESS, checkGateReadinessFresh } from "./gate-readiness.js";
+import type { GateReadiness, GateReadinessResult } from "./gate-readiness.js";
 
 const exec = promisify(execFile);
 
@@ -535,6 +537,14 @@ export interface OrchestratorDeps {
   readonly auth: AuthProbe;
   readonly preview: PreviewHost;
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * Fresh, uncached scorer-runtime readiness at queue entry.
+   *
+   * Optional only for source compatibility with old harnesses. Absence resolves
+   * to `unknown` and therefore parks the run before spend; production wires one
+   * shared instance from `index.ts`, while execution tests must inject `ready`.
+   */
+  readonly gateReadiness?: GateReadiness;
   /**
    * How a provider becomes a driver. Defaulted to the two real ones.
    *
@@ -2137,6 +2147,40 @@ export class Orchestrator {
     const abort = new AbortController();
     this.#active.set(runId, { runId, abort });
     try {
+      /*
+       * RECHECK AFTER THE QUEUE WAIT, BEFORE `#execute` TOUCHES THE RUN.
+       *
+       * A direct POST may have proved readiness minutes or hours ago. The daemon
+       * and image can move while this row waits, so the cached health answer and
+       * the intake check are both historical by now. `#execute` begins by making
+       * directories, then marks `running`, opens an attempt and enters PLAN;
+       * this check is deliberately above all four. A refusal therefore consumes
+       * no attempt and cannot call a seat or builder.
+      */
+      let readiness: GateReadinessResult;
+      try {
+        readiness = await checkGateReadinessFresh(
+          this.#deps.gateReadiness ?? UNKNOWN_GATE_READINESS,
+          abort.signal,
+        );
+      } catch (error) {
+        if (!abort.signal.aborted) throw error;
+        if (abortReasonOf(abort.signal) === ABORT_CANCELLED) {
+          this.#finish(runId, "cancelled", { endedAt: new Date().toISOString(), queuePosition: null });
+        }
+        return;
+      }
+      if (abort.signal.aborted) {
+        if (abortReasonOf(abort.signal) === ABORT_CANCELLED) {
+          this.#finish(runId, "cancelled", { endedAt: new Date().toISOString(), queuePosition: null });
+        }
+        return;
+      }
+      if (this.#deps.store.getRun(runId)?.status !== "queued") return;
+      if (readiness.state !== "ready") {
+        this.#deferForGateReadiness(runId, readiness);
+        return;
+      }
       await this.#execute(runId, abort.signal);
     } catch (error) {
       // A throw that escapes #execute is a harness fault, not a model result.
@@ -2200,6 +2244,20 @@ export class Orchestrator {
       this.#active.delete(runId);
       this.pump();
     }
+  }
+
+  /** Park honestly and durably without classifying a creative/model failure. */
+  #deferForGateReadiness(runId: string, readiness: GateReadinessResult): void {
+    const row = this.#deps.store.getRun(runId);
+    if (row === null || row.status !== "queued") return;
+    this.#deps.store.updateRun(runId, { status: "awaiting_input", queuePosition: null });
+    this.#emit(runId, { type: "status", status: "awaiting_input" });
+    this.#emitLog(
+      runId,
+      "warn",
+      `deferred before any run attempt or model spend because scorer runtime readiness is ` +
+        `${readiness.state}: ${readiness.detail}. Fix: ${readiness.remediation}`,
+    );
   }
 
   async #execute(runId: string, signal: AbortSignal): Promise<void> {

@@ -192,6 +192,8 @@ import {
 import { foldGraphAll } from "./graph.js";
 import type { AuthProbe } from "./auth.js";
 import { GateProbe } from "./health-gate.js";
+import { FreshGateReadiness, checkGateReadinessFresh } from "./gate-readiness.js";
+import type { GateReadiness, GateReadinessResult } from "./gate-readiness.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import { isTerminal } from "./db.js";
@@ -489,6 +491,15 @@ export interface HttpDeps {
    */
   readonly gate?: GateProbe;
   /**
+   * The uncached scorer-runtime spend barrier.
+   *
+   * Distinct from `gate`: the health probe intentionally serves cached answers,
+   * while this port MUST start a fresh container smoke check for every direct
+   * submission. Production passes the same instance to the orchestrator so the
+   * queued start can recheck after an arbitrary wait.
+   */
+  readonly gateReadiness?: GateReadiness;
+  /**
    * How a page named in a ticket gets captured. Defaults to real chromium.
    *
    * THE SEAM EXISTS BECAUSE THE ALTERNATIVE IS AN UNTESTABLE ROUTE. `POST
@@ -556,6 +567,7 @@ export interface HttpDeps {
  */
 interface ResolvedHttpDeps extends HttpDeps {
   readonly gate: GateProbe;
+  readonly gateReadiness: GateReadiness;
   readonly projects: ProjectRunner;
   /** The boot arm check's verdict, carried onto every supervisor response. */
   readonly supervisorArm: { readonly armed: boolean; readonly armNote: string };
@@ -2361,6 +2373,9 @@ export function createDashboardServer(deps: HttpDeps): Server {
     gate:
       deps.gate ??
       new GateProbe({ paths: deps.paths, env: deps.env ?? process.env }),
+    gateReadiness:
+      deps.gateReadiness ??
+      new FreshGateReadiness({ paths: deps.paths, env: deps.env ?? process.env }),
     // A DEFAULT RUNNER SPAWNS NOTHING until a route asks it to, so building one
     // for a server that never serves `/api/projects` costs an object.
     projects: deps.projects ?? new ProjectRunner({ paths: deps.paths, env: deps.env ?? process.env }),
@@ -3940,7 +3955,63 @@ function requestedMotionTarget(body: Record<string, unknown>): ReturnType<typeof
   return captureTargetFor(explicit.trim());
 }
 
-async function createRun(deps: HttpDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
+/**
+ * Turn a fresh scorer-runtime refusal into the API's existing error envelope.
+ * `unknown` has its own code because it means the check itself produced no
+ * answer; both states are 503 and both fail closed.
+ */
+function sendGateReadinessRefusal(response: ServerResponse, readiness: GateReadinessResult): void {
+  sendError(
+    response,
+    503,
+    readiness.state === "unknown" ? "scorer_readiness_unknown" : "scorer_unavailable",
+    `the scorer runtime is ${readiness.state}: ${readiness.detail}`,
+    readiness.remediation,
+  );
+}
+
+async function createRun(deps: ResolvedHttpDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  /*
+   * THIS WRITE CAN SPEND THE OWNER'S SUBSCRIPTION. A cross-origin page does not
+   * need to read the response to cause that spend, and `text/plain` is a CORS
+   * safelisted request. Browser writes therefore require the exact dashboard
+   * origin, while origin-less cron/curl callers remain supported only with JSON.
+   */
+  if (request.headers.origin !== undefined && !originIsDashboardOwner(request.headers.origin)) {
+    sendError(
+      response,
+      403,
+      "cross_origin_write",
+      "a run may only be created from the dashboard's own page or an origin-less local client",
+      "Open the dashboard on 127.0.0.1:4319, or use a local JSON client that sends no Origin header.",
+    );
+    return;
+  }
+  if (!requestIsJson(request)) {
+    sendError(
+      response,
+      415,
+      "unsupported_media_type",
+      "POST /api/runs requires Content-Type: application/json",
+      "Cross-origin pages can send text/plain without a CORS preflight, so non-JSON writes are refused.",
+    );
+    return;
+  }
+
+  let clientClosed = false;
+  const submissionAbort = new AbortController();
+  const markClientClosed = (): void => {
+    clientClosed = true;
+    submissionAbort.abort(new Error("the ticket client disconnected before the run was committed"));
+  };
+  const clientIsGone = (): boolean =>
+    clientClosed || request.aborted || response.destroyed || response.writableEnded;
+  // Installed before the first await and retained through capture and commit.
+  // `once` releases both listeners on disconnect; a normal response closes
+  // after the synchronous create-row/pump block and makes this abort harmless.
+  response.once("close", markClientClosed);
+  request.once("aborted", markClientClosed);
+
   let payload: unknown;
   try {
     // THE ATTACHMENT CAP. This route carries reference images AND documents, so
@@ -4151,6 +4222,34 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
   }
 
   /*
+   * THE FRESH SPEND BARRIER, AT THE LAST PRE-WRITE SEAM.
+   *
+   * `/api/health` cannot authorize this request: its gate answer is cached for
+   * a minute and intentionally returns a stale value while it refreshes. This
+   * check always starts a new runtime smoke probe. It sits after every request
+   * and reuse-source refusal but before the run id, attachment directories,
+   * browser capture, database row and pump. Therefore a 503 leaves NONE of
+   * those behind, and `unknown` is a refusal rather than a degraded success.
+   */
+  let readiness: GateReadinessResult;
+  try {
+    readiness = await checkGateReadinessFresh(deps.gateReadiness, submissionAbort.signal);
+  } catch (error) {
+    if (submissionAbort.signal.aborted) return;
+    throw error;
+  }
+  // The fresh smoke probe may legitimately take tens of seconds. If the client
+  // went away during that wait, there is nobody left authorizing this ticket:
+  // continuing would mint and pump an orphaned run after an abandoned POST.
+  // `IncomingMessage.destroyed` is true after a normally consumed request body
+  // on Node 24, so it cannot distinguish an abandoned client here.
+  if (clientIsGone()) return;
+  if (readiness.state !== "ready") {
+    sendGateReadinessRefusal(response, readiness);
+    return;
+  }
+
+  /*
    * THE RUN ID IS MINTED BEFORE THE TICKET, WHICH IS A REVERSAL.
    *
    * References are bytes, and bytes need a directory. The directory is the run's
@@ -4161,6 +4260,22 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
    * them.
    */
   const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+  const provisionalRunRoot = runPathsFor(deps.paths, runId).root;
+  const discardAbandonedSubmission = async (): Promise<boolean> => {
+    /*
+     * A client-side fetch abort rejects before Node necessarily services the
+     * server socket's close event. Two check phases guarantee one intervening
+     * poll/close-callback turn, so a capture promise released in that window
+     * cannot race synchronously through the row write and pump on stale flags.
+     */
+    if (!clientIsGone()) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (!clientIsGone()) return false;
+    rmSync(provisionalRunRoot, { recursive: true, force: true });
+    return true;
+  };
   /*
    * THE REUSE INTENT, INTO THE RUN'S OWN DIRECTORY, BESIDE ITS REFERENCES.
    *
@@ -4257,7 +4372,8 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
    * in the log rather than being lost in a `Promise.all` rejection.
    */
   const target = requestedCaptureTarget(body, ticketText);
-  const capture = await runCapture(deps, target, referenceDir);
+  const capture = await runCapture(deps, target, referenceDir, submissionAbort.signal);
+  if (await discardAbandonedSubmission()) return;
   /*
    * BEFORE `ticketWithReferences`, AND THAT ORDER IS THE WHOLE REQUIREMENT.
    *
@@ -4267,7 +4383,8 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
    * afterwards would mean the row's `ticketId` and the ticket the run is graded
    * under were different strings, silently, on the owner's quota.
    */
-  const motion = await runMotionCapture(deps, requestedMotionTarget(body));
+  const motion = await runMotionCapture(deps, requestedMotionTarget(body), submissionAbort.signal);
+  if (await discardAbandonedSubmission()) return;
 
   const ticket = ticketWithReferences({
     prose: ticketText,
@@ -4301,6 +4418,9 @@ async function createRun(deps: HttpDeps, request: IncomingMessage, response: Ser
   // already refused everything that is not one of these, and `body["designLock"]`
   // is `unknown` until something compares it to a literal.
   const requestedLock: "auto" | "ask" | null = designLock === "auto" || designLock === "ask" ? designLock : null;
+  // No await exists between this reconciled check, the row write and pump, so
+  // a socket close cannot interleave after authority is re-confirmed here.
+  if (await discardAbandonedSubmission()) return;
   deps.store.createRun({
     runId,
     ticketId: ticket.id,
@@ -4387,6 +4507,7 @@ async function runCapture(
   deps: HttpDeps,
   target: ReturnType<typeof captureTargetIn>,
   dir: string,
+  signal?: AbortSignal,
 ): Promise<CaptureAttempt> {
   if (target.kind === "none") return { capture: null, failure: null, url: null };
   if (target.kind === "refused") {
@@ -4396,12 +4517,35 @@ async function runCapture(
   }
   try {
     mkdirSync(dir, { recursive: true });
-    const capture = await (deps.captureSite ?? captureSite)({ url: target.url, dir });
+    const capture = await untilAborted((deps.captureSite ?? captureSite)({ url: target.url, dir }), signal);
     if (!capture.ok) return { capture: null, failure: capture.reason, url: target.url };
     return { capture: capture.capture, failure: null, url: target.url };
   } catch (error) {
     return { capture: null, failure: describeError(error), url: target.url };
   }
+}
+
+/** Stop awaiting optional capture work as soon as its submitting client leaves. */
+function untilAborted<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return operation;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** A motion reading as `createRun` needs it: the spec, plus why there is none. */
@@ -4440,6 +4584,7 @@ interface MotionAttempt {
 async function runMotionCapture(
   deps: HttpDeps,
   target: ReturnType<typeof captureTargetFor>,
+  signal?: AbortSignal,
 ): Promise<MotionAttempt> {
   if (target.kind === "none") return { spec: null, failure: null, url: null };
   if (target.kind === "refused") {
@@ -4448,7 +4593,7 @@ async function runMotionCapture(
     return { spec: null, failure: target.reason, url: target.url };
   }
   try {
-    const result = await (deps.captureMotion ?? captureMotion)({ url: target.url });
+    const result = await untilAborted((deps.captureMotion ?? captureMotion)({ url: target.url }), signal);
     if (!result.ok) return { spec: null, failure: result.reason, url: target.url };
     return { spec: normaliseMotion(result.reading), failure: null, url: target.url };
   } catch (error) {

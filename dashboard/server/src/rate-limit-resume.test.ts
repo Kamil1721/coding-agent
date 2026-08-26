@@ -55,6 +55,7 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { Orchestrator, RATE_LIMIT_AUTO_RESUME_ENV, rateLimitAutoResume } from "./orchestrator.js";
 import {
   AUTO_CONTINUE_MAX,
@@ -344,7 +345,7 @@ function harness(env: NodeJS.ProcessEnv): Harness {
   const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
   const catalog = new ModelCatalog(auth, {}, async () => []);
   const preview = new PreviewHost();
-  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env });
+  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env, gateReadiness: READY_GATE_READINESS });
   return {
     store,
     orchestrator,

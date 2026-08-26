@@ -60,6 +60,7 @@ import { readDesignLaneRecord } from "./design-outcome.js";
 import { FIXTURE_IMAGE_COUNT, FIXTURE_PNG, writeReusableDesign } from "./design-reuse-fixture.js";
 import { copyDesignAssets, validateDesignReuseSource, writeDesignReuseMarker } from "./design-reuse.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import type { CatalogEntry } from "./models.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
@@ -319,6 +320,7 @@ async function runOnce(options: {
       DASHBOARD_GEMINI_IMAGE_SCRIPT: script,
       GEMINI_API_KEY: "not-a-real-key-fixture",
     },
+    gateReadiness: READY_GATE_READINESS,
     makeBuilder: () => builder,
     // THE INJECTED IMAGE RUNNER. The real preflight spawns `npx impeccable`, which
     // reaches a registry; this records every command instead, so "the image runner

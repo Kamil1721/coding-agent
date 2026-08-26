@@ -57,6 +57,7 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import { GateProbe } from "./health-gate.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import type { HttpDeps, RunController } from "./http.js";
 import { ModelCatalog } from "./models.js";
@@ -113,6 +114,7 @@ async function startHarness(): Promise<Harness> {
     auth,
     paths,
     gate: new GateProbe({ paths, makeGate: () => Promise.reject(new Error("no docker in a routing test")) }),
+    gateReadiness: READY_GATE_READINESS,
     // Never launched: no ticket below names a URL, and the stub refuses so a
     // ticket that accidentally did would fail loudly rather than reach chromium.
     captureSite: () => Promise.resolve({ ok: false, reason: "no capture in a routing test" }),

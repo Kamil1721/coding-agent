@@ -42,6 +42,7 @@ import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import { scoresRoot } from "./gate-attempts.js";
 import { GateProbe } from "./health-gate.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import type { HttpDeps, RunController } from "./http.js";
 import { MACHINE_CHECK_LABELS } from "./machine-checks.js";
@@ -95,6 +96,7 @@ async function startHarness(): Promise<Harness> {
     auth,
     paths,
     gate: new GateProbe({ paths, makeGate: () => Promise.reject(new Error("no docker in a routing test")) }),
+    gateReadiness: READY_GATE_READINESS,
   };
   const server = createDashboardServer(deps);
   await new Promise<void>((resolve) => server.listen({ host: LOOPBACK_HOST, port: 0 }, resolve));

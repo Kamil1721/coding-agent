@@ -71,6 +71,7 @@ import { readDesignLaneRecord } from "./design-outcome.js";
 import { foldGraphAll } from "./graph.js";
 import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import type { CatalogEntry } from "./models.js";
 import {
   ABORT_CANCELLED,
@@ -121,7 +122,7 @@ function harness(): {
   const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
   const catalog = new ModelCatalog(auth, {}, async () => []);
   const preview = new PreviewHost();
-  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env: {} });
+  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env: {}, gateReadiness: READY_GATE_READINESS });
   return {
     store,
     bus,
@@ -242,6 +243,15 @@ async function waitForRunToStop(store: RunStore, runId: string, timeoutMs = 30_0
   }
 }
 
+/** The fresh scorer readiness barrier makes queue entry asynchronous. */
+async function waitForRowStatus(store: RunStore, runId: string, status: string, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (store.getRun(runId)?.status !== status) {
+    if (Date.now() > deadline) throw new Error(`run ${runId} never reached ${status}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 /**
  * THE REGRESSION FOR `run-2026-07-30T13-31-38-076Z-c228e63b`.
  *
@@ -263,6 +273,7 @@ test("a shutdown during the spec phase leaves the run resumable, not failed", as
     // `#start` records the active run synchronously before it awaits, so the
     // shutdown that follows lands on a live signal rather than on nothing.
     h.orchestrator.pump();
+    await waitForRowStatus(h.store, "run-spec-abort", "running");
     await h.orchestrator.shutdown();
     await waitForRunToStop(h.store, "run-spec-abort");
 
@@ -327,6 +338,7 @@ test("an owner cancel during the spec phase still finishes the run cancelled", a
     seed(h.store, "run-spec-cancel", 1);
 
     h.orchestrator.pump();
+    await waitForRowStatus(h.store, "run-spec-cancel", "running");
     assert.equal(h.orchestrator.cancel("run-spec-cancel"), true, "the active run must be cancellable");
     await waitForLog(h.store, "run-spec-cancel", /backlog|did not close/i);
 
@@ -1327,6 +1339,7 @@ async function designRun(options: {
     auth,
     preview,
     env,
+    gateReadiness: READY_GATE_READINESS,
     makeBuilder: () => builder,
     // The real preflight spawns `npx impeccable`, which reaches a registry. A
     // sequencing test that pays for that learns nothing about sequencing.
@@ -2950,6 +2963,7 @@ test("a resumed run archives BESIDE the earlier attempts, never on top of them",
     // No PATH: the sealed gate cannot find docker and stops on infra at attempt
     // 1, having archived whatever the scorer left behind.
     env: { HOME: home },
+    gateReadiness: READY_GATE_READINESS,
     makeBuilder: () => builder,
     designRun: async () => ({ code: 0, stderr: "" }),
     designCanWrite: () => true,
@@ -3191,6 +3205,7 @@ test("the opted-in Context7 review runs once against the final post-gate tree", 
     auth,
     preview,
     env: { HOME: home, [GATE_MAX_ATTEMPTS_ENV]: "1" },
+    gateReadiness: READY_GATE_READINESS,
     makeBuilder: () => builder,
     designRun: async () => ({ code: 0, stderr: "" }),
     designCanWrite: () => true,
@@ -5895,6 +5910,7 @@ async function quiescenceRun(declaresDone: boolean, selfReportStatus?: string): 
     auth,
     preview,
     env: { HOME: home },
+    gateReadiness: READY_GATE_READINESS,
     makeBuilder: () => builder,
     designRun: async () => ({ code: 0, stderr: "" }),
     designCanWrite: () => true,
@@ -6247,6 +6263,7 @@ async function spendRun(preStampClass: string | null = null): Promise<SpendRun> 
     auth,
     preview,
     env: { HOME: home, [GATE_MAX_ATTEMPTS_ENV]: "2" },
+    gateReadiness: READY_GATE_READINESS,
     makeBuilder: () => builder,
     designRun: async () => ({ code: 0, stderr: "" }),
     designCanWrite: () => true,

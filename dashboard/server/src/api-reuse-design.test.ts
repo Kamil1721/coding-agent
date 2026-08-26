@@ -47,6 +47,7 @@ import { manifestPathFor, refsDirFor } from "./design-manifest.js";
 import { writeReusableDesign } from "./design-reuse-fixture.js";
 import { DESIGN_REUSE_MARKER_FILE, readDesignReuseMarker } from "./design-reuse.js";
 import { GateProbe } from "./health-gate.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import type { HttpDeps, RunController } from "./http.js";
 import { ModelCatalog } from "./models.js";
@@ -114,6 +115,7 @@ async function startHarness(): Promise<Harness> {
     auth,
     paths,
     gate: new GateProbe({ paths, makeGate: () => Promise.reject(new Error("no docker in a routing test")) }),
+    gateReadiness: READY_GATE_READINESS,
     // NEVER THE NETWORK. No ticket below carries a URL, so neither seam should
     // fire at all; they are stubbed so that a regression which started scanning
     // for one fails loudly here rather than launching a browser.

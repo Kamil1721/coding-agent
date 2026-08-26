@@ -63,6 +63,7 @@ import { RunEventBus } from "./bus.js";
 import { RunStore, isTerminal } from "./db.js";
 import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { PreviewHost } from "./preview.js";
@@ -390,7 +391,7 @@ function harness(): Harness {
   const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
   const catalog = new ModelCatalog(auth, {}, async () => []);
   const preview = new PreviewHost();
-  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env: {} });
+  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env: {}, gateReadiness: READY_GATE_READINESS });
   return {
     dir,
     store,

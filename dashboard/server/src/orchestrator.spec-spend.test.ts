@@ -108,6 +108,7 @@ import type { SseEvent } from "./api-types.js";
 import { RunStore, isTerminal } from "./db.js";
 import { foldGraphAll } from "./graph.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import {
   Orchestrator,
   SEAT_HEARTBEAT_INTERVAL_ENV,
@@ -244,6 +245,7 @@ async function deadSpecRun(options: {
         ? {}
         : { [SEAT_HEARTBEAT_INTERVAL_ENV]: String(options.heartbeatMs) }),
     },
+    gateReadiness: READY_GATE_READINESS,
     seatQuery: factory,
   });
 

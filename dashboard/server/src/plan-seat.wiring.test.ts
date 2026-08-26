@@ -63,6 +63,7 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ensureDirs, resolvePaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
@@ -192,6 +193,7 @@ function harness(script: readonly string[]): Harness {
     preview,
     // `{}` IS THE SPEC-SEAT GUARD, not an oversight.
     env: {},
+    gateReadiness: READY_GATE_READINESS,
     makePlanSeat: scriptedSeats(script, handovers, seatCalls),
   });
   return {

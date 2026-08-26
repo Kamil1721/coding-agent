@@ -107,6 +107,11 @@ import type {
   ScorerPlan,
   Tier0GateResult,
 } from "./scorer-protocol.js";
+import {
+  SCORER_RUNTIME_SMOKE_ARG,
+  parseScorerRuntimeSmoke,
+} from "./scorer-runtime.js";
+import type { ScorerRuntimeSmokePayload } from "./scorer-runtime.js";
 
 /* -------------------------------------------------------------------------
  * 0. Non-retryable failures
@@ -559,28 +564,14 @@ export interface ScorerMounts {
   readonly screenshotDir: string;
 }
 
-/**
- * Build the exact `docker run` argument vector.
- *
- * Exported so that the invocation can be asserted in a test and printed in
- * docker/README.md without the two drifting apart.
- */
-export function buildDockerArgs(
-  spec: ScorerContainerSpec,
-  mounts: ScorerMounts,
-  containerName: string,
-): readonly string[] {
-  assertMountablePaths(mounts);
-
-  const args: string[] = [
+function sealedDockerRunPrefix(spec: ScorerContainerSpec, containerName: string): string[] {
+  return [
     "run",
     "--rm",
     "--name",
     containerName,
 
     // ---- THE LOAD-BEARING FLAG -------------------------------------------
-    // No network namespace beyond loopback. See docker/README.md for why this
-    // is not decorative.
     "--network=none",
 
     // ---- least privilege --------------------------------------------------
@@ -595,9 +586,6 @@ export function buildDockerArgs(
     `--tmpfs=/tmp:rw,nosuid,nodev,exec,size=${spec.tmpfsSize}`,
 
     // ---- environment: explicit, complete, credential-free -----------------
-    // Every entry is NAME=VALUE. A bare `--env NAME` would forward the host's
-    // value for NAME into the container, which is exactly how a credential
-    // reaches a place it must never reach. assertSealedInvocation enforces it.
     "--env=HOME=/tmp",
     "--env=XDG_CACHE_HOME=/tmp/.cache",
     "--env=npm_config_cache=/tmp/.npm",
@@ -608,10 +596,24 @@ export function buildDockerArgs(
     `--env=PLAYWRIGHT_JSON_OUTPUT_NAME=${CONTAINER_PATHS.suiteReport}`,
 
     "--workdir=/opt/bakeoff-scorer",
+    ...(spec.platform === null ? [] : [`--platform=${spec.platform}`]),
+    ...(spec.user === null ? [] : [`--user=${spec.user}`]),
   ];
+}
 
-  if (spec.platform !== null) args.push(`--platform=${spec.platform}`);
-  if (spec.user !== null) args.push(`--user=${spec.user}`);
+/**
+ * Build the exact `docker run` argument vector.
+ *
+ * Exported so that the invocation can be asserted in a test and printed in
+ * docker/README.md without the two drifting apart.
+ */
+export function buildDockerArgs(
+  spec: ScorerContainerSpec,
+  mounts: ScorerMounts,
+  containerName: string,
+): readonly string[] {
+  assertMountablePaths(mounts);
+  const args = sealedDockerRunPrefix(spec, containerName);
 
   args.push(
     `--mount=type=bind,source=${mounts.stagedArtifactDir},target=${CONTAINER_PATHS.artifact}`,
@@ -625,7 +627,49 @@ export function buildDockerArgs(
   return args;
 }
 
+/**
+ * Build the no-mount runtime readiness invocation.
+ *
+ * `imageDigest` is the daemon-resolved content identity, never the configured
+ * tag. Therefore the bytes inspected and the bytes executed are the same even
+ * if a mutable tag moves between the two Docker CLI calls.
+ */
+export function buildScorerRuntimeProbeArgs(
+  spec: ScorerContainerSpec,
+  imageDigest: string,
+  containerName: string,
+): readonly string[] {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(imageDigest)) {
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `cannot probe scorer image identity ${JSON.stringify(imageDigest)} because it is not a sha256 digest`,
+      "Resolve the configured scorer image with resolveImageIdentity() before building the runtime probe.",
+    );
+  }
+  return [...sealedDockerRunPrefix(spec, containerName), imageDigest, SCORER_RUNTIME_SMOKE_ARG];
+}
+
 const CREDENTIAL_ENV_NAME_RE = /(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|SESSION|COOKIE|BEARER)/i;
+
+/** Options emitted by sealedDockerRunPrefix whose value is the following token. */
+const GENERATED_DOCKER_RUN_OPTIONS_WITH_VALUE = new Set(["--name", "--security-opt"]);
+
+/** Locate Docker's image operand in the generated `docker run` argument shape. */
+function dockerRunImageIndex(args: readonly string[]): number | undefined {
+  if (args[0] !== "run") return undefined;
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined) return undefined;
+    if (arg === "--") return index + 1 < args.length ? index + 1 : undefined;
+    if (!arg.startsWith("-")) return index;
+    if (GENERATED_DOCKER_RUN_OPTIONS_WITH_VALUE.has(arg)) {
+      const value = args[index + 1];
+      if (value === undefined || value.length === 0 || value.startsWith("-")) return undefined;
+      index += 1;
+    }
+  }
+  return undefined;
+}
 
 /**
  * Refuse to dispatch an invocation that is not sealed.
@@ -635,25 +679,76 @@ const CREDENTIAL_ENV_NAME_RE = /(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|A
  * bare `-e NAME` forwarding a host credential, and a privilege escalation flag
  * that reopens what --cap-drop closed.
  */
-export function assertSealedInvocation(args: readonly string[]): void {
+export function assertSealedInvocation(
+  args: readonly string[],
+  expectedImageRef: string,
+  expectedContainerArgs: readonly string[] = [],
+): void {
   const problems: string[] = [];
 
-  const networkFlags = args.filter((a) => a === "--network" || a.startsWith("--network=") || a === "--net" || a.startsWith("--net="));
-  if (!args.includes("--network=none")) {
+  const imageIndex = dockerRunImageIndex(args);
+  const imageIndexes = args.flatMap((arg, index) => arg === expectedImageRef ? [index] : []);
+  if (imageIndexes.length !== 1) {
+    problems.push(
+      `the invocation must contain expected image ${JSON.stringify(expectedImageRef)} exactly once; ` +
+        `found ${String(imageIndexes.length)} occurrences`,
+    );
+  }
+  if (imageIndex === undefined) {
+    problems.push("the invocation contains no positional Docker image operand");
+  } else if (args[imageIndex] !== expectedImageRef) {
+    problems.push(
+      `the first positional Docker image operand is ${JSON.stringify(args[imageIndex])}, not ` +
+        `${JSON.stringify(expectedImageRef)}`,
+    );
+  }
+  const dockerArgs = imageIndex === undefined ? [] : args.slice(0, imageIndex);
+  const containerArgs = imageIndex === undefined ? [] : args.slice(imageIndex + 1);
+  if (
+    containerArgs.length !== expectedContainerArgs.length ||
+    containerArgs.some((arg, index) => arg !== expectedContainerArgs[index])
+  ) {
+    problems.push(
+      `unexpected arguments after the image boundary: expected ${JSON.stringify(expectedContainerArgs)}, ` +
+        `received ${JSON.stringify(containerArgs)}`,
+    );
+  }
+
+  // Docker stops parsing run options at the image operand. Inspecting the full
+  // vector would let a required flag placed after the image masquerade as a
+  // runtime restriction even though it is only an argument to the container.
+  const networkFlags = dockerArgs.filter((a) => a === "--network" || a.startsWith("--network=") || a === "--net" || a.startsWith("--net="));
+  if (!dockerArgs.includes("--network=none")) {
     problems.push('the invocation does not contain "--network=none"');
   }
   for (const flag of networkFlags) {
     if (flag !== "--network=none") problems.push(`conflicting network flag ${JSON.stringify(flag)}`);
   }
+  if (!dockerArgs.includes("--read-only")) problems.push('the invocation does not contain "--read-only"');
+  if (!dockerArgs.includes("--cap-drop=ALL")) problems.push('the invocation does not contain "--cap-drop=ALL"');
+  const hasNoNewPrivileges = dockerArgs.some(
+    (arg, index) =>
+      arg === "--security-opt=no-new-privileges" ||
+      (arg === "--security-opt" && dockerArgs[index + 1] === "no-new-privileges"),
+  );
+  if (!hasNoNewPrivileges) problems.push('the invocation does not contain security-opt "no-new-privileges"');
+  if (!dockerArgs.includes("--env=BAKEOFF_SCORER_SEALED=1")) {
+    problems.push('the invocation does not contain "--env=BAKEOFF_SCORER_SEALED=1"');
+  }
 
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
+  for (let i = 0; i < dockerArgs.length; i += 1) {
+    const arg = dockerArgs[i];
     if (arg === undefined) continue;
 
     if (arg === "--env-file" || arg.startsWith("--env-file=")) {
       problems.push("--env-file would inject a file of host variables into the sealed container");
     }
-    if (arg === "--privileged" || arg.startsWith("--cap-add") || arg.startsWith("--device")) {
+    if (
+      arg === "--privileged" ||
+      arg === "--read-only=false" ||
+      arg.startsWith("--cap-add") ||
+      arg.startsWith("--device")
+    ) {
       problems.push(`privilege-restoring flag ${JSON.stringify(arg)}`);
     }
     if (arg === "--network" || arg === "--net" || arg === "--dns" || arg.startsWith("--dns=") || arg.startsWith("--add-host")) {
@@ -662,7 +757,7 @@ export function assertSealedInvocation(args: readonly string[]): void {
 
     const isEnvFlag = arg === "-e" || arg === "--env";
     const inlineEnv = arg.startsWith("--env=") ? arg.slice("--env=".length) : arg.startsWith("-e=") ? arg.slice(3) : null;
-    const value = isEnvFlag ? args[i + 1] : inlineEnv;
+    const value = isEnvFlag ? dockerArgs[i + 1] : inlineEnv;
     if (value === undefined || value === null) continue;
 
     if (!value.includes("=")) {
@@ -719,47 +814,109 @@ function dockerCliEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
-interface ProcessOutcome {
+export interface ScorerProcessOutcome {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
   readonly timedOut: boolean;
+  readonly signal: NodeJS.Signals | null;
+  readonly launchError: string | null;
 }
 
-function runProcess(
+export type ScorerProcessRunner = (
   bin: string,
   args: readonly string[],
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
   onTimeout?: () => void,
-): Promise<ProcessOutcome> {
-  return new Promise<ProcessOutcome>((resolvePromise) => {
-    const child = spawn(bin, [...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+  maxOutputChars?: number,
+  signal?: AbortSignal,
+) => Promise<ScorerProcessOutcome>;
+
+const runProcess: ScorerProcessRunner = (
+  bin,
+  args,
+  timeoutMs,
+  env,
+  onTimeout,
+  maxOutputChars = 4_000_000,
+  signal,
+) => {
+  return new Promise<ScorerProcessOutcome>((resolvePromise) => {
+    const startedAt = Date.now();
+    let child;
+    try {
+      child = spawn(bin, [...args], {
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        signal,
+        // The explicit timer below classifies the boundary and invokes the
+        // named-container cleanup. This later native timeout is a backstop if
+        // that timer is delayed by a saturated event loop.
+        timeout: timeoutMs + 1_000,
+        killSignal: "SIGKILL",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      resolvePromise({
+        exitCode: -1,
+        stdout: "",
+        stderr: message,
+        timedOut: false,
+        signal: null,
+        launchError: message,
+      });
+      return;
+    }
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let settled = false;
+    const finish = (outcome: ScorerProcessOutcome): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(outcome);
+    };
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
-      if (stdout.length > 4_000_000) stdout = stdout.slice(-2_000_000);
+      if (stdout.length > maxOutputChars) stdout = stdout.slice(-maxOutputChars);
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
-      if (stderr.length > 4_000_000) stderr = stderr.slice(-2_000_000);
+      if (stderr.length > maxOutputChars) stderr = stderr.slice(-maxOutputChars);
     });
     const timer = setTimeout(() => {
       timedOut = true;
       onTimeout?.();
+      // Node's spawn timeout also uses SIGKILL. The explicit kill makes the
+      // boundary observable as `timedOut` and invokes the Docker-container kill
+      // callback before the attached CLI disappears.
       child.kill("SIGKILL");
     }, timeoutMs);
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolvePromise({ exitCode: -1, stdout, stderr: `${stderr}\n${error.message}`, timedOut });
+      finish({
+        exitCode: -1,
+        stdout,
+        stderr: `${stderr}${stderr.length === 0 ? "" : "\n"}${error.message}`,
+        timedOut,
+        signal: null,
+        launchError: error.message,
+      });
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolvePromise({ exitCode: code ?? -1, stdout, stderr, timedOut });
+    child.on("close", (code, signal) => {
+      if (signal === "SIGKILL" && Date.now() - startedAt >= timeoutMs) timedOut = true;
+      finish({ exitCode: code ?? -1, stdout, stderr, timedOut, signal, launchError: null });
     });
   });
+};
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  if (signal.reason !== undefined) throw signal.reason;
+  const error = new Error("the scorer runtime probe was aborted");
+  error.name = "AbortError";
+  throw error;
 }
 
 /**
@@ -775,12 +932,48 @@ export async function resolveImageIdentity(
   spec: ScorerContainerSpec,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<DockerImageIdentity> {
-  const outcome = await runProcess(
-    spec.dockerBin,
-    ["image", "inspect", spec.imageRef, "--format", "{{.Id}}\t{{json .RepoDigests}}\t{{json .RepoTags}}"],
-    120_000,
-    dockerCliEnv(env),
-  );
+  return resolveImageIdentityWithRunner(spec, env, runProcess);
+}
+
+async function resolveImageIdentityWithRunner(
+  spec: ScorerContainerSpec,
+  env: NodeJS.ProcessEnv,
+  runner: ScorerProcessRunner,
+  signal?: AbortSignal,
+): Promise<DockerImageIdentity> {
+  throwIfAborted(signal);
+  let outcome: ScorerProcessOutcome;
+  try {
+    outcome = await runner(
+      spec.dockerBin,
+      ["image", "inspect", spec.imageRef, "--format", "{{.Id}}\t{{json .RepoDigests}}\t{{json .RepoTags}}"],
+      120_000,
+      dockerCliEnv(env),
+      undefined,
+      undefined,
+      signal,
+    );
+  } catch (error) {
+    throwIfAborted(signal);
+    throw error;
+  }
+  throwIfAborted(signal);
+  if (outcome.launchError !== null) {
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `could not launch ${spec.dockerBin} to inspect scorer image ${spec.imageRef}: ` +
+        redactText(outcome.launchError).text,
+      `Install or configure ${spec.dockerBin}, then retry. The scorer image must be inspected before it can be ` +
+        "executed by content digest.",
+    );
+  }
+  if (outcome.timedOut) {
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `docker image inspect ${spec.imageRef} exceeded its 120000 ms boundary`,
+      "Check that the Docker daemon is reachable and responsive, then retry. No scoring container was started.",
+    );
+  }
   if (outcome.exitCode !== 0) {
     throw new BakeoffError(
       "invalid_usage_shape",
@@ -808,6 +1001,123 @@ export async function resolveImageIdentity(
     );
   }
   return { id, repoDigests: parseList(repoDigestsJson), repoTags: parseList(repoTagsJson) };
+}
+
+export const SCORER_RUNTIME_PROBE_TIMEOUT_MS = 30_000;
+
+export interface ScorerRuntimeReadiness {
+  /** The configured tag/reference that was resolved. */
+  readonly imageRef: string;
+  /** The exact local content identity passed to `docker run`. */
+  readonly imageDigest: string;
+  /** Complete inspect provenance for health API/UI display. */
+  readonly image: DockerImageIdentity;
+  /** Machine-readable facts emitted by the scorer entrypoint itself. */
+  readonly smoke: ScorerRuntimeSmokePayload;
+}
+
+export interface ScorerRuntimeProbeDependencies {
+  readonly runProcess?: ScorerProcessRunner;
+  readonly containerName?: () => string;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Prove that the configured scorer image can execute under the scoring seal.
+ *
+ * Inspecting an image proves only that bytes exist. This additionally executes
+ * those exact bytes with the critical restrictions used for scoring and asks
+ * the entrypoint to validate its bundled runtime without mounting or scoring an
+ * artefact. Old images have no `--smoke` path and therefore fail closed.
+ */
+export async function probeScorerRuntime(
+  spec: ScorerContainerSpec,
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: ScorerRuntimeProbeDependencies = {},
+): Promise<ScorerRuntimeReadiness> {
+  const runner = dependencies.runProcess ?? runProcess;
+  const signal = dependencies.signal;
+  throwIfAborted(signal);
+  const identity = await resolveImageIdentityWithRunner(spec, env, runner, signal);
+  const containerName =
+    dependencies.containerName?.() ?? `bakeoff-scorer-smoke-${randomUUID().slice(0, 12)}`;
+  const args = buildScorerRuntimeProbeArgs(spec, identity.id, containerName);
+  assertSealedInvocation(args, identity.id, [SCORER_RUNTIME_SMOKE_ARG]);
+
+  let cleanupPromise: Promise<ScorerProcessOutcome | null> | null = null;
+  const killContainer = (): void => {
+    if (cleanupPromise !== null) return;
+    // Killing only the attached Docker CLI can leave the container behind.
+    // The named-container kill is bounded and receives the same sanitized CLI
+    // environment. It contains no image input, mounts, shell, or credentials.
+    cleanupPromise = runner(spec.dockerBin, ["kill", containerName], 10_000, dockerCliEnv(env))
+      .catch(() => null);
+  };
+  const onAbort = (): void => { killContainer(); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  let outcome: ScorerProcessOutcome;
+  try {
+    outcome = await runner(
+      spec.dockerBin,
+      args,
+      SCORER_RUNTIME_PROBE_TIMEOUT_MS,
+      dockerCliEnv(env),
+      killContainer,
+      64 * 1024,
+      signal,
+    );
+  } catch (error) {
+    throwIfAborted(signal);
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (cleanupPromise !== null) await cleanupPromise;
+  }
+  throwIfAborted(signal);
+
+  if (outcome.launchError !== null) {
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `could not launch the scorer runtime probe with ${spec.dockerBin}: ${redactText(outcome.launchError).text}`,
+      `Install or configure ${spec.dockerBin}, verify the Docker daemon is reachable, and retry. ` +
+        "No score was recorded.",
+    );
+  }
+  if (outcome.timedOut) {
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `scorer runtime probe for ${identity.id} exceeded its ${SCORER_RUNTIME_PROBE_TIMEOUT_MS} ms boundary` +
+        `${outcome.signal === null ? "" : ` and exited on ${outcome.signal}`}`,
+      "Check Docker daemon health and the configured platform/resource limits. If this image predates the " +
+        "runtime smoke path, rebuild it from the current bakeoff/docker/scorer.Dockerfile.",
+    );
+  }
+  if (outcome.exitCode !== 0) {
+    const status = outcome.signal === null ? `exit ${outcome.exitCode}` : `signal ${outcome.signal}`;
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `scorer runtime probe for ${identity.id} failed (${status}): ` +
+        redactText(outcome.stderr.trim().slice(-4000)).text,
+      "Rebuild the scorer image from the current bakeoff/docker/scorer.Dockerfile so it includes the " +
+        "--smoke entrypoint, then pin and configure the rebuilt image digest. Do not start a bake-off with " +
+        "an image that cannot pass this sealed runtime probe.",
+    );
+  }
+
+  let smoke: ScorerRuntimeSmokePayload;
+  try {
+    smoke = parseScorerRuntimeSmoke(outcome.stdout);
+  } catch (error) {
+    throw new BakeoffError(
+      "invalid_usage_shape",
+      `scorer runtime probe for ${identity.id} returned malformed output: ` +
+        redactText(error instanceof Error ? error.message : String(error)).text,
+      "Rebuild the scorer image from the current bakeoff/docker/scorer.Dockerfile. A zero exit without the " +
+        "current machine-readable smoke payload is not runtime-readiness evidence.",
+    );
+  }
+
+  return { imageRef: spec.imageRef, imageDigest: identity.id, image: identity, smoke };
 }
 
 /* -------------------------------------------------------------------------
@@ -1095,7 +1405,7 @@ export class SealedScorerGate implements AcceptanceGate {
     const spec = this.options.container;
     const containerName = `bakeoff-scorer-${safeSegment(runId)}-${randomUUID().slice(0, 8)}`;
     const args = buildDockerArgs(spec, mounts, containerName);
-    assertSealedInvocation(args);
+    assertSealedInvocation(args, spec.imageRef);
 
     const outcome = await runProcess(
       spec.dockerBin,

@@ -25,6 +25,10 @@ dashboard/data/
 dashboard/runs/
 dashboard/results/
 dashboard/screenshots/
+# Generated cron journal/report and a legacy empty database path. The live
+# database is dashboard/data/runs.db; neither runtime surface is source.
+dashboard/cron/
+dashboard/runs.db
 bakeoff/dist/
 bakeoff/results/
 bakeoff/dry-run/

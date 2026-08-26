@@ -124,6 +124,7 @@ import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import type { RunRow } from "./db.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { PreviewHost } from "./preview.js";
@@ -264,6 +265,7 @@ function harness(options: { script?: readonly string[]; env?: NodeJS.ProcessEnv 
     preview,
     // `{}` IS THE SPEC-SEAT GUARD, not an oversight. See the file header.
     env: options.env ?? {},
+    gateReadiness: READY_GATE_READINESS,
     ...(script === undefined ? {} : { makePlanSeat: scriptedSeats(script, seatCalls) }),
   });
   return {
@@ -559,6 +561,7 @@ test("a restart during a plan park re-arms the REMAINDER of the window, not a fr
       auth: new AuthProbe({ claudeBin: "absent", codexBin: "absent" }),
       preview: new PreviewHost(),
       env: {},
+      gateReadiness: READY_GATE_READINESS,
       makePlanSeat: scriptedSeats([ONE_QUESTION], []),
     });
     try {
@@ -626,6 +629,7 @@ test("the re-armed timer fires on what is LEFT of the window, not on a fresh one
       auth: new AuthProbe({ claudeBin: "absent", codexBin: "absent" }),
       preview: new PreviewHost(),
       env: {},
+      gateReadiness: READY_GATE_READINESS,
       makePlanSeat: scriptedSeats([ONE_QUESTION], []),
     });
     try {
@@ -677,6 +681,7 @@ test("a park that expired while the dashboard was down is resumed on boot, not l
       auth: new AuthProbe({ claudeBin: "absent", codexBin: "absent" }),
       preview: new PreviewHost(),
       env: {},
+      gateReadiness: READY_GATE_READINESS,
       makePlanSeat: scriptedSeats([ONE_QUESTION], []),
     });
     try {
@@ -1333,6 +1338,7 @@ test("an unreadable plan.json ENDS the park — the run proceeds and says why", 
       auth: new AuthProbe({ claudeBin: "absent", codexBin: "absent" }),
       preview: new PreviewHost(),
       env: {},
+      gateReadiness: READY_GATE_READINESS,
       makePlanSeat: scriptedSeats([ONE_QUESTION], []),
     });
     try {

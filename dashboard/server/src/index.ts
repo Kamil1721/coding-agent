@@ -29,6 +29,7 @@ import { RunEventBus } from "./bus.js";
 // because the cron tick needs the same answer and cannot import `http.ts`.
 import { LOOPBACK_HOST, parsePort } from "./dashboard-url.js";
 import { RunStore } from "./db.js";
+import { FreshGateReadiness } from "./gate-readiness.js";
 import { CONTEXT7_PILOT_PROJECT_ID } from "./context7-pipeline.js";
 import { CREATIVE_PILOT_PROJECT_ID } from "./creative-pilot.js";
 import { assertLoopback, createDashboardServer } from "./http.js";
@@ -59,6 +60,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const store = RunStore.open(paths.database);
   const bus = new RunEventBus(store);
   const auth = new AuthProbe({ env });
+  // ONE UNCACHED SPEND BARRIER, read at direct intake and again after the queue
+  // wait. Sharing the adapter keeps both checks on the same paths, environment
+  // and configured scorer image while each call still performs fresh work.
+  const gateReadiness = new FreshGateReadiness({ paths, env });
   const catalog = new ModelCatalog(auth, env);
   const preview = new PreviewHost();
   /*
@@ -82,6 +87,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     auth,
     preview,
     env,
+    gateReadiness,
     context7ReviewProjectId: CONTEXT7_PILOT_PROJECT_ID,
     context7ReviewActualProjectId: dashboardProjectId(env),
     creativePilotProjectId: CREATIVE_PILOT_PROJECT_ID,
@@ -221,6 +227,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     catalog,
     auth,
     paths,
+    env,
+    gateReadiness,
     projects,
     // WITHOUT THIS FIELD EVERY `POST /api/supervisor/*` ANSWERS 503 AND EVERY GET
     // ANSWERS `probe.wired: false`. It is the evidence that something on this

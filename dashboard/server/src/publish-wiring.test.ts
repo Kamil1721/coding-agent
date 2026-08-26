@@ -50,6 +50,7 @@ import { AuthProbe } from "./auth.js";
 import { RunEventBus } from "./bus.js";
 import { RunStore } from "./db.js";
 import { ModelCatalog } from "./models.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { PreviewHost } from "./preview.js";
@@ -105,6 +106,7 @@ function harness(): Harness {
     auth,
     preview: new PreviewHost(),
     env: {},
+    gateReadiness: READY_GATE_READINESS,
   });
   return {
     store,

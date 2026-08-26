@@ -55,6 +55,7 @@ import type { ChatMessage } from "./db.js";
 import { RunStore } from "./db.js";
 import { MAX_DOCUMENT_BODY_BYTES, MAX_REFERENCE_DOCUMENTS } from "./document-intake.js";
 import { GateProbe } from "./health-gate.js";
+import { READY_GATE_READINESS } from "./gate-readiness-fixture.js";
 import {
   LOOPBACK_HOST,
   MAX_ATTACHMENT_BODY_BYTES,
@@ -128,6 +129,7 @@ async function startHarness(): Promise<Harness> {
     auth,
     paths,
     gate: new GateProbe({ paths, makeGate: () => Promise.reject(new Error("no docker in a routing test")) }),
+    gateReadiness: READY_GATE_READINESS,
     captureSite: (): Promise<SiteCaptureResult> =>
       Promise.resolve({ ok: false, reason: "captures are switched off in this file" }),
   };
