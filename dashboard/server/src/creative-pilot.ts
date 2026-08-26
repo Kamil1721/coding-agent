@@ -124,7 +124,7 @@ const COMPILE_OUTCOMES = new Set<CreativeCompileOutcome>(["unknown", "passed", "
 const CRITIC_DISPOSITIONS = new Set(["accept", "revise", "unavailable"]);
 const REVIEW_STATES = new Set(["reviewing", "creative_ready", "creative_review_required", "not_converging", "failed"]);
 const REVIEW_STOP_REASONS = new Set([
-  "accepted", "functional_red", "compiler_red", "prerequisite_unknown", "critic_unavailable",
+  "accepted", "functional_red", "compiler_red", "prerequisite_unknown", "artifact_contract", "critic_unavailable",
   "repeated_tree_and_findings", "attempts_exhausted", "invalid_attempt",
 ]);
 const OWNER_DECISIONS = new Set(["approved", "revision_requested", "waived", "cancelled"]);

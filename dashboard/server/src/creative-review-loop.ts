@@ -20,6 +20,7 @@ export type CreativeReviewStopReason =
   | "functional_red"
   | "compiler_red"
   | "prerequisite_unknown"
+  | "artifact_contract"
   | "critic_unavailable"
   | "repeated_tree_and_findings"
   | "attempts_exhausted"

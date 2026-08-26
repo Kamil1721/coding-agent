@@ -11,6 +11,7 @@ import {
   buildTasteEvidenceIndex,
   buildTastePromptFacts,
   captureCreativeRender,
+  creativeRenderRefusalClass,
   creativeRenderRequestAllowed,
 } from "./creative-render.js";
 import type {
@@ -477,6 +478,59 @@ test("fails closed when a required section marker is missing", async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((item) => item.code === "SECTION_NOT_FOUND"));
+  assert.equal(creativeRenderRefusalClass(result), "artifact_contract");
+});
+
+test("a single wrong marker is diagnosed as a mismatch, not as missing or duplicated", async () => {
+  const binding = bindingFixture();
+  const env = tempPreview();
+  const bad = fixture({ routes: { desktop: {
+    "/": routeSnapshot("home", ["r.home-hero", "home-footer"]),
+    "/work": routeSnapshot("work", ["work-hero", "work-footer"]),
+  } } });
+  const result = await captureCreativeRender({
+    preview: env.preview,
+    binding,
+    iteration: 0,
+    outputDir: env.outputDir,
+    launch: fakeLaunch(bad),
+    readArtifactHash: () => binding.artifactHash,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /expected home-hero/u);
+  assert.match(result.reason, /found r\.home-hero/u);
+  assert.doesNotMatch(result.reason, /missing|duplicated/u);
+});
+
+test("browser startup refusal remains critic infrastructure unavailable", async () => {
+  const binding = bindingFixture();
+  const env = tempPreview();
+  const result = await captureCreativeRender({
+    preview: env.preview,
+    binding,
+    iteration: 0,
+    outputDir: env.outputDir,
+    launch: async () => { throw new Error("chromium unavailable"); },
+    readArtifactHash: () => binding.artifactHash,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(creativeRenderRefusalClass(result), "critic_unavailable");
+});
+
+test("a capture-only issue remains critic infrastructure unavailable", () => {
+  assert.equal(creativeRenderRefusalClass({
+    ok: false,
+    reason: "render capture failed for home-hero: screenshot timed out",
+    issues: [{
+      code: "CAPTURE_FAILED",
+      severity: "blocking",
+      profileId: "desktop",
+      routeId: "home",
+      sectionId: "home-hero",
+      motionId: null,
+      evidenceSha256: "f".repeat(64),
+    }],
+  }), "critic_unavailable");
 });
 
 test("fails closed when reduced-motion captures still observe active motion", async () => {

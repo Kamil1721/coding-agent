@@ -199,6 +199,13 @@ import {
   GateRecoveryRefusal,
   validateGateRecoveryRequest,
 } from "./gate-recovery.js";
+import {
+  TerminalCreativeRecoveryController,
+  TerminalCreativeRecoveryRefusal,
+  isTerminalCreativeRecoveryTarget,
+  validateTerminalCreativeRecoveryRequest,
+} from "./creative-recovery.js";
+import type { TerminalCreativeRecoveryWork, TerminalCreativeRecoveryWorkResult } from "./creative-recovery.js";
 import { attachSse, parseLastEventId } from "./bus.js";
 import type { RunEventBus } from "./bus.js";
 import { isTerminal } from "./db.js";
@@ -369,6 +376,8 @@ export interface RunController {
    * the orchestrator holds the manifest that could.
    */
   resume(runId: string, chosenMockup?: string | null, chosenDirection?: string | null): boolean;
+  /** Controller-owned fresh-session repair for one isolated terminal creative child. */
+  runTerminalCreativeRecovery?(work: TerminalCreativeRecoveryWork): Promise<TerminalCreativeRecoveryWorkResult>;
   /**
    * Push an owner message into a RUNNING segment's session.
    *
@@ -506,6 +515,8 @@ export interface HttpDeps {
   readonly gateReadiness?: GateReadiness;
   /** Isolated scorer-only lane; production passes the boot-reconciled instance. */
   readonly gateRecovery?: GateRecoveryController;
+  /** Isolated terminal creative recovery lane. */
+  readonly creativeRecovery?: TerminalCreativeRecoveryController;
   /**
    * How a page named in a ticket gets captured. Defaults to real chromium.
    *
@@ -576,6 +587,7 @@ interface ResolvedHttpDeps extends HttpDeps {
   readonly gate: GateProbe;
   readonly gateReadiness: GateReadiness;
   readonly gateRecovery: GateRecoveryController;
+  readonly creativeRecovery: TerminalCreativeRecoveryController;
   readonly projects: ProjectRunner;
   /** The boot arm check's verdict, carried onto every supervisor response. */
   readonly supervisorArm: { readonly armed: boolean; readonly armNote: string };
@@ -2401,6 +2413,22 @@ export function createDashboardServer(deps: HttpDeps): Server {
       readiness: gateReadiness,
       env: deps.env ?? process.env,
     }),
+    creativeRecovery: deps.creativeRecovery ?? new TerminalCreativeRecoveryController({
+      store: deps.store,
+      paths: deps.paths,
+      run: async (work) => {
+        const recover = deps.orchestrator.runTerminalCreativeRecovery;
+        if (recover === undefined) {
+          throw new TerminalCreativeRecoveryRefusal(
+            503,
+            "creative_recovery_worker_unavailable",
+            "the server has no terminal creative recovery worker wired",
+            "Start the production server with its Orchestrator recovery worker.",
+          );
+        }
+        return await recover.call(deps.orchestrator, work);
+      },
+    }),
     // A DEFAULT RUNNER SPAWNS NOTHING until a route asks it to, so building one
     // for a server that never serves `/api/projects` costs an object.
     projects: deps.projects ?? new ProjectRunner({ paths: deps.paths, env: deps.env ?? process.env }),
@@ -2740,13 +2768,20 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
 
   /* Recovery children are controller-owned. No public write may reopen,
    * relabel, message, design, cancel, resume, or publish one. */
-  if (method === "POST" && segments[3] !== "gate-recovery" && deps.store.isGateRecoveryTarget(runId)) {
+  const gateRecoveryTarget = deps.store.isGateRecoveryTarget(runId);
+  const creativeRecoveryTarget = isTerminalCreativeRecoveryTarget(deps.paths, runId);
+  const recoveryCommandAllowed = gateRecoveryTarget
+    ? segments[3] === "gate-recovery"
+    : creativeRecoveryTarget
+      ? segments[3] === "creative-recovery" || segments[3] === "creative-decision"
+      : true;
+  if (method === "POST" && !recoveryCommandAllowed) {
     sendError(
       response,
       409,
-      "gate_recovery_target_controller_owned",
-      `run ${runId} is a gate-only recovery child and cannot accept ordinary run commands`,
-      "Use the source run's gate-recovery endpoint with the same clientRequestId to read its durable result.",
+      creativeRecoveryTarget ? "creative_recovery_target_controller_owned" : "gate_recovery_target_controller_owned",
+      `run ${runId} is a controller-owned recovery child and cannot accept ordinary run commands`,
+      "Use the source run's recovery endpoint with the same clientRequestId to read its durable result.",
     );
     return;
   }
@@ -2804,6 +2839,36 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
       sendJson(response, result.replayed ? 200 : 201, result);
     } catch (error) {
       if (error instanceof GateRecoveryRefusal) {
+        sendError(response, error.status, error.code, error.message, error.remediation);
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
+  // POST /api/runs/:sourceRunId/creative-recovery
+  if (segments.length === 4 && segments[3] === "creative-recovery" && method === "POST") {
+    if (!originIsDashboardOwner(request.headers.origin)) {
+      sendError(response, 403, "cross_origin_write", "creative recovery may only come from the dashboard's exact origin", null);
+      return;
+    }
+    if (!requestIsJson(request)) {
+      sendError(response, 415, "unsupported_media_type", "POST a JSON body with Content-Type: application/json", null);
+      return;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await readBody(request));
+    } catch {
+      sendError(response, 400, "invalid_body", "the body is not valid JSON", "POST {\"clientRequestId\":\"…\",\"contractHash\":\"…\"}.");
+      return;
+    }
+    try {
+      const result = await deps.creativeRecovery.recover(runId, validateTerminalCreativeRecoveryRequest(payload));
+      sendJson(response, result.replayed ? 200 : 201, result);
+    } catch (error) {
+      if (error instanceof TerminalCreativeRecoveryRefusal) {
         sendError(response, error.status, error.code, error.message, error.remediation);
         return;
       }
@@ -2943,6 +3008,16 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
       return;
     }
     const decision = rawDecision as (typeof choices)[number];
+    if (isTerminalCreativeRecoveryTarget(deps.paths, runId) && decision !== "approved") {
+      sendError(
+        response,
+        409,
+        "creative_recovery_decision_unsupported",
+        "a controller-owned creative recovery child accepts only the idempotent approval/publication decision",
+        "Approve the accepted recovery evidence, or leave the immutable child unapproved.",
+      );
+      return;
+    }
     if (body["reason"] !== undefined && typeof body["reason"] !== "string") {
       sendError(response, 400, "invalid_creative_reason", "reason must be a string when present", null);
       return;

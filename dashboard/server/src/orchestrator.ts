@@ -231,8 +231,10 @@ import {
   writeCreativeRenderManifest,
 } from "./creative-pilot.js";
 import type { FreshCreativeContract } from "./creative-pilot.js";
-import { buildCreativeTastePromptInput, captureCreativeRender } from "./creative-render.js";
+import { buildCreativeTastePromptInput, captureCreativeRender, creativeRenderRefusalClass } from "./creative-render.js";
 import type { CreativeRenderOptions, CreativeRenderResult } from "./creative-render.js";
+import { CREATIVE_RECOVERY_WORKER_STARTED_FILE, isTerminalCreativeRecoveryTarget } from "./creative-recovery.js";
+import type { TerminalCreativeRecoveryWork, TerminalCreativeRecoveryWorkResult } from "./creative-recovery.js";
 import { readRenderedTasteCriticRecord, runRenderedTasteCritic, writeRenderedTasteCriticRecord } from "./rendered-taste-critic.js";
 import type { RenderedTasteCriticRecord, RenderedTasteCriticRequest } from "./rendered-taste-critic.js";
 import { canonicaliseForDecision, ClaudeSubscriptionBuilder } from "./builders/claude-builder.js";
@@ -281,7 +283,7 @@ import {
   writeDefectRecord,
 } from "./defect-record.js";
 import { judgeArtifact } from "./judge.js";
-import type { ModelCatalog } from "./models.js";
+import type { CatalogEntry, ModelCatalog } from "./models.js";
 import { DASHBOARD_ENV, ensureRunDirs, gateEnv, runPathsFor, safeSegment } from "./paths.js";
 import type { DashboardPaths, RunPaths } from "./paths.js";
 import { PreviewHost } from "./preview.js";
@@ -1334,6 +1336,7 @@ export class Orchestrator {
    * would have acted on the wrong run rather than refusing.
    */
   readonly #active = new Map<string, ActiveRun>();
+  readonly #creativeRecoveryTasks = new Set<Promise<TerminalCreativeRecoveryWorkResult>>();
 
   /** How many of the above may exist at once. 1 unless the owner raises it. */
   readonly #maxConcurrent: number;
@@ -1502,7 +1505,7 @@ export class Orchestrator {
     runId: string,
     message: { text: string; images: readonly string[]; seq: number; delivery: Delivery },
   ): boolean {
-    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
+    if (this.#isControllerRecoveryTarget(runId)) return false;
     const channel = this.#liveInputs.get(runId);
     if (channel === undefined || channel.closed) return false;
     return channel.push(message, message.delivery, () => {
@@ -1533,7 +1536,7 @@ export class Orchestrator {
    * that very answer.
    */
   deliverPlanReply(runId: string): boolean {
-    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
+    if (this.#isControllerRecoveryTarget(runId)) return false;
     return this.#plan.deliver(runId);
   }
 
@@ -1554,7 +1557,7 @@ export class Orchestrator {
    * `matchDirectionReference` stopped reading one as a direction.
    */
   deliverDesignRequest(runId: string): boolean {
-    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
+    if (this.#isControllerRecoveryTarget(runId)) return false;
     return this.#design.deliver(runId);
   }
 
@@ -1648,6 +1651,11 @@ export class Orchestrator {
     return this.#active.has(runId);
   }
 
+  #isControllerRecoveryTarget(runId: string): boolean {
+    return this.#deps.store.isGateRecoveryTarget(runId) ||
+      isTerminalCreativeRecoveryTarget(this.#deps.paths, runId);
+  }
+
   /* ---- queue -------------------------------------------------------- */
 
   /**
@@ -1684,7 +1692,7 @@ export class Orchestrator {
    * subscription to check an integer is not a test anyone will keep running.
    */
   assignQueuePositions(): readonly RunRow[] {
-    const queued = this.#deps.store.listQueued();
+    const queued = this.#deps.store.listQueued().filter((row) => !this.#isControllerRecoveryTarget(row.runId));
     let position = 1;
     for (const row of queued) {
       if (row.queuePosition !== position) {
@@ -1737,7 +1745,7 @@ export class Orchestrator {
    * before any of it.
    */
   cancel(runId: string): boolean {
-    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
+    if (this.#isControllerRecoveryTarget(runId)) return false;
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
     this.#plan.clearTimer(runId);
@@ -1769,7 +1777,7 @@ export class Orchestrator {
    * different conditions.
    */
   resume(runId: string, chosenMockup: string | null = null, chosenDirection: string | null = null): boolean {
-    if (this.#deps.store.isGateRecoveryTarget(runId)) return false;
+    if (this.#isControllerRecoveryTarget(runId)) return false;
     const row = this.#deps.store.getRun(runId);
     if (row === null || isTerminal(row.status)) return false;
     // SAME SHAPE, SAME SILENCE. Passing this guard on a running row requeues it
@@ -1966,10 +1974,47 @@ export class Orchestrator {
    */
   reconcileOnBoot(): void {
     for (const row of this.#deps.store.listByStatus("running")) {
+      if (isTerminalCreativeRecoveryTarget(this.#deps.paths, row.runId)) {
+        const workerStarted = existsSync(join(
+          runPathsFor(this.#deps.paths, row.runId).results,
+          CREATIVE_RECOVERY_WORKER_STARTED_FILE,
+        ));
+        if (!workerStarted) {
+          this.#deps.store.updateRun(row.runId, { status: "awaiting_input", queuePosition: null });
+          this.#emit(row.runId, { type: "status", status: "awaiting_input" });
+          this.#emitLog(
+            row.runId,
+            "warn",
+            "the dashboard restarted before the controller-owned creative recovery worker began; the child is parked and only an exact replay of its source recovery request may start it",
+          );
+          continue;
+        }
+        const interruption =
+          "the dashboard restarted after the controller-owned creative recovery worker began; its partial mutation cannot be replayed safely and requires operator inspection";
+        this.#deps.store.closeAttempt(row.runId, {
+          endedAt: new Date().toISOString(),
+          endClass: "interrupted",
+          endDetail: interruption,
+          phaseReached: row.phase,
+        });
+        this.#emitLog(row.runId, "warn", interruption);
+        this.#recordUnmeasuredBacklog(row.runId, "infra", interruption);
+        this.#finish(row.runId, "failed", {
+          phase: "done",
+          endedAt: new Date().toISOString(),
+          heldOutPass: row.heldOutPass,
+          falseFinish: row.heldOutPass === false && row.agentDeclaredDone,
+          queuePosition: null,
+          failureReason: interruption,
+          gateAttempts: row.gateAttempts,
+          ...(row.gateStopReason === null ? { gateStopReason: "infra" as const } : {}),
+        });
+        continue;
+      }
       // Gate-recovery children are owned by GateRecoveryController's durable
       // protocol and were reconciled before this method. Requeueing one would
       // invoke the normal builder/fixer path and violate the gate-only boundary.
-      if (this.#deps.store.isGateRecoveryTarget(row.runId)) continue;
+      if (this.#isControllerRecoveryTarget(row.runId)) continue;
       /*
        * THE INTERRUPTED CLASS, AND THE LARGEST "NOT SELF-MAINTAINING" HOLE IN
        * THIS SYSTEM UNTIL 2026-08-05.
@@ -2046,7 +2091,7 @@ export class Orchestrator {
     // exit, and the run waits for a click that a cron submission was never going
     // to produce.
     for (const row of this.#deps.store.listByStatus("awaiting_input")) {
-      if (this.#deps.store.isGateRecoveryTarget(row.runId)) continue;
+      if (this.#isControllerRecoveryTarget(row.runId)) continue;
       const paths = runPathsFor(this.#deps.paths, row.runId);
       /*
        * THE PLAN PARK IS RECONCILED FIRST, AND WITHOUT THIS BRANCH IT IS AN
@@ -2088,7 +2133,7 @@ export class Orchestrator {
     // refusal-time path, where the off-reason IS the thing worth saying.
     if (this.#recoveryEnabled("throttled")) {
       for (const row of this.#deps.store.listByStatus("rate_limited")) {
-        if (this.#deps.store.isGateRecoveryTarget(row.runId)) continue;
+        if (this.#isControllerRecoveryTarget(row.runId)) continue;
         /*
          * RE-ARMED FOR THE REMAINDER: the row's ORIGINAL `rateLimitedAt` goes in,
          * so a dashboard that restarts every few minutes cannot push the deadline
@@ -2155,12 +2200,14 @@ export class Orchestrator {
     // `reconcileOnBoot`. `#stopped` is already set above, so the `pump()` in
     // `#start`'s finally cannot start the next queued run on the way out.
     for (const live of this.#active.values()) live.abort.abort(ABORT_SHUTDOWN);
+    await Promise.allSettled([...this.#creativeRecoveryTasks]);
     await this.#deps.preview.stop();
   }
 
   /* ---- one run ------------------------------------------------------ */
 
   async #start(runId: string): Promise<void> {
+    if (this.#isControllerRecoveryTarget(runId)) return;
     const abort = new AbortController();
     this.#active.set(runId, { runId, abort });
     try {
@@ -4167,6 +4214,7 @@ export class Orchestrator {
     executionContract: ArtifactExecutionContract,
     initialScore: GateOutcome,
     signal: AbortSignal,
+    recoveryEntry?: CatalogEntry,
   ): Promise<CreativePhaseResult> {
     const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
     const authored = authorInputFor(ticket, manifest);
@@ -4243,7 +4291,7 @@ export class Orchestrator {
       });
       if (!rendered.ok) {
         this.#emitLog(runId, "warn", `creative render iteration ${String(iteration)} refused: ${rendered.reason}`);
-        review = { ...review, status: "creative_review_required", stopReason: "critic_unavailable" };
+        review = { ...review, status: "creative_review_required", stopReason: creativeRenderRefusalClass(rendered) };
         writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
         return { scored, rateLimit: null };
       }
@@ -4322,6 +4370,7 @@ export class Orchestrator {
         checked.fresh,
         critic,
         signal,
+        recoveryEntry,
       );
       if (revision.rateLimit !== null) return { scored, rateLimit: revision.rateLimit };
       if (signal.aborted) return { scored, rateLimit: null };
@@ -4430,10 +4479,11 @@ export class Orchestrator {
     contract: FreshCreativeContract,
     critic: RenderedTasteCriticRecord,
     signal: AbortSignal,
+    selectedEntry?: CatalogEntry,
   ): Promise<{ readonly completed: boolean; readonly rateLimit: RateLimitState | null }> {
     const row = this.#deps.store.getRun(runId);
     if (row === null || row.builderSessionId === null) return { completed: false, rateLimit: null };
-    const entry = await this.#deps.catalog.resolve(row.modelId);
+    const entry = selectedEntry ?? await this.#deps.catalog.resolve(row.modelId);
     if (entry === null || !entry.option.available) return { completed: false, rateLimit: null };
 
     const pending = this.#deps.store.pendingMessages(runId);
@@ -4453,7 +4503,7 @@ export class Orchestrator {
       workspace: runPaths.workspace,
       sealedRoots: [this.#deps.paths.acceptance, resultsRoot(this.#deps.paths)],
       allowedAgents: shortlistFor(classifySurface(ticketProse(stripPlanBlock(ticket.brief))), "off"),
-      modelId: row.modelId,
+      modelId: entry.option.id,
       effort: entry.effort,
       resumeSessionId: row.builderSessionId,
       signal,
@@ -6918,6 +6968,7 @@ export class Orchestrator {
         "error",
         `the sealed gate could not run, so this run has NO held-out verdict: ${failure}`,
       );
+      this.#deps.store.updateRun(runId, { gateAttempts: slot, gateStopReason: "infra" });
       return { record: null, container: null, failure };
     }
 
@@ -6958,6 +7009,11 @@ export class Orchestrator {
           "This is the failure mode that ships a broken app.",
       );
     }
+
+    this.#deps.store.updateRun(runId, {
+      gateAttempts: slot,
+      gateStopReason: record.heldOutPass ? "green" : "retry-cap",
+    });
 
     return { record, container, failure: null };
   }
@@ -8694,7 +8750,17 @@ export class Orchestrator {
     const runPaths = runPathsFor(this.#deps.paths, runId);
     try {
       const creative = readCreativePilotStatus(runPaths.results);
-      if (creative?.enabled === true && creative.applicable) {
+      const creativeRecovery = isTerminalCreativeRecoveryTarget(this.#deps.paths, runId);
+      if (creativeRecovery && !pilotMayPublish(creative)) {
+        this.#emitLog(
+          runId,
+          "warn",
+          `creative recovery publication is suppressed because its status is missing, invalid, or has not reached ` +
+            `functional/compiler green, critic acceptance, and owner approval. The inspectable run workspace remains at ${runPaths.workspace}.`,
+        );
+        return;
+      }
+      if (!creativeRecovery && creative?.enabled === true && creative.applicable) {
         if (!pilotMayPublish(creative)) {
           this.#emitLog(
             runId,
@@ -8821,6 +8887,217 @@ export class Orchestrator {
     return (progress) => {
       this.#emitLog(runId, "info", seatProgressLine(label, progress));
     };
+  }
+
+  /** Fresh-session repair lane for a controller-owned terminal creative child. */
+  runTerminalCreativeRecovery(work: TerminalCreativeRecoveryWork): Promise<TerminalCreativeRecoveryWorkResult> {
+    const task = this.#runTerminalCreativeRecovery(work);
+    this.#creativeRecoveryTasks.add(task);
+    void task.then(
+      () => this.#creativeRecoveryTasks.delete(task),
+      () => this.#creativeRecoveryTasks.delete(task),
+    );
+    return task;
+  }
+
+  async #runTerminalCreativeRecovery(work: TerminalCreativeRecoveryWork): Promise<TerminalCreativeRecoveryWorkResult> {
+    if (this.#stopped) throw new Error("creative recovery is unavailable while the orchestrator is stopped");
+    if (this.#active.has(work.targetRunId)) throw new Error("creative recovery child is already active");
+    const row = this.#deps.store.getRun(work.targetRunId);
+    if (row === null || row.status !== "running" || row.suiteSha256 === null) {
+      throw new Error("creative recovery child is not an owned running run");
+    }
+    const runPaths = runPathsFor(this.#deps.paths, work.targetRunId);
+    const log = new BuildLog(runPaths.buildLog);
+    const abort = new AbortController();
+    const signal = abort.signal;
+    let artifactHashBeforeMutation: string | null = null;
+    this.#active.set(work.targetRunId, { runId: work.targetRunId, abort });
+    try {
+      const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, work.targetRunId));
+      const ticket = ticketFromStoredReferences(row.ticketText, manifest);
+      if (ticket.id !== row.ticketId || ticket.sha256 !== row.ticketSha256) {
+        throw new Error("creative recovery child ticket lineage does not match its copied references");
+      }
+      const suite = assertSuiteIntact(ticket.id, { acceptanceRoot: this.#deps.paths.acceptance }).suite;
+      if (suite.sha256 !== row.suiteSha256) throw new Error("creative recovery child suite lineage changed");
+      const executionContract = loadArtifactExecutionContract(ticket.id, this.#deps.paths.acceptance);
+      const authored = authorInputFor(ticket, manifest);
+      const checkedBefore = freshCreativeContract(runPaths.results, authored.resolver);
+      if (checkedBefore.fresh === null || checkedBefore.fresh.contractHash !== work.contractHash) {
+        throw new Error("creative recovery child is not bound to the requested compiled contract");
+      }
+      if (readRenderedTasteCriticRecord(runPaths.results, 0) !== null) {
+        throw new Error("creative recovery child already has a critic attempt");
+      }
+
+      artifactHashBeforeMutation = hashCreativeArtifact(runPaths.workspace, join(runPaths.results, CREATIVE_RENDER_DIRECTORY));
+      const entry = await this.#deps.catalog.resolve(row.modelId);
+      if (entry === null || !entry.option.available) {
+        throw new Error(`creative recovery source selector ${row.modelId} is not available in the current catalog`);
+      }
+      if (entry.option.provider !== row.provider) {
+        throw new Error(`creative recovery source selector ${row.modelId} changed provider from ${row.provider} to ${entry.option.provider}`);
+      }
+      if (entry.resolvedModelId !== work.resolvedModelId) {
+        throw new Error(
+          `creative recovery source selector ${row.modelId} resolved to ${entry.resolvedModelId ?? "an unknown model"}, ` +
+          `not its frozen identity ${work.resolvedModelId}`,
+        );
+      }
+      const prompt = [
+        "TERMINAL CREATIVE RECOVERY — CONTROLLED MUTATION BOUNDARY",
+        `This is an isolated child copied from terminal run ${work.sourceRunId}. Never access or modify the source run.`,
+        "Start a fresh session. Repair only the implementation needed to make every route, section, motion, and required state exactly satisfy the frozen creative contract below.",
+        "Do not edit creative-contract.json or any harness/result/acceptance file. Do not weaken tests or invent alias/prefix normalization.",
+        "Run the project's normal compiler/tests and update the workspace self-report. Stop after the marker/state repair is complete.",
+        creativeContractPrompt(checkedBefore.fresh),
+      ].join("\n\n");
+      writeFileSync(join(runPaths.results, "creative-recovery-mutation-prompt.txt"), redactForPersistence(prompt), "utf8");
+      const outcome = await this.#builderFor(entry.option.provider).build({
+        runId: work.targetRunId,
+        prompt,
+        workspace: runPaths.workspace,
+        sealedRoots: [this.#deps.paths.acceptance, resultsRoot(this.#deps.paths)],
+        allowedAgents: shortlistFor(classifySurface(ticketProse(stripPlanBlock(ticket.brief))), "off"),
+        modelId: entry.option.id,
+        effort: entry.effort,
+        resumeSessionId: null,
+        signal,
+        sink: this.#sink(work.targetRunId, log, row.tokens),
+        env: this.#deps.env,
+      });
+      if (outcome.sessionId !== null) this.#deps.store.updateRun(work.targetRunId, { builderSessionId: outcome.sessionId });
+      if (outcome.tokens.callCount > 0) this.#recordSpend(work.targetRunId, "fix", row.modelId, outcome.tokens);
+      if (outcome.rateLimit.limited) throw new Error("creative recovery builder was rate limited");
+      if (outcome.cancelled || outcome.failure !== null) {
+        throw new Error(`creative recovery mutation did not complete: ${outcome.failure ?? "cancelled"}`);
+      }
+
+      const checkedAfter = freshCreativeContract(runPaths.results, authored.resolver);
+      if (checkedAfter.fresh === null || checkedAfter.fresh.contractHash !== work.contractHash) {
+        throw new Error("creative recovery mutation changed or invalidated the frozen contract binding");
+      }
+      const afterInitialMutation = hashCreativeArtifact(runPaths.workspace, join(runPaths.results, CREATIVE_RENDER_DIRECTORY));
+      if (afterInitialMutation === artifactHashBeforeMutation) throw new Error("creative recovery builder made no artifact mutation");
+      assertArtifactExecutionReady(runPaths.workspace, executionContract);
+
+      this.#deps.store.updateRun(work.targetRunId, { phase: "gate" });
+      this.#emit(work.targetRunId, { type: "phase", phase: "gate" });
+      let scored = await this.#gatePhase(work.targetRunId, ticket, suite, runPaths, true, signal, 1);
+      if (scored.record === null) throw new Error(`creative recovery sealed gate unavailable: ${scored.failure ?? "no score"}`);
+      if (scored.record.heldOutPass) {
+        const reviewed = await this.#creativeReviewPhase(
+          work.targetRunId,
+          ticket,
+          suite,
+          runPaths,
+          log,
+          true,
+          executionContract,
+          scored,
+          signal,
+          entry,
+        );
+        scored = reviewed.scored;
+      }
+      if (scored.record?.heldOutPass === false) {
+        const gateRedStatus = readCreativePilotStatus(runPaths.results);
+        if (gateRedStatus !== null) {
+          writeCreativePilotStatus(runPaths.results, {
+            ...gateRedStatus,
+            heldOutPass: false,
+            reviewState: "failed",
+            reviewStopReason: "functional_red",
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+      const status = readCreativePilotStatus(runPaths.results);
+      const finalHash = hashCreativeArtifact(runPaths.workspace, join(runPaths.results, CREATIVE_RENDER_DIRECTORY));
+      const gateRow = this.#deps.store.getRun(work.targetRunId);
+      if (
+        gateRow === null || gateRow.gateAttempts < 1 ||
+        !["green", "retry-cap", "not-converging", "infra", "cancelled", "artifact-contract"].includes(gateRow.gateStopReason ?? "")
+      ) {
+        throw new Error("creative recovery did not persist its exact gate attempt history");
+      }
+      const heldOutPass = scored.record?.heldOutPass ?? null;
+      const passed = heldOutPass === true && status?.criticDisposition === "accept";
+      const failureReason = passed ? null : `creative recovery stopped: ${status?.reviewStopReason ?? status?.criticDisposition ?? "unknown"}`;
+      const result: TerminalCreativeRecoveryWorkResult = {
+        terminalStatus: passed ? "passed" : "failed",
+        heldOutPass,
+        falseFinish: scored.record?.falseFinish ?? null,
+        failureReason,
+        artifactHashBeforeMutation,
+        artifactHashAfterMutation: finalHash,
+        renderManifestHash: status?.renderManifestHash ?? null,
+        criticDisposition: status?.criticDisposition ?? null,
+        criticAttempt: status?.criticAttempt ?? null,
+        iteration: status?.criticAttempt === null || status?.criticAttempt === undefined ? null : status.criticAttempt - 1,
+        reviewStopReason: status?.reviewStopReason ?? (scored.record?.heldOutPass === false ? "functional_red" : "prerequisite_unknown"),
+        gateAttempts: gateRow.gateAttempts,
+        gateStopReason: gateRow.gateStopReason as TerminalCreativeRecoveryWorkResult["gateStopReason"],
+      };
+      this.#finish(work.targetRunId, result.terminalStatus, {
+        phase: "done",
+        endedAt: new Date().toISOString(),
+        heldOutPass: result.heldOutPass,
+        falseFinish: result.falseFinish,
+        queuePosition: null,
+        failureReason: result.failureReason,
+        gateAttempts: result.gateAttempts,
+        gateStopReason: result.gateStopReason,
+      });
+      return result;
+    } catch (error) {
+      if (signal.aborted && abortReasonOf(signal) === ABORT_SHUTDOWN) throw error;
+      const current = this.#deps.store.getRun(work.targetRunId);
+      if (current === null) throw error;
+      const detail = describeError(error);
+      if (!isTerminal(current.status)) {
+        this.#recordUnmeasuredBacklog(work.targetRunId, current.gateStopReason === null ? "infra" : "artifact-contract", detail);
+        this.#finish(work.targetRunId, "failed", {
+          phase: "done",
+          endedAt: new Date().toISOString(),
+          heldOutPass: current.heldOutPass,
+          falseFinish: current.heldOutPass === false && current.agentDeclaredDone,
+          queuePosition: null,
+          failureReason: detail,
+          gateAttempts: current.gateAttempts,
+          ...(current.gateStopReason === null ? { gateStopReason: "infra" as const } : {}),
+        });
+      }
+      const terminal = this.#deps.store.getRun(work.targetRunId);
+      if (terminal === null || terminal.status !== "failed" || terminal.gateStopReason === null) throw error;
+      const status = readCreativePilotStatus(runPaths.results);
+      const finalHash = hashCreativeArtifact(runPaths.workspace, join(runPaths.results, CREATIVE_RENDER_DIRECTORY));
+      return {
+        terminalStatus: "failed",
+        heldOutPass: terminal.heldOutPass,
+        falseFinish: terminal.falseFinish,
+        failureReason: terminal.failureReason,
+        artifactHashBeforeMutation: artifactHashBeforeMutation ?? finalHash,
+        artifactHashAfterMutation: finalHash,
+        renderManifestHash: status?.renderManifestHash ?? null,
+        criticDisposition: status?.criticDisposition ?? null,
+        criticAttempt: status?.criticAttempt ?? null,
+        iteration: status?.criticAttempt === null || status?.criticAttempt === undefined ? null : status.criticAttempt - 1,
+        reviewStopReason: status?.reviewStopReason ?? "prerequisite_unknown",
+        gateAttempts: terminal.gateAttempts,
+        gateStopReason: terminal.gateStopReason as TerminalCreativeRecoveryWorkResult["gateStopReason"],
+      };
+    } finally {
+      log.close();
+      try {
+        await this.#deps.preview.stop(work.targetRunId);
+      } catch (error) {
+        this.#emitLog(work.targetRunId, "warn", `creative recovery preview cleanup failed: ${describeError(error)}`);
+      }
+      this.#active.delete(work.targetRunId);
+      this.pump();
+    }
   }
 
   #emitLog(runId: string, level: "info" | "warn" | "error", text: string): void {

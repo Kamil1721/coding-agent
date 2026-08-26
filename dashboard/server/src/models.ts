@@ -133,6 +133,8 @@ const ANTHROPIC_EFFORT_ORDER: readonly AnthropicEffort[] = ["low", "medium", "hi
 /** A catalog row plus the non-UI facts the builder driver needs. */
 export interface CatalogEntry {
   readonly option: ModelOption;
+  /** Vendor-resolved identity reported by the CLI, distinct from its callable selector. */
+  readonly resolvedModelId?: string | null;
   /**
    * Effort rung to pass to the SDK, or null when this model has no effort
    * parameter (the CLI reports `supportedEffortLevels` per model; `haiku` has
@@ -162,6 +164,7 @@ function anthropicRow(info: ModelInfo, available: boolean, reason: string | null
     resolved !== undefined && resolved !== info.value ? `${info.displayName} (${resolved})` : info.displayName;
   return {
     option: { id: info.value, label, provider: "anthropic", tier: "included", available, reason },
+    resolvedModelId: resolved ?? info.value,
     effort: chooseEffort(info),
   };
 }

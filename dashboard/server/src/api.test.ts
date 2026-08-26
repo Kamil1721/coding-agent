@@ -109,7 +109,10 @@ function writeExecutable(path: string, body: string): void {
 
 async function startHarness(claudeLoggedIn: boolean): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "dash-api-"));
-  const paths = resolvePaths({ DASHBOARD_HOME: dir });
+  const paths = resolvePaths({
+    DASHBOARD_HOME: dir,
+    DASHBOARD_PROJECTS_DIR: join(dir, "projects"),
+  });
   ensureDirs(paths);
 
   const claudeBin = join(dir, "claude-stub");

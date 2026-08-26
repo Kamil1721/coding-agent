@@ -1025,15 +1025,34 @@ function validateRouteSnapshot(
   if (snapshot.pathname !== route.path) {
     issues.push(issue("BROKEN_NAVIGATION", "blocking", profileId, route.id, null, null, `route loaded ${snapshot.pathname} instead of ${route.path}`));
   }
-  if (snapshot.routeMarkers.length !== 1 || snapshot.routeMarkers[0] !== route.id) {
-    issues.push(issue("SECTION_NOT_FOUND", "blocking", profileId, route.id, null, null, `route marker for ${route.id} is missing or duplicated`));
+  if (snapshot.routeMarkers.length === 1 && snapshot.routeMarkers[0] !== route.id) {
+    issues.push(issue("SECTION_NOT_FOUND", "blocking", profileId, route.id, null, null, `route marker mismatch: expected ${route.id}, found ${snapshot.routeMarkers[0] ?? "unknown"}`));
+  } else if (snapshot.routeMarkers.length !== 1) {
+    const state = snapshot.routeMarkers.length === 0 ? "missing" : `duplicated (${String(snapshot.routeMarkers.length)} markers)`;
+    issues.push(issue("SECTION_NOT_FOUND", "blocking", profileId, route.id, null, null, `route marker for ${route.id} is ${state}`));
   }
-  for (const sectionId of route.sectionIds) {
+  const routeSections = snapshot.sections.filter((item) => item.routeId === route.id);
+  for (const [index, sectionId] of route.sectionIds.entries()) {
     const matches = snapshot.sections.filter((item) => item.sectionId === sectionId && item.routeId === route.id);
     if (matches.length !== 1) {
-      issues.push(issue("SECTION_NOT_FOUND", "blocking", profileId, route.id, sectionId, null, `section marker ${sectionId} is missing or duplicated on ${route.id}`));
+      const observed = routeSections[index]?.sectionId;
+      const oneForSlot = matches.length === 0 && routeSections.length === route.sectionIds.length && observed !== undefined;
+      const detail = oneForSlot
+        ? `section marker mismatch on ${route.id} at position ${String(index + 1)}: expected ${sectionId}, found ${observed}`
+        : matches.length === 0
+          ? `section marker ${sectionId} is missing on ${route.id}`
+          : `section marker ${sectionId} is duplicated (${String(matches.length)} matches) on ${route.id}`;
+      issues.push(issue("SECTION_NOT_FOUND", "blocking", profileId, route.id, sectionId, null, detail));
     }
   }
+}
+
+/** Deterministic render-contract failures are not critic infrastructure outages. */
+export function creativeRenderRefusalClass(result: CreativeRenderResult): "artifact_contract" | "critic_unavailable" {
+  if (result.ok) return "critic_unavailable";
+  const deterministicIssue = result.issues.some((issue) => issue.code !== "CAPTURE_FAILED");
+  const deterministicReason = /^(?:binding |preview artefact |render capture would exceed|section |captured screenshot bytes)/u.test(result.reason);
+  return deterministicIssue || deterministicReason ? "artifact_contract" : "critic_unavailable";
 }
 
 async function driveState(

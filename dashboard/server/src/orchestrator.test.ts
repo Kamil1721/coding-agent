@@ -15,7 +15,7 @@
 
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -24,7 +24,7 @@ import { BAKEOFF_SCHEMA_VERSION } from "bakeoff/dist/contracts.js";
 import type { AcceptanceGate, AcceptanceSuite } from "bakeoff/dist/contracts.js";
 import { JUDGE_SEAT, SPEC_SEAT } from "bakeoff/dist/config.js";
 import { acceptanceSuiteDigest, sha256Hex } from "bakeoff/dist/hash.js";
-import { freezeSuite, verifySuiteIntact } from "bakeoff/dist/spec-freeze.js";
+import { assertSuiteIntact, freezeSuite, verifySuiteIntact } from "bakeoff/dist/spec-freeze.js";
 import { WORKSPACE } from "bakeoff/dist/runner.js";
 import { SUITE_MANIFEST_PATH, criteriaFromDraft, planFromDraft, testFileRefsFromDraft } from "bakeoff/dist/spec-types.js";
 import type { SuiteDraft } from "bakeoff/dist/spec-types.js";
@@ -92,7 +92,7 @@ import type { DesignPostSegmentAction } from "./orchestrator.js";
 import { attemptPath, liveResultPath, readAttempt, scorerOutRoot, scoresRoot } from "./gate-attempts.js";
 import { containerFixture, coverageFixture, tier0Fixture } from "./container-fixture.js";
 import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
-import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
+import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { AUTO_CONTINUE_MAX, boundFor } from "./recovery.js";
 import { PreviewHost } from "./preview.js";
 import { renderRunVerdict } from "./run-report.js";
@@ -109,9 +109,17 @@ import type { CreativeAuthorRepairFinding, CreativeContractAuthorRequest, Creati
 import {
   CREATIVE_AUTHOR_FILE,
   CREATIVE_CONTRACT_FILE,
+  authorInputFor,
   creativeAuthorAttemptFile,
+  initialCreativePilotStatus,
+  persistCreativeAuthorResult,
   readCreativePilotStatus,
+  writeCreativePilotStatus,
 } from "./creative-pilot.js";
+import {
+  CREATIVE_RECOVERY_OWNER_FILE,
+  CREATIVE_RECOVERY_WORKER_STARTED_FILE,
+} from "./creative-recovery.js";
 import { buildTasteEvidenceIndex, buildTastePromptFacts } from "./creative-render.js";
 import type { CreativeRenderOutput } from "./creative-render.js";
 import { REQUIRED_RENDER_PROFILES } from "./render-manifest.js";
@@ -510,6 +518,7 @@ const DESIGN_TICKET = "a portfolio page with a considered visual design";
 
 interface SegmentCall {
   readonly prompt: string;
+  readonly modelId: string;
   readonly allowedAgents: readonly string[];
   /**
    * Captured 2026-07-30. Its absence is WHY the score-record leak survived: the
@@ -783,6 +792,7 @@ class FakeBuilder implements SubscriptionBuilder {
 
     this.calls.push({
       prompt: request.prompt,
+      modelId: request.modelId,
       allowedAgents: [...request.allowedAgents],
       sealedRoots: [...request.sealedRoots],
       resumeSessionId,
@@ -1040,6 +1050,41 @@ class FakeCatalog extends ModelCatalog {
       },
       effort: null,
     };
+  }
+}
+
+/** Exposes a callable selector separately from the vendor-resolved model identity. */
+class ExactFakeCatalog extends ModelCatalog {
+  override async entries(): Promise<readonly CatalogEntry[]> {
+    return ["default", "opus[1m]"].map((id) => ({
+      option: {
+        id,
+        label: `${id} fake builder`,
+        provider: "anthropic" as const,
+        tier: "included" as const,
+        available: true,
+        reason: null,
+      },
+      resolvedModelId: "claude-opus-5[1m]",
+      effort: null,
+    }));
+  }
+
+  override async resolve(modelId: string): Promise<CatalogEntry | null> {
+    return (await this.entries()).find((entry) => entry.option.id === modelId) ?? null;
+  }
+}
+
+class RecoveryDriftCatalog extends ModelCatalog {
+  readonly #entry: CatalogEntry;
+
+  constructor(auth: AuthProbe, entry: CatalogEntry) {
+    super(auth, {}, async () => []);
+    this.#entry = entry;
+  }
+
+  override async resolve(): Promise<CatalogEntry | null> {
+    return this.#entry;
   }
 }
 
@@ -3043,7 +3088,6 @@ test("a resumed run archives BESIDE the earlier attempts, never on top of them",
     designRun: async () => ({ code: 0, stderr: "" }),
     designCanWrite: () => true,
   });
-
   const ticketText = "Build a portfolio site. No design lane.";
   freezeFor(ticketText, paths.acceptance);
   store.createRun({
@@ -6526,6 +6570,584 @@ test("ARTIFACT-BOOT: resumed attempt-zero refusal preserves archived attempt tru
   assert.match(run.backlog, /no current valid scorer verdict/i);
   assert.doesNotMatch(run.backlog, /UNKNOWN|Infrastructure failure|no scorer verdict was produced/);
   assert.doesNotMatch(run.log, /sealed gate could not produce|scorer infrastructure/i);
+});
+
+test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a revision, accepts, and finishes normally", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dash-creative-recovery-orch-"));
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  const paths = resolvePaths({ DASHBOARD_HOME: join(dir, "dashboard"), DASHBOARD_PROJECTS_DIR: join(dir, "projects") });
+  ensureDirs(paths);
+  const store = RunStore.open(paths.database);
+  const bus = new RunEventBus(store);
+  const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
+  const catalog = new ExactFakeCatalog(auth, {}, async () => []);
+  const preview = new PreviewHost();
+  const targetRunId = "run-creative-recovery-integration";
+  const sourceRunId = "run-terminal-source";
+  const ticketText = "Build a portfolio site. No design lane.";
+  const ticket = ticketFromText(ticketText);
+  freezeFor(ticketText, paths.acceptance);
+  const suite = assertSuiteIntact(ticket.id, { acceptanceRoot: paths.acceptance }).suite;
+  const runPaths = runPathsFor(paths, targetRunId);
+  ensureRunDirs(runPaths);
+  writeFileSync(join(runPaths.workspace, "index.html"), '<main data-creative-route="r.home">old</main>\n', "utf8");
+  const authored = authorInputFor(ticket, null);
+  const authorResult = compiledCreativeAuthorResult({
+    input: authored.input,
+    evidenceResolver: authored.resolver,
+  } as CreativeContractAuthorRequest);
+  persistCreativeAuthorResult(runPaths.results, authorResult);
+  assert.ok(authorResult.contractHash !== null);
+  const frozenContract = readFileSync(join(runPaths.results, CREATIVE_CONTRACT_FILE), "utf8");
+  const seedRecoveryStatus = (results: string): void => {
+    const initial = initialCreativePilotStatus(true, true);
+    writeCreativePilotStatus(results, {
+      ...initial,
+      contractHash: authorResult.contractHash,
+      compile: {
+        outcome: "passed",
+        contractHash: authorResult.contractHash,
+        findings: [],
+        checkedAt: new Date().toISOString(),
+      },
+      reviewState: "reviewing",
+    });
+  };
+  seedRecoveryStatus(runPaths.results);
+  writeFileSync(join(runPaths.results, CREATIVE_RECOVERY_OWNER_FILE), "{}\n", "utf8");
+
+  const builder = new FakeBuilder({
+    workspace: () => runPaths.workspace,
+    pngCount: 0,
+    segmentTokens: [],
+    writeManifest: false,
+    animateRefs: false,
+    artifactShape: "static-ready",
+    creativeRevisionMutation: () => {
+      writeFileSync(join(runPaths.workspace, "index.html"), "<!doctype html><title>revised fixture</title>", "utf8");
+    },
+  });
+  let gateCalls = 0;
+  let captureCalls = 0;
+  let criticCalls = 0;
+  let settledCalls = 0;
+  const orchestrator = new Orchestrator({
+    store,
+    bus,
+    paths,
+    catalog,
+    auth,
+    preview,
+    env: { HOME: home },
+    gateReadiness: READY_GATE_READINESS,
+    makeBuilder: () => builder,
+    designRun: async () => ({ code: 0, stderr: "" }),
+    designCanWrite: () => true,
+    onRunSettled: (runId) => { if (runId === targetRunId) settledCalls += 1; },
+    makeGate: async () => ({
+      scorerImageDigest: "sha256:" + "b".repeat(64),
+      score: async (run, frozenSuite) => {
+        gateCalls += 1;
+        assert.equal(run.ticketId, ticket.id);
+        assert.equal(frozenSuite.sha256, suite.sha256);
+        const live = liveResultPath(paths, targetRunId);
+        mkdirSync(dirname(live), { recursive: true });
+        writeFileSync(live, JSON.stringify(containerFixture({ ticketId: ticket.id })), "utf8");
+        return {
+          schemaVersion: BAKEOFF_SCHEMA_VERSION,
+          runId: run.runId,
+          ticketId: run.ticketId,
+          acceptanceSuiteSha256: frozenSuite.sha256,
+          heldOutPass: true,
+          criteriaResults: frozenSuite.criteria.map((criterion) => ({
+            criterionId: criterion.id,
+            passed: true,
+            tier: criterion.tier,
+            detail: `gate ${String(gateCalls)} green`,
+            evidenceRefs: [],
+          })),
+          falseFinish: false,
+          agentDeclaredDone: run.agentDeclaredDone,
+          scoredAt: new Date().toISOString(),
+          scorerImageDigest: "sha256:" + "b".repeat(64),
+          suiteExecution: {
+            exitCode: 0,
+            durationMs: 1,
+            testsTotal: 2,
+            testsPassed: 2,
+            testsFailed: 0,
+            stdoutPath: null,
+            stderrPath: null,
+            reportProblem: null,
+          },
+          protectedPathViolations: [],
+          harnessErrors: [],
+        } as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>;
+      },
+    }),
+    captureCreativeRender: async (request): Promise<{ readonly ok: true; readonly output: CreativeRenderOutput }> => {
+      captureCalls += 1;
+      assert.equal(request.binding.contractHash, authorResult.contractHash);
+      const manifest: RenderManifestV1 = {
+        schemaVersion: 1,
+        contractHash: request.binding.contractHash,
+        artifactHash: request.binding.artifactHash,
+        iteration: request.iteration,
+        profiles: Object.values(REQUIRED_RENDER_PROFILES),
+        captures: [],
+        motionTraces: [],
+        issues: [],
+      };
+      const canonical = canonicalJson(manifest);
+      const renderManifestHash = sha256Hex(canonical);
+      return {
+        ok: true,
+        output: {
+          manifest,
+          canonicalJson: canonical,
+          renderManifestHash,
+          evidenceIndex: buildTasteEvidenceIndex(request.binding.contract, manifest, renderManifestHash),
+          facts: buildTastePromptFacts(request.binding.contract, manifest, renderManifestHash),
+          files: [],
+        },
+      };
+    },
+    runRenderedTasteCritic: async (request) => {
+      criticCalls += 1;
+      const route = request.prompt.evidenceIndex.routes[0];
+      const sectionId = route?.sectionIds[0];
+      const evidence = request.prompt.facts.slice(0, 2).map((fact) => fact.evidence);
+      assert.ok(route !== undefined && sectionId !== undefined && evidence.length === 2);
+      const revise = criticCalls === 1;
+      return {
+        schemaVersion: 1,
+        attempt: request.attempt,
+        iteration: request.iteration,
+        treeHash: request.treeHash,
+        contractHash: request.prompt.evidenceIndex.contractHash,
+        renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
+        recordedAt: new Date().toISOString(),
+        criticDisposition: revise ? "revise" as const : "accept" as const,
+        ran: true,
+        output: {
+          schemaVersion: 1,
+          contractHash: request.prompt.evidenceIndex.contractHash,
+          renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
+          findings: revise ? [{
+            id: "fixture-revision",
+            category: "copy" as const,
+            code: "GENERIC_COPY" as const,
+            routeId: route.id,
+            sectionIds: [sectionId],
+            diagnosis: "The initial render needs one bounded revision.",
+            revision: "Apply the admitted evidence more directly.",
+            evidence,
+          }] : [],
+        },
+        findingFingerprint: revise ? "d".repeat(64) : null,
+        policyErrors: [],
+        detail: revise ? "one revision requested" : "accepted",
+        tokens: null,
+        rateLimit: null,
+        criticBy: "test/rendered-taste-critic",
+      };
+    },
+  });
+  let abortOrchestrator: Orchestrator | null = null;
+  let restartOrchestrator: Orchestrator | null = null;
+  let edgeOrchestrator: Orchestrator | null = null;
+
+  try {
+    store.createRun({
+      runId: targetRunId,
+      ticketId: ticket.id,
+      ticketTitle: "Portfolio recovery",
+      ticketText,
+      ticketSha256: ticket.sha256,
+      modelId: "default",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 0,
+      designLock: null,
+      interactive: false,
+    });
+    store.updateRun(targetRunId, {
+      status: "running",
+      phase: "build",
+      queuePosition: null,
+      artifactPath: runPaths.workspace,
+      suiteSha256: suite.sha256,
+      agentDeclaredDone: true,
+    });
+    store.putCriteria(targetRunId, suite.criteria.map((criterion) => ({
+      id: criterion.id,
+      statement: criterion.statement,
+      tier: criterion.tier,
+      result: "pending",
+    })));
+    store.openAttempt(targetRunId, new Date().toISOString(), "build");
+    const outcome = await orchestrator.runTerminalCreativeRecovery({
+      sourceRunId,
+      targetRunId,
+      contractHash: authorResult.contractHash,
+      resolvedModelId: "claude-opus-5[1m]",
+    });
+    assert.equal(gateCalls, 2, "the critic revision must invalidate and re-run the sealed gate");
+    assert.equal(captureCalls, 2);
+    assert.equal(criticCalls, 2);
+    assert.equal(builder.calls.length, 2);
+    assert.equal(builder.calls[0]?.modelId, "default", "duplicate aliases must not displace the source row's exact selector");
+    assert.equal(builder.calls[0]?.resumeSessionId, null, "the recovery mutation must start a fresh session");
+    assert.equal(builder.calls[1]?.resumeSessionId, "session-0", "the bounded critic revision stays in the recovery session");
+    assert.match(builder.calls[0]?.prompt ?? "", new RegExp(authorResult.contractHash));
+    assert.equal(outcome.criticDisposition, "accept");
+    assert.equal(outcome.reviewStopReason, "accepted");
+    assert.equal(outcome.gateAttempts, 2);
+    assert.equal(outcome.gateStopReason, "green");
+    assert.notEqual(outcome.artifactHashBeforeMutation, outcome.artifactHashAfterMutation);
+    assert.equal(readFileSync(join(runPaths.results, CREATIVE_CONTRACT_FILE), "utf8"), frozenContract);
+    const terminal = store.getRun(targetRunId);
+    assert.equal(terminal?.status, "passed");
+    assert.equal(terminal?.gateAttempts, 2);
+    assert.equal(terminal?.gateStopReason, "green");
+    assert.notEqual(terminal?.verdictPath, "");
+    assert.equal(store.listAttempts(targetRunId)[0]?.endClass, "completed");
+    assert.equal(existsSync(join(runPaths.results, "defect.json")), true);
+    assert.equal(settledCalls, 1);
+    assert.equal(orchestrator.isActive(targetRunId), false);
+    assert.deepEqual(existsSync(paths.projects) ? readdirSync(paths.projects) : [], [], "accepted critic evidence must not publish before owner approval");
+
+    let edgeBuilderCalls = 0;
+    edgeOrchestrator = new Orchestrator({
+      store,
+      bus,
+      paths,
+      catalog,
+      auth,
+      preview,
+      env: { HOME: home },
+      gateReadiness: READY_GATE_READINESS,
+      makeBuilder: () => ({
+        provider: "anthropic",
+        build: async (request) => {
+          edgeBuilderCalls += 1;
+          if (request.runId.endsWith("gate-red")) {
+            writeFileSync(join(request.workspace, "index.html"), "<!doctype html><title>gate red mutation</title>", "utf8");
+          }
+          return {
+            sessionId: "edge-recovery-session",
+            tokens: zeroTokens("anthropic"),
+            rateLimit: NOT_RATE_LIMITED,
+            completed: !request.runId.includes("builder-failure"),
+            cancelled: false,
+            failure: request.runId.includes("builder-failure") ? "fixture early builder failure" : null,
+          };
+        },
+      }),
+      designRun: async () => ({ code: 0, stderr: "" }),
+      designCanWrite: () => true,
+      makeGate: async () => ({
+        scorerImageDigest: "sha256:" + "c".repeat(64),
+        score: async (run, frozenSuite) => ({
+          schemaVersion: BAKEOFF_SCHEMA_VERSION,
+          runId: run.runId,
+          ticketId: run.ticketId,
+          acceptanceSuiteSha256: frozenSuite.sha256,
+          heldOutPass: false,
+          criteriaResults: frozenSuite.criteria.map((criterion) => ({
+            criterionId: criterion.id,
+            passed: false,
+            tier: criterion.tier,
+            detail: "fixture gate red",
+            evidenceRefs: [],
+          })),
+          falseFinish: true,
+          agentDeclaredDone: run.agentDeclaredDone,
+          scoredAt: new Date().toISOString(),
+          scorerImageDigest: "sha256:" + "c".repeat(64),
+          suiteExecution: {
+            exitCode: 1,
+            durationMs: 1,
+            testsTotal: 2,
+            testsPassed: 0,
+            testsFailed: 2,
+            stdoutPath: null,
+            stderrPath: null,
+            reportProblem: null,
+          },
+          protectedPathViolations: [],
+          harnessErrors: [],
+        }) as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>,
+      }),
+    });
+    const prepareEdgeRecovery = (runId: string, status: "valid" | "missing" | "corrupt"): void => {
+      const edgePaths = runPathsFor(paths, runId);
+      ensureRunDirs(edgePaths);
+      writeFileSync(join(edgePaths.workspace, "index.html"), '<main data-creative-route="r.home">old</main>\n', "utf8");
+      persistCreativeAuthorResult(edgePaths.results, authorResult);
+      writeFileSync(join(edgePaths.results, CREATIVE_RECOVERY_OWNER_FILE), "{}\n", "utf8");
+      if (status === "valid") seedRecoveryStatus(edgePaths.results);
+      else if (status === "corrupt") writeFileSync(join(edgePaths.results, "creative-status.json"), "{broken", "utf8");
+      store.createRun({
+        runId,
+        ticketId: ticket.id,
+        ticketTitle: `Edge recovery ${runId}`,
+        ticketText,
+        ticketSha256: ticket.sha256,
+        modelId: "default",
+        provider: "anthropic",
+        deploy: false,
+        startedAt: new Date().toISOString(),
+        queuePosition: 0,
+        designLock: null,
+        interactive: false,
+      });
+      store.updateRun(runId, {
+        status: "running",
+        phase: "build",
+        queuePosition: null,
+        artifactPath: edgePaths.workspace,
+        suiteSha256: suite.sha256,
+        agentDeclaredDone: true,
+      });
+      store.putCriteria(runId, suite.criteria.map((criterion) => ({
+        id: criterion.id,
+        statement: criterion.statement,
+        tier: criterion.tier,
+        result: "pending",
+      })));
+      store.openAttempt(runId, new Date().toISOString(), "build");
+    };
+    const edgeCases = [
+      ["run-recovery-missing-status-builder-failure", "missing"],
+      ["run-recovery-corrupt-status-builder-failure", "corrupt"],
+      ["run-recovery-no-mutation", "valid"],
+      ["run-recovery-gate-red", "valid"],
+    ] as const;
+    for (const [runId, status] of edgeCases) {
+      prepareEdgeRecovery(runId, status);
+      const failed = await edgeOrchestrator.runTerminalCreativeRecovery({
+        sourceRunId,
+        targetRunId: runId,
+        contractHash: authorResult.contractHash,
+        resolvedModelId: "claude-opus-5[1m]",
+      });
+      assert.equal(failed.terminalStatus, "failed");
+      assert.equal(store.getRun(runId)?.status, "failed");
+      assert.equal(failed.gateAttempts, runId.endsWith("gate-red") ? 1 : 0);
+      assert.equal(failed.gateStopReason, runId.endsWith("gate-red") ? "retry-cap" : "infra");
+      assert.deepEqual(existsSync(paths.projects) ? readdirSync(paths.projects) : [], [], `${runId} must not publish a project copy`);
+    }
+    assert.equal(edgeBuilderCalls, edgeCases.length);
+
+    const catalogDrifts = [
+      {
+        runId: "run-recovery-provider-drift",
+        entry: {
+          option: {
+            id: "default",
+            label: "provider drift",
+            provider: "openai" as const,
+            tier: "included" as const,
+            available: true,
+            reason: null,
+          },
+          resolvedModelId: "claude-opus-5[1m]",
+          effort: null,
+        },
+        failure: /changed provider from anthropic to openai/u,
+      },
+      {
+        runId: "run-recovery-resolved-model-drift",
+        entry: {
+          option: {
+            id: "default",
+            label: "model drift",
+            provider: "anthropic" as const,
+            tier: "included" as const,
+            available: true,
+            reason: null,
+          },
+          resolvedModelId: "claude-sonnet-different",
+          effort: null,
+        },
+        failure: /not its frozen identity claude-opus-5\[1m\]/u,
+      },
+    ] as const;
+    for (const drift of catalogDrifts) {
+      prepareEdgeRecovery(drift.runId, "valid");
+      let driftBuilderCalls = 0;
+      const driftOrchestrator = new Orchestrator({
+        store,
+        bus,
+        paths,
+        catalog: new RecoveryDriftCatalog(auth, drift.entry),
+        auth,
+        preview,
+        env: { HOME: home },
+        gateReadiness: READY_GATE_READINESS,
+        makeBuilder: () => ({
+          provider: "anthropic",
+          build: async () => {
+            driftBuilderCalls += 1;
+            throw new Error("catalog drift must stop before builder access");
+          },
+        }),
+        designRun: async () => ({ code: 0, stderr: "" }),
+        designCanWrite: () => true,
+      });
+      try {
+        const failed = await driftOrchestrator.runTerminalCreativeRecovery({
+          sourceRunId,
+          targetRunId: drift.runId,
+          contractHash: authorResult.contractHash,
+          resolvedModelId: "claude-opus-5[1m]",
+        });
+        assert.equal(failed.terminalStatus, "failed");
+        assert.equal(failed.gateAttempts, 0);
+        assert.equal(failed.gateStopReason, "infra");
+        assert.match(failed.failureReason ?? "", drift.failure);
+        assert.equal(store.getRun(drift.runId)?.status, "failed");
+        assert.equal(driftBuilderCalls, 0);
+      } finally {
+        await driftOrchestrator.shutdown();
+      }
+    }
+
+    const interruptedRunId = `${targetRunId}-shutdown`;
+    const interruptedPaths = runPathsFor(paths, interruptedRunId);
+    ensureRunDirs(interruptedPaths);
+    writeFileSync(join(interruptedPaths.workspace, "index.html"), '<main data-creative-route="r.home">old</main>\n', "utf8");
+    persistCreativeAuthorResult(interruptedPaths.results, authorResult);
+    seedRecoveryStatus(interruptedPaths.results);
+    writeFileSync(join(interruptedPaths.results, CREATIVE_RECOVERY_OWNER_FILE), "{}\n", "utf8");
+    writeFileSync(join(interruptedPaths.results, CREATIVE_RECOVERY_WORKER_STARTED_FILE), "{}\n", "utf8");
+    store.createRun({
+      runId: interruptedRunId,
+      ticketId: ticket.id,
+      ticketTitle: "Interrupted portfolio recovery",
+      ticketText,
+      ticketSha256: ticket.sha256,
+      modelId: "default",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 0,
+      designLock: null,
+      interactive: false,
+    });
+    store.updateRun(interruptedRunId, {
+      status: "running",
+      phase: "build",
+      queuePosition: null,
+      artifactPath: interruptedPaths.workspace,
+      suiteSha256: suite.sha256,
+      agentDeclaredDone: true,
+    });
+    store.putCriteria(interruptedRunId, suite.criteria.map((criterion) => ({
+      id: criterion.id,
+      statement: criterion.statement,
+      tier: criterion.tier,
+      result: "pending",
+    })));
+    store.openAttempt(interruptedRunId, new Date().toISOString(), "build");
+    const retained: { signal: AbortSignal | null } = { signal: null };
+    const blockingBuilder: SubscriptionBuilder = {
+      provider: "anthropic",
+      build: async (request) => {
+        retained.signal = request.signal;
+        request.sink.session("blocked-recovery-session");
+        await new Promise<void>((resolve) => {
+          if (request.signal.aborted) resolve();
+          else request.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {
+          sessionId: "blocked-recovery-session",
+          tokens: zeroTokens("anthropic"),
+          rateLimit: NOT_RATE_LIMITED,
+          completed: false,
+          cancelled: true,
+          failure: null,
+        };
+      },
+    };
+    abortOrchestrator = new Orchestrator({
+      store,
+      bus,
+      paths,
+      catalog,
+      auth,
+      preview,
+      env: { HOME: home },
+      gateReadiness: READY_GATE_READINESS,
+      makeBuilder: () => blockingBuilder,
+      designRun: async () => ({ code: 0, stderr: "" }),
+      designCanWrite: () => true,
+    });
+    const interrupted = abortOrchestrator.runTerminalCreativeRecovery({
+      sourceRunId,
+      targetRunId: interruptedRunId,
+      contractHash: authorResult.contractHash,
+      resolvedModelId: "claude-opus-5[1m]",
+    });
+    for (const deadline = Date.now() + 2_000; retained.signal === null; ) {
+      if (Date.now() > deadline) throw new Error("recovery builder never received the retained abort signal");
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    assert.equal(abortOrchestrator.isActive(interruptedRunId), true);
+    await abortOrchestrator.shutdown();
+    await assert.rejects(interrupted, /cancelled/u);
+    assert.equal(retained.signal?.aborted, true);
+    assert.equal(abortOrchestrator.isActive(interruptedRunId), false);
+    assert.equal(store.getRun(interruptedRunId)?.status, "running", "shutdown interruption must remain nonterminal and fail closed");
+    assert.equal(store.listAttempts(interruptedRunId)[0]?.endedAt, null);
+
+    let ordinaryBuilderCalls = 0;
+    restartOrchestrator = new Orchestrator({
+      store,
+      bus,
+      paths,
+      catalog,
+      auth,
+      preview,
+      env: { HOME: home },
+      gateReadiness: READY_GATE_READINESS,
+      makeBuilder: () => ({
+        provider: "anthropic",
+        build: async () => {
+          ordinaryBuilderCalls += 1;
+          throw new Error("ordinary execution must not adopt a creative recovery child");
+        },
+      }),
+      designRun: async () => ({ code: 0, stderr: "" }),
+      designCanWrite: () => true,
+    });
+    restartOrchestrator.reconcileOnBoot();
+    restartOrchestrator.pump();
+    await new Promise((resolve) => setImmediate(resolve));
+    const interruptedTerminal = store.getRun(interruptedRunId);
+    assert.equal(interruptedTerminal?.status, "failed");
+    assert.equal(interruptedTerminal?.gateAttempts, 0);
+    assert.equal(interruptedTerminal?.gateStopReason, "infra");
+    assert.match(interruptedTerminal?.failureReason ?? "", /partial mutation cannot be replayed safely/u);
+    assert.equal(store.listAttempts(interruptedRunId)[0]?.endClass, "interrupted");
+    assert.equal(restartOrchestrator.resume(interruptedRunId), false);
+    assert.equal(ordinaryBuilderCalls, 0);
+    assert.equal(
+      store.eventsSince(interruptedRunId, 0).some((stored) =>
+        stored.event.type === "log" && /requires operator inspection/u.test(stored.event.text)),
+      true,
+    );
+  } finally {
+    await edgeOrchestrator?.shutdown();
+    await restartOrchestrator?.shutdown();
+    await abortOrchestrator?.shutdown();
+    await orchestrator.shutdown();
+    store.close();
+    removeDesignTree(dir);
+  }
 });
 
 test("ARTIFACT-BOOT: a resumed adversary finding preserves the cumulative gate-attempt count", async () => {
