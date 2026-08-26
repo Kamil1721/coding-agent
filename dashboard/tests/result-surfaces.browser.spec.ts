@@ -431,3 +431,106 @@ test("no publish record says so once, with the distinction behind the glyph", as
   );
   expect(await widthOf(page, "explain-project-body")).toBeGreaterThan(120);
 });
+
+/* ------------------------------------------------------------------ */
+/* ADDED — the twelve machine checks, which were on no screen at all    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE DEFECT: a run could read "8 of 8 must-pass checks green" on this panel
+ * while a MACHINE check was what failed it, and nothing on the page said which.
+ *
+ * The gate scores two kinds of thing — the frozen suite's `REQ-*` criteria and
+ * twelve deterministic gates — and only the first kind had rows in the criteria
+ * table, so `store.setCriterionResult` matched nothing for all twelve gates and
+ * dropped them. The header's count was honest about what it counted and silent
+ * about the half nobody could see.
+ *
+ * WHAT THESE TESTS ASSERT THAT A SOFTER ONE WOULD NOT. `toContainText("It
+ * builds")` passes on a panel that renders twelve labels and no results, which
+ * is the shape this feature most plausibly ships broken in. So each test below
+ * pairs a label with its OUTCOME, the count with the number of rows, and the
+ * failed row with the sentence under it.
+ *
+ * MUTATION M12, APPLIED, RED, REVERTED. `MachineChecksSection` rendered
+ * `checks.length` in place of `passed` in the header count, so twelve of twelve
+ * always read as passing. RED on the count assertion — which is the mutation
+ * that would reproduce the original defect exactly, one number to the left.
+ *
+ * MUTATION M13, APPLIED, RED, REVERTED. The `check.detail !== null` branch
+ * deleted, so a failed check showed its label and nothing else. RED on the
+ * detail assertion. That is the difference between "which check failed" and
+ * "why", and only the second is actionable.
+ */
+test("the twelve machine checks are on the panel, with which one failed", async ({
+  page,
+}) => {
+  await openResult(page, FINISHED_RUN_ID);
+  const section = page.getByTestId("machine-checks");
+  await expect(section).toBeVisible();
+
+  // TWELVE ROWS, COUNTED — not "at least one". A section that renders the two
+  // failures and drops the ten passes would satisfy every text assertion below.
+  await expect(section.locator("li")).toHaveCount(12);
+  await expect(section).toContainText("10 of 12 passing");
+
+  /*
+   * THE PAIRING IS THE ASSERTION. Each row is located by its own label and then
+   * read for its outcome, so a panel that printed twelve labels beside twelve
+   * "pass" words cannot satisfy this.
+   */
+  await expect(section.locator("li", { hasText: "It builds" })).toContainText("pass");
+  await expect(
+    section.locator("li", { hasText: "The real content is on the page" }),
+  ).toContainText("did not pass");
+  await expect(
+    section.locator("li", { hasText: "The full check run came back green" }),
+  ).toContainText("did not pass");
+
+  // THE ALLOWLISTED DETAIL IS UNDER THE ROW IT BELONGS TO, and it is the
+  // artefact's own words rather than a restatement of the label.
+  await expect(
+    section.locator("li", { hasText: "The real content is on the page" }),
+  ).toContainText("observed 0 row(s), required >= 6");
+
+  /*
+   * AND THE GRADER'S KEYS ARE NOWHERE ON THE PAGE. `GATE:suite-intact` carries a
+   * word the owner struck off the screen, and `title` attributes are exactly
+   * where such a string survives unnoticed — `criteria.tsx` therefore keeps the
+   * id out of the DOM. `innerText` misses attributes, so the outer HTML is what
+   * is read here.
+   */
+  expect(
+    await page.getByTestId("rail-panel").innerHTML(),
+    "a machine-check row put the grader's gate id into the page",
+  ).not.toContain("GATE:");
+});
+
+/**
+ * THE NULL, WHICH IS NOT AN EMPTY LIST.
+ *
+ * `machineChecks: null` means the run never reached the gate — queued, building,
+ * parked, cancelled before it. The panel says that in words. Twelve grey rows,
+ * or an absent section, would both say something false: the first that the
+ * checks ran and answered, the second that no such checks exist.
+ *
+ * MUTATION M14, APPLIED, RED, REVERTED. `MachineChecksSection` returning `null`
+ * for `checks === null` — the "just hide it" rendering. RED: the section was not
+ * found at all.
+ */
+test("a run that never reached the gate says so, rather than showing twelve blanks", async ({
+  page,
+}) => {
+  // RUN_ID is a live build: the fixture's `machineChecks` is null because the
+  // gate has not run, which is the state the server sends for every run before
+  // its first score record exists.
+  await openResult(page, RUN_ID);
+  const section = page.getByTestId("machine-checks");
+
+  await expect(section).toContainText("This run never got as far as these checks.");
+  await expect(section).toContainText("not run yet");
+  await expect(section.locator("li")).toHaveCount(0);
+  // NOT a pass count of any shape. "0 of 12" would read as twelve failures on a
+  // run that has not been measured at all.
+  await expect(section).not.toContainText("of 12");
+});
