@@ -313,7 +313,7 @@ test("a send that is REFUSED keeps every chip, and revokes nothing", async ({ pa
   const keptUrl = await previewUrlOf(page, "kept.png");
 
   await sendButton(page).click();
-  await expect(page.getByText("this run has finished")).toBeVisible();
+  await expect(page.getByText("this run has finished", { exact: true })).toBeVisible();
 
   await expect(page.getByTitle("kept.png")).toBeVisible();
   expect(await revoked(page)).not.toContain(keptUrl);
