@@ -6,16 +6,15 @@
 > operational lessons; it is not the authority for the current commit, dirty tree,
 > latest run outcome, or implementation status.
 
-> **VERIFIED CODE BASELINE `ba8ae81`:** executable scorer readiness is verified in
-> tests and a live sealed Chromium smoke;
-> machine-check result surfaces are verified `8/8`. The latest real run remains
-> `d728ab79`, **NO VERDICT**, `heldOutPass: null`. The stable next step is
-> `BACKLOG.md` `SCORE-001`: a strict gate-recovery child or controlled replacement
-> with immutable source, the exact frozen suite/snapshot, and no builder/model/fixer
-> spend. Gate-only recovery is not implemented; the Taste Critic chain is unproven;
-> Enhancement Scout remains design-only. The pre-documentation measurement was five
-> commits ahead of `origin/main`; verify current branch/upstream state live rather than
-> carrying that number forward.
+> **VERIFIED CODE BASELINE `56aa163`:** gate-only recovery is shipped and verified
+> for a terminal-red path. Source `d728ab79` remains immutable **NO VERDICT** with
+> `heldOutPass: null`; child `run-gate-recovery-5ffc96e73d39737f4b2bb197`
+> completed a sealed result with `heldOutPass: false`, `falseFinish: true`, and
+> Taste Critic explicitly `not-run`. The decisive failure is the builder's STATIC
+> delivery-contract mismatch, not infrastructure. The next step is
+> `ARTIFACT-BOOT-001`, followed by a normal full-pipeline run. Green recovery,
+> crash/boot reconciliation, the Taste chain, and Enhancement Scout remain
+> unproven. See the [recovery report](RUN-d728ab79-gate-recovery-2026-08-26.md).
 
 > **HISTORICAL ROUTE, 2026-08-16; SUPERSEDED FOR CURRENT WORK.** This file is the map of the
 > 2026-07-30 session and is kept for its measurements, not for its state — its

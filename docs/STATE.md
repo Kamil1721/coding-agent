@@ -1,104 +1,112 @@
 ---
 document_status: authoritative
 last_verified: 2026-08-26
-verified_at_commit: ba8ae81
+verified_at_commit: 56aa163
 ---
 
 # Current repository state
 
-This is the stable starting point for a new Claude or Codex session. It records
-what is true now; dated run reports and design documents are evidence and intent,
-not substitutes for this file.
+This is the stable starting point for a new Claude or Codex session. Dated run
+reports are evidence, not substitutes for this file.
 
 ## Repository checkpoint
 
 - Repository: `/Users/kamilborzecki/Projects/coding-agent`
-- Verified code baseline: `ba8ae81` on `main`.
-- Immediate predecessor: `e53f9f1`.
-- Documentation checkpoint: `31ea136`, pushed to `origin/main` on 2026-08-26.
-- Code-baseline commit chain, newest first:
-  - `ba8ae81` — `fix(runtime): gate spend on executable scorer readiness`
-  - `e53f9f1` — `test(dashboard): cover machine-check result surfaces`
-  - `624e564` — `docs: record run d728ab79 creative-park breakdown and fixes`
-  - `7abd149` — `fix(dashboard): park-aware waiting notice and parked chat copy`
-  - `259130f` — `feat(creative): bounded author retries and partial safe repairs`
+- Clean pushed baseline: `56aa163` (`feat(gate): add isolated no-verdict recovery`).
+- `HEAD`, `main`, and `origin/main` were equal when this state was verified.
+- Immediate predecessor: `55d426e`.
 
-Before the documentation checkpoint was committed, `main` was measured five commits
-ahead of `origin/main`. That is provenance, not a durable current-state claim. After
-every commit or push, verify the live branch, divergence, and worktree directly with
-`git status --short --branch` and `git log --oneline --decorate -8`.
+Recheck the branch, upstream divergence, and worktree directly after every commit
+or push; do not carry this checkpoint forward as an assumption.
 
-## Latest run
+## Latest source and recovery runs
 
-Run: `run-2026-08-25T10-30-39-122Z-d728ab79`
+Source: `run-2026-08-25T10-30-39-122Z-d728ab79`
 
-- Final pipeline outcome: **failed before the sealed scorer ran**. The terminal
-  failure was the scorer prerequisite inspection of `bakeoff-scorer:1`:
-  `docker image inspect` returned an invalid usage shape / exit `-1`.
-- Acceptance outcome: **NO VERDICT**.
-- `heldOutPass`: `null`.
-- The builder artifact records `status: "completed"` and
-  `agentDeclaredDone: true`; those fields describe the build session, not a held-out
-  acceptance result.
-- No sealed score was produced and no Taste Critic result exists for this run.
-- Executable scorer readiness is now verified in tests and by a live smoke against
-  digest `sha256:5c7a112cbea76741ea375bd32486d4d7fea25275e8cf8bc325b26067df62a18b`.
-  That prevents a repeat of this pre-spend prerequisite failure; it does not
-  retroactively score this run. No gate-only recovery or controlled replacement
-  run has been recorded.
+- The original remains immutable at **failed / done**, `heldOutPass: null`,
+  `falseFinish: null`, and `gateStopReason: infra`: its terminal outcome is still
+  **NO VERDICT**.
+- Before and after recovery, its whole run tree had 213 entries and logical
+  content-plus-metadata hash
+  `e9e86c5276d296670d6c08b97f66b106ec328a2e09f0a13c862b6837e4d67edf`.
+- Its database-owned records were unchanged: runs 1, criteria 16, events 1004,
+  messages 21, message requests 4, screenshots 13, run attempts 6, seat spend 4,
+  metered spend 2, continuations 0. Their logical hash remained
+  `9b085d2adf581f9f957f70ed1d1b6145440bde543d096729c5690e5378f14935`.
+
+Recovery child: `run-gate-recovery-5ffc96e73d39737f4b2bb197`
+
+- The child completed a real sealed score at **failed / done** with
+  `heldOutPass: false`, `falseFinish: true`, and
+  `gateStopReason: not-converging`.
+- It used the exact frozen suite
+  `b2f55a56882ec439b988ece9c4a368f7c0ac1aebe11aae8b1e3e50b4fe9c60b2`
+  and scorer image
+  `sha256:5c7a112cbea76741ea375bd32486d4d7fea25275e8cf8bc325b26067df62a18b`.
+  The recovery-time scorer-visible source and child snapshot digests both equal
+  `ec59faea05d546f71e82785b328bf2cc72b22ae2cc818d96743f40fa2f96829b`.
+- The child persisted 16 frozen criterion failures, 12 machine gate records, and
+  0 screenshots. It had 0 messages, run attempts, seat-spend rows, or
+  metered-spend rows. Its events are limited to phase/log/status, the 16 criterion
+  results, the verdict, and terminal status.
+- Builder, fixer, model, critic, Context7, judge, adversary, and publisher did not
+  run. Taste Critic is explicitly `not-run` because gate-only recovery makes no
+  model calls. Copied source design files are snapshot evidence, not recovery
+  design work.
 
 Primary evidence:
 
-- [Final run report](RUN-d728ab79-creative-park-2026-08-25.md)
-- [`results/verdict.md`](../dashboard/runs/run-2026-08-25T10-30-39-122Z-d728ab79/results/verdict.md)
-- [`results/creative-status.json`](../dashboard/runs/run-2026-08-25T10-30-39-122Z-d728ab79/results/creative-status.json)
-- [`results/run.json`](../dashboard/runs/run-2026-08-25T10-30-39-122Z-d728ab79/results/run.json)
+- [Gate-recovery report](RUN-d728ab79-gate-recovery-2026-08-26.md)
+- [Original run report](RUN-d728ab79-creative-park-2026-08-25.md)
+- [Recovery metadata](../dashboard/runs/run-gate-recovery-5ffc96e73d39737f4b2bb197/results/recovery.json)
+- [Sealed score](../dashboard/results/scores/run-gate-recovery-5ffc96e73d39737f4b2bb197.json)
+
+## Decisive result
+
+The real red is `GATE:boot`. The suite manifest intentionally chose STATIC mode
+from ticket behavior (`execution.start: null`) before the build; the authoring
+contract forbids choosing mode from whatever the builder later ships. The builder
+nevertheless delivered a Node server-only artifact (`start: node server.mjs`) and
+no root `index.html`. The scorer correctly served the artifact root statically;
+`/` returned 404 for about 30 seconds across 118 attempts. Routes, screenshots,
+and the suite therefore did not run, and all 16 requirements were unasserted.
+
+This is a static delivery-contract and handoff-enforcement failure. It is not an
+infrastructure failure, not a manifest-discovery bug, and not evidence of 16
+independently observed product defects.
 
 ## Shipped and verified at this checkpoint
 
-Commit `ba8ae81` adds a fail-closed, uncached executable-scorer readiness barrier
-before direct POST writes, captures, and model spend, plus a second fresh check at
-queue entry. Unavailable or unknown readiness parks queued runs without attempts or
-model spend; cancellation and shutdown are supported. Shared admission defaults to
-one active smoke and eight queued.
+Commit `56aa163` ships an isolated no-verdict recovery child with source
+immutability, exact suite/snapshot attribution, no build or model path, negative
+controls, and terminal result persistence. Targeted server and client typechecks
+were green; recovery, contract, security, and store coverage passed `56/56`.
+Final code, security, and debug reviews approved the feature.
 
-Runtime smoke v2 dynamically imports the runner/config, validates Playwright and
-the sealed environment, launches and closes Chromium under the scoring Docker seal,
-resolves the mutable image tag to an exact digest, and runs with sanitized env, no
-mounts, bounded time/output, and named-container cleanup. The seal parser validates
-the actual first image operand and has negative controls. A live smoke passed with
-Node `v24.18.0`, Playwright `1.62.0`, and Chromium `151.0.7922.34`.
+The last full server run before the final focused fix was 2485 total / 2479 pass /
+3 fail / 3 skip. The feature parity failure was then fixed and targeted
+verification passed, leaving two known pre-existing live-fixture failures: a
+hard-coded source continuation count and a malformed live design manifest. The
+full suite was not rerun after that focused fix.
 
-Direct intake now requires JSON and, when `Origin` is present, the exact dashboard
-origin. Originless loopback automation remains intentionally supported. A disconnect
-during reference or motion capture cannot create a run row, files, or pump work. The
-HTTP handler stops awaiting the capture; the underlying Playwright operation is not
-force-cancelled, but remains bounded and cleans up.
+The accepted residual is a same-OS-user pathname-swap TOCTOU. This is not the
+precreated-path vulnerability covered by the security controls.
 
-Verification recorded for this checkpoint: scorer runtime `9/9`, dashboard
-readiness/pre-spend `14/14`, machine-check result surfaces `8/8`, and a broad
-affected-dashboard run at `188/189`. Its sole capture-race failure was fixed; only the
-affected 14-test suite was then rerun and it passed `14/14`. Security and code review
-reported no remaining P1/P2 blocker.
-
-Do not infer implementation from
-[the capability and continuation design](DESIGN-capability-and-continuation-2026-08-19.md).
-In particular, the proposed capability-supply system, durable project
-continuation, and a proven scorer rescore path are not established as implemented.
-See [CAPABILITIES.md](CAPABILITIES.md) for the evidence-based matrix.
+Gate-only recovery is verified for this terminal-red path. A green recovery and
+crash/boot reconciliation remain unproven; this does not establish full-pipeline
+or Taste-chain reliability. See [CAPABILITIES.md](CAPABILITIES.md).
 
 ## Active next step
 
-Implement a strict gate-recovery child run or controlled replacement for `d728ab79`:
-keep the source immutable, use the exact frozen suite and snapshot, and permit no
-builder, model, or fixer spend. Only then execute it. Completion requires a new,
-correctly attributed verdict artifact and boolean `heldOutPass`; the original run
-must remain **NO VERDICT**. See `SCORE-001` in [BACKLOG.md](BACKLOG.md).
+Implement `ARTIFACT-BOOT-001`: propagate and enforce the frozen execution contract
+before and during build, require a root document for static tickets, and add a
+pre-gate contract check with a negative control. Then run a normal end-to-end
+replacement or continuation that reaches the held-out suite, screenshots, and
+Taste chain. See [BACKLOG.md](BACKLOG.md).
 
 ## Maintenance rule
 
-Update this file after every repository-state handoff and after every terminal
-run. Verify HEAD, upstream divergence, the dirty tree, the latest run artifacts,
-and blockers directly. Update [CAPABILITIES.md](CAPABILITIES.md) only when code plus
-test or run evidence changes a capability's status; append new work that cannot be
-finished to [BACKLOG.md](BACKLOG.md).
+Update this file after every repository-state handoff and terminal run. Verify
+HEAD, upstream divergence, the dirty tree, run artifacts, and blockers directly.
+Promote [CAPABILITIES.md](CAPABILITIES.md) only with code plus test or run evidence,
+and carry unfinished work in [BACKLOG.md](BACKLOG.md).

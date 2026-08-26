@@ -1,7 +1,7 @@
 ---
 document_status: authoritative
 last_verified: 2026-08-26
-verified_at_commit: ba8ae81
+verified_at_commit: 56aa163
 ---
 
 # Durable backlog
@@ -12,8 +12,9 @@ It records outcomes, not speculative implementation instructions.
 | ID | Priority | Status | Work | Done when | Evidence |
 |---|---|---|---|---|---|
 | DOC-001 | P0 | open | Reconcile the stale state claims in `dashboard/README.md` and `dashboard/STATUS.md` with the stable living state document. | Both files either contain current verified facts or explicitly point to `docs/STATE.md`; no second editable source of current state remains. | [STATE.md](STATE.md) |
-| SCORE-001 | P0 | open | Implement a controlled replacement or strict gate-recovery child run for `d728ab79`. | The source is immutable; the exact frozen suite and snapshot are attributed; no builder, model, or fixer spend is possible; negative controls prove the original run cannot be mutated or relabelled. | [No-verdict artifact](../dashboard/runs/run-2026-08-25T10-30-39-122Z-d728ab79/results/verdict.md) |
-| SCORE-002 | P0 | blocked by SCORE-001 | Produce a real terminal acceptance result after recovery. | A new, correctly attributed verdict has boolean `heldOutPass`; the original `d728ab79` remains **NO VERDICT**; the Taste Critic stage either has evidence or an explicit failure. | [Latest run state](STATE.md#latest-run) |
+| SCORE-001 | P0 | resolved | Implement a controlled replacement or strict gate-recovery child run for `d728ab79`. | The live child preserved the source, attributed the exact frozen suite and recovery-time snapshot, ran no builder/model/fixer path, and passed code plus negative controls. | [Recovery evidence](RUN-d728ab79-gate-recovery-2026-08-26.md#immutability-and-isolation) |
+| SCORE-002 | P0 | resolved | Produce a real terminal acceptance result after recovery. | The child has boolean `heldOutPass: false`; the source remains **NO VERDICT**. Taste Critic is explicitly `not-run`, which is correct for a no-model gate-only recovery. The goal was a boolean result, not a green result. | [Terminal result](RUN-d728ab79-gate-recovery-2026-08-26.md#terminal-result) |
+| ARTIFACT-BOOT-001 | P0 | open | Propagate and enforce the frozen execution contract before and during build so a STATIC ticket must deliver a root document. Add a pre-gate contract check and negative control. | A normal end-to-end replacement or continuation delivers the declared mode, reaches the held-out suite and screenshots, and records the Taste-chain outcome. | [Decisive recovery finding](RUN-d728ab79-gate-recovery-2026-08-26.md#why-the-red-result-is-real) |
 | READY-001 | P0 | open | Add the direct first scorer-readiness barrier to supervisor/cron intake. | Those intake paths fail closed before their first write or spend; the existing queue-entry recheck remains the second barrier. | [Capability boundary](CAPABILITIES.md) |
 | TEST-001 | P0 | resolved | Result-surface coverage is committed and verified. | Commit `e53f9f1` exists and the browser result-surface suite passes `8/8`. | [Capability matrix](CAPABILITIES.md) |
 | GIT-001 | P0 | resolved | The owner-authorized code and documentation checkpoint was committed and pushed. | `origin/main` contains checkpoint `31ea136`; post-push divergence was `0 0` before this closure commit. | [Repository checkpoint](STATE.md#repository-checkpoint) |

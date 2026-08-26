@@ -1,7 +1,7 @@
 ---
 document_status: authoritative-navigation
 last_verified: 2026-08-26
-verified_at_commit: ba8ae81
+verified_at_commit: 56aa163
 ---
 
 # Documentation map
@@ -29,15 +29,17 @@ every handoff. Their stable filenames are deliberate.
 ### Historical reports
 
 Run, session, finding, and dated state reports describe what was measured at a
-particular time. They are not current-state authorities. The most recent run record
-is [RUN-d728ab79-creative-park-2026-08-25.md](RUN-d728ab79-creative-park-2026-08-25.md),
-whose opening final-status update supersedes its earlier parked-run narrative.
+particular time. They are not current-state authorities. The latest evidence is the
+[gate-recovery report](RUN-d728ab79-gate-recovery-2026-08-26.md); the source
+[creative-park report](RUN-d728ab79-creative-park-2026-08-25.md) retains the
+original run's history and now links forward to that recovery.
 
 ### Historical evidence index
 
 | Run | Outcome at the time | Why it is retained |
 |---|---|---|
-| [`d728ab79`](RUN-d728ab79-creative-park-2026-08-25.md) | **NO VERDICT**; scorer not reached | Latest real run and the creative-park/repair evidence. Later readiness work does not retroactively score it. |
+| [`d728ab79` recovery child](RUN-d728ab79-gate-recovery-2026-08-26.md) | failed; `heldOutPass: false`, false finish | First live immutable gate-only recovery. It proves the terminal-red recovery path and identifies the STATIC delivery-contract failure. |
+| [`d728ab79` source](RUN-d728ab79-creative-park-2026-08-25.md) | **NO VERDICT**; scorer not reached | Original creative-park/repair evidence. The child does not mutate or retroactively score it. |
 | [`b1219c2d`](RUN-b1219c2d-breakdown-2026-08-18.md) | failed; `held_out_pass=0`, false finish | Pre-fix forensic ledger used by the capability/continuation design and included in this documentation checkpoint. |
 
 ### Design intent

@@ -9,10 +9,12 @@
 > therefore says **NO VERDICT WAS REACHED**, and
 > [`results/creative-status.json`](../dashboard/runs/run-2026-08-25T10-30-39-122Z-d728ab79/results/creative-status.json)
 > records `heldOutPass: null`. No sealed score or Taste Critic result exists for this
-> run. At `ba8ae81`, executable scorer readiness is verified by tests and a live
-> Chromium launch/close under the sealed scorer image. Gate-only recovery remains
-> unimplemented, and no controlled replacement has run; the readiness barrier does
-> not retroactively establish a pass or verdict.
+> run. At `56aa163`, gate-only recovery is shipped. The live child
+> `run-gate-recovery-5ffc96e73d39737f4b2bb197` completed a separately attributed
+> sealed result: `heldOutPass: false`, `falseFinish: true`, Taste Critic `not-run`.
+> The source stayed immutable and remains **NO VERDICT**; the child does not
+> retroactively score it. See the
+> [gate-recovery report](RUN-d728ab79-gate-recovery-2026-08-26.md).
 > The readiness evidence is scorer-runtime `9/9`, dashboard readiness/pre-spend
 > `14/14`, and a live smoke at the exact digest recorded in [STATE.md](STATE.md),
 > with fail-closed admission before direct writes/capture/spend and a fresh queue check.
