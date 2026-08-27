@@ -425,6 +425,15 @@ test("rejects duplicate ids, dangling references, route coverage and route order
   assert.ok(codes(path).includes("DUPLICATE_VALUE"));
 });
 
+test("every section requires a default render-state baseline", () => {
+  const contract = mutableContract();
+  contract.sections[0]!.requiredStates = ["interaction"];
+  const result = compile(contract);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((item) =>
+    item.code === "INVALID_VALUE" && item.path === "/sections/0/requiredStates"));
+});
+
 test("requires resolvable evidence with exact source and excerpt digests", () => {
   assert.ok(codes(validContract(), { resolve: () => null }).includes("EVIDENCE_NOT_FOUND"));
   assert.ok(

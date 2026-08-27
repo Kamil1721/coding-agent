@@ -1,5 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { strict as assert } from "node:assert";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -24,7 +26,8 @@ import type {
   LaunchCreativeRenderBrowser,
 } from "./creative-render.js";
 import { REQUIRED_RENDER_PROFILES } from "./render-manifest.js";
-import type { RenderManifestBinding, RenderProfileId } from "./render-manifest.js";
+import type { RenderCaptureV1, RenderManifestBinding, RenderManifestV1, RenderProfileId } from "./render-manifest.js";
+import { buildTasteCriticPrompt } from "./taste-policy.js";
 
 const SOURCE_HASH = "a".repeat(64);
 const EXCERPT_HASH = "b".repeat(64);
@@ -142,6 +145,22 @@ function bindingFixture(): RenderManifestBinding {
   return { contract, contractHash: compiled.contractHash, artifactHash: "c".repeat(64) };
 }
 
+function statefulBindingFixture(): RenderManifestBinding {
+  const contract = structuredClone(contractFixture()) as CreativeContractV1;
+  const workHero = contract.sections.find((item) => item.id === "work-hero");
+  assert.ok(workHero !== undefined);
+  (workHero as { requiredStates: readonly ("default" | "loading" | "error")[] }).requiredStates = [
+    "default",
+    "loading",
+    "error",
+  ];
+  const compiled = compileCreativeContract(JSON.stringify(contract), {
+    resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH }),
+  });
+  assert.equal(compiled.ok, true, JSON.stringify(compiled));
+  return { contract, contractHash: compiled.contractHash, artifactHash: "c".repeat(64) };
+}
+
 interface FakeSectionSnapshot {
   readonly sectionId: string;
   readonly routeId: string;
@@ -174,6 +193,11 @@ interface FakeFixture {
   readonly routes: Readonly<Record<RenderProfileId, FakeRouteMap>>;
   readonly motion: Readonly<Record<RenderProfileId, FakeMotionMap>>;
   readonly requests: readonly string[];
+  readonly renderStatePixels: boolean;
+  readonly renderInteractionPixels: boolean;
+  readonly stateReversionsAfterSettle: Readonly<Partial<Record<string, string>>>;
+  readonly stateWrites: string[];
+  readonly stateRequests: Readonly<Partial<Record<string, readonly string[]>>>;
 }
 
 function routeSnapshot(routeId: string, sectionIds: readonly string[], overflow = false, width = 720): FakeRouteSnapshot {
@@ -201,6 +225,11 @@ function fixture(overrides: {
   readonly routes?: FakeRouteOverrides;
   readonly motion?: FakeMotionOverrides;
   readonly requests?: readonly string[];
+  readonly renderStatePixels?: boolean;
+  readonly renderInteractionPixels?: boolean;
+  readonly stateReversionsAfterSettle?: Readonly<Partial<Record<string, string>>>;
+  readonly stateWrites?: string[];
+  readonly stateRequests?: Readonly<Partial<Record<string, readonly string[]>>>;
 } = {}): FakeFixture {
   const base: FakeFixture = {
     routes: {
@@ -240,6 +269,11 @@ function fixture(overrides: {
       },
     },
     requests: [],
+    renderStatePixels: true,
+    renderInteractionPixels: true,
+    stateReversionsAfterSettle: {},
+    stateWrites: [],
+    stateRequests: {},
   };
   return {
     routes: {
@@ -255,6 +289,11 @@ function fixture(overrides: {
       no_media: overrides.motion?.no_media ?? base.motion.no_media,
     },
     requests: overrides.requests ?? base.requests,
+    renderStatePixels: overrides.renderStatePixels ?? base.renderStatePixels,
+    renderInteractionPixels: overrides.renderInteractionPixels ?? base.renderInteractionPixels,
+    stateReversionsAfterSettle: overrides.stateReversionsAfterSettle ?? base.stateReversionsAfterSettle,
+    stateWrites: overrides.stateWrites ?? base.stateWrites,
+    stateRequests: overrides.stateRequests ?? base.stateRequests,
   };
 }
 
@@ -265,7 +304,10 @@ class FakePage implements CreativeRenderPage {
   readonly #pageErrorHandlers: ((error: Error) => void)[] = [];
   readonly #requestHandlers: ((request: CreativeRenderRequest) => void)[] = [];
   readonly #routeHandler: ((route: CreativeRenderRoute) => Promise<unknown>) | null;
+  readonly #states = new Map<string, string>();
+  #hovered = "";
   currentPath = "/";
+  readonly mouse = { move: async (_x: number, _y: number): Promise<void> => { this.#hovered = ""; } };
 
   constructor(
     fixtureData: FakeFixture,
@@ -316,9 +358,43 @@ class FakePage implements CreativeRenderPage {
       };
     }
     if (expression.includes("scrollIntoView")) return true;
-    if (expression.includes("querySelector('[data-state=")) return false;
+    if (expression.includes("const requiredState =")) {
+      const sectionMatch = /const sectionId = ("(?:[^"\\]|\\.)*");/u.exec(expression);
+      const stateMatch = /const requiredState = ("(?:[^"\\]|\\.)*");/u.exec(expression);
+      if (sectionMatch?.[1] === undefined || stateMatch?.[1] === undefined) return false;
+      return this.#states.get(JSON.parse(sectionMatch[1]) as string) === JSON.parse(stateMatch[1]);
+    }
+    if (expression.includes("const requestedState =")) {
+      const sectionMatch = /const sectionId = ("(?:[^"\\]|\\.)*");/u.exec(expression);
+      const stateMatch = /const requestedState = ("(?:[^"\\]|\\.)*");/u.exec(expression);
+      if (sectionMatch?.[1] === undefined || stateMatch?.[1] === undefined) return false;
+      const state = JSON.parse(stateMatch[1]) as string;
+      const sectionId = JSON.parse(sectionMatch[1]) as string;
+      this.#states.set(sectionId, state);
+      this.#fixture.stateWrites.push(`${sectionId}:${state}`);
+      for (const requestUrl of this.#fixture.stateRequests[state] ?? []) {
+        await this.#routeHandler?.({
+          request: () => ({ url: () => requestUrl, resourceType: () => "image", failure: () => null }),
+          continue: async () => {},
+          abort: async () => {},
+        });
+      }
+      return true;
+    }
+    if (expression.includes("data-creative-interaction-target")) return true;
     const snapshot = this.#fixture.routes[this.#profileId][this.currentPath];
-    return snapshot ?? {
+    if (snapshot !== undefined) {
+      return {
+        ...snapshot,
+        sections: snapshot.sections.map((section) => ({
+          ...section,
+          stateTokens: this.#states.has(section.sectionId)
+            ? [...section.stateTokens, this.#states.get(section.sectionId)!]
+            : section.stateTokens,
+        })),
+      };
+    }
+    return {
       pathname: this.currentPath,
       routeMarkers: [],
       sectionOrder: [],
@@ -327,12 +403,24 @@ class FakePage implements CreativeRenderPage {
     };
   }
 
-  async waitForTimeout(): Promise<void> {}
+  async waitForTimeout(): Promise<void> {
+    for (const [sectionId, state] of this.#states) {
+      const reverted = this.#fixture.stateReversionsAfterSettle[state];
+      if (reverted !== undefined) this.#states.set(sectionId, reverted);
+    }
+  }
 
-  async hover(): Promise<void> {}
+  async hover(selector: string): Promise<void> { this.#hovered = selector; }
 
-  async screenshot(): Promise<Uint8Array> {
-    return new TextEncoder().encode(`${this.#profileId}:${this.currentPath}`);
+  async screenshot(options: {
+    readonly clip: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+  }): Promise<Uint8Array> {
+    const state = this.#fixture.renderStatePixels
+      ? JSON.stringify([...this.#states.entries()].sort(([left], [right]) => left.localeCompare(right)))
+      : "states-hidden";
+    return new TextEncoder().encode(
+      `${this.#profileId}:${this.currentPath}:${JSON.stringify(options.clip)}:${state}:${this.#fixture.renderInteractionPixels ? this.#hovered : "interaction-hidden"}`,
+    );
   }
 
   async close(): Promise<void> {}
@@ -533,6 +621,179 @@ test("a capture-only issue remains critic infrastructure unavailable", () => {
   }), "critic_unavailable");
 });
 
+test("required non-default states must change the rendered pixels", async () => {
+  const binding = statefulBindingFixture();
+  const env = tempPreview();
+  const result = await captureCreativeRender({
+    preview: env.preview,
+    binding,
+    iteration: 0,
+    outputDir: env.outputDir,
+    launch: fakeLaunch(fixture({ renderStatePixels: false })),
+    readArtifactHash: () => binding.artifactHash,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /state loading is pixel-identical to its default state/u);
+  assert.ok(result.issues.some((item) => item.code === "CAPTURE_FAILED"));
+});
+
+test("a state reverted by the application during settle is not reasserted before capture", async () => {
+  const binding = statefulBindingFixture();
+  const env = tempPreview();
+  const stateWrites: string[] = [];
+  const result = await captureCreativeRender({
+    preview: env.preview,
+    binding,
+    iteration: 0,
+    outputDir: env.outputDir,
+    launch: fakeLaunch(fixture({
+      stateReversionsAfterSettle: { loading: "default" },
+      stateWrites,
+    })),
+    readArtifactHash: () => binding.artifactHash,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /section work-hero did not hold state loading through its settle window/u);
+  assert.equal(stateWrites.filter((write) => write === "work-hero:loading").length, 1);
+});
+
+test("an interaction state must produce pixels distinct from default", async () => {
+  const binding = bindingFixture();
+  const env = tempPreview();
+  const result = await captureCreativeRender({
+    preview: env.preview,
+    binding,
+    iteration: 0,
+    outputDir: env.outputDir,
+    launch: fakeLaunch(fixture({ renderInteractionPixels: false })),
+    readArtifactHash: () => binding.artifactHash,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /section home-hero state interaction is pixel-identical to its default state/u);
+});
+
+test("state-triggered network egress is blocked and reported", async () => {
+  const binding = statefulBindingFixture();
+  const env = tempPreview();
+  const result = await captureCreativeRender({
+    preview: env.preview,
+    binding,
+    iteration: 0,
+    outputDir: env.outputDir,
+    launch: fakeLaunch(fixture({
+      stateRequests: { loading: ["https://example.com/state-pixel.png"] },
+    })),
+    readArtifactHash: () => binding.artifactHash,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /blocked network egress/u);
+  assert.ok(result.issues.some((item) => item.code === "BROKEN_NAVIGATION"));
+});
+
+test("real Chromium captures below-fold, oversized sections and host-driven states", async () => {
+  const binding = statefulBindingFixture();
+  const env = tempPreview();
+  const server = createServer((request, response) => {
+    const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    const work = pathname === "/work";
+    const routeId = work ? "work" : "home";
+    const sections = work
+      ? `<section class="stateful" data-creative-section="work-hero" data-creative-state="default">
+           <div data-motion-id="work-reveal">A below-fold, oversized stateful hero.</div>
+         </section>
+         <footer data-creative-section="work-footer">Work footer</footer>`
+      : `<section class="home" data-creative-section="home-hero" data-creative-state="default">
+           <a href="/start" data-motion-id="home-action">Start review</a>
+           <img alt="Measured reference" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Crect width='8' height='8' fill='white'/%3E%3C/svg%3E">
+         </section>
+         <footer data-creative-section="home-footer">Home footer</footer>`;
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(`<!doctype html>
+      <html><head><style>
+        * { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body { margin: 0; background: rgb(12, 12, 12); color: white; }
+        main { min-height: 15000px; }
+        section, footer { padding: 32px; }
+        .home { height: 700px; background: rgb(60, 20, 20); }
+        .home a { display: inline-block; padding: 20px; color: white; background: rgb(20, 50, 90); transition: transform 80ms linear; }
+        .home a:hover { background: rgb(110, 70, 10); transform: translateX(8px); }
+        .stateful { margin-top: 12000px; min-height: 1600px; }
+        .stateful[data-creative-state="default"] { background: rgb(80, 20, 20); }
+        .stateful[data-creative-state="loading"] { background: rgb(20, 80, 20); }
+        .stateful[data-creative-state="error"] { background: rgb(20, 20, 80); }
+        footer { height: 180px; background: rgb(35, 35, 35); }
+        @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; transform: none !important; } }
+      </style></head>
+      <body><main data-creative-route="${routeId}">${sections}</main>
+      <script>
+        if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          const reveal = document.querySelector('[data-motion-id="work-reveal"]');
+          if (reveal) {
+            setTimeout(() => { reveal.style.opacity = '0.7'; reveal.style.transform = 'translateX(6px)'; }, 20);
+            setTimeout(() => { reveal.style.opacity = '1'; reveal.style.transform = 'translateX(0px)'; }, 70);
+          }
+        }
+      </script></body></html>`);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+
+  try {
+    const result = await captureCreativeRender({
+      preview: { ...env.preview, url: `http://127.0.0.1:${String(address.port)}` },
+      binding,
+      iteration: 0,
+      outputDir: env.outputDir,
+      readArtifactHash: () => binding.artifactHash,
+    });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.output.manifest.captures.length, 28);
+    for (const capture of result.output.manifest.captures) {
+      const region = capture.regions[0];
+      assert.ok(region !== undefined);
+      const viewport = REQUIRED_RENDER_PROFILES[capture.profileId].viewport;
+      assert.equal(region.box.x, 0);
+      assert.equal(region.box.y, 0);
+      assert.ok(region.box.width <= viewport.width);
+      assert.ok(region.box.height <= viewport.height);
+    }
+    for (const profileId of Object.keys(REQUIRED_RENDER_PROFILES) as RenderProfileId[]) {
+      const captures: readonly RenderCaptureV1[] = result.output.manifest.captures.filter((capture: RenderCaptureV1) =>
+        capture.profileId === profileId && capture.sectionId === "work-hero");
+      assert.equal(new Set(captures.map((capture) => capture.screenshotSha256)).size, 3);
+    }
+    assert.ok(result.output.facts.some((fact) =>
+      fact.observation.includes("desktop work/work-hero state loading")));
+    const loading = result.output.manifest.captures.find((capture) =>
+      capture.profileId === "desktop" && capture.sectionId === "work-hero" && capture.state === "loading");
+    assert.ok(loading !== undefined);
+    assert.ok(result.output.evidenceIndex.evidence.some((evidence) =>
+      evidence.kind === "region" && evidence.screenshotSha256 === loading.screenshotSha256));
+    const factKinds = new Set(result.output.facts.map((fact) => fact.evidence.kind));
+    for (const kind of ["contract", "region", "dom_text", "asset", "motion_trace"] as const) {
+      assert.ok(factKinds.has(kind), `critic facts retain ${kind}`);
+    }
+    for (const profileId of Object.keys(REQUIRED_RENDER_PROFILES) as RenderProfileId[]) {
+      assert.ok(result.output.facts.some((fact) =>
+        fact.evidence.kind === "region" && fact.evidence.frameId.startsWith(`${profileId}:`)));
+    }
+    assert.ok(result.output.facts.some((fact) => fact.observation.includes("state interaction")));
+    assert.ok(result.output.facts.some((fact) => fact.observation.includes("state error")));
+    assert.doesNotThrow(() => buildTasteCriticPrompt(buildCreativeTastePromptInput(result.output, binding.contract)));
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("fails closed when reduced-motion captures still observe active motion", async () => {
   const binding = bindingFixture();
   const env = tempPreview();
@@ -596,18 +857,34 @@ test("builds taste evidence indexes and facts from a captured manifest without e
   });
   assert.equal(result.ok, true, JSON.stringify(result));
 
+  const longTraceManifest = structuredClone(result.output.manifest) as RenderManifestV1 & {
+    motionTraces: { sampleIndexes: number[] }[];
+  };
+  assert.ok(longTraceManifest.motionTraces[0] !== undefined);
+  longTraceManifest.motionTraces[0].sampleIndexes = Array.from({ length: 16 }, (_, index) => index);
+
   const evidenceIndex = buildTasteEvidenceIndex(
     binding.contract,
-    result.output.manifest,
+    longTraceManifest,
     result.output.renderManifestHash,
   );
   assert.ok(evidenceIndex.evidence.some((item) => item.kind === "dom_text"));
+  assert.ok(evidenceIndex.evidence.some((item) => item.kind === "contract"));
   assert.ok(evidenceIndex.contractPointers.every((item) => !item.includes(env.outputDir)));
+  assert.ok(evidenceIndex.evidence.every((item) => item.kind !== "motion_trace" || item.sampleIndexes.length <= 8));
+  assert.ok(evidenceIndex.evidence.every((item) => item.kind !== "motion_trace" || item.observedProperties.length > 0));
 
   const facts = buildTastePromptFacts(
     binding.contract,
-    result.output.manifest,
+    longTraceManifest,
     result.output.renderManifestHash,
   );
   assert.ok(facts.every((item) => !item.observation.includes(env.outputDir)));
+  assert.ok(facts.every((item) => item.evidence.kind !== "motion_trace" || item.evidence.sampleIndexes.length <= 8));
+  assert.ok(facts.every((item) => item.evidence.kind !== "motion_trace" || item.evidence.observedProperties.length > 0));
+  const projectedLongTrace = facts.find((item) =>
+    item.evidence.kind === "motion_trace" && item.evidence.motionId === longTraceManifest.motionTraces[0]!.motionId);
+  assert.ok(projectedLongTrace !== undefined);
+  assert.match(projectedLongTrace.observation, /at samples 0, 1, 2, 3, 4, 5, 6, 7\.$/u);
+  assert.doesNotMatch(projectedLongTrace.observation, /at samples [^.]*\b(?:8|9|1[0-5])\b/u);
 });

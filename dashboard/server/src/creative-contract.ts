@@ -1047,6 +1047,7 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
   const destinationLabelsByIntent = new Map<string, Map<string, string>>();
   for (const [index, section] of contract.sections.entries()) {
     if (!routes.has(section.routeId)) error(ctx, "DANGLING_ROUTE", `/sections/${String(index)}/routeId`, "section route does not exist");
+    if (!section.requiredStates.includes("default")) error(ctx, "INVALID_VALUE", `/sections/${String(index)}/requiredStates`, "every section must include its default render state");
     if (copyIsBanned(section.headline)) error(ctx, "BANNED_COPY", `/sections/${String(index)}/headline`, "visible copy contains a forbidden generic phrase or dash character");
     if (section.eyebrow !== null && copyIsBanned(section.eyebrow)) error(ctx, "BANNED_COPY", `/sections/${String(index)}/eyebrow`, "visible copy contains a forbidden generic phrase or dash character");
     if (section.body !== null && copyIsBanned(section.body)) error(ctx, "BANNED_COPY", `/sections/${String(index)}/body`, "visible copy contains a forbidden generic phrase or dash character");

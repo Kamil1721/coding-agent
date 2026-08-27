@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
-import { canonicalJson, sha256Hex } from "./creative-contract.js";
+import { canonicalJson, REQUIRED_RENDER_STATES, sha256Hex } from "./creative-contract.js";
 import type {
   CreativeContractV1,
   CreativeMotionV1,
@@ -40,6 +40,8 @@ import type {
 export const CREATIVE_ROUTE_ATTRIBUTE = "data-creative-route";
 export const CREATIVE_SECTION_ATTRIBUTE = "data-creative-section";
 export const CREATIVE_MOTION_ATTRIBUTE = "data-motion-id";
+export const CREATIVE_STATE_ATTRIBUTE = "data-creative-state";
+const CREATIVE_INTERACTION_ATTRIBUTE = "data-creative-interaction-target";
 
 export const CREATIVE_NAVIGATION_TIMEOUT_MS = 20_000;
 export const CREATIVE_SCREENSHOT_TIMEOUT_MS = 10_000;
@@ -52,6 +54,7 @@ export const MAX_CREATIVE_TEXT_PER_CAPTURE = 8;
 export const MAX_CREATIVE_ASSETS_PER_CAPTURE = 8;
 export const MAX_CREATIVE_FACTS = 48;
 export const MAX_CREATIVE_TOTAL_BYTES = 60_000_000;
+const MAX_TASTE_MOTION_SAMPLES = 8;
 
 export interface CreativeRenderConsoleMessage {
   type(): string;
@@ -90,9 +93,11 @@ export interface CreativeRenderPage {
   evaluate(expression: string): Promise<unknown>;
   waitForTimeout(ms: number): Promise<unknown>;
   hover(selector: string, options: { readonly timeout: number }): Promise<unknown>;
+  readonly mouse: { move(x: number, y: number): Promise<unknown> };
   screenshot(options: {
     readonly type: "png";
     readonly timeout: number;
+    readonly animations: "disabled";
     readonly clip: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
   }): Promise<Uint8Array>;
   close(): Promise<unknown>;
@@ -493,19 +498,31 @@ export function buildTasteEvidenceIndex(
   })));
 
   const evidence: TasteEvidence[] = [];
-  for (const capture of manifest.captures.filter((item) => item.state === "default")) {
+  const evidenceIdentities = new Set<string>();
+  const addEvidence = (candidate: TasteEvidence): void => {
+    const identity = canonicalJson(candidate);
+    if (evidenceIdentities.has(identity)) return;
+    evidenceIdentities.add(identity);
+    evidence.push(candidate);
+  };
+  for (const pointer of contractPointersOf(contract)) {
+    addEvidence({ kind: "contract", pointer: pointer.pointer, valueSha256: pointer.valueSha256 });
+  }
+  for (const capture of manifest.captures) {
     const currentFrameId = frameId(capture.profileId, capture.routeId);
-    for (const text of capture.domText) {
-      evidence.push({
-        kind: "dom_text",
-        frameId: currentFrameId,
-        sectionId: capture.sectionId,
-        excerpt: text.excerpt,
-        textSha256: text.textSha256,
-      });
+    if (capture.state === "default") {
+      for (const text of capture.domText) {
+        addEvidence({
+          kind: "dom_text",
+          frameId: currentFrameId,
+          sectionId: capture.sectionId,
+          excerpt: text.excerpt,
+          textSha256: text.textSha256,
+        });
+      }
     }
     for (const region of capture.regions) {
-      evidence.push({
+      addEvidence({
         kind: "region",
         frameId: currentFrameId,
         sectionId: capture.sectionId,
@@ -513,22 +530,25 @@ export function buildTasteEvidenceIndex(
         box: { ...region.box },
       });
     }
-    for (const asset of capture.assets) {
-      evidence.push({
-        kind: "asset",
-        frameId: currentFrameId,
-        sectionId: capture.sectionId,
-        contentSha256: asset.contentSha256,
-        provenance: asset.provenance,
-      });
+    if (capture.state === "default") {
+      for (const asset of capture.assets) {
+        addEvidence({
+          kind: "asset",
+          frameId: currentFrameId,
+          sectionId: capture.sectionId,
+          contentSha256: asset.contentSha256,
+          provenance: asset.provenance,
+        });
+      }
     }
   }
   for (const trace of manifest.motionTraces) {
-    evidence.push({
+    if (trace.observedProperties.length === 0) continue;
+    addEvidence({
       kind: "motion_trace",
       frameId: frameId(trace.profileId, trace.routeId),
       motionId: trace.motionId,
-      sampleIndexes: [...trace.sampleIndexes],
+      sampleIndexes: trace.sampleIndexes.slice(0, MAX_TASTE_MOTION_SAMPLES),
       observedProperties: [...trace.observedProperties],
     });
   }
@@ -548,20 +568,71 @@ export function buildTastePromptFacts(
   manifest: RenderManifestV1,
   renderManifestHash: string,
 ): readonly TastePromptFact[] {
-  const facts: TastePromptFact[] = [];
+  const bucketOrder: string[] = [];
+  const buckets = new Map<string, TastePromptFact[]>();
+  const ensureBucket = (name: string): void => {
+    if (buckets.has(name)) return;
+    buckets.set(name, []);
+    bucketOrder.push(name);
+  };
+  for (const name of ["contract:job", "contract:layout", "contract:motion", "contract:proof"]) ensureBucket(name);
+  for (const profileId of RENDER_PROFILE_IDS) {
+    for (const state of REQUIRED_RENDER_STATES) ensureBucket(`region:${profileId}:${state}`);
+  }
+  for (const profileId of RENDER_PROFILE_IDS) {
+    ensureBucket(`dom:${profileId}`);
+    ensureBucket(`asset:${profileId}`);
+    ensureBucket(`motion:${profileId}`);
+  }
+
+  const factEvidence = new Set<string>();
+  const addFact = (bucket: string, fact: TastePromptFact): void => {
+    ensureBucket(bucket);
+    const identity = canonicalJson(fact.evidence);
+    if (factEvidence.has(identity)) return;
+    factEvidence.add(identity);
+    buckets.get(bucket)!.push(fact);
+  };
+
   const pointers = contractPointersOf(contract);
   for (const [index, pointer] of pointers.entries()) {
-    facts.push({
+    const bucket = pointer.pointer.includes("/layoutFamily")
+      ? "contract:layout"
+      : pointer.pointer.startsWith("/motion/")
+        ? "contract:motion"
+        : pointer.pointer.startsWith("/contentProof/")
+          ? "contract:proof"
+          : "contract:job";
+    addFact(bucket, {
       id: `contract-${String(index)}`,
       evidence: { kind: "contract", pointer: pointer.pointer, valueSha256: pointer.valueSha256 },
       observation: boundedObservation(pointer.observation),
     });
   }
 
+  for (const capture of manifest.captures) {
+    const currentFrameId = frameId(capture.profileId, capture.routeId);
+    for (const [index, region] of capture.regions.entries()) {
+      addFact(`region:${capture.profileId}:${capture.state}`, {
+        id: `region-${capture.id}-${String(index)}`,
+        evidence: {
+          kind: "region",
+          frameId: currentFrameId,
+          sectionId: capture.sectionId,
+          screenshotSha256: capture.screenshotSha256,
+          box: { ...region.box },
+        },
+        observation: boundedObservation(
+          `${capture.profileId} ${capture.routeId}/${capture.sectionId} state ${capture.state} region ${region.id} is ${String(Math.round(region.box.width))}x${String(Math.round(region.box.height))} at ${String(Math.round(region.box.x))},${String(Math.round(region.box.y))}.`,
+        ),
+      });
+    }
+  }
+
   for (const capture of manifest.captures.filter((item) => item.state === "default")) {
     const currentFrameId = frameId(capture.profileId, capture.routeId);
     for (const [index, text] of capture.domText.entries()) {
-      facts.push({
+      addFact(`dom:${capture.profileId}`, {
         id: `dom-${capture.id}-${String(index)}`,
         evidence: {
           kind: "dom_text",
@@ -575,23 +646,8 @@ export function buildTastePromptFacts(
         ),
       });
     }
-    for (const [index, region] of capture.regions.entries()) {
-      facts.push({
-        id: `region-${capture.id}-${String(index)}`,
-        evidence: {
-          kind: "region",
-          frameId: currentFrameId,
-          sectionId: capture.sectionId,
-          screenshotSha256: capture.screenshotSha256,
-          box: { ...region.box },
-        },
-        observation: boundedObservation(
-          `${capture.profileId} ${capture.routeId}/${capture.sectionId} region ${region.id} is ${String(Math.round(region.box.width))}x${String(Math.round(region.box.height))} at ${String(Math.round(region.box.x))},${String(Math.round(region.box.y))}.`,
-        ),
-      });
-    }
     for (const [index, asset] of capture.assets.entries()) {
-      facts.push({
+      addFact(`asset:${capture.profileId}`, {
         id: `asset-${capture.id}-${String(index)}`,
         evidence: {
           kind: "asset",
@@ -608,22 +664,39 @@ export function buildTastePromptFacts(
   }
 
   for (const trace of manifest.motionTraces) {
-    facts.push({
+    if (trace.observedProperties.length === 0) continue;
+    const sampleIndexes = trace.sampleIndexes.slice(0, MAX_TASTE_MOTION_SAMPLES);
+    addFact(`motion:${trace.profileId}`, {
       id: `motion-${trace.id}`,
       evidence: {
         kind: "motion_trace",
         frameId: frameId(trace.profileId, trace.routeId),
         motionId: trace.motionId,
-        sampleIndexes: [...trace.sampleIndexes],
+        sampleIndexes,
         observedProperties: [...trace.observedProperties],
       },
       observation: boundedObservation(
-        `${trace.profileId} motion ${trace.motionId} on ${trace.routeId}/${trace.sectionId} observed ${trace.observedProperties.join(", ") || "nothing"} at samples ${trace.sampleIndexes.join(", ")}.`,
+        `${trace.profileId} motion ${trace.motionId} on ${trace.routeId}/${trace.sectionId} observed ${trace.observedProperties.join(", ") || "nothing"} at samples ${sampleIndexes.join(", ")}.`,
       ),
     });
   }
 
-  if (facts.length > MAX_CREATIVE_FACTS) return facts.slice(0, MAX_CREATIVE_FACTS);
+  const facts: TastePromptFact[] = [];
+  const positions = new Map(bucketOrder.map((name) => [name, 0]));
+  while (facts.length < MAX_CREATIVE_FACTS) {
+    let added = false;
+    for (const name of bucketOrder) {
+      if (facts.length >= MAX_CREATIVE_FACTS) break;
+      const entries = buckets.get(name) ?? [];
+      const position = positions.get(name) ?? 0;
+      const fact = entries[position];
+      if (fact === undefined) continue;
+      facts.push(fact);
+      positions.set(name, position + 1);
+      added = true;
+    }
+    if (!added) break;
+  }
   void renderManifestHash;
   return facts;
 }
@@ -648,6 +721,7 @@ async function captureProfile(options: {
   const issues: RenderIssueDetail[] = [];
   const captures: RenderCaptureV1[] = [];
   const traces: RenderMotionTraceV1[] = [];
+  const motionIssues: RenderIssueDetail[] = [];
   const files: CreativeRenderFile[] = [];
   const sections = new Map(options.binding.contract.sections.map((item) => [item.id, item]));
   const motionsByRoute = new Map<string, CreativeMotionV1[]>();
@@ -686,19 +760,7 @@ async function captureProfile(options: {
         });
         await page.waitForTimeout(CREATIVE_STATE_SETTLE_MS);
 
-        for (const blocked of blockedRequests.splice(0)) {
-          issues.push(
-            issue(
-              "BROKEN_NAVIGATION",
-              "blocking",
-              options.profile.id,
-              route.id,
-              null,
-              null,
-              `render capture blocked network egress to ${blocked}`,
-            ),
-          );
-        }
+        issues.push(...drainBlockedRequestIssues(blockedRequests, options.profile.id, route.id));
         if (issues.some(isFatalIssue)) break;
 
         if ((response?.status() ?? 200) >= 400) {
@@ -718,15 +780,19 @@ async function captureProfile(options: {
 
         const snapshot = await readRouteSnapshot(page, route.id);
         validateRouteSnapshot(snapshot, route, options.profile.id, issues);
-        if (pageEvents.console.length > 0 || pageEvents.runtime.length > 0 || pageEvents.request.length > 0) {
-          issues.push(...eventIssues(pageEvents, options.profile.id, route.id));
-        }
+        issues.push(...drainPageIssues(pageEvents, options.profile.id, route.id));
         if (issues.some(isFatalIssue)) break;
 
         for (const sectionId of route.sectionIds) {
           const section = sections.get(sectionId);
           if (section === undefined) continue;
-          for (const state of section.requiredStates) {
+          const stateHashes = new Map<RequiredRenderState, string>();
+          const states = [
+            "default" as const,
+            ...section.requiredStates.filter((state) => state !== "default" && state !== "interaction"),
+            ...(section.requiredStates.includes("interaction") ? (["interaction"] as const) : []),
+          ];
+          for (const state of states) {
             const prepared = await driveState(
               page,
               route,
@@ -749,6 +815,25 @@ async function captureProfile(options: {
               break;
             }
             await page.waitForTimeout(state === "interaction" ? CREATIVE_INTERACTION_SETTLE_MS : CREATIVE_STATE_SETTLE_MS);
+            const confirmed = await confirmStateAfterSettle(
+              page,
+              section,
+              state,
+            );
+            if (!confirmed) {
+              issues.push(
+                issue(
+                  "CAPTURE_FAILED",
+                  "blocking",
+                  options.profile.id,
+                  route.id,
+                  section.id,
+                  null,
+                  `section ${section.id} did not hold state ${state} through its settle window`,
+                ),
+              );
+              break;
+            }
             const refreshed = await readRouteSnapshot(page, route.id);
             const snap = refreshed.sections.find((item) => item.sectionId === section.id);
             if (snap === undefined || snap.box === null || snap.routeId !== route.id) {
@@ -793,6 +878,30 @@ async function captureProfile(options: {
             });
             captures.push(capture.capture);
             files.push(capture.file);
+            issues.push(...drainBlockedRequestIssues(blockedRequests, options.profile.id, route.id));
+            issues.push(...drainPageIssues(pageEvents, options.profile.id, route.id));
+            if (issues.some(isFatalIssue)) break;
+            const identicalState = state === "interaction"
+              ? stateHashes.get("default") === capture.capture.screenshotSha256
+                ? (["default", capture.capture.screenshotSha256] as const)
+                : undefined
+              : [...stateHashes.entries()].find(([priorState, hash]) =>
+                  priorState !== "interaction" && hash === capture.capture.screenshotSha256);
+            if (identicalState !== undefined) {
+              issues.push(
+                issue(
+                  "CAPTURE_FAILED",
+                  "blocking",
+                  options.profile.id,
+                  route.id,
+                  section.id,
+                  null,
+                  `section ${section.id} state ${state} is pixel-identical to its ${identicalState[0]} state`,
+                ),
+              );
+              break;
+            }
+            stateHashes.set(state, capture.capture.screenshotSha256);
             if (refreshed.horizontalOverflow) {
               issues.push(
                 issue(
@@ -807,6 +916,20 @@ async function captureProfile(options: {
               );
             }
           }
+          const restored = await restoreDefaultState(page, route, section, options.stateDriver);
+          if (!restored && !issues.some(isFatalIssue)) {
+            issues.push(
+              issue(
+                "CAPTURE_FAILED",
+                "blocking",
+                options.profile.id,
+                route.id,
+                section.id,
+                null,
+                `section ${section.id} could not be restored to its default state`,
+              ),
+            );
+          }
           if (issues.some(isFatalIssue)) break;
         }
         if (issues.some(isFatalIssue)) break;
@@ -819,8 +942,10 @@ async function captureProfile(options: {
           captures,
         );
         traces.push(...motion.traces);
-        issues.push(...motion.issues);
-        if (issues.some(isFatalIssue)) break;
+        motionIssues.push(...motion.issues);
+        issues.push(...drainBlockedRequestIssues(blockedRequests, options.profile.id, route.id));
+        issues.push(...drainPageIssues(pageEvents, options.profile.id, route.id));
+        if (issues.some(isFatalIssue) || motionIssues.some(isFatalIssue)) break;
       } catch (error) {
         issues.push(
           issue(
@@ -850,7 +975,7 @@ async function captureProfile(options: {
     }
   }
 
-  return { captures, motion: { traces, issues }, files, issues };
+  return { captures, motion: { traces, issues: motionIssues }, files, issues };
 }
 
 export function creativeRenderRequestAllowed(previewUrl: string, requestUrl: string): boolean {
@@ -874,12 +999,13 @@ async function screenshotCapture(options: {
   readonly writeFile: (path: string, bytes: Uint8Array) => void;
   readonly readBackFile: (path: string) => Uint8Array;
 }): Promise<{ readonly capture: RenderCaptureV1; readonly file: CreativeRenderFile }> {
-  const box = clippedBox(options.snapshot.box);
+  const box = clippedBox(options.snapshot.box, REQUIRED_RENDER_PROFILES[options.profileId].viewport);
   const relativePath = `captures/${options.profileId}/${options.route.id}/${options.section.id}-${options.state}.png`;
   const absolutePath = join(options.outputDir, relativePath);
   const bytes = await options.page.screenshot({
     type: "png",
     timeout: options.screenshotTimeout,
+    animations: "disabled",
     clip: box,
   });
   options.writeFile(absolutePath, bytes);
@@ -900,7 +1026,7 @@ async function screenshotCapture(options: {
     screenshotPath: relativePath,
     screenshotSha256: sha256,
     domText: domTextOf(options.snapshot.texts),
-    regions: [{ id: "section", box }],
+    regions: [{ id: "section", box: { x: 0, y: 0, width: box.width, height: box.height } }],
     assets: assetsOf(options.snapshot.assets),
   };
   return {
@@ -1016,6 +1142,39 @@ function eventIssues(
   return issues;
 }
 
+function drainPageIssues(
+  events: PageIssueCollector,
+  profileId: RenderProfileId,
+  routeId: string,
+): readonly RenderIssueDetail[] {
+  return eventIssues(
+    {
+      console: events.console.splice(0),
+      runtime: events.runtime.splice(0),
+      request: events.request.splice(0),
+    },
+    profileId,
+    routeId,
+  );
+}
+
+function drainBlockedRequestIssues(
+  blockedRequests: string[],
+  profileId: RenderProfileId,
+  routeId: string,
+): readonly RenderIssueDetail[] {
+  return blockedRequests.splice(0).map((blocked) =>
+    issue(
+      "BROKEN_NAVIGATION",
+      "blocking",
+      profileId,
+      routeId,
+      null,
+      null,
+      `render capture blocked network egress to ${blocked}`,
+    ));
+}
+
 function validateRouteSnapshot(
   snapshot: RouteSnapshot,
   route: CreativeRouteV1,
@@ -1062,10 +1221,23 @@ async function driveState(
   state: RequiredRenderState,
   driver?: CreativeRenderStateDriver,
 ): Promise<boolean> {
-  if (driver !== undefined) return await driver(page, route, section, state);
-  await page.evaluate(scrollSectionExpression(section.id));
-  if (state === "default") return true;
   if (state === "interaction") {
+    const reset = driver === undefined
+      ? await page.evaluate(setCreativeStateExpression(section.id, "default")) === true
+      : await driver(page, route, section, "default");
+    if (!reset) return false;
+    if (await page.evaluate(scrollSectionExpression(section.id)) !== true) return false;
+    if (driver !== undefined) return await driver(page, route, section, state);
+    const primaryAction = section.actions.find((action) => action.priority === "primary") ?? section.actions[0];
+    const marked = await page.evaluate(markInteractionTargetExpression(section.id, primaryAction?.href ?? null)) === true;
+    if (marked) {
+      try {
+        await page.hover(attributeSelector(CREATIVE_INTERACTION_ATTRIBUTE, section.id), { timeout: CREATIVE_HOVER_TIMEOUT_MS });
+        return true;
+      } catch {
+        /* fall back to section-level hover below */
+      }
+    }
     try {
       await page.hover(attributeSelector(CREATIVE_SECTION_ATTRIBUTE, section.id), { timeout: CREATIVE_HOVER_TIMEOUT_MS });
       return true;
@@ -1073,7 +1245,43 @@ async function driveState(
       return false;
     }
   }
-  return await page.evaluate(hasStateMarkerExpression(section.id, state)) === true;
+  if (!await clearInteractionState(page, section.id)) return false;
+  const prepared = driver !== undefined
+    ? await driver(page, route, section, state)
+    : await page.evaluate(setCreativeStateExpression(section.id, state)) === true;
+  if (!prepared) return false;
+  return await page.evaluate(scrollSectionExpression(section.id)) === true;
+}
+
+async function restoreDefaultState(
+  page: CreativeRenderPage,
+  route: CreativeRouteV1,
+  section: CreativeSectionV1,
+  driver?: CreativeRenderStateDriver,
+): Promise<boolean> {
+  const restored = driver === undefined
+    ? await page.evaluate(setCreativeStateExpression(section.id, "default")) === true
+    : await driver(page, route, section, "default");
+  return restored && await clearInteractionState(page, section.id);
+}
+
+async function confirmStateAfterSettle(
+  page: CreativeRenderPage,
+  section: CreativeSectionV1,
+  state: RequiredRenderState,
+): Promise<boolean> {
+  if (state === "interaction") return true;
+  if (await page.evaluate(creativeStateHeldExpression(section.id, state)) !== true) return false;
+  return await page.evaluate(scrollSectionExpression(section.id)) === true;
+}
+
+async function clearInteractionState(page: CreativeRenderPage, sectionId: string): Promise<boolean> {
+  try {
+    await page.mouse.move(0, 0);
+    return await page.evaluate(clearInteractionTargetExpression(sectionId)) === true;
+  } catch {
+    return false;
+  }
 }
 
 async function readRouteSnapshot(page: CreativeRenderPage, routeId: string): Promise<RouteSnapshot> {
@@ -1122,6 +1330,7 @@ function routeSnapshotExpression(routeId: string): string {
     const routeAttr = ${JSON.stringify(CREATIVE_ROUTE_ATTRIBUTE)};
     const sectionAttr = ${JSON.stringify(CREATIVE_SECTION_ATTRIBUTE)};
     const motionAttr = ${JSON.stringify(CREATIVE_MOTION_ATTRIBUTE)};
+    const stateAttr = ${JSON.stringify(CREATIVE_STATE_ATTRIBUTE)};
     const routeEls = Array.from(document.querySelectorAll("[" + routeAttr + "]"));
     const routeMarkers = routeEls.map((el) => el.getAttribute(routeAttr)).filter((value) => typeof value === "string");
     const routeEl = routeEls.find((el) => el.getAttribute(routeAttr) === ${JSON.stringify(routeId)}) ?? null;
@@ -1131,11 +1340,16 @@ function routeSnapshotExpression(routeId: string): string {
       if (!(el instanceof Element)) return null;
       const rect = el.getBoundingClientRect();
       if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) return null;
+      const left = Math.max(0, rect.left);
+      const top = Math.max(0, rect.top);
+      const right = Math.min(window.innerWidth, rect.right);
+      const bottom = Math.min(window.innerHeight, rect.bottom);
+      if (right <= left || bottom <= top) return null;
       return {
-        x: Math.max(0, rect.left + window.scrollX),
-        y: Math.max(0, rect.top + window.scrollY),
-        width: Math.max(1, rect.width),
-        height: Math.max(1, rect.height)
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top
       };
     };
     const textNodes = (el) => {
@@ -1187,7 +1401,14 @@ function routeSnapshotExpression(routeId: string): string {
         box: boxOf(el),
         texts: textNodes(el),
         motionIds: Array.from(el.querySelectorAll("[" + motionAttr + "]")).map((node) => node.getAttribute(motionAttr)).filter((value) => typeof value === "string"),
-        stateTokens: [el.getAttribute("data-state"), ...Array.from(el.querySelectorAll("[data-state]")).map((node) => node.getAttribute("data-state"))].filter((value) => typeof value === "string"),
+        stateTokens: [
+          el,
+          ...Array.from(el.querySelectorAll("[" + stateAttr + "],[data-state]")).filter((node) => node.closest("[" + sectionAttr + "]") === el)
+        ].flatMap((node) => [
+            node.getAttribute(stateAttr),
+            node.getAttribute("data-state")
+          ])
+        .filter((value) => typeof value === "string"),
         assets: assets(el),
       })),
     };
@@ -1198,17 +1419,65 @@ function scrollSectionExpression(sectionId: string): string {
   return `(() => {
     const el = document.querySelector(${JSON.stringify(attributeSelector(CREATIVE_SECTION_ATTRIBUTE, sectionId))});
     if (!el) return false;
-    el.scrollIntoView({ block: "center", inline: "nearest" });
+    const prior = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = "auto";
+    el.scrollIntoView({ behavior: "auto", block: "center", inline: "nearest" });
+    document.documentElement.style.scrollBehavior = prior;
     return true;
   })()`;
 }
 
-function hasStateMarkerExpression(sectionId: string, state: RequiredRenderState): string {
+function setCreativeStateExpression(sectionId: string, state: RequiredRenderState): string {
   return `(() => {
+    const sectionAttr = ${JSON.stringify(CREATIVE_SECTION_ATTRIBUTE)};
+    const stateAttr = ${JSON.stringify(CREATIVE_STATE_ATTRIBUTE)};
+    const sectionId = ${JSON.stringify(sectionId)};
+    const requestedState = ${JSON.stringify(state)};
     const el = document.querySelector(${JSON.stringify(attributeSelector(CREATIVE_SECTION_ATTRIBUTE, sectionId))});
     if (!el) return false;
-    if (el.getAttribute("data-state") === ${JSON.stringify(state)}) return true;
-    return el.querySelector('[data-state=${JSON.stringify(state).replace(/^"|"$/g, "'")}]') !== null;
+    const nodes = [
+      el,
+      ...Array.from(el.querySelectorAll("[" + stateAttr + "]")).filter((node) => node.closest("[" + sectionAttr + "]") === el)
+    ];
+    for (const node of nodes) node.setAttribute(stateAttr, requestedState);
+    return el.getAttribute(stateAttr) === requestedState;
+  })()`;
+}
+
+function creativeStateHeldExpression(sectionId: string, state: RequiredRenderState): string {
+  return `(() => {
+    const stateAttr = ${JSON.stringify(CREATIVE_STATE_ATTRIBUTE)};
+    const sectionId = ${JSON.stringify(sectionId)};
+    const requiredState = ${JSON.stringify(state)};
+    const el = document.querySelector(${JSON.stringify(attributeSelector(CREATIVE_SECTION_ATTRIBUTE, sectionId))});
+    if (!el) return false;
+    return el.getAttribute(stateAttr) === requiredState || el.getAttribute("data-state") === requiredState;
+  })()`;
+}
+
+function markInteractionTargetExpression(sectionId: string, preferredHref: string | null): string {
+  return `(() => {
+    const sectionAttr = ${JSON.stringify(CREATIVE_SECTION_ATTRIBUTE)};
+    const interactionAttr = ${JSON.stringify(CREATIVE_INTERACTION_ATTRIBUTE)};
+    const sectionId = ${JSON.stringify(sectionId)};
+    const preferredHref = ${JSON.stringify(preferredHref)};
+    const el = document.querySelector(${JSON.stringify(attributeSelector(CREATIVE_SECTION_ATTRIBUTE, sectionId))});
+    if (!el) return false;
+    for (const marked of document.querySelectorAll("[" + interactionAttr + "]")) marked.removeAttribute(interactionAttr);
+    const candidates = Array.from(el.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'))
+      .filter((node) => node.closest("[" + sectionAttr + "]") === el);
+    const target = (preferredHref === null ? null : candidates.find((node) => node.getAttribute("href") === preferredHref)) ?? candidates[0] ?? null;
+    if (!target) return false;
+    target.setAttribute(interactionAttr, sectionId);
+    return true;
+  })()`;
+}
+
+function clearInteractionTargetExpression(sectionId: string): string {
+  return `(() => {
+    const selector = ${JSON.stringify(attributeSelector(CREATIVE_INTERACTION_ATTRIBUTE, sectionId))};
+    for (const node of document.querySelectorAll(selector)) node.removeAttribute(${JSON.stringify(CREATIVE_INTERACTION_ATTRIBUTE)});
+    return true;
   })()`;
 }
 
@@ -1374,16 +1643,17 @@ function boundedObservation(text: string): string {
   return text.replace(/\s+/gu, " ").trim().slice(0, 240);
 }
 
-function clippedBox(box: SectionBox | null): SectionBox {
+function clippedBox(
+  box: SectionBox | null,
+  viewport: { readonly width: number; readonly height: number },
+): SectionBox {
   if (box === null) throw new Error("section box is missing");
-  const width = Math.max(1, Math.round(box.width));
-  const height = Math.max(1, Math.round(box.height));
-  return {
-    x: Math.max(0, Math.round(box.x)),
-    y: Math.max(0, Math.round(box.y)),
-    width,
-    height,
-  };
+  const x = Math.max(0, Math.floor(box.x));
+  const y = Math.max(0, Math.floor(box.y));
+  const right = Math.min(viewport.width, Math.ceil(box.x + box.width));
+  const bottom = Math.min(viewport.height, Math.ceil(box.y + box.height));
+  if (right <= x || bottom <= y) throw new Error("section box is outside the capture viewport");
+  return { x, y, width: right - x, height: bottom - y };
 }
 
 function attributeSelector(attribute: string, value: string): string {

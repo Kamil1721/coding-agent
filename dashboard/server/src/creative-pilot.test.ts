@@ -12,11 +12,15 @@ import type { CreativeContractV1 } from "./creative-contract.js";
 import type { CreativeContractAuthorResult } from "./creative-contract-author.js";
 import {
   CREATIVE_AUTHOR_FILE,
+  CREATIVE_ARTIFACT_REPAIR_FILE,
+  CREATIVE_ARTIFACT_REPAIR_PROMPT_FILE,
   CREATIVE_COMPILE_FILE,
   CREATIVE_CONTRACT_FILE,
   CREATIVE_PILOT_PROJECT_ID,
   authorInputFor,
+  claimCreativeArtifactRepair,
   claimCreativeDecision,
+  creativeArtifactRevisionPrompt,
   creativeAuthorAttemptFile,
   creativeAuthorAttemptTextFile,
   creativeContractPrompt,
@@ -373,6 +377,96 @@ test("builder projection binds the hash and all host capture markers", () => {
   assert.match(prompt, /data-creative-route/u);
   assert.match(prompt, /data-creative-section/u);
   assert.match(prompt, /data-motion-id/u);
+  assert.match(prompt, /data-creative-state/u);
+  assert.match(prompt, /pixels distinct from default/u);
+  assert.match(prompt, /hovers the contracted primary action/u);
+  assert.match(prompt, /interaction MUST produce pixels visibly distinct from default/u);
+});
+
+test("artifact repair prompt is bounded, critic-free, and durably one-shot", () => {
+  const input = authorInputFor(TICKET, null);
+  const compiled = compileCreativeContract(JSON.stringify(validContract(input)), input.resolver);
+  assert.equal(compiled.ok, true);
+  const fresh = { contract: compiled.contract, contractHash: compiled.contractHash };
+  const refusal = {
+    ok: false as const,
+    reason: `section hero is missing ${"x".repeat(4_000)}`,
+    issues: [{
+      code: "SECTION_NOT_FOUND" as const,
+      severity: "blocking" as const,
+      profileId: "desktop" as const,
+      routeId: "home",
+      sectionId: "hero",
+      motionId: null,
+      evidenceSha256: HASH,
+    }],
+  };
+  const prompt = creativeArtifactRevisionPrompt(fresh, refusal);
+  assert.match(prompt, /^CREATIVE ARTIFACT REPAIR BOUNDARY/u);
+  assert.match(prompt, /same builder session/i);
+  assert.match(prompt, /Do not invent critic findings/u);
+  assert.ok(prompt.length < 20_000, "untrusted renderer text must stay bounded");
+
+  const outputDir = mkdtempSync(join(tmpdir(), "creative-artifact-repair-"));
+  const first = claimCreativeArtifactRepair(
+    outputDir,
+    { contractHash: compiled.contractHash, artifactHash: HASH },
+    0,
+    refusal,
+    prompt,
+    () => new Date("2026-08-27T10:00:00.000Z"),
+  );
+  assert.equal(first.kind, "created");
+  assert.equal(existsSync(join(outputDir, CREATIVE_ARTIFACT_REPAIR_FILE)), true);
+  assert.equal(readFileSync(join(outputDir, CREATIVE_ARTIFACT_REPAIR_PROMPT_FILE), "utf8"), prompt);
+  const persisted = readFileSync(join(outputDir, CREATIVE_ARTIFACT_REPAIR_FILE), "utf8");
+
+  const restart = claimCreativeArtifactRepair(
+    outputDir,
+    { contractHash: compiled.contractHash, artifactHash: "b".repeat(64) },
+    0,
+    { ...refusal, reason: "a different refusal after restart" },
+    "a different prompt",
+  );
+  assert.equal(restart.kind, "already_claimed");
+  assert.equal(readFileSync(join(outputDir, CREATIVE_ARTIFACT_REPAIR_FILE), "utf8"), persisted);
+  assert.equal(readFileSync(join(outputDir, CREATIVE_ARTIFACT_REPAIR_PROMPT_FILE), "utf8"), prompt);
+});
+
+test("artifact repair claim fails closed when prompt publication is interrupted", () => {
+  const input = authorInputFor(TICKET, null);
+  const compiled = compileCreativeContract(JSON.stringify(validContract(input)), input.resolver);
+  assert.equal(compiled.ok, true);
+  const fresh = { contract: compiled.contract, contractHash: compiled.contractHash };
+  const refusal = {
+    ok: false as const,
+    reason: "section hero is missing its contracted marker",
+    issues: [{
+      code: "SECTION_NOT_FOUND" as const,
+      severity: "blocking" as const,
+      profileId: "desktop" as const,
+      routeId: "home",
+      sectionId: "hero",
+      motionId: null,
+      evidenceSha256: HASH,
+    }],
+  };
+  const prompt = creativeArtifactRevisionPrompt(fresh, refusal);
+  const outputDir = mkdtempSync(join(tmpdir(), "creative-artifact-repair-crash-"));
+  writeFileSync(join(outputDir, CREATIVE_ARTIFACT_REPAIR_PROMPT_FILE), "simulated interrupted publication\n", "utf8");
+  assert.throws(() => claimCreativeArtifactRepair(
+    outputDir,
+    { contractHash: compiled.contractHash, artifactHash: HASH },
+    0,
+    refusal,
+    prompt,
+  ));
+  assert.equal(existsSync(join(outputDir, CREATIVE_ARTIFACT_REPAIR_FILE)), true, "the durable claim survives the prompt write failure");
+  assert.equal(
+    claimCreativeArtifactRepair(outputDir, { contractHash: compiled.contractHash, artifactHash: HASH }, 0, refusal, prompt).kind,
+    "already_claimed",
+    "a restart cannot spend a second repair after the interrupted publication",
+  );
 });
 
 test("publication remains closed until all four independent authorities approve", () => {
@@ -385,11 +479,14 @@ test("publication remains closed until all four independent authorities approve"
   const ready = {
     ...compiled,
     heldOutPass: true,
+    renderFresh: true,
     criticDisposition: "accept" as const,
     reviewState: "creative_ready" as const,
     ownerDecision: "approved" as const,
   };
   assert.equal(pilotMayPublish(ready), true);
+  assert.equal(pilotMayPublish({ ...ready, renderFresh: false }), false);
+  assert.equal(pilotMayPublish({ ...ready, renderFresh: null }), false);
   assert.equal(pilotMayPublish({ ...ready, heldOutPass: false }), false);
   assert.equal(pilotMayPublish({ ...ready, ownerDecision: null }), false);
   assert.equal(pilotMayPublish({

@@ -212,6 +212,8 @@ import type { CreativeReviewState } from "./creative-review-loop.js";
 import {
   CREATIVE_RENDER_DIRECTORY,
   authorInputFor,
+  claimCreativeArtifactRepair,
+  creativeArtifactRevisionPrompt,
   creativeContractPrompt,
   creativePilotEnabled,
   creativeRevisionPrompt,
@@ -4281,9 +4283,9 @@ export class Orchestrator {
 
       const iteration = attempt - 1;
       const outputDir = join(runPaths.results, CREATIVE_RENDER_DIRECTORY, String(iteration));
-      const treeHash = hashCreativeArtifact(runPaths.workspace, outputDir);
+      let treeHash = hashCreativeArtifact(runPaths.workspace, outputDir);
       const capture = this.#deps.captureCreativeRender ?? captureCreativeRender;
-      const rendered = await capture({
+      let rendered = await capture({
         preview,
         binding: { contract: checked.fresh.contract, contractHash: checked.fresh.contractHash, artifactHash: treeHash },
         iteration,
@@ -4291,9 +4293,126 @@ export class Orchestrator {
       });
       if (!rendered.ok) {
         this.#emitLog(runId, "warn", `creative render iteration ${String(iteration)} refused: ${rendered.reason}`);
-        review = { ...review, status: "creative_review_required", stopReason: creativeRenderRefusalClass(rendered) };
-        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
-        return { scored, rateLimit: null };
+        const refusalClass = creativeRenderRefusalClass(rendered);
+        if (refusalClass !== "artifact_contract") {
+          review = { ...review, status: "creative_review_required", stopReason: refusalClass };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored, rateLimit: null };
+        }
+
+        const repairPrompt = creativeArtifactRevisionPrompt(checked.fresh, rendered);
+        let claim: ReturnType<typeof claimCreativeArtifactRepair>;
+        try {
+          claim = claimCreativeArtifactRepair(
+            join(runPaths.results, CREATIVE_RENDER_DIRECTORY),
+            { contractHash: checked.fresh.contractHash, artifactHash: treeHash },
+            iteration,
+            rendered,
+            repairPrompt,
+          );
+        } catch (error) {
+          this.#emitLog(runId, "error", `creative artifact repair could not be claimed durably: ${describeError(error)}`);
+          review = { ...review, status: "creative_review_required", stopReason: "prerequisite_unknown" };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored, rateLimit: null };
+        }
+        if (claim.kind !== "created") {
+          this.#emitLog(runId, "warn", `creative render iteration ${String(iteration)} already consumed its one artifact repair`);
+          review = {
+            ...review,
+            status: "creative_review_required",
+            stopReason: "artifact_contract",
+          };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored, rateLimit: null };
+        }
+        status = statusBeforeCreativeMutation(status);
+        writeCreativePilotStatus(runPaths.results, status);
+        const staleFailure =
+          "the deterministic creative artifact repair entered a builder mutation boundary; the earlier sealed " +
+          "gate verdict is stale until a new sealed attempt completes";
+        scored = { record: null, container: null, failure: staleFailure };
+        const repair = await this.#runCreativeBuilderResume(
+          runId,
+          ticket,
+          runPaths,
+          log,
+          repairPrompt,
+          signal,
+          recoveryEntry,
+        );
+        if (repair.rateLimit !== null) {
+          review = { ...review, heldOutPass: null, status: "creative_review_required", stopReason: "invalid_attempt" };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored, rateLimit: repair.rateLimit };
+        }
+        if (signal.aborted) return { scored, rateLimit: null };
+        const executionFailure = this.#executionContractFailure(
+          runId,
+          runPaths,
+          executionContract,
+          "post-mutation",
+        );
+        if (executionFailure !== null) {
+          review = { ...review, heldOutPass: null, status: "creative_review_required", stopReason: "prerequisite_unknown" };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored: { record: null, container: null, failure: executionFailure }, rateLimit: null };
+        }
+        if (!repair.completed) {
+          const incompleteFailure =
+            "creative artifact repair did not complete cleanly after the builder mutation boundary; the workspace " +
+            "may have been partially changed and the earlier sealed gate verdict is stale";
+          this.#emitLog(runId, "error", incompleteFailure);
+          review = { ...review, heldOutPass: null, status: "creative_review_required", stopReason: "invalid_attempt" };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored: { record: null, container: null, failure: incompleteFailure }, rateLimit: null };
+        }
+
+        checked = freshCreativeContract(runPaths.results, authored.resolver);
+        status = statusAfterCompile(status, checked.compile);
+        if (checked.fresh === null) {
+          const compileFailure =
+            "creative artifact repair changed or invalidated the frozen creative contract; the earlier sealed gate verdict is stale";
+          this.#emitLog(runId, "error", compileFailure);
+          review = { ...review, creativeCompilePass: false, heldOutPass: null, status: "failed", stopReason: "compiler_red" };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored: { record: null, container: null, failure: compileFailure }, rateLimit: null };
+        }
+
+        scored = await this.#gatePhase(
+          runId,
+          ticket,
+          suite,
+          runPaths,
+          declaredDone,
+          signal,
+          highestArchivedAttempt(this.#deps.paths, runId) + 1,
+        );
+        const repairedHeldOutPass = scored.record?.heldOutPass ?? null;
+        if (repairedHeldOutPass !== true) {
+          review = {
+            ...review,
+            heldOutPass: repairedHeldOutPass,
+            status: repairedHeldOutPass === false ? "failed" : "creative_review_required",
+            stopReason: repairedHeldOutPass === false ? "functional_red" : "prerequisite_unknown",
+          };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored, rateLimit: null };
+        }
+        review = { ...review, heldOutPass: true, creativeCompilePass: true };
+        treeHash = hashCreativeArtifact(runPaths.workspace, outputDir);
+        rendered = await capture({
+          preview,
+          binding: { contract: checked.fresh.contract, contractHash: checked.fresh.contractHash, artifactHash: treeHash },
+          iteration,
+          outputDir,
+        });
+        if (!rendered.ok) {
+          this.#emitLog(runId, "warn", `creative render iteration ${String(iteration)} refused after its one artifact repair: ${rendered.reason}`);
+          review = { ...review, status: "creative_review_required", stopReason: creativeRenderRefusalClass(rendered) };
+          writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, null, null));
+          return { scored, rateLimit: null };
+        }
       }
       if (
         rendered.output.manifest.contractHash !== checked.fresh.contractHash ||
@@ -4481,11 +4600,6 @@ export class Orchestrator {
     signal: AbortSignal,
     selectedEntry?: CatalogEntry,
   ): Promise<{ readonly completed: boolean; readonly rateLimit: RateLimitState | null }> {
-    const row = this.#deps.store.getRun(runId);
-    if (row === null || row.builderSessionId === null) return { completed: false, rateLimit: null };
-    const entry = selectedEntry ?? await this.#deps.catalog.resolve(row.modelId);
-    if (entry === null || !entry.option.available) return { completed: false, rateLimit: null };
-
     const pending = this.#deps.store.pendingMessages(runId);
     const boundary = ownerMessageBlock(pending);
     const prompt = creativeRevisionPrompt(contract, critic) + boundary;
@@ -4496,6 +4610,36 @@ export class Orchestrator {
       this.#emitLog(runId, "info", `${String(pending.length)} owner message(s) consumed at the persisted creative revision boundary`);
     }
 
+    return this.#runCreativeBuilderResume(runId, ticket, runPaths, log, prompt, signal, selectedEntry);
+  }
+
+  /** The one resume executor shared by critic-led and deterministic artifact repairs. */
+  async #runCreativeBuilderResume(
+    runId: string,
+    ticket: Ticket,
+    runPaths: RunPaths,
+    log: BuildLog,
+    prompt: string,
+    signal: AbortSignal,
+    selectedEntry?: CatalogEntry,
+  ): Promise<{ readonly completed: boolean; readonly rateLimit: RateLimitState | null }> {
+    const row = this.#deps.store.getRun(runId);
+    if (row === null || row.builderSessionId === null) return { completed: false, rateLimit: null };
+    const entry = selectedEntry ?? await this.#deps.catalog.resolve(row.modelId);
+    if (entry === null || !entry.option.available) return { completed: false, rateLimit: null };
+    const requestedSessionId = row.builderSessionId;
+    const baseSink = this.#sink(runId, log, row.tokens);
+    let reportedSessionMismatch: string | null = null;
+    const sink: BuildEventSink = {
+      ...baseSink,
+      session: (id) => {
+        if (id !== requestedSessionId) {
+          reportedSessionMismatch = id;
+          return;
+        }
+        baseSink.session(id);
+      },
+    };
     const builder = this.#builderFor(entry.option.provider);
     const outcome = await builder.build({
       runId,
@@ -4505,16 +4649,29 @@ export class Orchestrator {
       allowedAgents: shortlistFor(classifySurface(ticketProse(stripPlanBlock(ticket.brief))), "off"),
       modelId: entry.option.id,
       effort: entry.effort,
-      resumeSessionId: row.builderSessionId,
+      resumeSessionId: requestedSessionId,
       signal,
-      sink: this.#sink(runId, log, row.tokens),
+      sink,
       env: this.#deps.env,
     });
-    if (outcome.sessionId !== null) this.#deps.store.updateRun(runId, { builderSessionId: outcome.sessionId });
     if (outcome.tokens.callCount > 0) {
       this.#deps.store.updateRun(runId, { tokens: mergeTokenTotals(row.tokens, toApiTokens(outcome.tokens)) });
       this.#recordSpend(runId, "fix", row.modelId, outcome.tokens);
     }
+    const returnedSessionMismatch = outcome.sessionId !== null && outcome.sessionId !== requestedSessionId
+      ? outcome.sessionId
+      : null;
+    const sessionMismatch = returnedSessionMismatch ?? reportedSessionMismatch;
+    if (sessionMismatch !== null) {
+      this.#emitLog(
+        runId,
+        "error",
+        `creative builder resume returned session ${sessionMismatch}, but the bounded mutation requested ${requestedSessionId}; ` +
+          "the stored session was not replaced and the mutation is incomplete",
+      );
+      return { completed: false, rateLimit: null };
+    }
+    if (outcome.sessionId !== null) this.#deps.store.updateRun(runId, { builderSessionId: requestedSessionId });
     if (outcome.rateLimit.limited) return { completed: false, rateLimit: outcome.rateLimit };
     if (outcome.cancelled || outcome.failure !== null) {
       if (outcome.failure !== null) this.#emitLog(runId, "warn", `creative revision did not complete cleanly: ${outcome.failure}`);

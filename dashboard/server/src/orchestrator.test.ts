@@ -108,6 +108,8 @@ import type { CreativeCompileError, CreativeContractSafeRepair, CreativeContract
 import type { CreativeAuthorRepairFinding, CreativeContractAuthorRequest, CreativeContractAuthorResult } from "./creative-contract-author.js";
 import {
   CREATIVE_AUTHOR_FILE,
+  CREATIVE_ARTIFACT_REPAIR_FILE,
+  CREATIVE_ARTIFACT_REPAIR_PROMPT_FILE,
   CREATIVE_CONTRACT_FILE,
   authorInputFor,
   creativeAuthorAttemptFile,
@@ -121,7 +123,7 @@ import {
   CREATIVE_RECOVERY_WORKER_STARTED_FILE,
 } from "./creative-recovery.js";
 import { buildTasteEvidenceIndex, buildTastePromptFacts } from "./creative-render.js";
-import type { CreativeRenderOutput } from "./creative-render.js";
+import type { CreativeRenderOutput, CreativeRenderResult } from "./creative-render.js";
 import { REQUIRED_RENDER_PROFILES } from "./render-manifest.js";
 import type { RenderManifestV1 } from "./render-manifest.js";
 
@@ -678,6 +680,14 @@ interface FakeBuilderOptions {
   readonly creativeRevisionFailure?: string;
   /** Test-only mutation at the creative builder boundary. */
   readonly creativeRevisionMutation?: () => void;
+  /** Optional mutation made only by the one pre-critic artifact repair. */
+  readonly creativeArtifactRepairArtifactShape?: FakeBuilderOptions["artifactShape"];
+  /** Optional provider failure after the artifact repair may have partially mutated the tree. */
+  readonly creativeArtifactRepairFailure?: string;
+  /** Test-only mutation at the deterministic artifact-repair boundary. */
+  readonly creativeArtifactRepairMutation?: () => void;
+  /** Test-only wrong session identity returned by the artifact-repair call. */
+  readonly creativeArtifactRepairSessionId?: string;
 }
 
 class FakeBuilder implements SubscriptionBuilder {
@@ -735,13 +745,17 @@ class FakeBuilder implements SubscriptionBuilder {
     const design = request.prompt.startsWith("DESIGN LANE — art direction");
     const fix = request.prompt.includes("did not pass its gate. You are fixing it.");
     const creativeRevision = request.prompt.startsWith("CREATIVE REVISION BOUNDARY");
+    const creativeArtifactRepair = request.prompt.startsWith("CREATIVE ARTIFACT REPAIR BOUNDARY");
     if (creativeRevision) this.#options.creativeRevisionMutation?.();
+    if (creativeArtifactRepair) this.#options.creativeArtifactRepairMutation?.();
     if (!design) {
       const workspace = this.#options.workspace();
       const shape = fix
         ? this.#options.fixArtifactShape
         : creativeRevision
           ? this.#options.creativeRevisionArtifactShape
+          : creativeArtifactRepair
+            ? this.#options.creativeArtifactRepairArtifactShape
           : this.#options.artifactShape ?? "static-ready";
       if (shape !== undefined) rmSync(join(workspace, "index.html"), { force: true });
       if (shape === "static-ready") {
@@ -800,9 +814,15 @@ class FakeBuilder implements SubscriptionBuilder {
       env: request.env,
     });
     const refused = (this.#options.limitCalls ?? []).includes(index);
-    const failure = creativeRevision ? this.#options.creativeRevisionFailure ?? null : null;
+    const failure = creativeRevision
+      ? this.#options.creativeRevisionFailure ?? null
+      : creativeArtifactRepair
+        ? this.#options.creativeArtifactRepairFailure ?? null
+        : null;
     return {
-      sessionId: this.#session,
+      sessionId: creativeArtifactRepair
+        ? this.#options.creativeArtifactRepairSessionId ?? this.#session
+        : this.#session,
       tokens,
       rateLimit: refused
         ? {
@@ -5965,6 +5985,16 @@ test("visualGateInputFor: the fence root, the capture directory, and blank captu
 
 interface QuiescenceRun {
   readonly gateCalls: number;
+  readonly captureCalls: number;
+  readonly criticCalls: number;
+  readonly builderCalls: number;
+  readonly builderPrompts: readonly string[];
+  readonly builderResumeSessions: readonly (string | null)[];
+  readonly captureContractHashes: readonly string[];
+  readonly captureIterations: readonly number[];
+  readonly persistedBuilderSessionId: string | null;
+  readonly artifactRepairClaim: string | null;
+  readonly artifactRepairPrompt: string | null;
   readonly builderPrompt: string;
   /**
    * What `Orchestrator.resume` answered for this run once it had stopped, or
@@ -6017,6 +6047,13 @@ async function quiescenceRun(
     readonly creativeRevisionArtifactShape?: FakeBuilderOptions["artifactShape"];
     readonly creativeRevisionFailure?: string;
     readonly creativeRevisionCompilerRed?: boolean;
+    readonly creativeRenderRefusals?: readonly ("artifact_contract" | "critic_unavailable" | null)[];
+    readonly creativeCriticDisposition?: "accept" | "revise";
+    readonly creativeCriticDispositions?: readonly ("accept" | "revise")[];
+    readonly creativeArtifactRepairFailure?: string;
+    readonly creativeArtifactRepairSessionId?: string;
+    readonly creativeRepairGateOutcome?: "green" | "red" | "unavailable";
+    readonly preclaimedArtifactRepair?: boolean;
     readonly archivedAttempt?: "continue" | "refuse-build" | "refuse-visual";
     readonly adversaryFinding?: boolean;
   } = {},
@@ -6061,10 +6098,39 @@ async function quiescenceRun(
           },
         }
       : {}),
+    ...(options.creativeArtifactRepairFailure === undefined
+      ? options.creativeRenderRefusals?.includes("artifact_contract") === true
+        ? {
+            creativeArtifactRepairMutation: () => {
+              writeFileSync(
+                join(runPathsFor(paths, runId).workspace, "index.html"),
+                "<!doctype html><title>artifact repaired fixture</title>",
+                "utf8",
+              );
+            },
+          }
+        : {}
+      : {
+          creativeArtifactRepairFailure: options.creativeArtifactRepairFailure,
+          creativeArtifactRepairMutation: () => {
+            writeFileSync(
+              join(runPathsFor(paths, runId).workspace, "index.html"),
+              "<!doctype html><title>partially repaired fixture</title>",
+              "utf8",
+            );
+          },
+        }),
+    ...(options.creativeArtifactRepairSessionId === undefined
+      ? {}
+      : { creativeArtifactRepairSessionId: options.creativeArtifactRepairSessionId }),
     ...(selfReportStatus === undefined ? {} : { selfReportStatus }),
   });
 
   let gateCalls = 0;
+  let captureCalls = 0;
+  let criticCalls = 0;
+  const captureContractHashes: string[] = [];
+  const captureIterations: number[] = [];
   let adversaryCalls = 0;
   if (options.adversaryFinding === true) {
     const agentDir = join(home, ".claude", "agents");
@@ -6078,7 +6144,11 @@ async function quiescenceRun(
   const creativePilot =
     options.creativeRevisionArtifactShape !== undefined ||
     options.creativeRevisionFailure !== undefined ||
-    options.creativeRevisionCompilerRed === true;
+    options.creativeRevisionCompilerRed === true ||
+    options.creativeRenderRefusals !== undefined ||
+    options.creativeArtifactRepairFailure !== undefined ||
+    options.creativeArtifactRepairSessionId !== undefined ||
+    options.preclaimedArtifactRepair === true;
   const orchestrator = new Orchestrator({
     store,
     bus,
@@ -6111,15 +6181,20 @@ async function quiescenceRun(
       gateCalls += 1;
       return {
         scorerImageDigest: "sha256:" + "b".repeat(64),
-        score: async (run, suite) => ({
+        score: async (run, suite) => {
+          if (gateCalls > 1 && options.creativeRepairGateOutcome === "unavailable") {
+            throw new Error("fixture repaired gate infrastructure unavailable");
+          }
+          const heldOutPass = !(gateCalls > 1 && options.creativeRepairGateOutcome === "red");
+          return ({
             schemaVersion: BAKEOFF_SCHEMA_VERSION,
             runId: run.runId,
             ticketId: run.ticketId,
             acceptanceSuiteSha256: suite.sha256,
-            heldOutPass: true,
+            heldOutPass,
             criteriaResults: suite.criteria.map((criterion) => ({
               criterionId: criterion.id,
-              passed: true,
+              passed: heldOutPass,
               tier: criterion.tier,
               detail: "the injected gate says yes to everything",
               evidenceRefs: [],
@@ -6140,7 +6215,8 @@ async function quiescenceRun(
             },
             protectedPathViolations: [],
             harnessErrors: [],
-          }) as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>,
+          }) as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>;
+        },
       };
     },
     ...(creativePilot
@@ -6149,7 +6225,40 @@ async function quiescenceRun(
           creativePilotActualProjectId: "coding-agent",
           runCreativeContractAuthor: async (request: CreativeContractAuthorRequest) =>
             compiledCreativeAuthorResult(request),
-          captureCreativeRender: async (request): Promise<{ readonly ok: true; readonly output: CreativeRenderOutput }> => {
+          captureCreativeRender: async (request): Promise<CreativeRenderResult> => {
+            captureCalls += 1;
+            captureContractHashes.push(request.binding.contractHash);
+            captureIterations.push(request.iteration);
+            const refusal = options.creativeRenderRefusals?.[captureCalls - 1];
+            if (refusal != null) {
+              return refusal === "artifact_contract"
+                ? {
+                    ok: false,
+                    reason: "section hero is missing its contracted marker",
+                    issues: [{
+                      code: "SECTION_NOT_FOUND",
+                      severity: "blocking",
+                      profileId: "desktop",
+                      routeId: "home",
+                      sectionId: "hero",
+                      motionId: null,
+                      evidenceSha256: "a".repeat(64),
+                    }],
+                  }
+                : {
+                    ok: false,
+                    reason: "render capture failed for home-hero: screenshot timed out",
+                    issues: [{
+                      code: "CAPTURE_FAILED",
+                      severity: "blocking",
+                      profileId: "desktop",
+                      routeId: "home",
+                      sectionId: "hero",
+                      motionId: null,
+                      evidenceSha256: "a".repeat(64),
+                    }],
+                  };
+            }
             const manifest: RenderManifestV1 = {
               schemaVersion: 1,
               contractHash: request.binding.contractHash,
@@ -6179,10 +6288,13 @@ async function quiescenceRun(
             };
           },
           runRenderedTasteCritic: async (request) => {
+            criticCalls += 1;
             const route = request.prompt.evidenceIndex.routes[0];
             const sectionId = route?.sectionIds[0];
             const evidence = request.prompt.facts.slice(0, 2).map((fact) => fact.evidence);
             assert.ok(route !== undefined && sectionId !== undefined && evidence.length === 2);
+            const disposition = options.creativeCriticDispositions?.[criticCalls - 1] ?? options.creativeCriticDisposition;
+            const revise = disposition !== "accept";
             return {
               schemaVersion: 1,
               attempt: request.attempt,
@@ -6191,13 +6303,13 @@ async function quiescenceRun(
               contractHash: request.prompt.evidenceIndex.contractHash,
               renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
               recordedAt: new Date().toISOString(),
-              criticDisposition: "revise" as const,
+              criticDisposition: revise ? "revise" as const : "accept" as const,
               ran: true,
               output: {
                 schemaVersion: 1,
                 contractHash: request.prompt.evidenceIndex.contractHash,
                 renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
-                findings: [{
+                findings: revise ? [{
                   id: "fixture-revision",
                   category: "copy",
                   code: "GENERIC_COPY",
@@ -6206,11 +6318,11 @@ async function quiescenceRun(
                   diagnosis: "The rendered headline needs a bounded evidence-led revision.",
                   revision: "Tie the headline directly to the admitted owner proof.",
                   evidence,
-                }],
+                }] : [],
               },
-              findingFingerprint: "d".repeat(64),
+              findingFingerprint: revise ? "d".repeat(64) : null,
               policyErrors: [],
-              detail: "fixture requests one bounded revision",
+              detail: revise ? "fixture requests one bounded revision" : "fixture accepts the render",
               tokens: null,
               rateLimit: null,
               criticBy: "test/rendered-taste-critic",
@@ -6271,6 +6383,11 @@ async function quiescenceRun(
     mkdirSync(dirname(live), { recursive: true });
     writeFileSync(live, JSON.stringify(containerFixture({ ticketId: ticket.id })), "utf8");
   }
+  const artifactRepairDir = join(runPathsFor(paths, runId).results, "creative-render");
+  if (options.preclaimedArtifactRepair === true) {
+    mkdirSync(artifactRepairDir, { recursive: true });
+    writeFileSync(join(artifactRepairDir, CREATIVE_ARTIFACT_REPAIR_FILE), "{}\n", "utf8");
+  }
   const staleReviewPath = join(runPathsFor(paths, runId).results, CONTEXT7_REVIEW_RECORD_FILE);
   mkdirSync(dirname(staleReviewPath), { recursive: true });
   writeFileSync(staleReviewPath, '{"schemaVersion":1,"stale":true}\n', "utf8");
@@ -6285,6 +6402,8 @@ async function quiescenceRun(
     }
     const row = store.getRun(runId);
     const verdictPath = join(runPathsFor(paths, runId).results, "verdict.md");
+    const artifactRepairClaimPath = join(artifactRepairDir, CREATIVE_ARTIFACT_REPAIR_FILE);
+    const artifactRepairPromptPath = join(artifactRepairDir, CREATIVE_ARTIFACT_REPAIR_PROMPT_FILE);
     // WHETHER THE SERVER WOULD ACCEPT THE REMEDIATION ITS OWN LOG NAMES.
     // Asked here, inside the harness, because `resume` needs the live
     // orchestrator and the `finally` below shuts it down. Guarded on
@@ -6294,6 +6413,16 @@ async function quiescenceRun(
     const resumeAccepted = row !== null && isTerminal(row.status) ? orchestrator.resume(runId) : null;
     return {
       gateCalls,
+      captureCalls,
+      criticCalls,
+      builderCalls: builder.calls.length,
+      builderPrompts: builder.calls.map((call) => call.prompt),
+      builderResumeSessions: builder.calls.map((call) => call.resumeSessionId),
+      captureContractHashes,
+      captureIterations,
+      persistedBuilderSessionId: row?.builderSessionId ?? null,
+      artifactRepairClaim: existsSync(artifactRepairClaimPath) ? readFileSync(artifactRepairClaimPath, "utf8") : null,
+      artifactRepairPrompt: existsSync(artifactRepairPromptPath) ? readFileSync(artifactRepairPromptPath, "utf8") : null,
       builderPrompt: builder.calls.at(-1)?.prompt ?? "",
       resumeAccepted,
       status: row?.status ?? "gone",
@@ -6552,6 +6681,145 @@ test("ARTIFACT-BOOT: a completed creative revision with compiler-red contract in
   assert.match(run.backlog, /`artifact-contract` after 1 attempts/);
   assert.match(run.backlog, /historical result is not a verdict/i);
   assert.doesNotMatch(run.backlog, /no scorer verdict was produced|renders the hero heading/i);
+});
+
+test("CREATIVE-ARTIFACT: one deterministic refusal repairs in the same session, re-gates, recaptures, then reaches the critic", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["artifact_contract"],
+    creativeCriticDisposition: "accept",
+  });
+  assert.equal(run.builderCalls, 3, "the normal two build segments plus exactly one artifact repair");
+  assert.deepEqual(run.builderResumeSessions, [null, "session-0", "session-0"]);
+  assert.equal(run.gateCalls, 2, "the stale initial verdict must be replaced before recapture");
+  assert.equal(run.captureCalls, 2, "the repaired tree is captured in the same critic iteration");
+  assert.deepEqual(run.captureIterations, [0, 0]);
+  assert.equal(run.criticCalls, 1, "no critic is fabricated for the refused render");
+  assert.equal(run.creativeStopReason, "accepted");
+  assert.equal(run.heldOutPass, true);
+  assert.match(run.builderPrompts[2] ?? "", /^CREATIVE ARTIFACT REPAIR BOUNDARY/u);
+  assert.match(run.artifactRepairPrompt ?? "", /Do not invent critic findings/u);
+  assert.match(run.artifactRepairClaim ?? "", /"iteration": 0/u);
+  assert.equal(new Set(run.captureContractHashes).size, 1, "the frozen contract authority cannot change across repair");
+});
+
+test("CREATIVE-ARTIFACT: a second deterministic refusal stops without a third builder or a critic", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["artifact_contract", "artifact_contract"],
+    creativeCriticDisposition: "accept",
+  });
+  assert.equal(run.builderCalls, 3);
+  assert.equal(run.gateCalls, 2);
+  assert.equal(run.captureCalls, 2);
+  assert.equal(run.criticCalls, 0);
+  assert.equal(run.creativeStopReason, "artifact_contract");
+});
+
+test("CREATIVE-ARTIFACT: critic infrastructure refusal never enters the repair boundary", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["critic_unavailable"],
+    creativeCriticDisposition: "accept",
+  });
+  assert.equal(run.builderCalls, 2);
+  assert.equal(run.gateCalls, 1);
+  assert.equal(run.captureCalls, 1);
+  assert.equal(run.criticCalls, 0);
+  assert.equal(run.creativeStopReason, "critic_unavailable");
+  assert.equal(run.artifactRepairClaim, null);
+});
+
+test("CREATIVE-ARTIFACT: a partial repair mutation invalidates the current sealed verdict", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["artifact_contract"],
+    creativeArtifactRepairFailure: "fixture provider stopped after partial repair",
+    creativeCriticDisposition: "accept",
+  });
+  assert.equal(run.builderCalls, 3);
+  assert.equal(run.gateCalls, 1, "a partial mutation must not be scored");
+  assert.equal(run.captureCalls, 1);
+  assert.equal(run.criticCalls, 0);
+  assert.equal(run.heldOutPass, null);
+  assert.equal(run.creativeStopReason, "invalid_attempt");
+  assert.match(run.failureReason ?? "", /partially changed|stale/u);
+});
+
+test("CREATIVE-ARTIFACT: a durable prior claim blocks repair after restart", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["artifact_contract"],
+    creativeCriticDisposition: "accept",
+    preclaimedArtifactRepair: true,
+  });
+  assert.equal(run.builderCalls, 2);
+  assert.equal(run.gateCalls, 1);
+  assert.equal(run.captureCalls, 1);
+  assert.equal(run.criticCalls, 0);
+  assert.equal(run.creativeStopReason, "artifact_contract");
+  assert.equal(run.artifactRepairPrompt, null);
+  assert.equal(run.heldOutPass, true, "the freshly computed incoming gate remains current when no mutation is attempted");
+});
+
+test("CREATIVE-ARTIFACT: iteration one cannot consume a second phase-wide artifact repair", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["artifact_contract", null, "artifact_contract"],
+    creativeCriticDispositions: ["revise"],
+  });
+  assert.equal(run.builderCalls, 4, "normal build, one artifact repair, and one admitted critic revision only");
+  assert.equal(run.gateCalls, 3);
+  assert.deepEqual(run.captureIterations, [0, 0, 1]);
+  assert.equal(run.captureCalls, 3);
+  assert.equal(run.criticCalls, 1);
+  assert.equal(run.creativeStopReason, "artifact_contract");
+  assert.equal((run.builderPrompts.filter((prompt) => prompt.startsWith("CREATIVE ARTIFACT REPAIR BOUNDARY"))).length, 1);
+});
+
+test("CREATIVE-ARTIFACT: a resumed builder cannot replace the session identity", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["artifact_contract"],
+    creativeArtifactRepairSessionId: "session-1",
+    creativeCriticDisposition: "accept",
+  });
+  assert.equal(run.builderCalls, 3);
+  assert.equal(run.gateCalls, 1, "a mismatched session mutation must not be re-gated");
+  assert.equal(run.captureCalls, 1, "the mismatched session mutation must not be recaptured");
+  assert.equal(run.criticCalls, 0);
+  assert.equal(run.persistedBuilderSessionId, "session-0", "the requested session remains authoritative");
+  assert.equal(run.heldOutPass, null);
+  assert.equal(run.creativeStopReason, "invalid_attempt");
+  assert.match(run.log, /returned session session-1.*requested session-0/u);
+});
+
+test("CREATIVE-ARTIFACT: repaired gate red stops as functional_red before recapture", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["artifact_contract"],
+    creativeCriticDisposition: "accept",
+    creativeRepairGateOutcome: "red",
+  });
+  assert.equal(run.gateCalls, 2);
+  assert.equal(run.captureCalls, 1);
+  assert.equal(run.criticCalls, 0);
+  assert.equal(run.heldOutPass, false);
+  assert.equal(run.creativeStopReason, "functional_red");
+});
+
+test("CREATIVE-ARTIFACT: unavailable repaired gate stops as prerequisite_unknown with no verdict", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeRenderRefusals: ["artifact_contract"],
+    creativeCriticDisposition: "accept",
+    creativeRepairGateOutcome: "unavailable",
+  });
+  assert.equal(run.gateCalls, 2);
+  assert.equal(run.captureCalls, 1);
+  assert.equal(run.criticCalls, 0);
+  assert.equal(run.heldOutPass, null);
+  assert.equal(run.creativeStopReason, "prerequisite_unknown");
 });
 
 test("ARTIFACT-BOOT: resumed attempt-zero refusal preserves archived attempt truth cumulatively", async () => {

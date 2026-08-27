@@ -31,6 +31,7 @@ import { LOOPBACK_HOST, createDashboardServer } from "./http.js";
 import type { RunController } from "./http.js";
 import { ModelCatalog } from "./models.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
+import { RENDER_PROFILE_IDS } from "./render-manifest.js";
 
 function recoveryHarness(options: {
   readonly requestedModelId?: string;
@@ -124,10 +125,15 @@ function terminalAccepted(
   };
   const creative = readCreativePilotStatus(targetPaths.results);
   assert.ok(creative !== null);
+  const renderFresh = outcome.criticDisposition === "accept" && outcome.renderManifestHash !== null;
   writeCreativePilotStatus(targetPaths.results, {
     ...creative,
     heldOutPass: outcome.heldOutPass,
     renderManifestHash: outcome.renderManifestHash,
+    renderFresh,
+    renderProfiles: renderFresh
+      ? RENDER_PROFILE_IDS.map((profileId) => ({ profileId, captureCount: 1, complete: true }))
+      : null,
     criticDisposition: outcome.criticDisposition,
     criticAttempt: outcome.criticAttempt,
     reviewState: outcome.criticDisposition === "accept" ? "creative_ready" : creative.reviewState,
