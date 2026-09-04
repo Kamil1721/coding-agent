@@ -78,6 +78,7 @@ import { SPEC_SEAT } from "bakeoff/dist/config.js";
 
 import { DASHBOARD_BUDGET } from "./orchestrator.js";
 import {
+  DISABLE_AUTO_MEMORY_ENV,
   MAX_OUTPUT_TOKENS_ENV,
   OVERFLOW_STOP_REASON,
   SubscriptionSeatCaller,
@@ -413,6 +414,35 @@ test("each call's own maxOutputTokens reaches the subprocess environment", async
 });
 
 /**
+ * The auto-memory guard travels through the SAME dispatch as the existing
+ * sealed-seat boundary. A unit test of seatCallEnv alone would prove only that a
+ * helper can make an object; this pins the production startQuery seam and the
+ * isolation fields whose accidental widening would invalidate the probe.
+ */
+test("the sealed dispatch disables cross-run auto memory without changing its prompt or isolation", async () => {
+  const { factory, dispatches } = replaying([
+    assistantFrame("done"),
+    envelope({
+      type: "result",
+      subtype: "success",
+      stop_reason: "end_turn",
+      is_error: false,
+      result: "done",
+      usage: USAGE,
+    }),
+  ]);
+  await callerWith(factory).call(request());
+
+  const dispatch = dispatches[0];
+  assert.ok(dispatch !== undefined, "the production seam must receive one dispatch");
+  assert.equal(dispatch.prompt, "TICKET: build a landing page");
+  assert.equal(dispatch.options.cwd, tmpdir());
+  assert.deepEqual(dispatch.options.tools, []);
+  assert.deepEqual(dispatch.options.settingSources, []);
+  assert.equal(dispatch.options.env?.[DISABLE_AUTO_MEMORY_ENV], "1");
+});
+
+/**
  * THE SUBTRACTION STILL WINS, AND THE VARIABLE SURVIVES IT.
  * `subscriptionSubprocessEnv` is a subtraction rather than an allowlist, so an
  * added name passes through — but it is applied at construction and this value
@@ -427,7 +457,20 @@ test("seatCallEnv adds the ceiling without disturbing the environment it was giv
   assert.equal(withCeiling[MAX_OUTPUT_TOKENS_ENV], "16000");
   assert.equal(withCeiling["PATH"], "/usr/bin");
   assert.equal(withCeiling["HOME"], "/home/x");
+  assert.equal(withCeiling[DISABLE_AUTO_MEMORY_ENV], "1");
   assert.equal(base[MAX_OUTPUT_TOKENS_ENV as keyof typeof base], undefined, "the input is not mutated");
+  assert.equal(
+    base[DISABLE_AUTO_MEMORY_ENV as keyof typeof base],
+    undefined,
+    "adding the isolation guard does not mutate the input",
+  );
+
+  const inheritedUnsafeValue = seatCallEnv({ [DISABLE_AUTO_MEMORY_ENV]: "0" }, 16_000);
+  assert.equal(
+    inheritedUnsafeValue[DISABLE_AUTO_MEMORY_ENV],
+    "1",
+    "a caller cannot override the sealed-seat guard through its inherited environment",
+  );
 
   // A VALUE THE CLI WOULD PARSE AS NaN IS NOT WRITTEN AT ALL. Leaving the
   // variable unset falls back to the CLI's default, which is a known state; a
@@ -435,4 +478,9 @@ test("seatCallEnv adds the ceiling without disturbing the environment it was giv
   assert.equal(seatCallEnv(base, 0)[MAX_OUTPUT_TOKENS_ENV], undefined);
   assert.equal(seatCallEnv(base, -1)[MAX_OUTPUT_TOKENS_ENV], undefined);
   assert.equal(seatCallEnv(base, 1.5)[MAX_OUTPUT_TOKENS_ENV], undefined);
+  assert.equal(
+    seatCallEnv(base, 0)[DISABLE_AUTO_MEMORY_ENV],
+    "1",
+    "the memory boundary does not depend on the unrelated output-budget value being valid",
+  );
 });

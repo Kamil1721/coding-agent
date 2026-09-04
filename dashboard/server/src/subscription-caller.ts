@@ -231,6 +231,18 @@ function seatMaxTurns(env: NodeJS.ProcessEnv): number {
 export const MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS";
 
 /**
+ * The sealed seats must not inherit Claude Code's cross-run auto memory.
+ *
+ * Probe T5 exercises the real SDK and bundled CLI against a loopback fake API:
+ * with `settingSources: []`, `tools: []`, and the production prompt untouched,
+ * a canary seeded only in `Settings.autoMemoryDirectory/MEMORY.md` still reached
+ * the default outbound /v1/messages body. This CLI control removed it. It is
+ * ADDED here, after subscriptionSubprocessEnv, rather than placed in that
+ * function's stripped-name list: stripping would restore the unsafe default.
+ */
+export const DISABLE_AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
+
+/**
  * The subprocess environment for ONE call, carrying that call's own ceiling.
  *
  * Per CALL and not per caller, because the ceiling is a property of the request:
@@ -244,8 +256,9 @@ export const MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS";
  * the CLI's own default applies and the run continues.
  */
 export function seatCallEnv(base: NodeJS.ProcessEnv, maxOutputTokens: number): NodeJS.ProcessEnv {
-  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) return { ...base };
-  return { ...base, [MAX_OUTPUT_TOKENS_ENV]: String(maxOutputTokens) };
+  const sealed = { ...base, [DISABLE_AUTO_MEMORY_ENV]: "1" };
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) return sealed;
+  return { ...sealed, [MAX_OUTPUT_TOKENS_ENV]: String(maxOutputTokens) };
 }
 
 /**

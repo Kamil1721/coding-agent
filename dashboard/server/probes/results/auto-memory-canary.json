@@ -1,0 +1,1565 @@
+{
+  "schemaVersion": 2,
+  "probe": "T5 sealed-seat cross-run auto-memory wire canary",
+  "measuredAt": "2026-09-04T15:19:57.922Z",
+  "mode": "canonical",
+  "probeSourceSha256": "dc5a301d20072e6a674e05605bc88f48b87e25683293a0b4c1c97224e7e45e9c",
+  "versions": {
+    "claudeAgentSdk": "0.3.220",
+    "claudeCodeDeclaredBySdkPackage": "2.1.220",
+    "claudeCodeActualVersionOutput": "2.1.220 (Claude Code)"
+  },
+  "exactQuestion": "Does the real bundled Claude Code request assembled for a production sealed seat include a token that exists only in a scratch cross-run auto-memory MEMORY.md file, and does CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 remove it?",
+  "canary": "T5_AUTO_MEMORY_CANARY_21D06F0B2753C8E1C151A4D6F5FCC4DE",
+  "fixture": {
+    "root": "<scratch-root>",
+    "workspace": "<scratch-root>/workspace",
+    "autoMemoryDirectory": "<scratch-root>/auto-memory",
+    "memoryFile": "<scratch-root>/auto-memory/MEMORY.md",
+    "memoryLayout": "<scratchAutoMemoryDirectory>/MEMORY.md",
+    "claudeConfigDirectory": "<scratch-root>/claude-config",
+    "cleanedAfterRun": true
+  },
+  "productionCapture": {
+    "seam": "SubscriptionSeatCaller startQuery",
+    "noAttachments": true,
+    "promptShape": "string",
+    "prompt": "Reply with exactly the word READY and nothing else.",
+    "arms": {
+      "default": {
+        "prompt": "Reply with exactly the word READY and nothing else.",
+        "options": {
+          "abortController": {
+            "present": true,
+            "aborted": false
+          },
+          "cwd": "<scratch-root>/workspace",
+          "model": "claude-opus-5",
+          "effort": {
+            "present": true,
+            "value": "xhigh"
+          },
+          "systemPrompt": "You are a sealed evaluation seat. Follow the user request exactly. You have no tools.",
+          "tools": [],
+          "settingSources": [],
+          "maxTurns": 8,
+          "thinking": {
+            "present": false,
+            "value": null
+          },
+          "includePartialMessages": false,
+          "outputFormat": {
+            "present": false,
+            "value": null
+          },
+          "env": {
+            "keyCount": 51,
+            "keySetSha256": "8eb3be2945159ed0538fadf1ec1f54a0ebc2dd900993947e1ba9e19bbbca3cce",
+            "keysSerialized": false,
+            "hashBasis": "JSON of sorted environment key names; neither names nor values are serialized",
+            "strippedCredentialAbsence": {
+              "ANTHROPIC_API_KEY": "absent",
+              "ANTHROPIC_AUTH_TOKEN": "absent",
+              "ANTHROPIC_BASE_URL": "absent",
+              "ANTHROPIC_API_URL": "absent",
+              "CLAUDE_CODE_USE_BEDROCK": "absent",
+              "CLAUDE_CODE_USE_VERTEX": "absent",
+              "OPENAI_API_KEY": "absent",
+              "OPENAI_BASE_URL": "absent",
+              "CODEX_API_KEY": "absent",
+              "MOONSHOT_API_KEY": "absent",
+              "MOONSHOT_BASE_URL": "absent",
+              "DEEPSEEK_API_KEY": "absent",
+              "DEEPSEEK_BASE_URL": "absent",
+              "REPAIR_SMTP_URL": "absent"
+            },
+            "transportCredentialStates": {
+              "ANTHROPIC_API_KEY": "absent",
+              "ANTHROPIC_AUTH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "absent"
+            },
+            "relevantStates": {
+              "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+              "CLAUDE_CONFIG_DIR": "absent",
+              "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "absent",
+              "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "present"
+            },
+            "valuesSerialized": false
+          }
+        }
+      },
+      "disabled": {
+        "prompt": "Reply with exactly the word READY and nothing else.",
+        "options": {
+          "abortController": {
+            "present": true,
+            "aborted": false
+          },
+          "cwd": "<scratch-root>/workspace",
+          "model": "claude-opus-5",
+          "effort": {
+            "present": true,
+            "value": "xhigh"
+          },
+          "systemPrompt": "You are a sealed evaluation seat. Follow the user request exactly. You have no tools.",
+          "tools": [],
+          "settingSources": [],
+          "maxTurns": 8,
+          "thinking": {
+            "present": false,
+            "value": null
+          },
+          "includePartialMessages": false,
+          "outputFormat": {
+            "present": false,
+            "value": null
+          },
+          "env": {
+            "keyCount": 51,
+            "keySetSha256": "8eb3be2945159ed0538fadf1ec1f54a0ebc2dd900993947e1ba9e19bbbca3cce",
+            "keysSerialized": false,
+            "hashBasis": "JSON of sorted environment key names; neither names nor values are serialized",
+            "strippedCredentialAbsence": {
+              "ANTHROPIC_API_KEY": "absent",
+              "ANTHROPIC_AUTH_TOKEN": "absent",
+              "ANTHROPIC_BASE_URL": "absent",
+              "ANTHROPIC_API_URL": "absent",
+              "CLAUDE_CODE_USE_BEDROCK": "absent",
+              "CLAUDE_CODE_USE_VERTEX": "absent",
+              "OPENAI_API_KEY": "absent",
+              "OPENAI_BASE_URL": "absent",
+              "CODEX_API_KEY": "absent",
+              "MOONSHOT_API_KEY": "absent",
+              "MOONSHOT_BASE_URL": "absent",
+              "DEEPSEEK_API_KEY": "absent",
+              "DEEPSEEK_BASE_URL": "absent",
+              "REPAIR_SMTP_URL": "absent"
+            },
+            "transportCredentialStates": {
+              "ANTHROPIC_API_KEY": "absent",
+              "ANTHROPIC_AUTH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "absent"
+            },
+            "relevantStates": {
+              "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+              "CLAUDE_CONFIG_DIR": "absent",
+              "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "absent",
+              "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "present"
+            },
+            "valuesSerialized": false
+          }
+        }
+      }
+    },
+    "promptsByteIdentical": true,
+    "optionsEqualExceptAutoMemoryControl": true,
+    "note": "This is the production projection before settings, config isolation, dummy auth, loopback URL, or custom spawning were added. Environment names and values are represented only by counts, digests, and an allowlisted set of relevant presence states."
+  },
+  "arms": {
+    "default": {
+      "label": "default",
+      "inputControlState": "1",
+      "prompt": "Reply with exactly the word READY and nothing else.",
+      "probeOnlyAugmentation": {
+        "settings": {
+          "autoMemoryEnabled": true,
+          "autoMemoryDirectory": "<scratch-root>/auto-memory"
+        },
+        "optionEnvAdditions": [
+          "CLAUDE_CONFIG_DIR",
+          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+          "DISABLE_TELEMETRY",
+          "DISABLE_AUTO_UPDATE"
+        ],
+        "spawnWrapperChanges": {
+          "launchesSuppliedCommandAndArgvUnchanged": true,
+          "addsDummyTransportAuth": [
+            "ANTHROPIC_API_KEY"
+          ],
+          "removesRealTransportAuth": [
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+          ],
+          "forcesLoopbackEndpoint": [
+            "ANTHROPIC_BASE_URL"
+          ],
+          "environmentPolicy": "fixed allowlist plus probe-owned transport values",
+          "inheritedNamesAllowed": [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "SHELL",
+            "TERM",
+            "NO_COLOR",
+            "FORCE_COLOR",
+            "CLAUDE_AGENT_SDK_VERSION",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            "CLAUDE_CONFIG_DIR"
+          ],
+          "removesOtherEndpointSelectors": "all omitted unless explicitly allowlisted",
+          "removesInheritedProxies": [
+            "ALL_PROXY",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "all_proxy",
+            "https_proxy",
+            "http_proxy"
+          ],
+          "disablesNonessentialTraffic": true,
+          "valuesSerialized": false
+        },
+        "untouchedProductionFields": {
+          "cwd": true,
+          "model": true,
+          "effort": true,
+          "systemPrompt": true,
+          "tools": true,
+          "settingSources": true,
+          "maxTurns": true,
+          "thinking": true,
+          "includePartialMessages": true,
+          "outputFormat": true,
+          "prompt": true
+        },
+        "productionContract": {
+          "promptExact": true,
+          "cwdIsScratchWorkspace": true,
+          "modelMatchesSeat": true,
+          "effortMatchesSeat": true,
+          "systemPromptExact": true,
+          "toolsAreEmpty": true,
+          "settingSourcesAreEmpty": true,
+          "maxTurnsIsPositiveInteger": true,
+          "thinkingOptionAbsent": true,
+          "partialMessagesDisabled": true,
+          "outputFormatAbsent": true
+        }
+      },
+      "cli": {
+        "command": "<sdk-bundled-cli-path-redacted>",
+        "commandPathSerialized": false,
+        "commandBasename": "claude",
+        "argv": [
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--input-format",
+          "stream-json",
+          "--effort",
+          "xhigh",
+          "--max-turns",
+          "8",
+          "--model",
+          "claude-opus-5",
+          "--tools",
+          "",
+          "--setting-sources=",
+          "--permission-mode",
+          "default",
+          "--settings",
+          "<scratch-root>/auto-memory\"}"
+        ],
+        "cwd": "<scratch-root>/workspace",
+        "settingsArg": "<scratch-root>/auto-memory\"}",
+        "spawnEnvironment": {
+          "keyCount": 20,
+          "keySetSha256": "02941b0b8c5a30030f000bacfffa6e62bf9d7e1bd2889a3d34c7143612f60e3d",
+          "keysSerialized": false,
+          "hashBasis": "JSON of sorted environment key names; neither names nor values are serialized",
+          "endpoint": {
+            "scheme": "http",
+            "hostname": "127.0.0.1",
+            "loopback": true
+          },
+          "transportCredentialStates": {
+            "ANTHROPIC_API_KEY": "dummy-present",
+            "ANTHROPIC_AUTH_TOKEN": "absent",
+            "CLAUDE_CODE_OAUTH_TOKEN": "absent",
+            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "absent",
+            "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "absent"
+          },
+          "endpointSelectorStates": {
+            "ANTHROPIC_BASE_URL": "loopback-present",
+            "ANTHROPIC_API_URL": "absent",
+            "CLAUDE_CODE_API_BASE_URL": "absent",
+            "CLAUDE_CODE_USE_BEDROCK": "absent",
+            "CLAUDE_CODE_USE_VERTEX": "absent"
+          },
+          "proxyStates": {
+            "ALL_PROXY": "absent",
+            "HTTPS_PROXY": "absent",
+            "HTTP_PROXY": "absent",
+            "all_proxy": "absent",
+            "https_proxy": "absent",
+            "http_proxy": "absent"
+          },
+          "nonessentialTrafficDisabled": true,
+          "valuesSerialized": false
+        }
+      },
+      "capture": {
+        "requests": [
+          {
+            "method": "HEAD",
+            "target": "/api/hello",
+            "kind": "hello-capability-probe",
+            "host": "127.0.0.1:50225",
+            "remoteAddress": "127.0.0.1",
+            "headers": {
+              "names": [
+                "accept",
+                "accept-encoding",
+                "connection",
+                "host",
+                "user-agent"
+              ],
+              "credentialHeaderStates": {
+                "authorization": "absent",
+                "x-api-key": "absent"
+              },
+              "valuesSerialized": false
+            },
+            "body": null,
+            "invalidRawBody": {
+              "present": false,
+              "byteLength": 0,
+              "serialized": false
+            },
+            "parseError": "Unexpected end of JSON input"
+          },
+          {
+            "method": "POST",
+            "target": "/v1/messages?beta=true",
+            "kind": "messages",
+            "host": "127.0.0.1:50225",
+            "remoteAddress": "127.0.0.1",
+            "headers": {
+              "names": [
+                "accept",
+                "accept-encoding",
+                "anthropic-beta",
+                "anthropic-dangerous-direct-browser-access",
+                "anthropic-version",
+                "connection",
+                "content-length",
+                "content-type",
+                "host",
+                "user-agent",
+                "x-api-key",
+                "x-app",
+                "x-claude-code-session-id",
+                "x-stainless-arch",
+                "x-stainless-lang",
+                "x-stainless-os",
+                "x-stainless-package-version",
+                "x-stainless-retry-count",
+                "x-stainless-runtime",
+                "x-stainless-runtime-version",
+                "x-stainless-timeout"
+              ],
+              "credentialHeaderStates": {
+                "authorization": "absent",
+                "x-api-key": "present"
+              },
+              "valuesSerialized": false
+            },
+            "body": {
+              "model": "claude-opus-5",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-09-04.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                    },
+                    {
+                      "type": "text",
+                      "text": "Reply with exactly the word READY and nothing else.",
+                      "cache_control": {
+                        "type": "ephemeral"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "system": [
+                {
+                  "type": "text",
+                  "text": "x-anthropic-billing-header: cc_version=2.1.220.c13; cc_entrypoint=sdk-ts;"
+                },
+                {
+                  "type": "text",
+                  "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+                  "cache_control": {
+                    "type": "ephemeral"
+                  }
+                },
+                {
+                  "type": "text",
+                  "text": "You are a sealed evaluation seat. Follow the user request exactly. You have no tools.",
+                  "cache_control": {
+                    "type": "ephemeral"
+                  }
+                }
+              ],
+              "tools": [],
+              "metadata": {
+                "user_id": {
+                  "present": true,
+                  "type": "string",
+                  "serialized": false
+                }
+              },
+              "max_tokens": 1024,
+              "thinking": {
+                "type": "adaptive"
+              },
+              "context_management": {
+                "edits": [
+                  {
+                    "type": "clear_thinking_20251015",
+                    "keep": "all"
+                  }
+                ]
+              },
+              "output_config": {
+                "effort": "xhigh"
+              },
+              "stream": true
+            },
+            "invalidRawBody": null,
+            "parseError": null
+          }
+        ],
+        "requestCount": 2,
+        "messagesRequestCount": 1,
+        "messagesBodiesParsed": true,
+        "seatPromptPresent": true,
+        "seatPromptPaths": [
+          "requests[1].body.messages[0].content[1].text"
+        ],
+        "everyRequestWasLoopback": true,
+        "onlyExpectedTargets": true,
+        "canaryPresent": false,
+        "canaryPaths": []
+      },
+      "termination": {
+        "response": "deterministic HTTP 400 invalid_request_error T5_OFFLINE_CAPTURE_COMPLETE",
+        "timedOut": false,
+        "sdkEnvelopes": [
+          "system/init",
+          "user",
+          "result/error_during_execution"
+        ],
+        "sdkError": "Claude Code returned an error result: [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+        "stderrExcerpt": ""
+      }
+    },
+    "disabled": {
+      "label": "disabled",
+      "inputControlState": "1",
+      "prompt": "Reply with exactly the word READY and nothing else.",
+      "probeOnlyAugmentation": {
+        "settings": {
+          "autoMemoryEnabled": true,
+          "autoMemoryDirectory": "<scratch-root>/auto-memory"
+        },
+        "optionEnvAdditions": [
+          "CLAUDE_CONFIG_DIR",
+          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+          "DISABLE_TELEMETRY",
+          "DISABLE_AUTO_UPDATE"
+        ],
+        "spawnWrapperChanges": {
+          "launchesSuppliedCommandAndArgvUnchanged": true,
+          "addsDummyTransportAuth": [
+            "ANTHROPIC_API_KEY"
+          ],
+          "removesRealTransportAuth": [
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+          ],
+          "forcesLoopbackEndpoint": [
+            "ANTHROPIC_BASE_URL"
+          ],
+          "environmentPolicy": "fixed allowlist plus probe-owned transport values",
+          "inheritedNamesAllowed": [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "SHELL",
+            "TERM",
+            "NO_COLOR",
+            "FORCE_COLOR",
+            "CLAUDE_AGENT_SDK_VERSION",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            "CLAUDE_CONFIG_DIR"
+          ],
+          "removesOtherEndpointSelectors": "all omitted unless explicitly allowlisted",
+          "removesInheritedProxies": [
+            "ALL_PROXY",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "all_proxy",
+            "https_proxy",
+            "http_proxy"
+          ],
+          "disablesNonessentialTraffic": true,
+          "valuesSerialized": false
+        },
+        "untouchedProductionFields": {
+          "cwd": true,
+          "model": true,
+          "effort": true,
+          "systemPrompt": true,
+          "tools": true,
+          "settingSources": true,
+          "maxTurns": true,
+          "thinking": true,
+          "includePartialMessages": true,
+          "outputFormat": true,
+          "prompt": true
+        },
+        "productionContract": {
+          "promptExact": true,
+          "cwdIsScratchWorkspace": true,
+          "modelMatchesSeat": true,
+          "effortMatchesSeat": true,
+          "systemPromptExact": true,
+          "toolsAreEmpty": true,
+          "settingSourcesAreEmpty": true,
+          "maxTurnsIsPositiveInteger": true,
+          "thinkingOptionAbsent": true,
+          "partialMessagesDisabled": true,
+          "outputFormatAbsent": true
+        }
+      },
+      "cli": {
+        "command": "<sdk-bundled-cli-path-redacted>",
+        "commandPathSerialized": false,
+        "commandBasename": "claude",
+        "argv": [
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--input-format",
+          "stream-json",
+          "--effort",
+          "xhigh",
+          "--max-turns",
+          "8",
+          "--model",
+          "claude-opus-5",
+          "--tools",
+          "",
+          "--setting-sources=",
+          "--permission-mode",
+          "default",
+          "--settings",
+          "<scratch-root>/auto-memory\"}"
+        ],
+        "cwd": "<scratch-root>/workspace",
+        "settingsArg": "<scratch-root>/auto-memory\"}",
+        "spawnEnvironment": {
+          "keyCount": 20,
+          "keySetSha256": "02941b0b8c5a30030f000bacfffa6e62bf9d7e1bd2889a3d34c7143612f60e3d",
+          "keysSerialized": false,
+          "hashBasis": "JSON of sorted environment key names; neither names nor values are serialized",
+          "endpoint": {
+            "scheme": "http",
+            "hostname": "127.0.0.1",
+            "loopback": true
+          },
+          "transportCredentialStates": {
+            "ANTHROPIC_API_KEY": "dummy-present",
+            "ANTHROPIC_AUTH_TOKEN": "absent",
+            "CLAUDE_CODE_OAUTH_TOKEN": "absent",
+            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "absent",
+            "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "absent"
+          },
+          "endpointSelectorStates": {
+            "ANTHROPIC_BASE_URL": "loopback-present",
+            "ANTHROPIC_API_URL": "absent",
+            "CLAUDE_CODE_API_BASE_URL": "absent",
+            "CLAUDE_CODE_USE_BEDROCK": "absent",
+            "CLAUDE_CODE_USE_VERTEX": "absent"
+          },
+          "proxyStates": {
+            "ALL_PROXY": "absent",
+            "HTTPS_PROXY": "absent",
+            "HTTP_PROXY": "absent",
+            "all_proxy": "absent",
+            "https_proxy": "absent",
+            "http_proxy": "absent"
+          },
+          "nonessentialTrafficDisabled": true,
+          "valuesSerialized": false
+        }
+      },
+      "capture": {
+        "requests": [
+          {
+            "method": "HEAD",
+            "target": "/api/hello",
+            "kind": "hello-capability-probe",
+            "host": "127.0.0.1:50228",
+            "remoteAddress": "127.0.0.1",
+            "headers": {
+              "names": [
+                "accept",
+                "accept-encoding",
+                "connection",
+                "host",
+                "user-agent"
+              ],
+              "credentialHeaderStates": {
+                "authorization": "absent",
+                "x-api-key": "absent"
+              },
+              "valuesSerialized": false
+            },
+            "body": null,
+            "invalidRawBody": {
+              "present": false,
+              "byteLength": 0,
+              "serialized": false
+            },
+            "parseError": "Unexpected end of JSON input"
+          },
+          {
+            "method": "POST",
+            "target": "/v1/messages?beta=true",
+            "kind": "messages",
+            "host": "127.0.0.1:50228",
+            "remoteAddress": "127.0.0.1",
+            "headers": {
+              "names": [
+                "accept",
+                "accept-encoding",
+                "anthropic-beta",
+                "anthropic-dangerous-direct-browser-access",
+                "anthropic-version",
+                "connection",
+                "content-length",
+                "content-type",
+                "host",
+                "user-agent",
+                "x-api-key",
+                "x-app",
+                "x-claude-code-session-id",
+                "x-stainless-arch",
+                "x-stainless-lang",
+                "x-stainless-os",
+                "x-stainless-package-version",
+                "x-stainless-retry-count",
+                "x-stainless-runtime",
+                "x-stainless-runtime-version",
+                "x-stainless-timeout"
+              ],
+              "credentialHeaderStates": {
+                "authorization": "absent",
+                "x-api-key": "present"
+              },
+              "valuesSerialized": false
+            },
+            "body": {
+              "model": "claude-opus-5",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-09-04.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                    },
+                    {
+                      "type": "text",
+                      "text": "Reply with exactly the word READY and nothing else.",
+                      "cache_control": {
+                        "type": "ephemeral"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "system": [
+                {
+                  "type": "text",
+                  "text": "x-anthropic-billing-header: cc_version=2.1.220.c13; cc_entrypoint=sdk-ts;"
+                },
+                {
+                  "type": "text",
+                  "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+                  "cache_control": {
+                    "type": "ephemeral"
+                  }
+                },
+                {
+                  "type": "text",
+                  "text": "You are a sealed evaluation seat. Follow the user request exactly. You have no tools.",
+                  "cache_control": {
+                    "type": "ephemeral"
+                  }
+                }
+              ],
+              "tools": [],
+              "metadata": {
+                "user_id": {
+                  "present": true,
+                  "type": "string",
+                  "serialized": false
+                }
+              },
+              "max_tokens": 1024,
+              "thinking": {
+                "type": "adaptive"
+              },
+              "context_management": {
+                "edits": [
+                  {
+                    "type": "clear_thinking_20251015",
+                    "keep": "all"
+                  }
+                ]
+              },
+              "output_config": {
+                "effort": "xhigh"
+              },
+              "stream": true
+            },
+            "invalidRawBody": null,
+            "parseError": null
+          }
+        ],
+        "requestCount": 2,
+        "messagesRequestCount": 1,
+        "messagesBodiesParsed": true,
+        "seatPromptPresent": true,
+        "seatPromptPaths": [
+          "requests[1].body.messages[0].content[1].text"
+        ],
+        "everyRequestWasLoopback": true,
+        "onlyExpectedTargets": true,
+        "canaryPresent": false,
+        "canaryPaths": []
+      },
+      "termination": {
+        "response": "deterministic HTTP 400 invalid_request_error T5_OFFLINE_CAPTURE_COMPLETE",
+        "timedOut": false,
+        "sdkEnvelopes": [
+          "system/init",
+          "user",
+          "result/error_during_execution"
+        ],
+        "sdkError": "Claude Code returned an error result: [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+        "stderrExcerpt": ""
+      }
+    }
+  },
+  "assertions": {
+    "defaultArm": {
+      "capturedExactlyOneMessagesRequest": true,
+      "messagesBodyParsed": true,
+      "seatPromptPresentInMessagesBody": true,
+      "capturedApiRequestsLoopbackOnly": true,
+      "onlyExpectedLoopbackTargets": true,
+      "boundedTermination": true,
+      "realBundledCliLaunched": true,
+      "suppliedPromptUnchanged": true,
+      "productionFieldsUntouched": true,
+      "productionSeatContractExact": true
+    },
+    "disabledArm": {
+      "capturedExactlyOneMessagesRequest": true,
+      "messagesBodyParsed": true,
+      "seatPromptPresentInMessagesBody": true,
+      "capturedApiRequestsLoopbackOnly": true,
+      "onlyExpectedLoopbackTargets": true,
+      "boundedTermination": true,
+      "realBundledCliLaunched": true,
+      "suppliedPromptUnchanged": true,
+      "productionFieldsUntouched": true,
+      "productionSeatContractExact": true
+    },
+    "productionPromptsByteIdentical": true,
+    "productionOptionsEqualExceptControl": true,
+    "defaultInputExplicitlyRemovedInheritedDisableFlag": true,
+    "disabledInputControlExpected": "1",
+    "disabledProductionControlState": "1",
+    "disabledArmControlState": "1",
+    "disabledControlWasSet": true,
+    "credentialNamesStrippedBeforeProbeAugmentation": true,
+    "priorEvidenceStatus": "validated",
+    "preGuardEvidenceValidWhenGuardActive": true,
+    "sourceBoundNegativeControlValidWhenGuardActive": true,
+    "preGuardDefaultCanaryPresent": true,
+    "postGuardDefaultCanaryAbsent": true,
+    "disabledCanaryAbsent": true,
+    "acceptedObservation": true
+  },
+  "conclusion": {
+    "classification": "open-pre-guard-closed-post-guard",
+    "claim": "Pre-guard evidence showed the canary in the default request. After the production guard, both rerun arms omitted it."
+  },
+  "productionChangeDecision": "guard-added-and-verified",
+  "preGuardEvidence": {
+    "schemaVersion": 1,
+    "measuredAt": "2026-09-04T14:32:50.531Z",
+    "versions": null,
+    "canary": "T5_AUTO_MEMORY_CANARY_727C36C0E91CCE4A295DD22944324561",
+    "productionCapture": {
+      "seam": "SubscriptionSeatCaller startQuery",
+      "noAttachments": true,
+      "promptShape": "string",
+      "prompt": "Reply with exactly the word READY and nothing else.",
+      "arms": {
+        "default": {
+          "prompt": "Reply with exactly the word READY and nothing else.",
+          "options": {
+            "abortController": {
+              "present": true,
+              "aborted": false
+            },
+            "cwd": "<scratch-root>/workspace",
+            "model": "claude-opus-5",
+            "effort": "xhigh",
+            "systemPrompt": "You are a sealed evaluation seat. Follow the user request exactly. You have no tools.",
+            "tools": [],
+            "settingSources": [],
+            "maxTurns": 8,
+            "thinking": null,
+            "includePartialMessages": false,
+            "outputFormat": null,
+            "env": {
+              "keyCount": 50,
+              "keysSerialized": false,
+              "keySetSha256": "0d0412a66413855dd33f42985b07158db7b4c15c4ae844d3589ba4773e4f3b81",
+              "hashBasis": "JSON of sorted environment key names only; no values are hashed or serialized",
+              "strippedCredentialAbsence": {
+                "ANTHROPIC_API_KEY": "absent",
+                "ANTHROPIC_AUTH_TOKEN": "absent",
+                "ANTHROPIC_BASE_URL": "absent",
+                "ANTHROPIC_API_URL": "absent",
+                "CLAUDE_CODE_USE_BEDROCK": "absent",
+                "CLAUDE_CODE_USE_VERTEX": "absent",
+                "OPENAI_API_KEY": "absent",
+                "OPENAI_BASE_URL": "absent",
+                "CODEX_API_KEY": "absent",
+                "MOONSHOT_API_KEY": "absent",
+                "MOONSHOT_BASE_URL": "absent",
+                "DEEPSEEK_API_KEY": "absent",
+                "DEEPSEEK_BASE_URL": "absent",
+                "REPAIR_SMTP_URL": "absent"
+              },
+              "transportCredentialStates": {
+                "ANTHROPIC_API_KEY": "absent",
+                "ANTHROPIC_AUTH_TOKEN": "absent",
+                "CLAUDE_CODE_OAUTH_TOKEN": "absent",
+                "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "absent",
+                "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "absent"
+              },
+              "relevantStates": {
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "absent",
+                "CLAUDE_CONFIG_DIR": "absent",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "absent",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "present"
+              },
+              "valuesSerialized": false
+            }
+          }
+        },
+        "disabled": {
+          "prompt": "Reply with exactly the word READY and nothing else.",
+          "options": {
+            "abortController": {
+              "present": true,
+              "aborted": false
+            },
+            "cwd": "<scratch-root>/workspace",
+            "model": "claude-opus-5",
+            "effort": "xhigh",
+            "systemPrompt": "You are a sealed evaluation seat. Follow the user request exactly. You have no tools.",
+            "tools": [],
+            "settingSources": [],
+            "maxTurns": 8,
+            "thinking": null,
+            "includePartialMessages": false,
+            "outputFormat": null,
+            "env": {
+              "keyCount": 51,
+              "keysSerialized": false,
+              "keySetSha256": "8eb3be2945159ed0538fadf1ec1f54a0ebc2dd900993947e1ba9e19bbbca3cce",
+              "hashBasis": "JSON of sorted environment key names only; no values are hashed or serialized",
+              "strippedCredentialAbsence": {
+                "ANTHROPIC_API_KEY": "absent",
+                "ANTHROPIC_AUTH_TOKEN": "absent",
+                "ANTHROPIC_BASE_URL": "absent",
+                "ANTHROPIC_API_URL": "absent",
+                "CLAUDE_CODE_USE_BEDROCK": "absent",
+                "CLAUDE_CODE_USE_VERTEX": "absent",
+                "OPENAI_API_KEY": "absent",
+                "OPENAI_BASE_URL": "absent",
+                "CODEX_API_KEY": "absent",
+                "MOONSHOT_API_KEY": "absent",
+                "MOONSHOT_BASE_URL": "absent",
+                "DEEPSEEK_API_KEY": "absent",
+                "DEEPSEEK_BASE_URL": "absent",
+                "REPAIR_SMTP_URL": "absent"
+              },
+              "transportCredentialStates": {
+                "ANTHROPIC_API_KEY": "absent",
+                "ANTHROPIC_AUTH_TOKEN": "absent",
+                "CLAUDE_CODE_OAUTH_TOKEN": "absent",
+                "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "absent",
+                "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "absent"
+              },
+              "relevantStates": {
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                "CLAUDE_CONFIG_DIR": "absent",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "absent",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "present"
+              },
+              "valuesSerialized": false
+            }
+          }
+        }
+      },
+      "promptsByteIdentical": true,
+      "optionsEqualExceptAutoMemoryControl": true,
+      "note": "This is the production projection before settings, config isolation, dummy auth, loopback URL, or custom spawning were added. Environment values and secrets are never serialized."
+    },
+    "arms": {
+      "default": {
+        "label": "default",
+        "inputControlState": "absent",
+        "prompt": "Reply with exactly the word READY and nothing else.",
+        "probeOnlyAugmentation": {
+          "settings": {
+            "autoMemoryEnabled": true,
+            "autoMemoryDirectory": "<scratch-root>/auto-memory"
+          },
+          "optionEnvAdditions": [
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            "DISABLE_TELEMETRY",
+            "DISABLE_AUTO_UPDATE"
+          ],
+          "spawnWrapperChanges": {
+            "launchesSuppliedCommandAndArgvUnchanged": true,
+            "addsDummyTransportAuth": [
+              "ANTHROPIC_API_KEY"
+            ],
+            "removesRealTransportAuth": [
+              "ANTHROPIC_AUTH_TOKEN",
+              "CLAUDE_CODE_OAUTH_TOKEN",
+              "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+              "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+            ],
+            "forcesLoopbackEndpoint": [
+              "ANTHROPIC_BASE_URL"
+            ],
+            "removesOtherEndpointSelectors": [
+              "ANTHROPIC_API_URL",
+              "CLAUDE_CODE_API_BASE_URL",
+              "CLAUDE_CODE_USE_BEDROCK",
+              "CLAUDE_CODE_USE_VERTEX"
+            ],
+            "removesInheritedProxies": [
+              "ALL_PROXY",
+              "HTTPS_PROXY",
+              "HTTP_PROXY",
+              "all_proxy",
+              "https_proxy",
+              "http_proxy"
+            ],
+            "disablesNonessentialTraffic": true,
+            "valuesSerialized": false
+          }
+        },
+        "cli": {
+          "command": "<sdk-bundled-cli-path-redacted>",
+          "commandPathSerialized": false,
+          "commandBasename": "claude",
+          "argv": [
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--input-format",
+            "stream-json",
+            "--effort",
+            "xhigh",
+            "--max-turns",
+            "8",
+            "--model",
+            "claude-opus-5",
+            "--tools",
+            "",
+            "--setting-sources=",
+            "--permission-mode",
+            "default",
+            "--settings",
+            "<scratch-root>/auto-memory\"}"
+          ],
+          "cwd": "<scratch-root>/workspace",
+          "settingsArg": "<scratch-root>/auto-memory\"}",
+          "spawnEnvironment": {
+            "keyCount": 59,
+            "keysSerialized": false,
+            "keySetSha256": "7534ec859af3150d773895177844cbe9ae6ad35543f333b937169fefefb553a4",
+            "hashBasis": "JSON of sorted environment key names only; no values are hashed or serialized",
+            "endpoint": {
+              "scheme": "http",
+              "hostname": "127.0.0.1",
+              "loopback": true
+            },
+            "transportCredentialStates": {
+              "ANTHROPIC_API_KEY": "dummy-present",
+              "ANTHROPIC_AUTH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "absent"
+            },
+            "endpointSelectorStates": {
+              "ANTHROPIC_BASE_URL": "loopback-present",
+              "ANTHROPIC_API_URL": "absent",
+              "CLAUDE_CODE_API_BASE_URL": "absent",
+              "CLAUDE_CODE_USE_BEDROCK": "absent",
+              "CLAUDE_CODE_USE_VERTEX": "absent"
+            },
+            "proxyStates": {
+              "ALL_PROXY": "absent",
+              "HTTPS_PROXY": "absent",
+              "HTTP_PROXY": "absent",
+              "all_proxy": "absent",
+              "https_proxy": "absent",
+              "http_proxy": "absent"
+            },
+            "nonessentialTrafficDisabled": true,
+            "valuesSerialized": false
+          }
+        },
+        "capture": {
+          "requests": [
+            {
+              "method": "HEAD",
+              "target": "/api/hello",
+              "kind": "hello-capability-probe",
+              "host": "127.0.0.1:57502",
+              "remoteAddress": "127.0.0.1",
+              "headers": {
+                "names": [
+                  "accept",
+                  "accept-encoding",
+                  "connection",
+                  "host",
+                  "user-agent"
+                ],
+                "credentialHeaderStates": {
+                  "authorization": "absent",
+                  "x-api-key": "absent"
+                },
+                "valuesSerialized": false
+              },
+              "body": null,
+              "invalidRawBody": {
+                "present": false,
+                "byteLength": 0,
+                "serialized": false
+              },
+              "parseError": "Unexpected end of JSON input"
+            },
+            {
+              "method": "POST",
+              "target": "/v1/messages?beta=true",
+              "kind": "messages",
+              "host": "127.0.0.1:57502",
+              "remoteAddress": "127.0.0.1",
+              "headers": {
+                "names": [
+                  "accept",
+                  "accept-encoding",
+                  "anthropic-beta",
+                  "anthropic-dangerous-direct-browser-access",
+                  "anthropic-version",
+                  "connection",
+                  "content-length",
+                  "content-type",
+                  "host",
+                  "user-agent",
+                  "x-api-key",
+                  "x-app",
+                  "x-claude-code-session-id",
+                  "x-stainless-arch",
+                  "x-stainless-lang",
+                  "x-stainless-os",
+                  "x-stainless-package-version",
+                  "x-stainless-retry-count",
+                  "x-stainless-runtime",
+                  "x-stainless-runtime-version",
+                  "x-stainless-timeout"
+                ],
+                "credentialHeaderStates": {
+                  "authorization": "absent",
+                  "x-api-key": "present"
+                },
+                "valuesSerialized": false
+              },
+              "body": {
+                "model": "claude-opus-5",
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "<scratch-root>/auto-memory/MEMORY.md (user's auto-memory, persists across conversations):\n\n# Scratch cross-run memory\n\nThis file is probe-only state from an earlier run.\nUnique canary: T5_AUTO_MEMORY_CANARY_727C36C0E91CCE4A295DD22944324561\n# currentDate\nToday's date is 2026-09-04.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                      },
+                      {
+                        "type": "text",
+                        "text": "Reply with exactly the word READY and nothing else.",
+                        "cache_control": {
+                          "type": "ephemeral"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "system": [
+                  {
+                    "type": "text",
+                    "text": "x-anthropic-billing-header: cc_version=2.1.220.c13; cc_entrypoint=sdk-ts;"
+                  },
+                  {
+                    "type": "text",
+                    "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+                    "cache_control": {
+                      "type": "ephemeral"
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "You are a sealed evaluation seat. Follow the user request exactly. You have no tools.",
+                    "cache_control": {
+                      "type": "ephemeral"
+                    }
+                  }
+                ],
+                "tools": [],
+                "metadata": {
+                  "user_id": {
+                    "present": true,
+                    "type": "object",
+                    "serialized": false
+                  }
+                },
+                "max_tokens": 1024,
+                "thinking": {
+                  "type": "adaptive"
+                },
+                "context_management": {
+                  "edits": [
+                    {
+                      "type": "clear_thinking_20251015",
+                      "keep": "all"
+                    }
+                  ]
+                },
+                "output_config": {
+                  "effort": "xhigh"
+                },
+                "stream": true
+              },
+              "invalidRawBody": null,
+              "parseError": null
+            }
+          ],
+          "requestCount": 2,
+          "messagesRequestCount": 1,
+          "everyRequestWasLoopback": true,
+          "onlyExpectedTargets": true,
+          "canaryPresent": true,
+          "canaryPaths": [
+            "requests[1].body.messages[0].content[0].text"
+          ]
+        },
+        "termination": {
+          "response": "deterministic HTTP 400 invalid_request_error T5_OFFLINE_CAPTURE_COMPLETE",
+          "timedOut": false,
+          "sdkEnvelopes": [
+            "system/init",
+            "user",
+            "result/error_during_execution"
+          ],
+          "sdkError": "Claude Code returned an error result: [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+          "stderrExcerpt": ""
+        }
+      },
+      "disabled": {
+        "label": "disabled",
+        "inputControlState": "1",
+        "prompt": "Reply with exactly the word READY and nothing else.",
+        "probeOnlyAugmentation": {
+          "settings": {
+            "autoMemoryEnabled": true,
+            "autoMemoryDirectory": "<scratch-root>/auto-memory"
+          },
+          "optionEnvAdditions": [
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            "DISABLE_TELEMETRY",
+            "DISABLE_AUTO_UPDATE"
+          ],
+          "spawnWrapperChanges": {
+            "launchesSuppliedCommandAndArgvUnchanged": true,
+            "addsDummyTransportAuth": [
+              "ANTHROPIC_API_KEY"
+            ],
+            "removesRealTransportAuth": [
+              "ANTHROPIC_AUTH_TOKEN",
+              "CLAUDE_CODE_OAUTH_TOKEN",
+              "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+              "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+            ],
+            "forcesLoopbackEndpoint": [
+              "ANTHROPIC_BASE_URL"
+            ],
+            "removesOtherEndpointSelectors": [
+              "ANTHROPIC_API_URL",
+              "CLAUDE_CODE_API_BASE_URL",
+              "CLAUDE_CODE_USE_BEDROCK",
+              "CLAUDE_CODE_USE_VERTEX"
+            ],
+            "removesInheritedProxies": [
+              "ALL_PROXY",
+              "HTTPS_PROXY",
+              "HTTP_PROXY",
+              "all_proxy",
+              "https_proxy",
+              "http_proxy"
+            ],
+            "disablesNonessentialTraffic": true,
+            "valuesSerialized": false
+          }
+        },
+        "cli": {
+          "command": "<sdk-bundled-cli-path-redacted>",
+          "commandPathSerialized": false,
+          "commandBasename": "claude",
+          "argv": [
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--input-format",
+            "stream-json",
+            "--effort",
+            "xhigh",
+            "--max-turns",
+            "8",
+            "--model",
+            "claude-opus-5",
+            "--tools",
+            "",
+            "--setting-sources=",
+            "--permission-mode",
+            "default",
+            "--settings",
+            "<scratch-root>/auto-memory\"}"
+          ],
+          "cwd": "<scratch-root>/workspace",
+          "settingsArg": "<scratch-root>/auto-memory\"}",
+          "spawnEnvironment": {
+            "keyCount": 60,
+            "keysSerialized": false,
+            "keySetSha256": "384fae28dc34750e376606508a0428f90e22a82d0ec09050ebf7c3ef126627b9",
+            "hashBasis": "JSON of sorted environment key names only; no values are hashed or serialized",
+            "endpoint": {
+              "scheme": "http",
+              "hostname": "127.0.0.1",
+              "loopback": true
+            },
+            "transportCredentialStates": {
+              "ANTHROPIC_API_KEY": "dummy-present",
+              "ANTHROPIC_AUTH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "absent",
+              "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "absent"
+            },
+            "endpointSelectorStates": {
+              "ANTHROPIC_BASE_URL": "loopback-present",
+              "ANTHROPIC_API_URL": "absent",
+              "CLAUDE_CODE_API_BASE_URL": "absent",
+              "CLAUDE_CODE_USE_BEDROCK": "absent",
+              "CLAUDE_CODE_USE_VERTEX": "absent"
+            },
+            "proxyStates": {
+              "ALL_PROXY": "absent",
+              "HTTPS_PROXY": "absent",
+              "HTTP_PROXY": "absent",
+              "all_proxy": "absent",
+              "https_proxy": "absent",
+              "http_proxy": "absent"
+            },
+            "nonessentialTrafficDisabled": true,
+            "valuesSerialized": false
+          }
+        },
+        "capture": {
+          "requests": [
+            {
+              "method": "HEAD",
+              "target": "/api/hello",
+              "kind": "hello-capability-probe",
+              "host": "127.0.0.1:57507",
+              "remoteAddress": "127.0.0.1",
+              "headers": {
+                "names": [
+                  "accept",
+                  "accept-encoding",
+                  "connection",
+                  "host",
+                  "user-agent"
+                ],
+                "credentialHeaderStates": {
+                  "authorization": "absent",
+                  "x-api-key": "absent"
+                },
+                "valuesSerialized": false
+              },
+              "body": null,
+              "invalidRawBody": {
+                "present": false,
+                "byteLength": 0,
+                "serialized": false
+              },
+              "parseError": "Unexpected end of JSON input"
+            },
+            {
+              "method": "POST",
+              "target": "/v1/messages?beta=true",
+              "kind": "messages",
+              "host": "127.0.0.1:57507",
+              "remoteAddress": "127.0.0.1",
+              "headers": {
+                "names": [
+                  "accept",
+                  "accept-encoding",
+                  "anthropic-beta",
+                  "anthropic-dangerous-direct-browser-access",
+                  "anthropic-version",
+                  "connection",
+                  "content-length",
+                  "content-type",
+                  "host",
+                  "user-agent",
+                  "x-api-key",
+                  "x-app",
+                  "x-claude-code-session-id",
+                  "x-stainless-arch",
+                  "x-stainless-lang",
+                  "x-stainless-os",
+                  "x-stainless-package-version",
+                  "x-stainless-retry-count",
+                  "x-stainless-runtime",
+                  "x-stainless-runtime-version",
+                  "x-stainless-timeout"
+                ],
+                "credentialHeaderStates": {
+                  "authorization": "absent",
+                  "x-api-key": "present"
+                },
+                "valuesSerialized": false
+              },
+              "body": {
+                "model": "claude-opus-5",
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-09-04.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                      },
+                      {
+                        "type": "text",
+                        "text": "Reply with exactly the word READY and nothing else.",
+                        "cache_control": {
+                          "type": "ephemeral"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "system": [
+                  {
+                    "type": "text",
+                    "text": "x-anthropic-billing-header: cc_version=2.1.220.c13; cc_entrypoint=sdk-ts;"
+                  },
+                  {
+                    "type": "text",
+                    "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+                    "cache_control": {
+                      "type": "ephemeral"
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "You are a sealed evaluation seat. Follow the user request exactly. You have no tools.",
+                    "cache_control": {
+                      "type": "ephemeral"
+                    }
+                  }
+                ],
+                "tools": [],
+                "metadata": {
+                  "user_id": {
+                    "present": true,
+                    "type": "object",
+                    "serialized": false
+                  }
+                },
+                "max_tokens": 1024,
+                "thinking": {
+                  "type": "adaptive"
+                },
+                "context_management": {
+                  "edits": [
+                    {
+                      "type": "clear_thinking_20251015",
+                      "keep": "all"
+                    }
+                  ]
+                },
+                "output_config": {
+                  "effort": "xhigh"
+                },
+                "stream": true
+              },
+              "invalidRawBody": null,
+              "parseError": null
+            }
+          ],
+          "requestCount": 2,
+          "messagesRequestCount": 1,
+          "everyRequestWasLoopback": true,
+          "onlyExpectedTargets": true,
+          "canaryPresent": false,
+          "canaryPaths": []
+        },
+        "termination": {
+          "response": "deterministic HTTP 400 invalid_request_error T5_OFFLINE_CAPTURE_COMPLETE",
+          "timedOut": false,
+          "sdkEnvelopes": [
+            "system/init",
+            "user",
+            "result/error_during_execution"
+          ],
+          "sdkError": "Claude Code returned an error result: [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+          "stderrExcerpt": ""
+        }
+      }
+    },
+    "assertions": {
+      "defaultArm": {
+        "capturedExactlyOneMessagesRequest": true,
+        "loopbackOnly": true,
+        "onlyExpectedLoopbackTargets": true,
+        "boundedTermination": true,
+        "realBundledCliLaunched": true,
+        "suppliedPromptUnchanged": true
+      },
+      "disabledArm": {
+        "capturedExactlyOneMessagesRequest": true,
+        "loopbackOnly": true,
+        "onlyExpectedLoopbackTargets": true,
+        "boundedTermination": true,
+        "realBundledCliLaunched": true,
+        "suppliedPromptUnchanged": true
+      },
+      "productionPromptsByteIdentical": true,
+      "productionOptionsEqualExceptControl": true,
+      "defaultInputExplicitlyRemovedInheritedDisableFlag": true,
+      "disabledInputControlExpected": "1",
+      "disabledProductionControlState": "1",
+      "disabledControlWasSet": true,
+      "credentialNamesStrippedBeforeProbeAugmentation": true,
+      "defaultCanaryPresent": true,
+      "disabledCanaryAbsent": true,
+      "acceptedObservation": true
+    },
+    "conclusion": {
+      "classification": "open-pre-guard",
+      "claim": "The default sealed seat included cross-run auto memory; the explicit disable control removed it."
+    },
+    "negativeControl": {
+      "command": "node probes/auto-memory-canary.mjs --mutate-disable-control",
+      "mutation": "remove CLAUDE_CODE_DISABLE_AUTO_MEMORY from the disabled real-query arm after production capture",
+      "canonicalResultWrittenByMutation": false,
+      "expectedRedAssertion": "disabledControlWasSet",
+      "observed": {
+        "exitCode": 1,
+        "classification": "failure",
+        "defaultCanaryPresent": false,
+        "disabledCanaryPresent": true,
+        "disabledProductionControlState": "absent",
+        "failedAssertions": [
+          "disabledControlWasSet",
+          "disabledCanaryAbsent",
+          "acceptedObservation"
+        ],
+        "canonicalResultWritten": false
+      }
+    },
+    "note": "Validated historical wire evidence preserved from the pre-guard canonical result."
+  },
+  "negativeControl": {
+    "command": "node probes/auto-memory-canary.mjs --mutate-disable-control",
+    "mutation": "remove CLAUDE_CODE_DISABLE_AUTO_MEMORY from the disabled real-query arm after production capture",
+    "canonicalResultWrittenByMutation": false,
+    "expectedRedAssertion": "disabledControlWasSet",
+    "observed": {
+      "measuredAt": "2026-09-04T15:19:57.176Z",
+      "probeSourceSha256": "dc5a301d20072e6a674e05605bc88f48b87e25683293a0b4c1c97224e7e45e9c",
+      "exitCode": 1,
+      "classification": "failure",
+      "defaultCanaryPresent": false,
+      "disabledCanaryPresent": true,
+      "disabledProductionControlState": "1",
+      "disabledArmControlState": "absent",
+      "failedAssertions": [
+        "disabledControlWasSet",
+        "preGuardEvidenceValidWhenGuardActive",
+        "sourceBoundNegativeControlValidWhenGuardActive",
+        "disabledCanaryAbsent",
+        "acceptedObservation"
+      ],
+      "canonicalBeforeSha256": "fe66587f53d1ea5f7503f54fbc2ed226389dcef23a2e5e76731a3a3e265ff6c8",
+      "canonicalAfterSha256": "fe66587f53d1ea5f7503f54fbc2ed226389dcef23a2e5e76731a3a3e265ff6c8",
+      "canonicalResultWritten": false,
+      "canonicalUnchanged": true
+    }
+  },
+  "notes": [
+    "The in-memory canary scan walks the entire parsed JSON object, including system and messages. Persisted request bodies keep the prompt-bearing fields but redact transport metadata values.",
+    "The loopback fake endpoint answers Claude Code's HEAD /api/hello capability probe locally, then returns a deterministic HTTP 400 and terminates the child immediately after the first complete /v1/messages body is captured. Retries, timeouts, missing captures, unexpected targets, or a non-loopback socket observed by the fake endpoint are failures.",
+    "Inline autoMemoryEnabled:true makes feature availability explicit. autoMemoryDirectory names the directory itself, and MEMORY.md is seeded directly inside it.",
+    "The spawn wrapper launches exactly the command and argv supplied by the SDK. Its child environment is a fixed allowlist plus probe-owned dummy auth, loopback transport, and traffic-disable flags.",
+    "The fake API response prevents a model response; this probe measures CLI request assembly only. It does not claim to be an OS-level egress sandbox."
+  ]
+}
