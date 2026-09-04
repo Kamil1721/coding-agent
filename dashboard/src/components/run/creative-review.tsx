@@ -22,7 +22,15 @@ interface AuthorityCopy {
 
 const COMPILE_OUTCOMES = new Set(["unknown", "passed", "failed", "unavailable"]);
 const RENDER_PROFILE_IDS = new Set(["desktop", "mobile", "reduced_motion", "no_media"]);
-const CRITIC_DISPOSITIONS = new Set(["accept", "revise", "unavailable"]);
+const CRITIC_DISPOSITIONS = new Set(["accept", "no_evidence", "revise", "unavailable"]);
+const CRITIC_STOP_REASONS = new Set([
+  "accepted",
+  "critic_no_evidence",
+  "critic_unavailable",
+  "repeated_tree_and_findings",
+  "attempts_exhausted",
+  "invalid_attempt",
+]);
 const REVIEW_STATES = new Set([
   "reviewing",
   "creative_ready",
@@ -111,10 +119,31 @@ function isCreativeStatus(value: unknown): value is CreativeStatus {
       (typeof criticDisposition === "string" && CRITIC_DISPOSITIONS.has(criticDisposition))) &&
     Array.isArray(value["criticFindings"]) &&
     value["criticFindings"].every(isCriticFinding) &&
+    (criticDisposition !== null || (
+      criticAttempt === null &&
+      value["criticFindings"].length === 0 &&
+      (typeof value["reviewStopReason"] !== "string" ||
+        !CRITIC_STOP_REASONS.has(value["reviewStopReason"]))
+    )) &&
+    (criticDisposition !== "accept" || (
+      value["criticFindings"].length === 0 &&
+      criticAttempt !== null &&
+      reviewState === "creative_ready" &&
+      value["reviewStopReason"] === "accepted"
+    )) &&
+    (criticDisposition !== "no_evidence" || (
+      value["criticFindings"].length === 0 &&
+      criticAttempt !== null &&
+      reviewState === "creative_review_required" &&
+      value["reviewStopReason"] === "critic_no_evidence" &&
+      (ownerDecision === null || ownerDecision === "cancelled") &&
+      value["ownerDecisionTargetRunId"] === null
+    )) &&
     (criticAttempt === null ||
       (typeof criticAttempt === "number" &&
         Number.isInteger(criticAttempt) &&
-        criticAttempt >= 1)) &&
+        criticAttempt >= 1 &&
+        criticAttempt <= 3)) &&
     (reviewState === null ||
       (typeof reviewState === "string" && REVIEW_STATES.has(reviewState))) &&
     (value["reviewStopReason"] === null || typeof value["reviewStopReason"] === "string") &&
@@ -197,6 +226,14 @@ function criticCopy(disposition: CreativeStatus["criticDisposition"]): Authority
       label: "Rendered critic",
       value: "Revise",
       detail: "The critic recorded rendered-evidence revisions.",
+      tone: "warn",
+    };
+  }
+  if (disposition === "no_evidence") {
+    return {
+      label: "Rendered critic",
+      value: "Insufficient evidence",
+      detail: "The critic ran, but the rendered evidence was insufficient to accept or request a revision.",
       tone: "warn",
     };
   }
@@ -566,13 +603,15 @@ export function CreativeReviewPanel({
                     {pending === "approved" ? "Recording…" : "Approve"}
                   </Button>
                 )}
-                <Button
-                  variant="default"
-                  disabled={pending !== null || reason.trim() === ""}
-                  onClick={() => void decide("revision_requested")}
-                >
-                  {pending === "revision_requested" ? "Recording…" : "Request revision"}
-                </Button>
+                {review.criticDisposition !== "no_evidence" && (
+                  <Button
+                    variant="default"
+                    disabled={pending !== null || reason.trim() === ""}
+                    onClick={() => void decide("revision_requested")}
+                  >
+                    {pending === "revision_requested" ? "Recording…" : "Request revision"}
+                  </Button>
+                )}
                 {mayWaive && (
                   <Button
                     variant="default"

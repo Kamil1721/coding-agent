@@ -613,7 +613,7 @@ export interface CreativeStatus {
     readonly captureCount: number;
     readonly complete: boolean;
   }[] | null;
-  readonly criticDisposition: "accept" | "revise" | "unavailable" | null;
+  readonly criticDisposition: "accept" | "no_evidence" | "revise" | "unavailable" | null;
   readonly criticFindings: readonly CreativeCriticFinding[];
   readonly criticAttempt: number | null;
   readonly reviewState:

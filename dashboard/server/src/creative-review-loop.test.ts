@@ -48,6 +48,14 @@ test("critic accept stops the loop but remains separate from owner approval", ()
   assert.equal(state.ownerDecision, "pending", "critic acceptance is not owner promotion approval");
 });
 
+test("insufficient critic evidence stops before any revision attempt", () => {
+  const state = advanceCreativeReview(green(), critic(1, "no_evidence"));
+  assert.equal(state.status, "creative_review_required");
+  assert.equal(state.stopReason, "critic_no_evidence");
+  assert.equal(state.criticDisposition, "no_evidence");
+  assert.equal(state.attempts.length, 1);
+});
+
 test("functional and compiler red stop before a critic attempt can run", () => {
   const functional = initialCreativeReviewState({ heldOutPass: false, creativeCompilePass: true });
   assert.equal(functional.status, "failed");

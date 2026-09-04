@@ -20,6 +20,7 @@ import {
   authorInputFor,
   claimCreativeArtifactRepair,
   claimCreativeDecision,
+  creativeCriticAuthorityMatches,
   creativeArtifactRevisionPrompt,
   creativeAuthorAttemptFile,
   creativeAuthorAttemptTextFile,
@@ -37,6 +38,9 @@ import {
   webCreativeApplicable,
   writeCreativePilotStatus,
 } from "./creative-pilot.js";
+import { fingerprintTasteFindings, writeRenderedTasteCriticRecord } from "./rendered-taste-critic.js";
+import type { RenderedTasteCriticRecord } from "./rendered-taste-critic.js";
+import type { TasteFindingV1 } from "./taste-policy.js";
 
 const HASH = "a".repeat(64);
 const TICKET: Ticket = { id: "ticket-web", title: "Web", brief: "Build a responsive portfolio website for a photographer.", sha256: HASH, tier: "medium" };
@@ -489,6 +493,10 @@ test("publication remains closed until all four independent authorities approve"
   assert.equal(pilotMayPublish({ ...ready, renderFresh: null }), false);
   assert.equal(pilotMayPublish({ ...ready, heldOutPass: false }), false);
   assert.equal(pilotMayPublish({ ...ready, ownerDecision: null }), false);
+  assert.equal(
+    pilotMayPublish({ ...ready, criticDisposition: "no_evidence", reviewState: "creative_review_required" }),
+    false,
+  );
   assert.equal(pilotMayPublish({
     ...ready,
     criticDisposition: "revise",
@@ -496,6 +504,91 @@ test("publication remains closed until all four independent authorities approve"
     ownerDecisionReason: "The asymmetry is intentional for the supplied editorial reference.",
   }), true);
   assert.equal(pilotMayPublish({ ...ready, criticDisposition: "revise", ownerDecision: "waived", ownerDecisionReason: null }), false);
+});
+
+test("latest durable critic history defeats status rollback and legacy latest remains authoritative", () => {
+  const finding: TasteFindingV1 = {
+    id: "hierarchy",
+    category: "hierarchy",
+    code: "HIERARCHY_FLAT",
+    routeId: "home",
+    sectionIds: ["hero"],
+    diagnosis: "The hierarchy is flat.",
+    revision: "Increase separation between headline and proof.",
+    evidence: [
+      { kind: "contract", pointer: "/sections/0/headline", valueSha256: "b".repeat(64) },
+      { kind: "contract", pointer: "/sections/0/body", valueSha256: "c".repeat(64) },
+    ],
+  };
+  const manifest = "d".repeat(64);
+  const record = (
+    attempt: number,
+    disposition: "revise" | "no_evidence" | "unavailable" | "accept",
+    legacy = false,
+  ): RenderedTasteCriticRecord => {
+    const findings = disposition === "revise" ? [finding] : [];
+    const output = disposition === "unavailable" ? null : legacy ? {
+      schemaVersion: 1 as const,
+      contractHash: HASH,
+      renderManifestHash: manifest,
+      findings,
+    } : {
+      schemaVersion: 2 as const,
+      contractHash: HASH,
+      renderManifestHash: manifest,
+      evidenceSufficient: disposition !== "no_evidence",
+      findings,
+    };
+    return {
+      schemaVersion: 1,
+      attempt,
+      iteration: attempt - 1,
+      treeHash: "e".repeat(64),
+      contractHash: HASH,
+      renderManifestHash: manifest,
+      recordedAt: "2026-08-20T12:00:00.000Z",
+      criticDisposition: disposition,
+      ran: disposition !== "unavailable",
+      output,
+      findingFingerprint: output === null ? null : fingerprintTasteFindings(findings),
+      policyErrors: [],
+      detail: `fixture ${disposition}`,
+      tokens: null,
+      rateLimit: null,
+      criticBy: "test/latest-authority",
+    };
+  };
+  const projected = (authority: RenderedTasteCriticRecord) => ({
+    ...statusAfterCompile(initialCreativePilotStatus(true, true), {
+      outcome: "passed" as const, contractHash: HASH, findings: [], checkedAt: new Date().toISOString(),
+    }),
+    renderManifestHash: authority.renderManifestHash,
+    criticDisposition: authority.criticDisposition,
+    criticAttempt: authority.attempt,
+    criticFindings: authority.output?.findings.map(({ category, code, routeId, sectionIds, diagnosis, revision }) => ({
+      category, code, routeId, sectionIds, diagnosis, revision,
+    })) ?? [],
+  });
+
+  for (const terminal of ["no_evidence", "unavailable"] as const) {
+    const results = mkdtempSync(join(tmpdir(), `creative-critic-rollback-${terminal}-`));
+    const first = record(1, "revise");
+    writeRenderedTasteCriticRecord(results, first);
+    assert.equal(creativeCriticAuthorityMatches(results, projected(first)), true, "attempt 1 waiver authority initially matches");
+    const latest = record(2, terminal);
+    writeRenderedTasteCriticRecord(results, latest);
+    assert.equal(creativeCriticAuthorityMatches(results, projected(first)), false, "older projected authority cannot roll back history");
+    assert.equal(creativeCriticAuthorityMatches(results, projected(latest)), true, "latest terminal authority matches");
+    assert.equal(pilotMayPublish({ ...projected(latest), heldOutPass: true, renderFresh: true, ownerDecision: "approved" }), false);
+  }
+
+  const legacyResults = mkdtempSync(join(tmpdir(), "creative-critic-legacy-latest-"));
+  const first = record(1, "revise");
+  const legacyLatest = record(2, "accept", true);
+  writeRenderedTasteCriticRecord(legacyResults, first);
+  writeRenderedTasteCriticRecord(legacyResults, legacyLatest);
+  assert.equal(creativeCriticAuthorityMatches(legacyResults, projected(first)), false);
+  assert.equal(creativeCriticAuthorityMatches(legacyResults, projected(legacyLatest)), true);
 });
 
 test("review re-entry preserves prior critic evidence and marks it stale before mutation", () => {
@@ -557,6 +650,56 @@ test("tampered creative status records fail closed on invented render profiles a
     reviewState: "creative_review_required" as const,
   };
   writeCreativePilotStatus(results, valid);
+  assert.notEqual(readCreativePilotStatus(results), null);
+
+  const noEvidence = {
+    ...valid,
+    criticDisposition: "no_evidence" as const,
+    criticFindings: [],
+    reviewStopReason: "critic_no_evidence" as const,
+  };
+  writeCreativePilotStatus(results, noEvidence);
+  assert.equal(readCreativePilotStatus(results)?.criticDisposition, "no_evidence");
+
+  writeCreativePilotStatus(results, { ...noEvidence, criticAttempt: null });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, { ...noEvidence, reviewState: "creative_ready" });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, { ...noEvidence, reviewStopReason: "accepted" });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, { ...noEvidence, ownerDecision: "approved" });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, { ...noEvidence, ownerDecision: "waived", ownerDecisionReason: "tampered" });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, {
+    ...noEvidence,
+    ownerDecision: "revision_requested",
+    ownerDecisionReason: "Try again.",
+  });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, {
+    ...noEvidence,
+    ownerDecision: "cancelled",
+    ownerDecisionTargetRunId: "run-cont-tampered",
+  });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, {
+    ...noEvidence,
+    ownerDecision: "cancelled",
+    ownerDecisionTargetRunId: null,
+  });
+  assert.equal(readCreativePilotStatus(results)?.ownerDecision, "cancelled");
+  writeCreativePilotStatus(results, { ...noEvidence, criticDisposition: null });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, { ...noEvidence, criticFindings: [], criticDisposition: null, criticAttempt: null });
+  assert.equal(readCreativePilotStatus(results), null);
+  writeCreativePilotStatus(results, {
+    ...noEvidence,
+    criticDisposition: null,
+    criticAttempt: null,
+    criticFindings: [],
+    reviewStopReason: null,
+  });
   assert.notEqual(readCreativePilotStatus(results), null);
 
   writeFileSync(join(results, "creative-status.json"), JSON.stringify({

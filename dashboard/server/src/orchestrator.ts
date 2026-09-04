@@ -210,19 +210,23 @@ import type { CreativeAuthorRepairFinding, CreativeContractAuthorRequest, Creati
 import { advanceCreativeReview, initialCreativeReviewState } from "./creative-review-loop.js";
 import type { CreativeReviewState } from "./creative-review-loop.js";
 import {
+  CREATIVE_CONTRACT_FILE,
+  CREATIVE_STATUS_FILE,
   CREATIVE_RENDER_DIRECTORY,
   authorInputFor,
   claimCreativeArtifactRepair,
   creativeArtifactRevisionPrompt,
   creativeContractPrompt,
+  creativeCriticAuthorityMatches,
+  creativeDecisionAuthorityMatches,
   creativePilotEnabled,
   creativeRevisionPrompt,
+  durablePilotMayPublish,
   freshCreativeContract,
   hashCreativeArtifact,
   initialCreativePilotStatus,
   persistCreativeAuthorAttempt,
   persistCreativeAuthorResult,
-  pilotMayPublish,
   readCreativePilotStatus,
   statusAfterCompile,
   statusAfterRender,
@@ -232,12 +236,21 @@ import {
   writeCreativePilotStatus,
   writeCreativeRenderManifest,
 } from "./creative-pilot.js";
-import type { FreshCreativeContract } from "./creative-pilot.js";
+import type { CreativePilotStatus, FreshCreativeContract } from "./creative-pilot.js";
 import { buildCreativeTastePromptInput, captureCreativeRender, creativeRenderRefusalClass } from "./creative-render.js";
 import type { CreativeRenderOptions, CreativeRenderResult } from "./creative-render.js";
-import { CREATIVE_RECOVERY_WORKER_STARTED_FILE, isTerminalCreativeRecoveryTarget } from "./creative-recovery.js";
+import {
+  CREATIVE_RECOVERY_WORKER_STARTED_FILE,
+  isTerminalCreativeRecoveryTarget,
+  terminalCreativeRecoveryRecordMatches,
+} from "./creative-recovery.js";
 import type { TerminalCreativeRecoveryWork, TerminalCreativeRecoveryWorkResult } from "./creative-recovery.js";
-import { readRenderedTasteCriticRecord, runRenderedTasteCritic, writeRenderedTasteCriticRecord } from "./rendered-taste-critic.js";
+import {
+  hasRenderedTasteCriticArtifact,
+  readRenderedTasteCriticHistory,
+  runRenderedTasteCritic,
+  writeRenderedTasteCriticRecord,
+} from "./rendered-taste-critic.js";
 import type { RenderedTasteCriticRecord, RenderedTasteCriticRequest } from "./rendered-taste-critic.js";
 import { canonicaliseForDecision, ClaudeSubscriptionBuilder } from "./builders/claude-builder.js";
 import { CodexSubscriptionBuilder } from "./builders/codex-builder.js";
@@ -917,6 +930,26 @@ export function recordedNetworkPolicy(clause: BuilderNetworkClause | undefined):
   return {
     egress: CONFIGURED_BUT_UNVERIFIED_LABEL as NetworkPolicy["egress"],
     allowedHosts: [...(clause.allowedDomains ?? [])],
+  };
+}
+
+export function terminalCreativeRecoveryOutcome(
+  resultsDir: string,
+  status: CreativePilotStatus | null,
+  heldOutPass: boolean | null,
+): Pick<TerminalCreativeRecoveryWorkResult, "terminalStatus" | "failureReason"> {
+  const criticAuthorityMatches = status !== null && creativeCriticAuthorityMatches(resultsDir, status);
+  const passed = heldOutPass === true && status?.criticDisposition === "accept" && criticAuthorityMatches;
+  if (passed) return { terminalStatus: "passed", failureReason: null };
+  if (heldOutPass === true && status?.criticDisposition === "accept" && !criticAuthorityMatches) {
+    return {
+      terminalStatus: "failed",
+      failureReason: "creative recovery stopped: final critic authority is missing, invalid, or does not match the latest durable critic record",
+    };
+  }
+  return {
+    terminalStatus: "failed",
+    failureReason: `creative recovery stopped: ${status?.reviewStopReason ?? status?.criticDisposition ?? "unknown"}`,
   };
 }
 
@@ -4229,11 +4262,23 @@ export class Orchestrator {
       heldOutPass: scored.record?.heldOutPass ?? null,
       creativeCompilePass: checked.compile.outcome === "passed" ? true : checked.compile.outcome === "failed" ? false : null,
     });
-    const priorCritics = [0, 1, 2]
-      .map((iteration) => readRenderedTasteCriticRecord(runPaths.results, iteration))
-      .filter((record): record is RenderedTasteCriticRecord => record !== null);
+    const priorCritics = readRenderedTasteCriticHistory(runPaths.results);
+    if (priorCritics === null) {
+      review = { ...review, status: "creative_review_required", stopReason: "invalid_attempt" };
+      writeCreativePilotStatus(
+        runPaths.results,
+        statusAfterReview(status, review, null, status.renderManifestHash),
+      );
+      this.#emitLog(runId, "warn", "creative review stopped before capture: durable critic history is invalid or non-contiguous");
+      return { scored, rateLimit: null };
+    }
     if (review.status === "reviewing") {
-      for (const critic of priorCritics) review = advanceCreativeReview(review, critic);
+      for (const [index, critic] of priorCritics.entries()) {
+        review = advanceCreativeReview(review, critic);
+        if (critic.criticDisposition === "accept" && index < priorCritics.length - 1) {
+          review = { ...review, status: "reviewing", stopReason: null };
+        }
+      }
       const pendingAfterAcceptedCritic = this.#deps.store.pendingMessages(runId);
       if (review.status === "creative_ready" && pendingAfterAcceptedCritic.length > 0) {
         review = priorCritics.length < 3
@@ -4253,6 +4298,47 @@ export class Orchestrator {
       writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, priorCritics.at(-1) ?? null, status.renderManifestHash));
       this.#emitLog(runId, "warn", "creative review has exhausted its three durable critic attempts");
       return { scored, rateLimit: null };
+    }
+
+    if (lastCritic?.criticDisposition === "revise") {
+      status = statusBeforeCreativeMutation(status);
+      writeCreativePilotStatus(runPaths.results, status);
+      const revision = await this.#runCreativeRevision(
+        runId, ticket, runPaths, log, checked.fresh, lastCritic, signal, recoveryEntry,
+      );
+      if (revision.rateLimit !== null) return { scored, rateLimit: revision.rateLimit };
+      if (signal.aborted) return { scored, rateLimit: null };
+      const executionFailure = this.#executionContractFailure(runId, runPaths, executionContract, "post-mutation");
+      if (!revision.completed || executionFailure !== null) {
+        const failure = executionFailure ??
+          "creative revision did not complete cleanly after restart; the previous sealed gate score is stale";
+        review = { ...review, heldOutPass: null, status: "creative_review_required", stopReason: "invalid_attempt" };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, lastCritic, lastCritic.renderManifestHash));
+        this.#emitLog(runId, "error", failure);
+        return { scored: { record: null, container: null, failure }, rateLimit: null };
+      }
+      checked = freshCreativeContract(runPaths.results, authored.resolver);
+      status = statusAfterCompile(status, checked.compile);
+      if (checked.fresh === null) {
+        review = { ...review, creativeCompilePass: false, status: "failed", stopReason: "compiler_red" };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, lastCritic, lastCritic.renderManifestHash));
+        return { scored: { record: null, container: null, failure: "restarted creative revision made the contract unavailable" }, rateLimit: null };
+      }
+      scored = await this.#gatePhase(
+        runId, ticket, suite, runPaths, declaredDone, signal, highestArchivedAttempt(this.#deps.paths, runId) + 1,
+      );
+      const heldOutPass = scored.record?.heldOutPass ?? null;
+      if (heldOutPass !== true) {
+        review = {
+          ...review,
+          heldOutPass,
+          status: heldOutPass === false ? "failed" : "creative_review_required",
+          stopReason: heldOutPass === false ? "functional_red" : "prerequisite_unknown",
+        };
+        writeCreativePilotStatus(runPaths.results, statusAfterReview(status, review, lastCritic, lastCritic.renderManifestHash));
+        return { scored, rateLimit: null };
+      }
+      review = { ...review, heldOutPass: true, creativeCompilePass: true };
     }
 
     let preview;
@@ -8908,7 +8994,42 @@ export class Orchestrator {
     try {
       const creative = readCreativePilotStatus(runPaths.results);
       const creativeRecovery = isTerminalCreativeRecoveryTarget(this.#deps.paths, runId);
-      if (creativeRecovery && !pilotMayPublish(creative)) {
+      const creativeContractExists = existsSync(join(runPaths.results, CREATIVE_CONTRACT_FILE));
+      const criticArtifactPresent = hasRenderedTasteCriticArtifact(runPaths.results);
+      const creativeStatusRequired =
+        creativeRecovery ||
+        creativeContractExists ||
+        criticArtifactPresent ||
+        existsSync(join(runPaths.results, CREATIVE_STATUS_FILE));
+      if (creativeStatusRequired && creative === null) {
+        this.#emitLog(
+          runId,
+          "warn",
+          `creative publication is suppressed because the required durable status is missing or invalid. ` +
+            `The inspectable run workspace remains at ${runPaths.workspace}.`,
+        );
+        return;
+      }
+      if (
+        creative !== null &&
+        (((criticArtifactPresent || creative.criticDisposition !== null) &&
+          !creativeCriticAuthorityMatches(runPaths.results, creative)) ||
+          (creative.ownerDecision !== null && !creativeDecisionAuthorityMatches(runPaths.results, creative)))
+      ) {
+        this.#emitLog(
+          runId,
+          "warn",
+          `creative publication is suppressed because a projected authority does not match its durable record. ` +
+            `The inspectable run workspace remains at ${runPaths.workspace}.`,
+        );
+        return;
+      }
+      if (
+        creativeRecovery &&
+        (creative === null ||
+          !terminalCreativeRecoveryRecordMatches(runPaths.results, row, creative) ||
+          !durablePilotMayPublish(runPaths.results, creative))
+      ) {
         this.#emitLog(
           runId,
           "warn",
@@ -8917,8 +9038,12 @@ export class Orchestrator {
         );
         return;
       }
-      if (!creativeRecovery && creative?.enabled === true && creative.applicable) {
-        if (!pilotMayPublish(creative)) {
+      if (!creativeRecovery && (
+        creativeContractExists ||
+        criticArtifactPresent ||
+        (creative?.enabled === true && creative.applicable)
+      )) {
+        if (!durablePilotMayPublish(runPaths.results, creative)) {
           this.#emitLog(
             runId,
             "warn",
@@ -9084,7 +9209,11 @@ export class Orchestrator {
       if (checkedBefore.fresh === null || checkedBefore.fresh.contractHash !== work.contractHash) {
         throw new Error("creative recovery child is not bound to the requested compiled contract");
       }
-      if (readRenderedTasteCriticRecord(runPaths.results, 0) !== null) {
+      const criticHistory = readRenderedTasteCriticHistory(runPaths.results);
+      if (criticHistory === null) {
+        throw new Error("creative recovery child has invalid or non-contiguous critic history");
+      }
+      if (criticHistory.length !== 0) {
         throw new Error("creative recovery child already has a critic attempt");
       }
 
@@ -9180,13 +9309,12 @@ export class Orchestrator {
         throw new Error("creative recovery did not persist its exact gate attempt history");
       }
       const heldOutPass = scored.record?.heldOutPass ?? null;
-      const passed = heldOutPass === true && status?.criticDisposition === "accept";
-      const failureReason = passed ? null : `creative recovery stopped: ${status?.reviewStopReason ?? status?.criticDisposition ?? "unknown"}`;
+      const terminalOutcome = terminalCreativeRecoveryOutcome(runPaths.results, status, heldOutPass);
       const result: TerminalCreativeRecoveryWorkResult = {
-        terminalStatus: passed ? "passed" : "failed",
+        terminalStatus: terminalOutcome.terminalStatus,
         heldOutPass,
         falseFinish: scored.record?.falseFinish ?? null,
-        failureReason,
+        failureReason: terminalOutcome.failureReason,
         artifactHashBeforeMutation,
         artifactHashAfterMutation: finalHash,
         renderManifestHash: status?.renderManifestHash ?? null,

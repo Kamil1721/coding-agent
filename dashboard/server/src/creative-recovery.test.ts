@@ -7,8 +7,13 @@ import test from "node:test";
 import { canonicalJson, sha256Hex } from "./creative-contract.js";
 import { ENVIRONMENT_FILE } from "./build-environment.js";
 import {
+  CREATIVE_RECOVERY_FILE,
+  CREATIVE_RECOVERY_OWNER_FILE,
+  CREATIVE_RECOVERY_WORKER_STARTED_FILE,
+  isTerminalCreativeRecoveryTarget,
   TerminalCreativeRecoveryController,
   TerminalCreativeRecoveryRefusal,
+  terminalCreativeRecoveryRecordMatches,
   terminalCreativeRecoveryRunId,
   validateTerminalCreativeRecoveryRequest,
 } from "./creative-recovery.js";
@@ -18,8 +23,10 @@ import {
   CREATIVE_COMPILE_FILE,
   CREATIVE_CONTRACT_FILE,
   CREATIVE_RENDER_DIRECTORY,
+  CREATIVE_STATUS_FILE,
   hashCreativeArtifact,
   initialCreativePilotStatus,
+  pilotMayPublish,
   readCreativePilotStatus,
   writeCreativePilotStatus,
 } from "./creative-pilot.js";
@@ -32,6 +39,11 @@ import type { RunController } from "./http.js";
 import { ModelCatalog } from "./models.js";
 import { ensureDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { RENDER_PROFILE_IDS } from "./render-manifest.js";
+import {
+  CREATIVE_CRITIC_DIRECTORY,
+  fingerprintTasteFindings,
+  writeRenderedTasteCriticRecord,
+} from "./rendered-taste-critic.js";
 
 function recoveryHarness(options: {
   readonly requestedModelId?: string;
@@ -126,6 +138,40 @@ function terminalAccepted(
   const creative = readCreativePilotStatus(targetPaths.results);
   assert.ok(creative !== null);
   const renderFresh = outcome.criticDisposition === "accept" && outcome.renderManifestHash !== null;
+  if (
+    (outcome.criticDisposition === "accept" || outcome.criticDisposition === "no_evidence") &&
+    outcome.criticAttempt !== null &&
+    outcome.iteration !== null &&
+    outcome.renderManifestHash !== null
+  ) {
+    const findings: [] = [];
+    writeRenderedTasteCriticRecord(targetPaths.results, {
+      schemaVersion: 1,
+      attempt: outcome.criticAttempt,
+      iteration: outcome.iteration,
+      treeHash: outcome.artifactHashAfterMutation,
+      contractHash: h.contractHash,
+      renderManifestHash: outcome.renderManifestHash,
+      recordedAt: "2026-08-26T02:00:00.000Z",
+      criticDisposition: outcome.criticDisposition,
+      ran: true,
+      output: {
+        schemaVersion: 2,
+        contractHash: h.contractHash,
+        renderManifestHash: outcome.renderManifestHash,
+        evidenceSufficient: outcome.criticDisposition === "accept",
+        findings,
+      },
+      findingFingerprint: fingerprintTasteFindings(findings),
+      policyErrors: [],
+      detail: outcome.criticDisposition === "accept"
+        ? "critic accepted the rendered evidence"
+        : "critic ran but the supplied rendered evidence was insufficient",
+      tokens: null,
+      rateLimit: null,
+      criticBy: "test/rendered-taste-critic",
+    });
+  }
   writeCreativePilotStatus(targetPaths.results, {
     ...creative,
     heldOutPass: outcome.heldOutPass,
@@ -136,7 +182,11 @@ function terminalAccepted(
       : null,
     criticDisposition: outcome.criticDisposition,
     criticAttempt: outcome.criticAttempt,
-    reviewState: outcome.criticDisposition === "accept" ? "creative_ready" : creative.reviewState,
+    reviewState: outcome.criticDisposition === "accept"
+      ? "creative_ready"
+      : outcome.criticDisposition === "no_evidence"
+        ? "creative_review_required"
+        : creative.reviewState,
     reviewStopReason: outcome.reviewStopReason,
   });
   h.store.updateRun(targetRunId, {
@@ -151,6 +201,120 @@ function terminalAccepted(
   });
   return outcome;
 }
+
+test("terminal creative recovery identity is fail-closed across namespace and artifact shapes", () => {
+  const h = recoveryHarness();
+  try {
+    assert.equal(isTerminalCreativeRecoveryTarget(h.paths, "ordinary-run"), false);
+    assert.equal(isTerminalCreativeRecoveryTarget(h.paths, "run-creative-recovery-prefix-only"), true);
+
+    for (const [index, file] of [
+      CREATIVE_RECOVERY_OWNER_FILE,
+      CREATIVE_RECOVERY_WORKER_STARTED_FILE,
+      CREATIVE_RECOVERY_FILE,
+    ].entries()) {
+      const runId = `ordinary-artifact-${String(index)}`;
+      const results = runPathsFor(h.paths, runId).results;
+      mkdirSync(results, { recursive: true });
+      writeFileSync(join(results, file), "not-json\n", "utf8");
+      assert.equal(isTerminalCreativeRecoveryTarget(h.paths, runId), true, `${file} alone identifies recovery ownership`);
+    }
+
+    const directoryResults = runPathsFor(h.paths, "ordinary-directory-artifact").results;
+    mkdirSync(join(directoryResults, CREATIVE_RECOVERY_OWNER_FILE), { recursive: true });
+    assert.equal(isTerminalCreativeRecoveryTarget(h.paths, "ordinary-directory-artifact"), true);
+
+    const symlinkResults = runPathsFor(h.paths, "ordinary-symlink-artifact").results;
+    mkdirSync(symlinkResults, { recursive: true });
+    symlinkSync(join(h.root, "missing-target"), join(symlinkResults, CREATIVE_RECOVERY_OWNER_FILE));
+    assert.equal(isTerminalCreativeRecoveryTarget(h.paths, "ordinary-symlink-artifact"), true);
+  } finally { h.cleanup(); }
+});
+
+test("source critic artifacts cannot be hidden by rolling back the mutable creative status", async () => {
+  const record = (
+    h: ReturnType<typeof recoveryHarness>,
+    attempt: number,
+    disposition: "no_evidence" | "unavailable",
+  ) => {
+    const output = disposition === "unavailable" ? null : {
+      schemaVersion: 2 as const,
+      contractHash: h.contractHash,
+      renderManifestHash: "f".repeat(64),
+      evidenceSufficient: false,
+      findings: [],
+    };
+    return {
+      schemaVersion: 1 as const,
+      attempt,
+      iteration: attempt - 1,
+      treeHash: "e".repeat(64),
+      contractHash: h.contractHash,
+      renderManifestHash: "f".repeat(64),
+      recordedAt: "2026-08-26T00:30:00.000Z",
+      criticDisposition: disposition,
+      ran: disposition !== "unavailable",
+      output,
+      findingFingerprint: output === null ? null : fingerprintTasteFindings([]),
+      policyErrors: [],
+      detail: `fixture ${disposition}`,
+      tokens: null,
+      rateLimit: null,
+      criticBy: "test/source-authority",
+    };
+  };
+  const cases: readonly [string, (h: ReturnType<typeof recoveryHarness>) => void][] = [
+    ["terminal no_evidence", (h) => writeRenderedTasteCriticRecord(runPathsFor(h.paths, h.sourceRunId).results, record(h, 1, "no_evidence"))],
+    ["terminal unavailable", (h) => writeRenderedTasteCriticRecord(runPathsFor(h.paths, h.sourceRunId).results, record(h, 1, "unavailable"))],
+    ["malformed canonical record", (h) => {
+      const directory = join(runPathsFor(h.paths, h.sourceRunId).results, CREATIVE_CRITIC_DIRECTORY);
+      mkdirSync(directory);
+      writeFileSync(join(directory, "0.json"), "not json", "utf8");
+    }],
+    ["noncanonical record", (h) => {
+      const directory = join(runPathsFor(h.paths, h.sourceRunId).results, CREATIVE_CRITIC_DIRECTORY);
+      mkdirSync(directory);
+      writeFileSync(join(directory, "critic.tmp"), "{}", "utf8");
+    }],
+    ["symlink authority", (h) => symlinkSync(join(h.root, "missing-critic"), join(runPathsFor(h.paths, h.sourceRunId).results, CREATIVE_CRITIC_DIRECTORY))],
+    ["non-directory authority", (h) => writeFileSync(join(runPathsFor(h.paths, h.sourceRunId).results, CREATIVE_CRITIC_DIRECTORY), "not a directory", "utf8")],
+    ["gapped history", (h) => writeRenderedTasteCriticRecord(runPathsFor(h.paths, h.sourceRunId).results, record(h, 2, "unavailable"))],
+  ];
+
+  for (const [label, arrange] of cases) {
+    const h = recoveryHarness();
+    try {
+      arrange(h);
+      let calls = 0;
+      await assert.rejects(
+        new TerminalCreativeRecoveryController({
+          store: h.store,
+          paths: h.paths,
+          run: async () => { calls += 1; throw new Error("must not run"); },
+        }).recover(h.sourceRunId, { clientRequestId: `rolled-back-${label.replaceAll(" ", "-")}`, contractHash: h.contractHash }),
+        (error: unknown) => error instanceof TerminalCreativeRecoveryRefusal &&
+          error.code === "creative_recovery_prior_critic_unsupported",
+        label,
+      );
+      assert.equal(calls, 0, `${label}: worker must not run`);
+      assert.equal(h.store.listRuns().length, 1, `${label}: child must not be created`);
+    } finally { h.cleanup(); }
+  }
+});
+
+test("a source with a genuinely absent critic directory remains recovery-eligible", async () => {
+  const h = recoveryHarness();
+  try {
+    let calls = 0;
+    const response = await new TerminalCreativeRecoveryController({
+      store: h.store,
+      paths: h.paths,
+      run: async ({ targetRunId }) => { calls += 1; return terminalAccepted(h, targetRunId); },
+    }).recover(h.sourceRunId, { clientRequestId: "no-prior-critic-directory", contractHash: h.contractHash });
+    assert.equal(calls, 1);
+    assert.equal(response.terminalStatus, "passed");
+  } finally { h.cleanup(); }
+});
 
 test("terminal creative recovery creates one isolated child and replays without touching its source", async () => {
   const h = recoveryHarness();
@@ -180,6 +344,11 @@ test("terminal creative recovery creates one isolated child and replays without 
     assert.equal(h.store.getRun(first.targetRunId)?.status, "passed");
     assert.equal(h.store.getRun(first.targetRunId)?.modelId, "fixture-model");
     assert.equal(first.resolvedModelId, "fixture-model");
+    const targetPaths = runPathsFor(h.paths, first.targetRunId);
+    const targetRow = h.store.getRun(first.targetRunId);
+    const targetStatus = readCreativePilotStatus(targetPaths.results);
+    assert.ok(targetRow !== null && targetStatus !== null);
+    assert.equal(terminalCreativeRecoveryRecordMatches(targetPaths.results, targetRow, targetStatus), true);
     assert.notEqual(first.artifactHashBeforeMutation, first.artifactHashAfterMutation);
     assert.equal(readFileSync(join(runPathsFor(h.paths, h.sourceRunId).workspace, "index.html"), "utf8"), sourceBefore);
     assert.match(readFileSync(join(runPathsFor(h.paths, first.targetRunId).workspace, "index.html"), "utf8"), /data-creative-route="home"/u);
@@ -190,6 +359,150 @@ test("terminal creative recovery creates one isolated child and replays without 
     );
     assert.equal(h.store.listRuns().length, 2);
   } finally { h.cleanup(); }
+});
+
+test("terminal creative recovery records no_evidence as failed and never publishable", async () => {
+  const h = recoveryHarness();
+  try {
+    let calls = 0;
+    const controller = new TerminalCreativeRecoveryController({
+      store: h.store,
+      paths: h.paths,
+      run: async ({ targetRunId }) => {
+        calls += 1;
+        return terminalAccepted(h, targetRunId, {
+          terminalStatus: "failed",
+          failureReason: "creative recovery stopped: critic_no_evidence",
+          criticDisposition: "no_evidence",
+          reviewStopReason: "critic_no_evidence",
+        });
+      },
+    });
+    const request = {
+      clientRequestId: "critic-no-evidence",
+      contractHash: h.contractHash,
+    };
+    const response = await controller.recover(h.sourceRunId, request);
+    assert.equal(response.terminalStatus, "failed");
+    assert.equal(response.criticDisposition, "no_evidence");
+    assert.equal(response.reviewStopReason, "critic_no_evidence");
+    assert.equal(h.store.getRun(response.targetRunId)?.status, "failed");
+    assert.equal(pilotMayPublish(readCreativePilotStatus(runPathsFor(h.paths, response.targetRunId).results)), false);
+    const failedPaths = runPathsFor(h.paths, response.targetRunId);
+    const failedRow = h.store.getRun(response.targetRunId);
+    const failedStatus = readCreativePilotStatus(failedPaths.results);
+    assert.ok(failedRow !== null && failedStatus !== null);
+    assert.equal(terminalCreativeRecoveryRecordMatches(failedPaths.results, failedRow, failedStatus), false);
+
+    const relabeledStatus = {
+      ...failedStatus,
+      criticDisposition: "accept" as const,
+      reviewState: "creative_ready" as const,
+      reviewStopReason: "accepted" as const,
+      ownerDecision: "approved" as const,
+    };
+    writeCreativePilotStatus(failedPaths.results, relabeledStatus);
+    assert.notEqual(readCreativePilotStatus(failedPaths.results), null, "the forged projection is structurally valid");
+    assert.equal(
+      terminalCreativeRecoveryRecordMatches(failedPaths.results, failedRow, relabeledStatus),
+      false,
+      "a failed no_evidence recovery record cannot be relabeled into publishable acceptance",
+    );
+
+    const recordPath = join(runPathsFor(h.paths, response.targetRunId).results, "creative-recovery.json");
+    const validRecord = JSON.parse(readFileSync(recordPath, "utf8")) as Record<string, unknown>;
+    for (const mutation of [
+      { ...validRecord, criticAttempt: null },
+      { ...validRecord, iteration: null },
+      { ...validRecord, iteration: 1 },
+    ]) {
+      writeFileSync(recordPath, `${JSON.stringify(mutation, null, 2)}\n`, "utf8");
+      await assert.rejects(
+        controller.recover(h.sourceRunId, request),
+        (error: unknown) => error instanceof TerminalCreativeRecoveryRefusal &&
+          error.code === "creative_recovery_incomplete",
+      );
+      assert.equal(calls, 1, "an incoherent no_evidence replay must not rerun the recovery worker");
+    }
+  } finally { h.cleanup(); }
+});
+
+test("passing recovery finalization requires the latest strict durable child critic authority", async () => {
+  const cases = ["missing", "malformed", "later-no-evidence", "later-unavailable"] as const;
+  for (const variant of cases) {
+    const h = recoveryHarness();
+    try {
+      const request = validateTerminalCreativeRecoveryRequest({
+        clientRequestId: `finalization-${variant}`,
+        contractHash: h.contractHash,
+      });
+      const controller = new TerminalCreativeRecoveryController({
+        store: h.store,
+        paths: h.paths,
+        run: async ({ targetRunId }) => {
+          const outcome = terminalAccepted(h, targetRunId);
+          const results = runPathsFor(h.paths, targetRunId).results;
+          const criticDirectory = join(results, CREATIVE_CRITIC_DIRECTORY);
+          if (variant === "missing") {
+            rmSync(criticDirectory, { recursive: true });
+          } else if (variant === "malformed") {
+            writeFileSync(join(criticDirectory, "0.json"), "not json", "utf8");
+          } else {
+            const unavailable = variant === "later-unavailable";
+            const output = unavailable ? null : {
+              schemaVersion: 2 as const,
+              contractHash: h.contractHash,
+              renderManifestHash: outcome.renderManifestHash as string,
+              evidenceSufficient: false,
+              findings: [],
+            };
+            writeRenderedTasteCriticRecord(results, {
+              schemaVersion: 1,
+              attempt: 2,
+              iteration: 1,
+              treeHash: outcome.artifactHashAfterMutation,
+              contractHash: h.contractHash,
+              renderManifestHash: outcome.renderManifestHash as string,
+              recordedAt: "2026-08-26T02:01:00.000Z",
+              criticDisposition: unavailable ? "unavailable" : "no_evidence",
+              ran: !unavailable,
+              output,
+              findingFingerprint: output === null ? null : fingerprintTasteFindings([]),
+              policyErrors: [],
+              detail: `fixture ${variant}`,
+              tokens: null,
+              rateLimit: null,
+              criticBy: "test/finalization-authority",
+            });
+          }
+          return outcome;
+        },
+      });
+
+      await assert.rejects(
+        controller.recover(h.sourceRunId, request),
+        (error: unknown) => error instanceof TerminalCreativeRecoveryRefusal &&
+          error.code === "creative_recovery_terminal_conflict",
+        variant,
+      );
+      const targetRunId = terminalCreativeRecoveryRunId(h.sourceRunId, request);
+      const targetPaths = runPathsFor(h.paths, targetRunId);
+      const recordPath = join(targetPaths.results, CREATIVE_RECOVERY_FILE);
+      const finalizing = JSON.parse(readFileSync(recordPath, "utf8")) as { state: string };
+      assert.equal(finalizing.state, "finalizing", `${variant}: passing authority must not be completed`);
+      const row = h.store.getRun(targetRunId);
+      const status = readCreativePilotStatus(targetPaths.results);
+      assert.ok(row !== null && status !== null);
+      assert.equal(terminalCreativeRecoveryRecordMatches(targetPaths.results, row, status), false);
+      await assert.rejects(
+        controller.recover(h.sourceRunId, request),
+        (error: unknown) => error instanceof TerminalCreativeRecoveryRefusal &&
+          error.code === "creative_recovery_terminal_conflict",
+        `${variant}: replay`,
+      );
+      assert.equal((JSON.parse(readFileSync(recordPath, "utf8")) as { state: string }).state, "finalizing");
+    } finally { h.cleanup(); }
+  }
 });
 
 test("terminal creative recovery seeds closed publication state and durably replays a pre-gate failure", async () => {
@@ -508,6 +821,10 @@ test("creative-recovery POST enforces owner origin and returns the durable child
     const replayBody = await replay.json() as { targetRunId: string; replayed: boolean };
     assert.equal(replayBody.targetRunId, first.targetRunId);
     assert.equal(replayBody.replayed, true);
+    const recoveryResults = runPathsFor(h.paths, first.targetRunId).results;
+    const recoveryOwner = join(recoveryResults, CREATIVE_RECOVERY_OWNER_FILE);
+    const validRecoveryOwner = readFileSync(recoveryOwner, "utf8");
+    rmSync(recoveryOwner);
     const blocked = await fetch(`http://${LOOPBACK_HOST}:${String(address.port)}/api/runs/${first.targetRunId}/cancel`, {
       method: "POST",
       headers,
@@ -527,6 +844,27 @@ test("creative-recovery POST enforces owner origin and returns the durable child
       headers,
       body: JSON.stringify({ decision: "approved" }),
     });
+    const missingOwnerApproval = await approve();
+    assert.equal(missingOwnerApproval.status, 409);
+    assert.equal((await missingOwnerApproval.json() as { error: string }).error, "creative_recovery_record_invalid");
+    assert.equal(readCreativePilotStatus(recoveryResults)?.ownerDecision, null, "missing owner authority cannot publish");
+    symlinkSync(join(h.root, "missing-owner"), recoveryOwner);
+    const symlinkOwnerApproval = await approve();
+    assert.equal(symlinkOwnerApproval.status, 409);
+    assert.equal((await symlinkOwnerApproval.json() as { error: string }).error, "creative_recovery_record_invalid");
+    assert.equal(readCreativePilotStatus(recoveryResults)?.ownerDecision, null, "symlink owner authority cannot publish");
+    rmSync(recoveryOwner);
+    writeFileSync(recoveryOwner, validRecoveryOwner, "utf8");
+    const recoveryRecord = join(recoveryResults, CREATIVE_RECOVERY_FILE);
+    const validRecoveryRecord = readFileSync(recoveryRecord, "utf8");
+    rmSync(recoveryRecord);
+    mkdirSync(recoveryRecord);
+    const invalidApproval = await approve();
+    assert.equal(invalidApproval.status, 409);
+    assert.equal((await invalidApproval.json() as { error: string }).error, "creative_recovery_record_invalid");
+    assert.equal(readCreativePilotStatus(recoveryResults)?.ownerDecision, null, "invalid recovery authority cannot publish");
+    rmSync(recoveryRecord, { recursive: true });
+    writeFileSync(recoveryRecord, validRecoveryRecord, "utf8");
     const approved = await approve();
     assert.equal(approved.status, 200);
     const approval = await approved.json() as { ownerDecision: string; mayPublish: boolean; published: boolean };
@@ -622,6 +960,49 @@ test("a finalizing record reconciles the child verdict without rerunning the wor
     assert.equal(replay.replayed, true);
     assert.equal(calls, 1);
     assert.equal(h.store.getRun(replay.targetRunId)?.status, "passed");
+  } finally { h.cleanup(); }
+});
+
+test("completed recovery replay rejects a passed no_evidence contradiction", async () => {
+  const h = recoveryHarness();
+  try {
+    let calls = 0;
+    const worker = async ({ targetRunId }: { readonly targetRunId: string }) => {
+      calls += 1;
+      return terminalAccepted(h, targetRunId);
+    };
+    const request = validateTerminalCreativeRecoveryRequest({
+      clientRequestId: "passed-no-evidence",
+      contractHash: h.contractHash,
+    });
+    const controller = new TerminalCreativeRecoveryController({ store: h.store, paths: h.paths, run: worker });
+    const first = await controller.recover(h.sourceRunId, request);
+    const results = runPathsFor(h.paths, first.targetRunId).results;
+    const recordPath = join(results, "creative-recovery.json");
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Record<string, unknown>;
+    writeFileSync(recordPath, `${JSON.stringify({
+      ...record,
+      criticDisposition: "no_evidence",
+      reviewStopReason: "critic_no_evidence",
+    }, null, 2)}\n`, "utf8");
+
+    const statusPath = join(results, CREATIVE_STATUS_FILE);
+    const status = JSON.parse(readFileSync(statusPath, "utf8")) as Record<string, unknown>;
+    writeFileSync(statusPath, `${JSON.stringify({
+      ...status,
+      criticDisposition: "no_evidence",
+      reviewState: "creative_review_required",
+      reviewStopReason: "critic_no_evidence",
+      renderFresh: false,
+    }, null, 2)}\n`, "utf8");
+
+    await assert.rejects(
+      new TerminalCreativeRecoveryController({ store: h.store, paths: h.paths, run: worker })
+        .recover(h.sourceRunId, request),
+      (error: unknown) => error instanceof TerminalCreativeRecoveryRefusal &&
+        error.code === "creative_recovery_incomplete",
+    );
+    assert.equal(calls, 1, "contradictory replay must not rerun the recovery worker");
   } finally { h.cleanup(); }
 });
 

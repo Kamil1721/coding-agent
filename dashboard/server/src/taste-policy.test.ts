@@ -85,11 +85,15 @@ function validFinding(overrides: Partial<TasteFindingV1> = {}): TasteFindingV1 {
   };
 }
 
-function validOutput(findings: readonly TasteFindingV1[] = [validFinding()]): TasteCriticOutputV1 {
+function validOutput(
+  findings: readonly TasteFindingV1[] = [validFinding()],
+  evidenceSufficient = true,
+): TasteCriticOutputV1 {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contractHash: CONTRACT_HASH,
     renderManifestHash: MANIFEST_HASH,
+    evidenceSufficient,
     findings,
   };
 }
@@ -104,15 +108,29 @@ function errorCodes(value: unknown): readonly string[] {
   return result.errors.map((error) => error.code);
 }
 
-test("accepts a closed, grounded critic result and treats no findings as the only clean signal", () => {
+test("accepts closed grounded results and distinguishes acceptance from insufficient evidence", () => {
   const result = parse(validOutput());
   assert.equal(result.ok, true);
   assert.equal(result.output.findings.length, 1);
   assert.equal(result.output.findings[0]?.code, "GENERIC_COPY");
 
-  const empty = parse(validOutput([]));
-  assert.equal(empty.ok, true);
-  assert.deepEqual(empty.output.findings, []);
+  const accepted = parse(validOutput([], true));
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.output.evidenceSufficient, true);
+  assert.deepEqual(accepted.output.findings, []);
+
+  const noEvidence = parse(validOutput([], false));
+  assert.equal(noEvidence.ok, true);
+  assert.equal(noEvidence.output.evidenceSufficient, false);
+  assert.deepEqual(noEvidence.output.findings, []);
+});
+
+test("requires the live evidence signal and rejects findings that claim insufficient evidence", () => {
+  const { evidenceSufficient: _evidenceSufficient, ...missing } = validOutput();
+  assert.ok(errorCodes(missing).includes("MISSING_KEY"));
+  assert.ok(errorCodes({ ...validOutput(), schemaVersion: 1 }).includes("INVALID_VALUE"));
+  assert.ok(errorCodes({ ...validOutput(), evidenceSufficient: "yes" }).includes("INVALID_TYPE"));
+  assert.ok(errorCodes(validOutput([validFinding()], false)).includes("INVALID_VALUE"));
 });
 
 test("rejects prose around JSON instead of extracting a convenient object", () => {
@@ -272,6 +290,8 @@ test("builds a bounded one-turn prompt without a prose verdict or aesthetic mono
   assert.match(prompt, /unknown provenance/u);
   assert.match(prompt, /broken reflow/u);
   assert.match(prompt, /reduced motion/u);
+  assert.match(prompt, /evidenceSufficient/u);
+  assert.match(prompt, /schemaVersion":2/u);
   assert.match(prompt, /no Markdown fence, score, severity, summary, commentary, or prose verdict/u);
   assert.doesNotMatch(prompt, /data:image\//u);
   assert.ok(prompt.length < 40_000);

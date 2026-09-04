@@ -12,7 +12,7 @@
 
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -48,7 +48,20 @@ import { PLAN_RECORD_FILE, planPolicy, writePlanRecord } from "./plan-record.js"
 import { writeContext7ReviewRecord } from "./context7-review-record.js";
 import type { Context7ReviewRecord } from "./context7-review-record.js";
 import { expectedContext7ObligationHashes } from "./context7-review.js";
-import { claimCreativeDecision, initialCreativePilotStatus, statusAfterCompile, writeCreativePilotStatus } from "./creative-pilot.js";
+import {
+  CREATIVE_CONTRACT_FILE,
+  CREATIVE_DECISION_FILE,
+  CREATIVE_STATUS_FILE,
+  claimCreativeDecision,
+  initialCreativePilotStatus,
+  statusAfterCompile,
+  writeCreativePilotStatus,
+} from "./creative-pilot.js";
+import {
+  CREATIVE_CRITIC_DIRECTORY,
+  fingerprintTasteFindings,
+  writeRenderedTasteCriticRecord,
+} from "./rendered-taste-critic.js";
 import type { DashboardPaths } from "./paths.js";
 import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
 import {
@@ -1043,18 +1056,43 @@ test("terminal message and creative revision refuse a source with no workspace",
     const creativeRunId = "run-creative-no-workspace";
     createTerminal(creativeRunId);
     const paths = runPathsFor(harness.paths, creativeRunId);
+    const acceptedContractHash = "8".repeat(64);
+    const acceptedManifestHash = "7".repeat(64);
     writeCreativePilotStatus(paths.results, {
       ...statusAfterCompile(initialCreativePilotStatus(true, true), {
-        outcome: "passed", contractHash: "8".repeat(64), findings: [], checkedAt: new Date().toISOString(),
+        outcome: "passed", contractHash: acceptedContractHash, findings: [], checkedAt: new Date().toISOString(),
       }),
       heldOutPass: true,
-      criticDisposition: "revise",
-      criticFindings: [{
-        category: "hierarchy", code: "HIERARCHY_FLAT", routeId: "home", sectionIds: ["hero"],
-        diagnosis: "The hierarchy is generic.", revision: "Use the admitted hierarchy.",
-      }],
+      renderManifestHash: acceptedManifestHash,
+      criticDisposition: "accept",
+      criticFindings: [],
       criticAttempt: 1,
-      reviewState: "creative_review_required",
+      reviewState: "creative_ready",
+      reviewStopReason: "accepted",
+    });
+    writeRenderedTasteCriticRecord(paths.results, {
+      schemaVersion: 1,
+      attempt: 1,
+      iteration: 0,
+      treeHash: "6".repeat(64),
+      contractHash: acceptedContractHash,
+      renderManifestHash: acceptedManifestHash,
+      recordedAt: "2026-09-04T12:00:00.000Z",
+      criticDisposition: "accept",
+      ran: true,
+      output: {
+        schemaVersion: 2,
+        contractHash: acceptedContractHash,
+        renderManifestHash: acceptedManifestHash,
+        evidenceSufficient: true,
+        findings: [],
+      },
+      findingFingerprint: fingerprintTasteFindings([]),
+      policyErrors: [],
+      detail: "critic accepted the rendered evidence",
+      tokens: null,
+      rateLimit: null,
+      criticBy: "test/rendered-taste-critic",
     });
     const creativeResponse = await fetch(`${harness.base}/api/runs/${creativeRunId}/creative-decision`, {
       method: "POST",
@@ -1062,6 +1100,7 @@ test("terminal message and creative revision refuse a source with no workspace",
       body: JSON.stringify({ decision: "revision_requested", reason: "Revise the hierarchy." }),
     });
     assert.equal(creativeResponse.status, 409);
+    assert.equal((await creativeResponse.json() as ApiErrorResponse).error, "creative_revision_unavailable");
     assert.equal(
       harness.store.listRuns().some((run) => run.runId.startsWith("run-cont-")),
       false,
@@ -2370,16 +2409,18 @@ test("creative decision is closed, idempotent, projected from records, and appro
       heldOutPass: true,
       artifactPath: paths.workspace,
     });
+    const contractHash = "b".repeat(64);
+    const renderManifestHash = "c".repeat(64);
     const base = statusAfterCompile(initialCreativePilotStatus(true, true), {
       outcome: "passed",
-      contractHash: "b".repeat(64),
+      contractHash,
       findings: [],
       checkedAt: new Date().toISOString(),
     });
-    writeCreativePilotStatus(paths.results, {
+    const ready = {
       ...base,
       heldOutPass: true,
-      renderManifestHash: "c".repeat(64),
+      renderManifestHash,
       renderFresh: true,
       renderProfiles: [
         { profileId: "desktop", captureCount: 3, complete: true },
@@ -2390,7 +2431,41 @@ test("creative decision is closed, idempotent, projected from records, and appro
       criticDisposition: "accept",
       criticAttempt: 1,
       reviewState: "creative_ready",
-    });
+      reviewStopReason: "accepted",
+    } as const;
+    const writeCritic = (evidenceSufficient: boolean): void => {
+      const findings: [] = [];
+      rmSync(join(paths.results, CREATIVE_CRITIC_DIRECTORY, "0.json"), { force: true });
+      writeRenderedTasteCriticRecord(paths.results, {
+        schemaVersion: 1,
+        attempt: 1,
+        iteration: 0,
+        treeHash: "d".repeat(64),
+        contractHash,
+        renderManifestHash,
+        recordedAt: "2026-09-04T12:00:00.000Z",
+        criticDisposition: evidenceSufficient ? "accept" : "no_evidence",
+        ran: true,
+        output: {
+          schemaVersion: 2,
+          contractHash,
+          renderManifestHash,
+          evidenceSufficient,
+          findings,
+        },
+        findingFingerprint: fingerprintTasteFindings(findings),
+        policyErrors: [],
+        detail: evidenceSufficient
+          ? "critic accepted the rendered evidence"
+          : "critic ran but the supplied rendered evidence was insufficient",
+        tokens: null,
+        rateLimit: null,
+        criticBy: "test/rendered-taste-critic",
+      });
+    };
+    writeFileSync(join(paths.results, CREATIVE_CONTRACT_FILE), "{}\n", "utf8");
+    writeCritic(true);
+    writeCreativePilotStatus(paths.results, ready);
 
     const detail = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
     assert.equal(detail.creative?.renderFresh, true);
@@ -2421,6 +2496,197 @@ test("creative decision is closed, idempotent, projected from records, and appro
     });
     assert.equal(unknown.status, 400);
 
+    writeCritic(false);
+    const noEvidence = {
+      ...ready,
+      criticDisposition: "no_evidence",
+      reviewState: "creative_review_required",
+      reviewStopReason: "critic_no_evidence",
+    } as const;
+    writeCreativePilotStatus(paths.results, noEvidence);
+    const noEvidenceDetail = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
+    assert.equal(noEvidenceDetail.creative?.criticDisposition, "no_evidence");
+    const refusedApproval = await fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    assert.equal(refusedApproval.status, 409);
+    assert.equal((await refusedApproval.json() as ApiErrorResponse).error, "creative_not_approvable");
+    const refusedWaiver = await fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision: "waived", reason: "No evidence is not a subjective revision." }),
+    });
+    assert.equal(refusedWaiver.status, 409);
+    assert.equal((await refusedWaiver.json() as ApiErrorResponse).error, "creative_not_waivable");
+    assert.equal(existsSync(join(paths.results, "project-publish.json")), false);
+
+    const revisionReason = "Try another treatment.";
+    const assertDowngradeRefused = async (): Promise<void> => {
+      const statusBefore = readFileSync(join(paths.results, CREATIVE_STATUS_FILE), "utf8");
+      const messagesBefore = harness.store.messages(runId);
+      const response = await fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+        method: "POST",
+        headers: DASHBOARD_WRITE_HEADERS,
+        body: JSON.stringify({ decision: "revision_requested", reason: revisionReason }),
+      });
+      assert.equal(response.status, 409);
+      assert.equal((await response.json() as ApiErrorResponse).error, "creative_critic_record_invalid");
+      assert.equal(readFileSync(join(paths.results, CREATIVE_STATUS_FILE), "utf8"), statusBefore);
+      assert.equal(existsSync(join(paths.results, CREATIVE_DECISION_FILE)), false);
+      assert.deepEqual(harness.store.messages(runId), messagesBefore);
+      assert.equal(harness.store.continuationFor(runId, 1), null);
+    };
+    const downgradeStatuses = [
+      { ...noEvidence, criticDisposition: null },
+      { ...noEvidence, criticDisposition: null, criticAttempt: null, criticFindings: [], reviewStopReason: null },
+      { ...noEvidence, criticDisposition: "accept", reviewState: "creative_ready", reviewStopReason: "accepted" },
+      {
+        ...noEvidence,
+        criticDisposition: "revise",
+        criticFindings: [{
+          category: "hierarchy", code: "HIERARCHY_FLAT", routeId: "home", sectionIds: ["hero"],
+          diagnosis: "Relabelled status.", revision: "This is not durable critic evidence.",
+        }],
+      },
+    ] as const;
+    for (const downgraded of downgradeStatuses) {
+      writeCreativePilotStatus(paths.results, downgraded);
+      await assertDowngradeRefused();
+    }
+
+    writeCreativePilotStatus(paths.results, noEvidence);
+    writeFileSync(join(paths.results, CREATIVE_CRITIC_DIRECTORY, "0.json"), "not json", "utf8");
+    await assertDowngradeRefused();
+    writeCritic(false);
+    rmSync(join(paths.results, CREATIVE_CRITIC_DIRECTORY, "0.json"));
+    await assertDowngradeRefused();
+    writeCritic(false);
+    writeCreativePilotStatus(paths.results, noEvidence);
+
+    const statusBeforeRevision = readFileSync(join(paths.results, CREATIVE_STATUS_FILE), "utf8");
+    const messagesBeforeRevision = harness.store.messages(runId);
+    const refusedRevision = await fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision: "revision_requested", reason: "Try another treatment." }),
+    });
+    assert.equal(refusedRevision.status, 409);
+    assert.deepEqual(await refusedRevision.json(), {
+      error: "creative_no_evidence_terminal",
+      message: "no_evidence is terminal; only cancellation remains available",
+      remediation: null,
+    });
+    assert.equal(readFileSync(join(paths.results, CREATIVE_STATUS_FILE), "utf8"), statusBeforeRevision);
+    assert.equal(existsSync(join(paths.results, CREATIVE_DECISION_FILE)), false);
+    assert.deepEqual(harness.store.messages(runId), messagesBeforeRevision);
+    assert.equal(harness.store.continuationFor(runId, 1), null);
+
+    writeCreativePilotStatus(paths.results, ready);
+    const refusedRelabel = await fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    assert.equal(refusedRelabel.status, 409);
+    assert.equal((await refusedRelabel.json() as ApiErrorResponse).error, "creative_critic_record_invalid");
+    assert.equal(existsSync(join(paths.results, "project-publish.json")), false);
+
+    writeCreativePilotStatus(paths.results, {
+      ...noEvidence,
+      criticDisposition: "no_evidence",
+      criticFindings: [{
+        category: "copy",
+        code: "GENERIC_COPY",
+        routeId: "home",
+        sectionIds: ["hero"],
+        diagnosis: "This finding makes no_evidence internally inconsistent.",
+        revision: "Do not admit the corrupted record.",
+      }],
+      reviewState: "creative_review_required",
+      reviewStopReason: "critic_no_evidence",
+    });
+    const refusedRepublish = await fetch(`${harness.base}/api/runs/${runId}/publish`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: "{}",
+    });
+    assert.equal(refusedRepublish.status, 409);
+    assert.equal((await refusedRepublish.json() as ApiErrorResponse).error, "creative_pilot_record_invalid");
+    assert.equal(existsSync(join(paths.results, "project-publish.json")), false);
+
+    rmSync(join(paths.results, CREATIVE_STATUS_FILE));
+    const refusedMissingStatus = await fetch(`${harness.base}/api/runs/${runId}/publish`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: "{}",
+    });
+    assert.equal(refusedMissingStatus.status, 409);
+    assert.equal((await refusedMissingStatus.json() as ApiErrorResponse).error, "creative_pilot_record_invalid");
+    assert.equal(existsSync(join(paths.results, "project-publish.json")), false);
+
+    rmSync(join(paths.results, CREATIVE_CONTRACT_FILE));
+    const criticPath = join(paths.results, CREATIVE_CRITIC_DIRECTORY);
+    const disabledCleared = {
+      ...base,
+      applicable: false,
+      enabled: false,
+      criticDisposition: null,
+      criticFindings: [],
+      criticAttempt: null,
+      reviewState: null,
+      reviewStopReason: null,
+    } as const;
+    const assertFootprintRefused = async (expectedError = "creative_critic_record_invalid"): Promise<void> => {
+      const response = await fetch(`${harness.base}/api/runs/${runId}/publish`, {
+        method: "POST",
+        headers: DASHBOARD_WRITE_HEADERS,
+        body: "{}",
+      });
+      assert.equal(response.status, 409);
+      assert.equal((await response.json() as ApiErrorResponse).error, expectedError);
+      assert.equal(existsSync(join(paths.results, "project-publish.json")), false);
+    };
+    await assertFootprintRefused("creative_pilot_record_invalid");
+
+    for (const footprint of ["real", "empty", "malformed", "file", "symlink"] as const) {
+      rmSync(criticPath, { recursive: true, force: true });
+      if (footprint === "real") writeCritic(false);
+      else if (footprint === "empty") mkdirSync(criticPath);
+      else if (footprint === "malformed") {
+        mkdirSync(criticPath);
+        writeFileSync(join(criticPath, "0.json"), "not json", "utf8");
+      } else if (footprint === "file") writeFileSync(criticPath, "not a directory", "utf8");
+      else symlinkSync(join(paths.results, "missing-critic-target"), criticPath);
+      writeCreativePilotStatus(paths.results, disabledCleared);
+      await assertFootprintRefused();
+    }
+
+    rmSync(criticPath, { recursive: true, force: true });
+    writeCritic(true);
+    writeCreativePilotStatus(paths.results, { ...ready, applicable: false, enabled: false });
+    const refusedDisabledStatus = await fetch(`${harness.base}/api/runs/${runId}/publish`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: "{}",
+    });
+    assert.equal(refusedDisabledStatus.status, 409);
+    assert.equal((await refusedDisabledStatus.json() as ApiErrorResponse).error, "creative_owner_approval_required");
+    assert.equal(existsSync(join(paths.results, "project-publish.json")), false);
+
+    writeCreativePilotStatus(paths.results, { ...ready, ownerDecision: "approved" });
+    const refusedUnclaimedDecision = await fetch(`${harness.base}/api/runs/${runId}/publish`, {
+      method: "POST",
+      headers: DASHBOARD_WRITE_HEADERS,
+      body: "{}",
+    });
+    assert.equal(refusedUnclaimedDecision.status, 409);
+    assert.equal((await refusedUnclaimedDecision.json() as ApiErrorResponse).error, "creative_decision_record_invalid");
+    assert.equal(existsSync(join(paths.results, "project-publish.json")), false);
+
+    writeCreativePilotStatus(paths.results, ready);
+
     const approve = async (decision = "approved") => fetch(`${harness.base}/api/runs/${runId}/creative-decision`, {
       method: "POST",
       headers: DASHBOARD_WRITE_HEADERS,
@@ -2434,8 +2700,165 @@ test("creative decision is closed, idempotent, projected from records, and appro
     const replay = await approve();
     assert.equal(replay.status, 200);
     assert.deepEqual(await replay.json(), receipt);
+    const validOwnerDetail = await (await fetch(`${harness.base}/api/runs/${runId}`)).json() as RunDetail;
+    assert.equal(validOwnerDetail.creative?.criticDisposition, "accept");
+    assert.equal(validOwnerDetail.creative?.reviewState, "creative_ready");
+    assert.equal(validOwnerDetail.creative?.ownerDecision, "approved");
     const conflict = await approve("cancelled");
     assert.equal(conflict.status, 409);
+    writeRenderedTasteCriticRecord(paths.results, {
+      schemaVersion: 1, attempt: 2, iteration: 1, treeHash: "d".repeat(64),
+      contractHash, renderManifestHash, recordedAt: "2026-09-04T12:01:00.000Z",
+      criticDisposition: "no_evidence", ran: true,
+      output: {
+        schemaVersion: 2, contractHash, renderManifestHash, evidenceSufficient: false, findings: [],
+      },
+      findingFingerprint: fingerprintTasteFindings([]), policyErrors: [],
+      detail: "critic ran but the supplied rendered evidence was insufficient",
+      tokens: null, rateLimit: null, criticBy: "test/rendered-taste-critic",
+    });
+    const rolledAcceptDetail = await (await fetch(`${harness.base}/api/runs/${runId}`)).json() as RunDetail;
+    assert.equal(rolledAcceptDetail.creative?.criticDisposition, null);
+    assert.equal(rolledAcceptDetail.creative?.reviewStopReason, "invalid_attempt");
+    assert.equal(rolledAcceptDetail.creative?.ownerDecision, null);
+
+    const rollbackRunId = "run-creative-latest-wins";
+    harness.store.createRun({
+      runId: rollbackRunId,
+      ticketId: "ticket-creative-latest-wins",
+      ticketTitle: "Creative latest wins",
+      ticketText: "Build a responsive portfolio website.",
+      ticketSha256: "4".repeat(64),
+      modelId: "opus[1m]",
+      provider: "anthropic",
+      deploy: false,
+      startedAt: new Date().toISOString(),
+      queuePosition: 1,
+    });
+    const rollbackPaths = runPathsFor(harness.paths, rollbackRunId);
+    ensureRunDirs(rollbackPaths);
+    writeFileSync(join(rollbackPaths.workspace, "index.html"), "<!doctype html><title>Rollback</title>", "utf8");
+    harness.store.updateRun(rollbackRunId, {
+      status: "passed", phase: "done", endedAt: new Date().toISOString(), heldOutPass: true, artifactPath: rollbackPaths.workspace,
+    });
+    const rollbackContractHash = "5".repeat(64);
+    const rollbackManifestHash = "6".repeat(64);
+    const rollbackFinding = {
+      category: "hierarchy" as const,
+      code: "HIERARCHY_FLAT" as const,
+      routeId: "home",
+      sectionIds: ["hero"],
+      diagnosis: "The hierarchy needs revision.",
+      revision: "Increase the separation between title and proof.",
+    };
+    const rollbackEvidenceFinding = {
+      id: "hierarchy-flat",
+      ...rollbackFinding,
+      evidence: [
+        { kind: "contract" as const, pointer: "/designRead/thesis", valueSha256: "7".repeat(64) },
+        { kind: "contract" as const, pointer: "/sections/0/job", valueSha256: "8".repeat(64) },
+      ],
+    };
+    const rollbackBase = statusAfterCompile(initialCreativePilotStatus(true, true), {
+      outcome: "passed", contractHash: rollbackContractHash, findings: [], checkedAt: new Date().toISOString(),
+    });
+    const rollbackStatus = {
+      ...rollbackBase,
+      heldOutPass: true,
+      renderManifestHash: rollbackManifestHash,
+      renderFresh: true,
+      renderProfiles: [
+        { profileId: "desktop" as const, captureCount: 1, complete: true },
+        { profileId: "mobile" as const, captureCount: 1, complete: true },
+        { profileId: "reduced_motion" as const, captureCount: 1, complete: true },
+        { profileId: "no_media" as const, captureCount: 1, complete: true },
+      ],
+      criticDisposition: "revise" as const,
+      criticFindings: [rollbackFinding],
+      criticAttempt: 1,
+      reviewState: "creative_review_required" as const,
+    };
+    writeCreativePilotStatus(rollbackPaths.results, rollbackStatus);
+    writeRenderedTasteCriticRecord(rollbackPaths.results, {
+      schemaVersion: 1, attempt: 1, iteration: 0, treeHash: "9".repeat(64),
+      contractHash: rollbackContractHash, renderManifestHash: rollbackManifestHash,
+      recordedAt: "2026-09-04T12:00:00.000Z", criticDisposition: "revise", ran: true,
+      output: {
+        schemaVersion: 2, contractHash: rollbackContractHash, renderManifestHash: rollbackManifestHash,
+        evidenceSufficient: true, findings: [rollbackEvidenceFinding],
+      },
+      findingFingerprint: fingerprintTasteFindings([rollbackEvidenceFinding]), policyErrors: [],
+      detail: "critic requested bounded revisions", tokens: null, rateLimit: null, criticBy: "test/rendered-taste-critic",
+    });
+    const waiverReason = "Owner accepts this subjective hierarchy tradeoff.";
+    const waiver = await fetch(`${harness.base}/api/runs/${rollbackRunId}/creative-decision`, {
+      method: "POST", headers: DASHBOARD_WRITE_HEADERS,
+      body: JSON.stringify({ decision: "waived", reason: waiverReason }),
+    });
+    assert.equal(waiver.status, 200, "the matching first critic attempt is authoritative before later history exists");
+    writeCreativePilotStatus(rollbackPaths.results, {
+      ...rollbackStatus,
+      ownerDecision: "approved",
+      ownerDecisionReason: null,
+      ownerDecisionTargetRunId: null,
+    });
+    const forgedApprovalDetail = await (await fetch(`${harness.base}/api/runs/${rollbackRunId}`)).json() as RunDetail;
+    assert.equal(forgedApprovalDetail.creative?.criticDisposition, null);
+    assert.deepEqual(forgedApprovalDetail.creative?.criticFindings, []);
+    assert.equal(forgedApprovalDetail.creative?.criticAttempt, null);
+    assert.equal(forgedApprovalDetail.creative?.reviewState, "creative_review_required");
+    assert.equal(forgedApprovalDetail.creative?.reviewStopReason, "invalid_attempt");
+    assert.equal(forgedApprovalDetail.creative?.ownerDecision, null);
+    writeCreativePilotStatus(rollbackPaths.results, {
+      ...rollbackStatus,
+      ownerDecision: "waived",
+      ownerDecisionReason: waiverReason,
+      ownerDecisionTargetRunId: null,
+    });
+    const initialPublish = JSON.parse(readFileSync(join(rollbackPaths.results, "project-publish.json"), "utf8")) as { path: string };
+    rmSync(initialPublish.path, { recursive: true, force: true });
+    rmSync(join(rollbackPaths.results, "project-publish.json"));
+
+    writeRenderedTasteCriticRecord(rollbackPaths.results, {
+      schemaVersion: 1, attempt: 2, iteration: 1, treeHash: "a".repeat(64),
+      contractHash: rollbackContractHash, renderManifestHash: rollbackManifestHash,
+      recordedAt: "2026-09-04T12:01:00.000Z", criticDisposition: "no_evidence", ran: true,
+      output: {
+        schemaVersion: 2, contractHash: rollbackContractHash, renderManifestHash: rollbackManifestHash,
+        evidenceSufficient: false, findings: [],
+      },
+      findingFingerprint: fingerprintTasteFindings([]), policyErrors: [],
+      detail: "critic ran but the supplied rendered evidence was insufficient",
+      tokens: null, rateLimit: null, criticBy: "test/rendered-taste-critic",
+    });
+    writeCreativePilotStatus(rollbackPaths.results, {
+      ...rollbackStatus,
+      ownerDecision: "waived",
+      ownerDecisionReason: waiverReason,
+      ownerDecisionTargetRunId: null,
+    });
+    const rolledStatus = readFileSync(join(rollbackPaths.results, CREATIVE_STATUS_FILE), "utf8");
+    const rolledPublish = await fetch(`${harness.base}/api/runs/${rollbackRunId}/publish`, {
+      method: "POST", headers: DASHBOARD_WRITE_HEADERS, body: "{}",
+    });
+    assert.equal(rolledPublish.status, 409);
+    assert.equal((await rolledPublish.json() as ApiErrorResponse).error, "creative_critic_record_invalid");
+    assert.equal(readFileSync(join(rollbackPaths.results, CREATIVE_STATUS_FILE), "utf8"), rolledStatus);
+    assert.equal(existsSync(join(rollbackPaths.results, "project-publish.json")), false);
+
+    const precriticRunId = "run-creative-precritic";
+    harness.store.createRun({
+      runId: precriticRunId, ticketId: "ticket-precritic", ticketTitle: "Precritic", ticketText: "Build a page.",
+      ticketSha256: "e".repeat(64), modelId: "opus[1m]", provider: "anthropic", deploy: false,
+      startedAt: new Date().toISOString(), queuePosition: 1,
+    });
+    const precriticPaths = runPathsFor(harness.paths, precriticRunId);
+    ensureRunDirs(precriticPaths);
+    writeCreativePilotStatus(precriticPaths.results, initialCreativePilotStatus(true, true));
+    const precriticDetail = await (await fetch(`${harness.base}/api/runs/${precriticRunId}`)).json() as RunDetail;
+    assert.equal(precriticDetail.creative?.criticDisposition, null);
+    assert.equal(precriticDetail.creative?.reviewStopReason, null);
+    assert.equal(precriticDetail.creative?.ownerDecision, null);
   } finally {
     await harness.close();
   }
@@ -2467,16 +2890,60 @@ test("a revision decision replay recovers an abandoned claim with one message an
     const base = statusAfterCompile(initialCreativePilotStatus(true, true), {
       outcome: "passed", contractHash: "e".repeat(64), findings: [], checkedAt: new Date().toISOString(),
     });
+    const renderManifestHash = "f".repeat(64);
+    const criticFinding = {
+      category: "hierarchy" as const,
+      code: "HIERARCHY_FLAT" as const,
+      routeId: "home",
+      sectionIds: ["hero"],
+      diagnosis: "The hierarchy is generic.",
+      revision: "Use the admitted editorial hierarchy.",
+    };
     writeCreativePilotStatus(paths.results, {
       ...base,
       heldOutPass: true,
+      renderManifestHash,
       criticDisposition: "revise",
-      criticFindings: [{
-        category: "hierarchy", code: "HIERARCHY_FLAT", routeId: "home", sectionIds: ["hero"],
-        diagnosis: "The hierarchy is generic.", revision: "Use the admitted editorial hierarchy.",
-      }],
+      criticFindings: [criticFinding],
       criticAttempt: 1,
       reviewState: "creative_review_required",
+    });
+    const durableFinding = {
+      id: "hierarchy-flat",
+      ...criticFinding,
+      evidence: [{
+        kind: "contract" as const,
+        pointer: "/designRead/thesis",
+        valueSha256: "1".repeat(64),
+      }, {
+        kind: "contract" as const,
+        pointer: "/sections/0/job",
+        valueSha256: "3".repeat(64),
+      }],
+    };
+    writeRenderedTasteCriticRecord(paths.results, {
+      schemaVersion: 1,
+      attempt: 1,
+      iteration: 0,
+      treeHash: "2".repeat(64),
+      contractHash: "e".repeat(64),
+      renderManifestHash,
+      recordedAt: "2026-09-04T12:00:00.000Z",
+      criticDisposition: "revise",
+      ran: true,
+      output: {
+        schemaVersion: 2,
+        contractHash: "e".repeat(64),
+        renderManifestHash,
+        evidenceSufficient: true,
+        findings: [durableFinding],
+      },
+      findingFingerprint: fingerprintTasteFindings([durableFinding]),
+      policyErrors: [],
+      detail: "critic requested bounded revisions",
+      tokens: null,
+      rateLimit: null,
+      criticBy: "test/rendered-taste-critic",
     });
     claimCreativeDecision(paths.results, "revision_requested", reason);
 

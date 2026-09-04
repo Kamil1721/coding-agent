@@ -5,7 +5,7 @@
  * It performs no model call, file access, rendering or orchestration.
  */
 
-export const TASTE_POLICY_SCHEMA_VERSION = 1 as const;
+export const TASTE_POLICY_SCHEMA_VERSION = 2 as const;
 export const MAX_TASTE_FINDINGS = 10;
 export const MAX_TASTE_FINDINGS_PER_CATEGORY = 2;
 export const MIN_TASTE_EVIDENCE_PER_FINDING = 2;
@@ -139,9 +139,21 @@ export interface TasteFindingV1 {
   readonly evidence: readonly TasteEvidence[];
 }
 
-/** The absence of findings is the only pass signal. There is no prose verdict. */
+/**
+ * Live critic output. The V1 name is retained for source compatibility while
+ * the nested wire schema advances independently from its durable host record.
+ */
 export interface TasteCriticOutputV1 {
   readonly schemaVersion: typeof TASTE_POLICY_SCHEMA_VERSION;
+  readonly contractHash: string;
+  readonly renderManifestHash: string;
+  readonly evidenceSufficient: boolean;
+  readonly findings: readonly TasteFindingV1[];
+}
+
+/** Historical nested payload accepted only by the durable record reader. */
+export interface LegacyTasteCriticOutputV1 {
+  readonly schemaVersion: 1;
   readonly contractHash: string;
   readonly renderManifestHash: string;
   readonly findings: readonly TasteFindingV1[];
@@ -689,10 +701,10 @@ export function parseTasteCriticOutput(text: string, index: TasteEvidenceIndex):
   const errors: TastePolicyError[] = [];
   const record = asRecord(raw, "", errors);
   if (record === null) return { ok: false, errors: sortedErrors(errors) };
-  enforceExactKeys(record, "", ["schemaVersion", "contractHash", "renderManifestHash", "findings"], errors);
+  enforceExactKeys(record, "", ["schemaVersion", "contractHash", "renderManifestHash", "evidenceSufficient", "findings"], errors);
 
   const schemaVersion = record["schemaVersion"];
-  if (schemaVersion !== TASTE_POLICY_SCHEMA_VERSION) pushError(errors, "INVALID_VALUE", "/schemaVersion", "schemaVersion must equal 1");
+  if (schemaVersion !== TASTE_POLICY_SCHEMA_VERSION) pushError(errors, "INVALID_VALUE", "/schemaVersion", "schemaVersion must equal 2");
   const contractHash = sha256(record["contractHash"], "/contractHash", errors);
   const renderManifestHash = sha256(record["renderManifestHash"], "/renderManifestHash", errors);
   if (contractHash !== null && contractHash !== index.contractHash) {
@@ -701,6 +713,9 @@ export function parseTasteCriticOutput(text: string, index: TasteEvidenceIndex):
   if (renderManifestHash !== null && renderManifestHash !== index.renderManifestHash) {
     pushError(errors, "WRONG_RENDER_MANIFEST_HASH", "/renderManifestHash", "render manifest hash does not match the injected index");
   }
+  const evidenceSufficientValue = record["evidenceSufficient"];
+  const evidenceSufficient = typeof evidenceSufficientValue === "boolean" ? evidenceSufficientValue : null;
+  if (evidenceSufficient === null) pushError(errors, "INVALID_TYPE", "/evidenceSufficient", "expected a boolean");
 
   const findingsValue = record["findings"];
   const findings: TasteFindingV1[] = [];
@@ -731,12 +746,27 @@ export function parseTasteCriticOutput(text: string, index: TasteEvidenceIndex):
     }
   }
 
-  if (errors.length > 0 || contractHash === null || renderManifestHash === null || schemaVersion !== 1) {
+  if (evidenceSufficient === false && Array.isArray(findingsValue) && findingsValue.length > 0) {
+    pushError(
+      errors,
+      "INVALID_VALUE",
+      "/evidenceSufficient",
+      "evidenceSufficient must be true when findings are present",
+    );
+  }
+
+  if (
+    errors.length > 0 ||
+    contractHash === null ||
+    renderManifestHash === null ||
+    evidenceSufficient === null ||
+    schemaVersion !== TASTE_POLICY_SCHEMA_VERSION
+  ) {
     return { ok: false, errors: sortedErrors(errors) };
   }
   return {
     ok: true,
-    output: { schemaVersion, contractHash, renderManifestHash, findings },
+    output: { schemaVersion, contractHash, renderManifestHash, evidenceSufficient, findings },
   };
 }
 
@@ -806,11 +836,13 @@ Evidence rules:
 - Return a finding only for an observable failure supported by at least two distinct canonical evidence objects from facts.
 - Copy canonical evidence objects exactly. Never invent a frame, section, motion, pointer, hash, coordinate or excerpt.
 - A stylistic preference (for example "more modern", "more premium", "make it pop", or "I prefer asymmetry") is not a diagnosis.
-- Maximum 10 findings total and 2 per category. An empty findings array is correct when evidence is insufficient.
+- Maximum 10 findings total and 2 per category.
+- Set evidenceSufficient to false only when the supplied evidence is insufficient to judge the rendered result. In that case findings must be empty.
+- Set evidenceSufficient to true when the supplied evidence supports a judgment. An empty findings array with true means the rendered result is accepted.
 - category and code must match the closed vocabulary.
 
 Return exactly one JSON object and nothing else: no Markdown fence, score, severity, summary, commentary, or prose verdict. The object must have exactly these keys:
-{"schemaVersion":1,"contractHash":"${input.evidenceIndex.contractHash}","renderManifestHash":"${input.evidenceIndex.renderManifestHash}","findings":[{"id":"stable-id","category":"copy|layout|motion|imagery|hierarchy|mobile|reduced_motion","code":"one allowed code","routeId":"indexed route","sectionIds":["indexed section"],"diagnosis":"observable failure only","revision":"specific bounded correction preserving project intent","evidence":[{"kind":"one canonical evidence object copied from facts"},{"kind":"a second canonical evidence object copied from facts"}]}]}
+{"schemaVersion":2,"contractHash":"${input.evidenceIndex.contractHash}","renderManifestHash":"${input.evidenceIndex.renderManifestHash}","evidenceSufficient":true,"findings":[{"id":"stable-id","category":"copy|layout|motion|imagery|hierarchy|mobile|reduced_motion","code":"one allowed code","routeId":"indexed route","sectionIds":["indexed section"],"diagnosis":"observable failure only","revision":"specific bounded correction preserving project intent","evidence":[{"kind":"one canonical evidence object copied from facts"},{"kind":"a second canonical evidence object copied from facts"}]}]}
 
 Allowed code-to-category map:
 ${JSON.stringify(TASTE_CODE_CATEGORY)}

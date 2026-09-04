@@ -203,6 +203,7 @@ import {
   TerminalCreativeRecoveryController,
   TerminalCreativeRecoveryRefusal,
   isTerminalCreativeRecoveryTarget,
+  terminalCreativeRecoveryRecordMatches,
   validateTerminalCreativeRecoveryRequest,
 } from "./creative-recovery.js";
 import type { TerminalCreativeRecoveryWork, TerminalCreativeRecoveryWorkResult } from "./creative-recovery.js";
@@ -224,11 +225,17 @@ import { validateDesignReuseSource, writeDesignReuseMarker } from "./design-reus
 import { readMachineChecks } from "./machine-checks.js";
 import { planTimeoutMin, readPlanRecordOutcome } from "./plan-record.js";
 import {
+  CREATIVE_CONTRACT_FILE,
+  CREATIVE_STATUS_FILE,
   claimCreativeDecision,
-  pilotMayPublish,
+  creativeCriticAuthorityMatches,
+  creativeDecisionAuthorityMatches,
+  durablePilotMayPublish,
   readCreativePilotStatus,
   writeCreativePilotStatus,
 } from "./creative-pilot.js";
+import type { CreativePilotStatus } from "./creative-pilot.js";
+import { hasRenderedTasteCriticArtifact } from "./rendered-taste-critic.js";
 import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
 import { describeError, silenceOf } from "./orchestrator.js";
@@ -959,7 +966,7 @@ function toDetail(
 function creativeStatusOf(resultsDir: string): ApiCreativeStatus | null {
   const status = readCreativePilotStatus(resultsDir);
   if (status === null || !status.enabled) return null;
-  return {
+  const projection: ApiCreativeStatus = {
     applicable: status.applicable,
     enabled: status.enabled,
     contractHash: status.contractHash,
@@ -981,6 +988,39 @@ function creativeStatusOf(resultsDir: string): ApiCreativeStatus | null {
     ownerDecisionReason: status.ownerDecisionReason,
     ownerDecisionTargetRunId: status.ownerDecisionTargetRunId,
   };
+  const criticAuthorityClaimed = hasRenderedTasteCriticArtifact(resultsDir) ||
+    status.criticDisposition !== null ||
+    status.criticAttempt !== null ||
+    status.criticFindings.length > 0;
+  const auditUnavailable = (): ApiCreativeStatus => ({
+      ...projection,
+      criticDisposition: null,
+      criticFindings: [],
+      criticAttempt: null,
+      reviewState: "creative_review_required",
+      reviewStopReason: "invalid_attempt",
+      ownerDecision: null,
+      ownerDecisionReason: null,
+      ownerDecisionTargetRunId: null,
+  });
+  if (criticAuthorityClaimed && !creativeCriticAuthorityMatches(resultsDir, status)) {
+    return auditUnavailable();
+  }
+  if (status.ownerDecision !== null && !creativeDecisionAuthorityMatches(resultsDir, status)) {
+    return auditUnavailable();
+  }
+  return projection;
+}
+
+function durableCreativeMayPublish(
+  deps: ResolvedHttpDeps,
+  row: RunRow,
+  resultsDir: string,
+  status: CreativePilotStatus,
+): boolean {
+  return durablePilotMayPublish(resultsDir, status) &&
+    (!isTerminalCreativeRecoveryTarget(deps.paths, row.runId) ||
+      terminalCreativeRecoveryRecordMatches(resultsDir, row, status));
 }
 
 /**
@@ -2981,7 +3021,8 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
     }
     const resultsDir = runPathsFor(deps.paths, runId).results;
     const creative = readCreativePilotStatus(resultsDir);
-    if (creative === null || !creative.enabled || !creative.applicable) {
+    const criticArtifactPresent = hasRenderedTasteCriticArtifact(resultsDir);
+    if ((creative === null || !creative.enabled || !creative.applicable) && !criticArtifactPresent) {
       sendError(response, 409, "creative_pilot_not_applicable", "this run has no active creative pilot record", null);
       return;
     }
@@ -3018,6 +3059,52 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
       );
       return;
     }
+    const criticStopEvidence = creative !== null && (
+      creative.reviewStopReason === "accepted" ||
+      creative.reviewStopReason === "critic_no_evidence" ||
+      creative.reviewStopReason === "critic_unavailable" ||
+      creative.reviewStopReason === "repeated_tree_and_findings" ||
+      creative.reviewStopReason === "attempts_exhausted" ||
+      creative.reviewStopReason === "invalid_attempt"
+    );
+    const statusClaimsCriticAuthority = creative !== null && (
+      creative.criticAttempt !== null ||
+      creative.criticDisposition !== null ||
+      creative.criticFindings.length > 0 ||
+      criticStopEvidence
+    );
+    if (
+      decision === "revision_requested" &&
+      (criticArtifactPresent || statusClaimsCriticAuthority) &&
+      (creative === null || !creativeCriticAuthorityMatches(resultsDir, creative))
+    ) {
+      sendError(
+        response,
+        409,
+        "creative_critic_record_invalid",
+        "the projected critic result does not match its durable critic record",
+        "Restore the matching durable critic authority before recording a revision decision.",
+      );
+      return;
+    }
+    if (creative === null) {
+      sendError(response, 409, "creative_pilot_not_applicable", "this run has no active creative pilot record", null);
+      return;
+    }
+    if (creative.criticDisposition === "no_evidence" && decision === "revision_requested") {
+      sendError(
+        response,
+        409,
+        "creative_no_evidence_terminal",
+        "no_evidence is terminal; only cancellation remains available",
+        null,
+      );
+      return;
+    }
+    if (!creative.enabled || !creative.applicable) {
+      sendError(response, 409, "creative_pilot_not_applicable", "this run has no active creative pilot record", null);
+      return;
+    }
     if (body["reason"] !== undefined && typeof body["reason"] !== "string") {
       sendError(response, 400, "invalid_creative_reason", "reason must be a string when present", null);
       return;
@@ -3035,6 +3122,42 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
       sendError(response, 409, "creative_decision_too_early", `${decision} is available only after the run is terminal and staged`, null);
       return;
     }
+    if (
+      (decision === "approved" || decision === "waived") &&
+      !creativeCriticAuthorityMatches(resultsDir, creative)
+    ) {
+      sendError(
+        response,
+        409,
+        "creative_critic_record_invalid",
+        "the projected critic result does not match its durable critic record",
+        "Restore the matching durable critic authority before recording a publish-capable decision.",
+      );
+      return;
+    }
+    if (
+      isTerminalCreativeRecoveryTarget(deps.paths, runId) &&
+      !terminalCreativeRecoveryRecordMatches(resultsDir, row, creative)
+    ) {
+      sendError(
+        response,
+        409,
+        "creative_recovery_record_invalid",
+        "the recovery child does not have a matching completed passing recovery record",
+        "Inspect the immutable recovery record; do not publish a mismatched or failed recovery.",
+      );
+      return;
+    }
+    if (creative.ownerDecision !== null && !creativeDecisionAuthorityMatches(resultsDir, creative)) {
+      sendError(
+        response,
+        409,
+        "creative_decision_record_invalid",
+        "the projected owner decision does not match its exclusive durable claim",
+        "Restore the matching durable owner-decision claim before publishing.",
+      );
+      return;
+    }
 
     if (creative.ownerDecision !== null) {
       if (creative.ownerDecision !== decision || (creative.ownerDecisionReason ?? "") !== reason) {
@@ -3042,14 +3165,15 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
         return;
       }
       let existingPublish = readPublishedProject(resultsDir);
-      if (pilotMayPublish(creative) && existingPublish?.published !== true) {
+      const mayPublish = durableCreativeMayPublish(deps, row, resultsDir, creative);
+      if (mayPublish && existingPublish?.published !== true) {
         republishProject({ run: row, paths: deps.paths });
         existingPublish = readPublishedProject(resultsDir);
       }
       const receipt: ApiCreativeDecisionResponse = {
         runId,
         ownerDecision: decision,
-        mayPublish: pilotMayPublish(creative),
+        mayPublish,
         published: existingPublish?.published === true,
         targetRunId: creative.ownerDecisionTargetRunId,
       };
@@ -3084,11 +3208,21 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
     if (claim.kind === "replay") {
       const settled = readCreativePilotStatus(resultsDir);
       if (settled?.ownerDecision !== null && settled?.ownerDecision !== undefined) {
+        if (!creativeDecisionAuthorityMatches(resultsDir, settled)) {
+          sendError(
+            response,
+            409,
+            "creative_decision_record_invalid",
+            "the projected owner decision does not match its exclusive durable claim",
+            "Restore the matching durable owner-decision claim before publishing.",
+          );
+          return;
+        }
         const existingPublish = readPublishedProject(resultsDir);
         const receipt: ApiCreativeDecisionResponse = {
           runId,
           ownerDecision: settled.ownerDecision,
-          mayPublish: pilotMayPublish(settled),
+          mayPublish: durableCreativeMayPublish(deps, row, resultsDir, settled),
           published: existingPublish?.published === true,
           targetRunId: settled.ownerDecisionTargetRunId,
         };
@@ -3143,13 +3277,14 @@ async function handle(deps: ResolvedHttpDeps, request: IncomingMessage, response
     });
 
     let published = false;
-    if ((decision === "approved" || decision === "waived") && pilotMayPublish(decided)) {
+    const mayPublish = durableCreativeMayPublish(deps, row, resultsDir, decided);
+    if ((decision === "approved" || decision === "waived") && mayPublish) {
       published = republishProject({ run: row, paths: deps.paths }).published;
     }
     const receipt: ApiCreativeDecisionResponse = {
       runId,
       ownerDecision: decision,
-      mayPublish: pilotMayPublish(decided),
+      mayPublish,
       published,
       targetRunId,
     };
@@ -5041,8 +5176,64 @@ async function putSecretRoute(deps: HttpDeps, request: IncomingMessage, response
  * response body is the only place it is ever reported.
  */
 function republishRoute(deps: ResolvedHttpDeps, row: RunRow, response: ServerResponse): void {
-  const creative = readCreativePilotStatus(runPathsFor(deps.paths, row.runId).results);
-  if (creative?.enabled === true && creative.applicable && !pilotMayPublish(creative)) {
+  const resultsDir = runPathsFor(deps.paths, row.runId).results;
+  const creative = readCreativePilotStatus(resultsDir);
+  const creativeRecovery = isTerminalCreativeRecoveryTarget(deps.paths, row.runId);
+  const creativeContractExists = existsSync(join(resultsDir, CREATIVE_CONTRACT_FILE));
+  const criticArtifactPresent = hasRenderedTasteCriticArtifact(resultsDir);
+  const creativeStatusRequired =
+    creativeRecovery ||
+    creativeContractExists ||
+    criticArtifactPresent ||
+    existsSync(join(resultsDir, CREATIVE_STATUS_FILE));
+  if (creativeStatusRequired && creative === null) {
+    sendError(
+      response,
+      409,
+      "creative_pilot_record_invalid",
+      "the creative pilot requires a valid durable status before publication",
+      "Repair or restore the durable creative status before publishing.",
+    );
+    return;
+  }
+  if (
+    creative !== null &&
+    (criticArtifactPresent || creative.criticDisposition !== null) &&
+    !creativeCriticAuthorityMatches(resultsDir, creative)
+  ) {
+    sendError(
+      response,
+      409,
+      "creative_critic_record_invalid",
+      "the projected critic result does not match its durable critic record",
+      "Restore the matching durable critic authority before publishing.",
+    );
+    return;
+  }
+  if (creative !== null && creative.ownerDecision !== null && !creativeDecisionAuthorityMatches(resultsDir, creative)) {
+    sendError(
+      response,
+      409,
+      "creative_decision_record_invalid",
+      "the projected owner decision does not match its exclusive durable claim",
+      "Restore the matching durable owner-decision claim before publishing.",
+    );
+    return;
+  }
+  if (creativeRecovery && creative !== null && !terminalCreativeRecoveryRecordMatches(resultsDir, row, creative)) {
+    sendError(
+      response,
+      409,
+      "creative_recovery_record_invalid",
+      "the recovery child does not have a matching completed passing recovery record",
+      "Inspect the immutable recovery record; do not publish a mismatched or failed recovery.",
+    );
+    return;
+  }
+  if (
+    (creativeRecovery || creativeContractExists || criticArtifactPresent || (creative?.enabled === true && creative.applicable)) &&
+    (creative === null || !durableCreativeMayPublish(deps, row, resultsDir, creative))
+  ) {
     sendError(
       response,
       409,

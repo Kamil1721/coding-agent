@@ -1,7 +1,19 @@
 /** Independent, tool-less rendered-taste critic and its durable host record. */
 
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { AnthropicSeat, BudgetPolicy } from "bakeoff/dist/contracts.js";
 import { redactForPersistence } from "bakeoff/dist/redact.js";
@@ -9,11 +21,21 @@ import type { RateLimitState } from "./claude-common.js";
 import { SubscriptionSeatCaller } from "./subscription-caller.js";
 import type { SeatImage, SeatSessionFactory } from "./subscription-caller.js";
 import {
+  MAX_TASTE_EVIDENCE_PER_FINDING,
+  MAX_TASTE_FINDINGS,
+  MAX_TASTE_FINDINGS_PER_CATEGORY,
+  MIN_TASTE_EVIDENCE_PER_FINDING,
+  TASTE_ASSET_PROVENANCE,
+  TASTE_CATEGORIES,
+  TASTE_CODE_CATEGORY,
+  TASTE_FINDING_CODES,
   buildTasteCriticPrompt,
   parseTasteCriticOutput,
 } from "./taste-policy.js";
 import type {
+  LegacyTasteCriticOutputV1,
   TasteCriticOutputV1,
+  TasteEvidence,
   TasteCriticPromptInput,
   TasteFindingV1,
   TastePolicyError,
@@ -25,7 +47,21 @@ export const MAX_CREATIVE_REVIEW_ATTEMPTS = 3;
 export const RENDERED_TASTE_CRITIC_MAX_OUTPUT_TOKENS = 16_000;
 export const CREATIVE_CRITIC_DIRECTORY = "creative-critic";
 
-export type CriticDisposition = "accept" | "revise" | "unavailable";
+/**
+ * Detect any durable critic-artifact footprint without following or traversing it.
+ * A malformed node still counts as authority evidence and must fail closed.
+ */
+export function hasRenderedTasteCriticArtifact(resultsDir: string): boolean {
+  try {
+    lstatSync(join(resultsDir, CREATIVE_CRITIC_DIRECTORY));
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+export type CriticDisposition = "accept" | "no_evidence" | "revise" | "unavailable";
+type CompletedCriticDisposition = Exclude<CriticDisposition, "unavailable">;
 
 export interface RenderedTasteCriticRecord {
   readonly schemaVersion: typeof RENDERED_TASTE_CRITIC_SCHEMA_VERSION;
@@ -40,7 +76,7 @@ export interface RenderedTasteCriticRecord {
   readonly recordedAt: string;
   readonly criticDisposition: CriticDisposition;
   readonly ran: boolean;
-  readonly output: TasteCriticOutputV1 | null;
+  readonly output: TasteCriticOutputV1 | LegacyTasteCriticOutputV1 | null;
   readonly findingFingerprint: string | null;
   readonly policyErrors: readonly TastePolicyError[];
   readonly detail: string;
@@ -66,6 +102,9 @@ export interface RenderedTasteCriticRequest {
 }
 
 const HASH = /^[a-f0-9]{64}$/u;
+const TASTE_CATEGORY_SET = new Set<string>(TASTE_CATEGORIES);
+const TASTE_CODE_SET = new Set<string>(TASTE_FINDING_CODES);
+const TASTE_PROVENANCE_SET = new Set<string>(TASTE_ASSET_PROVENANCE);
 const RECORD_KEYS = new Set([
   "schemaVersion",
   "attempt",
@@ -84,6 +123,101 @@ const RECORD_KEYS = new Set([
   "rateLimit",
   "criticBy",
 ]);
+const COMPLETED_CRITIC_DETAILS = {
+  accept: "critic accepted the rendered evidence",
+  no_evidence: "critic ran but the supplied rendered evidence was insufficient",
+  revise: "critic requested bounded revisions",
+} as const satisfies Record<CompletedCriticDisposition, string>;
+
+function completedDispositionFor(
+  output: TasteCriticOutputV1 | LegacyTasteCriticOutputV1,
+): CompletedCriticDisposition {
+  if (output.findings.length > 0) return "revise";
+  return output.schemaVersion === 2 && !output.evidenceSufficient ? "no_evidence" : "accept";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isUniqueStringArray(value: unknown, minimum: number, maximum: number): value is readonly string[] {
+  return Array.isArray(value) && value.length >= minimum && value.length <= maximum &&
+    value.every(isNonEmptyString) && new Set(value).size === value.length;
+}
+
+function isTasteEvidence(value: unknown): value is TasteEvidence {
+  if (!isRecord(value) || typeof value["kind"] !== "string") return false;
+  if (value["kind"] === "contract") {
+    return hasExactKeys(value, ["kind", "pointer", "valueSha256"]) &&
+      isNonEmptyString(value["pointer"]) && typeof value["valueSha256"] === "string" && HASH.test(value["valueSha256"]);
+  }
+  if (value["kind"] === "dom_text") {
+    return hasExactKeys(value, ["kind", "frameId", "sectionId", "excerpt", "textSha256"]) &&
+      isNonEmptyString(value["frameId"]) && isNonEmptyString(value["sectionId"]) &&
+      isNonEmptyString(value["excerpt"]) && typeof value["textSha256"] === "string" && HASH.test(value["textSha256"]);
+  }
+  if (value["kind"] === "region") {
+    const box = value["box"];
+    return hasExactKeys(value, ["kind", "frameId", "sectionId", "screenshotSha256", "box"]) &&
+      isNonEmptyString(value["frameId"]) && isNonEmptyString(value["sectionId"]) &&
+      typeof value["screenshotSha256"] === "string" && HASH.test(value["screenshotSha256"]) &&
+      isRecord(box) && hasExactKeys(box, ["x", "y", "width", "height"]) &&
+      typeof box["x"] === "number" && Number.isFinite(box["x"]) && box["x"] >= 0 &&
+      typeof box["y"] === "number" && Number.isFinite(box["y"]) && box["y"] >= 0 &&
+      typeof box["width"] === "number" && Number.isFinite(box["width"]) && box["width"] > 0 &&
+      typeof box["height"] === "number" && Number.isFinite(box["height"]) && box["height"] > 0;
+  }
+  if (value["kind"] === "motion_trace") {
+    const indexes = value["sampleIndexes"];
+    return hasExactKeys(value, ["kind", "frameId", "motionId", "sampleIndexes", "observedProperties"]) &&
+      isNonEmptyString(value["frameId"]) && isNonEmptyString(value["motionId"]) &&
+      Array.isArray(indexes) && indexes.length >= 1 && indexes.length <= 8 &&
+      indexes.every((item) => typeof item === "number" && Number.isSafeInteger(item) && item >= 0) &&
+      new Set(indexes).size === indexes.length && isUniqueStringArray(value["observedProperties"], 1, 8);
+  }
+  if (value["kind"] === "asset") {
+    return hasExactKeys(value, ["kind", "frameId", "sectionId", "contentSha256", "provenance"]) &&
+      isNonEmptyString(value["frameId"]) && isNonEmptyString(value["sectionId"]) &&
+      (value["contentSha256"] === null || (typeof value["contentSha256"] === "string" && HASH.test(value["contentSha256"]))) &&
+      typeof value["provenance"] === "string" && TASTE_PROVENANCE_SET.has(value["provenance"]);
+  }
+  return false;
+}
+
+function isTasteFinding(value: unknown): value is TasteFindingV1 {
+  if (!isRecord(value) || !hasExactKeys(
+    value,
+    ["id", "category", "code", "routeId", "sectionIds", "diagnosis", "revision", "evidence"],
+  )) return false;
+  const evidence = value["evidence"];
+  return isNonEmptyString(value["id"]) &&
+    typeof value["category"] === "string" && TASTE_CATEGORY_SET.has(value["category"]) &&
+    typeof value["code"] === "string" && TASTE_CODE_SET.has(value["code"]) &&
+    TASTE_CODE_CATEGORY[value["code"] as keyof typeof TASTE_CODE_CATEGORY] === value["category"] &&
+    isNonEmptyString(value["routeId"]) && isUniqueStringArray(value["sectionIds"], 1, 8) &&
+    isNonEmptyString(value["diagnosis"]) && isNonEmptyString(value["revision"]) &&
+    Array.isArray(evidence) && evidence.length >= MIN_TASTE_EVIDENCE_PER_FINDING &&
+    evidence.length <= MAX_TASTE_EVIDENCE_PER_FINDING && evidence.every(isTasteEvidence) &&
+    new Set(evidence.map(canonicalJson)).size === evidence.length;
+}
+
+function isTasteFindings(value: unknown): value is readonly TasteFindingV1[] {
+  if (!Array.isArray(value) || value.length > MAX_TASTE_FINDINGS || !value.every(isTasteFinding)) return false;
+  const categoryCounts = new Map<string, number>();
+  const findingIds = new Set<string>();
+  for (const finding of value) {
+    if (findingIds.has(finding.id)) return false;
+    findingIds.add(finding.id);
+    const count = (categoryCounts.get(finding.category) ?? 0) + 1;
+    if (count > MAX_TASTE_FINDINGS_PER_CATEGORY) return false;
+    categoryCounts.set(finding.category, count);
+  }
+  return true;
+}
 
 /**
  * Run exactly one independent critic call. Every failure is data; none escapes
@@ -150,6 +284,7 @@ export async function runRenderedTasteCritic(
       );
     }
     const output = redactForPersistence(parsed.output);
+    const criticDisposition = completedDispositionFor(output);
     return {
       schemaVersion: RENDERED_TASTE_CRITIC_SCHEMA_VERSION,
       attempt: request.attempt,
@@ -158,12 +293,12 @@ export async function runRenderedTasteCritic(
       contractHash: output.contractHash,
       renderManifestHash: output.renderManifestHash,
       recordedAt,
-      criticDisposition: output.findings.length === 0 ? "accept" : "revise",
+      criticDisposition,
       ran: true,
       output,
       findingFingerprint: fingerprintTasteFindings(output.findings),
       policyErrors: [],
-      detail: output.findings.length === 0 ? "critic accepted the rendered evidence" : "critic requested bounded revisions",
+      detail: COMPLETED_CRITIC_DETAILS[criticDisposition],
       tokens: caller.tokens,
       rateLimit: caller.rateLimit,
       criticBy,
@@ -234,17 +369,75 @@ function canonicalJson(value: unknown): string {
 }
 
 export function criticRecordPath(resultsDir: string, iteration: number): string {
-  if (!Number.isInteger(iteration) || iteration < 0 || iteration > 3) {
-    throw new Error("render iteration must be 0-3");
+  if (!Number.isInteger(iteration) || iteration < 0 || iteration >= MAX_CREATIVE_REVIEW_ATTEMPTS) {
+    throw new Error(`render iteration must be 0-${String(MAX_CREATIVE_REVIEW_ATTEMPTS - 1)}`);
   }
   return join(resultsDir, CREATIVE_CRITIC_DIRECTORY, `${String(iteration)}.json`);
 }
 
 export function writeRenderedTasteCriticRecord(resultsDir: string, record: RenderedTasteCriticRecord): string {
   const path = criticRecordPath(resultsDir, record.iteration);
-  mkdirSync(join(resultsDir, CREATIVE_CRITIC_DIRECTORY), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-  return path;
+  const directory = join(resultsDir, CREATIVE_CRITIC_DIRECTORY);
+  mkdirSync(directory, { recursive: true });
+  const directoryStat = lstatSync(directory);
+  if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+    throw new Error("creative critic authority path must be a regular directory");
+  }
+  const temporary = join(directory, `.${String(record.iteration)}.${String(process.pid)}.${randomUUID()}.tmp`);
+  const fd = openSync(temporary, "wx", 0o600);
+  try {
+    try {
+      writeFileSync(fd, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    linkSync(temporary, path);
+    return path;
+  } finally {
+    try { unlinkSync(temporary); } catch { /* best-effort cleanup after link or failure */ }
+  }
+}
+
+/** Strict, append-only critic authority history. The final record is the only current authority. */
+export function readRenderedTasteCriticHistory(resultsDir: string): readonly RenderedTasteCriticRecord[] | null {
+  const directory = join(resultsDir, CREATIVE_CRITIC_DIRECTORY);
+  let stat;
+  try {
+    stat = lstatSync(directory);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return null;
+
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  if (entries.length === 0) return null;
+  const indexes = entries.map((entry) => {
+    const match = /^([0-2])\.json$/u.exec(entry.name);
+    return match !== null && entry.isFile() ? Number(match[1]) : null;
+  });
+  if (indexes.some((index) => index === null)) return null;
+  const ordered = indexes
+    .filter((index): index is number => index !== null)
+    .sort((left, right) => left - right);
+  if (ordered.length > MAX_CREATIVE_REVIEW_ATTEMPTS) return null;
+
+  const records: RenderedTasteCriticRecord[] = [];
+  for (let index = 0; index < ordered.length; index += 1) {
+    if (ordered[index] !== index) return null;
+    const record = readRenderedTasteCriticRecord(resultsDir, index);
+    if (record === null || record.attempt !== index + 1) return null;
+    const prior = records.at(-1);
+    if (prior !== undefined && record.contractHash !== prior.contractHash) return null;
+    if (prior?.criticDisposition === "no_evidence" || prior?.criticDisposition === "unavailable") return null;
+    records.push(record);
+  }
+  return records;
 }
 
 export function readRenderedTasteCriticRecord(
@@ -276,27 +469,48 @@ export function readRenderedTasteCriticRecord(
       typeof record.detail !== "string" ||
       typeof record.criticBy !== "string" ||
       (record.criticDisposition !== "accept" &&
+        record.criticDisposition !== "no_evidence" &&
         record.criticDisposition !== "revise" &&
         record.criticDisposition !== "unavailable")
     ) return null;
     if (record.criticDisposition === "unavailable") {
       if (record.output !== null || record.findingFingerprint !== null) return null;
     } else {
+      const output = record.output as unknown;
       if (
-        typeof record.output !== "object" ||
-        record.output === null ||
+        !isRecord(output) ||
+        record.ran !== true ||
+        record.policyErrors.length !== 0 ||
         !HASH.test(record.findingFingerprint ?? "") ||
-        record.output.contractHash !== record.contractHash ||
-        record.output.renderManifestHash !== record.renderManifestHash ||
-        !Array.isArray(record.output.findings) ||
-        (record.criticDisposition === "accept" && record.output.findings.length !== 0) ||
-        (record.criticDisposition === "revise" && record.output.findings.length === 0)
+        output["contractHash"] !== record.contractHash ||
+        output["renderManifestHash"] !== record.renderManifestHash ||
+        !isTasteFindings(output["findings"])
+      ) return null;
+      if (output["schemaVersion"] === 1) {
+        if (!hasExactKeys(output, ["schemaVersion", "contractHash", "renderManifestHash", "findings"])) return null;
+      } else if (output["schemaVersion"] === 2) {
+        if (
+          !hasExactKeys(output, ["schemaVersion", "contractHash", "renderManifestHash", "evidenceSufficient", "findings"]) ||
+          typeof output["evidenceSufficient"] !== "boolean" ||
+          (output["findings"].length > 0 && output["evidenceSufficient"] !== true)
+        ) return null;
+      } else return null;
+      const completedOutput = output as unknown as TasteCriticOutputV1 | LegacyTasteCriticOutputV1;
+      if (
+        record.criticDisposition !== completedDispositionFor(completedOutput) ||
+        record.findingFingerprint !== fingerprintTasteFindings(completedOutput.findings)
       ) return null;
     }
     return record as RenderedTasteCriticRecord;
   } catch {
     return null;
   }
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
 function abortControllerFor(signal: AbortSignal): AbortController {

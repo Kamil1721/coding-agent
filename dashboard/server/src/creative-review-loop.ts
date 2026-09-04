@@ -21,6 +21,7 @@ export type CreativeReviewStopReason =
   | "compiler_red"
   | "prerequisite_unknown"
   | "artifact_contract"
+  | "critic_no_evidence"
   | "critic_unavailable"
   | "repeated_tree_and_findings"
   | "attempts_exhausted"
@@ -104,6 +105,9 @@ export function advanceCreativeReview(
   if (prerequisiteStop !== null) return prerequisiteStop;
 
   if (critic.criticDisposition === "accept") return stopped(base, "creative_ready", "accepted");
+  if (critic.criticDisposition === "no_evidence") {
+    return stopped(base, "creative_review_required", "critic_no_evidence");
+  }
   if (critic.criticDisposition === "unavailable") {
     return stopped(base, "creative_review_required", "critic_unavailable");
   }

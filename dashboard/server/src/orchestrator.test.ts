@@ -84,6 +84,7 @@ import {
   context7PilotEnabled,
   highestArchivedAttempt,
   recordedNetworkPolicy,
+  terminalCreativeRecoveryOutcome,
   renderEvidence,
   verdictSourceFor,
   visualGateInputFor,
@@ -95,6 +96,7 @@ import type { ContainerResult } from "bakeoff/dist/scorer-protocol.js";
 import { ensureDirs, ensureRunDirs, resolvePaths, runPathsFor } from "./paths.js";
 import { AUTO_CONTINUE_MAX, boundFor } from "./recovery.js";
 import { PreviewHost } from "./preview.js";
+import { readPublishedProject } from "./project-publish.js";
 import { renderRunVerdict } from "./run-report.js";
 import { ticketFromText } from "./ticket.js";
 import { zeroTokens } from "./tokens.js";
@@ -111,7 +113,9 @@ import {
   CREATIVE_ARTIFACT_REPAIR_FILE,
   CREATIVE_ARTIFACT_REPAIR_PROMPT_FILE,
   CREATIVE_CONTRACT_FILE,
+  CREATIVE_STATUS_FILE,
   authorInputFor,
+  claimCreativeDecision,
   creativeAuthorAttemptFile,
   initialCreativePilotStatus,
   persistCreativeAuthorResult,
@@ -126,6 +130,12 @@ import { buildTasteEvidenceIndex, buildTastePromptFacts } from "./creative-rende
 import type { CreativeRenderOutput, CreativeRenderResult } from "./creative-render.js";
 import { REQUIRED_RENDER_PROFILES } from "./render-manifest.js";
 import type { RenderManifestV1 } from "./render-manifest.js";
+import {
+  CREATIVE_CRITIC_DIRECTORY,
+  fingerprintTasteFindings,
+  readRenderedTasteCriticRecord,
+  writeRenderedTasteCriticRecord,
+} from "./rendered-taste-critic.js";
 
 function harness(): {
   store: RunStore;
@@ -6023,6 +6033,10 @@ interface QuiescenceRun {
   readonly verdict: string;
   readonly backlog: string;
   readonly creativeStopReason: string | null;
+  readonly criticRecordReadable: boolean;
+  readonly projectPublished: boolean;
+  readonly creativeStatusTampered: boolean;
+  readonly creativeContractPresentAtTamper: boolean;
   readonly gateAttempts: number;
   readonly gateStopReason: string | null;
   readonly adversaryCalls: number;
@@ -6048,8 +6062,11 @@ async function quiescenceRun(
     readonly creativeRevisionFailure?: string;
     readonly creativeRevisionCompilerRed?: boolean;
     readonly creativeRenderRefusals?: readonly ("artifact_contract" | "critic_unavailable" | null)[];
-    readonly creativeCriticDisposition?: "accept" | "revise";
-    readonly creativeCriticDispositions?: readonly ("accept" | "revise")[];
+    readonly creativeCriticDisposition?: "accept" | "no_evidence" | "revise";
+    readonly creativeCriticDispositions?: readonly ("accept" | "no_evidence" | "revise")[];
+    readonly creativeStatusTamperAfterCritic?:
+      "delete" | "malformed" | "nonapplicable" | "footprint-file" | "footprint-symlink" | "rollback";
+    readonly creativeHistoryBeforeReview?: "malformed" | "gap" | "accept-no_evidence" | "accept-revise";
     readonly creativeArtifactRepairFailure?: string;
     readonly creativeArtifactRepairSessionId?: string;
     readonly creativeRepairGateOutcome?: "green" | "red" | "unavailable";
@@ -6146,6 +6163,10 @@ async function quiescenceRun(
     options.creativeRevisionFailure !== undefined ||
     options.creativeRevisionCompilerRed === true ||
     options.creativeRenderRefusals !== undefined ||
+    options.creativeCriticDisposition !== undefined ||
+    options.creativeCriticDispositions !== undefined ||
+    options.creativeStatusTamperAfterCritic !== undefined ||
+    options.creativeHistoryBeforeReview !== undefined ||
     options.creativeArtifactRepairFailure !== undefined ||
     options.creativeArtifactRepairSessionId !== undefined ||
     options.preclaimedArtifactRepair === true;
@@ -6293,8 +6314,18 @@ async function quiescenceRun(
             const sectionId = route?.sectionIds[0];
             const evidence = request.prompt.facts.slice(0, 2).map((fact) => fact.evidence);
             assert.ok(route !== undefined && sectionId !== undefined && evidence.length === 2);
-            const disposition = options.creativeCriticDispositions?.[criticCalls - 1] ?? options.creativeCriticDisposition;
-            const revise = disposition !== "accept";
+            const disposition = options.creativeCriticDispositions?.[criticCalls - 1] ?? options.creativeCriticDisposition ?? "revise";
+            const revise = disposition === "revise";
+            const findings = revise ? [{
+              id: "fixture-revision",
+              category: "copy" as const,
+              code: "GENERIC_COPY" as const,
+              routeId: route.id,
+              sectionIds: [sectionId],
+              diagnosis: "The rendered headline needs a bounded evidence-led revision.",
+              revision: "Tie the headline directly to the admitted owner proof.",
+              evidence,
+            }] : [];
             return {
               schemaVersion: 1,
               attempt: request.attempt,
@@ -6303,26 +6334,22 @@ async function quiescenceRun(
               contractHash: request.prompt.evidenceIndex.contractHash,
               renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
               recordedAt: new Date().toISOString(),
-              criticDisposition: revise ? "revise" as const : "accept" as const,
+              criticDisposition: disposition,
               ran: true,
               output: {
-                schemaVersion: 1,
+                schemaVersion: 2,
                 contractHash: request.prompt.evidenceIndex.contractHash,
                 renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
-                findings: revise ? [{
-                  id: "fixture-revision",
-                  category: "copy",
-                  code: "GENERIC_COPY",
-                  routeId: route.id,
-                  sectionIds: [sectionId],
-                  diagnosis: "The rendered headline needs a bounded evidence-led revision.",
-                  revision: "Tie the headline directly to the admitted owner proof.",
-                  evidence,
-                }] : [],
+                evidenceSufficient: disposition !== "no_evidence",
+                findings,
               },
-              findingFingerprint: revise ? "d".repeat(64) : null,
+              findingFingerprint: fingerprintTasteFindings(findings),
               policyErrors: [],
-              detail: revise ? "fixture requests one bounded revision" : "fixture accepts the render",
+              detail: revise
+                ? "fixture requests one bounded revision"
+                : disposition === "no_evidence"
+                  ? "fixture critic ran without sufficient evidence"
+                  : "fixture accepts the render",
               tokens: null,
               rateLimit: null,
               criticBy: "test/rendered-taste-critic",
@@ -6348,6 +6375,10 @@ async function quiescenceRun(
     interactive: false,
   });
   let unsubscribeArtifactRace = (): void => undefined;
+  let unsubscribeCreativeStatusTamper = (): void => undefined;
+  let unsubscribeCreativeHistory = (): void => undefined;
+  let creativeStatusTampered = false;
+  let creativeContractPresentAtTamper = false;
   if (options.archivedAttempt !== undefined) {
     const archived = attemptPath(paths, runId, 1);
     mkdirSync(dirname(archived), { recursive: true });
@@ -6382,6 +6413,143 @@ async function quiescenceRun(
     const live = liveResultPath(paths, runId);
     mkdirSync(dirname(live), { recursive: true });
     writeFileSync(live, JSON.stringify(containerFixture({ ticketId: ticket.id })), "utf8");
+  }
+  if (options.creativeHistoryBeforeReview !== undefined) {
+    unsubscribeCreativeHistory = bus.subscribe(runId, (stored) => {
+      if (stored.event.type !== "phase" || stored.event.phase !== "gate") return;
+      const resultsDir = runPathsFor(paths, runId).results;
+      if (options.creativeHistoryBeforeReview === "malformed") {
+        mkdirSync(join(resultsDir, CREATIVE_CRITIC_DIRECTORY));
+        writeFileSync(join(resultsDir, CREATIVE_CRITIC_DIRECTORY, "0.json"), "{broken", "utf8");
+      } else if (options.creativeHistoryBeforeReview === "gap") {
+        writeRenderedTasteCriticRecord(resultsDir, {
+          schemaVersion: 1, attempt: 2, iteration: 1, treeHash: "1".repeat(64),
+          contractHash: "2".repeat(64), renderManifestHash: "3".repeat(64),
+          recordedAt: "2026-09-04T12:00:00.000Z", criticDisposition: "accept", ran: true,
+          output: {
+            schemaVersion: 2, contractHash: "2".repeat(64), renderManifestHash: "3".repeat(64),
+            evidenceSufficient: true, findings: [],
+          },
+          findingFingerprint: fingerprintTasteFindings([]), policyErrors: [],
+          detail: "critic accepted the rendered evidence", tokens: null, rateLimit: null,
+          criticBy: "test/rendered-taste-critic",
+        });
+      } else {
+        const status = readCreativePilotStatus(resultsDir);
+        const historyContractHash = status?.contractHash ?? "2".repeat(64);
+        const historyManifestHash = "3".repeat(64);
+        writeRenderedTasteCriticRecord(resultsDir, {
+          schemaVersion: 1, attempt: 1, iteration: 0, treeHash: "1".repeat(64),
+          contractHash: historyContractHash, renderManifestHash: historyManifestHash,
+          recordedAt: "2026-09-04T12:00:00.000Z", criticDisposition: "accept", ran: true,
+          output: {
+            schemaVersion: 2, contractHash: historyContractHash, renderManifestHash: historyManifestHash,
+            evidenceSufficient: true, findings: [],
+          },
+          findingFingerprint: fingerprintTasteFindings([]), policyErrors: [],
+          detail: "critic accepted the rendered evidence", tokens: null, rateLimit: null,
+          criticBy: "test/rendered-taste-critic",
+        });
+        const revise = options.creativeHistoryBeforeReview === "accept-revise";
+        const findings = revise ? [{
+          id: "restart-revision",
+          category: "copy" as const,
+          code: "GENERIC_COPY" as const,
+          routeId: "home",
+          sectionIds: ["hero"],
+          diagnosis: "The restarted history requires one more revision.",
+          revision: "Use the admitted owner proof directly.",
+          evidence: [
+            { kind: "contract" as const, pointer: "/designRead/thesis", valueSha256: "4".repeat(64) },
+            { kind: "contract" as const, pointer: "/sections/0/job", valueSha256: "5".repeat(64) },
+          ],
+        }] : [];
+        writeRenderedTasteCriticRecord(resultsDir, {
+          schemaVersion: 1, attempt: 2, iteration: 1, treeHash: "6".repeat(64),
+          contractHash: historyContractHash, renderManifestHash: historyManifestHash,
+          recordedAt: "2026-09-04T12:01:00.000Z",
+          criticDisposition: revise ? "revise" : "no_evidence", ran: true,
+          output: {
+            schemaVersion: 2, contractHash: historyContractHash, renderManifestHash: historyManifestHash,
+            evidenceSufficient: revise, findings,
+          },
+          findingFingerprint: fingerprintTasteFindings(findings), policyErrors: [],
+          detail: revise ? "critic requested bounded revisions" : "critic ran but evidence was insufficient",
+          tokens: null, rateLimit: null, criticBy: "test/rendered-taste-critic",
+        });
+      }
+      unsubscribeCreativeHistory();
+    });
+  }
+  if (options.creativeStatusTamperAfterCritic !== undefined) {
+    unsubscribeCreativeStatusTamper = bus.subscribe(runId, (stored) => {
+      if (
+        stored.event.type !== "log" ||
+        !stored.event.text.includes(options.creativeStatusTamperAfterCritic === "rollback"
+          ? "creative critic attempt 2: no_evidence"
+          : "creative critic attempt 1: no_evidence")
+      ) return;
+      const statusPath = join(runPathsFor(paths, runId).results, CREATIVE_STATUS_FILE);
+      const resultsDir = runPathsFor(paths, runId).results;
+      const contractPath = join(resultsDir, CREATIVE_CONTRACT_FILE);
+      const footprintTamper = options.creativeStatusTamperAfterCritic === "footprint-file" ||
+        options.creativeStatusTamperAfterCritic === "footprint-symlink";
+      if (options.creativeStatusTamperAfterCritic === "rollback") {
+        const first = readRenderedTasteCriticRecord(resultsDir, 0);
+        assert.notEqual(first, null);
+        const findings = first?.output?.findings.map((finding) => ({
+          category: finding.category,
+          code: finding.code,
+          routeId: finding.routeId,
+          sectionIds: finding.sectionIds,
+          diagnosis: finding.diagnosis,
+          revision: finding.revision,
+        })) ?? [];
+        const status = JSON.parse(readFileSync(statusPath, "utf8")) as Record<string, unknown>;
+        const reason = "Owner waives the first critic attempt only.";
+        claimCreativeDecision(resultsDir, "waived", reason);
+        writeFileSync(statusPath, JSON.stringify({
+          ...status,
+          criticDisposition: "revise",
+          criticFindings: findings,
+          criticAttempt: 1,
+          reviewState: "creative_review_required",
+          reviewStopReason: null,
+          ownerDecision: "waived",
+          ownerDecisionReason: reason,
+          ownerDecisionTargetRunId: null,
+        }), "utf8");
+      } else if (footprintTamper) {
+        rmSync(contractPath, { force: true });
+        const status = JSON.parse(readFileSync(statusPath, "utf8")) as Record<string, unknown>;
+        writeFileSync(statusPath, JSON.stringify({
+          ...status,
+          applicable: false,
+          enabled: false,
+          criticDisposition: null,
+          criticFindings: [],
+          criticAttempt: null,
+          reviewState: null,
+          reviewStopReason: null,
+        }), "utf8");
+        const criticPath = join(resultsDir, CREATIVE_CRITIC_DIRECTORY);
+        rmSync(criticPath, { recursive: true, force: true });
+        if (options.creativeStatusTamperAfterCritic === "footprint-file") {
+          writeFileSync(criticPath, "malformed critic authority", "utf8");
+        } else {
+          symlinkSync(join(resultsDir, "missing-critic-target"), criticPath);
+        }
+      }
+      creativeContractPresentAtTamper = existsSync(contractPath);
+      if (options.creativeStatusTamperAfterCritic === "delete") rmSync(statusPath, { force: true });
+      else if (options.creativeStatusTamperAfterCritic === "malformed") writeFileSync(statusPath, "{malformed", "utf8");
+      else if (!footprintTamper && options.creativeStatusTamperAfterCritic !== "rollback") {
+        const status = JSON.parse(readFileSync(statusPath, "utf8")) as Record<string, unknown>;
+        writeFileSync(statusPath, JSON.stringify({ ...status, applicable: false, enabled: false }), "utf8");
+      }
+      creativeStatusTampered = true;
+      unsubscribeCreativeStatusTamper();
+    });
   }
   const artifactRepairDir = join(runPathsFor(paths, runId).results, "creative-render");
   if (options.preclaimedArtifactRepair === true) {
@@ -6439,6 +6607,10 @@ async function quiescenceRun(
         ? readFileSync(join(runPathsFor(paths, runId).results, "backlog.md"), "utf8")
         : "",
       creativeStopReason: readCreativePilotStatus(runPathsFor(paths, runId).results)?.reviewStopReason ?? null,
+      criticRecordReadable: readRenderedTasteCriticRecord(runPathsFor(paths, runId).results, 0) !== null,
+      projectPublished: readPublishedProject(runPathsFor(paths, runId).results) !== null,
+      creativeStatusTampered,
+      creativeContractPresentAtTamper,
       gateAttempts: row?.gateAttempts ?? 0,
       gateStopReason: row?.gateStopReason ?? null,
       adversaryCalls,
@@ -6446,6 +6618,8 @@ async function quiescenceRun(
     };
   } finally {
     unsubscribeArtifactRace();
+    unsubscribeCreativeStatusTamper();
+    unsubscribeCreativeHistory();
     await orchestrator.shutdown();
     store.close();
     removeDesignTree(dir);
@@ -6703,6 +6877,104 @@ test("CREATIVE-ARTIFACT: one deterministic refusal repairs in the same session, 
   assert.equal(new Set(run.captureContractHashes).size, 1, "the frozen contract authority cannot change across repair");
 });
 
+test("CREATIVE-CRITIC: insufficient evidence terminalizes without revision or publication", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeCriticDisposition: "no_evidence",
+  });
+  assert.equal(run.gateCalls, 1);
+  assert.equal(run.captureCalls, 1);
+  assert.equal(run.criticCalls, 1);
+  assert.equal(run.builderCalls, 2, "no_evidence must not enter the creative revision builder");
+  assert.equal(run.creativeStopReason, "critic_no_evidence");
+  assert.equal(run.criticRecordReadable, true, "the terminal critic record must survive a durable-reader round trip");
+  assert.match(run.log, /creative critic attempt 1: no_evidence/u);
+  assert.match(run.log, /publication is suppressed/u);
+});
+
+test("CREATIVE-CRITIC: status tampering cannot bypass automatic publication", async () => {
+  for (const tamper of ["delete", "malformed", "nonapplicable"] as const) {
+    const run = await quiescenceRun(true, undefined, {
+      artifactShape: "static-ready",
+      creativeCriticDisposition: "no_evidence",
+      creativeStatusTamperAfterCritic: tamper,
+    });
+    assert.equal(run.creativeStatusTampered, true);
+    assert.equal(run.creativeContractPresentAtTamper, true);
+    assert.equal(run.projectPublished, false, `${tamper} status must keep publication closed`);
+    assert.match(run.log, tamper === "nonapplicable"
+      ? /WEB pilot publication is suppressed/u
+      : /required durable status is missing or invalid/u);
+  }
+});
+
+test("CREATIVE-CRITIC: an orphaned malformed critic footprint keeps automatic publication closed", async () => {
+  for (const tamper of ["footprint-file", "footprint-symlink"] as const) {
+    const run = await quiescenceRun(true, undefined, {
+      artifactShape: "static-ready",
+      creativeCriticDisposition: "no_evidence",
+      creativeStatusTamperAfterCritic: tamper,
+    });
+    assert.equal(run.creativeStatusTampered, true);
+    assert.equal(run.creativeContractPresentAtTamper, false);
+    assert.equal(run.projectPublished, false, `${tamper} critic footprint must keep publication closed`);
+    assert.match(run.log, /projected authority does not match its durable record/u);
+  }
+});
+
+test("CREATIVE-CRITIC: rolling status back behind a later critic attempt cannot auto-publish", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeCriticDispositions: ["revise", "no_evidence"],
+    creativeStatusTamperAfterCritic: "rollback",
+  });
+  assert.equal(run.creativeStatusTampered, true);
+  assert.equal(run.projectPublished, false);
+  assert.match(run.log, /projected authority does not match its durable record/u);
+});
+
+test("CREATIVE-CRITIC: restart refuses malformed or gapped history before capture", async () => {
+  for (const history of ["malformed", "gap"] as const) {
+    const run = await quiescenceRun(true, undefined, {
+      artifactShape: "static-ready",
+      creativeCriticDisposition: "accept",
+      creativeHistoryBeforeReview: history,
+    });
+    assert.equal(run.captureCalls, 0, `${history} history must stop before a fresh capture`);
+    assert.equal(run.criticCalls, 0, `${history} history must not be compressed into a fresh critic attempt`);
+    assert.equal(run.creativeStopReason, "invalid_attempt");
+    assert.equal(run.projectPublished, false);
+    assert.match(run.log, /durable critic history is invalid or non-contiguous/u);
+  }
+});
+
+test("CREATIVE-CRITIC: restart replays a non-final accept before terminal no_evidence", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeCriticDisposition: "accept",
+    creativeHistoryBeforeReview: "accept-no_evidence",
+  });
+  assert.equal(run.captureCalls, 0);
+  assert.equal(run.criticCalls, 0);
+  assert.equal(run.creativeStopReason, "critic_no_evidence");
+  assert.equal(run.projectPublished, false);
+  assert.match(run.log, /creative review stopped before capture: critic_no_evidence/u);
+});
+
+test("CREATIVE-CRITIC: restart replays accept then revise and continues at attempt three", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    artifactShape: "static-ready",
+    creativeCriticDisposition: "accept",
+    creativeHistoryBeforeReview: "accept-revise",
+  });
+  assert.equal(run.creativeStopReason, "accepted", run.log);
+  assert.equal(run.builderCalls, 3, "only the bounded revision after the two replayed attempts is added");
+  assert.equal(run.captureCalls, 1);
+  assert.deepEqual(run.captureIterations, [2]);
+  assert.equal(run.criticCalls, 1);
+  assert.equal(run.projectPublished, false, "latest accept still requires owner authority");
+});
+
 test("CREATIVE-ARTIFACT: a second deterministic refusal stops without a third builder or a critic", async () => {
   const run = await quiescenceRun(true, undefined, {
     artifactShape: "static-ready",
@@ -6716,7 +6988,7 @@ test("CREATIVE-ARTIFACT: a second deterministic refusal stops without a third bu
   assert.equal(run.creativeStopReason, "artifact_contract");
 });
 
-test("CREATIVE-ARTIFACT: critic infrastructure refusal never enters the repair boundary", async () => {
+test("CREATIVE-ARTIFACT: critic infrastructure refusal never enters repair or publishes an inconsistent status", async () => {
   const run = await quiescenceRun(true, undefined, {
     artifactShape: "static-ready",
     creativeRenderRefusals: ["critic_unavailable"],
@@ -6726,8 +6998,10 @@ test("CREATIVE-ARTIFACT: critic infrastructure refusal never enters the repair b
   assert.equal(run.gateCalls, 1);
   assert.equal(run.captureCalls, 1);
   assert.equal(run.criticCalls, 0);
-  assert.equal(run.creativeStopReason, "critic_unavailable");
+  assert.equal(run.creativeStopReason, null, "a critic-specific stop without a critic disposition is not projected as valid status");
   assert.equal(run.artifactRepairClaim, null);
+  assert.equal(run.projectPublished, false);
+  assert.match(run.log, /required durable status is missing or invalid/u);
 });
 
 test("CREATIVE-ARTIFACT: a partial repair mutation invalidates the current sealed verdict", async () => {
@@ -6988,6 +7262,16 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
       const evidence = request.prompt.facts.slice(0, 2).map((fact) => fact.evidence);
       assert.ok(route !== undefined && sectionId !== undefined && evidence.length === 2);
       const revise = criticCalls === 1;
+      const findings = revise ? [{
+        id: "fixture-revision",
+        category: "copy" as const,
+        code: "GENERIC_COPY" as const,
+        routeId: route.id,
+        sectionIds: [sectionId],
+        diagnosis: "The initial render needs one bounded revision.",
+        revision: "Apply the admitted evidence more directly.",
+        evidence,
+      }] : [];
       return {
         schemaVersion: 1,
         attempt: request.attempt,
@@ -6999,21 +7283,13 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
         criticDisposition: revise ? "revise" as const : "accept" as const,
         ran: true,
         output: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           contractHash: request.prompt.evidenceIndex.contractHash,
           renderManifestHash: request.prompt.evidenceIndex.renderManifestHash,
-          findings: revise ? [{
-            id: "fixture-revision",
-            category: "copy" as const,
-            code: "GENERIC_COPY" as const,
-            routeId: route.id,
-            sectionIds: [sectionId],
-            diagnosis: "The initial render needs one bounded revision.",
-            revision: "Apply the admitted evidence more directly.",
-            evidence,
-          }] : [],
+          evidenceSufficient: true,
+          findings,
         },
-        findingFingerprint: revise ? "d".repeat(64) : null,
+        findingFingerprint: fingerprintTasteFindings(findings),
         policyErrors: [],
         detail: revise ? "one revision requested" : "accepted",
         tokens: null,
@@ -7065,6 +7341,8 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
     assert.equal(gateCalls, 2, "the critic revision must invalidate and re-run the sealed gate");
     assert.equal(captureCalls, 2);
     assert.equal(criticCalls, 2);
+    assert.notEqual(readRenderedTasteCriticRecord(runPaths.results, 0), null);
+    assert.notEqual(readRenderedTasteCriticRecord(runPaths.results, 1), null);
     assert.equal(builder.calls.length, 2);
     assert.equal(builder.calls[0]?.modelId, "default", "duplicate aliases must not displace the source row's exact selector");
     assert.equal(builder.calls[0]?.resumeSessionId, null, "the recovery mutation must start a fresh session");
@@ -7086,6 +7364,31 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
     assert.equal(settledCalls, 1);
     assert.equal(orchestrator.isActive(targetRunId), false);
     assert.deepEqual(existsSync(paths.projects) ? readdirSync(paths.projects) : [], [], "accepted critic evidence must not publish before owner approval");
+
+    const acceptedStatus = readCreativePilotStatus(runPaths.results);
+    const acceptedRecord = readRenderedTasteCriticRecord(runPaths.results, 1);
+    assert.notEqual(acceptedStatus, null);
+    assert.notEqual(acceptedRecord, null);
+    assert.ok(acceptedRecord?.output !== null && acceptedRecord?.output !== undefined);
+    writeRenderedTasteCriticRecord(runPaths.results, {
+      ...acceptedRecord,
+      attempt: 3,
+      iteration: 2,
+      recordedAt: "2026-09-04T12:02:00.000Z",
+      criticDisposition: "no_evidence",
+      output: {
+        schemaVersion: 2,
+        contractHash: acceptedRecord?.contractHash ?? "",
+        renderManifestHash: acceptedRecord?.renderManifestHash ?? "",
+        evidenceSufficient: false,
+        findings: [],
+      },
+      findingFingerprint: fingerprintTasteFindings([]),
+      detail: "critic ran but the supplied rendered evidence was insufficient",
+    });
+    const relabelledOutcome = terminalCreativeRecoveryOutcome(runPaths.results, acceptedStatus, true);
+    assert.equal(relabelledOutcome.terminalStatus, "failed");
+    assert.match(relabelledOutcome.failureReason ?? "", /does not match the latest durable critic record/u);
 
     let edgeBuilderCalls = 0;
     edgeOrchestrator = new Orchestrator({
@@ -7150,14 +7453,29 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
         }) as unknown as Awaited<ReturnType<AcceptanceGate["score"]>>,
       }),
     });
-    const prepareEdgeRecovery = (runId: string, status: "valid" | "missing" | "corrupt"): void => {
+    const prepareEdgeRecovery = (
+      runId: string,
+      status: "valid" | "missing" | "corrupt" | "critic-malformed" | "critic-gap",
+    ): void => {
       const edgePaths = runPathsFor(paths, runId);
       ensureRunDirs(edgePaths);
       writeFileSync(join(edgePaths.workspace, "index.html"), '<main data-creative-route="r.home">old</main>\n', "utf8");
       persistCreativeAuthorResult(edgePaths.results, authorResult);
       writeFileSync(join(edgePaths.results, CREATIVE_RECOVERY_OWNER_FILE), "{}\n", "utf8");
-      if (status === "valid") seedRecoveryStatus(edgePaths.results);
+      if (status === "valid" || status === "critic-malformed" || status === "critic-gap") {
+        seedRecoveryStatus(edgePaths.results);
+      }
       else if (status === "corrupt") writeFileSync(join(edgePaths.results, "creative-status.json"), "{broken", "utf8");
+      if (status === "critic-malformed") {
+        mkdirSync(join(edgePaths.results, CREATIVE_CRITIC_DIRECTORY));
+        writeFileSync(join(edgePaths.results, CREATIVE_CRITIC_DIRECTORY, "0.json"), "{broken", "utf8");
+      } else if (status === "critic-gap") {
+        mkdirSync(join(edgePaths.results, CREATIVE_CRITIC_DIRECTORY));
+        writeFileSync(
+          join(edgePaths.results, CREATIVE_CRITIC_DIRECTORY, "1.json"),
+          readFileSync(join(runPaths.results, CREATIVE_CRITIC_DIRECTORY, "1.json")),
+        );
+      }
       store.createRun({
         runId,
         ticketId: ticket.id,
@@ -7209,6 +7527,22 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
       assert.deepEqual(existsSync(paths.projects) ? readdirSync(paths.projects) : [], [], `${runId} must not publish a project copy`);
     }
     assert.equal(edgeBuilderCalls, edgeCases.length);
+
+    for (const status of ["critic-malformed", "critic-gap"] as const) {
+      const runId = `run-recovery-${status}`;
+      prepareEdgeRecovery(runId, status);
+      const failed = await edgeOrchestrator.runTerminalCreativeRecovery({
+        sourceRunId,
+        targetRunId: runId,
+        contractHash: authorResult.contractHash,
+        resolvedModelId: "claude-opus-5[1m]",
+      });
+      assert.equal(failed.terminalStatus, "failed");
+      assert.match(failed.failureReason ?? "", /invalid or non-contiguous critic history/u);
+      assert.equal(failed.gateAttempts, 0);
+      assert.equal(edgeBuilderCalls, edgeCases.length, `${status} history must fail before builder access`);
+      assert.deepEqual(existsSync(paths.projects) ? readdirSync(paths.projects) : [], []);
+    }
 
     const catalogDrifts = [
       {

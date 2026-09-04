@@ -21,12 +21,14 @@ import {
   CREATIVE_COMPILE_FILE,
   CREATIVE_CONTRACT_FILE,
   CREATIVE_STATUS_FILE,
+  creativeCriticAuthorityMatches,
   hashCreativeArtifact,
   readCreativePilotStatus,
   writeCreativePilotStatus,
 } from "./creative-pilot.js";
 import type { CreativePilotStatus } from "./creative-pilot.js";
 import type { CreativeReviewStopReason } from "./creative-review-loop.js";
+import { hasRenderedTasteCriticArtifact } from "./rendered-taste-critic.js";
 import type { StopReason } from "./gate-fix-loop.js";
 import type { RunRow, RunStore } from "./db.js";
 import { isTerminal } from "./db.js";
@@ -48,7 +50,7 @@ const COPY_RESULTS = [CREATIVE_CONTRACT_FILE, CREATIVE_AUTHOR_FILE, CREATIVE_COM
 const GATE_STOP_REASONS = new Set<StopReason>(["green", "retry-cap", "not-converging", "infra", "cancelled", "artifact-contract"]);
 const REVIEW_STOP_REASONS = new Set<Exclude<CreativeReviewStopReason, null>>([
   "accepted", "functional_red", "compiler_red", "prerequisite_unknown", "artifact_contract",
-  "critic_unavailable", "repeated_tree_and_findings", "attempts_exhausted", "invalid_attempt",
+  "critic_no_evidence", "critic_unavailable", "repeated_tree_and_findings", "attempts_exhausted", "invalid_attempt",
 ]);
 
 export interface TerminalCreativeRecoveryRequest {
@@ -71,7 +73,7 @@ export interface TerminalCreativeRecoveryWorkResult {
   readonly artifactHashBeforeMutation: string;
   readonly artifactHashAfterMutation: string;
   readonly renderManifestHash: string | null;
-  readonly criticDisposition: "accept" | "revise" | "unavailable" | null;
+  readonly criticDisposition: "accept" | "no_evidence" | "revise" | "unavailable" | null;
   readonly criticAttempt: number | null;
   readonly iteration: number | null;
   readonly reviewStopReason: CreativeReviewStopReason;
@@ -164,7 +166,8 @@ function readRecord(path: string): RecoveryRecord | null {
     const value = parsed as Record<string, unknown>;
     const nullableHash = (item: unknown): item is string | null => item === null || (typeof item === "string" && HASH.test(item));
     const nullableInteger = (item: unknown): item is number | null => item === null || (typeof item === "number" && Number.isInteger(item) && item >= 0);
-    const nullableDisposition = (item: unknown): boolean => item === null || item === "accept" || item === "revise" || item === "unavailable";
+    const nullableDisposition = (item: unknown): boolean =>
+      item === null || item === "accept" || item === "no_evidence" || item === "revise" || item === "unavailable";
     const nullableStop = (item: unknown): boolean => item === null || (typeof item === "string" && REVIEW_STOP_REASONS.has(item as Exclude<CreativeReviewStopReason, null>));
     if (
       value["protocolVersion"] !== CREATIVE_RECOVERY_PROTOCOL_VERSION ||
@@ -186,10 +189,65 @@ function readRecord(path: string): RecoveryRecord | null {
       typeof value["gateAttempts"] !== "number" || !Number.isInteger(value["gateAttempts"]) || value["gateAttempts"] < 0 ||
       typeof value["gateStopReason"] !== "string" || !GATE_STOP_REASONS.has(value["gateStopReason"] as StopReason)
     ) return null;
+    const criticAttemptIsCoherent =
+      typeof value["criticAttempt"] === "number" &&
+      value["criticAttempt"] >= 1 &&
+      value["criticAttempt"] <= 3 &&
+      value["iteration"] === value["criticAttempt"] - 1;
+    if (
+      (value["terminalStatus"] === "passed" && (
+        value["heldOutPass"] !== true || value["falseFinish"] !== false || value["failureReason"] !== null ||
+        value["criticDisposition"] !== "accept" || value["reviewStopReason"] !== "accepted" ||
+        !criticAttemptIsCoherent ||
+        value["gateStopReason"] !== "green"
+      )) ||
+      (value["criticDisposition"] === "no_evidence" && (
+        value["terminalStatus"] !== "failed" || value["reviewStopReason"] !== "critic_no_evidence" ||
+        !criticAttemptIsCoherent ||
+        typeof value["failureReason"] !== "string" || value["failureReason"].trim().length === 0
+      ))
+    ) return null;
     return value as unknown as RecoveryRecord;
   } catch {
     return null;
   }
+}
+
+/** Publication-time reconciliation of a recovery status against its completed controller record and run row. */
+export function terminalCreativeRecoveryRecordMatches(
+  resultsDir: string,
+  row: RunRow,
+  status: CreativePilotStatus,
+): boolean {
+  const record = readRecord(join(resultsDir, CREATIVE_RECOVERY_FILE));
+  const marker = readOwnerMarker(join(resultsDir, CREATIVE_RECOVERY_OWNER_FILE));
+  return record !== null &&
+    marker !== null &&
+    record.state === "completed" &&
+    record.targetRunId === row.runId &&
+    marker.sourceRunId === record.sourceRunId &&
+    marker.targetRunId === record.targetRunId &&
+    marker.payloadSha256 === record.payloadSha256 &&
+    marker.resolvedModelId === record.resolvedModelId &&
+    payloadSha256({ clientRequestId: marker.clientRequestId, contractHash: record.contractHash }) === record.payloadSha256 &&
+    terminalCreativeRecoveryRunId(record.sourceRunId, {
+      clientRequestId: marker.clientRequestId,
+      contractHash: record.contractHash,
+    }) === record.targetRunId &&
+    record.terminalStatus === "passed" &&
+    row.status === record.terminalStatus &&
+    row.heldOutPass === record.heldOutPass &&
+    row.falseFinish === record.falseFinish &&
+    row.failureReason === record.failureReason &&
+    row.gateAttempts === record.gateAttempts &&
+    row.gateStopReason === record.gateStopReason &&
+    status.contractHash === record.contractHash &&
+    status.heldOutPass === record.heldOutPass &&
+    status.renderManifestHash === record.renderManifestHash &&
+    status.criticDisposition === record.criticDisposition &&
+    status.criticAttempt === record.criticAttempt &&
+    status.reviewStopReason === record.reviewStopReason &&
+    creativeCriticAuthorityMatches(resultsDir, status);
 }
 
 function atomicRecord(path: string, value: RecoveryRecord): void {
@@ -308,7 +366,10 @@ function eligibleSource(store: RunStore, paths: DashboardPaths, sourceRunId: str
   if (creative.contractHash !== request.contractHash || creative.compile.outcome !== "passed") {
     refuse(409, "creative_recovery_contract_mismatch", "the source creative status is not green for the requested frozen contract");
   }
-  if (creative.criticAttempt !== null || creative.criticDisposition !== null) {
+  if (
+    creative.criticAttempt !== null || creative.criticDisposition !== null ||
+    hasRenderedTasteCriticArtifact(sourcePaths.results)
+  ) {
     refuse(409, "creative_recovery_prior_critic_unsupported", "this recovery slice supports failures before the first critic attempt only");
   }
   if (creative.reviewStopReason !== "artifact_contract" && !(
@@ -356,8 +417,17 @@ function hasLegacyDeterministicMarkerConflict(workspace: string, results: string
 }
 
 export function isTerminalCreativeRecoveryTarget(paths: DashboardPaths, runId: string): boolean {
-  const marker = join(runPathsFor(paths, runId).results, CREATIVE_RECOVERY_OWNER_FILE);
-  return existsSync(marker) && !lstatSync(marker).isSymbolicLink() && lstatSync(marker).isFile();
+  if (runId.startsWith("run-creative-recovery-")) return true;
+  const results = runPathsFor(paths, runId).results;
+  return [CREATIVE_RECOVERY_OWNER_FILE, CREATIVE_RECOVERY_WORKER_STARTED_FILE, CREATIVE_RECOVERY_FILE]
+    .some((file) => {
+      try {
+        lstatSync(join(results, file));
+        return true;
+      } catch (error) {
+        return !(error instanceof Error && "code" in error && error.code === "ENOENT");
+      }
+    });
 }
 
 function inventorySource(workspace: string): ReturnType<typeof inventoryScorerVisibleWorkspace> {
@@ -702,7 +772,8 @@ export class TerminalCreativeRecoveryController {
       creative === null || creative.contractHash !== record.contractHash ||
       creative.heldOutPass !== record.heldOutPass || creative.renderManifestHash !== record.renderManifestHash ||
       creative.criticDisposition !== record.criticDisposition || creative.criticAttempt !== record.criticAttempt ||
-      creative.reviewStopReason !== record.reviewStopReason
+      creative.reviewStopReason !== record.reviewStopReason ||
+      (record.terminalStatus === "passed" && !creativeCriticAuthorityMatches(targetPaths.results, creative))
     ) {
       refuse(409, "creative_recovery_terminal_conflict", "the durable recovery record conflicts with its creative evidence");
     }

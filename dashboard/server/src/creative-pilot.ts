@@ -23,6 +23,7 @@ import type {
   CreativeContractAuthorResult,
 } from "./creative-contract-author.js";
 import type { CreativeReviewState } from "./creative-review-loop.js";
+import { readRenderedTasteCriticHistory } from "./rendered-taste-critic.js";
 import type { RenderedTasteCriticRecord } from "./rendered-taste-critic.js";
 import type { CreativeRenderOutput, CreativeRenderResult } from "./creative-render.js";
 import { RENDER_PROFILE_IDS } from "./render-manifest.js";
@@ -91,7 +92,7 @@ export interface CreativePilotStatus {
     readonly captureCount: number;
     readonly complete: boolean;
   }[] | null;
-  readonly criticDisposition: "accept" | "revise" | "unavailable" | null;
+  readonly criticDisposition: "accept" | "no_evidence" | "revise" | "unavailable" | null;
   readonly criticFindings: readonly {
     readonly category: string;
     readonly code: string;
@@ -142,11 +143,14 @@ export interface CreativeArtifactRepairClaim {
 
 const HASH = /^[a-f0-9]{64}$/u;
 const COMPILE_OUTCOMES = new Set<CreativeCompileOutcome>(["unknown", "passed", "failed", "unavailable"]);
-const CRITIC_DISPOSITIONS = new Set(["accept", "revise", "unavailable"]);
+const CRITIC_DISPOSITIONS = new Set(["accept", "no_evidence", "revise", "unavailable"]);
 const REVIEW_STATES = new Set(["reviewing", "creative_ready", "creative_review_required", "not_converging", "failed"]);
 const REVIEW_STOP_REASONS = new Set([
-  "accepted", "functional_red", "compiler_red", "prerequisite_unknown", "artifact_contract", "critic_unavailable",
+  "accepted", "functional_red", "compiler_red", "prerequisite_unknown", "artifact_contract", "critic_no_evidence", "critic_unavailable",
   "repeated_tree_and_findings", "attempts_exhausted", "invalid_attempt",
+]);
+const CRITIC_REVIEW_STOP_REASONS = new Set([
+  "accepted", "critic_no_evidence", "critic_unavailable", "repeated_tree_and_findings", "attempts_exhausted",
 ]);
 const OWNER_DECISIONS = new Set(["approved", "revision_requested", "waived", "cancelled"]);
 const PROFILE_IDS = new Set<string>(RENDER_PROFILE_IDS);
@@ -258,21 +262,28 @@ export function claimCreativeDecision(
     return { kind: "created", claim: candidate };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (!isRecord(raw) || !hasExactKeys(raw, ["decision", "reason", "claimedAt"])) {
-      throw new Error("creative owner-decision claim is malformed");
-    }
+    const existing = readCreativeDecisionClaim(resultsDir);
+    if (existing === null) throw new Error("creative owner-decision claim is malformed");
+    const same = existing.decision === decision && existing.reason === reason;
+    return { kind: same ? "replay" : "conflict", claim: existing };
+  } finally {
+    try { unlinkSync(temporary); } catch { /* best-effort cleanup after the durable link */ }
+  }
+}
+
+export function readCreativeDecisionClaim(resultsDir: string): CreativeDecisionClaim | null {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(join(resultsDir, CREATIVE_DECISION_FILE), "utf8"));
+    if (!isRecord(raw) || !hasExactKeys(raw, ["decision", "reason", "claimedAt"])) return null;
     const record = raw as unknown as Partial<CreativeDecisionClaim>;
     if (
       typeof record.decision !== "string" || !OWNER_DECISIONS.has(record.decision) ||
       !(record.reason === null || typeof record.reason === "string") ||
       typeof record.claimedAt !== "string" || !Number.isFinite(Date.parse(record.claimedAt))
-    ) throw new Error("creative owner-decision claim is malformed");
-    const existing = record as CreativeDecisionClaim;
-    const same = existing.decision === decision && existing.reason === reason;
-    return { kind: same ? "replay" : "conflict", claim: existing };
-  } finally {
-    try { unlinkSync(temporary); } catch { /* best-effort cleanup after the durable link */ }
+    ) return null;
+    return record as CreativeDecisionClaim;
+  } catch {
+    return null;
   }
 }
 
@@ -344,8 +355,27 @@ export function readCreativePilotStatus(resultsDir: string): CreativePilotStatus
       (record.renderFresh === true && (record.renderManifestHash === null || profiles === null)) ||
       !(record.criticDisposition === null ||
         (typeof record.criticDisposition === "string" && CRITIC_DISPOSITIONS.has(record.criticDisposition))) ||
+      (record.criticDisposition === null && (
+        record.criticAttempt !== null ||
+        criticFindings.length !== 0 ||
+        (typeof record.reviewStopReason === "string" && CRITIC_REVIEW_STOP_REASONS.has(record.reviewStopReason))
+      )) ||
       (record.criticDisposition === "accept" && criticFindings.length !== 0) ||
+      (record.criticDisposition === "accept" && (
+        record.criticAttempt === null ||
+        record.reviewState !== "creative_ready" ||
+        record.reviewStopReason !== "accepted"
+      )) ||
+      (record.criticDisposition === "no_evidence" && criticFindings.length !== 0) ||
+      (record.criticDisposition === "no_evidence" && (
+        record.criticAttempt === null ||
+        record.reviewState !== "creative_review_required" ||
+        record.reviewStopReason !== "critic_no_evidence" ||
+        (record.ownerDecision !== null && record.ownerDecision !== "cancelled") ||
+        record.ownerDecisionTargetRunId !== null
+      )) ||
       (record.criticDisposition === "revise" && criticFindings.length === 0) ||
+      (record.criticDisposition === "revise" && record.criticAttempt === null) ||
       !(record.criticAttempt === null ||
         (typeof record.criticAttempt === "number" && Number.isInteger(record.criticAttempt) &&
           record.criticAttempt >= 1 && record.criticAttempt <= 3)) ||
@@ -985,6 +1015,53 @@ export function pilotMayPublish(status: CreativePilotStatus | null): boolean {
     status.ownerDecision === "waived" &&
     (status.ownerDecisionReason?.trim().length ?? 0) > 0
   );
+}
+
+function criticFindingProjection(record: RenderedTasteCriticRecord): CreativePilotStatus["criticFindings"] {
+  return record.output?.findings.map((finding) => ({
+    category: finding.category,
+    code: finding.code,
+    routeId: finding.routeId,
+    sectionIds: [...finding.sectionIds],
+    diagnosis: finding.diagnosis,
+    revision: finding.revision,
+  })) ?? [];
+}
+
+/** Reconcile the mutable status projection with its independently persisted critic authority. */
+export function creativeCriticAuthorityMatches(
+  resultsDir: string,
+  status: CreativePilotStatus,
+): boolean {
+  if (status.criticAttempt === null || status.criticDisposition === null) return false;
+  const history = readRenderedTasteCriticHistory(resultsDir);
+  const record = history === null ? null : history.at(-1) ?? null;
+  return record !== null &&
+    record.attempt === status.criticAttempt &&
+    record.contractHash === status.contractHash &&
+    record.renderManifestHash === status.renderManifestHash &&
+    record.criticDisposition === status.criticDisposition &&
+    canonicalJson(criticFindingProjection(record)) === canonicalJson(status.criticFindings);
+}
+
+/** Reconcile a projected owner decision with the exclusive durable claim that created it. */
+export function creativeDecisionAuthorityMatches(
+  resultsDir: string,
+  status: CreativePilotStatus,
+): boolean {
+  if (status.ownerDecision === null) return false;
+  const claim = readCreativeDecisionClaim(resultsDir);
+  return claim !== null &&
+    claim.decision === status.ownerDecision &&
+    claim.reason === status.ownerDecisionReason;
+}
+
+/** Publication policy plus both durable authorities; real publish paths use this, not the projection alone. */
+export function durablePilotMayPublish(resultsDir: string, status: CreativePilotStatus | null): boolean {
+  return status !== null &&
+    pilotMayPublish(status) &&
+    creativeCriticAuthorityMatches(resultsDir, status) &&
+    creativeDecisionAuthorityMatches(resultsDir, status);
 }
 
 export function hashCreativeArtifact(rootDir: string, ignoredDir: string): string {

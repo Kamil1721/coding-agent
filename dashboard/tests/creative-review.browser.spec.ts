@@ -87,6 +87,155 @@ test("keeps critic acceptance separate from the functional, compiler, and owner 
   await expect(panel(page).getByText("b".repeat(64))).toBeVisible();
 });
 
+test("fails an accepting critic without a recorded attempt closed", async ({ page }) => {
+  await patchCreative(page, creative({
+    criticAttempt: null,
+    reviewState: null,
+    reviewStopReason: null,
+  }));
+
+  await page.goto(`/runs/${RUN_ID}`);
+  await page.getByTestId("rail-result").click();
+  await expect(page.getByTestId("creative-review-unavailable")).toContainText(
+    "No authority result was admitted",
+  );
+  await expect(page.getByText("Accepted", { exact: true })).toHaveCount(0);
+});
+
+test("renders insufficient critic evidence as a distinct non-green recorded outcome", async ({ page }) => {
+  await patchCreative(page, creative({
+    criticDisposition: "no_evidence",
+    criticFindings: [],
+    reviewState: "creative_review_required",
+    reviewStopReason: "critic_no_evidence",
+  }));
+  await openResult(page);
+
+  const critic = authority(page, "critic");
+  await expect(critic).toContainText("Insufficient evidence");
+  await expect(critic).toContainText("The critic ran, but the rendered evidence was insufficient");
+  await expect(page.getByTestId("creative-review-unavailable")).toHaveCount(0);
+  await expect(critic.locator(".text-pass")).toHaveCount(0);
+  await page.getByText("Owner decision controls").click();
+  await expect(page.getByRole("button", { name: "Approve" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Request revision" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Waive critic revision" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Cancel review" })).toBeVisible();
+});
+
+test("admits a cancelled insufficient-evidence review without a continuation", async ({ page }) => {
+  await patchCreative(page, creative({
+    criticDisposition: "no_evidence",
+    criticFindings: [],
+    reviewState: "creative_review_required",
+    reviewStopReason: "critic_no_evidence",
+    ownerDecision: "cancelled",
+    ownerDecisionTargetRunId: null,
+  }));
+  await openResult(page);
+
+  await expect(authority(page, "critic")).toContainText("Insufficient evidence");
+  await expect(authority(page, "owner")).toContainText("Cancelled");
+  await expect(page.getByTestId("creative-review-unavailable")).toHaveCount(0);
+});
+
+test("fails a contradictory insufficient-evidence payload closed", async ({ page }) => {
+  await patchCreative(page, creative({
+    criticDisposition: "no_evidence",
+    criticFindings: [],
+    reviewState: "creative_ready",
+    reviewStopReason: "accepted",
+    ownerDecision: "approved",
+  }));
+
+  await page.goto(`/runs/${RUN_ID}`);
+  await page.getByTestId("rail-result").click();
+  await expect(page.getByTestId("creative-review-unavailable")).toContainText(
+    "No authority result was admitted",
+  );
+  await expect(page.getByTestId("creative-authority-critic")).toHaveCount(0);
+  await expect(page.getByText("Insufficient evidence", { exact: true })).toHaveCount(0);
+});
+
+test("fails insufficient evidence without a recorded critic attempt closed", async ({ page }) => {
+  await patchCreative(page, creative({
+    criticDisposition: "no_evidence",
+    criticFindings: [],
+    criticAttempt: null,
+    reviewState: "creative_review_required",
+    reviewStopReason: "critic_no_evidence",
+  }));
+
+  await page.goto(`/runs/${RUN_ID}`);
+  await page.getByTestId("rail-result").click();
+  await expect(page.getByTestId("creative-review-unavailable")).toContainText(
+    "No authority result was admitted",
+  );
+  await expect(page.getByText("Attempt not recorded", { exact: true })).toHaveCount(0);
+});
+
+for (const authority of ["critic", "owner"] as const) {
+  test(`fails the sanitized ${authority}-authority mismatch projection closed`, async ({ page }) => {
+    await patchCreative(page, creative({
+      criticDisposition: null,
+      criticAttempt: null,
+      criticFindings: [],
+      reviewState: "creative_review_required",
+      reviewStopReason: "invalid_attempt",
+      ownerDecision: null,
+      ownerDecisionReason: null,
+      ownerDecisionTargetRunId: null,
+    }));
+
+    await page.goto(`/runs/${RUN_ID}`);
+    await page.getByTestId("rail-result").click();
+    await expect(page.getByTestId("creative-review-unavailable")).toContainText(
+      "No authority result was admitted",
+    );
+    await expect(page.getByTestId("creative-owner-awaiting")).toHaveCount(0);
+    await expect(page.getByText("Owner decision controls")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Approve" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Request revision" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Waive critic revision" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Cancel review" })).toHaveCount(0);
+  });
+}
+
+test("fails insufficient evidence with a persisted revision request closed", async ({ page }) => {
+  await patchCreative(page, creative({
+    criticDisposition: "no_evidence",
+    criticFindings: [],
+    reviewState: "creative_review_required",
+    reviewStopReason: "critic_no_evidence",
+    ownerDecision: "revision_requested",
+    ownerDecisionReason: "Contradictory persisted decision.",
+  }));
+
+  await page.goto(`/runs/${RUN_ID}`);
+  await page.getByTestId("rail-result").click();
+  await expect(page.getByTestId("creative-review-unavailable")).toContainText(
+    "No authority result was admitted",
+  );
+  await expect(page.getByTestId("creative-authority-critic")).toHaveCount(0);
+});
+
+test("fails insufficient evidence with a persisted continuation target closed", async ({ page }) => {
+  await patchCreative(page, creative({
+    criticDisposition: "no_evidence",
+    criticFindings: [],
+    reviewState: "creative_review_required",
+    reviewStopReason: "critic_no_evidence",
+    ownerDecisionTargetRunId: "run-contradictory-continuation",
+  }));
+
+  await page.goto(`/runs/${RUN_ID}`);
+  await page.getByTestId("rail-result").click();
+  await expect(page.getByTestId("creative-review-unavailable")).toContainText(
+    "No authority result was admitted",
+  );
+  await expect(page.getByRole("link", { name: /Open continuation/ })).toHaveCount(0);
+});
+
 test("keeps a durable revision continuation reachable after reload", async ({ page }) => {
   const targetRunId = "run-cont-1234567890abcdefabcd";
   await patchCreative(page, creative({
@@ -233,6 +382,7 @@ test("keeps a compiler failure red even when the functional suite passed", async
     criticDisposition: null,
     criticAttempt: null,
     reviewState: "failed",
+    reviewStopReason: "compiler_red",
   }));
   await openResult(page);
 
@@ -254,6 +404,7 @@ test("renders every absent authority as unknown, not green", async ({ page }) =>
     criticDisposition: null,
     criticAttempt: null,
     reviewState: null,
+    reviewStopReason: null,
     ownerDecision: null,
   }), null);
   await openResult(page);

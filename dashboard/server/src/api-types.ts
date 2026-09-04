@@ -747,7 +747,7 @@ export interface ApiCreativeStatus {
     readonly captureCount: number;
     readonly complete: boolean;
   }[] | null;
-  readonly criticDisposition: "accept" | "revise" | "unavailable" | null;
+  readonly criticDisposition: "accept" | "no_evidence" | "revise" | "unavailable" | null;
   readonly criticFindings: readonly ApiCreativeCriticFinding[];
   readonly criticAttempt: number | null;
   readonly reviewState: "reviewing" | "creative_ready" | "creative_review_required" | "not_converging" | "failed" | null;
