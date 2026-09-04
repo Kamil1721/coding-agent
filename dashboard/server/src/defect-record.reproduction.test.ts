@@ -40,12 +40,12 @@
  */
 
 import { strict as assert } from "node:assert";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
-import { buildDefectRecord, defectSignature, planReproduction } from "./defect-record.js";
+import { buildDefectRecord, classifyDefectCause, defectSignature, planReproduction } from "./defect-record.js";
 import type { DefectRecordInput, DefectReproduction, ReproductionInput } from "./defect-record.js";
 
 /* -------------------------------------------------------------------------
@@ -382,29 +382,141 @@ test("a record with no reproduction block at all still reads as NO_REPRODUCTION_
 });
 
 /* =========================================================================
- * 6. THE SIGNATURE DID NOT MOVE
+ * 6. VERSION TWO SPLITS DIFFERENT CAUSES WITHOUT SPLITTING VOLATILE COPIES
  * ====================================================================== */
 
-test("the digest of a class already on disk is byte-identical after this change", () => {
-  /*
-   * READ OFF A REAL RECORD: `dashboard/runs/run-2026-08-11T00-24-14-388Z-aa6e721e/
-   * results/defect.json` carries this digest for site `spec/failed/suite_not_audited`
-   * with no violations, and so do two other runs. The shard is
-   * `data/defects/<signature>.jsonl`, so a signature that moved would file the
-   * next occurrence of an already-recorded class in a fresh file where it reads
-   * as a first occurrence — and the anti-loop guard is signature comparison.
-   */
-  assert.equal(
-    defectSignature("spec/failed/suite_not_audited", []),
-    "2650ca82aa3e5ffc03074058d0d8320431bc65eba67108f7e9ae65c03d55c3f0",
+test("same cause with different run identity and timestamp has one v2 signature", () => {
+  const firstCause = classifyDefectCause(
+    "worker run-abc123 failed at 2026-09-04T09:01:02.123Z after attempt 1",
   );
+  const secondCause = classifyDefectCause(
+    "worker run-def456 failed at 2027-10-05T10:02:03.456Z after attempt 99",
+  );
+  assert.equal(firstCause, secondCause);
+  assert.equal(defectSignature("build/failed/no-code", [], firstCause), defectSignature("build/failed/no-code", [], secondCause));
 });
 
-test("two records with the same site and different reproductions share one signature", () => {
-  const priced = recordFor({ site: "build/failed/x" });
-  const absent = recordFor({ site: "build/failed/x", bakeoffCode: "suite_not_audited", failureClass: "suite_authoring" });
-  assert.notDeepEqual(priced.reproduction, absent.reproduction, "the fixtures must actually differ or this proves nothing");
-  assert.equal(priced.signature, absent.signature);
+test("null reason is stable, inspectable, and distinct from a supplied reason", () => {
+  assert.doesNotThrow(() => classifyDefectCause(null));
+  assert.equal(classifyDefectCause(null), classifyDefectCause(null));
+  assert.notEqual(classifyDefectCause(null), classifyDefectCause(""), "null is unavailable, not an empty supplied reason");
+  assert.notEqual(classifyDefectCause(null), classifyDefectCause("a reason exists"));
+});
+
+test("generic cause normalization replaces volatile paths and keeps long causes collision-resistant", () => {
+  const first = classifyDefectCause(
+    "failed run-alpha at /Users/alice/work/run-alpha/output.json on 2026-09-04T09:01:02Z after 1 attempts",
+  );
+  const second = classifyDefectCause(
+    "failed run-beta at /opt/build/run-beta/output.json on 2027-10-05T10:02:03Z after 99 attempts",
+  );
+  assert.equal(first, second);
+  assert.match(first, /path/);
+  const sharedPrefix = "x".repeat(300);
+  const longA = classifyDefectCause(`${sharedPrefix} alpha`);
+  const longB = classifyDefectCause(`${sharedPrefix} beta`);
+  assert.equal(longA.length, 160);
+  assert.equal(longB.length, 160);
+  assert.notEqual(longA, longB, "bounded classes with the same readable prefix retain a normalized digest suffix");
+});
+
+test("relative, spaced, UNC, and offset-bearing locations do not fragment one cause", () => {
+  const equivalentPairs = [
+    [
+      "compile failed at workspace-a/results/output.json on 2026-09-04T09:01:02+02:00",
+      "compile failed at workspace-b/results/output.json on 2027-10-05T10:02:03-05:00",
+    ],
+    [
+      String.raw`compile failed at \\server-a\share\output.json on 2026-09-04T09:01:02`,
+      String.raw`compile failed at \\server-b\share\output.json on 2027-10-05T10:02:03`,
+    ],
+    [
+      "compile failed at /Users/alice/My Project/output.json on 2026-09-04T09:01:02Z",
+      "compile failed at /opt/build/Other Root/output.json on 2027-10-05T10:02:03Z",
+    ],
+    [
+      String.raw`compile failed at C:\Users\Alice Smith\output.json on 2026-09-04T09:01:02Z`,
+      String.raw`compile failed at D:\agent\Bob Smith\output.json on 2027-10-05T10:02:03Z`,
+    ],
+  ] as const;
+  for (const [firstReason, secondReason] of equivalentPairs) {
+    const firstCause = classifyDefectCause(firstReason);
+    const secondCause = classifyDefectCause(secondReason);
+    assert.equal(firstCause, secondCause, `${firstCause} must equal ${secondCause}`);
+    assert.equal(
+      defectSignature("build/failed/no-code", [], firstCause),
+      defectSignature("build/failed/no-code", [], secondCause),
+    );
+  }
+});
+
+test("one bracket code keeps different causes separate while removing volatile identity", () => {
+  const vacuous = classifyDefectCause(
+    "[suite_not_audited] test file holdout/site-routes.test.mjs contains a not implemented marker",
+  );
+  const misSpecified = classifyDefectCause(
+    "[suite_not_audited] REQ-013 statement matches no EARS template",
+  );
+  assert.notEqual(vacuous, misSpecified, "the shared routing code is not the underlying defect cause");
+  assert.notEqual(
+    defectSignature("spec/failed/suite_not_audited", [], vacuous),
+    defectSignature("spec/failed/suite_not_audited", [], misSpecified),
+  );
+
+  const firstCopy = classifyDefectCause(
+    "[suite_not_audited] run-alpha test file workspace-a/holdout/site-routes.test.mjs at 2026-09-04T09:01:02Z contains 1 not implemented marker",
+  );
+  const secondCopy = classifyDefectCause(
+    "[suite_not_audited] run-beta test file workspace-b/holdout/site-routes.test.mjs at 2027-10-05T10:02:03Z contains 99 not implemented marker",
+  );
+  assert.equal(firstCopy, secondCopy, "volatile identity must not split the same coded cause");
+});
+
+test("the live legacy ledger replays into four v2 cause groups for its eleven-row shard", () => {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let hop = 0; hop < 8 && !existsSync(join(dir, "dashboard", "data", "defects")); hop += 1) dir = resolve(dir, "..");
+  const defectsDir = join(dir, "dashboard", "data", "defects");
+  assert.ok(existsSync(defectsDir), `missing live read-only fixture ${defectsDir}`);
+  const legacyFiles = readdirSync(defectsDir).filter((name) => /^[0-9a-f]{64}\.jsonl$/u.test(name));
+  assert.equal(legacyFiles.length, 6, "the read-only replay must cover every live legacy shard");
+  const liveRows = legacyFiles.flatMap((name) =>
+    readFileSync(join(defectsDir, name), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>),
+  );
+  assert.equal(liveRows.length, 24, "the read-only replay must cover all live ledger rows");
+  for (const row of liveRows) {
+    const reason = typeof row["failureReason"] === "string" ? row["failureReason"] : null;
+    assert.match(defectSignature(String(row["site"]), Array.isArray(row["fieldPaths"]) ? row["fieldPaths"] as string[] : [], classifyDefectCause(reason)), /^[0-9a-f]{64}$/u);
+  }
+  const legacyPath = legacyFiles.find((name) => name.startsWith("010f"));
+  assert.ok(legacyPath !== undefined, "missing expected 010f legacy shard");
+  const rows = readFileSync(join(defectsDir, legacyPath), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.equal(rows.length, 11);
+  const groups = new Map<string, { readonly cause: string; count: number }>();
+  for (const row of rows) {
+    const reason = typeof row["failureReason"] === "string" ? row["failureReason"] : null;
+    const cause = classifyDefectCause(reason);
+    const signature = defectSignature(String(row["site"]), Array.isArray(row["fieldPaths"]) ? row["fieldPaths"] as string[] : [], cause);
+    const prior = groups.get(signature);
+    assert.ok(prior === undefined || prior.cause === cause, "one signature must not merge distinct cause classes");
+    groups.set(signature, { cause, count: (prior?.count ?? 0) + 1 });
+  }
+  const sizes = [...groups.values()].map((group) => group.count).sort((a, b) => b - a);
+  assert.deepEqual(sizes, [7, 2, 1, 1], `v2 live replay group sizes: ${sizes.join("/")}`);
+  assert.equal(groups.size, 4, "different causes at one structural site must split into more than one group");
+  const causes = [...groups.values()].map((group) => group.cause);
+  assert.ok(causes.includes("sealed_suite:held_out_failure"));
+  assert.ok(causes.some((cause) => cause.startsWith("code:invalid_usage_shape:")));
+  assert.ok(causes.includes("creative_recovery:critic_unavailable"));
+  assert.ok(causes.includes("creative_recovery:artifact_contract"));
+});
+
+test("record persists the exact classifier input and bounded readable output", () => {
+  const reason = "creative recovery stopped: critic_unavailable";
+  const record = recordFor({ failureReason: reason });
+  assert.equal(record.signatureVersion, 2);
+  assert.equal(record.causeClassifierInput, reason);
+  assert.equal(record.causeClass, "creative_recovery:critic_unavailable");
+  assert.ok(record.causeClass.length <= 160);
 });
 
 /* =========================================================================

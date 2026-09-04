@@ -17,7 +17,7 @@
  *   results/authoring-trail.json — what the spec phase attempted, on BOTH paths
  *
  * plus an append-only, content-addressed shard at
- * `data/defects/<signature>.jsonl`, so the second occurrence of a class is
+ * `data/defects/v<version>-<signature>.jsonl`, so the second occurrence of a class is
  * findable without reading every run directory.
  *
  * ─── THE RULE THIS MODULE IS BUILT AROUND ───
@@ -35,9 +35,9 @@
  *
  * `PhaseFailureSignals` has no `message` field and its docblock forbids one,
  * citing the 2026-08-04 death by name. The signature is built from a SITE and a
- * sorted list of FIELD PATHS — structured values written at the throw site —
- * and never from the failure text. `failureReason` is carried verbatim into the
- * record for a human to read; nothing in this file reads it back.
+ * sorted list of FIELD PATHS and a bounded CAUSE CLASS. The classifier removes
+ * volatile identities before the class enters the digest; raw prose never does.
+ * `failureReason` is still carried verbatim for a human to read.
  */
 
 import { createHash } from "node:crypto";
@@ -189,8 +189,14 @@ export interface DefectRecord {
   readonly phase: string;
   readonly failureClass: string;
   readonly bakeoffCode: string | null;
-  /** sha256 hex of the site plus the sorted field paths. Never prose. */
+  /** Version of the material and shard namespace used by `signature`. */
+  readonly signatureVersion: 2;
+  /** sha256 hex of version, site, sorted field paths, and bounded cause class. */
   readonly signature: string;
+  /** Exact nullable value supplied to the cause classifier. */
+  readonly causeClassifierInput: string | null;
+  /** Stable, bounded classifier output used in the signature. */
+  readonly causeClass: string;
   readonly violations: readonly DefectViolation[];
   readonly attempts: readonly DefectAttempt[];
   readonly artefacts: readonly string[];
@@ -209,7 +215,7 @@ export interface DefectRecord {
   readonly attemptsAvailable: boolean;
   /** Non-empty exactly when something above is `false`. */
   readonly unavailable: readonly string[];
-  /** Carried verbatim for a human. NOTHING in this program parses it. */
+  /** Carried verbatim for a human; only the explicit bounded classifier reads it. */
   readonly failureReason: string | null;
   /**
    * How to watch this defect fail, or the named reason nobody can.
@@ -226,17 +232,82 @@ export interface DefectRecord {
 /**
  * The stable fingerprint.
  *
- * SITE PLUS SORTED FIELD PATHS, HASHED. Sorted because `a913c871`'s attempts
+ * VERSION, SITE, SORTED FIELD PATHS, AND THE BOUNDED CAUSE CLASS, HASHED. Sorted because `a913c871`'s attempts
  * named `id`, then `kind`, then `kind` again with `id` lost — the same defect
  * arriving in three orders, and an order-sensitive fingerprint would call them
  * three different defects and never fire the oscillation arm.
  *
  * HEX, BECAUSE IT IS ALSO A FILENAME. The shard is
- * `data/defects/<signature>.jsonl`, and a signature built by joining a site and
+ * `data/defects/v2-<signature>.jsonl`, and a signature built by joining a site and
  * some field paths with separators would carry `/` and escape the directory.
  */
-export function defectSignature(site: string, fieldPaths: readonly string[]): string {
-  const material = `site=${site}\n${[...fieldPaths].sort().join("\n")}`;
+export const DEFECT_SIGNATURE_VERSION = 2 as const;
+export const MAX_CAUSE_CLASS_LENGTH = 160;
+
+const NULL_CAUSE_CLASS = "reason:null";
+const EMPTY_CAUSE_CLASS = "reason:empty";
+
+function boundedCauseClass(value: string): string {
+  if (value.length <= MAX_CAUSE_CLASS_LENGTH) return value;
+  const suffix = createHash("sha256").update(value, "utf8").digest("hex").slice(0, 12);
+  return `${value.slice(0, MAX_CAUSE_CLASS_LENGTH - suffix.length - 1)}:${suffix}`;
+}
+
+function normalizedCauseDetail(value: string): string {
+  const normalized = value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/\b\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:z|[+-]\d{2}:?\d{2})?\b/gu, " timestamp ")
+    .replace(/(?:\\\\|\b[a-z]:\\)(?:[^\r\n"'<>|]*?\\)*[^\r\n"'<>|]*?\.[a-z0-9]{1,16}(?=$|[\s"',:;)])/gu, " path ")
+    .replace(/(?:\.{1,2}\/|\/(?!\/)|\b[a-z0-9._-]+\/)(?:[^\r\n"'<>|]*?\/)*[^\r\n"'<>|]*?\.[a-z0-9]{1,16}(?=$|[\s"',:;)])/gu, " path ")
+    .replace(/(?:\/[a-z0-9._-]+){2,}(?=[\s"',:;)]|$)/gu, " path ")
+    .replace(/\b(?:[a-z0-9._-]+\/){2,}[a-z0-9._-]*\b/gu, " path ")
+    .replace(/\\\\(?:[^\\\s"']+\\)+[^\\\s"']*/gu, " path ")
+    .replace(/\b[a-z]:\\(?:[^\\\s"']+\\)*[^\\\s"']*/gu, " path ")
+    .replace(/\brun[-_][a-z0-9][a-z0-9_-]*\b/gu, " run_id ")
+    .replace(/\bt-[a-f0-9]{8,}\b/gu, " ticket_id ")
+    .replace(/\b\d+\b/gu, " number ")
+    .replace(/[^a-z0-9_]+/gu, "_")
+    .replace(/_+/gu, "_")
+    .replace(/^_|_$/gu, "");
+  return normalized === "" ? "unclassified" : normalized;
+}
+
+/**
+ * Turn volatile human-readable failure text into stable signature material.
+ *
+ * Stable machine tokens prefix the normalized detail rather than replacing it.
+ * Every detail path replaces run and ticket ids, timestamps, filesystem paths,
+ * and numbers with named category tokens before the result is bounded. The
+ * readable prefix remains inspectable; only an overlong class gains a short
+ * digest of its already-normalized value to avoid truncation collisions.
+ */
+export function classifyDefectCause(failureReason: string | null): string {
+  if (failureReason === null) return NULL_CAUSE_CLASS;
+  const trimmed = failureReason.trim();
+  if (trimmed === "") return EMPTY_CAUSE_CLASS;
+
+  const bracket = /^\[([a-z][a-z0-9_]*)\]\s*([\s\S]*)$/iu.exec(trimmed);
+  if (bracket !== null) {
+    const code = (bracket[1] ?? "").toLowerCase().replace(/\d+/gu, "number");
+    const detail = normalizedCauseDetail(bracket[2] ?? "");
+    return boundedCauseClass(detail === "unclassified" ? `code:${code}` : `code:${code}:${detail}`);
+  }
+
+  const creativeRecovery = /^creative recovery stopped:\s*([a-z][a-z0-9_]*)/iu.exec(trimmed)?.[1];
+  if (creativeRecovery !== undefined) return `creative_recovery:${creativeRecovery.toLowerCase()}`;
+
+  if (/^the frozen held-out suite did not go green in the sealed container$/iu.test(trimmed)) {
+    return "sealed_suite:held_out_failure";
+  }
+
+  return boundedCauseClass(`normalized:${normalizedCauseDetail(trimmed)}`);
+}
+
+export function defectSignature(site: string, fieldPaths: readonly string[], causeClass: string): string {
+  const material =
+    `version=${String(DEFECT_SIGNATURE_VERSION)}\nsite=${site}\ncause=${causeClass}\n` +
+    [...fieldPaths].sort().join("\n");
   return createHash("sha256").update(material, "utf8").digest("hex");
 }
 
@@ -618,16 +689,22 @@ export function buildDefectRecord(input: DefectRecordInput): DefectRecord {
         "audit file. Zero attempts here would be a lie.",
     );
   }
+  const causeClassifierInput = input.failureReason;
+  const causeClass = classifyDefectCause(causeClassifierInput);
   return {
     runId: input.runId,
     at: input.at,
     phase: input.phase,
     failureClass: input.failureClass,
     bakeoffCode: input.bakeoffCode,
+    signatureVersion: DEFECT_SIGNATURE_VERSION,
     signature: defectSignature(
       input.site,
       violations.map((v) => v.path),
+      causeClass,
     ),
+    causeClassifierInput,
+    causeClass,
     violations,
     attempts,
     artefacts: input.artefacts,
@@ -643,10 +720,7 @@ export function buildDefectRecord(input: DefectRecordInput): DefectRecord {
      * THE REPRODUCTION IS COMPUTED HERE AND NOT PASSED IN, so that no caller can
      * hand this record a command nobody checked against the isolated copy — the
      * whole risk {@link DefectReproduction} is written around. It is also AFTER
-     * `signature`, and deliberately not an input to it: `defectSignature` is site
-     * plus sorted field paths, and adding anything else would give every existing
-     * `data/defects/<signature>.jsonl` shard a new name, so the second occurrence
-     * of a class already recorded would land in a fresh file and read as a first.
+     * `signature`; it describes replay mechanics rather than failure identity.
      */
     reproduction: planReproduction({
       status: input.status,
@@ -686,7 +760,7 @@ export function writeDefectRecord(record: DefectRecord, targets: DefectWriteTarg
   mkdirSync(targets.defectsDir, { recursive: true });
   const recordPath = join(targets.resultsDir, "defect.json");
   writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-  const shardPath = join(targets.defectsDir, `${record.signature}.jsonl`);
+  const shardPath = join(targets.defectsDir, `v${String(record.signatureVersion)}-${record.signature}.jsonl`);
   appendFileSync(shardPath, `${JSON.stringify(record)}\n`, "utf8");
   return { recordPath, shardPath };
 }

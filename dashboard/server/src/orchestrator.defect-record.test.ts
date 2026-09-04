@@ -169,6 +169,9 @@ test("a dead run writes a defect record, and the record says what it does not kn
     assert.equal(record["status"], "failed");
     assert.equal(record["phase"], "spec");
     assert.match(String(record["signature"]), /^[0-9a-f]{64}$/, "the signature is also a filename");
+    assert.equal(record["signatureVersion"], 2);
+    assert.equal(record["causeClassifierInput"], record["failureReason"]);
+    assert.ok(String(record["causeClass"]).length > 0);
     assert.notEqual(String(record["failureClass"]), "");
 
     /*
@@ -270,7 +273,7 @@ test("a dead run writes a defect record, and the record says what it does not kn
     assert.ok(!Object.hasOwn(reproduction, "command"), "an absence that carries a command would send the bar to run nothing");
 
     // The shard is content-addressed and was appended to.
-    const shard = join(run.defectsDir, `${String(record["signature"])}.jsonl`);
+    const shard = join(run.defectsDir, `v2-${String(record["signature"])}.jsonl`);
     assert.ok(existsSync(shard), `${shard} must exist`);
     assert.equal(readFileSync(shard, "utf8").trimEnd().split("\n").length, 1);
 
@@ -289,7 +292,7 @@ test("a second run of the same class APPENDS to the shard rather than replacing 
     );
     first.store.close();
     const second = await deadSpecRun("run-defect-b", first.home);
-    const shard = join(second.defectsDir, `${signature}.jsonl`);
+    const shard = join(second.defectsDir, `v2-${signature}.jsonl`);
     // MUTATION: use `writeFileSync` instead of `appendFileSync` in
     // `writeDefectRecord` and the first occurrence is erased by the second.
     //   VERBATIM RED:
