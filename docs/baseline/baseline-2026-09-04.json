@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-04T10:02:30.744Z",
+  "sourceDatabase": "dashboard/data/runs.db",
+  "counts": {
+    "totalRuns": 30,
+    "gatedDenominator": 16,
+    "successes": 7,
+    "failures": 9,
+    "noVerdict": 14
+  },
+  "rates": {
+    "heldOutPass": {
+      "successes": 7,
+      "n": 16,
+      "rate": 0.4375,
+      "standardError": 0.12401959270615269,
+      "interval": {
+        "low": 0.23098652405492354,
+        "high": 0.6682144360118811
+      },
+      "confidence": 0.95,
+      "standardErrorDegenerate": false,
+      "label": "Held-out pass",
+      "denominatorLabel": "gated runs"
+    },
+    "heldOutFail": {
+      "successes": 9,
+      "n": 16,
+      "rate": 0.5625,
+      "standardError": 0.12401959270615269,
+      "interval": {
+        "low": 0.331785563988119,
+        "high": 0.7690134759450765
+      },
+      "confidence": 0.95,
+      "standardErrorDegenerate": false,
+      "label": "Held-out fail",
+      "denominatorLabel": "gated runs"
+    },
+    "gateReach": {
+      "successes": 16,
+      "n": 30,
+      "rate": 0.5333333333333333,
+      "standardError": 0.09108400680852977,
+      "interval": {
+        "low": 0.36142299619873297,
+        "high": 0.6976761109230025
+      },
+      "confidence": 0.95,
+      "standardErrorDegenerate": false,
+      "label": "Gate reach",
+      "denominatorLabel": "all runs"
+    },
+    "noVerdict": {
+      "successes": 14,
+      "n": 30,
+      "rate": 0.4666666666666667,
+      "standardError": 0.09108400680852977,
+      "interval": {
+        "low": 0.3023238890769976,
+        "high": 0.638577003801267
+      },
+      "confidence": 0.95,
+      "standardErrorDegenerate": false,
+      "label": "No verdict",
+      "denominatorLabel": "all runs"
+    }
+  },
+  "requiredRuns": [
+    {
+      "delta": 0.1,
+      "baseRate": 0.4375,
+      "targetRate": 0.5375,
+      "perArm": 389,
+      "perArmRange": {
+        "low": 314,
+        "high": 389
+      },
+      "baseRateWilson95": {
+        "low": 0.23098652405492354,
+        "high": 0.6682144360118811
+      }
+    },
+    {
+      "delta": 0.15,
+      "baseRate": 0.4375,
+      "targetRate": 0.5875,
+      "perArm": 171,
+      "perArmRange": {
+        "low": 130,
+        "high": 171
+      },
+      "baseRateWilson95": {
+        "low": 0.23098652405492354,
+        "high": 0.6682144360118811
+      }
+    },
+    {
+      "delta": 0.2,
+      "baseRate": 0.4375,
+      "targetRate": 0.6375,
+      "perArm": 94,
+      "perArmRange": {
+        "low": 66,
+        "high": 95
+      },
+      "baseRateWilson95": {
+        "low": 0.23098652405492354,
+        "high": 0.6682144360118811
+      }
+    },
+    {
+      "delta": 0.3,
+      "baseRate": 0.4375,
+      "targetRate": 0.7375,
+      "perArm": 39,
+      "perArmRange": {
+        "low": 23,
+        "high": 40
+      },
+      "baseRateWilson95": {
+        "low": 0.23098652405492354,
+        "high": 0.6682144360118811
+      }
+    }
+  ]
+}

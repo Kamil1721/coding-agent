@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "npm run build --silent && node dist/index.js",
+    "baseline": "npm run build --silent && node dist/baseline-cli.js",
     "test": "npm run build --silent && node --test \"dist/**/*.test.js\"",
     "cron:tick": "node dist/cron/cron-tick.js",
     "cron:report": "node dist/cron/cron-report.js",
