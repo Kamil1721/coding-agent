@@ -4,11 +4,18 @@ import {
   wilsonInterval,
 } from "bakeoff/dist/analyze.js";
 import type { Interval } from "bakeoff/dist/analyze.js";
+import { analyzeClusteredBinary, designEffectByClusterSize } from "./cluster-stats.js";
+import type {
+  BinaryCountCluster,
+  ClusterStatsResult,
+  DesignEffectAtClusterSize,
+} from "./cluster-stats.js";
 
-export const BASELINE_SCHEMA_VERSION = 1;
+export const BASELINE_SCHEMA_VERSION = 2;
 export const Z_ALPHA = 1.959963984540054;
 export const Z_POWER = 0.8416212335729143;
 export const DEFAULT_DELTAS = Object.freeze([0.1, 0.15, 0.2, 0.3] as const);
+export const DESIGN_EFFECT_CLUSTER_SIZES = Object.freeze([2, 3, 6, 10, 16] as const);
 
 export interface ObservedCounts {
   readonly successes: number;
@@ -45,6 +52,26 @@ export interface BaselineRate {
   readonly denominatorLabel: "all runs" | "gated runs";
 }
 
+export interface BaselineClusterInputs {
+  readonly gating: readonly BinaryCountCluster[];
+  readonly quality: readonly BinaryCountCluster[];
+}
+
+export interface CriterionClusteringReport {
+  readonly label: "GATING" | "QUALITY";
+  readonly gateRole: "gating" | "never-gating";
+  readonly tiers: readonly ("BLOCKING" | "FUNCTIONAL" | "QUALITY")[];
+  readonly includedResults: readonly ["pass", "fail"];
+  readonly runScope: "held_out_pass IS NOT NULL";
+  readonly stats: ClusterStatsResult;
+  readonly designEffectByClusterSize: readonly DesignEffectAtClusterSize[];
+}
+
+export interface BaselineClusteringReport {
+  readonly gating: CriterionClusteringReport;
+  readonly quality: CriterionClusteringReport;
+}
+
 export interface BaselineReport {
   readonly schemaVersion: typeof BASELINE_SCHEMA_VERSION;
   readonly generatedAt: string;
@@ -56,6 +83,7 @@ export interface BaselineReport {
     readonly gateReach: BaselineRate;
     readonly noVerdict: BaselineRate;
   };
+  readonly criterionClustering: BaselineClusteringReport;
   readonly requiredRuns: readonly RequiredRunsEstimate[];
 }
 
@@ -185,6 +213,7 @@ export function createBaselineReport(
   counts: BaselineCounts,
   generatedAt: string,
   sourceDatabase: string,
+  clusterInputs: BaselineClusterInputs,
   wilson: WilsonFunction = wilsonInterval,
 ): BaselineReport {
   assertFiniteInteger(counts.totalRuns, "total runs");
@@ -207,6 +236,8 @@ export function createBaselineReport(
 
   validatePinnedWilson(wilson);
   const observed = { successes: counts.successes, gatedDenominator: counts.gatedDenominator };
+  const gatingStats = analyzeClusteredBinary(clusterInputs.gating);
+  const qualityStats = analyzeClusteredBinary(clusterInputs.quality);
   return {
     schemaVersion: BASELINE_SCHEMA_VERSION,
     generatedAt,
@@ -218,6 +249,26 @@ export function createBaselineReport(
       gateReach: rate("Gate reach", "all runs", counts.gatedDenominator, counts.totalRuns, wilson),
       noVerdict: rate("No verdict", "all runs", counts.noVerdict, counts.totalRuns, wilson),
     },
+    criterionClustering: {
+      gating: {
+        label: "GATING",
+        gateRole: "gating",
+        tiers: ["BLOCKING", "FUNCTIONAL"],
+        includedResults: ["pass", "fail"],
+        runScope: "held_out_pass IS NOT NULL",
+        stats: gatingStats,
+        designEffectByClusterSize: designEffectByClusterSize(gatingStats.rawIcc, DESIGN_EFFECT_CLUSTER_SIZES),
+      },
+      quality: {
+        label: "QUALITY",
+        gateRole: "never-gating",
+        tiers: ["QUALITY"],
+        includedResults: ["pass", "fail"],
+        runScope: "held_out_pass IS NOT NULL",
+        stats: qualityStats,
+        designEffectByClusterSize: designEffectByClusterSize(qualityStats.rawIcc, DESIGN_EFFECT_CLUSTER_SIZES),
+      },
+    },
     requiredRuns: DEFAULT_DELTAS.map((delta) => requiredRuns(observed, delta, wilson)),
   };
 }
@@ -228,6 +279,48 @@ function decimal(value: number): string {
 
 function percent(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
+}
+
+function clusteringSection(report: CriterionClusteringReport): readonly string[] {
+  const { stats } = report;
+  const planning = stats.planning;
+  const gateRole = report.gateRole === "never-gating" ? "never gating" : "gating";
+  const tierDescription = report.tiers.join(" + ");
+  const designEffectRows = report.designEffectByClusterSize.map(
+    (item) => `| ${String(item.clusterSize)} | ${item.designEffect.toFixed(2)} |`,
+  );
+
+  return [
+    `### ${report.label} tiers (${gateRole})`,
+    "",
+    `${tierDescription}; scored \`pass\`/\`fail\` criteria only, joined to runs where ` +
+      "`held_out_pass IS NOT NULL`. Run `status` is not used.",
+    "",
+    `There are ${String(stats.clusterCount)} run clusters and ${String(stats.observationCount)} criterion observations: ` +
+      `${String(stats.successes)} pass (${percent(stats.mean)}).`,
+    "",
+    "| K | N | Mean cluster size | m0 | MSB | MSW | Raw ICC |",
+    "|---:|---:|---:|---:|---:|---:|---:|",
+    `| ${String(stats.clusterCount)} | ${String(stats.observationCount)} | ${decimal(stats.meanClusterSize)} | ` +
+      `${decimal(stats.m0)} | ${decimal(stats.betweenMeanSquare)} | ${decimal(stats.withinMeanSquare)} | ` +
+      `${decimal(stats.rawIcc)} |`,
+    "",
+    "Planning clamps a negative raw ICC to zero. The unequal-size estimate is recommended because it uses `sum(n_i^2) / N`; the mean-size approximation is retained only for historical reproducibility.",
+    "",
+    "| Planning estimate | Effective cluster size | Design effect | Effective sample size | Use |",
+    "|---|---:|---:|---:|---|",
+    `| Historical mean-size approximation | ${decimal(planning.meanSizeApproximation.effectiveClusterSize)} | ` +
+      `${decimal(planning.meanSizeApproximation.designEffect)} | ` +
+      `${decimal(planning.meanSizeApproximation.effectiveSampleSize)} | Reproducibility only |`,
+    `| Unequal-size estimate | ${decimal(planning.unequalSizeRecommended.effectiveClusterSize)} | ` +
+      `${decimal(planning.unequalSizeRecommended.designEffect)} | ` +
+      `${decimal(planning.unequalSizeRecommended.effectiveSampleSize)} | Recommended |`,
+    "",
+    "| Cluster size m | Design effect at measured ICC |",
+    "|---:|---:|",
+    ...designEffectRows,
+    "",
+  ];
 }
 
 export function renderBaselineJson(report: BaselineReport): string {
@@ -262,6 +355,12 @@ export function renderBaselineMarkdown(report: BaselineReport): string {
     "|---|---:|---:|---:|",
     ...rateRows,
     "",
+    "## Criterion clustering",
+    "",
+    "GATING and QUALITY are reported separately. **QUALITY is never gating.**",
+    "",
+    ...clusteringSection(report.criterionClustering.gating),
+    ...clusteringSection(report.criterionClustering.quality),
     "## Runs required",
     "",
     "Two-sided alpha 0.05, power 0.80. Counts are per arm and are rounded up only after the full-precision calculation.",

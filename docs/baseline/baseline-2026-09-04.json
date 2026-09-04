@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "generatedAt": "2026-09-04T10:02:30.744Z",
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-04T10:38:09.177Z",
   "sourceDatabase": "dashboard/data/runs.db",
   "counts": {
     "totalRuns": 30,
@@ -65,6 +65,137 @@
       "standardErrorDegenerate": false,
       "label": "No verdict",
       "denominatorLabel": "all runs"
+    }
+  },
+  "criterionClustering": {
+    "gating": {
+      "label": "GATING",
+      "gateRole": "gating",
+      "tiers": [
+        "BLOCKING",
+        "FUNCTIONAL"
+      ],
+      "includedResults": [
+        "pass",
+        "fail"
+      ],
+      "runScope": "held_out_pass IS NOT NULL",
+      "stats": {
+        "clusterCount": 16,
+        "observationCount": 248,
+        "successes": 194,
+        "mean": 0.782258064516129,
+        "meanClusterSize": 15.5,
+        "sumSquaredClusterSizes": 4396,
+        "sizeWeightedM": 17.725806451612904,
+        "m0": 15.351612903225806,
+        "betweenMeanSquare": 1.3614876527883097,
+        "withinMeanSquare": 0.09405008918985483,
+        "rawIcc": 0.4674721124035525,
+        "rhoForPlanning": 0.4674721124035525,
+        "planning": {
+          "meanSizeApproximation": {
+            "basis": "mean-cluster-size",
+            "effectiveClusterSize": 15.5,
+            "designEffect": 7.778345629851511,
+            "effectiveSampleSize": 31.88338649393937,
+            "recommendation": "reproducibility-only"
+          },
+          "unequalSizeRecommended": {
+            "basis": "size-weighted-cluster-size",
+            "effectiveClusterSize": 17.725806451612904,
+            "designEffect": 8.818848073588452,
+            "effectiveSampleSize": 28.12158662112965,
+            "recommendation": "recommended"
+          }
+        }
+      },
+      "designEffectByClusterSize": [
+        {
+          "clusterSize": 2,
+          "designEffect": 1.4674721124035526
+        },
+        {
+          "clusterSize": 3,
+          "designEffect": 1.9349442248071052
+        },
+        {
+          "clusterSize": 6,
+          "designEffect": 3.3373605620177624
+        },
+        {
+          "clusterSize": 10,
+          "designEffect": 5.207249011631973
+        },
+        {
+          "clusterSize": 16,
+          "designEffect": 8.012081686053289
+        }
+      ]
+    },
+    "quality": {
+      "label": "QUALITY",
+      "gateRole": "never-gating",
+      "tiers": [
+        "QUALITY"
+      ],
+      "includedResults": [
+        "pass",
+        "fail"
+      ],
+      "runScope": "held_out_pass IS NOT NULL",
+      "stats": {
+        "clusterCount": 16,
+        "observationCount": 49,
+        "successes": 42,
+        "mean": 0.8571428571428571,
+        "meanClusterSize": 3.0625,
+        "sumSquaredClusterSizes": 161,
+        "sizeWeightedM": 3.2857142857142856,
+        "m0": 3.047619047619048,
+        "betweenMeanSquare": 0.34999999999999987,
+        "withinMeanSquare": 0.022727272727272728,
+        "rawIcc": 0.8253275109170305,
+        "rhoForPlanning": 0.8253275109170305,
+        "planning": {
+          "meanSizeApproximation": {
+            "basis": "mean-cluster-size",
+            "effectiveClusterSize": 3.0625,
+            "designEffect": 2.7022379912663754,
+            "effectiveSampleSize": 18.133117866882134,
+            "recommendation": "reproducibility-only"
+          },
+          "unequalSizeRecommended": {
+            "basis": "size-weighted-cluster-size",
+            "effectiveClusterSize": 3.2857142857142856,
+            "designEffect": 2.88646288209607,
+            "effectiveSampleSize": 16.975794251134644,
+            "recommendation": "recommended"
+          }
+        }
+      },
+      "designEffectByClusterSize": [
+        {
+          "clusterSize": 2,
+          "designEffect": 1.8253275109170306
+        },
+        {
+          "clusterSize": 3,
+          "designEffect": 2.650655021834061
+        },
+        {
+          "clusterSize": 6,
+          "designEffect": 5.126637554585153
+        },
+        {
+          "clusterSize": 10,
+          "designEffect": 8.427947598253274
+        },
+        {
+          "clusterSize": 16,
+          "designEffect": 13.379912663755457
+        }
+      ]
     }
   },
   "requiredRuns": [

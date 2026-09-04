@@ -9,6 +9,8 @@ import {
   renderBaselineMarkdown,
 } from "./baseline.js";
 import type { BaselineCounts, BaselineReport } from "./baseline.js";
+import type { BaselineClusterInputs } from "./baseline.js";
+import type { BinaryCountCluster } from "./cluster-stats.js";
 import { resolvePaths } from "./paths.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -57,6 +59,76 @@ export function readBaselineCounts(db: DatabaseSync): BaselineCounts {
     failures: countValue(row["failures"] ?? 0, "failure"),
     noVerdict: countValue(row["no_verdict"] ?? 0, "no-verdict"),
   };
+}
+
+export type CriterionTierGroup = "gating" | "quality";
+
+export interface BaselineDatabaseSnapshot {
+  readonly counts: BaselineCounts;
+  readonly clusterInputs: BaselineClusterInputs;
+}
+
+export function readCriterionClusters(
+  db: DatabaseSync,
+  tierGroup: CriterionTierGroup,
+): readonly BinaryCountCluster[] {
+  const tierPredicate =
+    tierGroup === "gating" ? "c.tier IN ('BLOCKING', 'FUNCTIONAL')" : "c.tier = 'QUALITY'";
+  const rows = db
+    .prepare(
+      `SELECT
+         c.run_id AS cluster_id,
+         sum(CASE WHEN c.result = 'pass' THEN 1 ELSE 0 END) AS successes,
+         count(*) AS observation_count
+       FROM criteria AS c
+       INNER JOIN runs AS r ON r.run_id = c.run_id
+       WHERE r.held_out_pass IS NOT NULL
+         AND c.result IN ('pass', 'fail')
+         AND ${tierPredicate}
+       GROUP BY c.run_id
+       ORDER BY c.run_id`,
+    )
+    .all();
+
+  return rows.map((row) => {
+    const id = row["cluster_id"];
+    if (typeof id !== "string" || id === "") {
+      throw new Error(`database returned an invalid criterion cluster id: ${String(id)}`);
+    }
+    return {
+      id,
+      successes: countValue(row["successes"], `${tierGroup} cluster success`),
+      n: countValue(row["observation_count"], `${tierGroup} cluster observation`),
+    };
+  });
+}
+
+/** Read every baseline input from one SQLite snapshot. The callback exists for concurrency tests. */
+export function readBaselineSnapshot(
+  db: DatabaseSync,
+  afterCountsRead: () => void = () => undefined,
+): BaselineDatabaseSnapshot {
+  db.exec("BEGIN");
+  try {
+    const counts = readBaselineCounts(db);
+    afterCountsRead();
+    const clusterInputs = {
+      gating: readCriterionClusters(db, "gating"),
+      quality: readCriterionClusters(db, "quality"),
+    };
+    db.exec("COMMIT");
+    return { counts, clusterInputs };
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "baseline snapshot read failed and its transaction could not be rolled back",
+      );
+    }
+    throw error;
+  }
 }
 
 function sourceDatabaseForReport(databasePath: string): string {
@@ -179,14 +251,20 @@ export function runBaselineCli(options: BaselineCliOptions = {}): BaselineCliRes
   const outputDirectory = resolve(options.outputDirectory ?? DEFAULT_OUTPUT_DIRECTORY);
   const generatedAt = (options.now ?? new Date()).toISOString();
   const db = new DatabaseSync(databasePath, { readOnly: true });
-  let counts: BaselineCounts;
+  let snapshot: BaselineDatabaseSnapshot;
   try {
-    counts = readBaselineCounts(db);
+    snapshot = readBaselineSnapshot(db);
   } finally {
     db.close();
   }
+  const { counts, clusterInputs } = snapshot;
 
-  const report = createBaselineReport(counts, generatedAt, sourceDatabaseForReport(databasePath));
+  const report = createBaselineReport(
+    counts,
+    generatedAt,
+    sourceDatabaseForReport(databasePath),
+    clusterInputs,
+  );
   const basename = `baseline-${generatedAt.slice(0, 10)}`;
   const jsonPath = resolve(outputDirectory, `${basename}.json`);
   const markdownPath = resolve(outputDirectory, `${basename}.md`);
@@ -210,7 +288,19 @@ export function runBaselineCli(options: BaselineCliOptions = {}): BaselineCliRes
         `[${item.interval.low.toFixed(4)}, ${item.interval.high.toFixed(4)}])`,
     )
     .join("\n");
-  const summary = `${printedRates}\n${jsonPath}\n${markdownPath}\n${cleanupWarning}`;
+  const gating = report.criterionClustering.gating.stats;
+  const quality = report.criterionClustering.quality.stats;
+  const printedClustering = [
+    `GATING clustering: ICC ${gating.rawIcc.toFixed(4)}, recommended unequal-size DEFF ` +
+      `${gating.planning.unequalSizeRecommended.designEffect.toFixed(4)}, ESS ` +
+      `${gating.planning.unequalSizeRecommended.effectiveSampleSize.toFixed(4)} ` +
+      `(mean-size reproducibility-only ESS ${gating.planning.meanSizeApproximation.effectiveSampleSize.toFixed(4)})`,
+    `QUALITY clustering (never gating): ICC ${quality.rawIcc.toFixed(4)}, recommended unequal-size DEFF ` +
+      `${quality.planning.unequalSizeRecommended.designEffect.toFixed(4)}, ESS ` +
+      `${quality.planning.unequalSizeRecommended.effectiveSampleSize.toFixed(4)} ` +
+      `(mean-size reproducibility-only ESS ${quality.planning.meanSizeApproximation.effectiveSampleSize.toFixed(4)})`,
+  ].join("\n");
+  const summary = `${printedRates}\n${printedClustering}\n${jsonPath}\n${markdownPath}\n${cleanupWarning}`;
   (options.writeStdout ?? ((text) => process.stdout.write(text)))(summary);
   return { report, jsonPath, markdownPath, retainedBackupPaths };
 }
