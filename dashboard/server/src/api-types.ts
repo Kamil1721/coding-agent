@@ -2907,7 +2907,7 @@ export type CodeResponse = CodeTreeResponse | CodeFileResponse;
  * `resolveWorkspacePath`. Those are NOT enumerated here because nothing would
  * keep the enumeration true: `CodeRefusal.code` is a `string`, so a union
  * claiming to list them would be a promise the compiler does not check, which is
- * the exact defect this codebase keeps finding. These three ARE checked — each
+ * the exact defect this codebase keeps finding. These four ARE checked — each
  * one is assigned to a `PreviewOwnRefusalCode`-typed const at its single
  * construction site, so renaming the literal or the member fails the build.
  *
@@ -2923,8 +2923,13 @@ export type CodeResponse = CodeTreeResponse | CodeFileResponse;
  *
  * `not_a_file` — 403. The resolved path is neither a file nor a directory. The
  * word is shared with the files route on purpose: same condition, same name.
+ *
+ * `path_internal` — 404. A harness-internal request or real target is withheld
+ * from the preview. The owner's code browser still exposes these files, subject
+ * to its existing refusals; secret-shaped names retain `path_forbidden` there
+ * and in the preview.
  */
-export type PreviewOwnRefusalCode = "no_index_html" | "invalid_encoding" | "not_a_file";
+export type PreviewOwnRefusalCode = "no_index_html" | "invalid_encoding" | "not_a_file" | "path_internal";
 
 
 /* ----------------------------------------------------------------------

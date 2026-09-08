@@ -15,9 +15,9 @@
  * artefact sat intact on disk). So `GET /api/runs/:id/preview/*` re-serves the
  * same workspace from the dashboard, which is by definition running when someone
  * is looking at it. {@link resolvePreviewTarget} is that route's resolver and it
- * goes through {@link resolveWorkspacePath} — the SAME five refusals below — so
- * the browsable site and the code browser cannot disagree about what is inside
- * the fence. What differs is what happens to the bytes afterwards; see note 5.
+ * goes through {@link resolveWorkspacePath} — the SAME five refusals below.
+ * The code browser deliberately shows harness files; the preview additionally
+ * refuses their internal paths. The byte handling also differs; see note 5.
  *
  * IT IS A FILE-SERVING ENDPOINT, WHICH IS THE MOST DANGEROUS KIND OF ROUTE THIS
  * PROGRAM HAS. Five things are refused, and each one is refused HERE rather than
@@ -92,10 +92,10 @@
  */
 
 import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { BakeoffError } from "bakeoff/dist/contracts.js";
 import { assertRedacted, redactForPersistence } from "bakeoff/dist/redact.js";
-import { STATIC_CONTENT_TYPES } from "bakeoff/dist/tier0.js";
+import { isInternalStaticPath, STATIC_CONTENT_TYPES } from "bakeoff/dist/tier0.js";
 import type {
   CodeExclusion,
   CodeFileResponse,
@@ -719,15 +719,16 @@ export function decodePreviewPath(
  * is the directory. Nothing client-supplied is resolved in that branch: it
  * realpaths the workspace and reports "this is a directory", so the fence is not
  * widened by a single character. Every non-empty path goes through the full
- * chain — shape, deny list, realpath, containment, bake-off assertion.
+ * chain — shape, deny list, realpath, containment, bake-off assertion — before
+ * applying the preview-only internal-path rule to the request and real target.
  *
  * THE PREVIEW AND THE TREE DISAGREE ABOUT SYMLINKS, AND THAT IS NOT A BUG BUT A
  * READER WILL ASSUME THE TWO SURFACES SHOW THE SAME SET. `walk` lists no symlink
  * at all — it records an exclusion instead, because what a link points at may be
  * outside the workspace and a row that 403s when clicked is worse than an honest
  * note. This resolver judges the link by WHERE IT LANDS, so a symlink whose
- * realpath is inside the workspace IS served here while the code browser hides
- * it. Containment holds in both; only the listing differs.
+ * realpath is inside the workspace and whose request and target are public IS
+ * served here while the code browser hides it. Containment holds in both.
  */
 export function resolvePreviewTarget(workspace: string, relPath: string): PreviewTarget {
   if (relPath === "") {
@@ -756,6 +757,19 @@ export function resolvePreviewTarget(workspace: string, relPath: string): Previe
 
   let stat;
   try {
+    const realPath = relative(realpathSync(workspace), resolved.target).split(sep).join("/");
+    if (isInternalStaticPath(relPath) || isInternalStaticPath(realPath)) {
+      const code: PreviewOwnRefusalCode = "path_internal";
+      return {
+        kind: "refusal",
+        refusal: {
+          status: 404,
+          code,
+          message: "harness-internal paths are not available in the site preview",
+          remediation: "Use the run's code browser to inspect harness files.",
+        },
+      };
+    }
     stat = statSync(resolved.target);
   } catch {
     // `realpathSync` succeeded a moment ago, so this is a file that vanished

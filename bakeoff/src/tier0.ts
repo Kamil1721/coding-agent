@@ -1274,7 +1274,7 @@ export const STATIC_INTERNAL_ROOTS: readonly string[] = [
 ];
 
 /** Evaluate paths relative to the served root, never the root's own ancestors. */
-function isInternalStaticPath(path: string): boolean {
+export function isInternalStaticPath(path: string): boolean {
   const segments = path.split("/").filter((segment) => segment !== "");
   // Case-insensitive filesystems can resolve a spelling realpath leaves unchanged.
   const first = (segments[0] ?? "").toLowerCase();
@@ -1301,6 +1301,7 @@ export function resolveStaticFile(rootDir: string, urlPath: string): string | nu
     return null;
   }
   if (decoded.includes("\0")) return null;
+  if (decoded.includes("\\")) return null;
   // Normalization would erase dot segments, including encoded traversal.
   if (isInternalStaticPath(decoded)) return null;
 

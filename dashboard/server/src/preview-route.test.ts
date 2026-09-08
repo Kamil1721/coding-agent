@@ -447,6 +447,77 @@ test("a nested directory serves its own index.html, after the same redirect", as
  * The fence
  * ---------------------------------------------------------------------- */
 
+test("T18b preview internal-path matrix preserves public files and existing refusals", async (t) => {
+  const harness = await startHarness();
+  t.after(() => harness.close());
+  const marker = "T18B_INTERNAL_FIXTURE_MARKER";
+  const internals = [
+    "TICKET.md", "design-refs/manifest.json", "visible-acceptance/x.spec.mjs",
+    "tests/x.test.mjs", ".claude/settings.json", ".bakeoff/state.json",
+    "assets/.cache/state.json",
+  ];
+  for (const path of internals) {
+    const parent = path.slice(0, path.lastIndexOf("/"));
+    if (path.includes("/")) mkdirSync(join(harness.workspace, parent), { recursive: true });
+    writeFileSync(join(harness.workspace, path), marker, "utf8");
+  }
+  mkdirSync(join(harness.workspace, ".git"));
+  writeFileSync(join(harness.workspace, ".git/config"), marker, "utf8");
+  symlinkSync(join(harness.workspace, "TICKET.md"), join(harness.workspace, "ticket-alias.txt"));
+  symlinkSync(join(harness.workspace, "design-refs"), join(harness.workspace, "refs-alias"));
+  // Real target is public: only the requested-path predicate can refuse this.
+  symlinkSync(join(harness.workspace, "script.js"), join(harness.workspace, ".claude/product-alias.js"));
+
+  for (const [suffix, expectedMarker] of [["/", INDEX_MARKER], ["/script.js", JS_MARKER]] as const) {
+    const response = await preview(harness, suffix);
+    t.diagnostic(`T18b observed GET ${suffix}: ${response.status}, expected marker present: ${response.raw.includes(expectedMarker)}`);
+    assert.equal(response.status, 200, `T18b public positive control ${suffix}`);
+    assert.ok(response.raw.includes(expectedMarker));
+  }
+
+  const cases = [
+    ...internals.map((path) => ({ suffix: `/${path}`, boundary: "internal path" })),
+    { suffix: "/visible-acceptance%2fx.spec.mjs", boundary: "encoded internal path" },
+    { suffix: "/%2eclaude/settings.json", boundary: "encoded internal path" },
+    { suffix: "/ticket-alias.txt", boundary: "real-target guard" },
+    { suffix: "/refs-alias/manifest.json", boundary: "real-target guard" },
+    { suffix: "/.claude/product-alias.js", boundary: "requested-path guard" },
+  ];
+  for (const { suffix, boundary } of cases) {
+    await t.test(suffix, async (t) => {
+      const response = await preview(harness, suffix);
+      t.diagnostic(`T18b observed GET ${suffix}: ${response.status}, internal marker present: ${response.raw.includes(marker)}`);
+      assert.equal(response.status, 404, `T18b ${boundary} must refuse GET ${suffix}`);
+      assert.equal(errorBody(response).error, "path_internal", `T18b ${boundary} refusal code ${suffix}`);
+      assert.ok(!response.raw.includes(marker), `T18b ${suffix} must not expose the planted internal marker`);
+    });
+  }
+  for (const suffix of ["/.git/config", "/%2egit/config", "/.env"]) {
+    await t.test(`existing refusal ${suffix}`, async () => {
+      const response = await preview(harness, suffix);
+      assert.equal(response.status, 403, `T18b existing secret-path precedence ${suffix}`);
+      assert.equal(errorBody(response).error, "path_forbidden");
+      assert.ok(!response.raw.includes(marker));
+      assert.ok(!response.raw.includes(LEAKED_KEY));
+    });
+  }
+});
+
+test("T18b a site document root keeps its nested tests directory public", async (t) => {
+  const harness = await startHarness();
+  t.after(() => harness.close());
+  rmSync(join(harness.workspace, "index.html"));
+  mkdirSync(join(harness.workspace, "site/tests"), { recursive: true });
+  writeFileSync(join(harness.workspace, "site/index.html"), `<h1>${INDEX_MARKER}</h1>`, "utf8");
+  writeFileSync(join(harness.workspace, "site/tests/product.js"), JS_MARKER, "utf8");
+  const index = await preview(harness, "/");
+  assert.equal(index.status, 200, "T18b site document-root positive control");
+  assert.ok(index.raw.includes(INDEX_MARKER));
+  const product = await preview(harness, "/tests/product.js");
+  assert.equal(product.status, 200, "T18b internal-root policy must use the workspace-relative site/tests path");
+  assert.equal(product.raw, JS_MARKER);
+});
+
 test("THE HELD-OUT BOUNDARY: a symlink out of the workspace is refused by the preview too", async () => {
   const harness = await startHarness();
   try {

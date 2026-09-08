@@ -5360,7 +5360,9 @@ const PREVIEW_CSP =
  * is why `results/` is unreachable from here: it is a SIBLING of the workspace
  * (`runs/<id>/results/`) and three levels up (`<home>/results/`), so the fence
  * that keeps everything inside `workspace/` keeps the held-out test titles out
- * with no name-based rule to forget to extend.
+ * through containment. The code browser deliberately shows harness files inside
+ * that boundary; the preview additionally refuses harness-internal request paths
+ * and real targets using the static server's policy.
  *
  * THE REDIRECT IS THE PART THAT LOOKS COSMETIC AND IS NOT. A document fetched at
  * `…/preview` resolves its own `styles.css` against `…/`, i.e. `/api/runs/:id/`,

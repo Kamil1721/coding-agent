@@ -29,7 +29,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,6 +39,7 @@ import {
   detectBuildEvidence,
   detectLintEvidence,
   detectTypecheckEvidence,
+  isInternalStaticPath,
   isScannableSourceFile,
   loadScannableSources,
   probeStaticRoot,
@@ -66,7 +67,10 @@ const STATIC_DENIED_URLS = [
   "/design%2drefs/manifest.json", "/app%2f.private/data.txt",
   "/ticket.md", "/TiCkEt.Md", "/DeSiGn-ReFs/manifest.json",
   "/VISIBLE-ACCEPTANCE/x.spec.mjs", "/TeStS/x.test.mjs",
+  "/app%5c..%5cTICKET.md",
 ] as const;
+const BACKSLASH_BASENAME = "app\\..\\TICKET.md";
+const BACKSLASH_MARKER = "private backslash fixture marker";
 
 function staticFixture(): { root: string; cleanup: () => void } {
   // A hidden ancestor is legitimate; only paths relative to this root are private.
@@ -77,6 +81,9 @@ function staticFixture(): { root: string; cleanup: () => void } {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, `fixture ${file}\n`);
   }
+  // POSIX permits backslashes in a basename. Plant the exact file so refusing
+  // its encoded URL is evidence of the policy, not an incidental stat miss.
+  if (process.platform !== "win32") writeFileSync(join(root, BACKSLASH_BASENAME), BACKSLASH_MARKER);
   writeFileSync(join(parent, "outside.txt"), "outside workspace\n");
   symlinkSync(join(parent, "outside.txt"), join(root, "outside-alias.txt"));
   symlinkSync(join(root, ".git", "config"), join(root, "git-alias.txt"));
@@ -104,6 +111,41 @@ Promise<{ status: number | undefined; body: string }> {
 }
 
 describe("resolveStaticFile exposure", () => {
+  test("T18b shared predicate denies mixed case independently of the filesystem", () => {
+    assert.equal(isInternalStaticPath("/ticket.md"), true, "shared predicate must fold the ticket name");
+    assert.equal(isInternalStaticPath("/TeStS/x"), true, "shared predicate must fold mixed-case tests");
+    assert.equal(isInternalStaticPath("/app/.private/data"), true, "shared predicate must deny nested dot segments");
+    assert.equal(isInternalStaticPath("/app/tests/x"), false, "nested product tests remain public");
+    assert.equal(isInternalStaticPath("/README.md"), false);
+  });
+
+  test("T18b mixed-case files are refused on case-sensitive hosts", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "static-case-exposure-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "Tests"));
+    writeFileSync(join(root, "Tests/x.txt"), "internal test marker");
+    writeFileSync(join(root, "Ticket.md"), "internal ticket marker");
+    assert.equal(readFileSync(join(root, "Tests/x.txt"), "utf8"), "internal test marker");
+    assert.equal(readFileSync(join(root, "Ticket.md"), "utf8"), "internal ticket marker");
+    if (process.platform === "linux") {
+      assert.equal(existsSync(join(root, "tests/x.txt")), false, "the Linux temporary fixture must be case-sensitive");
+      assert.equal(existsSync(join(root, "ticket.md")), false, "the Linux ticket fixture must be case-sensitive");
+    }
+    for (const path of ["/Tests/x.txt", "/tests/x.txt", "/Ticket.md", "/TICKET.md"]) {
+      assert.equal(resolveStaticFile(root, path), null, `mixed-case internal file must be refused: ${path}`);
+    }
+  });
+
+  test("T18b backslash guard refuses an existing POSIX basename over HTTP", { skip: process.platform === "win32" }, async (t) => {
+    const fixture = staticFixture();
+    const server = await startStaticServer(fixture.root, 0);
+    t.after(async () => { await server.close(); fixture.cleanup(); });
+    assert.equal(readFileSync(join(fixture.root, BACKSLASH_BASENAME), "utf8"), BACKSLASH_MARKER);
+    const response = await rawStaticRequest(server.port, "/app%5c..%5cTICKET.md", "GET");
+    assert.equal(response.status, 404, "backslash guard must refuse the existing POSIX file, not rely on a stat miss");
+    assert.ok(!response.body.includes(BACKSLASH_MARKER), "backslash refusal must not disclose the planted marker");
+  });
+
   test("product files and root index remain resolvable", (t) => {
     const fixture = staticFixture();
     t.after(fixture.cleanup);
@@ -181,17 +223,28 @@ function acceptancePaths(sourceText: string): readonly string[] {
 
 function deniedAcceptancePaths(sourceText: string): readonly string[] {
   return acceptancePaths(sourceText).filter((path) => {
-    const segments = decodeURIComponent(path).split("/").filter(Boolean);
-    const first = (segments[0] ?? "").toLowerCase();
-    return segments.some((segment) => segment.startsWith(".")) || STATIC_INTERNAL_ROOTS.some((name) => name.toLowerCase() === first);
+    try {
+      return isInternalStaticPath(decodeURIComponent(path));
+    } catch {
+      return true;
+    }
   });
 }
+
+test("T18b malformed acceptance literals are named violations without throwing", () => {
+  const paths = ["/x%", "/%C0%AE"];
+  let violations: readonly string[] = [];
+  assert.doesNotThrow(() => {
+    violations = deniedAcceptancePaths(paths.map((path) => `fetch(${JSON.stringify(path)})`).join("\n"));
+  }, "malformed acceptance URL literals must be reported instead of throwing");
+  assert.deepEqual(violations, paths, "each malformed acceptance URL literal must be named as a violation");
+});
 
 test("acceptance source guard catches planted internal URLs without blocking product URLs", () => {
   assert.deepEqual(STATIC_INTERNAL_ROOTS, ["TICKET.md", "design-refs", "visible-acceptance", "tests"]);
   const planted = ["/.git/config", "/%2egit/config", "/ticket.md", "/DeSiGn-ReFs/file", ...STATIC_INTERNAL_ROOTS.map((name) => `/${name}`)];
   const sourceText = planted.map((path) => `fetch(BASE + ${JSON.stringify(path)})`).join("\n");
-  assert.deepEqual(deniedAcceptancePaths(sourceText), planted);
+  assert.deepEqual(deniedAcceptancePaths(sourceText), planted, "acceptance source guard must use the shared internal-path policy");
   assert.deepEqual(deniedAcceptancePaths("fetch(`${BASE}/tests/check.mjs`)"), ["/tests/check.mjs"]);
   assert.deepEqual(deniedAcceptancePaths('fetch("https://example.test/.well-known/security.txt")'), ["/.well-known/security.txt"]);
   assert.deepEqual(deniedAcceptancePaths('fetch("/README.md"); fetch("/node_modules/x.js"); fetch("/public/tests/item"); fetch("/")'), []);
