@@ -1261,6 +1261,27 @@ export interface StaticServer {
   close(): Promise<void>;
 }
 
+/** Harness-owned names denied at the workspace root. Product names elsewhere remain public. */
+export const STATIC_INTERNAL_ROOTS: readonly string[] = [
+  // runner.ts and dashboard/server/src/orchestrator.ts copy the ticket into the workspace.
+  "TICKET.md",
+  // dashboard/server/src/design-manifest.ts writes the reference manifest and its directory.
+  "design-refs",
+  // runner.ts and orchestrator.ts materialise the visible acceptance subset here.
+  "visible-acceptance",
+  // spec-freeze.ts materialiseVisibleSubset defaults to this directory.
+  "tests",
+];
+
+/** Evaluate paths relative to the served root, never the root's own ancestors. */
+function isInternalStaticPath(path: string): boolean {
+  const segments = path.split("/").filter((segment) => segment !== "");
+  // Case-insensitive filesystems can resolve a spelling realpath leaves unchanged.
+  const first = (segments[0] ?? "").toLowerCase();
+  return segments.some((segment) => segment.startsWith(".")) ||
+    STATIC_INTERNAL_ROOTS.some((name) => name.toLowerCase() === first);
+}
+
 /**
  * Resolve a URL path to a file inside `rootDir`, or null.
  *
@@ -1268,10 +1289,9 @@ export interface StaticServer {
  * covers what static generators actually emit (Astro, Eleventy, Hugo, Jekyll,
  * Next `output: "export"`).
  *
- * Traversal is rejected AFTER percent-decoding — `%2e%2e%2f` is `../` and a
- * check that runs before decoding does not see it — and the resolved path is
- * re-checked against the root, so a symlink inside the artefact cannot serve
- * the frozen suite mounted next door.
+ * Dot segments and harness paths are rejected after percent-decoding and before
+ * normalization. Realpath containment still prevents serving the frozen suite
+ * mounted next door; the relative target check also blocks internal aliases.
  */
 export function resolveStaticFile(rootDir: string, urlPath: string): string | null {
   let decoded: string;
@@ -1281,6 +1301,8 @@ export function resolveStaticFile(rootDir: string, urlPath: string): string | nu
     return null;
   }
   if (decoded.includes("\0")) return null;
+  // Normalization would erase dot segments, including encoded traversal.
+  if (isInternalStaticPath(decoded)) return null;
 
   const normalised = posix.normalize(decoded);
   if (normalised.startsWith("..") || normalised.includes("../")) return null;
@@ -1310,6 +1332,8 @@ export function resolveStaticFile(rootDir: string, urlPath: string): string | nu
       }
     })();
     if (real !== rootReal && !real.startsWith(rootReal + sep)) continue;
+    // A public alias must not expose a private target still inside the root.
+    if (isInternalStaticPath(relative(rootReal, real).split(sep).join("/"))) continue;
     try {
       if (statSync(real).isFile()) return real;
     } catch {
@@ -1377,9 +1401,15 @@ export function startStaticServer(rootDir: string, port: number): Promise<Static
     server.on("error", rejectPromise);
     server.listen(port, "127.0.0.1", () => {
       server.removeListener("error", rejectPromise);
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close();
+        rejectPromise(new Error("the static server did not bind a TCP port"));
+        return;
+      }
       resolvePromise({
-        origin: `http://127.0.0.1:${String(port)}`,
-        port,
+        origin: `http://127.0.0.1:${String(address.port)}`,
+        port: address.port,
         counts: () => ({ served, notFound, denied }),
         close: () =>
           new Promise<void>((done) => {

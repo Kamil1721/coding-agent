@@ -29,23 +29,194 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import {
+  STATIC_INTERNAL_ROOTS,
   detectBuildEvidence,
   detectLintEvidence,
   detectTypecheckEvidence,
   isScannableSourceFile,
   loadScannableSources,
   probeStaticRoot,
+  resolveStaticFile,
   scanExploits,
   scanStubMarkers,
+  startStaticServer,
   walkFiles,
 } from "./tier0.js";
 import type { LoadedSource } from "./tier0.js";
+
+const STATIC_PRODUCT_FILES = [
+  "index.html", "app/styles.css", "app/main.mjs", "README.md",
+  "node_modules/example/index.js", "public/tests/example.txt",
+] as const;
+const STATIC_INTERNAL_FILES = [
+  ".git/config", "TICKET.md", "design-refs/manifest.json",
+  "visible-acceptance/x.spec.mjs", "tests/x.test.mjs", "tests/index.html",
+  ".bakeoff/state.json", ".tmp/file", ".DS_Store", ".design-tmp/file",
+  ".well-known/security.txt", "app/.private/data.txt",
+] as const;
+const STATIC_DENIED_URLS = [
+  ...STATIC_INTERNAL_FILES.map((file) => `/${file}`),
+  "/tests/", "/%2e%2e/", "/app/%2e%2e/index.html", "/%2egit/config",
+  "/design%2drefs/manifest.json", "/app%2f.private/data.txt",
+  "/ticket.md", "/TiCkEt.Md", "/DeSiGn-ReFs/manifest.json",
+  "/VISIBLE-ACCEPTANCE/x.spec.mjs", "/TeStS/x.test.mjs",
+] as const;
+
+function staticFixture(): { root: string; cleanup: () => void } {
+  // A hidden ancestor is legitimate; only paths relative to this root are private.
+  const parent = mkdtempSync(join(tmpdir(), ".static-exposure-"));
+  const root = join(parent, "workspace");
+  for (const file of [...STATIC_PRODUCT_FILES, ...STATIC_INTERNAL_FILES]) {
+    const path = join(root, file);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `fixture ${file}\n`);
+  }
+  writeFileSync(join(parent, "outside.txt"), "outside workspace\n");
+  symlinkSync(join(parent, "outside.txt"), join(root, "outside-alias.txt"));
+  symlinkSync(join(root, ".git", "config"), join(root, "git-alias.txt"));
+  symlinkSync(join(root, "TICKET.md"), join(root, "ticket-alias.txt"));
+  symlinkSync(join(root, "ticket.md"), join(root, "case-alias.txt"));
+  symlinkSync(join(root, "design-refs"), join(root, "refs-alias"));
+  symlinkSync(join(root, "app", "main.mjs"), join(root, "product-alias.mjs"));
+  return { root, cleanup: () => rmSync(parent, { recursive: true, force: true }) };
+}
+
+function rawStaticRequest(port: number, path: string, method: "GET" | "HEAD"):
+Promise<{ status: number | undefined; body: string }> {
+  // Pass the raw path separately: URL/fetch normalization can erase encoded '..'.
+  return new Promise((resolve, reject) => {
+    const req = request({ hostname: "127.0.0.1", port, path, method }, (res) => {
+      res.setEncoding("utf8");
+      let body = "";
+      res.on("data", (chunk: string) => { body += chunk; });
+      res.on("error", reject);
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+describe("resolveStaticFile exposure", () => {
+  test("product files and root index remain resolvable", (t) => {
+    const fixture = staticFixture();
+    t.after(fixture.cleanup);
+    for (const file of STATIC_PRODUCT_FILES) {
+      assert.equal(resolveStaticFile(fixture.root, `/${file}`), realpathSync(join(fixture.root, file)));
+    }
+    assert.equal(resolveStaticFile(fixture.root, "/"), realpathSync(join(fixture.root, "index.html")));
+    assert.equal(resolveStaticFile(fixture.root, "/app/%6dain.mjs"), realpathSync(join(fixture.root, "app/main.mjs")));
+  });
+
+  for (const path of STATIC_DENIED_URLS) {
+    test(`internal URL ${path} is absent`, (t) => {
+      const fixture = staticFixture();
+      t.after(fixture.cleanup);
+      assert.equal(resolveStaticFile(fixture.root, path), null, path);
+    });
+  }
+
+  test("exact file then index then html resolution stays ordered", (t) => {
+    const fixture = staticFixture();
+    t.after(fixture.cleanup);
+    writeFileSync(join(fixture.root, "page"), "exact");
+    writeFileSync(join(fixture.root, "page.html"), "html fallback");
+    assert.equal(resolveStaticFile(fixture.root, "/page"), realpathSync(join(fixture.root, "page")));
+    rmSync(join(fixture.root, "page"));
+    mkdirSync(join(fixture.root, "page"));
+    writeFileSync(join(fixture.root, "page/index.html"), "index");
+    assert.equal(resolveStaticFile(fixture.root, "/page"), realpathSync(join(fixture.root, "page/index.html")));
+    assert.equal(resolveStaticFile(fixture.root, "/page/"), realpathSync(join(fixture.root, "page/index.html")));
+    rmSync(join(fixture.root, "page/index.html"));
+    assert.equal(resolveStaticFile(fixture.root, "/page"), realpathSync(join(fixture.root, "page.html")));
+    assert.equal(resolveStaticFile(fixture.root, "/page/"), null);
+  });
+
+  test("symlinks cannot expose internals or escape containment", (t) => {
+    const fixture = staticFixture();
+    t.after(fixture.cleanup);
+    assert.equal(resolveStaticFile(fixture.root, "/product-alias.mjs"), realpathSync(join(fixture.root, "app/main.mjs")));
+    for (const path of ["/outside-alias.txt", "/git-alias.txt", "/ticket-alias.txt", "/case-alias.txt", "/refs-alias/manifest.json"]) {
+      assert.equal(resolveStaticFile(fixture.root, path), null, path);
+    }
+    assert.equal(resolveStaticFile(fixture.root, "/%zz"), null);
+    assert.equal(resolveStaticFile(fixture.root, "/%00"), null);
+  });
+
+  test("HTTP serves product controls before rejecting internal GET and HEAD", async (t) => {
+    const fixture = staticFixture();
+    const server = await startStaticServer(fixture.root, 0);
+    t.after(async () => { await server.close(); fixture.cleanup(); });
+    assert.ok(server.port > 0, "the assigned ephemeral port is reported");
+    assert.equal(server.origin, `http://127.0.0.1:${String(server.port)}`);
+    for (const method of ["GET", "HEAD"] as const) {
+      for (const path of ["/", ...STATIC_PRODUCT_FILES.map((file) => `/${file}`), "/product-alias.mjs"]) {
+        const response = await rawStaticRequest(server.port, path, method);
+        assert.equal(response.status, 200, `${method} ${path}`);
+        if (method === "HEAD") assert.equal(response.body, "");
+        else assert.match(response.body, /^fixture /);
+      }
+    }
+    for (const method of ["GET", "HEAD"] as const) {
+      for (const path of [...STATIC_DENIED_URLS, "/git-alias.txt", "/ticket-alias.txt", "/case-alias.txt", "/refs-alias/manifest.json", "/outside-alias.txt"]) {
+        const response = await rawStaticRequest(server.port, path, method);
+        assert.equal(response.status, 404, `${method} ${path}`);
+        assert.equal(response.body, method === "HEAD" ? "" : "not found\n", `${method} ${path}`);
+      }
+    }
+  });
+});
+
+/** Conservative static guard on URL literals/fragments, including BASE + '/path'. */
+function acceptancePaths(sourceText: string): readonly string[] {
+  return [...sourceText.matchAll(/["'`}]((?:https?:\/\/[^/\s"'`]+)?\/[^\s"'`]*)/g)]
+    .map((match) => (match[1] ?? "").replace(/^https?:\/\/[^/]+/, ""));
+}
+
+function deniedAcceptancePaths(sourceText: string): readonly string[] {
+  return acceptancePaths(sourceText).filter((path) => {
+    const segments = decodeURIComponent(path).split("/").filter(Boolean);
+    const first = (segments[0] ?? "").toLowerCase();
+    return segments.some((segment) => segment.startsWith(".")) || STATIC_INTERNAL_ROOTS.some((name) => name.toLowerCase() === first);
+  });
+}
+
+test("acceptance source guard catches planted internal URLs without blocking product URLs", () => {
+  assert.deepEqual(STATIC_INTERNAL_ROOTS, ["TICKET.md", "design-refs", "visible-acceptance", "tests"]);
+  const planted = ["/.git/config", "/%2egit/config", "/ticket.md", "/DeSiGn-ReFs/file", ...STATIC_INTERNAL_ROOTS.map((name) => `/${name}`)];
+  const sourceText = planted.map((path) => `fetch(BASE + ${JSON.stringify(path)})`).join("\n");
+  assert.deepEqual(deniedAcceptancePaths(sourceText), planted);
+  assert.deepEqual(deniedAcceptancePaths("fetch(`${BASE}/tests/check.mjs`)"), ["/tests/check.mjs"]);
+  assert.deepEqual(deniedAcceptancePaths('fetch("https://example.test/.well-known/security.txt")'), ["/.well-known/security.txt"]);
+  assert.deepEqual(deniedAcceptancePaths('fetch("/README.md"); fetch("/node_modules/x.js"); fetch("/public/tests/item"); fetch("/")'), []);
+});
+
+test("held-out acceptance source does not reference internal URL paths", () => {
+  const acceptance = new URL("../../dashboard/acceptance/", import.meta.url);
+  const files: string[] = [];
+  function visit(dir: string): void {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (/\.(?:mjs|js|ts)$/.test(entry.name)) files.push(path);
+    }
+  }
+  visit(acceptance.pathname);
+  assert.ok(files.length > 0, "the guard must inspect the real acceptance source");
+  const violations: string[] = [];
+  for (const file of files) {
+    for (const path of deniedAcceptancePaths(readFileSync(file, "utf8"))) {
+      violations.push(`${file}: ${path}`);
+    }
+  }
+  assert.deepEqual(violations, []);
+});
 
 /** A LoadedSource without touching disk: the scanners take text, not paths. */
 function source(path: string, text: string): LoadedSource {
