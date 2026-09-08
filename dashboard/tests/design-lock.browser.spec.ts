@@ -24,6 +24,7 @@
  */
 
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { DIRECTION_TIMEOUT_REASON } from "../server/src/direction-timeout-reason";
 
 import type {
   DesignDirectionState,
@@ -355,7 +356,7 @@ test("judged direction quotes the clinic reason without inventing a timeout", as
 });
 
 test("fallback timeout keeps its timeout explanation and warning", async ({ page }) => {
-  await serve(page, directionChoice("fallback", "no owner choice arrived before the timeout"));
+  await serve(page, directionChoice("fallback", DIRECTION_TIMEOUT_REASON));
   await expect(panel(page)).toContainText("No choice arrived before the timeout");
   await expect(panel(page).getByText("no one chose", { exact: true })).toHaveClass(/text-warn/);
   await expect(panel(page)).not.toContainText("judged by ui-designer");
@@ -372,6 +373,42 @@ test("missing direction reason does not borrow a mockup-lock reason", async ({ p
   await serve(page, directionChoice("ui-designer", null));
   await expect(panel(page)).toContainText("No reason was recorded.");
   await expect(panel(page)).not.toContainText("a different mockup-lock reason");
+});
+
+test("absent direction reason does not borrow a mockup-lock reason", async ({ page }) => {
+  const fixture = directionChoice("ui-designer", null);
+  const designLock = { ...fixture.designLock! };
+  delete designLock.chosenDirectionReason;
+  expect(Object.hasOwn(designLock, "chosenDirectionReason"), "fixture genuinely omits the direction reason key").toBe(false);
+  await serve(page, { ...fixture, designLock });
+  await expect(page.getByRole("heading", { name: "Design lock" }), "omitted reason still renders the design panel").toBeVisible();
+  await expect(panel(page), "omitted direction reason is reported as absent").toContainText("No reason was recorded.");
+  await expect(panel(page), "omitted direction reason never borrows the mockup reason").not.toContainText("a different mockup-lock reason");
+  await expect(panel(page), "omitted direction reason never invents a timeout").not.toContainText("No choice arrived");
+});
+
+test("direction fallback requires the complete timeout reason", async ({ page }) => {
+  await serve(page, directionChoice("fallback", "ui-designer finished before the timeout but wrote no choice"));
+  await expect(page.getByRole("heading", { name: "Design lock" }), "partial timeout direction fixture renders").toBeVisible();
+  await expect(panel(page), "direction reader rejects incidental timeout wording").toContainText("The chooser wrote no usable choice");
+  await expect(panel(page), "direction reader does not invent a timeout").not.toContainText("No choice arrived before the timeout");
+});
+
+test("mockup fallback requires the complete timeout reason", async ({ page }) => {
+  await serve(page, legacy("passed", {
+    ...SETTLED.designLock!, lockedBy: "fallback",
+    reason: "ui-designer finished before the timeout but wrote no choice",
+  }));
+  await expect(page.getByRole("heading", { name: "Design lock" }), "partial timeout mockup fixture renders").toBeVisible();
+  await expect(panel(page), "mockup reader rejects incidental timeout wording").toContainText("The chooser wrote no usable choice");
+  await expect(panel(page), "mockup reader does not invent a timeout").not.toContainText("No choice arrived before the timeout");
+});
+
+test("mockup fallback preserves the complete timeout explanation", async ({ page }) => {
+  await serve(page, legacy("passed", {
+    ...SETTLED.designLock!, lockedBy: "fallback", reason: DIRECTION_TIMEOUT_REASON,
+  }));
+  await expect(panel(page), "mockup reader accepts the recorded timeout reason").toContainText("No choice arrived before the timeout");
 });
 
 /* ------------------------------------------------------------------ */

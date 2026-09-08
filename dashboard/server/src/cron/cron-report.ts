@@ -110,9 +110,9 @@ function designLine(run: RunDetail): string {
   if (lock.awaiting) return "  - design lock: **still awaiting a choice** — this run is parked";
   if (lock.locked === null) return "  - design lock: the lane ran and locked nothing";
   const chosenBy = lock.chosenDirectionBy ?? lock.lockedBy;
-  const choiceReason = lock.chosenDirectionBy == null || lock.chosenDirectionReason === undefined
+  const choiceReason = lock.chosenDirectionBy == null
     ? lock.reason
-    : lock.chosenDirectionReason;
+    : lock.chosenDirectionReason ?? null;
   const reason = choiceReason ?? "no reason recorded";
   if (chosenBy === "owner") {
     return `  - design lock: ${lock.locked} — chosen by the owner (${reason})`;

@@ -28,6 +28,8 @@ import { basename, join } from "node:path";
 import type { DesignLockedBy, DesignManifest } from "./design-manifest.js";
 import { DESIGN_CHOICE_FILE, DESIGN_DIRECTION_CHOICE_FILE } from "./design-prompt.js";
 
+export { DIRECTION_TIMEOUT_REASON } from "./direction-timeout-reason.js";
+
 export type DesignLockPolicy = "auto" | "ask";
 
 export const DESIGN_LOCK_TIMEOUT_ENV = "DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN";

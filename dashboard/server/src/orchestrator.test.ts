@@ -54,6 +54,7 @@ import { RunStore, isTerminal } from "./db.js";
 import type { StoredEvent } from "./db.js";
 import {
   DESIGN_MOCKUP_LABEL,
+  DIRECTION_TIMEOUT_REASON,
   chosenMockupRef,
   publishedMockupPath,
   readDesignLock,
@@ -2591,7 +2592,7 @@ test("and the LIVE token stream never goes backwards either", async () => {
 
 test("RULE 1: a parked run auto-selects when the timeout expires", async () => {
   // The timer is an external mechanism; this asserts it FIRES, not that it exists.
-  const h = await designRun({ designLock: "ask", env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "0.01" } });
+  const h = await designRun({ designLock: "ask", makeGate: judgeGreenGate, env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "0.01" } });
   try {
     // POLLED ON THE OUTCOME, NOT ON A TRANSIENT `running`. The second segment is
     // a fake builder and finishes in single-digit milliseconds, so a poll for the
@@ -2603,10 +2604,30 @@ test("RULE 1: a parked run auto-selects when the timeout expires", async () => {
     await h.settle();
     assert.notEqual(h.lock()?.locked, null);
     assert.equal(h.lock()?.lockedBy, "fallback", "no chooser ran, and it says so");
+    assert.ok(h.lock()?.reason?.includes(DIRECTION_TIMEOUT_REASON), "legacy timeout writer must persist the shared reason");
+    assert.equal(h.lock()?.reason, "no owner choice arrived before the timeout; the first mockup in manifest order was locked automatically, with no judgement applied", "legacy timeout wire text must remain exact");
     assert.equal(h.builderCalls.length, 2, "and the timeout started the build segment");
   } finally {
     await h.cleanup();
   }
+});
+
+test("T16b direction timer persists the exact shared timeout reason", async () => {
+  const h = await designRun({
+    designLock: "ask", directions: true, makeGate: judgeGreenGate,
+    env: { DASHBOARD_DESIGN_LOCK_TIMEOUT_MIN: "0.01" },
+  });
+  try {
+    await h.waitFor(() => h.lock()?.chosenDirectionBy === "fallback", 15_000, "the direction timeout never fired");
+    await h.settle();
+    const lock = h.lock();
+    assert.ok(lock !== null);
+    assert.ok(lock?.chosenDirectionReason?.includes(DIRECTION_TIMEOUT_REASON), "direction timeout writer must persist the shared reason");
+    assert.equal(lock.chosenDirectionReason, 'no owner choice arrived before the timeout; the first direction in manifest order ("editorial-slab") was chosen automatically, with no judgement applied', "direction timeout wire text must remain exact");
+    assert.equal(lock.chosenDirection, "editorial-slab");
+    assert.equal(lock.awaiting, false);
+    assert.equal(h.builderCalls.length, 3, "the timer resumes expansion and the final build");
+  } finally { await h.cleanup(); }
 });
 
 test("RULE 1: a restart during a park does not make the park infinite", async () => {

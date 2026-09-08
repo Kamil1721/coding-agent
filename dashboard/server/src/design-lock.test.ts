@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { DesignManifest } from "./design-manifest.js";
 import {
   DEFAULT_DESIGN_LOCK_TIMEOUT_MIN,
+  DIRECTION_TIMEOUT_REASON,
   DESIGN_LOCK_RECORD_FILE,
   chooseDirection,
   chosenMockupRef,
@@ -283,7 +284,7 @@ function resolveParkOnTimeout(delayMs: number, refsDir: string, watchdogMs: numb
       const at = new Date().toISOString();
       const attempt =
         readChoiceFile(refsDir, MANIFEST, at) ??
-        fallbackChoice(MANIFEST, at, "no owner choice arrived before the timeout");
+        fallbackChoice(MANIFEST, at, DIRECTION_TIMEOUT_REASON);
       if (attempt === null) {
         resolve({ kind: "no-lock", why: "neither the chooser nor the fallback produced an attempt" });
         return;

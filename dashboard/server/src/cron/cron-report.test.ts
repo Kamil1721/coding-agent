@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ApiDesignLock, RunDetail } from "../api-types.js";
+import { DIRECTION_TIMEOUT_REASON } from "../direction-timeout-reason.js";
 // THE CAPS THE WIRE ACTUALLY CARRIES, IMPORTED RATHER THAN TRANSCRIBED. This
 // fixture hardcoded `turnsMax: 4` and stayed green while `MAX_DESIGN_LOCK_TURNS`
 // moved to 8 and `http.ts` started sending it — a fixture describing a wire shape
@@ -267,10 +268,10 @@ test("the design lock's provenance is reported — automatic is not the same as 
   assert.match(owned, /chosen by the owner/);
 
   const fallback = renderCronReport(input({ runs: [detail({ designLock: {
-    ...lock, chosenDirectionBy: "fallback", chosenDirectionReason: "no owner choice arrived before the timeout",
+    ...lock, chosenDirectionBy: "fallback", chosenDirectionReason: DIRECTION_TIMEOUT_REASON,
   } })] }));
   assert.match(fallback, /chosen automatically by `fallback`/);
-  assert.match(fallback, /before the timeout/);
+  assert.ok(fallback.includes(DIRECTION_TIMEOUT_REASON));
   assert.doesNotMatch(fallback, /denser grid|judged by/);
 
   const judged = renderCronReport(input({ runs: [detail({ designLock: {
@@ -284,6 +285,12 @@ test("the design lock's provenance is reported — automatic is not the same as 
   } })] }));
   assert.match(missingReason, /no reason recorded/);
   assert.doesNotMatch(missingReason, /denser grid/);
+
+  const absentReason = renderCronReport(input({ runs: [detail({ designLock: {
+    ...lock, chosenDirectionBy: "ui-designer",
+  } })] }));
+  assert.doesNotMatch(absentReason, /denser grid/, "an absent direction reason must not borrow the mockup-lock reason");
+  assert.equal(absentReason, missingReason, "absent and null direction reasons must render identically");
 });
 
 test("A RUN THE REPORT COULD NOT FETCH IS NAMED AS UNREADABLE, never as absent", () => {

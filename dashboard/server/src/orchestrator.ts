@@ -124,6 +124,7 @@ import { designLaneMode, designSurfaceGate } from "./design-lane.js";
 import type { DesignLaneMode } from "./design-lane.js";
 import {
   DESIGN_MOCKUP_LABEL,
+  DIRECTION_TIMEOUT_REASON,
   chooseDirection,
   chosenMockupRef,
   designLockPolicy,
@@ -1884,7 +1885,7 @@ export class Orchestrator {
         const attempt: DirectionAttempt | null =
           slug === null
             ? (readDirectionChoiceFile(refsDirFor(runPaths.workspace), manifest, at) ??
-              fallbackDirectionChoice(manifest, at, "no owner choice arrived before the timeout"))
+              fallbackDirectionChoice(manifest, at, DIRECTION_TIMEOUT_REASON))
             : { slug, by: "owner", reason: "chosen by the owner in the dashboard", at };
         // A REFUSED CHOICE LEAVES THE RUN PARKED, `#applyDesignLock`'s rule: a
         // resume that proceeded anyway would expand nothing and build to a canvass
@@ -1895,7 +1896,7 @@ export class Orchestrator {
         const attempt: LockAttempt | null =
           chosenMockup === null
             ? (readChoiceFile(refsDirFor(runPaths.workspace), manifest, at) ??
-              fallbackChoice(manifest, at, "no owner choice arrived before the timeout"))
+              fallbackChoice(manifest, at, DIRECTION_TIMEOUT_REASON))
             : // TRANSLATED, BECAUSE A CLICK CANNOT CARRY A REF. What the owner
               // clicks is `designLock.mockups[].path` — the PUBLISHED COPY, which
               // is the only mockup path the screenshot route can serve and so the

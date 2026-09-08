@@ -82,6 +82,7 @@
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { DIRECTION_TIMEOUT_REASON } from "../../../server/src/direction-timeout-reason";
 
 import type { RunDetail, Screenshot } from "@/lib/api-types";
 import {
@@ -179,7 +180,7 @@ function chooserOf(lockedBy: "owner" | "ui-designer" | "fallback" | null, reason
       // "no judgement applied" was the badge and it is the one thing a fallback
       // is; "no one chose" says it without asking the reader to parse it.
       badge: "no one chose",
-      sentence: reason?.includes("before the timeout")
+      sentence: reason?.includes(DIRECTION_TIMEOUT_REASON)
         ? "No choice arrived before the timeout, so the first mockup in the list was taken."
         : "The chooser wrote no usable choice, so the first mockup in the list was taken.",
     };
@@ -462,7 +463,7 @@ function directionSentence(
     return `ui-designer chose ${name}. No reason was recorded.`;
   }
   if (by === "fallback") {
-    if (reason?.includes("before the timeout")) {
+    if (reason?.includes(DIRECTION_TIMEOUT_REASON)) {
       return `No choice arrived before the timeout, so ${name}, the first one offered, was taken.`;
     }
     return `The chooser wrote no usable choice, so ${name}, the first one offered, was taken.`;
@@ -529,9 +530,9 @@ export function DesignLockPanel({
 
   const chosen = lockedMockup(lock);
   const chosenBy = lock.chosenDirectionBy ?? lock.lockedBy;
-  const chosenReason = lock.chosenDirectionBy == null || lock.chosenDirectionReason === undefined
+  const chosenReason = lock.chosenDirectionBy == null
     ? lock.reason
-    : lock.chosenDirectionReason;
+    : (lock.chosenDirectionReason ?? null);
   const chooser = chooserOf(chosenBy, chosenReason);
   const pending = phase === "pending";
 
