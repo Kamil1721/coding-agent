@@ -44,7 +44,7 @@ function contractFixture(): CreativeContractV1 {
 
 function bindingFixture(): RenderManifestBinding {
   const contract = contractFixture();
-  const compiled = compileCreativeContract(JSON.stringify(contract), { resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH }) });
+  const compiled = compileCreativeContract(JSON.stringify(contract), { resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind: "goal" }) });
   assert.equal(compiled.ok, true, JSON.stringify(compiled));
   return { contract, contractHash: compiled.contractHash, artifactHash: ARTIFACT_HASH };
 }

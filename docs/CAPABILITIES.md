@@ -32,3 +32,21 @@ Move a row to verified only when identified implementation plus a persisted test
 negative control, or run artifact demonstrates the stated boundary. A terminal-red
 recovery verifies that path; it does not prove green recovery, the full pipeline,
 or the Taste chain.
+
+### T21 requirement evidence boundary (2026-09-08)
+
+New author packets split owner prose into sentences. Product transitions such as Back and
+Reset remain goals; accessibility, layout, local-data and delivery requirements carry their
+own kinds. The 18 brief slots retain nine opening and nine closing sentences when needed,
+using original sentence indexes, with ten separate slots still reserved for plan answers.
+Requirement proofs may authorize only alt text, cannot support actions, and cannot supply
+every proof in a section. The host capture-marker requirement is subject to the same rule.
+
+D13 supersedes T21's original expectation that historical contracts must be re-authored.
+Frozen pre-T21 reads retain the old projection only when the canonical record has no new
+projection marker, its input hash matches the reconstructed legacy packet, and its contract
+hash still matches the unchanged contract. New records carry a host-written version;
+unknown versions fail closed, and authoring never retries with the legacy compiler option.
+The unchanged clinic fixture exercises that frozen read separately from a reproducible
+sentence-rebound fixture whose six requirement proofs are rejected without rejecting Reset.
+This is a compiler and continuation-read boundary, not evidence from a new pipeline run.

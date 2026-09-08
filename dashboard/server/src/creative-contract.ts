@@ -84,6 +84,7 @@ export interface CreativeEvidenceRef {
 }
 
 export interface CreativeEvidenceResolution {
+  readonly factKind: import("./creative-contract-author.js").CreativeAuthorFactKind;
   readonly sha256: string;
   readonly excerptSha256: string;
 }
@@ -461,6 +462,7 @@ export const CREATIVE_CONTRACT_V1_COMPILER_CONSTRAINTS: Readonly<Record<string, 
 });
 
 export type CreativeCompileErrorCode =
+  | "REQUIREMENT_AS_COPY" | "REQUIREMENT_SECTION"
   | "INVALID_JSON" | "INVALID_ROOT" | "UNKNOWN_KEY" | "MISSING_KEY" | "INVALID_TYPE" | "INVALID_VALUE" | "LIMIT_EXCEEDED"
   | "DUPLICATE_ID" | "DUPLICATE_VALUE" | "DANGLING_ROUTE" | "DANGLING_SECTION" | "DANGLING_CONTENT_PROOF"
   | "EVIDENCE_NOT_FOUND" | "EVIDENCE_DIGEST_MISMATCH" | "CONTENT_PROOF_UNUSED" | "CONTENT_USE_NOT_ALLOWED"
@@ -477,6 +479,16 @@ export type CreativeCompileErrorCode =
  * not independently reinterpret these branches.
  */
 export const CREATIVE_CONTRACT_V1_AUTHOR_INVARIANTS = [
+  {
+    id: "requirements-are-not-copy",
+    errorSites: [
+      { code: "REQUIREMENT_AS_COPY", pathPattern: "/contentProof/*" },
+      { code: "REQUIREMENT_AS_COPY", pathPattern: "/sections/*/contentRefs/*" },
+      { code: "REQUIREMENT_AS_COPY", pathPattern: "/sections/*/actions/*/proofId" },
+      { code: "REQUIREMENT_SECTION", pathPattern: "/sections/*" },
+    ],
+    guidance: "Facts of kind constraint, accessibility, technical_constraint or avoid describe implementation requirements, not page copy. Their contentProof entries may authorize only alt, never another content use or an action; no section may draw all its proof references from requirements.",
+  },
   {
     id: "content-proof-coverage",
     errorSites: [{ code: "CONTENT_PROOF_UNUSED", pathPattern: "/contentProof/*" }],
@@ -892,12 +904,13 @@ function duplicateIds<T extends { readonly id: string }>(items: readonly T[], ba
   return result;
 }
 
-function checkEvidence(reference: CreativeEvidenceRef, path: string, resolver: CreativeEvidenceResolver, ctx: Context): void {
+function checkEvidence(reference: CreativeEvidenceRef, path: string, resolver: CreativeEvidenceResolver, ctx: Context): CreativeEvidenceResolution | null {
   const resolved = resolver.resolve(reference);
-  if (resolved === null) { error(ctx, "EVIDENCE_NOT_FOUND", path, "evidence resolver did not find this reference"); return; }
+  if (resolved === null || typeof resolved.factKind !== "string") { error(ctx, "EVIDENCE_NOT_FOUND", path, "evidence resolver did not find this reference and its fact kind"); return null; }
   if (!HASH.test(resolved.sha256) || !HASH.test(resolved.excerptSha256) || resolved.sha256 !== reference.sha256 || resolved.excerptSha256 !== reference.excerptSha256) {
     error(ctx, "EVIDENCE_DIGEST_MISMATCH", path, "resolved evidence digests do not match the contract");
   }
+  return resolved;
 }
 
 function wordCount(value: string): number { return value.trim().split(/\s+/u).filter(Boolean).length; }
@@ -1001,13 +1014,14 @@ export function dashRepairedCopy(value: string): string | null {
   return copyIsBanned(after) ? null : after;
 }
 
-function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolver, ctx: Context): void {
+function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolver, ctx: Context, legacyRequirements: boolean): void {
   const proofs = duplicateIds(contract.contentProof, "/contentProof", ctx);
   const routes = duplicateIds(contract.routes, "/routes", ctx);
   const sections = duplicateIds(contract.sections, "/sections", ctx);
   duplicateIds(contract.motion, "/motion", ctx);
   const proofUse = new Map<string, number>();
   const exceptionUse = new Set<number>();
+  const requirementProofs = new Set<string>();
 
   const routePaths = new Set<string>();
   for (const [index, route] of contract.routes.entries()) {
@@ -1016,7 +1030,9 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
   }
 
   for (const [index, proof] of contract.contentProof.entries()) {
-    checkEvidence(proof.evidence, `/contentProof/${String(index)}/evidence`, resolver, ctx);
+    const resolved = checkEvidence(proof.evidence, `/contentProof/${String(index)}/evidence`, resolver, ctx);
+    if (!legacyRequirements && ["constraint", "accessibility", "technical_constraint", "avoid"].includes(resolved?.factKind ?? "")) requirementProofs.add(proof.id);
+    if (requirementProofs.has(proof.id) && proof.allowedUses.some((use) => use !== "alt")) error(ctx, "REQUIREMENT_AS_COPY", `/contentProof/${String(index)}`, "implementation requirement may authorize only alt content");
     if (copyIsBanned(proof.claim)) error(ctx, "BANNED_COPY", `/contentProof/${String(index)}/claim`, "copy contains a forbidden generic phrase or dash character");
   }
   for (const [index, exception] of contract.intentionalExceptions.entries()) {
@@ -1047,6 +1063,8 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
 
   const destinationLabelsByIntent = new Map<string, Map<string, string>>();
   for (const [index, section] of contract.sections.entries()) {
+    const sectionProofs = [...section.contentRefs.map((ref) => ref.proofId), ...section.actions.flatMap((action) => action.proofId === null ? [] : [action.proofId])];
+    if (sectionProofs.length > 0 && sectionProofs.every((id) => requirementProofs.has(id))) error(ctx, "REQUIREMENT_SECTION", `/sections/${String(index)}`, "section draws every proof reference from implementation requirements");
     if (!routes.has(section.routeId)) error(ctx, "DANGLING_ROUTE", `/sections/${String(index)}/routeId`, "section route does not exist");
     if (!section.requiredStates.includes("default")) error(ctx, "INVALID_VALUE", `/sections/${String(index)}/requiredStates`, "every section must include its default render state");
     if (copyIsBanned(section.headline)) error(ctx, "BANNED_COPY", `/sections/${String(index)}/headline`, "visible copy contains a forbidden generic phrase or dash character");
@@ -1054,6 +1072,7 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
     if (section.body !== null && copyIsBanned(section.body)) error(ctx, "BANNED_COPY", `/sections/${String(index)}/body`, "visible copy contains a forbidden generic phrase or dash character");
     const refs = new Set<string>();
     for (const [position, ref] of section.contentRefs.entries()) {
+      if (requirementProofs.has(ref.proofId) && ref.use !== "alt") error(ctx, "REQUIREMENT_AS_COPY", `/sections/${String(index)}/contentRefs/${String(position)}`, "implementation requirement may appear only as alt content");
       const key = `${ref.proofId}:${ref.use}`;
       if (refs.has(key)) error(ctx, "DUPLICATE_VALUE", `/sections/${String(index)}/contentRefs/${String(position)}`, "content proof use must be unique per section");
       refs.add(key);
@@ -1076,6 +1095,7 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
       if (wordCount(action.label) > MAX_ACTION_LABEL_WORDS) error(ctx, "LIMIT_EXCEEDED", `/sections/${String(index)}/actions/${String(position)}/label`, `action label must be at most ${String(MAX_ACTION_LABEL_WORDS)} words`);
       if (action.proofId !== null && !proofs.has(action.proofId)) error(ctx, "DANGLING_CONTENT_PROOF", `/sections/${String(index)}/actions/${String(position)}/proofId`, "action proof does not exist");
       if (action.proofId !== null) {
+        if (requirementProofs.has(action.proofId)) error(ctx, "REQUIREMENT_AS_COPY", `/sections/${String(index)}/actions/${String(position)}/proofId`, "implementation requirement cannot support an action");
         proofUse.set(action.proofId, (proofUse.get(action.proofId) ?? 0) + 1);
         if (proofs.get(action.proofId)?.allowedUses.includes("action") !== true) error(ctx, "CONTENT_USE_NOT_ALLOWED", `/sections/${String(index)}/actions/${String(position)}/proofId`, "proof does not authorize action use");
       }
@@ -1169,7 +1189,10 @@ function canonicalValue(value: unknown): unknown {
 export function canonicalJson(value: unknown): string { return JSON.stringify(canonicalValue(value)); }
 export function sha256Hex(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
 
-export function compileCreativeContract(text: string, resolver: CreativeEvidenceResolver): CreativeCompileResult {
+export function compileCreativeContract(text: string, resolver: CreativeEvidenceResolver, options?: {
+  /** Host frozen-read compatibility only. Never enabled by author admission. */
+  readonly legacyRequirements?: boolean;
+}): CreativeCompileResult {
   let raw: unknown;
   try { raw = JSON.parse(text.trim()) as unknown; }
   catch { return { ok: false, errors: [{ code: "INVALID_JSON", path: "/", message: "contract must be exactly one JSON object" }] }; }
@@ -1177,7 +1200,7 @@ export function compileCreativeContract(text: string, resolver: CreativeEvidence
   contractShape(raw, ctx);
   if (ctx.errors.length > 0) return { ok: false, errors: sorted(ctx.errors) };
   const contract = raw as CreativeContractV1;
-  semantic(contract, resolver, ctx);
+  semantic(contract, resolver, ctx, options?.legacyRequirements === true);
   if (ctx.errors.length > 0) return { ok: false, errors: sorted(ctx.errors) };
   const result = canonicalJson(contract);
   return { ok: true, contract, canonicalJson: result, contractHash: sha256Hex(result) };

@@ -36,7 +36,7 @@ export async function batch2bAuthorPrompt(repair = false): Promise<string> {
       designFacts: [{ id: "direction", kind: "design_direction", statement: "Use direct hierarchy and restrained motion.", evidence }],
       referenceFacts: [],
     },
-    evidenceResolver: { resolve: () => ({ sha256: evidence.sha256, excerptSha256: evidence.excerptSha256 }) },
+    evidenceResolver: { resolve: () => ({ sha256: evidence.sha256, excerptSha256: evidence.excerptSha256, factKind: "goal" }) },
     repairFindings,
     seat: JUDGE_SEAT,
     budget: { maxCostUsd: 1, maxWallClockMs: 1000, maxCampaignCostUsd: 1, warnAtFraction: 0.8, perVendorMaxOutputTokens: null, vendorAdvisoryBudgets: [] },

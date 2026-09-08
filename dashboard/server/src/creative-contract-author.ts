@@ -420,7 +420,7 @@ function validateInput(value: unknown, resolver: CreativeEvidenceResolver): Vali
     let resolved;
     try { resolved = resolver.resolve(fact.evidence); }
     catch { throw new Error("creative evidence resolver failed"); }
-    if (resolved === null) add(errors, "EVIDENCE_NOT_FOUND", `/facts/${fact.id}/evidence`, "evidence resolver did not find the fact reference");
+    if (resolved === null || typeof resolved.factKind !== "string") add(errors, "EVIDENCE_NOT_FOUND", `/facts/${fact.id}/evidence`, "evidence resolver did not find the fact reference and its kind");
     else if (!HASH.test(resolved.sha256) || !HASH.test(resolved.excerptSha256) || resolved.sha256 !== fact.evidence.sha256 || resolved.excerptSha256 !== fact.evidence.excerptSha256) add(errors, "EVIDENCE_DIGEST_MISMATCH", `/facts/${fact.id}/evidence`, "resolved evidence digests do not match the host fact");
   }
   return { input: errors.length === 0 ? value as CreativeContractAuthorInput : null, facts, errors: sorted(errors) };
@@ -524,6 +524,7 @@ function buildPrompt(input: CreativeContractAuthorInput, repairFindings: readonl
 - Copy contractId exactly. Use only evidence objects present in HOST FACTS. Never invent or alter a locator or digest.
 - State one project-specific design read: audience, vibe, aesthetic family, honest design system, display style, palette, theme and thesis. Derive the three 1-10 dials from the facts, not a universal preset.
 - Turn supported claims into contentProof entries and authorize only their actual uses. Every section needs one focused job and evidence-linked content.
+- Keep constraint, accessibility, technical_constraint and avoid facts out of visible page copy and actions; use them to guide implementation, with alt as their only permitted content use.
 - Use concrete copy. Do not use generic filler, fake metrics, startup placeholder names, em-dashes, decorative section numbers, scroll cues, version labels or mock-poetic micro-labels.
 - Give each route exactly one hero. Keep hero body within 20 words and actions to one primary plus at most one secondary.
 - Use eyebrows no more than once per three sections with two sections between them.

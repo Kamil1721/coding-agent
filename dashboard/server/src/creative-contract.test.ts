@@ -32,7 +32,7 @@ const EVIDENCE: CreativeEvidenceRef = {
 
 const RESOLVER: CreativeEvidenceResolver = {
   resolve(reference) {
-    return reference.locator === EVIDENCE.locator ? { sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH } : null;
+    return reference.locator === EVIDENCE.locator ? { sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind: "goal" } : null;
   },
 };
 
@@ -131,6 +131,58 @@ function codes(contract: CreativeContractV1, resolver = RESOLVER): readonly stri
   assert.equal(result.ok, false);
   return result.errors.map((item) => item.code);
 }
+
+test("T21 product headline remains valid and every requirement kind rejects every non-alt authorization", () => {
+  assert.equal(compile(validContract()).ok, true, "T21 product headline must remain compilable");
+  for (const factKind of ["constraint", "accessibility", "technical_constraint", "avoid"] as const) {
+    for (const use of ["headline", "eyebrow", "body", "action", "metric", "quote"] as const) {
+      const candidate = structuredClone(validContract()) as Mutable<CreativeContractV1>;
+      candidate.contentProof[0]!.allowedUses = [use];
+      const result = compile(candidate, { resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind }) });
+      assert.equal(result.ok, false);
+      assert.ok(result.errors.some((item) => item.code === "REQUIREMENT_AS_COPY" && item.path === "/contentProof/0"), `T21 ${factKind} ${use} authorization must reject requirement copy`);
+    }
+  }
+});
+
+test("T21 requirement refs and actions are rejected independently of allowed uses", () => {
+  const candidate = structuredClone(validContract()) as Mutable<CreativeContractV1>;
+  candidate.contentProof[0]!.evidence = { ...EVIDENCE, locator: "requirement" };
+  candidate.contentProof[0]!.allowedUses = ["alt"];
+  const resolver: CreativeEvidenceResolver = { resolve: (ref) => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind: ref.locator === "requirement" ? "constraint" : "goal" }) };
+  const result = compile(candidate, resolver);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((item) => item.code === "REQUIREMENT_AS_COPY" && item.path === "/sections/0/contentRefs/0"), "T21 non-alt reference must reject requirement copy independently");
+  assert.ok(result.errors.some((item) => item.code === "REQUIREMENT_AS_COPY" && item.path === "/sections/0/actions/0/proofId"), "T21 action must reject requirement copy independently");
+  for (const use of ["headline", "eyebrow", "body", "action", "metric", "quote"] as const) {
+    candidate.sections[0]!.contentRefs[0]!.use = use;
+    const used = compile(candidate, resolver);
+    assert.equal(used.ok, false);
+    assert.ok(used.errors.some((item) => item.code === "REQUIREMENT_AS_COPY" && item.path === "/sections/0/contentRefs/0"), `T21 ${use} reference must reject requirement copy independently`);
+  }
+});
+
+test("T21 resolver omissions cannot silently classify evidence as product", () => {
+  const resolver = { resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH }) } as unknown as CreativeEvidenceResolver;
+  const result = compile(validContract(), resolver);
+  assert.equal(result.ok, false, "T21 evidence without a host fact kind must fail closed");
+  assert.ok(result.errors.some((error) => error.code === "EVIDENCE_NOT_FOUND"));
+});
+
+test("T21 requirement-only section fails while alt mixed with product proof compiles", () => {
+  const candidate = structuredClone(validContract()) as Mutable<CreativeContractV1>;
+  const requirement = candidate.contentProof[1]!;
+  requirement.evidence = { ...EVIDENCE, locator: "requirement" };
+  requirement.allowedUses = ["alt"];
+  candidate.sections[1]!.contentRefs = [{ proofId: requirement.id, use: "alt" }];
+  const resolver: CreativeEvidenceResolver = { resolve: (ref) => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind: ref.locator === "requirement" ? "accessibility" : "goal" }) };
+  const rejected = compile(candidate, resolver);
+  assert.equal(rejected.ok, false, "T21 all-requirement alt section must fail only the section invariant");
+  assert.deepEqual(rejected.errors.map((item) => [item.code, item.path]), [["REQUIREMENT_SECTION", "/sections/1"]], "T21 all-requirement alt section must fail only the section invariant");
+  candidate.sections[1]!.contentRefs.push({ proofId: candidate.contentProof[0]!.id, use: "headline" });
+  const admitted = compile(candidate, resolver);
+  assert.equal(admitted.ok, true, "T21 alt requirement alongside product proof must compile");
+});
 
 type Mutable<T> = T extends readonly (infer Item)[]
   ? Mutable<Item>[]
@@ -437,7 +489,7 @@ test("every section requires a default render-state baseline", () => {
 test("requires resolvable evidence with exact source and excerpt digests", () => {
   assert.ok(codes(validContract(), { resolve: () => null }).includes("EVIDENCE_NOT_FOUND"));
   assert.ok(
-    codes(validContract(), { resolve: () => ({ sha256: "f".repeat(64), excerptSha256: EXCERPT_HASH }) }).includes(
+    codes(validContract(), { resolve: () => ({ sha256: "f".repeat(64), excerptSha256: EXCERPT_HASH, factKind: "goal" }) }).includes(
       "EVIDENCE_DIGEST_MISMATCH",
     ),
   );

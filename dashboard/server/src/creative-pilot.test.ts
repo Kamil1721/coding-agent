@@ -118,6 +118,7 @@ test("host author packet admits bounded ticket/design facts and digest-only refe
     assert.deepEqual(packet.resolver.resolve(fact.evidence), {
       sha256: fact.evidence.sha256,
       excerptSha256: fact.evidence.excerptSha256,
+      factKind: fact.kind,
     });
   }
 });
@@ -180,7 +181,7 @@ test("host author packet preserves late plan answers plus captured page and moti
   assert.ok(packet.input.referenceFacts.length <= 20);
 });
 
-test("owner projection preserves the bounded head and tail with an admitted omission notice", () => {
+test("T21 owner sentence projection preserves nine head and nine tail indexes within eighteen slots", () => {
   const tailConstraint = "TAIL-CONSTRAINT: keep the readiness result beside the final contact action.";
   const long: Ticket = {
     ...TICKET,
@@ -190,7 +191,8 @@ test("owner projection preserves the bounded head and tail with an admitted omis
   const statements = packet.input.ticket.facts.map((fact) => fact.statement);
   assert.equal(statements.length, 18);
   assert.match(statements[0] ?? "", /Owner requirement 0/u);
-  assert.match(statements.join("\n"), /projection notice/u);
+  assert.doesNotMatch(statements.join("\n"), /projection notice/u);
+  assert.deepEqual(packet.input.ticket.facts.map((fact) => Number(fact.evidence.locator.split(":").at(-1))), [1, 2, 3, 4, 5, 6, 7, 8, 9, 253, 254, 255, 256, 257, 258, 259, 260, 261], "T21 bounded projection must retain original sentence indexes at both ends");
   assert.match(statements.at(-1) ?? "", new RegExp(tailConstraint, "u"));
   assert.ok(statements.every((statement) => statement.length <= 500));
 });
@@ -253,6 +255,7 @@ test("compiled author result is atomically durable and freshness compilation fai
   const compile = persistCreativeAuthorResult(results, result);
   assert.equal(compile.outcome, "passed");
   assert.equal(existsSync(join(results, CREATIVE_AUTHOR_FILE)), true);
+  assert.equal((JSON.parse(readFileSync(join(results, CREATIVE_AUTHOR_FILE), "utf8")) as { projectionVersion: number }).projectionVersion, 2, "T21 canonical author writer must stamp the current host projection version");
   assert.deepEqual(
     (JSON.parse(readFileSync(join(results, CREATIVE_AUTHOR_FILE), "utf8")) as CreativeContractAuthorResult).repairs,
     repairs,

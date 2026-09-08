@@ -34,6 +34,7 @@ import type { RenderProfileId } from "./render-manifest.js";
 import type { ReferenceManifest } from "./ticket-refs.js";
 import { manifestDocuments, ticketProse } from "./ticket-refs.js";
 import { PLAN_BLOCK_BEGIN, PLAN_BLOCK_END, stripPlanBlock } from "./plan-brief.js";
+import { briefFactKind, briefFactSentences } from "./creative-brief-facts.js";
 import { TASTE_CATEGORIES, TASTE_CODE_CATEGORY, TASTE_FINDING_CODES } from "./taste-policy.js";
 
 export const CREATIVE_CONTRACT_FILE = "creative-contract.json";
@@ -549,16 +550,27 @@ function boundedWarning(warnings: string[], code: string, detail: string): void 
   warnings.push(`Creative author reference warning [${code}]: ${detail}`.slice(0, 300));
 }
 
-export function authorInputFor(
+export const CREATIVE_FACT_PROJECTION_VERSION = 2;
+const legacyPackets = new WeakMap<CreativeEvidenceResolver, { readonly inputHash: string; readonly resolver: CreativeEvidenceResolver }>();
+
+export function authorInputFor(ticket: Ticket, manifest: ReferenceManifest | null): ReturnType<typeof projectedAuthorInput> {
+  const current = projectedAuthorInput(ticket, manifest, false);
+  const legacy = projectedAuthorInput(ticket, manifest, true);
+  legacyPackets.set(current.resolver, { inputHash: sha256Hex(canonicalJson(legacy.input)), resolver: legacy.resolver });
+  return current;
+}
+
+function projectedAuthorInput(
   ticket: Ticket,
   manifest: ReferenceManifest | null,
+  legacy: boolean,
 ): {
   readonly input: CreativeContractAuthorInput;
   readonly resolver: CreativeEvidenceResolver;
   readonly warnings: readonly string[];
 } {
   const facts: CreativeAuthorFact[] = [];
-  const resolutions = new Map<string, { readonly sha256: string; readonly excerptSha256: string }>();
+  const resolutions = new Map<string, { readonly sha256: string; readonly excerptSha256: string; readonly factKind: CreativeAuthorFact["kind"] }>();
   const warnings: string[] = [];
   const add = (
     id: string,
@@ -575,7 +587,7 @@ export function authorInputFor(
       sha256,
       excerptSha256: sha256Hex(bounded),
     };
-    resolutions.set(canonicalJson(evidence), { sha256: evidence.sha256, excerptSha256: evidence.excerptSha256 });
+    resolutions.set(canonicalJson(evidence), { sha256: evidence.sha256, excerptSha256: evidence.excerptSha256, factKind: kind });
     const fact = { id, kind, statement: bounded, evidence } satisfies CreativeAuthorFact;
     facts.push(fact);
     return fact;
@@ -585,10 +597,13 @@ export function authorInputFor(
   const ownerProse = ticketProse(stripPlanBlock(ticket.brief));
   // Reserve ten ticket-fact slots for late plan answers and enough prompt room
   // for the closed vocabularies plus the twenty reference-fact ceiling.
-  for (const [index, statement] of boundedFactStatements("Owner brief", ownerProse, 18).entries()) {
+  const sentences = (legacy ? boundedFactStatements("Owner brief", ownerProse, 18) : briefFactSentences(ownerProse)).map((statement, index) => ({ statement, index }));
+  const briefStatements = sentences.length <= 18 ? sentences : [...sentences.slice(0, 9), ...sentences.slice(-9)];
+  for (const { index, statement } of briefStatements) {
+    const kind = legacy ? "goal" : briefFactKind(statement);
     ticketFacts.push(add(
-      `ticket.goal.${String(index + 1)}`,
-      "goal",
+      `ticket.${kind === "goal" ? "goal" : "req"}.${String(index + 1)}`,
+      kind,
       statement,
       "owner_message",
       `ticket:${ticket.id}:brief:${String(index + 1)}`,
@@ -798,7 +813,7 @@ export function persistCreativeAuthorResult(
   resultsDir: string,
   result: CreativeContractAuthorResult,
 ): CreativeCompileRecord {
-  atomicJson(join(resultsDir, CREATIVE_AUTHOR_FILE), authorRecordWithoutRawText(result));
+  atomicJson(join(resultsDir, CREATIVE_AUTHOR_FILE), { ...authorRecordWithoutRawText(result), projectionVersion: CREATIVE_FACT_PROJECTION_VERSION });
   const compile: CreativeCompileRecord = {
     outcome: result.status === "compiled" ? "passed" : result.status === "invalid" ? "failed" : "unavailable",
     contractHash: result.contractHash,
@@ -846,13 +861,20 @@ export function freshCreativeContract(
   resolver: CreativeEvidenceResolver,
 ): { readonly fresh: FreshCreativeContract | null; readonly compile: CreativeCompileRecord } {
   let frozenContractHash: string;
+  let legacyResolver: CreativeEvidenceResolver | undefined;
   try {
     const authored: unknown = JSON.parse(readFileSync(join(resultsDir, CREATIVE_AUTHOR_FILE), "utf8"));
     if (!isRecord(authored)) throw new Error("missing frozen author contract hash");
-    const record = authored as { readonly status?: unknown; readonly contractHash?: unknown };
+    const record = authored as { readonly status?: unknown; readonly contractHash?: unknown; readonly inputHash?: unknown; readonly projectionVersion?: unknown };
     if (record.status !== "compiled" || typeof record.contractHash !== "string" ||
       !HASH.test(record.contractHash)) throw new Error("missing frozen author contract hash");
     frozenContractHash = record.contractHash;
+    if (record.projectionVersion !== undefined && record.projectionVersion !== CREATIVE_FACT_PROJECTION_VERSION) throw new Error("unknown creative fact projection version");
+    const legacy = legacyPackets.get(resolver);
+    if (record.projectionVersion === undefined && legacy !== undefined && record.inputHash === legacy.inputHash) {
+      const raw: unknown = JSON.parse(readFileSync(join(resultsDir, CREATIVE_CONTRACT_FILE), "utf8"));
+      if (sha256Hex(canonicalJson(raw)) === frozenContractHash) legacyResolver = legacy.resolver;
+    }
   } catch {
     const compile = unavailableCompileRecord();
     atomicJson(join(resultsDir, CREATIVE_COMPILE_FILE), compile);
@@ -860,7 +882,7 @@ export function freshCreativeContract(
   }
   let compiled: ReturnType<typeof compileCreativeContract>;
   try {
-    compiled = compileCreativeContract(readFileSync(join(resultsDir, CREATIVE_CONTRACT_FILE), "utf8"), resolver);
+    compiled = compileCreativeContract(readFileSync(join(resultsDir, CREATIVE_CONTRACT_FILE), "utf8"), legacyResolver ?? resolver, { legacyRequirements: legacyResolver !== undefined });
   } catch {
     const compile = unavailableCompileRecord();
     atomicJson(join(resultsDir, CREATIVE_COMPILE_FILE), compile);

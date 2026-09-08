@@ -53,7 +53,7 @@ const EVIDENCE: CreativeEvidenceRef = {
 const RESOLVER: CreativeEvidenceResolver = {
   resolve(reference) {
     return reference.locator === EVIDENCE.locator
-      ? { sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH }
+      ? { sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind: "goal" }
       : null;
   },
 };
@@ -423,6 +423,28 @@ test("authors one bounded, tool-less contract call and returns only compiled dat
   assert.doesNotMatch(JSON.stringify(result), /Build an evidence-led service page/);
 });
 
+test("T21 author requirement headline is compile-rejected and consumes the attempt", async () => {
+  const candidateInput = structuredClone(input()) as Mutable<CreativeContractAuthorInput>;
+  const evidence = { ...EVIDENCE, locator: "message:requirement" };
+  candidateInput.ticket.facts.push({ id: "ticket.req.1", kind: "technical_constraint", statement: "Deliver a local web server with clear run instructions.", evidence });
+  const candidate = structuredClone(contract()) as Mutable<CreativeContractV1>;
+  candidate.contentProof[0]!.evidence = evidence;
+  const recorder = recordingQuery(JSON.stringify(candidate));
+  const resolver: CreativeEvidenceResolver = { resolve: (ref) => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind: ref.locator === evidence.locator ? "technical_constraint" : "goal" }) };
+  const result = await authorCreativeContract(request(recorder.factory, candidateInput, resolver));
+  assert.equal(result.ran, true);
+  assert.equal(creativeAuthorStep(result).kind, "consume", "T21 requirement headline must consume a rejected attempt, never proceed");
+  assert.ok(result.compileErrors.some((error) => error.code === "REQUIREMENT_AS_COPY" && error.path === "/contentProof/0"), "T21 author must preserve the requirement compiler finding");
+});
+
+test("T21 author rejects missing resolver kinds before making a query", async () => {
+  const resolver = { resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH }) } as unknown as CreativeEvidenceResolver;
+  let calls = 0;
+  const result = await authorCreativeContract(request(() => { calls += 1; throw new Error("unexpected query"); }, input(), resolver));
+  assert.equal(calls, 0, "T21 missing resolver kind must be refused before the author query");
+  assert.equal(result.status, "invalid");
+});
+
 test("repairs only the exact three live authority-link findings, audits them, and is idempotent", async () => {
   const live = observedLiveRepairableContract();
   const result = await authorCreativeContract(request(recordingQuery(JSON.stringify(live)).factory));
@@ -775,7 +797,7 @@ test("requires exact evidence resolution and admits no evidence outside the fact
   assert.ok(missing.errors.some((item) => item.code === "EVIDENCE_NOT_FOUND"));
 
   const mismatch = await authorCreativeContract(request(recordingQuery(JSON.stringify(contract())).factory, input(), {
-    resolve: () => ({ sha256: "d".repeat(64), excerptSha256: EXCERPT_HASH }),
+    resolve: () => ({ sha256: "d".repeat(64), excerptSha256: EXCERPT_HASH, factKind: "goal" }),
   }));
   assert.equal(mismatch.status, "invalid");
   assert.ok(mismatch.errors.some((item) => item.code === "EVIDENCE_DIGEST_MISMATCH"));
@@ -785,7 +807,7 @@ test("requires exact evidence resolution and admits no evidence outside the fact
     ...unadmitted.contentProof[0]!,
     evidence: { ...EVIDENCE, locator: "message:not-admitted" },
   };
-  const broadResolver: CreativeEvidenceResolver = { resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH }) };
+  const broadResolver: CreativeEvidenceResolver = { resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind: "goal" }) };
   const rejected = await authorCreativeContract(request(recordingQuery(JSON.stringify(unadmitted)).factory, input(), broadResolver));
   assert.equal(rejected.status, "invalid");
   assert.ok(rejected.compileErrors.some((item) => item.code === "EVIDENCE_NOT_FOUND"));

@@ -1,0 +1,811 @@
+{
+  "contentProof": [
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "eyebrow",
+        "alt",
+        "action"
+      ],
+      "claim": "Three-step wizard: choose appointment type, choose date and time slot, review and confirm.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:2",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "08d7975f12362eaa4bedf0eb47a7cf896ba9e9b8bc011fe3febcc5c466ba47c5"
+      },
+      "id": "p.wizard",
+      "status": "supported_paraphrase"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "metric",
+        "alt"
+      ],
+      "claim": "Step one offers exactly three appointment types.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:3",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "44eb70b833ef5a4e8c15edd14dc35870416d42a2e03ee7b9d458f152dccacfa6"
+      },
+      "id": "p.types",
+      "status": "verbatim"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "metric",
+        "alt"
+      ],
+      "claim": "Step two offers a date picker and exactly four predefined time slots.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:4",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "5bb65c091a7fa11191118ef882323618272ff4f588c48e2ad04c13ae95e55363"
+      },
+      "id": "p.slots",
+      "status": "verbatim"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "alt"
+      ],
+      "claim": "Back and Continue controls, a visible progress indicator, and inline validation are included; Back preserves valid selections.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:6",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "9ac6f23ddf2c00adad3ba0ba910db9d151b034aec0c3f1e89d4d3414b42b12d2"
+      },
+      "id": "p.controls",
+      "status": "supported_paraphrase"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "action"
+      ],
+      "claim": "Reset returns to Step 1 and clears selections, validation messages, and the previous confirmation.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:8",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "a9b9a291ae7ee2979e433f87ee53abc2f9edf9938567e885446f454595a2ed68"
+      },
+      "id": "p.reset",
+      "status": "supported_paraphrase"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "metric"
+      ],
+      "claim": "All data stays local and deterministic: no authentication, payments, databases, maps, email, calendars, analytics, or external APIs.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:9",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "d986ef6ab773594888becc5ae4263874d787756e302672810ef4c1141c348043"
+      },
+      "id": "p.local",
+      "status": "verbatim"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "eyebrow",
+        "alt"
+      ],
+      "claim": "Full keyboard operation, visible focus states, semantic form controls, associated labels, error messages that do not rely on color alone, logical heading structure, and sufficient color contrast.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:10",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "c83abd52d8b43af9c9b26485cde07ff8f82c11cadb9be023cbebf68f85e0ed00"
+      },
+      "id": "p.a11y",
+      "status": "verbatim"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "quote",
+        "alt"
+      ],
+      "claim": "After a validation failure focus moves to the first error or invalid field; after a step change focus moves to the new step heading or first meaningful control.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:11",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "4657396ce9b5d534c563a283b763e5649a29e03906f535a39fdc24f5bca59b38"
+      },
+      "id": "p.focus",
+      "status": "verbatim"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "metric",
+        "alt"
+      ],
+      "claim": "The layout works at 375px and desktop widths with no horizontal scrolling or clipped controls; resizing mid-flow preserves the current step and valid selections.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:13",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "84864486d0701382a2548ff9b5769fb3f31eb0ced7cdc7e23535926e0e36cbee"
+      },
+      "id": "p.responsive",
+      "status": "verbatim"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "action"
+      ],
+      "claim": "Delivered as a static app or local web server with clear run instructions; all routes and interactions work after a fresh start.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:15",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "9d3406427e2b8287c0a96ec7da50402210f924750bc09243fdf92f47d8316da8"
+      },
+      "id": "p.run",
+      "status": "supported_paraphrase"
+    },
+    {
+      "allowedUses": [
+        "headline",
+        "body",
+        "action",
+        "alt"
+      ],
+      "claim": "A confirmation screen ends the flow and offers a Book another appointment reset action.",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-822f12c1ba07308c:brief:6",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "9ac6f23ddf2c00adad3ba0ba910db9d151b034aec0c3f1e89d4d3414b42b12d2"
+      },
+      "id": "p.confirm",
+      "status": "verbatim"
+    },
+    {
+      "allowedUses": [
+        "body",
+        "alt"
+      ],
+      "claim": "The delivered page exposes deterministic route, section, and motion data markers for rendered capture.",
+      "evidence": {
+        "kind": "brief_artifact",
+        "locator": "ticket:t-822f12c1ba07308c:surface",
+        "sha256": "822f12c1ba07308c9ff1496ec32adbe38f6e4a048840777e3fe4bb2cd8b26a20",
+        "excerptSha256": "49b752ef6425eaa245a9727f32fca79bb18286ed10131302507b11c2e0e24c74"
+      },
+      "id": "p.markers",
+      "status": "verbatim"
+    }
+  ],
+  "contractId": "creative-t-822f12c1ba07308c",
+  "designRead": {
+    "aestheticFamily": "trust_first",
+    "audience": "Patients booking a clinic visit on phone or desktop, including keyboard and screen reader users",
+    "designSystem": "native",
+    "displayStyle": "sans",
+    "pageKind": "saas_landing",
+    "paletteFamily": "cobalt_cream",
+    "theme": "light",
+    "thesis": "A three-step booking wizard earns trust by making state visible: where you are, what you picked, what is wrong, and how to start over.",
+    "vibe": "Calm, legible, clinical without coldness; every control obvious and reachable"
+  },
+  "dials": {
+    "designVariance": 4,
+    "motionIntensity": 3,
+    "visualDensity": 5
+  },
+  "intentionalExceptions": [],
+  "motion": [
+    {
+      "fallback": {
+        "noMedia": "content_equivalent",
+        "reducedMotion": "instant"
+      },
+      "id": "m.step",
+      "implementation": "css",
+      "properties": [
+        "opacity",
+        "transform"
+      ],
+      "purpose": "state_transition",
+      "rationale": "A short slide clarifies that the wizard moved between steps rather than reloading the page.",
+      "routeId": "r.book",
+      "sectionId": "s.step2",
+      "simulationAuthorized": true,
+      "sourceStillKind": "ui",
+      "target": "Step panel entering after Continue or Back",
+      "trigger": "interaction"
+    },
+    {
+      "fallback": {
+        "noMedia": "content_equivalent",
+        "reducedMotion": "static"
+      },
+      "id": "m.error",
+      "implementation": "css",
+      "properties": [
+        "opacity"
+      ],
+      "purpose": "feedback",
+      "rationale": "Fading the error in draws the eye to the message focus has just moved to, without relying on color alone.",
+      "routeId": "r.book",
+      "sectionId": "s.step1",
+      "simulationAuthorized": true,
+      "sourceStillKind": "ui",
+      "target": "Inline validation message appearing under an invalid field",
+      "trigger": "interaction"
+    },
+    {
+      "fallback": {
+        "noMedia": "content_equivalent",
+        "reducedMotion": "static"
+      },
+      "id": "m.confirm",
+      "implementation": "css",
+      "properties": [
+        "opacity"
+      ],
+      "purpose": "hierarchy",
+      "rationale": "A single settle marks the end of the flow so the reset action reads as a new beginning.",
+      "routeId": "r.book",
+      "sectionId": "s.confirm",
+      "simulationAuthorized": true,
+      "sourceStillKind": "ui",
+      "target": "Confirmation summary block",
+      "trigger": "enter_view"
+    }
+  ],
+  "routes": [
+    {
+      "id": "r.book",
+      "path": "/",
+      "sectionIds": [
+        "s.hero",
+        "s.nav",
+        "s.step1",
+        "s.step2",
+        "s.step3",
+        "s.confirm",
+        "s.a11y",
+        "s.responsive",
+        "s.local",
+        "s.run",
+        "s.footer"
+      ]
+    }
+  ],
+  "schemaVersion": 1,
+  "sections": [
+    {
+      "actions": [
+        {
+          "href": "#step-1",
+          "id": "a.hero.start",
+          "intent": "navigate",
+          "label": "Start booking",
+          "priority": "primary",
+          "proofId": "p.wizard"
+        }
+      ],
+      "body": "Pick a type, pick a time, review it. Back keeps your choices. Progress stays visible throughout.",
+      "contentRefs": [
+        {
+          "proofId": "p.wizard",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.controls",
+          "use": "body"
+        },
+        {
+          "proofId": "p.wizard",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Book a clinic appointment in three steps",
+      "id": "s.hero",
+      "job": "State what the app does and start the wizard at step one.",
+      "kind": "hero",
+      "layoutFamily": "asymmetric_split",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual",
+          "actions"
+        ],
+        "strategy": "stack"
+      },
+      "order": 0,
+      "requiredStates": [
+        "default",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [],
+      "body": null,
+      "contentRefs": [
+        {
+          "proofId": "p.controls",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.wizard",
+          "use": "alt"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Step 1 of 3: appointment type",
+      "id": "s.nav",
+      "job": "Show the three-step progress indicator and current position.",
+      "kind": "navigation",
+      "layoutFamily": "navigation_bar",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "visual"
+        ],
+        "strategy": "horizontal_scroll"
+      },
+      "order": 1,
+      "requiredStates": [
+        "default",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [
+        {
+          "href": "#step-2",
+          "id": "a.s1.next",
+          "intent": "navigate",
+          "label": "Continue to date",
+          "priority": "primary",
+          "proofId": "p.wizard"
+        }
+      ],
+      "body": "Three options: general consultation, follow up visit, and vaccination. Select one to continue.",
+      "contentRefs": [
+        {
+          "proofId": "p.types",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.types",
+          "use": "body"
+        },
+        {
+          "proofId": "p.wizard",
+          "use": "eyebrow"
+        },
+        {
+          "proofId": "p.wizard",
+          "use": "action"
+        }
+      ],
+      "eyebrow": "Step one",
+      "headline": "Choose your appointment type",
+      "id": "s.step1",
+      "job": "Let the patient choose one of exactly three appointment types.",
+      "kind": "form",
+      "layoutFamily": "form_stack",
+      "mobile": {
+        "contentOrder": [
+          "eyebrow",
+          "headline",
+          "body",
+          "visual",
+          "actions"
+        ],
+        "strategy": "stack"
+      },
+      "order": 2,
+      "requiredStates": [
+        "default",
+        "error",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [
+        {
+          "href": "#step-1",
+          "id": "a.s2.back",
+          "intent": "navigate",
+          "label": "Start booking",
+          "priority": "secondary",
+          "proofId": "p.wizard"
+        },
+        {
+          "href": "#step-3",
+          "id": "a.s2.next",
+          "intent": "navigate",
+          "label": "Continue to review",
+          "priority": "primary",
+          "proofId": "p.wizard"
+        }
+      ],
+      "body": "Choose a date, then select morning, midday, afternoon, or evening. Back returns to step one with your type intact.",
+      "contentRefs": [
+        {
+          "proofId": "p.slots",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.slots",
+          "use": "body"
+        },
+        {
+          "proofId": "p.slots",
+          "use": "metric"
+        },
+        {
+          "proofId": "p.wizard",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Pick a date and one of four time slots",
+      "id": "s.step2",
+      "job": "Let the patient choose a date and one of exactly four time slots.",
+      "kind": "form",
+      "layoutFamily": "split_media_left",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual",
+          "actions"
+        ],
+        "strategy": "stack"
+      },
+      "order": 3,
+      "requiredStates": [
+        "default",
+        "empty",
+        "error",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [
+        {
+          "href": "#confirmation",
+          "id": "a.s3.confirm",
+          "intent": "navigate",
+          "label": "Confirm booking",
+          "priority": "primary",
+          "proofId": "p.confirm"
+        }
+      ],
+      "body": "Type, date, and time slot listed together. Edit any line by stepping back; nothing is lost.",
+      "contentRefs": [
+        {
+          "proofId": "p.wizard",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.controls",
+          "use": "body"
+        },
+        {
+          "proofId": "p.confirm",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Review your appointment before confirming",
+      "id": "s.step3",
+      "job": "Show the review summary before the booking is confirmed.",
+      "kind": "proof",
+      "layoutFamily": "vertical_stack",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual",
+          "actions"
+        ],
+        "strategy": "stack"
+      },
+      "order": 4,
+      "requiredStates": [
+        "default",
+        "loading",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [
+        {
+          "href": "#reset",
+          "id": "a.reset",
+          "intent": "navigate",
+          "label": "Book another appointment",
+          "priority": "primary",
+          "proofId": "p.reset"
+        }
+      ],
+      "body": "Book another appointment returns to step one and clears every selection, validation message, and this confirmation.",
+      "contentRefs": [
+        {
+          "proofId": "p.confirm",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.reset",
+          "use": "body"
+        },
+        {
+          "proofId": "p.reset",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Your appointment is booked",
+      "id": "s.confirm",
+      "job": "Confirm the booking and offer the reset action.",
+      "kind": "cta",
+      "layoutFamily": "media_mask",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual",
+          "actions"
+        ],
+        "strategy": "stack"
+      },
+      "order": 5,
+      "requiredStates": [
+        "default",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [],
+      "body": "Semantic controls with associated labels, visible focus rings, sufficient contrast, and a logical heading order.",
+      "contentRefs": [
+        {
+          "proofId": "p.a11y",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.a11y",
+          "use": "body"
+        },
+        {
+          "proofId": "p.focus",
+          "use": "quote"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Keyboard first, labelled, and never color alone",
+      "id": "s.a11y",
+      "job": "Explain the accessibility behaviour built into the wizard.",
+      "kind": "feature",
+      "layoutFamily": "bento",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual"
+        ],
+        "strategy": "stack"
+      },
+      "order": 6,
+      "requiredStates": [
+        "default",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [],
+      "body": "Resize mid flow and the current step plus every valid selection stay exactly where you left them.",
+      "contentRefs": [
+        {
+          "proofId": "p.responsive",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.responsive",
+          "use": "body"
+        },
+        {
+          "proofId": "p.responsive",
+          "use": "metric"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Works at 375px without horizontal scroll",
+      "id": "s.responsive",
+      "job": "Show the flow surviving a resize at 375px and desktop widths.",
+      "kind": "feature",
+      "layoutFamily": "gallery_grid",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual"
+        ],
+        "strategy": "stack"
+      },
+      "order": 7,
+      "requiredStates": [
+        "default",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [],
+      "body": "No authentication, payments, databases, maps, email, calendars, analytics, or external APIs. Data is local and deterministic.",
+      "contentRefs": [
+        {
+          "proofId": "p.local",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.local",
+          "use": "body"
+        },
+        {
+          "proofId": "p.a11y",
+          "use": "eyebrow"
+        }
+      ],
+      "eyebrow": "How it runs",
+      "headline": "Everything stays on your machine",
+      "id": "s.local",
+      "job": "State the no external dependency boundary.",
+      "kind": "editorial",
+      "layoutFamily": "editorial_manifesto",
+      "mobile": {
+        "contentOrder": [
+          "eyebrow",
+          "headline",
+          "body",
+          "visual"
+        ],
+        "strategy": "stack"
+      },
+      "order": 8,
+      "requiredStates": [
+        "default"
+      ],
+      "routeId": "r.book",
+      "visualKind": "type_only"
+    },
+    {
+      "actions": [
+        {
+          "href": "#run-instructions",
+          "id": "a.run",
+          "intent": "learn_more",
+          "label": "Read run instructions",
+          "priority": "secondary",
+          "proofId": "p.run"
+        }
+      ],
+      "body": "Serve the folder or open the static build. Every route and interaction works on first load.",
+      "contentRefs": [
+        {
+          "proofId": "p.run",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.markers",
+          "use": "body"
+        },
+        {
+          "proofId": "p.run",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Run it locally from a fresh start",
+      "id": "s.run",
+      "job": "Give the run instructions for the static app or local server.",
+      "kind": "feature",
+      "layoutFamily": "split_media_right",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual",
+          "actions"
+        ],
+        "strategy": "stack"
+      },
+      "order": 9,
+      "requiredStates": [
+        "default",
+        "interaction"
+      ],
+      "routeId": "r.book",
+      "visualKind": "real_component"
+    },
+    {
+      "actions": [
+        {
+          "href": "#step-1",
+          "id": "a.footer.start",
+          "intent": "navigate",
+          "label": "Start booking",
+          "priority": "secondary",
+          "proofId": "p.wizard"
+        }
+      ],
+      "body": null,
+      "contentRefs": [
+        {
+          "proofId": "p.wizard",
+          "use": "headline"
+        },
+        {
+          "proofId": "p.wizard",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Clinic booking demo",
+      "id": "s.footer",
+      "job": "Close the page and return the reader to step one.",
+      "kind": "footer",
+      "layoutFamily": "footer_columns",
+      "mobile": {
+        "contentOrder": [
+          "headline",
+          "actions"
+        ],
+        "strategy": "stack"
+      },
+      "order": 10,
+      "requiredStates": [
+        "default"
+      ],
+      "routeId": "r.book",
+      "visualKind": "none"
+    }
+  ]
+}
