@@ -257,8 +257,8 @@ test("CONTRACT: the client's RunDetail declares designLock, with the server's sh
   // parser. Counting first makes the truncation say so itself.
   assert.equal(
     state.split(";").length - 1,
-    14,
-    "the DesignLockState region did not parse as fourteen fields — re-point this parser, do not delete it",
+    15,
+    "the DesignLockState region did not parse as fifteen fields — re-point this parser, do not delete it",
   );
   for (const field of [
     /readonly awaiting: boolean;/,
@@ -266,13 +266,15 @@ test("CONTRACT: the client's RunDetail declares designLock, with the server's sh
     /readonly locked: string \| null;/,
     /readonly lockedBy: "owner" \| "ui-designer" \| "fallback" \| null;/,
     /readonly reason: string \| null;/,
-    // THE NINE ADDED 2026-08-03. Their TYPES are pinned here and not only their
-    // names, which is what the whole-shape check further down cannot see: a
-    // client that declared `stage: string` would mirror the field and lose the
+    // THE NINE ADDED 2026-08-03, plus the optional direction reason. Their TYPES
+    // are pinned here and not only their names, which is what the whole-shape
+    // check further down cannot see: a client that declared `stage: string`
+    // would mirror the field and lose the
     // four states the panel branches on.
     /readonly directions: readonly DesignDirectionState\[\];/,
     /readonly chosenDirection: string \| null;/,
     /readonly chosenDirectionBy: "owner" \| "ui-designer" \| "fallback" \| null;/,
+    /readonly chosenDirectionReason\?: string \| null;/,
     /readonly stage: DesignStage;/,
     /readonly turnsUsed: number;/,
     /readonly turnsMax: number;/,
@@ -814,10 +816,11 @@ const DETAIL_SHAPES: readonly {
   {
     server: "ApiDesignLock",
     client: "DesignLockState",
-    // FOURTEEN SINCE 2026-08-03. The nine added fields carry the two-stage
-    // canvass, and every one of them is a field the panel cannot render if the
-    // client omits it — `stage` most of all: without it the panel reports
-    // "unlocked" for the whole five-to-seven-generation stage-B window.
+    // FIFTEEN WITH THE OPTIONAL DIRECTION REASON. The nine fields added on
+    // 2026-08-03 carry the two-stage canvass, and every one is a field the panel
+    // cannot render if the client omits it — `stage` most of all: without it
+    // the panel reports "unlocked" for the whole five-to-seven-generation
+    // stage-B window.
     fields: [
       "awaiting",
       "mockups",
@@ -827,6 +830,7 @@ const DETAIL_SHAPES: readonly {
       "directions",
       "chosenDirection",
       "chosenDirectionBy",
+      "chosenDirectionReason",
       "stage",
       "turnsUsed",
       "turnsMax",
