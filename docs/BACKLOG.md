@@ -32,3 +32,16 @@ It records outcomes, not speculative implementation instructions.
 Never delete an unfinished item merely because a session ends. Change its status,
 link the evidence, and move verified behavior into [CAPABILITIES.md](CAPABILITIES.md).
 If an item is rejected, retain it with status `rejected` and the decision link.
+
+
+## Deferred findings from the Batch 2A review
+
+The [independent review](REVIEW-wave2-batch2a-2026-09-08.md) and [corrective report](REPORT-wave2-batch2a-fixes-2026-09-08.md) carry these items beyond T17b, T16b and T18b. They do not authorize Batch 2B implementation or activation.
+
+- **L5, Unicode filesystem folding:** measure on this Mac whether APFS resolves spellings such as U+017F long s or U+212A Kelvin to protected ASCII names while the current lowercase predicate does not. This remains an unmeasured hypothesis; choose a folding or native-realpath change only after evidence. Do not claim Linux behavior from that Mac measurement.
+- **L9, direction dial format:** address the universal format with T26, which edits the same prompt block and requires fresh design-prompt captures. Until then, an invalid-first-declaration reason may reflect unsupported punctuation rather than an intended motion-policy denial.
+- **L9, video-policy semantics:** decide whether video legs require an explicitly declared `scroll_progress` motion, and reconcile the lane with compiler-admitted `DIAL_DEVIATION` exceptions. The current projection omits trigger/exception semantics: it can deny an admitted low-dial exception or permit a high-dial contract containing only `enter_view` motion. Keep this a separate policy task; no new lane-specific threshold or implementation is included here.
+- **L2, unmapped accessible name:** with the next T15 touch, remove the repeated agent name and restore “unmapped role”; bind it with an accessible-name browser assertion.
+- **L10, role hue comment:** with the next T15 touch, include debug hue 300 and remove the near-grey unmapped 258 from the hue-wheel list. This is a comment correction, not a color change.
+
+- **PREVIEW-EXPOSURE-001 implementation update:** corrective API preview code completed in `57b74d691904c768d982a56b9789fa605a0801af`; see the [corrective report](REPORT-wave2-batch2a-fixes-2026-09-08.md). Activation remains pending owner review and a controlled API restart. The unchanged process on 4176 still serves the previously exposed clinic paths; this implementation status does not close the live exposure.
