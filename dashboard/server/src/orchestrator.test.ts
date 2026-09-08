@@ -8680,6 +8680,53 @@ test("T17b finish requeue cannot retain clean judge authority in a failed next b
   } finally { await h.cleanup(); }
 });
 
+test("T17b no-attempt finalization removes a stale judge file after boot requeue", async () => {
+  const h = harness();
+  try {
+    const runId = "run-stale-judge-no-attempt";
+    seed(h.store, runId, 1);
+    h.store.updateRun(runId, { status: "running", phase: "build" });
+    const paths = resolvePaths({ DASHBOARD_HOME: h.dir });
+    const results = runPathsFor(paths, runId).results;
+    mkdirSync(results, { recursive: true });
+    const judgePath = join(results, "judge.json");
+    writeFileSync(judgePath, JSON.stringify({
+      verdict: "clean", ran: true, findings: [], summary: "stale prior execution",
+    }), "utf8");
+    assert.equal(existsSync(judgePath), true, "the crash fixture must contain a stale judge report");
+    // A fresh orchestrator has no in-memory report. Keep execution stopped so
+    // boot requeue and cancellation cannot start a builder or reset at entry.
+    await h.orchestrator.shutdown();
+    h.orchestrator.reconcileOnBoot();
+    assert.equal(h.store.getRun(runId)?.status, "queued", "boot must requeue the interrupted run");
+    assert.equal(h.orchestrator.cancel(runId), true);
+    assert.equal(existsSync(judgePath), false,
+      "no-attempt finalization must remove stale judge.json when no judge report is in memory");
+    assert.equal(h.store.getRun(runId)?.status, "cancelled");
+    assert.equal(h.store.listAttempts(runId).length, 0, "finalization must run without an attempt-entry reset");
+    const page = readFileSync(join(results, "verdict.md"), "utf8");
+    assert.match(page, /^# NO VERDICT WAS REACHED/, "cancellation before the gate must retain its no-verdict outcome");
+    assert.doesNotMatch(page, /stale prior execution|nothing was noted against it/);
+  } finally { h.cleanup(); }
+});
+
+test("T17b no-attempt finalization keeps its verdict when stale judge cleanup fails", async () => {
+  const h = harness();
+  try {
+    const runId = "run-stale-judge-cleanup-failure";
+    seed(h.store, runId, 1);
+    const results = runPathsFor(resolvePaths({ DASHBOARD_HOME: h.dir }), runId).results;
+    mkdirSync(join(results, "judge.json"), { recursive: true });
+    await h.orchestrator.shutdown();
+    assert.doesNotThrow(() => h.orchestrator.cancel(runId), "no-attempt judge cleanup failure must not throw");
+    assert.equal(h.store.getRun(runId)?.status, "cancelled");
+    assert.equal(existsSync(join(results, "verdict.md")), true, "no-attempt judge cleanup failure must not suppress the verdict");
+    assert.ok(h.store.eventsSince(runId, 0).some(({ event }) =>
+      event.type === "log" && event.text.includes("previous judge report could not be removed")),
+    "no-attempt judge cleanup failure must be logged");
+  } finally { h.cleanup(); }
+});
+
 test("T17 a new attempt cannot reuse a prior clean judge when authentication is skipped", async () => {
   const h = await judgeHarness(JSON.stringify({ verdict: "clean", findings: [], summary: "fresh clean fixture" }));
   try {

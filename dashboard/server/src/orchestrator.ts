@@ -9186,9 +9186,12 @@ export class Orchestrator {
    */
   #writeVerdict(runId: string, row: RunRow): string | null {
     try {
+      const paths = runPathsFor(this.#deps.paths, runId);
+      const judgeReport = this.#judgeReports.get(runId);
+      if (judgeReport === undefined) this.#resetJudgeReport(runId, paths);
       return writeRunVerdict(
-        runPathsFor(this.#deps.paths, runId).results,
-        verdictSourceFor(row, this.#deps.store.listCriteria(runId), this.#visualGate.get(runId), this.#judgeReports.get(runId)),
+        paths.results,
+        verdictSourceFor(row, this.#deps.store.listCriteria(runId), this.#visualGate.get(runId), judgeReport),
       );
     } catch (error) {
       // The record of the run, not the run. A run that finished must not be
