@@ -70,6 +70,55 @@ function expand(overrides: Partial<Parameters<typeof designSegmentPrompt>[0]> = 
   return full({ stage: "expand", chosen: CHOSEN, ...overrides });
 }
 
+test("denied video policy removes both expansion invitation and template marks", () => {
+  const reason = "Contract motionIntensity 3 and direction motionIntensity 2 are below threshold 8.";
+  const prompt = expand({ capability: { ...CAP, video: true }, videoPolicy: { allowed: false, reason } });
+  assert.match(prompt, /MOTION LEGS ARE DECLINED BY POLICY FOR THIS EXPANSION/);
+  assert.ok(prompt.includes(reason), "the policy's recorded reason reaches the expansion");
+  assert.doesNotMatch(prompt, /MOTION LEGS ARE AVAILABLE/);
+  assert.doesNotMatch(prompt, /"animate": true/);
+  assert.equal(planFromTemplate(prompt).legs.length, 0, "the literal example must not request a refused leg");
+});
+
+test("allowed video policy leaves the expansion bytes unchanged", () => {
+  const capability = { ...CAP, video: true };
+  assert.equal(
+    expand({ capability, videoPolicy: { allowed: true, reason: "both dials allow motion" } }),
+    expand({ capability }),
+  );
+});
+
+test("denied expansion explains policy even when video capability is absent", () => {
+  const reason = "Contract motionIntensity 3 is below threshold 8.";
+  const prompt = expand({ capability: CAP, videoPolicy: { allowed: false, reason } });
+  assert.match(prompt, /MOTION LEGS ARE DECLINED BY POLICY FOR THIS EXPANSION/);
+  assert.ok(prompt.includes(reason));
+  assert.doesNotMatch(prompt, /MOTION LEGS ARE AVAILABLE|"animate": true/);
+});
+
+test("video policy does not change the canvass bytes", () => {
+  const capability = { ...CAP, video: true };
+  assert.equal(
+    full({ capability, videoPolicy: { allowed: false, reason: "contract motionIntensity 3" } }),
+    full({ capability }),
+  );
+});
+
+test("degraded expansion still explains a declined video policy", () => {
+  const reason = "Contract motionIntensity 3 is below threshold 8.";
+  const prompt = expand({ mode: "degraded", videoPolicy: { allowed: false, reason } });
+  assert.match(prompt, /MOTION LEGS ARE DECLINED BY POLICY FOR THIS EXPANSION/);
+  assert.ok(prompt.includes(reason));
+  assert.doesNotMatch(prompt, /Keep the references as stills|MOTION LEGS ARE AVAILABLE|"animate": true/);
+});
+
+test("degraded expansion bytes stay unchanged when policy allows or is omitted", () => {
+  assert.equal(
+    expand({ mode: "degraded", videoPolicy: { allowed: true, reason: "no contract; policy not applied" } }),
+    expand({ mode: "degraded" }),
+  );
+});
+
 test("the prompt names the script by its ABSOLUTE path — nothing on PATH substitutes", () => {
   assert.match(full(), /\/Users\/o\/\.claude\/scripts\/gemini-image\.sh/);
 });

@@ -17,10 +17,12 @@ function assertGolden(actual: string, expected: { readonly sha256: string; reado
 
 const current = await currentPromptBytes();
 for (const [name, golden] of Object.entries(WAVE2_PROMPT_GOLDENS)) {
-  test(`pre-T19/T20 golden: ${name}`, () => {
-    const actual = name === "video-consumption-rest"
-      ? current["video-consumption-original"]?.replace(FALSE_REFERENCE_SENTENCE, "")
-      : current[name];
+  test(`${name === "video-consumption-original" ? "historical capture hash integrity" : "runtime golden"}: ${name}`, () => {
+    // The full original remains an immutable historical capture. T19's runtime
+    // must now equal the independently captured sentence-removed remainder.
+    const actual = name === "video-consumption-original"
+      ? golden.bytes
+      : name === "video-consumption-rest" ? current["video-consumption-original"] : current[name];
     assert.ok(actual !== undefined);
     assertGolden(actual, golden);
   });

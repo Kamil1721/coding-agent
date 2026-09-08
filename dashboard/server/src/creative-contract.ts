@@ -5,6 +5,7 @@ export const MAX_CREATIVE_ROUTES = 20;
 export const MAX_CREATIVE_SECTIONS = 80;
 export const MAX_CONTENT_PROOFS = 200;
 export const MAX_CREATIVE_MOTIONS = 80;
+export const SCROLL_PROGRESS_MIN_MOTION_INTENSITY = 8;
 export const MAX_CREATIVE_EXCEPTIONS = 20;
 export const MAX_ACTION_LABEL_WORDS = 4;
 
@@ -517,7 +518,7 @@ export const CREATIVE_CONTRACT_V1_AUTHOR_INVARIANTS = [
       { code: "EXCEPTION_UNUSED", pathPattern: "/intentionalExceptions/*" },
     ],
     guidance:
-      "Default intentionalExceptions to []. Active predicates are exactly: SERIF_DISPLAY only when displayStyle is serif AND pageKind is not editorial AND aestheticFamily is not editorial; PURPLE_PALETTE when paletteFamily is purple; WARM_CRAFT_PALETTE when paletteFamily is warm_craft; THEME_SWITCH when theme is section_switch; DIAL_DEVIATION when a motion trigger is scroll_progress AND motionIntensity is below 8; CENTERED_HERO when a route hero layoutFamily is centered_hero AND pageKind is neither editorial nor event_landing; LAYOUT_FAMILY_REPEAT when one layoutFamily occurs more than once on a route; SECOND_MARQUEE when a route has more than one marquee; TEXT_ONLY_PAGE when a route has no section whose visualKind is outside none and type_only. After drafting, add an exception only for an active predicate it will waive. The five global rules require routeId null and sectionIds []; route rules require an existing routeId and only sectionIds from that route, including every affected section the predicate checks. Omit every inactive exception; in particular, an editorial aesthetic needs no SERIF_DISPLAY exception.",
+      `Default intentionalExceptions to []. Active predicates are exactly: SERIF_DISPLAY only when displayStyle is serif AND pageKind is not editorial AND aestheticFamily is not editorial; PURPLE_PALETTE when paletteFamily is purple; WARM_CRAFT_PALETTE when paletteFamily is warm_craft; THEME_SWITCH when theme is section_switch; DIAL_DEVIATION when a motion trigger is scroll_progress AND motionIntensity is below ${SCROLL_PROGRESS_MIN_MOTION_INTENSITY}; CENTERED_HERO when a route hero layoutFamily is centered_hero AND pageKind is neither editorial nor event_landing; LAYOUT_FAMILY_REPEAT when one layoutFamily occurs more than once on a route; SECOND_MARQUEE when a route has more than one marquee; TEXT_ONLY_PAGE when a route has no section whose visualKind is outside none and type_only. After drafting, add an exception only for an active predicate it will waive. The five global rules require routeId null and sectionIds []; route rules require an existing routeId and only sectionIds from that route, including every affected section the predicate checks. Omit every inactive exception; in particular, an editorial aesthetic needs no SERIF_DISPLAY exception.`,
   },
   {
     id: "hero-order",
@@ -1146,7 +1147,7 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
     else if (section.routeId !== motion.routeId) error(ctx, "DANGLING_ROUTE", `/motion/${String(index)}/sectionId`, "motion section belongs to a different route");
     else if (motion.trigger === "interaction" && !section.requiredStates.includes("interaction")) error(ctx, "MOTION_FALLBACK_INVALID", `/motion/${String(index)}/trigger`, "interaction motion requires an interaction render state on its section");
     if (motion.properties.some((property) => property !== "opacity" && property !== "transform")) error(ctx, "MOTION_PROPERTY_FORBIDDEN", `/motion/${String(index)}/properties`, "motion may animate only opacity and transform");
-    if (motion.trigger === "scroll_progress" && contract.dials.motionIntensity < 8 && !useException("DIAL_DEVIATION", null)) error(ctx, "MOTION_DIAL_CONFLICT", `/motion/${String(index)}/trigger`, "scroll-progress motion requires intensity 8-10 or a dial exception");
+    if (motion.trigger === "scroll_progress" && contract.dials.motionIntensity < SCROLL_PROGRESS_MIN_MOTION_INTENSITY && !useException("DIAL_DEVIATION", null)) error(ctx, "MOTION_DIAL_CONFLICT", `/motion/${String(index)}/trigger`, "scroll-progress motion requires intensity 8-10 or a dial exception");
     if (motion.sourceStillKind === "ui" && !motion.simulationAuthorized) error(ctx, "UI_SIMULATION_UNAUTHORIZED", `/motion/${String(index)}/simulationAuthorized`, "UI still simulation requires explicit authorization");
     if (motion.fallback.reducedMotion.length === 0 || motion.fallback.noMedia.length === 0) error(ctx, "MOTION_FALLBACK_INVALID", `/motion/${String(index)}/fallback`, "motion requires reduced-motion and no-media fallbacks");
   }

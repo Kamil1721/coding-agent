@@ -1,3 +1,4 @@
+import { videoLegPolicy } from "./video-policy.js";
 /**
  * video-lane.test.ts — the lane, and the two facts its unit assertions alone
  * cannot establish.
@@ -412,4 +413,47 @@ test("THE MANIFEST THIS PROGRAM WRITES SAYS `refs`, AND THE PLANNER READS `secti
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("T19 declined policy keeps capability intact and spends zero; high policy spends two", async () => {
+  for (const [contractDial, directionDial, expected] of [[3, 2, 0], [8, 8, 2]] as const) {
+    const policy = videoLegPolicy({ pageKind: "consumer_landing", contractDial, directionDial });
+    const { d, spawned, written } = deps({ policy, readManifest: () => ({ ...MANIFEST, refs: MANIFEST.refs.slice(0, 2) }) });
+    const { record, prompt } = await runVideoLane(d);
+    assert.equal(spawned.length, expected);
+    assert.equal(record?.legsAttempted, expected);
+    assert.equal(record?.capability.available, true);
+    assert.deepEqual(record?.policy, { ...policy, marksDeclined: expected === 0 ? 2 : 0 });
+    assert.equal(written.length, 1);
+    assert.equal(prompt.length > 0, expected > 0);
+    assert.equal(record?.rejected.length, expected === 0 ? 2 : 0);
+  }
+});
+
+test("T19 denied resume never readvertises existing legs or overwrites the spend record", async () => {
+  const policy = videoLegPolicy({ pageKind: "consumer_landing", contractDial: 3, directionDial: 2 });
+  const { d, spawned, written } = deps({ policy, fileExists: () => true });
+  const result = await runVideoLane(d);
+  assert.deepEqual(result, { record: null, prompt: "" });
+  assert.deepEqual(spawned, []);
+  assert.deepEqual(written, []);
+});
+
+
+test("T19 declined marks are counted even without video capability, unlike legacy degradation", async () => {
+  const policy = videoLegPolicy({ pageKind: "consumer_landing", contractDial: 3, directionDial: 2 });
+  let reads = 0;
+  const noCapability = { ...AVAILABLE, available: false, reason: "fixture unavailable" };
+  const { d, spawned } = deps({
+    policy, capability: noCapability,
+    readManifest: () => { reads += 1; return { ...MANIFEST, refs: MANIFEST.refs.slice(0, 2) }; },
+  });
+  const { record } = await runVideoLane(d);
+  assert.equal(reads, 1);
+  assert.deepEqual(record?.capability, noCapability);
+  assert.equal(record?.policy.marksDeclined, 2);
+  assert.equal(spawned.length, 0);
+  const legacy = deps({ capability: noCapability, readManifest: () => { throw new Error("legacy degradation must not read the manifest"); } });
+  const unchanged = await runVideoLane(legacy.d);
+  assert.equal(unchanged.record?.policy.marksDeclined, 0);
 });

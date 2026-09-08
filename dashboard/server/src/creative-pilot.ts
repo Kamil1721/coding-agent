@@ -1,12 +1,15 @@
 /** Durable, default-off host policy for the rendered creative-review pilot. */
 
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { redactForPersistence } from "bakeoff/dist/redact.js";
+import type { VideoPolicyPageKind } from "./design/video-policy.js";
 import type { Ticket } from "bakeoff/dist/contracts.js";
 
 import {
+  MAX_CREATIVE_MOTIONS,
+  PAGE_KINDS,
   canonicalJson,
   compileCreativeContract,
   sha256Hex,
@@ -34,6 +37,58 @@ import { PLAN_BLOCK_BEGIN, PLAN_BLOCK_END, stripPlanBlock } from "./plan-brief.j
 import { TASTE_CATEGORIES, TASTE_CODE_CATEGORY, TASTE_FINDING_CODES } from "./taste-policy.js";
 
 export const CREATIVE_CONTRACT_FILE = "creative-contract.json";
+
+/** Policy projection only. Other contract fields still belong to the evidence compiler. */
+export type CreativeMotionPolicyRead =
+  | { readonly kind: "missing" }
+  | { readonly kind: "invalid"; readonly reason: string }
+  | { readonly kind: "present"; readonly pageKind: VideoPolicyPageKind; readonly motionIntensity: number; readonly motionIds: readonly string[] };
+
+export const MAX_MOTION_POLICY_BYTES = 1024 * 1024;
+
+function motionPolicyObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+/** Reads bounded motion-policy fields without resolving evidence or compiling the contract. */
+export function readCreativeMotionPolicy(resultsDir: string): CreativeMotionPolicyRead {
+  const invalid = (reason: string): CreativeMotionPolicyRead => ({ kind: "invalid", reason });
+  let raw: unknown;
+  try {
+    const path = join(resultsDir, CREATIVE_CONTRACT_FILE);
+    const info = lstatSync(path);
+    if (!info.isFile() || info.size > MAX_MOTION_POLICY_BYTES) return invalid("contract policy file is not a bounded regular file");
+    const bytes = readFileSync(path);
+    if (bytes.length > MAX_MOTION_POLICY_BYTES) return invalid("contract policy file exceeds the byte limit");
+    raw = JSON.parse(bytes.toString("utf8"));
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return { kind: "missing" };
+    return invalid("contract policy file could not be read as JSON");
+  }
+  const root = motionPolicyObject(raw);
+  const dials = motionPolicyObject(root?.["dials"]);
+  const designRead = motionPolicyObject(root?.["designRead"]);
+  const pageKind = designRead?.["pageKind"];
+  const motionIntensity = dials?.["motionIntensity"];
+  if (root?.["schemaVersion"] !== 1 || typeof pageKind !== "string" ||
+      (!(PAGE_KINDS as readonly string[]).includes(pageKind) && pageKind !== "app") ||
+      typeof motionIntensity !== "number" || !Number.isInteger(motionIntensity) || motionIntensity < 1 || motionIntensity > 10) {
+    return invalid("contract schema, page kind or motion dial is invalid");
+  }
+  const motions = root["motion"];
+  if (!Array.isArray(motions) || motions.length > MAX_CREATIVE_MOTIONS) return invalid("contract motion list is invalid");
+  const motionIds: string[] = [];
+  for (const motion of motions) {
+    const id = motionPolicyObject(motion)?.["id"];
+    if (typeof id !== "string" || id.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(id) || motionIds.includes(id)) {
+      return invalid("contract motion IDs are invalid or duplicated");
+    }
+    motionIds.push(id);
+  }
+  return { kind: "present", pageKind: pageKind as VideoPolicyPageKind, motionIntensity, motionIds };
+}
+
 /** Exact repository identity for the default-off-everywhere-else WEB pilot. */
 export const CREATIVE_PILOT_PROJECT_ID = "coding-agent";
 export const CREATIVE_COMPILE_FILE = "creative-compile.json";

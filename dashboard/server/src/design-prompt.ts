@@ -38,6 +38,7 @@ import { join } from "node:path";
 // `design-capability.ts` owns, and the drift would be silent in the worst
 // direction — a build told to run a script that is not where this file says.
 import { GEMINI_IMAGE_SCRIPT, type DesignCapability } from "./design-capability.js";
+import type { VideoLegPolicy } from "./design/video-policy.js";
 // THE CAP AND THE ASPECT SET ARE IMPORTED FROM THE PLANNER THAT ENFORCES THEM.
 // A `2` and a `"16:9" or "9:16"` typed into this file would be a second
 // declaration site for numbers `video-legs.ts` owns, and the failure would be
@@ -156,6 +157,8 @@ export function designSegmentPrompt(input: {
   workspace: string;
   mode: DesignLaneMode;
   capability: DesignCapability;
+  /** Applied only when expanding the chosen direction. */
+  videoPolicy?: VideoLegPolicy;
   autoChoose: boolean;
   /** Which half of the two-stage lane. See {@link DesignPromptStage}. */
   stage: DesignPromptStage;
@@ -211,6 +214,13 @@ export function designSegmentPrompt(input: {
   );
 
   if (input.mode === "degraded") {
+    if (!canvass && input.videoPolicy?.allowed === false) {
+      lines.push(
+        "MOTION LEGS ARE DECLINED BY POLICY FOR THIS EXPANSION.",
+        input.videoPolicy.reason,
+        "",
+      );
+    }
     lines.push(
       "IMAGE GENERATION IS UNAVAILABLE ON THIS RUN, and that is expected rather than a",
       "fault — no Gemini key resolves, or the preflight found the chain broken. Do not",
@@ -430,14 +440,22 @@ export function designSegmentPrompt(input: {
       "the lane is then reported as having produced nothing.",
       "",
     );
-    lines.push(...(canvass ? canvassBrief(refsDir, manifest) : expandBrief(refsDir, manifest, chosen, input.capability.video)));
+    lines.push(...(canvass ? canvassBrief(refsDir, manifest) : expandBrief(refsDir, manifest, chosen, input.capability.video && input.videoPolicy?.allowed !== false)));
     lines.push(
       "`path` must be ABSOLUTE and inside that directory. A manifest with a path",
       "outside it is rejected wholesale by the host, and the lane then counts as having",
       "produced nothing.",
       "",
     );
-    if (!input.capability.video) {
+    if (!canvass && input.videoPolicy?.allowed === false) {
+      lines.push(
+        "MOTION LEGS ARE DECLINED BY POLICY FOR THIS EXPANSION.",
+        input.videoPolicy.reason,
+        "Do not mark refs for animation. Keep the references as stills; the build must",
+        "follow the motion limits in the chosen direction and creative contract.",
+        "",
+      );
+    } else if (!input.capability.video) {
       // DELIBERATELY NAMES NO FILE EXTENSION. The plan's draft of this branch read
       // "do not reference an .mp4 that will not exist" — which put the literal
       // `.mp4` into a prompt built with `capability.video === false`, and Step 1's

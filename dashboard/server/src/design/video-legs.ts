@@ -23,6 +23,7 @@
  * phase widens that route. `DASHBOARD_VIDEO_LEG_CAP` is read once per run and
  * written into `results/video.json` beside the number it produced.
  */
+import type { VideoLegPolicy } from "./video-policy.js";
 import type { VideoCapability } from "./video-capability.js";
 
 export const VEO_ASPECTS = ["16:9", "9:16"] as const;
@@ -101,6 +102,7 @@ export function planVideoLegs(
   manifestJson: unknown,
   workspace: string,
   cap: ResolvedLegCap,
+  policy?: VideoLegPolicy,
 ): VideoLegPlan {
   const sections =
     typeof manifestJson === "object" &&
@@ -116,6 +118,10 @@ export function planVideoLegs(
     const s = raw as Record<string, unknown>;
     if (s["animate"] !== true) continue;
     const name = typeof s["section"] === "string" ? s["section"] : "(unnamed section)";
+    if (policy?.allowed === false) {
+      rejected.push({ section: name, why: policy.reason });
+      continue;
+    }
     const still = typeof s["path"] === "string" ? s["path"] : "";
     if (still === "") {
       rejected.push({ section: name, why: "no `path` to a still — Veo 3.1 is driven from a first frame" });
@@ -191,6 +197,7 @@ export async function runVideoLegs(plan: VideoLegPlan, invoke: LegInvoker): Prom
 }
 
 export interface VideoSpendRecord {
+  readonly policy: VideoLegPolicy & { readonly marksDeclined: number };
   readonly capability: VideoCapability;
   readonly cap: number;
   readonly capSource: "default" | "run-opt-in";
@@ -231,6 +238,7 @@ export interface VideoSpendRecord {
  */
 export function renderVideoSpend(input: {
   capability: VideoCapability;
+  policy?: VideoLegPolicy;
   plan: VideoLegPlan;
   summary: LegRunSummary;
   model: string;
@@ -240,6 +248,10 @@ export function renderVideoSpend(input: {
 }): VideoSpendRecord {
   return {
     capability: input.capability,
+    policy: {
+      ...(input.policy ?? { allowed: true, reason: "no contract; policy not applied" }),
+      marksDeclined: input.policy?.allowed === false ? input.plan.rejected.length : 0,
+    },
     cap: input.plan.cap,
     capSource: input.plan.capSource,
     model: input.model,

@@ -573,6 +573,8 @@ interface FakeBuilderOptions {
    * manifest it has always seen.
    */
   readonly animateRefs: boolean;
+  readonly canvassMotionDial?: number;
+  readonly expandedMotionDial?: number;
   /**
    * Reach the orchestrator's own callbacks the way a real driver does.
    *
@@ -884,6 +886,7 @@ class FakeBuilder implements SubscriptionBuilder {
         intent: "x",
         direction: slug,
         origin: expanding ? ("expansion" as const) : ("canvass" as const),
+        ...(expanding && this.#options.animateRefs ? { animate: true } : {}),
       };
     };
 
@@ -892,7 +895,7 @@ class FakeBuilder implements SubscriptionBuilder {
       for (const slug of slugs) {
         refs.push(write(slug, 1, "hero"));
         refs.push(write(slug, 2, "work"));
-        writeFileSync(join(refsDir, `direction-${slug}.md`), `DESIGN_VARIANCE: 3 (${slug})\n`, "utf8");
+        writeFileSync(join(refsDir, `direction-${slug}.md`), `DESIGN_VARIANCE: 3 (${slug})\n${this.#options.canvassMotionDial === undefined ? "" : `- **MOTION_INTENSITY ${String(this.#options.canvassMotionDial)}** — fixture\n`}`, "utf8");
       }
       const chosen = this.#options.canvassChoice ?? null;
       writeDesignManifest(workspace, {
@@ -931,7 +934,7 @@ class FakeBuilder implements SubscriptionBuilder {
     for (const [offset, section] of ["about", "contact", "footer", "services", "gallery"].entries()) {
       added.push(write(chosen, offset + 3, section));
     }
-    writeFileSync(join(refsDir, "direction.md"), `DESIGN_VARIANCE: 3 (${chosen})\n`, "utf8");
+    writeFileSync(join(refsDir, "direction.md"), `DESIGN_VARIANCE: 3 (${chosen})\n${this.#options.expandedMotionDial === undefined ? "" : `- **MOTION_INTENSITY ${String(this.#options.expandedMotionDial)}** — fixture\n`}`, "utf8");
     const refs = [...existing.refs, ...added];
     const drops = this.#options.expandDrops;
     if (drops !== undefined) {
@@ -988,10 +991,10 @@ class FakeBuilder implements SubscriptionBuilder {
       writeFileSync(join(refsDir, "direction.md"), "DESIGN_VARIANCE: 3 (written, not drawn)\n", "utf8");
       return;
     }
-    if (shape === "bare") writeFileSync(join(refsDir, "direction.md"), "DESIGN_VARIANCE: 3\n", "utf8");
+    if (shape === "bare") writeFileSync(join(refsDir, "direction.md"), `DESIGN_VARIANCE: 3\n${this.#options.expandedMotionDial === undefined ? "" : `- **MOTION_INTENSITY ${String(this.#options.expandedMotionDial)}** — fixture\n`}`, "utf8");
     else {
       for (const slug of slugs) {
-        writeFileSync(join(refsDir, `direction-${slug}.md`), `DESIGN_VARIANCE: 3 (${slug})\n`, "utf8");
+        writeFileSync(join(refsDir, `direction-${slug}.md`), `DESIGN_VARIANCE: 3 (${slug})\n${this.#options.canvassMotionDial === undefined ? "" : `- **MOTION_INTENSITY ${String(this.#options.canvassMotionDial)}** — fixture\n`}`, "utf8");
       }
     }
     // `writeManifest: false` REACHES THIS SEGMENT TOO, and it did not until
@@ -1050,7 +1053,7 @@ class FakeBuilder implements SubscriptionBuilder {
       // string here would test a format nothing produces.
       request.sink.tool("Bash", `command: ${join(workspace, "..", "..", "..", GEMINI_STUB_NAME)} "a prompt" -a 16:9 -o ${path}`);
     }
-    writeFileSync(join(refsDir, "direction.md"), "DESIGN_VARIANCE: 3\n", "utf8");
+    writeFileSync(join(refsDir, "direction.md"), `DESIGN_VARIANCE: 3\n${this.#options.expandedMotionDial === undefined ? "" : `- **MOTION_INTENSITY ${String(this.#options.expandedMotionDial)}** — fixture\n`}`, "utf8");
     if (!this.#options.writeManifest || refs.length === 0) return;
     writeDesignManifest(workspace, {
       version: 1,
@@ -1397,6 +1400,8 @@ async function designRun(options: {
   pngCount?: number;
   writeManifest?: boolean;
   animateRefs?: boolean;
+  canvassMotionDial?: number;
+  expandedMotionDial?: number;
   videoScript?: boolean;
   segmentTokens?: readonly number[];
   env?: NodeJS.ProcessEnv;
@@ -1467,6 +1472,8 @@ async function designRun(options: {
     segmentTokens: options.segmentTokens ?? [],
     writeManifest: options.writeManifest ?? true,
     animateRefs: options.animateRefs ?? false,
+    ...(options.canvassMotionDial === undefined ? {} : { canvassMotionDial: options.canvassMotionDial }),
+    ...(options.expandedMotionDial === undefined ? {} : { expandedMotionDial: options.expandedMotionDial }),
     directions: options.directions ?? false,
     ...(options.emptyRefs === undefined ? {} : { emptyRefs: options.emptyRefs }),
     ...(options.canvassChoice === undefined ? {} : { canvassChoice: options.canvassChoice }),
@@ -8627,4 +8634,60 @@ test("T17 a cancelled attempt clears a stale judge file before reaching the judg
     assert.equal(existsSync(join(results, "judge.json")), false);
     assert.doesNotMatch(readFileSync(join(results, "verdict.md"), "utf8"), /nothing was noted against it/);
   } finally { await h.cleanup(); }
+});
+
+function t19Contract(motionIntensity: number, pageKind = "consumer_landing"): string {
+  return JSON.stringify({ schemaVersion: 1, designRead: { pageKind }, dials: { motionIntensity }, motion: [] });
+}
+
+async function t19VideoRun(options: { contract?: string; canvassDial?: number; expandedDial?: number; directions?: boolean }) {
+  const h = await designRun({
+    autoStart: false, designLock: "auto", animateRefs: true, videoScript: true, pngCount: 2,
+    makeGate: judgeGreenGate,
+    directions: options.directions ?? false,
+    ...(options.canvassDial === undefined ? {} : { canvassMotionDial: options.canvassDial }),
+    ...(options.expandedDial === undefined ? {} : { expandedMotionDial: options.expandedDial }),
+  });
+  const results = runPathsFor(h.paths, h.runId).results;
+  mkdirSync(results, { recursive: true });
+  if (options.contract !== undefined) writeFileSync(join(results, CREATIVE_CONTRACT_FILE), options.contract, "utf8");
+  h.orchestrator.pump();
+  await h.settle();
+  return h;
+}
+
+test("T19 real orchestrator declines low motion but permits high motion and missing-contract legacy", async () => {
+  for (const [contract, dial, expected, declined] of [
+    [t19Contract(3), 2, 0, 2], [t19Contract(8), 8, 2, 0], [undefined, 2, 2, 0],
+    ["{invalid", 8, 0, 2], [t19Contract(8, "app"), 8, 0, 2], [t19Contract(8), undefined, 2, 0],
+  ] as const) {
+    const h = await t19VideoRun({ ...(contract === undefined ? {} : { contract }), ...(dial === undefined ? {} : { expandedDial: dial }) });
+    try {
+      assert.equal(h.videoStubLog().length, expected, JSON.stringify({ contract, dial }));
+      const record = JSON.parse(readFileSync(runPathsFor(h.paths, h.runId).videoRecord, "utf8")) as { capability: { available: boolean }; policy: { allowed: boolean; reason: string; marksDeclined: number }; legsAttempted: number };
+      assert.equal(record.capability.available, true);
+      assert.equal(record.legsAttempted, expected);
+      assert.equal(record.policy.allowed, expected > 0);
+      assert.equal(record.policy.marksDeclined, declined);
+      if (contract === undefined) assert.equal(record.policy.reason, "no contract; policy not applied");
+      const build = h.builderCalls.at(-1)?.prompt ?? "";
+      assert.equal(build.includes("scrub, do not play"), expected > 0);
+    } finally { await h.cleanup(); }
+  }
+});
+
+test("T19 expansion reads the selected note while spend reads the expanded direction", async () => {
+  for (const [canvassDial, expandedDial] of [[2, 8], [8, 2]] as const) {
+    const h = await t19VideoRun({ contract: t19Contract(8), canvassDial, expandedDial, directions: true });
+    try {
+      const expansion = h.builderCalls.find(({ prompt }) => prompt.includes("STAGE B — EXPAND"))?.prompt;
+      assert.ok(expansion !== undefined);
+      assert.equal(expansion.includes("MOTION LEGS ARE AVAILABLE"), canvassDial >= 8);
+      assert.equal(expansion.includes('"animate": true'), canvassDial >= 8);
+      if (canvassDial < 8) assert.match(expansion, /direction dial 2/);
+      assert.equal(h.videoStubLog().length, expandedDial >= 8 ? 2 : 0);
+      const record = JSON.parse(readFileSync(runPathsFor(h.paths, h.runId).videoRecord, "utf8")) as { policy: { reason: string } };
+      assert.ok(record.policy.reason.includes(`direction dial ${String(expandedDial)}`));
+    } finally { await h.cleanup(); }
+  }
 });

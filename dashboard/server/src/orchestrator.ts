@@ -147,6 +147,7 @@ import {
   countDesignPngs,
   heroRefFor,
   pruneMissingRefs,
+  parseMotionIntensity,
   readDesignDirection,
   readDesignManifest,
   refsDirFor,
@@ -171,6 +172,7 @@ import {
   designSegmentPrompt,
 } from "./design-prompt.js";
 import { defaultVideoCapabilityDeps, videoCapability } from "./design/video-capability.js";
+import { videoLegPolicy } from "./design/video-policy.js";
 import { defaultSpawnLeg, runVideoLane } from "./design/video-lane.js";
 import { fixAllowedAgents } from "./fix-prompt.js";
 import { partitionByPermission, planFixes } from "./fix-triage.js";
@@ -228,6 +230,7 @@ import {
   persistCreativeAuthorAttempt,
   persistCreativeAuthorResult,
   readCreativePilotStatus,
+  readCreativeMotionPolicy,
   statusAfterCompile,
   statusAfterRender,
   statusAfterReview,
@@ -4962,6 +4965,28 @@ export class Orchestrator {
        * (`graph.ts:180-183`). The lane's node is the run's existing ROOT, read
        * off the durable stream by the same `graphResumeState` the remap uses.
        */
+      const selectedDirection = manifest === null || manifest.chosenDirection === null
+        ? null : (manifest.directions.find((direction) => direction.slug === manifest.chosenDirection) ?? null);
+      const motionContract = readCreativeMotionPolicy(runPaths.results);
+      let directionNote = "";
+      if (expandSegment) {
+        // Before expansion, direction.md may belong to a previous attempt.
+        // Only the selected canvass note can authorize this expansion.
+        if (selectedDirection?.notes !== null && selectedDirection?.notes !== undefined) {
+          try { directionNote = readFileSync(selectedDirection.notes, "utf8"); } catch { /* Unknown stays unknown. */ }
+        }
+      } else if (!designSegment) {
+        directionNote = readDesignDirection(runPaths.workspace);
+      }
+      const directionMotion = parseMotionIntensity(directionNote);
+      const videoPolicy = videoLegPolicy({
+        contractState: motionContract.kind,
+        pageKind: motionContract.kind === "present" ? motionContract.pageKind : null,
+        contractDial: motionContract.kind === "present" ? motionContract.motionIntensity : null,
+        directionDial: directionMotion.motionIntensity,
+        directionOccurrences: directionMotion.occurrences,
+        ...(motionContract.kind === "invalid" ? { contractProblem: motionContract.reason } : {}),
+      });
       const videoCap = videoCapability({
         ...defaultVideoCapabilityDeps(),
         env: this.#deps.env,
@@ -4975,6 +5000,7 @@ export class Orchestrator {
             node: graphResumeState(priorGraph).rootNode ?? "",
             env: this.#deps.env,
             capability: videoCap,
+            policy: videoPolicy,
             // The manifest this pass already read. A second `readDesignManifest`
             // here would be a second derivation of one path, and the plan's own
             // hand-rolled `JSON.parse(join(workspace,"design-refs",…))` is
@@ -5078,14 +5104,12 @@ export class Orchestrator {
             capability: this.#capability(),
             autoChoose: policy === "auto",
             stage: expandSegment ? "expand" : "canvass",
+            videoPolicy,
             // THE CHOSEN DIRECTION, READ OFF THE MANIFEST RATHER THAN CARRIED IN
             // MEMORY. The choice can be made by an owner while this process is
             // not executing the run at all — the park outlives the frame — so
             // there is no in-memory value to read on the second design segment.
-            chosen:
-              manifest === null || manifest.chosenDirection === null
-                ? null
-                : (manifest.directions.find((direction) => direction.slug === manifest.chosenDirection) ?? null),
+            chosen: selectedDirection,
           }) +
           designReferenceSection(references) +
           ownerNote

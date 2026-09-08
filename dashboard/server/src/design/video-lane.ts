@@ -19,6 +19,7 @@ import { promisify } from "node:util";
 import type { GraphSseEvent } from "../api-types.js";
 import type { DesignManifest } from "../design-manifest.js";
 import { subscriptionSubprocessEnv } from "../subprocess-env.js";
+import type { VideoLegPolicy } from "./video-policy.js";
 import type { VideoCapability } from "./video-capability.js";
 import {
   planVideoLegs,
@@ -43,6 +44,7 @@ export interface VideoLaneDeps {
   readonly node: string;
   readonly env: NodeJS.ProcessEnv;
   readonly capability: VideoCapability;
+  readonly policy?: VideoLegPolicy;
   /** The parsed manifest, or null. Given as a thunk so a degraded lane never reads. */
   readonly readManifest: () => DesignManifest | null;
   readonly spawnLeg: (leg: VideoLeg, env: NodeJS.ProcessEnv) => Promise<{ ok: boolean; detail: string }>;
@@ -155,7 +157,7 @@ function motionPromptFor(leg: VideoLeg): string {
 }
 
 /**
- * Spec §7.6.4, taken from the reference site's runtime behaviour, not invented.
+ * Consumption instructions for successfully produced video legs.
  *
  * ONLY LEGS THAT EXIST GET ADVERTISED. A path in a prompt is what makes a
  * `fetch` actually happen (§7.3) — which is exactly why a path to a leg that
@@ -168,8 +170,7 @@ export function videoConsumptionPrompt(legs: readonly VideoLeg[]): string {
     .map((l) => `  leg ${String(l.index)} (${l.section}): ${l.out}\n    poster: ${l.poster}`)
     .join("\n");
   return [
-    "SCROLL-SCRUBBED WORLD LAYER — implement exactly this pattern. It is measured from the",
-    "reference site's runtime behaviour, not invented, and it is what the motion bar accepts.",
+    "SCROLL-SCRUBBED WORLD LAYER — implement exactly this pattern.",
     "",
     list,
     "",
@@ -215,15 +216,15 @@ export async function runVideoLane(
   deps: VideoLaneDeps,
 ): Promise<{ record: VideoSpendRecord | null; prompt: string }> {
   const cap = resolveLegCap(deps.env);
-  const plan = deps.capability.available
-    ? planVideoLegs(legPlannerInput(deps.readManifest()), deps.workspace, cap)
+  const plan = deps.capability.available || deps.policy?.allowed === false
+    ? planVideoLegs(legPlannerInput(deps.readManifest()), deps.workspace, cap, deps.policy)
     : emptyPlan(cap);
 
   if (deps.fileExists(deps.recordPath)) {
     // Already spent, this run. Say nothing new, spend nothing, overwrite
     // nothing — but still hand the build agents the legs that landed, because
     // this entry is the one whose prompt reaches them.
-    return { record: null, prompt: videoConsumptionPrompt(plan.legs.filter((l) => deps.fileExists(l.out))) };
+    return { record: null, prompt: deps.policy?.allowed === false ? "" : videoConsumptionPrompt(plan.legs.filter((l) => deps.fileExists(l.out))) };
   }
 
   const env = videoLaneEnv(deps.env, deps.workspace);
@@ -249,6 +250,7 @@ export async function runVideoLane(
 
   const record = renderVideoSpend({
     capability: deps.capability,
+    ...(deps.policy === undefined ? {} : { policy: deps.policy }),
     plan,
     summary,
     model: MODEL,

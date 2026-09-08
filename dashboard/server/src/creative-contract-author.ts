@@ -5,6 +5,7 @@ import { redactForPersistence } from "bakeoff/dist/redact.js";
 
 import type { RateLimitState } from "./claude-common.js";
 import {
+  SCROLL_PROGRESS_MIN_MOTION_INTENSITY,
   AESTHETIC_FAMILIES,
   CONTENT_PROOF_STATUSES,
   CONTENT_USES,
@@ -528,7 +529,7 @@ function buildPrompt(input: CreativeContractAuthorInput, repairFindings: readonl
 - Use eyebrows no more than once per three sections with two sections between them.
 - Choose section layouts because their jobs differ. Do not repeat a layout family, use more than two consecutive split-media sections, or add more than one marquee unless an evidence-backed intentional exception applies.
 - Specify a mobile collapse strategy for every section. Multi-column and asymmetric layouts cannot merely preserve their desktop form.
-- Motion is optional at intensity 1-4. Above 4, include only motivated hierarchy, storytelling, feedback or state-transition motion. Animate only opacity and transform. Every motion entry needs reduced-motion and no-media fallbacks. Scroll-progress needs intensity 8-10 unless an evidence-backed dial exception applies.
+- Motion is optional at intensity 1-4. Above 4, include only motivated hierarchy, storytelling, feedback or state-transition motion. Animate only opacity and transform. Every motion entry needs reduced-motion and no-media fallbacks. Scroll-progress needs intensity ${SCROLL_PROGRESS_MIN_MOTION_INTENSITY}-10 unless an evidence-backed dial exception applies.
 - Real visuals are expected unless an admitted fact justifies TEXT_ONLY_PAGE. Do not prescribe one visual aesthetic across unrelated projects.
 
 DETERMINISTIC COMPILER INVARIANTS

@@ -40,6 +40,7 @@ import {
   heroRefFor,
   manifestPathFor,
   parseDesignManifest,
+  parseMotionIntensity,
   pruneMissingRefs,
   readDesignDirection,
   readDesignManifest,
@@ -54,6 +55,44 @@ import {
 
 const WS = "/runs/r1/workspace";
 const REF = `${WS}/design-refs/01-hero.png`;
+
+test("motion intensity parses measured bold bullets and legacy colon declarations", () => {
+  const cases = [
+    ["- **MOTION_INTENSITY 2** — no scroll-driven or continuous animation anywhere", 2],
+    ["- **MOTION_INTENSITY 3** — restrained transitions", 3],
+    ["MOTION_INTENSITY: 8", 8],
+    ["  - MOTION_INTENSITY: 10", 10],
+    ["* **MOTION_INTENSITY**: 9 — scroll progress", 9],
+    ["- **MOTION_INTENSITY:** 8", 8],
+    ["+ MOTION_INTENSITY: **1**", 1],
+    ["MOTION_INTENSITY 8\r\n", 8],
+  ] as const;
+  for (const [note, dial] of cases) {
+    assert.deepEqual(parseMotionIntensity(note), { motionIntensity: dial, occurrences: 1 }, note);
+  }
+});
+
+test("motion intensity absence and unrelated prose stay unknown", () => {
+  for (const note of ["", "Motion should remain restrained.", "The author suggested MOTION_INTENSITY 8.", "DESIGN_VARIANCE: 8", "MOTION_INTENSITY_EXTRA: 8"]) {
+    assert.deepEqual(parseMotionIntensity(note), { motionIntensity: null, occurrences: 0 }, note);
+  }
+});
+
+test("motion intensity retains the first declaration and counts duplicates", () => {
+  assert.deepEqual(parseMotionIntensity("- **MOTION_INTENSITY 2** — quiet\nMOTION_INTENSITY: 8"), {
+    motionIntensity: 2, occurrences: 2,
+  });
+});
+
+test("motion intensity rejects malformed first declarations without promoting a later value", () => {
+  for (const value of ["", "0", "11", "3.5", "8/10", "8px", "high", "-1", "+8", "8.0", "Infinity"]) {
+    const note = `MOTION_INTENSITY: ${value}\nMOTION_INTENSITY: 8`;
+    assert.deepEqual(parseMotionIntensity(note), { motionIntensity: null, occurrences: 2 }, note);
+  }
+  assert.deepEqual(parseMotionIntensity("MOTION_INTENSITY=8\nMOTION_INTENSITY: 9"), {
+    motionIntensity: null, occurrences: 2,
+  });
+});
 
 /**
  * THE PRE-2026-08-03 SHAPE, ON PURPOSE — no `directions`, no `direction`, no

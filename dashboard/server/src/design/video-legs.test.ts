@@ -1,3 +1,4 @@
+import { videoLegPolicy } from "./video-policy.js";
 /**
  * video-legs.test.ts — the cost control of spec §7.6.3.2, watched at BOTH the
  * places it is enforced.
@@ -310,4 +311,19 @@ test("THE KEY IS NOT IN THE SPEND RECORD — it is serialised to results/video.j
   });
   assert.ok(!JSON.stringify(record).includes(KEY));
   assert.equal(record.capability.keySource, "GEMINI_API_KEY", "the SOURCE is what a reader needs");
+});
+
+test("T19 policy declines every animate mark before still, aspect and cap checks", async () => {
+  const policy = videoLegPolicy({ pageKind: "consumer_landing", contractDial: 3, directionDial: 2 });
+  const plan = planVideoLegs({ sections: [
+    { section: "missing", animate: true },
+    { section: "bad-aspect", animate: true, path: "still.png", aspect: "1:1" },
+    { section: "unmarked", animate: false },
+  ] }, WS, resolveLegCap({ DASHBOARD_VIDEO_LEG_CAP: "1" }), policy);
+  assert.equal(plan.legs.length, 0);
+  assert.equal(plan.rejected.length, 2);
+  assert.ok(plan.rejected.every(({ why }) => why === policy.reason));
+  const calls = recorder();
+  await runVideoLegs(plan, calls.invoke);
+  assert.deepEqual(calls.calls, []);
 });

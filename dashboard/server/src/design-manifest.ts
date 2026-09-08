@@ -696,6 +696,26 @@ export function pruneMissingRefs(manifest: DesignManifest): DesignManifest {
   };
 }
 
+/** Read only anchored motion-dial declarations; a malformed first value stays unknown. */
+export function parseMotionIntensity(note: string): {
+  readonly motionIntensity: number | null;
+  readonly occurrences: number;
+} {
+  let motionIntensity: number | null = null;
+  let occurrences = 0;
+  for (const line of note.split(/\r?\n/)) {
+    const declaration = /^\s*(?:[-*+]\s+)?(?:\*\*)?MOTION_INTENSITY\b(.*)$/.exec(line);
+    if (declaration === null) continue;
+    occurrences += 1;
+    if (occurrences !== 1) continue;
+    const value = /^\s*:?\s*([0-9]+)(?:\s+[—–-].*)?\s*$/.exec((declaration[1] ?? "").replaceAll("**", ""));
+    if (value === null) continue;
+    const parsed = Number(value[1]);
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 10) motionIntensity = parsed;
+  }
+  return { motionIntensity, occurrences };
+}
+
 /** Used only by the HOST, when it applies a lock. The agent writes the refs. */
 export function writeDesignManifest(workspace: string, manifest: DesignManifest): void {
   mkdirSync(refsDirFor(workspace), { recursive: true });
