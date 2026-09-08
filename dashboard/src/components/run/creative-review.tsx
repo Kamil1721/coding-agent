@@ -6,6 +6,7 @@ import type {
   CreativeDecisionResponse,
   CreativeCompileFinding,
   CreativeCriticFinding,
+  CreativeRenderWarning,
   CreativeOwnerDecision,
   CreativeStatus,
 } from "@/lib/api-types";
@@ -75,6 +76,21 @@ function isCriticFinding(value: unknown): value is CreativeCriticFinding {
   );
 }
 
+const RENDER_WARNING_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+
+function isRenderWarning(value: unknown): value is CreativeRenderWarning {
+  return (
+    isObject(value) &&
+    Object.keys(value).length === 7 &&
+    typeof value["code"] === "string" && /^[A-Z][A-Z0-9_]*$/u.test(value["code"]) &&
+    value["severity"] === "warning" &&
+    typeof value["profileId"] === "string" && RENDER_PROFILE_IDS.has(value["profileId"]) &&
+    typeof value["routeId"] === "string" && RENDER_WARNING_ID.test(value["routeId"]) &&
+    [value["sectionId"], value["motionId"]].every((id) => id === null || (typeof id === "string" && RENDER_WARNING_ID.test(id))) &&
+    typeof value["evidenceSha256"] === "string" && isNullableSha256(value["evidenceSha256"])
+  );
+}
+
 function isRenderProfiles(value: unknown): value is NonNullable<CreativeStatus["renderProfiles"]> {
   if (!Array.isArray(value) || value.length !== RENDER_PROFILE_IDS.size) return false;
   const ids = new Set<string>();
@@ -114,6 +130,9 @@ function isCreativeStatus(value: unknown): value is CreativeStatus {
     value["compileFindings"].every(isCompileFinding) &&
     isNullableSha256(value["renderManifestHash"]) &&
     (value["renderFresh"] === null || typeof value["renderFresh"] === "boolean") &&
+    (!Object.hasOwn(value, "renderWarnings") || (
+      Array.isArray(value["renderWarnings"]) && value["renderWarnings"].every(isRenderWarning)
+    )) &&
     (value["renderProfiles"] === null || isRenderProfiles(value["renderProfiles"])) &&
     (criticDisposition === null ||
       (typeof criticDisposition === "string" && CRITIC_DISPOSITIONS.has(criticDisposition))) &&
@@ -386,6 +405,41 @@ function CompileFindings({ findings }: { readonly findings: readonly CreativeCom
   );
 }
 
+function RenderWarnings({ warnings }: { readonly warnings: readonly CreativeRenderWarning[] }): ReactNode {
+  if (warnings.length === 0) return null;
+  return (
+    <details className="group border-t border-line" data-testid="creative-render-warnings">
+      <summary className="cursor-pointer px-3 py-2.5 text-[11px] font-medium text-ink-dim focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60">
+        Render warnings <span className="numeric text-ink-faint">({warnings.length})</span>
+      </summary>
+      <div className="border-t border-line bg-canvas/20">
+        <p className="px-3 py-2.5 text-[11.5px] text-ink-dim">Warnings are observations, not review decisions.</p>
+        <ol>
+          {warnings.map((warning, index) => (
+            <li
+              key={`${warning.code}:${warning.profileId}:${warning.routeId}:${warning.sectionId}:${warning.motionId}:${warning.evidenceSha256}:${String(index)}`}
+              className="min-w-0 border-t border-line px-3 py-2.5"
+              data-testid="creative-render-warning"
+            >
+              <div className="flex min-w-0 flex-wrap items-start gap-1.5">
+                <span className="min-w-0 max-w-full break-all rounded-sm border border-warn/40 bg-warn-dim px-1.5 py-[2px] text-[10.5px] font-medium leading-[16px] text-warn">
+                  {warning.code}
+                </span>
+                <span className="min-w-0 break-all font-mono text-[10px] text-ink-dim">
+                  {warning.profileId} · route {warning.routeId}
+                </span>
+              </div>
+              {warning.sectionId !== null && <p className="mt-1 break-all font-mono text-[10px] text-ink-dim">Section: {warning.sectionId}</p>}
+              {warning.motionId !== null && <p className="mt-1 break-all font-mono text-[10px] text-ink-dim">Motion: {warning.motionId}</p>}
+              <p className="mt-1 break-all font-mono text-[10px] leading-relaxed text-ink-dim">Evidence sha256: {warning.evidenceSha256}</p>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </details>
+  );
+}
+
 function CriticFindings({ findings }: { readonly findings: readonly CreativeCriticFinding[] }): ReactNode {
   return (
     <details className="group border-t border-line" data-testid="creative-critic-findings">
@@ -552,6 +606,7 @@ export function CreativeReviewPanel({
         </section>
 
         <CompileFindings findings={review.compileFindings} />
+        <RenderWarnings warnings={review.renderFresh === true && review.renderManifestHash !== null ? review.renderWarnings ?? [] : []} />
         <CriticFindings findings={review.criticFindings} />
 
         {(review.reviewStopReason !== null || review.ownerDecisionReason !== null) && (

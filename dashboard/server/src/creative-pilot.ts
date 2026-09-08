@@ -29,8 +29,8 @@ import type { CreativeReviewState } from "./creative-review-loop.js";
 import { readRenderedTasteCriticHistory } from "./rendered-taste-critic.js";
 import type { RenderedTasteCriticRecord } from "./rendered-taste-critic.js";
 import type { CreativeRenderOutput, CreativeRenderResult } from "./creative-render.js";
-import { RENDER_PROFILE_IDS } from "./render-manifest.js";
-import type { RenderProfileId } from "./render-manifest.js";
+import { MAX_RENDER_ISSUES, RENDER_ISSUE_CODES, RENDER_PROFILE_IDS } from "./render-manifest.js";
+import type { RenderIssueV1, RenderProfileId } from "./render-manifest.js";
 import type { ReferenceManifest } from "./ticket-refs.js";
 import { manifestDocuments, ticketProse } from "./ticket-refs.js";
 import { PLAN_BLOCK_BEGIN, PLAN_BLOCK_END, stripPlanBlock } from "./plan-brief.js";
@@ -146,6 +146,8 @@ export interface CreativeCompileRecord {
   readonly checkedAt: string;
 }
 
+export type CreativeRenderWarning = RenderIssueV1 & { readonly severity: "warning" };
+
 export interface CreativePilotStatus {
   readonly schemaVersion: 1;
   readonly applicable: boolean;
@@ -154,6 +156,7 @@ export interface CreativePilotStatus {
   readonly compile: CreativeCompileRecord;
   readonly renderManifestHash: string | null;
   readonly renderFresh: boolean | null;
+  readonly renderWarnings?: readonly CreativeRenderWarning[];
   readonly renderProfiles: readonly {
     readonly profileId: RenderProfileId;
     readonly captureCount: number;
@@ -238,6 +241,21 @@ function isNullableHash(value: unknown): value is string | null {
   return value === null || (typeof value === "string" && HASH.test(value));
 }
 
+const RENDER_WARNING_CODES = new Set<string>(RENDER_ISSUE_CODES);
+const RENDER_WARNING_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+
+function isCreativeRenderWarning(value: unknown): value is CreativeRenderWarning {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "code", "severity", "profileId", "routeId", "sectionId", "motionId", "evidenceSha256",
+  ])) return false;
+  return value["severity"] === "warning" &&
+    typeof value["code"] === "string" && RENDER_WARNING_CODES.has(value["code"]) &&
+    typeof value["profileId"] === "string" && PROFILE_IDS.has(value["profileId"]) &&
+    typeof value["routeId"] === "string" && RENDER_WARNING_ID.test(value["routeId"]) &&
+    [value["sectionId"], value["motionId"]].every((id) => id === null || (typeof id === "string" && RENDER_WARNING_ID.test(id))) &&
+    typeof value["evidenceSha256"] === "string" && HASH.test(value["evidenceSha256"]);
+}
+
 export function creativePilotEnabled(
   actualProjectId: string | null | undefined,
   allowedProjectId: string | null | undefined,
@@ -287,6 +305,7 @@ export function initialCreativePilotStatus(applicable: boolean, enabled: boolean
     compile: { outcome: "unknown", contractHash: null, findings: [], checkedAt: new Date().toISOString() },
     renderManifestHash: null,
     renderFresh: null,
+    renderWarnings: [],
     renderProfiles: null,
     criticDisposition: null,
     criticFindings: [],
@@ -369,7 +388,11 @@ export function readCreativePilotStatus(resultsDir: string): CreativePilotStatus
       "renderFresh", "renderProfiles", "criticDisposition", "criticFindings", "criticAttempt",
       "reviewState", "reviewStopReason", "ownerDecision", "ownerDecisionReason",
       "ownerDecisionTargetRunId", "heldOutPass", "updatedAt",
+      ...(Object.hasOwn(raw, "renderWarnings") ? ["renderWarnings"] : []),
     ])) return null;
+    const renderWarnings = Object.hasOwn(raw, "renderWarnings") ? raw["renderWarnings"] : [];
+    if (!Array.isArray(renderWarnings) || renderWarnings.length > MAX_RENDER_ISSUES ||
+      !renderWarnings.every(isCreativeRenderWarning)) return null;
     const record = raw as unknown as Partial<CreativePilotStatus>;
     const compile = record.compile;
     if (!isRecord(compile) || !hasExactKeys(compile, ["outcome", "contractHash", "findings", "checkedAt"])) return null;
@@ -456,7 +479,7 @@ export function readCreativePilotStatus(resultsDir: string): CreativePilotStatus
       !(record.heldOutPass === null || typeof record.heldOutPass === "boolean") ||
       typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt))
     ) return null;
-    return record as unknown as CreativePilotStatus;
+    return { ...record, renderWarnings } as CreativePilotStatus;
   } catch {
     return null;
   }
@@ -1034,7 +1057,15 @@ export function statusAfterCompile(
   status: CreativePilotStatus,
   compile: CreativeCompileRecord,
 ): CreativePilotStatus {
-  return { ...status, contractHash: compile.contractHash, compile, updatedAt: new Date().toISOString() };
+  const contractChanged = status.contractHash !== compile.contractHash;
+  return {
+    ...status,
+    contractHash: compile.contractHash,
+    compile,
+    renderWarnings: contractChanged ? [] : status.renderWarnings ?? [],
+    renderFresh: contractChanged && status.renderFresh !== null ? false : status.renderFresh,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 export function statusAfterRender(
@@ -1045,6 +1076,7 @@ export function statusAfterRender(
     ...status,
     renderManifestHash: output.renderManifestHash,
     renderFresh: true,
+    renderWarnings: output.manifest.issues.filter(isCreativeRenderWarning),
     renderProfiles: output.manifest.profiles.map((profile) => ({
       profileId: profile.id,
       captureCount: output.manifest.captures.filter((capture) => capture.profileId === profile.id).length,
@@ -1058,7 +1090,7 @@ export function statusAfterRender(
 
 /** A builder mutation invalidates rendered evidence until the host captures again. */
 export function statusBeforeCreativeMutation(status: CreativePilotStatus): CreativePilotStatus {
-  return { ...status, renderFresh: false, updatedAt: new Date().toISOString() };
+  return { ...status, renderFresh: false, renderWarnings: [], updatedAt: new Date().toISOString() };
 }
 
 export function statusAfterReview(

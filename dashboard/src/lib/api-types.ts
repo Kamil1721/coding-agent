@@ -593,6 +593,16 @@ export interface CreativeCriticFinding {
   readonly revision: string;
 }
 
+export interface CreativeRenderWarning {
+  readonly code: string;
+  readonly severity: "warning";
+  readonly profileId: "desktop" | "mobile" | "reduced_motion" | "no_media";
+  readonly routeId: string;
+  readonly sectionId: string | null;
+  readonly motionId: string | null;
+  readonly evidenceSha256: string;
+}
+
 /**
  * The rendered creative pilot's record-backed audit projection.
  *
@@ -609,6 +619,8 @@ export interface CreativeStatus {
   readonly compileFindings: readonly CreativeCompileFinding[];
   readonly renderManifestHash: string | null;
   readonly renderFresh: boolean | null;
+  /** Absent on legacy records. These observations confer no review authority. */
+  readonly renderWarnings?: readonly CreativeRenderWarning[];
   readonly renderProfiles: readonly {
     readonly profileId: string;
     readonly captureCount: number;

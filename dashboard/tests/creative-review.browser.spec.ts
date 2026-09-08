@@ -73,6 +73,87 @@ function panel(page: Page) {
   return page.getByTestId("creative-review").locator("xpath=ancestor::section[1]");
 }
 
+const renderWarning = {
+  code: "DECORATIVE_CONTROL",
+  severity: "warning",
+  profileId: "desktop",
+  routeId: "booking",
+  sectionId: "s.a11y",
+  motionId: null,
+  evidenceSha256: "e".repeat(64),
+} as const;
+
+test("T23 shows a fresh render warning in a keyboard disclosure without promoting authority", async ({ page }) => {
+  await patchCreative(page, { ...creative(), renderWarnings: [renderWarning] } as CreativeStatus);
+  await openResult(page);
+  const disclosure = page.getByTestId("creative-render-warnings");
+  await expect(disclosure, "T23_FRESH_RENDER_WARNING_DISCLOSURE_REQUIRED").toBeVisible();
+  await expect(disclosure.locator("summary")).toContainText("Render warnings (1)");
+  await expect(page.getByTestId("creative-render-warning")).not.toBeVisible();
+  await disclosure.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  const warning = page.getByTestId("creative-render-warning");
+  await expect(warning).toContainText("DECORATIVE_CONTROL");
+  await expect(warning).toContainText("desktop");
+  await expect(warning).toContainText("booking");
+  await expect(warning).toContainText("s.a11y");
+  await expect(warning).toContainText(renderWarning.evidenceSha256);
+  await expect(disclosure).toContainText("Warnings are observations, not review decisions.");
+  await expect(authority(page, "functional")).toContainText("Passed");
+  await expect(authority(page, "compiler")).toContainText("Passed");
+  await expect(authority(page, "critic")).toContainText("Accepted");
+  await expect(authority(page, "owner")).toContainText("Awaiting owner");
+});
+
+for (const renderFresh of [false, null]) {
+  test(`T23 hides render warnings when freshness is ${String(renderFresh)}`, async ({ page }) => {
+    await patchCreative(page, { ...creative({ renderFresh }), renderWarnings: [renderWarning] } as CreativeStatus);
+    await openResult(page);
+    await expect(page.getByTestId("creative-render-warnings")).toHaveCount(0);
+    await expect(panel(page)).not.toContainText("DECORATIVE_CONTROL");
+  });
+}
+
+test("T23 legacy and empty warning lists leave the compact review unchanged", async ({ page }) => {
+  for (const review of [creative(), { ...creative(), renderWarnings: [] }]) {
+    await patchCreative(page, review);
+    await openResult(page);
+    await expect(page.getByTestId("creative-render-warnings")).toHaveCount(0);
+    await expect(authority(page, "critic")).toContainText("Accepted");
+  }
+});
+
+for (const [label, renderWarnings] of [
+  ["null list", null],
+  ["blocking severity", [{ ...renderWarning, severity: "blocking" }]],
+  ["invalid evidence hash", [{ ...renderWarning, evidenceSha256: "not-a-sha" }]],
+  ["unknown profile", [{ ...renderWarning, profileId: "invented" }]],
+  ["malformed section", [{ ...renderWarning, sectionId: 42 }]],
+] as const) {
+  test(`T23 fails malformed render warnings closed: ${label}`, async ({ page }) => {
+    await patchCreative(page, { ...creative(), renderWarnings } as unknown as CreativeStatus);
+    await page.goto(`/runs/${RUN_ID}`);
+    await page.getByTestId("rail-result").click();
+    await expect(page.getByTestId("creative-review-unavailable"), "T23_MALFORMED_RENDER_WARNING_MUST_FAIL_CLOSED").toContainText("No authority result was admitted");
+    await expect(page.getByTestId("creative-authority-critic")).toHaveCount(0);
+    await expect(page.getByTestId("creative-render-warnings")).toHaveCount(0);
+  });
+}
+
+test("T23 warning evidence stays contained at 375px", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 900 });
+  await patchCreative(page, {
+    ...creative(),
+    renderWarnings: [{ ...renderWarning, routeId: "route-".repeat(20), motionId: "motion-".repeat(18) }],
+  } as CreativeStatus);
+  await openResult(page);
+  const disclosure = page.getByTestId("creative-render-warnings");
+  await disclosure.locator("summary").click();
+  await expect(page.getByTestId("creative-render-warning")).toContainText(renderWarning.evidenceSha256);
+  expect(await disclosure.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+});
+
 test("keeps critic acceptance separate from the functional, compiler, and owner authorities", async ({ page }) => {
   await patchCreative(page, creative());
   await openResult(page);

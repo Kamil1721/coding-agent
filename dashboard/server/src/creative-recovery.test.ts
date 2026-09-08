@@ -508,6 +508,10 @@ test("passing recovery finalization requires the latest strict durable child cri
 test("terminal creative recovery seeds closed publication state and durably replays a pre-gate failure", async () => {
   const h = recoveryHarness();
   try {
+    const sourceResults = runPathsFor(h.paths, h.sourceRunId).results;
+    const sourceStatus = readCreativePilotStatus(sourceResults);
+    assert.ok(sourceStatus !== null);
+    writeCreativePilotStatus(sourceResults, { ...sourceStatus, renderWarnings: [{ code: "HORIZONTAL_OVERFLOW", severity: "warning", profileId: "desktop", routeId: "r.home", sectionId: "s.hero", motionId: null, evidenceSha256: h.contractHash }] } as typeof sourceStatus);
     let calls = 0;
     const controller = new TerminalCreativeRecoveryController({
       store: h.store,
@@ -517,6 +521,7 @@ test("terminal creative recovery seeds closed publication state and durably repl
         const status = readCreativePilotStatus(runPathsFor(h.paths, targetRunId).results);
         assert.ok(status !== null);
         assert.equal(status.contractHash, h.contractHash);
+        assert.deepEqual((status as unknown as { renderWarnings: unknown }).renderWarnings, [], "recovery never inherits source render warnings");
         assert.equal(status.heldOutPass, null);
         assert.equal(status.criticDisposition, null);
         assert.equal(status.ownerDecision, null);

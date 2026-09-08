@@ -311,6 +311,7 @@ function sanitizedRecoveryStatus(source: CreativePilotStatus, updatedAt: string)
     ...source,
     renderManifestHash: null,
     renderFresh: null,
+    renderWarnings: [],
     renderProfiles: null,
     criticDisposition: null,
     criticFindings: [],

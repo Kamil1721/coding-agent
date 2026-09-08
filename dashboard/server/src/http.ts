@@ -979,6 +979,7 @@ function creativeStatusOf(resultsDir: string): ApiCreativeStatus | null {
     })),
     renderManifestHash: status.renderManifestHash,
     renderFresh: status.renderFresh,
+    renderWarnings: status.renderFresh === true ? status.renderWarnings ?? [] : [],
     renderProfiles: status.renderProfiles,
     criticDisposition: status.criticDisposition,
     criticFindings: status.criticFindings,

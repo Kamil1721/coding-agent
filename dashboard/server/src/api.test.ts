@@ -2423,6 +2423,7 @@ test("creative decision is closed, idempotent, projected from records, and appro
       heldOutPass: true,
       renderManifestHash,
       renderFresh: true,
+      renderWarnings: [{ code: "HORIZONTAL_OVERFLOW", severity: "warning", profileId: "desktop", routeId: "r.home", sectionId: "s.hero", motionId: null, evidenceSha256: contractHash }],
       renderProfiles: [
         { profileId: "desktop", captureCount: 3, complete: true },
         { profileId: "mobile", captureCount: 3, complete: true },
@@ -2470,6 +2471,11 @@ test("creative decision is closed, idempotent, projected from records, and appro
 
     const detail = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
     assert.equal(detail.creative?.renderFresh, true);
+    assert.deepEqual((detail.creative as unknown as { renderWarnings: unknown }).renderWarnings, ready.renderWarnings);
+    writeCreativePilotStatus(paths.results, { ...ready, renderFresh: false });
+    const staleDetail = (await (await fetch(`${harness.base}/api/runs/${runId}`)).json()) as RunDetail;
+    assert.deepEqual((staleDetail.creative as unknown as { renderWarnings: unknown }).renderWarnings, [], "stale render warnings are not exposed");
+    writeCreativePilotStatus(paths.results, ready);
     assert.deepEqual(detail.creative?.renderProfiles, [
       { profileId: "desktop", captureCount: 3, complete: true },
       { profileId: "mobile", captureCount: 3, complete: true },

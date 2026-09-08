@@ -33,6 +33,7 @@ import {
   pilotMayPublish,
   readCreativePilotStatus,
   statusAfterCompile,
+  statusAfterRender,
   statusAfterReview,
   statusBeforeCreativeMutation,
   webCreativeApplicable,
@@ -601,6 +602,7 @@ test("review re-entry preserves prior critic evidence and marks it stale before 
     }),
     renderManifestHash: "b".repeat(64),
     renderFresh: true,
+    renderWarnings: [{ code: "HORIZONTAL_OVERFLOW" as const, severity: "warning" as const, profileId: "desktop" as const, routeId: "home", sectionId: "hero", motionId: null, evidenceSha256: HASH }],
     renderProfiles: [
       { profileId: "desktop" as const, captureCount: 1, complete: true },
       { profileId: "mobile" as const, captureCount: 1, complete: true },
@@ -627,6 +629,7 @@ test("review re-entry preserves prior critic evidence and marks it stale before 
   assert.equal(reentered.renderManifestHash, seeded.renderManifestHash);
   assert.equal(reentered.criticAttempt, 1);
   assert.deepEqual(reentered.criticFindings, seeded.criticFindings);
+  assert.deepEqual((reentered as unknown as { renderWarnings: unknown }).renderWarnings, seeded.renderWarnings, "review preserves fresh warnings");
   assert.equal(statusBeforeCreativeMutation(reentered).renderFresh, false);
 });
 
@@ -759,4 +762,38 @@ test("concurrent owner-decision claimants have one filesystem winner and one con
   assert.equal(claimCreativeDecision(results, winner.claim.decision, null).kind, "replay");
   const loser = winner.claim.decision === "approved" ? "cancelled" : "approved";
   assert.equal(claimCreativeDecision(results, loser, null).kind, "conflict");
+});
+
+
+test("render warning status preserves legacy reads and rejects malformed warning records", () => {
+  const results = mkdtempSync(join(tmpdir(), "creative-warning-status-"));
+  const base = initialCreativePilotStatus(true, true);
+  const warning = { code: "HORIZONTAL_OVERFLOW", severity: "warning", profileId: "desktop", routeId: "r.home", sectionId: "s.hero", motionId: null, evidenceSha256: HASH };
+  const readWarnings = (): unknown => (readCreativePilotStatus(results) as unknown as { renderWarnings?: unknown } | null)?.renderWarnings;
+  const { renderWarnings: ignored, ...legacy } = base as unknown as Record<string, unknown>;
+  writeFileSync(join(results, "creative-status.json"), JSON.stringify(legacy));
+  assert.deepEqual(readWarnings(), [], "legacy status defaults to no warnings");
+  writeCreativePilotStatus(results, { ...base, renderWarnings: [warning] } as typeof base);
+  assert.deepEqual(readWarnings(), [warning], "compact warning survives durable round trip");
+  for (const malformed of [null, {}, [null], [{ ...warning, severity: "blocking" }], [{ ...warning, code: "invented" }], [{ ...warning, profileId: "invented" }], [{ ...warning, evidenceSha256: "bad" }], [{ ...warning, sectionId: 1 }], [{ ...warning, detail: "untrusted prose" }], Array(401).fill(warning)]) {
+    writeCreativePilotStatus(results, { ...base, renderWarnings: malformed } as typeof base);
+    assert.equal(readCreativePilotStatus(results), null, "present malformed warnings are rejected");
+  }
+  writeFileSync(join(results, "creative-status.json"), JSON.stringify({ ...legacy, unexpected: [] }));
+  assert.equal(readCreativePilotStatus(results), null, "legacy support does not loosen other exact keys");
+});
+
+test("render warnings replace on capture and clear on mutation or contract change", () => {
+  const base = statusAfterCompile(initialCreativePilotStatus(true, true), { outcome: "passed", contractHash: HASH, findings: [], checkedAt: new Date().toISOString() });
+  const warning = { code: "HORIZONTAL_OVERFLOW", severity: "warning", profileId: "desktop", routeId: "r.home", sectionId: "s.hero", motionId: null, evidenceSha256: HASH };
+  const output = { renderManifestHash: HASH, manifest: { profiles: [{ id: "desktop" }], captures: [], issues: [warning, { ...warning, severity: "blocking" }] } } as unknown as Parameters<typeof statusAfterRender>[1];
+  const rendered = statusAfterRender(base, output);
+  const warnings = (status: typeof base): unknown => (status as unknown as { renderWarnings?: unknown }).renderWarnings;
+  assert.deepEqual(warnings(rendered), [warning], "only warnings reach status");
+  assert.deepEqual(warnings(statusAfterRender(rendered, { ...output, manifest: { ...output.manifest, issues: [] } })), [], "new capture replaces old warnings");
+  assert.deepEqual(warnings(statusBeforeCreativeMutation(rendered)), [], "builder mutation clears warnings");
+  assert.deepEqual(warnings(statusAfterCompile(rendered, base.compile)), [warning], "same contract retains fresh render warnings");
+  const changed = statusAfterCompile(rendered, { ...base.compile, contractHash: "b".repeat(64) });
+  assert.deepEqual(warnings(changed), [], "new contract clears warning evidence");
+  assert.equal(changed.renderFresh, false, "new contract invalidates render freshness");
 });

@@ -734,6 +734,16 @@ export interface ApiCreativeCriticFinding {
   readonly revision: string;
 }
 
+export interface ApiCreativeRenderWarning {
+  readonly code: string;
+  readonly severity: "warning";
+  readonly profileId: RenderProfileId;
+  readonly routeId: string;
+  readonly sectionId: string | null;
+  readonly motionId: string | null;
+  readonly evidenceSha256: string;
+}
+
 /** Closed, record-backed projection of the default-off rendered creative pilot. */
 export interface ApiCreativeStatus {
   readonly applicable: boolean;
@@ -743,6 +753,7 @@ export interface ApiCreativeStatus {
   readonly compileFindings: readonly ApiCreativeCompileFinding[];
   readonly renderManifestHash: string | null;
   readonly renderFresh: boolean | null;
+  readonly renderWarnings?: readonly ApiCreativeRenderWarning[];
   readonly renderProfiles: readonly {
     readonly profileId: RenderProfileId;
     readonly captureCount: number;
