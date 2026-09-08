@@ -222,8 +222,12 @@ test("T17b gate-only judge cleanup failure cannot fail a green sealed gate", asy
       },
     }),
   });
-  const recovered = await controller.recover(h.sourceRunId,
-    validateGateRecoveryRequest({ clientRequestId: "T17b-cleanup-io-failure" }));
+  let recovered: Awaited<ReturnType<GateRecoveryController["recover"]>> | undefined;
+  await assert.doesNotReject(async () => {
+    recovered = await controller.recover(h.sourceRunId,
+      validateGateRecoveryRequest({ clientRequestId: "T17b-cleanup-io-failure" }));
+  }, "judge cleanup failure must not throw out of recovery");
+  assert.ok(recovered);
   assert.equal(recovered.recoveryState, "completed", "judge cleanup failure is non-gating");
   assert.equal(recovered.status, "passed");
   assert.equal(recovered.heldOutPass, true);
