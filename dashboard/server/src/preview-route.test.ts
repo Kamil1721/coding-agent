@@ -477,6 +477,9 @@ test("T18b preview internal-path matrix preserves public files and existing refu
 
   const cases = [
     ...internals.map((path) => ({ suffix: `/${path}`, boundary: "internal path" })),
+    { suffix: "/visible-acceptance/missing.spec.mjs", boundary: "missing internal path" },
+    { suffix: "/design-refs/missing.json", boundary: "missing internal path" },
+    { suffix: "/.claude/missing.json", boundary: "missing internal path" },
     { suffix: "/visible-acceptance%2fx.spec.mjs", boundary: "encoded internal path" },
     { suffix: "/%2eclaude/settings.json", boundary: "encoded internal path" },
     { suffix: "/ticket-alias.txt", boundary: "real-target guard" },
@@ -492,6 +495,11 @@ test("T18b preview internal-path matrix preserves public files and existing refu
       assert.ok(!response.raw.includes(marker), `T18b ${suffix} must not expose the planted internal marker`);
     });
   }
+  await t.test("missing product path", async () => {
+    const response = await preview(harness, "/assets/missing.png");
+    assert.equal(response.status, 404, "missing product path must remain unavailable");
+    assert.equal(errorBody(response).error, "not_found", "missing product path must retain not_found");
+  });
   for (const suffix of ["/.git/config", "/%2egit/config", "/.env"]) {
     await t.test(`existing refusal ${suffix}`, async () => {
       const response = await preview(harness, suffix);

@@ -709,6 +709,19 @@ export function decodePreviewPath(
   return { ok: true, path: parts.join("/") };
 }
 
+function internalPreviewRefusal(): PreviewTarget {
+  const code: PreviewOwnRefusalCode = "path_internal";
+  return {
+    kind: "refusal",
+    refusal: {
+      status: 404,
+      code,
+      message: "harness-internal paths are not available in the site preview",
+      remediation: "Use the run's code browser to inspect harness files.",
+    },
+  };
+}
+
 /**
  * Resolve one preview path inside the run's workspace, or refuse.
  *
@@ -753,22 +766,20 @@ export function resolvePreviewTarget(workspace: string, relPath: string): Previe
   }
 
   const resolved = resolveWorkspacePath(workspace, relPath);
-  if (!resolved.ok) return { kind: "refusal", refusal: resolved.refusal };
+  if (!resolved.ok) {
+    // Missing internal names get the same response as existing ones, without
+    // overriding shape, secret-name or containment refusals.
+    if (resolved.refusal.code === "not_found" && isInternalStaticPath(relPath)) {
+      return internalPreviewRefusal();
+    }
+    return { kind: "refusal", refusal: resolved.refusal };
+  }
 
   let stat;
   try {
     const realPath = relative(realpathSync(workspace), resolved.target).split(sep).join("/");
     if (isInternalStaticPath(relPath) || isInternalStaticPath(realPath)) {
-      const code: PreviewOwnRefusalCode = "path_internal";
-      return {
-        kind: "refusal",
-        refusal: {
-          status: 404,
-          code,
-          message: "harness-internal paths are not available in the site preview",
-          remediation: "Use the run's code browser to inspect harness files.",
-        },
-      };
+      return internalPreviewRefusal();
     }
     stat = statSync(resolved.target);
   } catch {
