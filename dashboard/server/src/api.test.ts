@@ -2271,7 +2271,7 @@ test("THE FOUR STAGES ON THE WIRE, and `expanding` is the one a renderer gets wr
       // Parked on the canvass, nothing chosen.
       { over: { awaiting: true, directions }, stage: "canvass" },
       // THE WINDOW. Chosen, not yet expanded, and NOTHING IS LOCKED.
-      { over: { directions, chosenDirection: "quiet-grid", chosenDirectionBy: "owner" }, stage: "expanding" },
+      { over: { directions, chosenDirection: "quiet-grid", chosenDirectionBy: "owner", chosenDirectionReason: "the quieter grid suits the brief" }, stage: "expanding" },
       // Stage B returned. `expanded`, NOT `locked`, is what says so — a degraded
       // run finishes with no still to lock at all.
       { over: { directions, chosenDirection: "quiet-grid", expanded: true }, stage: "settled" },
@@ -2284,6 +2284,7 @@ test("THE FOUR STAGES ON THE WIRE, and `expanding` is the one a renderer gets wr
         assert.equal(detail.designLock?.locked, null, "nothing is locked yet — that is the whole window");
         assert.equal(detail.designLock?.awaiting, false, "and the run is not parked either");
         assert.equal(detail.designLock?.chosenDirection, "quiet-grid");
+        assert.equal(detail.designLock?.chosenDirectionReason, "the quieter grid suits the brief");
         assert.deepEqual(
           detail.designLock?.directions.map((direction) => direction.discarded),
           [true, false],

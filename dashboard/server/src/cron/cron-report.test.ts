@@ -260,10 +260,30 @@ test("the design lock's provenance is reported — automatic is not the same as 
   const md = renderCronReport(input({ runs: [detail({ designLock: lock })] }));
   assert.match(md, /ui-designer/);
   assert.match(md, /denser grid/);
-  assert.match(md, /automatic/i);
+  assert.doesNotMatch(md, /automatic/i, "a judged pick is not a fallback");
+  assert.match(md, /judged by `ui-designer`/);
   const owned = renderCronReport(input({ runs: [detail({ designLock: { ...lock, lockedBy: "owner" } })] }));
   assert.doesNotMatch(owned, /automatic/i, "an owner's pick must not read as an automatic one");
   assert.match(owned, /chosen by the owner/);
+
+  const fallback = renderCronReport(input({ runs: [detail({ designLock: {
+    ...lock, chosenDirectionBy: "fallback", chosenDirectionReason: "no owner choice arrived before the timeout",
+  } })] }));
+  assert.match(fallback, /chosen automatically by `fallback`/);
+  assert.match(fallback, /before the timeout/);
+  assert.doesNotMatch(fallback, /denser grid|judged by/);
+
+  const judged = renderCronReport(input({ runs: [detail({ designLock: {
+    ...lock, lockedBy: "fallback", chosenDirectionBy: "ui-designer", chosenDirectionReason: "clear patient-facing controls",
+  } })] }));
+  assert.match(judged, /judged by `ui-designer`: clear patient-facing controls/);
+  assert.doesNotMatch(judged, /automatically|denser grid/);
+
+  const missingReason = renderCronReport(input({ runs: [detail({ designLock: {
+    ...lock, chosenDirectionBy: "ui-designer", chosenDirectionReason: null,
+  } })] }));
+  assert.match(missingReason, /no reason recorded/);
+  assert.doesNotMatch(missingReason, /denser grid/);
 });
 
 test("A RUN THE REPORT COULD NOT FETCH IS NAMED AS UNREADABLE, never as absent", () => {

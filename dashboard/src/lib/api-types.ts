@@ -418,6 +418,7 @@ export interface DesignLockState {
   readonly directions: readonly DesignDirectionState[];
   readonly chosenDirection: string | null;
   readonly chosenDirectionBy: "owner" | "ui-designer" | "fallback" | null;
+  readonly chosenDirectionReason?: string | null;
   readonly stage: DesignStage;
   /** Owner turns spent at this park, and the cap. Every claimed message costs one. */
   readonly turnsUsed: number;

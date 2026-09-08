@@ -109,16 +109,21 @@ function designLine(run: RunDetail): string {
   if (lock === null) return "  - design lane: none for this run";
   if (lock.awaiting) return "  - design lock: **still awaiting a choice** — this run is parked";
   if (lock.locked === null) return "  - design lock: the lane ran and locked nothing";
-  if (lock.lockedBy === "owner") {
-    return `  - design lock: ${lock.locked} — chosen by the owner (${lock.reason ?? "no reason recorded"})`;
+  const chosenBy = lock.chosenDirectionBy ?? lock.lockedBy;
+  const choiceReason = lock.chosenDirectionBy == null || lock.chosenDirectionReason === undefined
+    ? lock.reason
+    : lock.chosenDirectionReason;
+  const reason = choiceReason ?? "no reason recorded";
+  if (chosenBy === "owner") {
+    return `  - design lock: ${lock.locked} — chosen by the owner (${reason})`;
   }
-  // §17.3 rule 4: the choice is recorded either way, with who made it and why. An
-  // unattended pick has to READ as automatic, or a reader will assume a human
-  // looked at five mockups and picked one.
-  return (
-    `  - design lock: ${lock.locked} — chosen automatically by \`${String(lock.lockedBy)}\`: ` +
-    `${lock.reason ?? "no reason recorded"}`
-  );
+  if (chosenBy === "ui-designer") {
+    return `  - design lock: ${lock.locked} — judged by \`ui-designer\`: ${reason}`;
+  }
+  if (chosenBy === "fallback") {
+    return `  - design lock: ${lock.locked} — chosen automatically by \`fallback\`: ${reason}`;
+  }
+  return `  - design lock: ${lock.locked} — no chooser recorded: ${reason}`;
 }
 
 function filesLine(run: RunDetail): string {

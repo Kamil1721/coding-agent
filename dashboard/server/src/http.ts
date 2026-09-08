@@ -740,6 +740,7 @@ function designLockOf(lock: DesignLockRecord, screenshots: readonly ApiScreensho
     })),
     chosenDirection: lock.chosenDirection,
     chosenDirectionBy: lock.chosenDirectionBy,
+    chosenDirectionReason: lock.chosenDirectionReason,
     stage,
     turnsUsed: lock.turnsUsed,
     turnsMax: MAX_DESIGN_LOCK_TURNS,

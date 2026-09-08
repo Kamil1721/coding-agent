@@ -162,15 +162,15 @@ interface Chooser {
  * else could be, and an owner reading this page later needs that distinction to
  * know how much the locked design means.
  */
-function chooserOf(lockedBy: "owner" | "ui-designer" | "fallback" | null): Chooser {
+function chooserOf(lockedBy: "owner" | "ui-designer" | "fallback" | null, reason: string | null): Chooser {
   if (lockedBy === "owner") {
     return { tone: "accent", badge: "your choice", sentence: "You picked this one." };
   }
   if (lockedBy === "ui-designer") {
     return {
       tone: "info",
-      badge: "chosen automatically",
-      sentence: "No choice arrived in time, so ui-designer picked.",
+      badge: "judged by ui-designer",
+      sentence: "ui-designer picked this one.",
     };
   }
   if (lockedBy === "fallback") {
@@ -179,7 +179,9 @@ function chooserOf(lockedBy: "owner" | "ui-designer" | "fallback" | null): Choos
       // "no judgement applied" was the badge and it is the one thing a fallback
       // is; "no one chose" says it without asking the reader to parse it.
       badge: "no one chose",
-      sentence: "No usable choice was made, so the first mockup in the list was taken.",
+      sentence: reason?.includes("before the timeout")
+        ? "No choice arrived before the timeout, so the first mockup in the list was taken."
+        : "The chooser wrote no usable choice, so the first mockup in the list was taken.",
     };
   }
   return { tone: "neutral", badge: "locked", sentence: "The run recorded no chooser." };
@@ -401,7 +403,7 @@ function ReasonBlock({ reason }: { reason: string }): ReactNode {
   return (
     <div className="rounded-sm border-l-2 border-line-strong bg-canvas/40 pl-2.5 pr-2 py-2">
       <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
-        ui-designer's recorded reason
+        ui-designer&apos;s recorded reason
       </p>
       <div
         className={cx(
@@ -452,11 +454,18 @@ function ReasonBlock({ reason }: { reason: string }): ReactNode {
 function directionSentence(
   by: "owner" | "ui-designer" | "fallback" | null,
   name: string,
+  reason: string | null,
 ): string {
   if (by === "owner") return `You chose ${name}.`;
-  if (by === "ui-designer") return `No choice arrived in time, so ui-designer chose ${name}.`;
+  if (by === "ui-designer") {
+    if (reason !== null) return `ui-designer chose ${name}: “${reason}”`;
+    return `ui-designer chose ${name}. No reason was recorded.`;
+  }
   if (by === "fallback") {
-    return `No usable choice was made, so ${name}, the first one offered, was taken.`;
+    if (reason?.includes("before the timeout")) {
+      return `No choice arrived before the timeout, so ${name}, the first one offered, was taken.`;
+    }
+    return `The chooser wrote no usable choice, so ${name}, the first one offered, was taken.`;
   }
   return `The run was built in the ${name} direction and recorded no chooser.`;
 }
@@ -519,7 +528,11 @@ export function DesignLockPanel({
   if (lock === null || phase === null) return null;
 
   const chosen = lockedMockup(lock);
-  const chooser = chooserOf(lock.lockedBy);
+  const chosenBy = lock.chosenDirectionBy ?? lock.lockedBy;
+  const chosenReason = lock.chosenDirectionBy == null || lock.chosenDirectionReason === undefined
+    ? lock.reason
+    : lock.chosenDirectionReason;
+  const chooser = chooserOf(chosenBy, chosenReason);
   const pending = phase === "pending";
 
   /*
@@ -634,16 +647,14 @@ export function DesignLockPanel({
          * land" is a consequence of a choice already made — there is nothing left
          * for the reader to do about it.
          */}
-        {phase === "expanding" && chosenDirection !== null && (
-          <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-            {directionSentence(lock.chosenDirectionBy, chosenDirection.name)}
-          </p>
-        )}
-
-        {(phase === "settled" || phase === "unlocked") && chosenDirection !== null && (
-          <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
-            {directionSentence(lock.chosenDirectionBy, chosenDirection.name)}
-          </p>
+        {(phase === "expanding" || phase === "settled" || phase === "unlocked") && chosenDirection !== null && (
+          chosenBy === "ui-designer" && chosenReason !== null ? (
+            <ReasonBlock reason={directionSentence(chosenBy, chosenDirection.name, chosenReason)} />
+          ) : (
+            <p className="max-w-[68ch] text-[12px] leading-relaxed text-ink-dim">
+              {directionSentence(chosenBy, chosenDirection.name, chosenReason)}
+            </p>
+          )
         )}
 
         {phase === "settled" && (
@@ -686,8 +697,8 @@ export function DesignLockPanel({
              * ending mid-word — the owner's words were "either too much text or its
              * formated poorly causing it to be just a wall of text".
              */}
-            {lock.reason !== null && lock.lockedBy === "ui-designer" && (
-              <ReasonBlock reason={lock.reason} />
+            {!hasDirections && chosenReason !== null && chosenBy === "ui-designer" && (
+              <ReasonBlock reason={`“${chosenReason}”`} />
             )}
           </div>
         )}

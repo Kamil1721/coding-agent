@@ -531,6 +531,7 @@ export interface ApiDesignLock {
   readonly directions: readonly ApiDesignDirection[];
   readonly chosenDirection: string | null;
   readonly chosenDirectionBy: "owner" | "ui-designer" | "fallback" | null;
+  readonly chosenDirectionReason?: string | null;
   readonly stage: ApiDesignStage;
   /**
    * THE CAPS, ON THE WIRE, because the panel has to say "no more renders on this

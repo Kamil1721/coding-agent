@@ -330,6 +330,50 @@ const CANVASS_SETTLED = detail(
   }),
 );
 
+// Copied verbatim from the protected clinic's results/design-lock.json,
+// chosenDirectionReason, on 2026-09-08. Tests never read or change that run.
+const CLINIC_CHOICE_REASON = "It takes the three heaviest criteria: the largest patient-facing type in the set (18px body, 15px sentence-case labels, nothing under 13px, 56px targets), an error carried by glyph, weight and position as well as colour, and a single-column idea that is width-independent so no part of its signature depends on desktop. The cost is that it is the most templated artifact of the three and it retreats from the 4/3/5 dials rather than earning distance from them, so the build has to supply the character the scaffold does not.";
+
+function directionChoice(by: "ui-designer" | "fallback", reason: string | null): RunDetail {
+  return detail("passed", canvassLock({
+    ...CANVASS_SETTLED.designLock,
+    lockedBy: "owner",
+    reason: "a different mockup-lock reason",
+    chosenDirectionBy: by,
+    chosenDirectionReason: reason,
+  }));
+}
+
+test("judged direction quotes the clinic reason without inventing a timeout", async ({ page }) => {
+  await serve(page, directionChoice("ui-designer", CLINIC_CHOICE_REASON));
+  await expect(panel(page).getByText("judged by ui-designer", { exact: true })).toBeVisible();
+  await expect(panel(page)).not.toContainText("No choice arrived");
+  await expect(panel(page)).not.toContainText("a different mockup-lock reason");
+  await expect(panel(page)).toContainText(`ui-designer chose Terminal grid: “${CLINIC_CHOICE_REASON}”`);
+  await panel(page).getByRole("button", { name: /^unfold/ }).click();
+  await expect(panel(page)).toContainText(CLINIC_CHOICE_REASON.split(". ")[0] ?? "");
+});
+
+test("fallback timeout keeps its timeout explanation and warning", async ({ page }) => {
+  await serve(page, directionChoice("fallback", "no owner choice arrived before the timeout"));
+  await expect(panel(page)).toContainText("No choice arrived before the timeout");
+  await expect(panel(page).getByText("no one chose", { exact: true })).toHaveClass(/text-warn/);
+  await expect(panel(page)).not.toContainText("judged by ui-designer");
+});
+
+test("fallback no-file reason never claims timeout or judgement", async ({ page }) => {
+  await serve(page, directionChoice("fallback", "ui-designer wrote no direction-choice.json"));
+  await expect(panel(page)).toContainText("The chooser wrote no usable choice");
+  await expect(panel(page)).not.toContainText("No choice arrived");
+  await expect(panel(page)).not.toContainText("judged by ui-designer");
+});
+
+test("missing direction reason does not borrow a mockup-lock reason", async ({ page }) => {
+  await serve(page, directionChoice("ui-designer", null));
+  await expect(panel(page)).toContainText("No reason was recorded.");
+  await expect(panel(page)).not.toContainText("a different mockup-lock reason");
+});
+
 /* ------------------------------------------------------------------ */
 
 interface Harness {
