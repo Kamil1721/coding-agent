@@ -1327,7 +1327,7 @@ function freezeFor(
   );
 }
 
-function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest): CreativeContractAuthorResult {
+function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest, pageKind: CreativeContractV1["designRead"]["pageKind"] = "agency_landing"): CreativeContractAuthorResult {
   const evidence = request.input.ticket.facts[0]?.evidence;
   assert.ok(evidence !== undefined, "the host author packet must admit at least one owner fact");
   const sections: CreativeContractV1["sections"] = [
@@ -1341,7 +1341,7 @@ function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest): C
       requiredStates: ["default", "interaction"],
     },
     {
-      id: "proof", routeId: "home", order: 1, kind: "proof", job: "Show evidence supporting the offer.",
+      id: "proof", routeId: "home", order: 1, kind: pageKind === "app" ? "form" : "proof", job: "Show evidence supporting the offer.",
       contentRefs: [{ proofId: "owner-brief", use: "headline" }], eyebrow: null,
       headline: "Evidence before assertion", body: null, actions: [], layoutFamily: "bento", visualKind: "brand_asset",
       mobile: { strategy: "stack", contentOrder: ["headline", "visual"] }, requiredStates: ["default"],
@@ -1357,7 +1357,7 @@ function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest): C
     schemaVersion: 1,
     contractId: request.input.contractId,
     designRead: {
-      pageKind: "agency_landing", audience: "Leaders responsible for consequential delivery.",
+      pageKind, audience: "Leaders responsible for consequential delivery.",
       vibe: "Editorial, direct and evidence-led.", aestheticFamily: "editorial", designSystem: "native",
       displayStyle: "serif", paletteFamily: "custom", theme: "light",
       thesis: "Pair an editorial reading rhythm with direct evidence and an unambiguous route to action.",
@@ -1725,6 +1725,53 @@ function rowAtBuilderStart<T>(read: (row: ReturnType<RunStore["getRun"]>) => T):
 async function waitForBuilderAfterContract(h: DesignHarness, message: string): Promise<void> {
   const results = runPathsFor(h.paths, h.runId).results;
   await h.waitFor(() => existsSync(join(results, CREATIVE_CONTRACT_FILE)) && h.builderCalls.length > 0, 10_000, message);
+}
+
+for (const noKey of [false, true]) {
+  test(`T22 canvass dispatch reads app from the fresh contract after the earlier motion read: degraded=${String(noKey)}`, async () => {
+    let authoredRequest: CreativeContractAuthorRequest | undefined;
+    const h = await designRun({
+      autoStart: false,
+      noKey,
+      designLock: "ask",
+      directions: true,
+      runCreativeContractAuthor: async (request) => {
+        authoredRequest = request;
+        return compiledCreativeAuthorResult(request);
+      },
+    });
+    const pendingMessages = h.store.pendingMessages.bind(h.store);
+    let replaced = false;
+    h.store.pendingMessages = (runId) => {
+      // This drain is after readCreativeMotionPolicy and before fresh compilation.
+      // Replace the temp authored fixture as a unit, so its freshness hash stays
+      // valid and a caller wired to the earlier page-kind read still fails.
+      if (!replaced && authoredRequest !== undefined) {
+        const path = join(runPathsFor(h.paths, h.runId).results, CREATIVE_CONTRACT_FILE);
+        if (existsSync(path)) {
+          const prior = JSON.parse(readFileSync(path, "utf8")) as CreativeContractV1;
+          assert.equal(prior.designRead.pageKind, "agency_landing");
+          persistCreativeAuthorResult(runPathsFor(h.paths, h.runId).results, compiledCreativeAuthorResult(authoredRequest, "app"));
+          replaced = true;
+        }
+      }
+      return pendingMessages(runId);
+    };
+    try {
+      h.orchestrator.pump();
+      await h.waitFor(() => h.builderCalls.length > 0 || isTerminal(h.store.getRun(h.runId)?.status ?? "queued"), 10_000, "app canvass was never dispatched");
+      assert.ok(h.builderCalls.length > 0, `app canvass dispatch failed: ${h.store.getRun(h.runId)?.failureReason}`);
+      assert.equal(replaced, true);
+      const prompt = h.builderCalls[0]?.prompt ?? "";
+      assert.ok(prompt.includes("APP CANVASS"), "APP_FORM_BRIEF_FROM_FRESH_CONTRACT_REQUIRED");
+      assert.ok(prompt.includes('"pageKind":"app"'), "the same fresh app contract must be appended");
+      assert.doesNotMatch(prompt, /once — the hero plus ONE signature section the ticket makes important — and render/);
+      assert.equal(prompt.includes("IMAGE GENERATION IS UNAVAILABLE"), noKey);
+    } finally {
+      h.store.pendingMessages = pendingMessages;
+      await h.cleanup();
+    }
+  });
 }
 
 function readAuthorAttempt(results: string, attempt: number): { status?: string; compileErrors?: readonly { path?: string }[] } {

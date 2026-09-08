@@ -6,6 +6,7 @@ import {
   CREATIVE_CONTRACT_V1_COMPILER_CONSTRAINTS,
   CREATIVE_CONTRACT_V1_JSON_SCHEMA,
   MAX_REPAIRABLE_COPY_CHARS,
+  PAGE_KINDS,
   compileCreativeContract,
   compileCreativeContractAuthorOutput,
   dashRepairedCopy,
@@ -125,6 +126,63 @@ function validContract(): CreativeContractV1 {
 function compile(contract: CreativeContractV1, resolver = RESOLVER) {
   return compileCreativeContract(JSON.stringify(contract), resolver);
 }
+
+function appRouteFixture(pageKind: "app" | "saas_landing", middleKinds: readonly CreativeSectionV1["kind"][]): CreativeContractV1 {
+  const layouts = ["form_stack", "split_media_left", "split_media_right", "vertical_stack"] as const;
+  const sections = [
+    section("home-hero", "home", 0, "hero", pageKind === "app" ? "centered_hero" : "asymmetric_split", "real_component"),
+    ...middleKinds.map((kind, index) => section(`home-middle-${String(index)}`, "home", index + 1, kind, layouts[index]!, "real_component", { mobile: { strategy: "stack", contentOrder: ["headline", "visual"] } })),
+    section("home-footer", "home", middleKinds.length + 1, "footer", "footer_columns", "none"),
+  ];
+  const base = validContract();
+  return {
+    ...base,
+    designRead: { ...base.designRead, pageKind },
+    dials: { ...base.dials, motionIntensity: 3 },
+    contentProof: sections.map((item) => proof(`proof-${item.id}`)),
+    routes: [{ id: "home", path: "/", sectionIds: sections.map((item) => item.id) }],
+    sections,
+    motion: [],
+  };
+}
+
+test("T22 app hero form feature footer compiles with a centered hero", () => {
+  assert.equal(compile(appRouteFixture("app", ["form", "feature"])).ok, true, "T22 app form route must compile without a centered-hero exception");
+});
+
+test("T22 app extends the existing page-kind vocabulary", () => {
+  assert.deepEqual(PAGE_KINDS, ["saas_landing", "consumer_landing", "agency_landing", "event_landing", "portfolio", "editorial", "app"], "T22 app must preserve every existing page kind");
+});
+
+test("T22 app section and form constraints are evaluated per route", () => {
+  const candidate = structuredClone(appRouteFixture("app", ["form", "feature"])) as Mutable<CreativeContractV1>;
+  const second = candidate.sections.map((item) => ({ ...item, id: item.id.replace("home", "work"), routeId: "work" }));
+  candidate.sections.push(...second);
+  candidate.routes.push({ id: "work", path: "/work", sectionIds: second.map((item) => item.id) });
+  assert.equal(compile(candidate).ok, true, "T22 two app routes may each contain one feature and one form");
+  second[1]!.kind = "proof";
+  const result = compile(candidate);
+  assert.equal(result.ok, false, "T22 a form on one app route must not satisfy another route");
+  assert.ok(result.errors.some((error) => error.code === "APP_FORM_REQUIRED" && error.path === "/routes/1/sectionIds"), "T22 missing form must be attributed to its own app route");
+});
+
+test("T22 app route rejects two features or a feature plus editorial", () => {
+  for (const kinds of [["form", "feature", "feature"], ["form", "feature", "editorial"]] as const) {
+    const result = compile(appRouteFixture("app", kinds));
+    assert.equal(result.ok, false, "T22 combined app feature/editorial limit must reject excess sections");
+    assert.ok(result.errors.some((error) => String(error.code) === "APP_SECTION_LIMIT" && error.path === "/routes/0/sectionIds"), "T22 excess app sections must fail APP_SECTION_LIMIT at the route");
+  }
+});
+
+test("T22 app route requires a form", () => {
+  const result = compile(appRouteFixture("app", ["feature"]));
+  assert.equal(result.ok, false, "T22 app without a form must be rejected");
+  assert.ok(result.errors.some((error) => String(error.code) === "APP_FORM_REQUIRED" && error.path === "/routes/0/sectionIds"), "T22 missing app form must fail APP_FORM_REQUIRED at the route");
+});
+
+test("T22 landing route still admits four features without a form", () => {
+  assert.equal(compile(appRouteFixture("saas_landing", ["feature", "feature", "feature", "feature"])).ok, true, "T22 app section and form rules must not restrict landing routes");
+});
 
 function codes(contract: CreativeContractV1, resolver = RESOLVER): readonly string[] {
   const result = compile(contract, resolver);

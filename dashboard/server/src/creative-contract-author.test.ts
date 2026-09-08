@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { clinicPacket } from "./test-fixtures/clinic-t21.js";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
@@ -421,6 +422,21 @@ test("authors one bounded, tool-less contract call and returns only compiled dat
   assert.match(dispatch.prompt as string, /mobile collapse strategy/i);
   assert.match(dispatch.prompt as string, /reduced-motion and no-media fallbacks/i);
   assert.doesNotMatch(JSON.stringify(result), /Build an evidence-led service page/);
+});
+
+test("T22 clinic sentence facts offer app to the author without asserting a model choice", async () => {
+  const packet = clinicPacket();
+  let prompt = "";
+  let calls = 0;
+  await authorCreativeContract(request((dispatch) => {
+    calls += 1;
+    assert.equal(typeof dispatch.prompt, "string");
+    prompt = dispatch.prompt as string;
+    throw new Error("fixture captures the offer without calling a model");
+  }, packet.input, packet.resolver));
+  assert.equal(calls, 1);
+  assert.match(prompt, /"pageKind":\[[^\]]*"app"/u, "T22 author vocabulary must offer app for the clinic fact packet");
+  assert.match(prompt, /Choose app when the visitor operates the page rather than reads it/u, "T22 author must receive the operate-page rule");
 });
 
 test("T21 author requirement headline is compile-rejected and consumes the attempt", async () => {

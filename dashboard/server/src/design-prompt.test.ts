@@ -25,6 +25,7 @@ import {
   VISUAL_GATE_REPORT,
 } from "./design-prompt.js";
 import { visualCriteriaFor } from "./visual-criteria.js";
+import { DESIGN_SYSTEMS, PAGE_KINDS } from "./creative-contract.js";
 
 const WS = "/runs/r1/workspace";
 const CAP: DesignCapability = {
@@ -69,6 +70,41 @@ const CHOSEN: DesignDirection = {
 function expand(overrides: Partial<Parameters<typeof designSegmentPrompt>[0]> = {}): string {
   return full({ stage: "expand", chosen: CHOSEN, ...overrides });
 }
+
+for (const mode of ["full", "degraded"] as const) {
+  for (const autoChoose of [false, true]) {
+    test(`T22 app canvass uses the comparable form brief: ${mode}, auto=${String(autoChoose)}`, () => {
+      const prompt = full({ mode, autoChoose, ...{ pageKind: "app" as const } });
+      assert.ok(prompt.includes("Multi-step forms / wizards (use Form-specific patterns; this skill won't make them better)."), "APP_FORM_SCOPE_SENTENCE_REQUIRED");
+      assert.ok(prompt.includes(`Each of the 3 comparable directions must be anchored on one named design system from DESIGN_SYSTEMS: ${DESIGN_SYSTEMS.join(", ")}.`));
+      assert.ok(prompt.includes(`Delegate this form brief to \`${VISUAL_GATE_AUTHOR}\``));
+      for (const requirement of ["type scale", "spacing", "control states", "error treatment", "375px"]) {
+        assert.ok(prompt.includes(requirement), `missing form requirement: ${requirement}`);
+      }
+      assert.doesNotMatch(prompt, /once — the hero plus ONE signature section the ticket makes important — and render/);
+      assert.doesNotMatch(prompt, /the one motion moment the page is built around/);
+      if (mode === "full") {
+        assert.match(prompt, /app header plus the form section/);
+        assert.match(prompt, /3 DISTINCT DIRECTIONS × 2 STILLS = 6 PNGs/);
+      } else {
+        assert.match(prompt, /EMPTY refs array/);
+      }
+    });
+  }
+  test(`T22 page kind cannot alter expansion bytes: ${mode}`, () => {
+    assert.equal(expand({ mode, ...{ pageKind: "app" as const } }), expand({ mode }));
+  });
+}
+
+test("T22 every existing page kind preserves omitted-kind canvass bytes", () => {
+  for (const pageKind of PAGE_KINDS.filter((kind) => String(kind) !== "app")) {
+    for (const mode of ["full", "degraded"] as const) {
+      for (const autoChoose of [false, true]) {
+        assert.equal(full({ mode, autoChoose, ...{ pageKind } }), full({ mode, autoChoose }));
+      }
+    }
+  }
+});
 
 test("denied video policy removes both expansion invitation and template marks", () => {
   const reason = "Contract motionIntensity 3 and direction motionIntensity 2 are below threshold 8.";

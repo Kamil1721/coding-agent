@@ -4231,8 +4231,8 @@ export class Orchestrator {
     ticket: Ticket,
     runPaths: RunPaths,
     manifest: ReferenceManifest | null,
-  ): string {
-    if (!this.#creativePilotApplies(ticket)) return "";
+  ): { prompt: string; pageKind: FreshCreativeContract["contract"]["designRead"]["pageKind"] | undefined } {
+    if (!this.#creativePilotApplies(ticket)) return { prompt: "", pageKind: undefined };
     const authored = authorInputFor(ticket, manifest);
     for (const warning of authored.warnings) this.#emitLog(runId, "warn", warning);
     const checked = freshCreativeContract(runPaths.results, authored.resolver);
@@ -4246,7 +4246,7 @@ export class Orchestrator {
       );
     }
     this.#emitLog(runId, "info", `creative contract freshness check green (${checked.fresh.contractHash.slice(0, 12)}…)`);
-    return creativeContractPrompt(checked.fresh);
+    return { prompt: creativeContractPrompt(checked.fresh), pageKind: checked.fresh.contract.designRead.pageKind };
   }
 
   async #creativeReviewPhase(
@@ -5107,6 +5107,7 @@ export class Orchestrator {
             capability: this.#capability(),
             autoChoose: policy === "auto",
             stage: expandSegment ? "expand" : "canvass",
+            ...(creativeContract.pageKind === undefined ? {} : { pageKind: creativeContract.pageKind }),
             videoPolicy,
             // THE CHOSEN DIRECTION, READ OFF THE MANIFEST RATHER THAN CARRIED IN
             // MEMORY. The choice can be made by an owner while this process is
@@ -5132,7 +5133,7 @@ export class Orchestrator {
           builderReferenceSection(references) +
           (videoPrompt === "" ? "" : `\n\n${videoPrompt}\n`) +
           ownerNote;
-      const prompt = creativeContract === "" ? phasePrompt : `${phasePrompt}\n\n${creativeContract}`;
+      const prompt = creativeContract.prompt === "" ? phasePrompt : `${phasePrompt}\n\n${creativeContract.prompt}`;
       // REDACTED ON THE WAY TO DISK. The prompt embeds the ticket text, and here
       // the ticket text is FREE-FORM OWNER INPUT typed into a web form — not a
       // frozen, harness-authored brief as in the bake-off. Every other persisted

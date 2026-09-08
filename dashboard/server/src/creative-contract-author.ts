@@ -523,6 +523,7 @@ function buildPrompt(input: CreativeContractAuthorInput, repairFindings: readonl
 
 - Copy contractId exactly. Use only evidence objects present in HOST FACTS. Never invent or alter a locator or digest.
 - State one project-specific design read: audience, vibe, aesthetic family, honest design system, display style, palette, theme and thesis. Derive the three 1-10 dials from the facts, not a universal preset.
+- Choose app when the visitor operates the page rather than reads it: completing forms, using a tool or moving through a workflow.
 - Turn supported claims into contentProof entries and authorize only their actual uses. Every section needs one focused job and evidence-linked content.
 - Keep constraint, accessibility, technical_constraint and avoid facts out of visible page copy and actions; use them to guide implementation, with alt as their only permitted content use.
 - Use concrete copy. Do not use generic filler, fake metrics, startup placeholder names, em-dashes, decorative section numbers, scroll cues, version labels or mock-poetic micro-labels.

@@ -3,6 +3,7 @@ import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { WAVE2_PROMPT_GOLDENS } from "./test-fixtures/wave2-prompt-goldens.js";
+import { WAVE2_T22_MOTION_GUIDANCE_GOLDEN } from "./test-fixtures/wave2b-t22-author-prompt-goldens.js";
 import { decideMotion } from "./builders/antislop-rules.js";
 import { visualCriteriaFor } from "./visual-criteria.js";
 import { MOTION_FILES } from "./test-fixtures/wave2-prompt-inputs.js";
@@ -19,7 +20,7 @@ function assertGolden(actual: string, expected: { readonly sha256: string; reado
 }
 
 const current = await currentPromptBytes();
-for (const [name, golden] of Object.entries(WAVE2_PROMPT_GOLDENS)) {
+for (const [name, golden] of Object.entries({ ...WAVE2_PROMPT_GOLDENS, ...WAVE2_T22_MOTION_GUIDANCE_GOLDEN })) {
   test(`${name === "video-consumption-original" ? "historical capture hash integrity" : "runtime golden"}: ${name}`, () => {
     // The full original remains an immutable historical capture. T19's runtime
     // must now equal the independently captured sentence-removed remainder.
@@ -41,6 +42,15 @@ for (const [name, golden] of Object.entries(WAVE2_PROMPT_GOLDENS)) {
     assert.notEqual(mutation, golden.bytes);
   });
 }
+
+test("T22 motion guidance differs only by the centered app hero exemption", () => {
+  const before = WAVE2_PROMPT_GOLDENS["author-motion-guidance"];
+  const after = WAVE2_T22_MOTION_GUIDANCE_GOLDEN["author-motion-guidance"];
+  const changed = "pageKind is not editorial, event_landing or app";
+  assert.equal(hash(before.bytes), before.sha256, "T22 historical motion guidance remains immutable");
+  assert.equal(after.bytes.split(changed).length, 2);
+  assert.equal(after.bytes.replace(changed, "pageKind is neither editorial nor event_landing"), before.bytes, "T22 every other motion-guidance byte must stay unchanged");
+});
 
 test("consumption remainder removes exactly the original false sentence", () => {
   const original = WAVE2_PROMPT_GOLDENS["video-consumption-original"].bytes;

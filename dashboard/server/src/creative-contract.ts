@@ -9,7 +9,7 @@ export const SCROLL_PROGRESS_MIN_MOTION_INTENSITY = 8;
 export const MAX_CREATIVE_EXCEPTIONS = 20;
 export const MAX_ACTION_LABEL_WORDS = 4;
 
-export const PAGE_KINDS = ["saas_landing", "consumer_landing", "agency_landing", "event_landing", "portfolio", "editorial"] as const;
+export const PAGE_KINDS = ["saas_landing", "consumer_landing", "agency_landing", "event_landing", "portfolio", "editorial", "app"] as const;
 export type PageKind = (typeof PAGE_KINDS)[number];
 
 export const AESTHETIC_FAMILIES = ["minimal", "editorial", "industrial", "playful", "premium", "trust_first", "brand_defined"] as const;
@@ -462,6 +462,7 @@ export const CREATIVE_CONTRACT_V1_COMPILER_CONSTRAINTS: Readonly<Record<string, 
 });
 
 export type CreativeCompileErrorCode =
+  | "APP_SECTION_LIMIT" | "APP_FORM_REQUIRED"
   | "REQUIREMENT_AS_COPY" | "REQUIREMENT_SECTION"
   | "INVALID_JSON" | "INVALID_ROOT" | "UNKNOWN_KEY" | "MISSING_KEY" | "INVALID_TYPE" | "INVALID_VALUE" | "LIMIT_EXCEEDED"
   | "DUPLICATE_ID" | "DUPLICATE_VALUE" | "DANGLING_ROUTE" | "DANGLING_SECTION" | "DANGLING_CONTENT_PROOF"
@@ -479,6 +480,14 @@ export type CreativeCompileErrorCode =
  * not independently reinterpret these branches.
  */
 export const CREATIVE_CONTRACT_V1_AUTHOR_INVARIANTS = [
+  {
+    id: "app-route-structure",
+    errorSites: [
+      { code: "APP_SECTION_LIMIT", pathPattern: "/routes/*/sectionIds" },
+      { code: "APP_FORM_REQUIRED", pathPattern: "/routes/*/sectionIds" },
+    ],
+    guidance: "For each app route, include at least one form section and at most one feature or editorial section combined. These route limits do not apply to landing or editorial page kinds.",
+  },
   {
     id: "requirements-are-not-copy",
     errorSites: [
@@ -530,7 +539,7 @@ export const CREATIVE_CONTRACT_V1_AUTHOR_INVARIANTS = [
       { code: "EXCEPTION_UNUSED", pathPattern: "/intentionalExceptions/*" },
     ],
     guidance:
-      `Default intentionalExceptions to []. Active predicates are exactly: SERIF_DISPLAY only when displayStyle is serif AND pageKind is not editorial AND aestheticFamily is not editorial; PURPLE_PALETTE when paletteFamily is purple; WARM_CRAFT_PALETTE when paletteFamily is warm_craft; THEME_SWITCH when theme is section_switch; DIAL_DEVIATION when a motion trigger is scroll_progress AND motionIntensity is below ${SCROLL_PROGRESS_MIN_MOTION_INTENSITY}; CENTERED_HERO when a route hero layoutFamily is centered_hero AND pageKind is neither editorial nor event_landing; LAYOUT_FAMILY_REPEAT when one layoutFamily occurs more than once on a route; SECOND_MARQUEE when a route has more than one marquee; TEXT_ONLY_PAGE when a route has no section whose visualKind is outside none and type_only. After drafting, add an exception only for an active predicate it will waive. The five global rules require routeId null and sectionIds []; route rules require an existing routeId and only sectionIds from that route, including every affected section the predicate checks. Omit every inactive exception; in particular, an editorial aesthetic needs no SERIF_DISPLAY exception.`,
+      `Default intentionalExceptions to []. Active predicates are exactly: SERIF_DISPLAY only when displayStyle is serif AND pageKind is not editorial AND aestheticFamily is not editorial; PURPLE_PALETTE when paletteFamily is purple; WARM_CRAFT_PALETTE when paletteFamily is warm_craft; THEME_SWITCH when theme is section_switch; DIAL_DEVIATION when a motion trigger is scroll_progress AND motionIntensity is below ${SCROLL_PROGRESS_MIN_MOTION_INTENSITY}; CENTERED_HERO when a route hero layoutFamily is centered_hero AND pageKind is not editorial, event_landing or app; LAYOUT_FAMILY_REPEAT when one layoutFamily occurs more than once on a route; SECOND_MARQUEE when a route has more than one marquee; TEXT_ONLY_PAGE when a route has no section whose visualKind is outside none and type_only. After drafting, add an exception only for an active predicate it will waive. The five global rules require routeId null and sectionIds []; route rules require an existing routeId and only sectionIds from that route, including every affected section the predicate checks. Omit every inactive exception; in particular, an editorial aesthetic needs no SERIF_DISPLAY exception.`,
   },
   {
     id: "hero-order",
@@ -1128,6 +1137,10 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
     const declared = contract.sections.filter((section) => section.routeId === route.id);
     if (declared.length !== routeSections.length) error(ctx, "DANGLING_SECTION", `/routes/${String(routeIndex)}/sectionIds`, "route section list must cover every section assigned to the route");
     const heroes = routeSections.filter((section) => section.kind === "hero");
+    if (contract.designRead.pageKind === "app") {
+      if (routeSections.filter((section) => section.kind === "feature" || section.kind === "editorial").length > 1) error(ctx, "APP_SECTION_LIMIT", `/routes/${String(routeIndex)}/sectionIds`, "app route may contain at most one feature or editorial section combined");
+      if (!routeSections.some((section) => section.kind === "form")) error(ctx, "APP_FORM_REQUIRED", `/routes/${String(routeIndex)}/sectionIds`, "app route requires at least one form section");
+    }
     if (heroes.length === 0) error(ctx, "HERO_MISSING", `/routes/${String(routeIndex)}/sectionIds`, "route requires one hero section");
     if (heroes.length > 1) error(ctx, "HERO_MULTIPLE", `/routes/${String(routeIndex)}/sectionIds`, "route may contain only one hero section");
     const hero = heroes[0];
@@ -1138,7 +1151,7 @@ function semantic(contract: CreativeContractV1, resolver: CreativeEvidenceResolv
       if (hero.body !== null && wordCount(hero.body) > 20) error(ctx, "HERO_BODY_TOO_LONG", `/sections/${String(heroIndex)}/body`, "hero body must be at most 20 words");
       if (hero.actions.length > 2) error(ctx, "HERO_ACTION_LIMIT", `/sections/${String(heroIndex)}/actions`, "hero may contain at most two actions");
       if (hero.actions.length > 0 && hero.actions.filter((action) => action.priority === "primary").length !== 1) error(ctx, "HERO_PRIMARY_ACTION_INVALID", `/sections/${String(heroIndex)}/actions`, "hero actions require exactly one primary action");
-      if (hero.layoutFamily === "centered_hero" && contract.designRead.pageKind !== "editorial" && contract.designRead.pageKind !== "event_landing" && !useException("CENTERED_HERO", route.id, [hero.id])) error(ctx, "EXCEPTION_REQUIRED", `/sections/${String(heroIndex)}/layoutFamily`, "centered hero requires a scoped intentional exception for this page kind");
+      if (hero.layoutFamily === "centered_hero" && contract.designRead.pageKind !== "editorial" && contract.designRead.pageKind !== "event_landing" && contract.designRead.pageKind !== "app" && !useException("CENTERED_HERO", route.id, [hero.id])) error(ctx, "EXCEPTION_REQUIRED", `/sections/${String(heroIndex)}/layoutFamily`, "centered hero requires a scoped intentional exception for this page kind");
     }
     const eyebrowPositions = routeSections.flatMap((section, position) => section.eyebrow === null ? [] : [position]);
     if (eyebrowPositions.length > Math.ceil(routeSections.length / 3)) error(ctx, "EYEBROW_LIMIT", `/routes/${String(routeIndex)}/sectionIds`, "route exceeds one eyebrow per three sections");

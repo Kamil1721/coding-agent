@@ -38,6 +38,7 @@ import { join } from "node:path";
 // `design-capability.ts` owns, and the drift would be silent in the worst
 // direction — a build told to run a script that is not where this file says.
 import { GEMINI_IMAGE_SCRIPT, type DesignCapability } from "./design-capability.js";
+import { DESIGN_SYSTEMS, type PageKind } from "./creative-contract.js";
 import type { VideoLegPolicy } from "./design/video-policy.js";
 // THE CAP AND THE ASPECT SET ARE IMPORTED FROM THE PLANNER THAT ENFORCES THEM.
 // A `2` and a `"16:9" or "9:16"` typed into this file would be a second
@@ -162,6 +163,8 @@ export function designSegmentPrompt(input: {
   autoChoose: boolean;
   /** Which half of the two-stage lane. See {@link DesignPromptStage}. */
   stage: DesignPromptStage;
+  /** From the same freshly compiled contract appended to this prompt. */
+  pageKind?: PageKind;
   /**
    * The direction the owner (or `ui-designer`, or the fallback) picked. Non-null
    * on `stage: "expand"` and null on `"canvass"` — the expand prompt is built
@@ -173,6 +176,7 @@ export function designSegmentPrompt(input: {
   const refsDir = refsDirFor(input.workspace);
   const manifest = manifestPathFor(input.workspace);
   const canvass = input.stage === "canvass";
+  const appCanvass = canvass && input.pageKind === "app";
   const chosen = input.chosen;
   const lines: string[] = [
     "DESIGN LANE — art direction, before any markup exists.",
@@ -213,6 +217,8 @@ export function designSegmentPrompt(input: {
         ]),
   );
 
+  if (appCanvass) lines.push(...appFormBrief());
+
   if (input.mode === "degraded") {
     if (!canvass && input.videoPolicy?.allowed === false) {
       lines.push(
@@ -243,10 +249,17 @@ export function designSegmentPrompt(input: {
       lines.push(
         `PRODUCE ${String(DESIGN_DIRECTION_COUNT)} WRITTEN ART DIRECTIONS, one per direction, at`,
         `${join(refsDir, "direction-<slug>.md")} — e.g. ${join(refsDir, "direction-editorial-slab.md")}.`,
-        "Each one states: the palette with hex values and the role of each, the type system",
-        "with families, scale steps and tracking, the section order with the weight each",
-        "carries, and the one motion moment the page is built around. Written direction is",
-        "what the build segment will be given in place of stills, so each has to be",
+        ...(appCanvass ? [
+          "Each one records its named design system and the form brief above, including",
+          "palette roles with hex values, type scale, spacing, control states, error treatment",
+          "and 375px behaviour for the same app header and form section in every direction.",
+          "Written direction is what the build segment will be given in place of stills, so each must be",
+        ] : [
+          "Each one states: the palette with hex values and the role of each, the type system",
+          "with families, scale steps and tracking, the section order with the weight each",
+          "carries, and the one motion moment the page is built around. Written direction is",
+          "what the build segment will be given in place of stills, so each has to be",
+        ]),
         "specific enough to build from on its own.",
         "",
         `DO NOT write ${join(refsDir, "direction.md")} yet. That filename means THE CHOSEN`,
@@ -440,7 +453,7 @@ export function designSegmentPrompt(input: {
       "the lane is then reported as having produced nothing.",
       "",
     );
-    lines.push(...(canvass ? canvassBrief(refsDir, manifest) : expandBrief(refsDir, manifest, chosen, input.capability.video && input.videoPolicy?.allowed !== false)));
+    lines.push(...(canvass ? canvassBrief(refsDir, manifest, "hero", appCanvass ? "form" : "work", appCanvass) : expandBrief(refsDir, manifest, chosen, input.capability.video && input.videoPolicy?.allowed !== false)));
     lines.push(
       "`path` must be ABSOLUTE and inside that directory. A manifest with a path",
       "outside it is rejected wholesale by the host, and the lane then counts as having",
@@ -604,7 +617,24 @@ export function designSegmentPrompt(input: {
  * feature turns into three unrelated designs and the owner's own image stops
  * mattering — which is the exact question this whole change exists to answer.
  */
-function canvassBrief(refsDir: string, manifestPath: string, hero = "hero", second = "work"): readonly string[] {
+function appFormBrief(): readonly string[] {
+  return [
+    "APP CANVASS. The visitor operates this page. Use a form-specific brief.",
+    `Delegate this form brief to \`${VISUAL_GATE_AUTHOR}\`. The author offers directions; it does not choose for the owner.`,
+    "The taste-skill's landing-page parts are out of scope for this ticket. Its own scope sentence is:",
+    "Multi-step forms / wizards (use Form-specific patterns; this skill won't make them better).",
+    `Each of the ${String(DESIGN_DIRECTION_COUNT)} comparable directions must be anchored on one named design system from DESIGN_SYSTEMS: ${DESIGN_SYSTEMS.join(", ")}.`,
+    "Name the system in each direction's notes and explain its fit. The author chooses the anchors; no system is preselected here.",
+    "For each direction specify type scale for headings, labels, help and values; spacing within controls and between groups;",
+    "control states for default, hover, focus, active, disabled, loading and success; and error treatment with inline messages, recovery and preserved input.",
+    "Describe 375px behaviour: column collapse, label and error wrapping, touch targets, keyboard focus order and actions without horizontal overflow.",
+    "Compare the same ticket content and form task in every direction. Distinguish at least two of type scale, spacing, control presentation and error treatment.",
+    "Keep form labels, help and feedback legible. Any motion must explain a control or state transition and respect reduced motion.",
+    "",
+  ];
+}
+
+function canvassBrief(refsDir: string, manifestPath: string, hero = "hero", second = "work", app = false): readonly string[] {
   const slugA = "editorial-slab";
   const slugB = "quiet-grid";
   return [
@@ -613,7 +643,9 @@ function canvassBrief(refsDir: string, manifestPath: string, hero = "hero", seco
     "direction.",
     "",
     `SAME SECTIONS, SAME ORDER, SAME ASPECT, IN ALL ${String(DESIGN_DIRECTION_COUNT)} DIRECTIONS. Pick the ${String(DESIGN_CANVASS_SECTIONS)} sections`,
-    `once — the ${hero} plus ONE signature section the ticket makes important — and render`,
+    app
+      ? "once: the app header plus the form section the ticket requires, and render"
+      : `once — the ${hero} plus ONE signature section the ticket makes important — and render`,
     "exactly those, in that order, at one aspect ratio, for every direction. This is not",
     "a formality: the owner is choosing between DIRECTIONS, and a set where direction 1",
     `shows its ${hero} and direction 2 shows its footer makes him choose between pictures`,
