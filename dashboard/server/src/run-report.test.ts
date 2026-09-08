@@ -42,6 +42,7 @@
  */
 
 import { strict as assert } from "node:assert";
+import { CLINIC_JUDGE_REPORT } from "./test-fixtures/clinic-judge-report.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -1033,4 +1034,15 @@ test("the footer cannot be read as a verdict — it carries none of the vocabula
   assert.doesNotMatch(PRICING_FOOTER, /PASSED/);
   assert.doesNotMatch(PRICING_FOOTER, /DID NOT PASS/);
   assert.doesNotMatch(PRICING_FOOTER, /^#/m, "the footer opens no heading");
+});
+
+
+test("T17 run report carries the whole judge report through verdict plumbing", () => {
+  const source = { ticketText: TICKET, criteria: SCORED_CLEAN, status: "passed" as const, failureReason: null };
+  const concerns = renderRunVerdict({ ...source, judgeReport: CLINIC_JUDGE_REPORT });
+  assert.ok(concerns.startsWith("# PASSED\n"));
+  for (const finding of CLINIC_JUDGE_REPORT.findings) assert.ok(concerns.includes(finding.detail));
+  assert.doesNotMatch(concerns, /nothing was noted against it/);
+  assert.match(renderRunVerdict(source), /code-reading judge did not run/);
+  assert.match(renderRunVerdict({ ...source, judgeReport: { ...CLINIC_JUDGE_REPORT, verdict: "clean", findings: [] } }), /nothing was noted against it/);
 });

@@ -86,6 +86,7 @@ import { stripPlanBlock } from "./plan-brief.js";
 import { ticketProse } from "./ticket-refs.js";
 import { renderVerdict } from "./verdict.js";
 import type { VerdictInput } from "./verdict.js";
+import type { JudgeReport } from "./judge.js";
 import type { VisualObservationOutcome } from "./visual-substance.js";
 
 /** Filenames, exported so tests and the API agree on one spelling. */
@@ -225,6 +226,8 @@ export function writeAssumptions(
 
 /** Everything the verdict needs, and all of it already persisted and redacted. */
 export interface RunVerdictSource {
+  /** Absent means this execution has no code-reading judge report. */
+  readonly judgeReport?: JudgeReport;
   /** The owner's ticket, as stored. Their words are the point of the document. */
   readonly ticketText: string;
   /** The run's criteria and their results, from `RunStore.listCriteria`. */
@@ -354,6 +357,7 @@ function verdictInputFor(source: RunVerdictSource): VerdictInput {
   }));
   return {
     ticket: source.ticketText,
+    ...(source.judgeReport === undefined ? {} : { judgeReport: source.judgeReport }),
     criteriaResults,
     qualityFindings: source.qualityFindings ?? [],
     // `tracedProse`, NOT `source.ticketText` — see that function. The page keeps

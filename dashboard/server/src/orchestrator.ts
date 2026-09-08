@@ -298,6 +298,7 @@ import {
   writeDefectRecord,
 } from "./defect-record.js";
 import { judgeArtifact } from "./judge.js";
+import type { JudgeReport } from "./judge.js";
 import type { CatalogEntry, ModelCatalog } from "./models.js";
 import { DASHBOARD_ENV, ensureRunDirs, gateEnv, runPathsFor, safeSegment } from "./paths.js";
 import type { DashboardPaths, RunPaths } from "./paths.js";
@@ -585,8 +586,8 @@ export interface OrchestratorDeps {
    */
   readonly makeBuilder?: (provider: ApiProvider) => SubscriptionBuilder;
   /**
-   * How the SPEC and AUDIT seats reach a model. Defaulted to the SDK's own
-   * `query`, which is the only thing production ever uses.
+   * How the SPEC, AUDIT and code-reading judge seats reach a model. Defaulted
+   * to the SDK's own `query`, which is the only thing production ever uses.
    *
    * IT EXISTS BECAUSE THE MOST EXPENSIVE DEFECT THIS FILE HAS SHIPPED LIVED ON
    * THE PATH NO TEST COULD DRIVE. `#specPhase` constructs both callers inline, so
@@ -1528,6 +1529,9 @@ export class Orchestrator {
    */
   readonly #visualGate = new Map<string, VisualGateRunResult>();
 
+  /** Only this execution's report may describe the final tree. Never restored from disk. */
+  readonly #judgeReports = new Map<string, JudgeReport>();
+
   /**
    * Deliver an owner message into a RUNNING session.
    *
@@ -2395,6 +2399,7 @@ export class Orchestrator {
 
     const runPaths = runPathsFor(this.#deps.paths, runId);
     ensureRunDirs(runPaths);
+    this.#resetJudgeReport(runId, runPaths);
 
     /*
      * THE TICKET IS DERIVED, NOT READ OFF THE ROW — AND NOW IT NEEDS THE
@@ -7530,6 +7535,27 @@ export class Orchestrator {
     return source.sourceHash;
   }
 
+  /** Starting another attempt invalidates any report about the previous tree. */
+  #resetJudgeReport(runId: string, runPaths: RunPaths): void {
+    this.#judgeReports.delete(runId);
+    try {
+      rmSync(join(runPaths.results, "judge.json"), { force: true });
+    } catch (error) {
+      this.#emitLog(runId, "warn", `the previous judge report could not be removed: ${describeError(error)}`);
+    }
+  }
+
+  #recordJudgeReport(runId: string, runPaths: RunPaths, report: JudgeReport): void {
+    const redacted = redactForPersistence(report);
+    this.#judgeReports.set(runId, redacted);
+    try {
+      writeFileSync(join(runPaths.results, "judge.json"), `${JSON.stringify(redacted, null, 2)}\n`, "utf8");
+    } catch (error) {
+      // Report persistence cannot change the gate's result.
+      this.#emitLog(runId, "warn", `the judge report could not be written: ${describeError(error)}`);
+    }
+  }
+
   /* ---- phase 5: the sealed judge ------------------------------------- */
 
   async #judgePhase(
@@ -7540,9 +7566,20 @@ export class Orchestrator {
     container: ContainerResult | null,
     signal: AbortSignal,
   ): Promise<void> {
-    if (signal.aborted) return;
+    const skipped = (summary: string): void => {
+      this.#recordJudgeReport(runId, runPaths, {
+        ran: false, verdict: "unavailable", findings: [], summary,
+        tokens: null, rateLimit: null,
+        judgedBy: "not run",
+      });
+    };
+    if (signal.aborted) {
+      skipped("the run was cancelled before the code-reading judge could run");
+      return;
+    }
     const auth = await this.#deps.auth.status();
     if (auth.claude !== "ok") {
+      skipped(auth.claudeDetail);
       this.#emitLog(runId, "warn", `skipping the code-reading judge: ${auth.claudeDetail}`);
       return;
     }
@@ -7559,7 +7596,9 @@ export class Orchestrator {
       cwd: this.#deps.paths.home,
       env: this.#deps.env,
       signal,
+      ...(this.#deps.seatQuery === undefined ? {} : { startQuery: this.#deps.seatQuery }),
     });
+    this.#recordJudgeReport(runId, runPaths, report);
 
     if (report.tokens !== null && report.tokens.callCount > 0) {
       this.#emitLog(runId, "info", `judge — ${describeTokens(report.tokens)}`);
@@ -8851,6 +8890,7 @@ export class Orchestrator {
     // the pre-2026-08-05 behaviour where `visualFindings` had no producer at all,
     // and nothing would look wrong.
     this.#visualGate.delete(runId);
+    this.#judgeReports.delete(runId);
     this.#emit(runId, { type: "status", status });
     /*
      * THE SETTLE HOOK IS LAST, AFTER THE TERMINAL `status`. A supervisor that
@@ -9119,7 +9159,7 @@ export class Orchestrator {
     try {
       return writeRunVerdict(
         runPathsFor(this.#deps.paths, runId).results,
-        verdictSourceFor(row, this.#deps.store.listCriteria(runId), this.#visualGate.get(runId)),
+        verdictSourceFor(row, this.#deps.store.listCriteria(runId), this.#visualGate.get(runId), this.#judgeReports.get(runId)),
       );
     } catch (error) {
       // The record of the run, not the run. A run that finished must not be
@@ -9190,6 +9230,12 @@ export class Orchestrator {
       throw new Error("creative recovery child is not an owned running run");
     }
     const runPaths = runPathsFor(this.#deps.paths, work.targetRunId);
+    this.#resetJudgeReport(work.targetRunId, runPaths);
+    this.#recordJudgeReport(work.targetRunId, runPaths, {
+      ran: false, verdict: "unavailable", findings: [],
+      summary: "terminal creative recovery does not run the code-reading judge",
+      tokens: null, rateLimit: null, judgedBy: "not run",
+    });
     const log = new BuildLog(runPaths.buildLog);
     const abort = new AbortController();
     const signal = abort.signal;
@@ -9783,8 +9829,8 @@ export function highestArchivedAttempt(paths: DashboardPaths, runId: string): nu
  * exists to keep out of a fixing agent's prompt, leaving by a different door.
  *
  * IT IS NOT A `heldOutPass` PROBLEM, and the fix is deliberate rather than
- * reflexive. The judge gates nothing (`#judgePhase` only emits log lines) and
- * its output never re-enters the GATE/FIX loop, so no measurement is corrupted
+ * reflexive. The judge gates nothing (`#judgePhase` records a non-gating report
+ * and log lines). Its output never re-enters the GATE/FIX loop, so no measurement is corrupted
  * by it. What IS corrupted is the claim the sealed store makes: that the
  * held-out suite's identities exist in exactly one place. A verdict-shaped
  * document quoting a held-out title is the same leak with a smaller blast
@@ -9880,12 +9926,14 @@ export function verdictSourceFor(
   row: RunRow,
   criteria: readonly ApiCriterion[],
   visual: VisualGateRunResult | undefined,
+  judgeReport?: JudgeReport,
 ): RunVerdictSource {
   return {
     ticketText: row.ticketText,
     criteria,
     status: row.status,
     failureReason: row.failureReason,
+    ...(judgeReport === undefined ? {} : { judgeReport }),
     ...(visual === undefined
       ? {}
       : { visualFindings: visual.findings, qualityFindings: visual.qualityFindings }),

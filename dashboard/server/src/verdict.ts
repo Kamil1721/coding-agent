@@ -92,6 +92,7 @@
  * the render pure is what lets its tests run without touching a filesystem.
  */
 
+import type { JudgeReport } from "./judge.js";
 import type { CriterionResult } from "bakeoff/dist/contracts.js";
 // VALUE imports. The gate id list is a public constant of the scorer protocol,
 // not something the sealed container produced, and importing it as a type would
@@ -117,6 +118,8 @@ import { visualObservationLabel } from "./visual-substance.js";
 export type VerdictOutcome = "pass" | "fail" | "pass_with_notes";
 
 export interface VerdictInput {
+  /** Non-gating observations from this execution. Absence is not a clean report. */
+  readonly judgeReport?: JudgeReport;
   /** The owner's ticket, verbatim. Their words are the point of this document. */
   readonly ticket: string;
   /** Criterion-level results from the sealed gate. Ids and tiers only, here. */
@@ -652,7 +655,24 @@ function summaryLine(input: VerdictInput, outcome: VerdictOutcome): string {
   if (outcome === "pass_with_notes") {
     return `Everything the ticket asked for is there. ${plural(quality, "note", "notes")} on quality, which do not fail the run.`;
   }
-  return "Everything the ticket asked for is there, and nothing was noted against it.";
+  const judge = input.judgeReport;
+  return judge?.ran === true && judge.verdict !== "unavailable" && judge.findings.length === 0
+    ? "Everything the ticket asked for is there, and nothing was noted against it."
+    : "Everything the ticket asked for is there.";
+}
+
+function renderCodeReadingJudge(report: JudgeReport | undefined): readonly string[] {
+  const lines = ["## Code-reading judge (non-gating)", ""];
+  if (report === undefined || !report.ran || report.verdict === "unavailable") {
+    lines.push(`The code-reading judge did not run: ${report?.summary ?? "no report was recorded for this execution"}`, "");
+  } else {
+    lines.push(report.summary, "");
+  }
+  for (const finding of report?.findings ?? []) {
+    lines.push(`- [${finding.kind}/${finding.severity}] ${finding.criterionId ?? "general"}: ${finding.detail}`);
+  }
+  if ((report?.findings.length ?? 0) > 0) lines.push("");
+  return lines;
 }
 
 /**
@@ -686,6 +706,7 @@ export function renderVerdict(input: VerdictInput): string {
   }
   lines.push(...renderHeldOut(input));
   lines.push(...renderNotes(input));
+  lines.push(...renderCodeReadingJudge(input.judgeReport));
   lines.push(...renderAssumptionSummary(input));
   lines.push(
     "## If this verdict is wrong",

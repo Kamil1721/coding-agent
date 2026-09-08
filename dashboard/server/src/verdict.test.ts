@@ -29,6 +29,7 @@
  */
 
 import { strict as assert } from "node:assert";
+import { CLINIC_JUDGE_REPORT } from "./test-fixtures/clinic-judge-report.js";
 import { test } from "node:test";
 import type { CriterionResult } from "bakeoff/dist/contracts.js";
 import { GATE_IDS } from "bakeoff/dist/scorer-protocol.js";
@@ -741,4 +742,33 @@ test("A QUALITY-TIERED visual finding WOULD flip a clean pass — which is why d
   const withNote = runWith({ passing: 3, visualFindings: [demoted] });
   assert.equal(computeOutcome(withNote), "pass_with_notes");
   assert.equal(failingTier(withNote), "QUALITY");
+});
+
+
+test("T17 judge findings and unavailable readings never produce a clean claim or alter the outcome", () => {
+  const base = runWith({ passing: 3 });
+  const variants = [
+    CLINIC_JUDGE_REPORT,
+    { ...CLINIC_JUDGE_REPORT, ran: false, verdict: "unavailable" as const, findings: [], summary: "authentication missing" },
+    { ...CLINIC_JUDGE_REPORT, ran: true, verdict: "unavailable" as const, findings: [], summary: "output was truncated" },
+    undefined,
+  ];
+  for (const judgeReport of variants) {
+    const input = { ...base, ...(judgeReport === undefined ? {} : { judgeReport }) };
+    const page = renderVerdict(input);
+    assert.equal(computeOutcome(input), "pass");
+    assert.doesNotMatch(page, /nothing was noted against it/);
+    assert.match(page, /Code-reading judge \(non-gating\)/);
+    if (judgeReport === undefined || !judgeReport.ran || judgeReport.verdict === "unavailable") {
+      assert.match(page, /code-reading judge did not run/);
+    }
+    assert.deepEqual(input.criteriaResults, base.criteriaResults);
+  }
+  const findings = renderVerdict({ ...base, judgeReport: CLINIC_JUDGE_REPORT });
+  for (const finding of CLINIC_JUDGE_REPORT.findings) {
+    assert.ok(findings.includes(`[${finding.kind}/${finding.severity}] ${finding.criterionId ?? "general"}: ${finding.detail}`));
+  }
+  const clean = { ...CLINIC_JUDGE_REPORT, verdict: "clean" as const, findings: [] };
+  assert.match(renderVerdict({ ...base, judgeReport: clean }), /nothing was noted against it/);
+  assert.doesNotMatch(renderVerdict({ ...runWith({ blocking: 1 }), judgeReport: clean }), /nothing was noted against it/);
 });

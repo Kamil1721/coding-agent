@@ -39,6 +39,13 @@ import type {
 import { ADVERSARY_AGENT, ADVERSARY_DISALLOWED_TOOLS } from "./adversary.js";
 import { GATE_MAX_ATTEMPTS_ENV } from "./gate-fix-loop.js";
 import { AuthProbe } from "./auth.js";
+import type { AuthStatus } from "./auth.js";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SeatSessionFactory } from "./subscription-caller.js";
+import type { OrchestratorDeps } from "./orchestrator.js";
+import type { JudgeReport } from "./judge.js";
+import { CLINIC_JUDGE_REPORT } from "./test-fixtures/clinic-judge-report.js";
+import { redactForPersistence } from "bakeoff/dist/redact.js";
 import { RunEventBus } from "./bus.js";
 import { MOTION_BAR_ENV, buildOptions } from "./builders/claude-builder.js";
 import type { BuildOutcome, BuildRequest, SubscriptionBuilder } from "./builders/types.js";
@@ -1380,6 +1387,9 @@ function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest): C
 }
 
 async function designRun(options: {
+  auth?: AuthProbe;
+  seatQuery?: SeatSessionFactory;
+  makeGate?: OrchestratorDeps["makeGate"];
   ticket?: string;
   designLock?: "auto" | "ask" | null;
   interactive?: boolean;
@@ -1443,7 +1453,7 @@ async function designRun(options: {
   ensureDirs(paths);
   const store = RunStore.open(paths.database);
   const bus = new RunEventBus(store);
-  const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
+  const auth = options.auth ?? new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
   const catalog = new FakeCatalog(auth, {}, async () => []);
   const preview = new PreviewHost();
 
@@ -1490,6 +1500,8 @@ async function designRun(options: {
     preview,
     env,
     gateReadiness: READY_GATE_READINESS,
+    ...(options.seatQuery === undefined ? {} : { seatQuery: options.seatQuery }),
+    ...(options.makeGate === undefined ? {} : { makeGate: options.makeGate }),
     makeBuilder: () => builder,
     // The real preflight spawns `npx impeccable`, which reaches a registry. A
     // sequencing test that pays for that learns nothing about sequencing.
@@ -7332,6 +7344,10 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
       result: "pending",
     })));
     store.openAttempt(targetRunId, new Date().toISOString(), "build");
+    // T17: copied or stale reports cannot describe a newly mutated recovery tree.
+    writeFileSync(join(runPaths.results, "judge.json"), JSON.stringify({
+      ...CLINIC_JUDGE_REPORT, verdict: "clean", findings: [], summary: "stale source report",
+    }), "utf8");
     const outcome = await orchestrator.runTerminalCreativeRecovery({
       sourceRunId,
       targetRunId,
@@ -7359,6 +7375,12 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
     assert.equal(terminal?.gateAttempts, 2);
     assert.equal(terminal?.gateStopReason, "green");
     assert.notEqual(terminal?.verdictPath, "");
+    const recoveryJudge = JSON.parse(readFileSync(join(runPaths.results, "judge.json"), "utf8")) as JudgeReport;
+    assert.equal(recoveryJudge.ran, false);
+    assert.equal(recoveryJudge.verdict, "unavailable");
+    const recoveryVerdict = readFileSync(join(runPaths.results, "verdict.md"), "utf8");
+    assert.match(recoveryVerdict, /code-reading judge did not run: terminal creative recovery/);
+    assert.doesNotMatch(recoveryVerdict, /nothing was noted against it|stale source report/);
     assert.equal(store.listAttempts(targetRunId)[0]?.endClass, "completed");
     assert.equal(existsSync(join(runPaths.results, "defect.json")), true);
     assert.equal(settledCalls, 1);
@@ -8447,4 +8469,162 @@ test("the retry bounds this fix depends on are what the fix assumes", () => {
   assert.equal(boundFor("interrupted" as never), 3, "if this is no longer 3, re-derive the defect above");
   assert.equal(boundFor("unclassified" as never), 0);
   assert.equal(boundFor(null as never), undefined, "an unknown class must take the conservative arm");
+});
+
+class FixtureJudgeAuth extends AuthProbe {
+  available = true;
+  override async status(): Promise<AuthStatus> {
+    return {
+      claude: this.available ? "ok" : "missing", codex: "missing",
+      claudeDetail: this.available ? "fixture authenticated" : "fixture authentication missing",
+      codexDetail: "fixture unused", checkedAt: "2026-09-08T00:00:00.000Z",
+    };
+  }
+}
+
+const judgeGreenGate: NonNullable<OrchestratorDeps["makeGate"]> = async () => ({
+  scorerImageDigest: "sha256:" + "e".repeat(64),
+  score: async (run, suite) => ({
+    schemaVersion: BAKEOFF_SCHEMA_VERSION, runId: run.runId, ticketId: run.ticketId,
+    acceptanceSuiteSha256: suite.sha256, heldOutPass: true, falseFinish: false,
+    agentDeclaredDone: run.agentDeclaredDone, scoredAt: "2026-09-08T00:00:00.000Z",
+    scorerImageDigest: "sha256:" + "e".repeat(64),
+    criteriaResults: suite.criteria.map((criterion) => ({
+      criterionId: criterion.id, tier: criterion.tier, passed: true, detail: null, evidenceRef: null,
+    })),
+    suiteExecution: { exitCode: 0, durationMs: 1, testsTotal: 2, testsPassed: 2, testsFailed: 0, logPath: null },
+    protectedPathViolations: [],
+  }),
+});
+
+function fixtureJudgeQuery(text: string, onCall: () => void): SeatSessionFactory {
+  return ({ options }) => {
+    onCall();
+    assert.deepEqual(options.tools, [], "the code-reading judge must remain tool-less");
+    // Fixed SDK envelope. No SDK query or subprocess is called.
+    const frame = {
+      type: "result", subtype: "success", stop_reason: "end_turn", is_error: false,
+      result: text,
+      usage: { input_tokens: 40, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    } as unknown as SDKMessage;
+    return (async function* (): AsyncGenerator<SDKMessage> { yield frame; })();
+  };
+}
+
+async function judgeHarness(text: string, failWrite = false) {
+  const auth = new FixtureJudgeAuth();
+  let calls = 0;
+  const h = await designRun({
+    ticket: "Build a command line tool that prints a report to stdout.",
+    noKey: true, pngCount: 0, writeManifest: false,
+    auth, makeGate: judgeGreenGate,
+    seatQuery: fixtureJudgeQuery(text, () => { calls += 1; }),
+    onRequest: (request) => {
+      writeFileSync(join(request.workspace, "fixture-report.txt"), "A computed report.\n", "utf8");
+      if (failWrite) mkdirSync(join(request.workspace, "..", "results", "judge.json"), { recursive: true });
+    },
+  });
+  return { ...h, auth, calls: () => calls, results: runPathsFor(h.paths, h.runId).results };
+}
+
+test("T17 judge persistence reaches the verdict without changing a green gate", async () => {
+  const h = await judgeHarness(JSON.stringify(CLINIC_JUDGE_REPORT));
+  try {
+    assert.equal(h.calls(), 1);
+    assert.equal(h.status(), "passed");
+    assert.equal(h.store.getRun(h.runId)?.heldOutPass, true);
+    const stored = JSON.parse(readFileSync(join(h.results, "judge.json"), "utf8")) as JudgeReport;
+    assert.deepEqual(Object.keys(stored).sort(), Object.keys(CLINIC_JUDGE_REPORT).sort());
+    assert.deepEqual(stored.findings, CLINIC_JUDGE_REPORT.findings);
+    assert.equal(stored.summary, CLINIC_JUDGE_REPORT.summary);
+    assert.equal(stored.ran, true);
+    assert.equal(stored.verdict, "concerns");
+    assert.equal(stored.tokens?.callCount, 1);
+    const page = readFileSync(join(h.results, "verdict.md"), "utf8");
+    for (const finding of stored.findings) assert.ok(page.includes(finding.detail));
+    assert.doesNotMatch(page, /nothing was noted against it/);
+    assert.ok(h.store.listCriteria(h.runId).every((criterion) => criterion.result === "pass"));
+  } finally { await h.cleanup(); }
+});
+
+test("T17 unavailable judge report is persisted before the early return", async () => {
+  const h = await judgeHarness("not a JSON report");
+  try {
+    assert.equal(h.calls(), 1);
+    assert.equal(h.status(), "passed");
+    const stored = JSON.parse(readFileSync(join(h.results, "judge.json"), "utf8")) as JudgeReport;
+    assert.equal(stored.ran, true);
+    assert.equal(stored.verdict, "unavailable");
+    assert.match(readFileSync(join(h.results, "verdict.md"), "utf8"), /code-reading judge did not run: the judge returned no parseable JSON object/);
+  } finally { await h.cleanup(); }
+});
+
+test("T17 persisted report and verdict redact nested judge text", async () => {
+  const secret = "ghp_" + "x".repeat(25);
+  const response = {
+    ...CLINIC_JUDGE_REPORT, summary: `fixture ${secret}`,
+    findings: [{ ...CLINIC_JUDGE_REPORT.findings[0], detail: `fixture detail ${secret}`, evidence: `fixture evidence ${secret}` }],
+  };
+  const h = await judgeHarness(JSON.stringify(response));
+  try {
+    const raw = readFileSync(join(h.results, "judge.json"), "utf8");
+    const page = readFileSync(join(h.results, "verdict.md"), "utf8");
+    assert.ok(!raw.includes(secret)); assert.ok(!page.includes(secret));
+    assert.match(raw, /REDACTED/); assert.match(page, /REDACTED/);
+    const stored = JSON.parse(raw) as JudgeReport;
+    assert.deepEqual(stored.findings, redactForPersistence(response.findings));
+    assert.equal(stored.summary, redactForPersistence(response.summary));
+  } finally { await h.cleanup(); }
+});
+
+test("T17 a new attempt cannot reuse a prior clean judge when authentication is skipped", async () => {
+  const h = await judgeHarness(JSON.stringify({ verdict: "clean", findings: [], summary: "fresh clean fixture" }));
+  try {
+    assert.equal(h.calls(), 1);
+    assert.match(readFileSync(join(h.results, "verdict.md"), "utf8"), /nothing was noted against it/);
+    h.auth.available = false;
+    h.store.updateRun(h.runId, { status: "queued", endedAt: null, queuePosition: 1 });
+    h.orchestrator.pump();
+    await h.settle();
+    assert.equal(h.calls(), 1, "auth skip must not call the judge");
+    const stored = JSON.parse(readFileSync(join(h.results, "judge.json"), "utf8")) as JudgeReport;
+    assert.equal(stored.ran, false);
+    assert.equal(stored.verdict, "unavailable");
+    assert.equal(stored.summary, "fixture authentication missing");
+    const page = readFileSync(join(h.results, "verdict.md"), "utf8");
+    assert.match(page, /code-reading judge did not run: fixture authentication missing/);
+    assert.doesNotMatch(page, /nothing was noted against it|fresh clean fixture/);
+    assert.equal(h.store.getRun(h.runId)?.heldOutPass, true);
+  } finally { await h.cleanup(); }
+});
+
+test("T17 judge report disk failure retains findings and cannot fail a green run", async () => {
+  const h = await judgeHarness(JSON.stringify(CLINIC_JUDGE_REPORT), true);
+  try {
+    assert.equal(h.calls(), 1);
+    assert.equal(h.status(), "passed");
+    assert.equal(h.store.getRun(h.runId)?.heldOutPass, true);
+    const page = readFileSync(join(h.results, "verdict.md"), "utf8");
+    assert.ok(page.includes(CLINIC_JUDGE_REPORT.findings[0]!.detail));
+    assert.ok(h.store.eventsSince(h.runId, 0).some(({ event }) => event.type === "log" && event.text.includes("judge report could not be written")));
+  } finally { await h.cleanup(); }
+});
+
+
+test("T17 a cancelled attempt clears a stale judge file before reaching the judge phase", async () => {
+  const h = await designRun({
+    autoStart: false, noKey: true, pngCount: 0, writeManifest: false,
+    ticket: "Build a command line tool that prints a report to stdout.",
+    onRequest: () => { h.orchestrator.cancel(h.runId); },
+  });
+  try {
+    const results = runPathsFor(h.paths, h.runId).results;
+    mkdirSync(results, { recursive: true });
+    writeFileSync(join(results, "judge.json"), JSON.stringify({ ...CLINIC_JUDGE_REPORT, verdict: "clean", findings: [] }), "utf8");
+    h.orchestrator.pump();
+    await h.settle();
+    assert.equal(h.status(), "cancelled");
+    assert.equal(existsSync(join(results, "judge.json")), false);
+    assert.doesNotMatch(readFileSync(join(results, "verdict.md"), "utf8"), /nothing was noted against it/);
+  } finally { await h.cleanup(); }
 });
