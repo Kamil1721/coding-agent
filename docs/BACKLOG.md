@@ -58,3 +58,13 @@ See [the prerequisite report](REPORT-wave2-batch2b-prerequisites-2026-09-08.md).
 - **Carried item 4:** move the design-lock borrow assertion before the absence assertion.
 - **Carried item 5:** make `chosenDirectionReason` required in server and client API type mirrors.
 - **G3:** owner-only run, not started. Prompt producer mutations passed and baselines are committed in `b88359b1a510e3b9ce3c1282fcc6d87897f06433`; the final protected-file comparison found 440 files unchanged and this backlog's original 11,166-byte prefix preserved.
+
+
+## Batch 2B checkpoint, 2026-09-08
+
+This update supersedes the prerequisite status above; see the [checkpoint report](REPORT-wave2-batch2b-2026-09-08.md) for commits, negative controls and limits. D13 and D14 are accepted. T21, T22 and carried items 2 and 3 are committed. The T23 warning persistence/API/UI prerequisite is committed in `41e97f7472a9dfcc87b871f8e55cbb155a689bb4`; T23 remains incomplete.
+
+- **D15 / T23:** owner answer pending on the literal Shape A classification of the decorative confirmation checkmark. The narrow aria-hidden symbol-only exclusion is a proposal, not an accepted decision. Keep the named literal browser test red and pause probe/classifier integration until the answer; then complete the report's remaining acceptance checks.
+- **T24 through T26:** unstarted. Retain T26's deferred dial-format work and the other earlier deferred findings. `CRITIC-001` remains open.
+- **Carried items 4 and 5:** with T25, move the design-lock borrow assertion before the absence assertion and require `chosenDirectionReason` in both API type mirrors.
+- **G3:** owner-only, not run. Batch 2B completion is not established by this checkpoint.
