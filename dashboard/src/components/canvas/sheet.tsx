@@ -98,7 +98,7 @@ import { EnvironmentPanel } from "./environment";
 import { AgentInspector } from "./inspector";
 import { AgentRoster } from "./roster";
 import { RoleChip } from "./agent-node";
-import { roleOf } from "./roles";
+import { roleOf, titleOf } from "./roles";
 
 /* ------------------------------------------------------------------ */
 /* The shell                                                           */
@@ -224,16 +224,18 @@ export function DetailSheet({
   return (
     <Sheet
       eyebrow="agent"
-      title={node.agent ?? "session"}
+      title={titleOf(node)}
       width="w-[min(420px,100%)]"
       onClose={onClose}
     >
-      <div className="border-b border-line px-3 py-2">
-        <RoleChip role={role} />
-      </div>
+      {role === "unmapped" && (
+        <div className="border-b border-line px-3 py-2">
+          <RoleChip role={role} />
+        </div>
+      )}
       <div className="px-3 py-2.5">
-        {/* `header={false}`: the sheet's own chrome already carries this agent's
-            name and its close button. */}
+        {/* The sheet carries the role title and close button; the inspector's
+            meta line retains the agent name. */}
         <AgentInspector node={node} onClose={onClose} header={false} />
       </div>
     </Sheet>

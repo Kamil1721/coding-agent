@@ -28,6 +28,7 @@ import { useMemo, type ReactNode } from "react";
 import type { GraphNode, GraphState } from "@/lib/api-types";
 import { EmptyState, cx } from "@/components/ui";
 import { stateLook } from "./agent-node";
+import { titleOf } from "./roles";
 
 const ROW_TONE = {
   pass: "text-pass",
@@ -104,13 +105,14 @@ export function AgentRoster({
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline justify-between gap-2">
                   <span className="truncate text-[12.5px] font-medium text-ink">
-                    {node.agent ?? "session"}
+                    {titleOf(node)}
                   </span>
                   <span className={cx("shrink-0 text-[10.5px]", ROW_TONE[look.tone])}>
                     {look.label}
                   </span>
                 </span>
                 <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
+                  {node.agent !== null && `${node.agent} · `}
                   {node.lane ?? "no lane"} · delegated by {parentLabel(node, byId)}
                   {node.attribution === "inferred" && " (inferred)"}
                 </span>

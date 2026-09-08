@@ -27,7 +27,7 @@
  *
  * AND IF BOTH MISS, THE ANSWER IS `unmapped`, WHICH IS A COLOUR OF ITS OWN.
  * `unmapped` is a flat, low-lightness, near-zero-chroma grey. It is deliberately
- * NOT the nearest plausible role and deliberately not one of the seven hues: an
+ * NOT the nearest plausible role and deliberately not one of the eight hues: an
  * agent this dashboard cannot classify must look like an agent this dashboard
  * cannot classify. Guessing `build` for anything unrecognised would make the
  * canvas assert something no event said, which is the same defect as animating
@@ -39,7 +39,7 @@
  * reading as a green `pass` badge even though their hues are 20 degrees apart —
  * the two channels are separated by saturation and by shape, not by hue
  * distance, because after removing the four state hues there is not enough wheel
- * left to give seven roles clean spacing. Colour means "what kind of work"; a
+ * left to give eight roles clean spacing. Colour means "what kind of work"; a
  * pill means "how it went". Nothing on the canvas uses colour for both.
  */
 
@@ -53,6 +53,7 @@ export type AgentRole =
   | "backend"
   | "build"
   | "review"
+  | "debug"
   | "unmapped";
 
 /** Every role that carries a hue, in the order they appear in the legend. */
@@ -64,6 +65,7 @@ export const ROLE_ORDER: readonly AgentRole[] = [
   "backend",
   "build",
   "review",
+  "debug",
   "unmapped",
 ];
 
@@ -75,6 +77,7 @@ export const ROLE_LABEL: Readonly<Record<AgentRole, string>> = {
   backend: "backend",
   build: "build",
   review: "review",
+  debug: "debug",
   unmapped: "unmapped",
 };
 
@@ -90,6 +93,7 @@ export const ROLE_MEANING: Readonly<Record<AgentRole, string>> = {
   backend: "Wrote the code a server runs, or the infrastructure under it.",
   build: "General engineering: language work, refactors, tooling, dependencies.",
   review: "Checked the work — tests, audits, accessibility, the gate.",
+  debug: "Diagnosed and fixed a problem.",
   unmapped:
     "This dashboard could not tell what kind of work this was. Neither the agent's name nor its lane matched anything it knows, so it is deliberately drawn as none of the roles rather than guessed at.",
 };
@@ -248,8 +252,6 @@ const ROLE_TOKENS: Readonly<Record<Exclude<AgentRole, "unmapped">, readonly stri
     "validator",
     "lint",
     "linter",
-    "debug",
-    "debugger",
     "security",
     "accessibility",
     "compliance",
@@ -258,14 +260,14 @@ const ROLE_TOKENS: Readonly<Record<Exclude<AgentRole, "unmapped">, readonly stri
     "gate",
     "gatekeeper",
   ],
+  debug: ["debug", "debugger", "debugfix", "troubleshoot"],
 };
 
 /**
  * The lane fallback, used only when no craft token matched.
  *
  * `gate` becomes `review` rather than a hue of its own: the gate IS the review
- * step, and an eighth colour bought nothing but a smaller gap between the other
- * seven.
+ * step. A debugger's craft token takes precedence over this lane fallback.
  */
 const LANE_ROLE: Readonly<Record<RunLane, AgentRole>> = {
   spec: "spec",
@@ -360,10 +362,17 @@ export function roleOf(agent: string | null, lane: RunLane | null): AgentRole {
   return "unmapped";
 }
 
+/** Lead with the known role; preserve identity when classification is absent. */
+export function titleOf(node: { agent: string | null; lane: RunLane | null }): string {
+  const role = roleOf(node.agent, node.lane);
+  if (role !== "unmapped") return ROLE_LABEL[role];
+  return node.agent ?? "session";
+}
+
 /**
  * The CSS custom property carrying this role's hue.
  *
- * Returned as a `var()` reference rather than a literal so the seven colours
+ * Returned as a `var()` reference rather than a literal so the eight colours
  * have exactly one definition, in globals.css, next to the state palette they
  * are tuned against.
  */

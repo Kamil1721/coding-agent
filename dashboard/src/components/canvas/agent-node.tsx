@@ -13,8 +13,8 @@
  * so a timer here would be a number this program invented.
  *
  * THE ONE THING ON THE CARD THAT IS DERIVED IS THE ROLE, AND IT SAYS SO. The
- * spine down the left edge and the chip under the title are `roleOf(agent,
- * lane)` — see `roles.ts`. An agent whose name and lane mean nothing to this
+ * spine down the left edge and the title use `roleOf(agent, lane)` — see
+ * `roles.ts`. An agent whose name and lane mean nothing to this
  * dashboard gets the flat `unmapped` grey and the chip reads `unmapped`, which is
  * a statement about this dashboard's knowledge rather than about the agent.
  *
@@ -42,7 +42,7 @@ import type { Tone } from "@/lib/presentation";
 import { formatTokens } from "@/lib/format";
 import { cx } from "@/components/ui";
 import { GROUP_PREVIEW, NODE_WIDTH, PILL_CAP, latestNarration } from "./layout";
-import { ROLE_LABEL, ROLE_MEANING, roleColorVar, type AgentRole } from "./roles";
+import { ROLE_LABEL, ROLE_MEANING, roleColorVar, titleOf, type AgentRole } from "./roles";
 
 /**
  * The dom id of a card's focusable shell.
@@ -435,11 +435,12 @@ export function AgentCard({
       </header>
 
       <h3 className="mt-2 truncate text-[13.5px] font-semibold tracking-[-0.01em] text-ink">
-        {node.agent ?? "session"}
+        {titleOf(node)}
       </h3>
 
-      <p className="mt-1">
-        <RoleChip role={role} />
+      <p className="mt-1 flex min-h-[18px] items-center gap-1.5 text-[11px] leading-[18px] text-ink-faint">
+        {node.agent !== null && <span className="truncate">{node.agent}</span>}
+        {role === "unmapped" && <RoleChip role={role} />}
       </p>
 
       <p className="mt-1 line-clamp-2 h-[32px] text-[11.5px] leading-[16px] text-ink-dim">
@@ -628,10 +629,10 @@ export function NodeShell({
 }
 
 /** What a screen reader hears instead of the card. */
-function agentLabel(node: GraphNode, role: AgentRole): string {
+function agentLabel(node: GraphNode): string {
   const look = stateLook(node.state);
   const parts = [
-    `${node.agent ?? "session"}, ${ROLE_LABEL[role]} role, ${look.label}`,
+    [titleOf(node), node.agent, look.label].filter(Boolean).join(", "),
     node.lane === null ? "no lane" : `${node.lane} lane`,
     node.description === "" ? "no task description" : node.description,
   ];
@@ -643,7 +644,7 @@ export function AgentNode({ id, data }: NodeProps<AgentFlowNode>): ReactNode {
   const node = data.graphNode;
   const look = stateLook(node.state);
   return (
-    <NodeShell nodeKey={id} data={data} label={agentLabel(node, data.role)} live={look.live}>
+    <NodeShell nodeKey={id} data={data} label={agentLabel(node)} live={look.live}>
       <AgentCard node={node} role={data.role} />
     </NodeShell>
   );

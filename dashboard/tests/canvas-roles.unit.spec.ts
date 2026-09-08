@@ -24,7 +24,32 @@ import { expect, test } from "@playwright/test";
 
 import type { GraphNode, GraphNodeState, RunLane } from "../src/lib/api-types";
 import { MIN_GROUP, columnOf, groupSiblings, placeGraph } from "../src/components/canvas/layout";
-import { ROLE_ORDER, roleOf } from "../src/components/canvas/roles";
+import { ROLE_ORDER, roleOf, titleOf } from "../src/components/canvas/roles";
+
+test("debug craft tokens win over the gate lane", () => {
+  expect(roleOf("debugger", "gate")).toBe("debug");
+  expect(roleOf("debug", null)).toBe("debug");
+  expect(roleOf("debugfix", null)).toBe("debug");
+  expect(roleOf("troubleshoot", null)).toBe("debug");
+  expect(roleOf("code-reviewer", "review")).toBe("review");
+});
+
+test("titleOf leads with the known role", () => {
+  const title = titleOf({ agent: "taste-frontend-expert", lane: "design" });
+  expect(title).toBe("design");
+  expect(title).not.toBe("taste-frontend-expert");
+});
+
+test("titleOf keeps a nameless session instead of unmapped", () => {
+  const title = titleOf({ agent: null, lane: null });
+  expect(title).toBe("session");
+  expect(title).not.toBe("unmapped");
+});
+
+test("titleOf preserves an unmapped named agent", () => {
+  expect(titleOf({ agent: "some-agent-nobody-has-named", lane: null }))
+    .toBe("some-agent-nobody-has-named");
+});
 
 /* ------------------------------------------------------------------ */
 /* roleOf                                                             */

@@ -203,6 +203,7 @@ body {
   --role-frontend: oklch(0.785 0.085 212);
   --role-spec: oklch(0.745 0.095 272);
   --role-design: oklch(0.745 0.1 330);
+  --role-debug: oklch(0.76 0.09 300);
   --role-unmapped: oklch(0.63 0.012 258);
 
   /*

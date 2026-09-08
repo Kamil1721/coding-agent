@@ -51,6 +51,7 @@ import { formatDuration, formatTimeOnly, formatTokens } from "@/lib/format";
 import { Button, EmptyState, cx } from "@/components/ui";
 import { FileDiff, ShellEditNote } from "@/components/run/diff";
 import { Pill, shortToolName, stateLook } from "./agent-node";
+import { titleOf } from "./roles";
 
 function Section({
   title,
@@ -108,7 +109,7 @@ const KIND_LOOK: Readonly<Record<ActivityRun["kind"], { dot: string; verb: strin
 const HOUSEKEEPING_MEANING = "housekeeping — not an agent step";
 
 /**
- * The line under the agent's name: its lane, and whether it is housekeeping.
+ * The line under the role title: agent name, lane, and housekeeping status.
  *
  * TWO THINGS WERE REMOVED HERE ON 2026-07-30, AND THEY ARE NOT THE SAME REMOVAL.
  *
@@ -121,12 +122,12 @@ const HOUSEKEEPING_MEANING = "housekeeping — not an agent step";
  *     is dropped is the row that announced the absence of one, which was the
  *     larger half of what the reader saw first.
  *
- * RETURNS NULL RATHER THAN AN EMPTY ROW. A node with no lane and no housekeeping
- * mark now has nothing to say on this line, and rendering the `<p>` anyway would
+ * RETURNS NULL RATHER THAN AN EMPTY ROW. A node with no name, no lane and no
+ * housekeeping mark has nothing to say on this line, and rendering `<p>` would
  * leave its padding — a visible gap under the name that no browser check here
  * would have caught.
  *
- * The separator is between the two, so it only exists when both do.
+ * Separators appear only between populated fields.
  */
 function MetaLine({
   node,
@@ -135,9 +136,11 @@ function MetaLine({
   node: GraphNode;
   className: string;
 }): ReactNode {
-  if (node.lane === null && !node.ambient) return null;
+  if (node.agent === null && node.lane === null && !node.ambient) return null;
   return (
     <p className={className}>
+      {node.agent !== null && <span>{node.agent}</span>}
+      {node.agent !== null && (node.lane !== null || node.ambient) && <span aria-hidden="true">·</span>}
       {node.lane !== null && <span>{node.lane}</span>}
       {node.lane !== null && node.ambient && <span aria-hidden="true">·</span>}
       {node.ambient && <span title={HOUSEKEEPING_MEANING}>housekeeping</span>}
@@ -451,9 +454,8 @@ export function AgentInspector({
   /**
    * `false` when the caller has already drawn a header for this agent.
    *
-   * `DetailSheet` puts the agent's name, its role chip and a close button in the
-   * sheet's own chrome, so leaving this on printed "context-manager" and "close"
-   * twice, twelve pixels apart. Default `true` so this stays the component's own
+   * `DetailSheet` supplies the role title and close button, so its inspector
+   * renders only the identity meta line. Default `true` keeps the component's own
    * complete rendering for any caller that is not wrapping it.
    */
   header = true,
@@ -479,7 +481,7 @@ export function AgentInspector({
         <header className="flex items-start justify-between gap-2 px-3 py-2.5">
           <div className="min-w-0">
             <p className="truncate text-[13.5px] font-semibold text-ink">
-              {node.agent ?? "session"}
+              {titleOf(node)}
             </p>
             <MetaLine
               node={node}
