@@ -42,6 +42,51 @@ const OWNER: OwnerReference = {
   bytes: 559_692,
 };
 
+test("low contract motion changes only the authored-motion statement", () => {
+  const baseline = visualCriteriaFor(manifestWithLock(), OWNER);
+  const original = baseline.find((criterion) => criterion.id === "VIS-MOTION-AUTHORED");
+  assert.ok(original);
+  for (const motionIntensity of [1, 3, 4]) {
+    const criteria = visualCriteriaFor(manifestWithLock(), OWNER, {
+      motionIntensity,
+      motionIds: ["m.focus", "m.step", "m.error"],
+    });
+    const authored = criteria.find((criterion) => criterion.id === "VIS-MOTION-AUTHORED");
+    assert.ok(authored);
+    assert.notEqual(authored.statement, original.statement);
+    assert.deepEqual({ ...authored, statement: original.statement }, original);
+    assert.deepEqual(criteria.filter((criterion) => criterion.id !== original.id),
+      baseline.filter((criterion) => criterion.id !== original.id));
+    for (const text of ["m.focus", "m.step", "m.error", `motion intensity ${motionIntensity}`,
+      "Every declared motion must perform", "markers alone do not show", "currentTime", "GSAP", "ScrollTrigger", "rAF"]) {
+      assert.ok(authored.statement.includes(text), text);
+    }
+    assert.match(authored.statement, /unrelated generic fades do not substitute/);
+  }
+});
+
+test("missing, empty, invalid and higher motion policies preserve every criterion byte", () => {
+  const baseline = visualCriteriaFor(manifestWithLock(), OWNER);
+  assert.deepEqual(visualCriteriaFor(manifestWithLock(), OWNER, null), baseline);
+  for (const motionIntensity of [-1, 0, 4.5, 5, 7, 8, 10, 11, NaN, Infinity]) {
+    assert.deepEqual(visualCriteriaFor(manifestWithLock(), OWNER, {
+      motionIntensity, motionIds: ["m.focus"],
+    }), baseline);
+  }
+  assert.deepEqual(visualCriteriaFor(manifestWithLock(), OWNER, {
+    motionIntensity: 3, motionIds: [],
+  }), baseline);
+});
+
+test("a low-motion call does not mutate the shared criterion seed", () => {
+  const baseline = visualCriteriaFor(manifestWithLock(), OWNER);
+  visualCriteriaFor(manifestWithLock(), OWNER, { motionIntensity: 3, motionIds: ["m.focus"] });
+  assert.deepEqual(visualCriteriaFor(manifestWithLock(), OWNER, {
+    motionIntensity: 8, motionIds: ["m.hero"],
+  }), baseline);
+  assert.deepEqual(visualCriteriaFor(manifestWithLock(), OWNER), baseline);
+});
+
 test("visual criteria are QUALITY tier — they report, they never block", () => {
   // Owner decision 2026-07-28: subjective judgement must not false-fail a run.
   // THE OWNER'S OWN IMAGE IS IN THE LOOP TOO. "Follow the design I gave you" is

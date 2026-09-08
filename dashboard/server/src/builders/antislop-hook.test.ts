@@ -22,6 +22,9 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type {
   HookCallbackMatcher,
@@ -421,4 +424,23 @@ test("Layer 2 ABSTAINS when the workspace cannot be read — absence is not evid
     signal: new AbortController().signal,
   })) as HookAnswer;
   assert.equal(answer.continue, true);
+});
+
+
+test("T20 buildOptions passes contract policy to actual Stop and SubagentStop callbacks", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "t20-motion-hook-"));
+  try {
+    writeFileSync(join(workspace, "index.html"), '<main data-motion-id="m.fade"></main>');
+    for (const [motionIntensity, ids, allowed] of [[3, ["m.fade"], true], [3, ["m.fade", "m.focus"], false], [8, ["m.fade"], false]] as const) {
+      for (const slot of ["Stop", "SubagentStop"] as const) {
+        const options = buildOptions(req({ workspace, env: { [MOTION_BAR_ENV]: "1" }, motionPolicy: { motionIntensity, motionIds: ids } }), false);
+        const callback = options.hooks?.[slot]?.[0]?.hooks[0];
+        assert.ok(callback);
+        const answer = await callback(stopInput(false, slot === "SubagentStop" ? "frontend" : undefined), undefined, { signal: new AbortController().signal }) as HookAnswer;
+        assert.equal(answer.decision === "block", !allowed, `${slot} dial ${motionIntensity} ids ${ids.join(",")}`);
+        if (allowed) assert.equal(answer.continue, true);
+      }
+    }
+    assert.equal(buildOptions(req({ workspace, motionPolicy: { motionIntensity: 3, motionIds: ["m.fade"] } }), false).hooks?.Stop, undefined);
+  } finally { rmSync(workspace, { recursive: true, force: true }); }
 });

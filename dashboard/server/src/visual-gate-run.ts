@@ -76,6 +76,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readDesignManifest } from "./design-manifest.js";
+import type { ContractMotionPolicy } from "./creative-pilot.js";
 import { ownerReferenceFor } from "./owner-reference.js";
 import type { OwnerReference } from "./owner-reference.js";
 import { visualCriteriaFor } from "./visual-criteria.js";
@@ -327,6 +328,7 @@ export interface VisualGateRunInput {
   /** `ContainerResult.screenshots`, or empty when the container wrote none. */
   readonly captures: readonly VisualCapture[];
   readonly mode?: VisualSubstanceMode;
+  readonly motionPolicy?: ContractMotionPolicy | null;
 }
 
 export interface VisualGateRunResult {
@@ -401,7 +403,7 @@ export async function visualGateRun(input: VisualGateRunInput): Promise<VisualGa
   // fence is the function, and `visualCriteriaFor`'s second parameter is typed
   // `OwnerReference | null` so that the only way to fill it is to have passed it.
   const ownerReference = ownerReferenceFor(input.runsRoot, input.runId);
-  const taste = visualCriteriaFor({ lockedMockup }, ownerReference);
+  const taste = visualCriteriaFor({ lockedMockup }, ownerReference, input.motionPolicy);
 
   const frames = framesFrom(input.captures);
   const referenceGround = lockedMockup === null ? null : await groundOf(lockedMockup);

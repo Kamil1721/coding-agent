@@ -231,6 +231,7 @@ import {
   persistCreativeAuthorResult,
   readCreativePilotStatus,
   readCreativeMotionPolicy,
+  contractMotionPolicy,
   statusAfterCompile,
   statusAfterRender,
   statusAfterReview,
@@ -4739,6 +4740,7 @@ export class Orchestrator {
       runId,
       prompt,
       workspace: runPaths.workspace,
+      motionPolicy: contractMotionPolicy(readCreativeMotionPolicy(runPaths.results)),
       sealedRoots: [this.#deps.paths.acceptance, resultsRoot(this.#deps.paths)],
       allowedAgents: shortlistFor(classifySurface(ticketProse(stripPlanBlock(ticket.brief))), "off"),
       modelId: entry.option.id,
@@ -5315,6 +5317,7 @@ export class Orchestrator {
         prompt,
         liveInput,
         workspace: runPaths.workspace,
+        motionPolicy: contractMotionPolicy(readCreativeMotionPolicy(runPaths.results)),
         // The sealed suite store, named so each driver can deny reads of it.
         // See builders/claude-builder.ts and builders/codex-builder.ts: the two
         // drivers do NOT enforce this equally, and neither enforces it as
@@ -7036,6 +7039,7 @@ export class Orchestrator {
       runId,
       prompt,
       workspace: runPaths.workspace,
+      motionPolicy: contractMotionPolicy(readCreativeMotionPolicy(runPaths.results)),
       sealedRoots: [
         this.#deps.paths.acceptance,
         resultsRoot(this.#deps.paths),
@@ -9314,6 +9318,7 @@ export class Orchestrator {
         runId: work.targetRunId,
         prompt,
         workspace: runPaths.workspace,
+        motionPolicy: contractMotionPolicy(readCreativeMotionPolicy(runPaths.results)),
         sealedRoots: [this.#deps.paths.acceptance, resultsRoot(this.#deps.paths)],
         allowedAgents: shortlistFor(classifySurface(ticketProse(stripPlanBlock(ticket.brief))), "off"),
         modelId: entry.option.id,
@@ -9918,6 +9923,7 @@ export function visualGateInputFor(
     runId,
     runsRoot: paths.runs,
     workspace: runPaths.workspace,
+    motionPolicy: contractMotionPolicy(readCreativeMotionPolicy(runPaths.results)),
     screenshotDir: join(paths.results, "screenshots", runId),
     captures: (container?.screenshots ?? []).filter((shot) => shot.nonBlank),
   };

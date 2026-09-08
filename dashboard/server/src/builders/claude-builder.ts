@@ -752,7 +752,7 @@ export function buildOptions(
   // ONE instance, shared by both Stop slots below so they share one budget.
   const motionBar =
     (request.env[MOTION_BAR_ENV] ?? "").trim() === "1"
-      ? makeMotionStopHook(makeWorkspaceReader(workspace), { observe: observeAntiSlop })
+      ? makeMotionStopHook(makeWorkspaceReader(workspace), { observe: observeAntiSlop, motionPolicy: request.motionPolicy ?? null })
       : null;
 
   return {

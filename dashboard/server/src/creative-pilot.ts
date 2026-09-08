@@ -38,6 +38,17 @@ import { TASTE_CATEGORIES, TASTE_CODE_CATEGORY, TASTE_FINDING_CODES } from "./ta
 
 export const CREATIVE_CONTRACT_FILE = "creative-contract.json";
 
+export interface ContractMotionPolicy {
+  readonly motionIntensity: number;
+  readonly motionIds: readonly string[];
+}
+
+export function contractMotionPolicy(read: CreativeMotionPolicyRead): ContractMotionPolicy | null {
+  return read.kind === "present"
+    ? { motionIntensity: read.motionIntensity, motionIds: read.motionIds }
+    : null;
+}
+
 /** Policy projection only. Other contract fields still belong to the evidence compiler. */
 export type CreativeMotionPolicyRead =
   | { readonly kind: "missing" }

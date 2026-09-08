@@ -1,3 +1,4 @@
+import type { ContractMotionPolicy } from "../creative-pilot.js";
 /**
  * builders/antislop-rules.ts — Phase 2a, the lexical craft floor as pure
  * functions. No SDK types, no filesystem, no hook. `antislop-hook.ts` is where
@@ -1074,7 +1075,7 @@ function extensionOf(filePath: string): string {
  * and a completion gate that blocks one is the "mysterious build failure" this
  * phase exists to avoid.
  */
-export function decideMotion(files: readonly WorkspaceFile[]): MotionVerdict {
+export function decideMotion(files: readonly WorkspaceFile[], motionPolicy: ContractMotionPolicy | null = null): MotionVerdict {
   const web = files.filter((f) => WEB_SURFACE_EXTENSIONS.has(extensionOf(f.path)));
   if (web.length === 0) {
     return { kind: "abstain", why: "no web surface in the workspace — nothing to animate" };
@@ -1108,6 +1109,17 @@ export function decideMotion(files: readonly WorkspaceFile[]): MotionVerdict {
   }
   if (/\buseScroll\s*\(/.test(code) || /\buseTransform\s*\(/.test(code)) {
     return { kind: "satisfied", satisfier: "a Framer Motion scroll drive (useScroll/useTransform)" };
+  }
+
+  if (motionPolicy !== null && Number.isInteger(motionPolicy.motionIntensity) &&
+      motionPolicy.motionIntensity >= 1 && motionPolicy.motionIntensity <= 4 && motionPolicy.motionIds.length > 0) {
+    const missing = motionPolicy.motionIds.filter((id) => {
+      const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return !new RegExp(`(?:^|[\\s<])data-motion-id\\s*=\\s*(["'])${escaped}\\1`).test(code);
+    });
+    return missing.length === 0
+      ? { kind: "satisfied", satisfier: `all low-motion creative contract markers: ${motionPolicy.motionIds.join(", ")}` }
+      : { kind: "unsatisfied", reason: `The creative contract requires these missing data-motion-id markers: ${missing.join(", ")}. Implement each declared motion with its exact marker.` };
   }
 
   const imported = /from\s*['"](?:gsap|framer-motion|motion|@react-spring\/[a-z]+|lenis|animejs)['"]|require\(\s*['"](?:gsap|framer-motion|animejs)['"]/.exec(

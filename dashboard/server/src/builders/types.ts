@@ -1,3 +1,4 @@
+import type { ContractMotionPolicy } from "../creative-pilot.js";
 /**
  * builders/types.ts — the seam between the orchestrator and the two
  * subscription SDKs.
@@ -92,6 +93,7 @@ export interface BuildEventSink {
 }
 
 export interface BuildRequest {
+  readonly motionPolicy?: ContractMotionPolicy | null;
   readonly runId: string;
   /** The builder prompt. Recorded verbatim to the run directory. */
   readonly prompt: string;

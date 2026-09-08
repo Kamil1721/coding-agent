@@ -28,7 +28,7 @@
 
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +59,35 @@ const ZERO_RUN = "run-2026-07-30T20-16-40-242Z-052c6e02";
 function haveGoodRun(): boolean {
   return existsSync(join(REAL_SHOTS, GOOD_RUN, "home__1280.png"));
 }
+
+test("contract motion policy reaches gate taste and report without inventing observations", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "visual-motion-policy-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const input = {
+    runId: "motion-policy-test", runsRoot: join(root, "runs"),
+    workspace: join(root, "workspace"), screenshotDir: join(root, "screenshots"), captures: [],
+  };
+  mkdirSync(input.workspace, { recursive: true });
+  const baseline = await visualGateRun(input);
+  const low = await visualGateRun({ ...input,
+    motionPolicy: { motionIntensity: 3, motionIds: ["m.focus", "m.step", "m.error"] },
+  });
+  const authored = low.taste.find((criterion) => criterion.id === "VIS-MOTION-AUTHORED");
+  assert.ok(authored);
+  assert.match(authored.statement, /contract's declared motions, implemented: m.focus, m.step, m.error/);
+  assert.ok(low.report.includes(authored.statement));
+  assert.ok(!baseline.report.includes(authored.statement));
+  assert.deepEqual(low.taste.filter((criterion) => criterion.id !== authored.id),
+    baseline.taste.filter((criterion) => criterion.id !== authored.id));
+  assert.deepEqual(low.record.outcomes, baseline.record.outcomes);
+  assert.ok(low.record.outcomes.length > 0);
+  assert.ok(low.record.outcomes.every((row) => row.verdict === "unknown"));
+  for (const motionPolicy of [null, { motionIntensity: 8, motionIds: ["m.hero"] },
+    { motionIntensity: 3, motionIds: [] }]) {
+    const unchanged = await visualGateRun({ ...input, motionPolicy });
+    assert.deepEqual(unchanged.taste, baseline.taste);
+  }
+});
 
 /* -------------------------------------------------------------------------
  * 1. The measurement itself, against artefacts nobody here authored

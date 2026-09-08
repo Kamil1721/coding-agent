@@ -1,3 +1,4 @@
+import type { ContractMotionPolicy } from "../creative-pilot.js";
 /**
  * builders/antislop-hook.ts — Phase 2a, the anti-slop rules in the slots the
  * engine actually asks.
@@ -330,6 +331,7 @@ export function makeWorkspaceReader(root: string): WorkspaceReader {
 }
 
 export interface MotionHookOptions {
+  readonly motionPolicy?: ContractMotionPolicy | null;
   readonly escalateAfter?: number;
   readonly observe?: AntiSlopObserver | null;
 }
@@ -390,7 +392,7 @@ export function makeMotionStopHook(
           // A workspace that cannot be read is not evidence of missing motion.
           return { continue: true };
         }
-        const verdict = decideMotion(files);
+        const verdict = decideMotion(files, options.motionPolicy);
         if (verdict.kind !== "unsatisfied") return { continue: true };
         const agent = stop.agent_id ?? "main";
         const count = (blocks.get(agent) ?? 0) + 1;

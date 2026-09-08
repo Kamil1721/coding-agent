@@ -3,6 +3,9 @@ import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { WAVE2_PROMPT_GOLDENS } from "./test-fixtures/wave2-prompt-goldens.js";
+import { decideMotion } from "./builders/antislop-rules.js";
+import { visualCriteriaFor } from "./visual-criteria.js";
+import { MOTION_FILES } from "./test-fixtures/wave2-prompt-inputs.js";
 import { currentPromptBytes } from "./test-fixtures/wave2-prompt-inputs.js";
 
 // The exact false sentence, including its wrapping. T19 may remove ONLY these bytes.
@@ -43,4 +46,19 @@ test("consumption remainder removes exactly the original false sentence", () => 
   const original = WAVE2_PROMPT_GOLDENS["video-consumption-original"].bytes;
   assert.equal(original.split(FALSE_REFERENCE_SENTENCE).length, 2);
   assert.equal(original.replace(FALSE_REFERENCE_SENTENCE, ""), WAVE2_PROMPT_GOLDENS["video-consumption-rest"].bytes);
+});
+
+
+test("T20 mid high and empty policy preserve frozen legacy motion bytes", () => {
+  for (const policy of [null, { motionIntensity: 3, motionIds: [] }, ...[5, 6, 7, 8, 9, 10].map(motionIntensity => ({ motionIntensity, motionIds: ["m.fade"] }))]) {
+    const visual = visualCriteriaFor({ lockedMockup: null }, null, policy).find(c => c.id === "VIS-MOTION-AUTHORED");
+    assert.ok(visual);
+    assertGolden(visual.statement, WAVE2_PROMPT_GOLDENS["visual-motion-statement"]);
+    for (const [name, files] of Object.entries(MOTION_FILES)) {
+      const result = decideMotion(files, policy);
+      assert.ok(result.kind === "unsatisfied");
+      const golden = WAVE2_PROMPT_GOLDENS[`motion-${name}` as "motion-absent" | "motion-stock" | "motion-imported"];
+      assertGolden(result.reason, golden);
+    }
+  }
 });

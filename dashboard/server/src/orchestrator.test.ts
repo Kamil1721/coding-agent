@@ -536,6 +536,7 @@ test("the local preview serves the artefact on loopback and nowhere else", async
 const DESIGN_TICKET = "a portfolio page with a considered visual design";
 
 interface SegmentCall {
+  readonly motionPolicy: BuildRequest["motionPolicy"];
   readonly prompt: string;
   readonly modelId: string;
   readonly allowedAgents: readonly string[];
@@ -824,6 +825,7 @@ class FakeBuilder implements SubscriptionBuilder {
     request.sink.tokens(tokens);
 
     this.calls.push({
+      motionPolicy: request.motionPolicy,
       prompt: request.prompt,
       modelId: request.modelId,
       allowedAgents: [...request.allowedAgents],
@@ -6019,6 +6021,7 @@ interface QuiescenceRun {
   readonly builderCalls: number;
   readonly builderPrompts: readonly string[];
   readonly builderResumeSessions: readonly (string | null)[];
+  readonly builderMotionPolicies: readonly BuildRequest["motionPolicy"][];
   readonly captureContractHashes: readonly string[];
   readonly captureIterations: readonly number[];
   readonly persistedBuilderSessionId: string | null;
@@ -6605,6 +6608,7 @@ async function quiescenceRun(
       builderCalls: builder.calls.length,
       builderPrompts: builder.calls.map((call) => call.prompt),
       builderResumeSessions: builder.calls.map((call) => call.resumeSessionId),
+      builderMotionPolicies: builder.calls.map((call) => call.motionPolicy),
       captureContractHashes,
       captureIterations,
       persistedBuilderSessionId: row?.builderSessionId ?? null,
@@ -6884,6 +6888,7 @@ test("CREATIVE-ARTIFACT: one deterministic refusal repairs in the same session, 
   });
   assert.equal(run.builderCalls, 3, "the normal two build segments plus exactly one artifact repair");
   assert.deepEqual(run.builderResumeSessions, [null, "session-0", "session-0"]);
+  assert.deepEqual(run.builderMotionPolicies, Array.from({ length: 3 }, () => ({ motionIntensity: 3, motionIds: [] })));
   assert.equal(run.gateCalls, 2, "the stale initial verdict must be replaced before recapture");
   assert.equal(run.captureCalls, 2, "the repaired tree is captured in the same critic iteration");
   assert.deepEqual(run.captureIterations, [0, 0]);
@@ -7369,6 +7374,7 @@ test("terminal creative recovery keeps frozen lineage, starts fresh, re-gates a 
     assert.equal(builder.calls.length, 2);
     assert.equal(builder.calls[0]?.modelId, "default", "duplicate aliases must not displace the source row's exact selector");
     assert.equal(builder.calls[0]?.resumeSessionId, null, "the recovery mutation must start a fresh session");
+    assert.deepEqual(builder.calls.map(call => call.motionPolicy), Array.from({ length: 2 }, () => ({ motionIntensity: 3, motionIds: [] })));
     assert.equal(builder.calls[1]?.resumeSessionId, "session-0", "the bounded critic revision stays in the recovery session");
     assert.match(builder.calls[0]?.prompt ?? "", new RegExp(authorResult.contractHash));
     assert.equal(outcome.criticDisposition, "accept");
@@ -7848,6 +7854,7 @@ interface SpendRun {
   readonly terminalRecoveryClass: string | null;
   /** …and what it was when the builder first ran, which is the stronger check. */
   readonly classAtFirstBuild: string | null;
+  readonly builderMotionPolicies: readonly BuildRequest["motionPolicy"][];
   readonly gateFactoryCalls: number;
   readonly gateScoreCalls: number;
   readonly heldOutPass: boolean | null;
@@ -7871,6 +7878,7 @@ async function spendRun(
   preStampClass: string | null = null,
   options: {
     readonly fixArtifactShape?: FakeBuilderOptions["artifactShape"];
+    readonly testMotionPolicy?: boolean;
   } = {},
 ): Promise<SpendRun> {
   const dir = mkdtempSync(join(tmpdir(), "dash-spend-"));
@@ -7911,6 +7919,9 @@ async function spendRun(
     animateRefs: false,
     onRequest: () => {
       classAtBuild.push(store.getRun(runId)?.recoveryClass ?? null);
+      if (options.testMotionPolicy && classAtBuild.length === 1) {
+        writeFileSync(join(runPathsFor(paths, runId).results, CREATIVE_CONTRACT_FILE), JSON.stringify({ schemaVersion: 1, designRead: { pageKind: "consumer_landing" }, dials: { motionIntensity: 4 }, motion: [{ id: "m.updated" }] }));
+      }
     },
     ...(options.fixArtifactShape === undefined ? {} : { fixArtifactShape: options.fixArtifactShape }),
   });
@@ -8026,6 +8037,7 @@ async function spendRun(
       fixRounds: builder.calls.length - 1,
       terminalRecoveryClass: store.getRun(runId)?.recoveryClass ?? null,
       classAtFirstBuild: classAtBuild[0] ?? null,
+      builderMotionPolicies: builder.calls.map(call => call.motionPolicy),
       gateFactoryCalls,
       gateScoreCalls,
       heldOutPass: row?.heldOutPass ?? null,
@@ -8690,4 +8702,28 @@ test("T19 expansion reads the selected note while spend reads the expanded direc
       assert.ok(record.policy.reason.includes(`direction dial ${String(expandedDial)}`));
     } finally { await h.cleanup(); }
   }
+});
+
+
+test("T20 gate fix reads fresh policy after the initial builder request", async () => {
+  const run = await spendRun(null, { testMotionPolicy: true });
+  assert.equal(run.fixRounds, 1);
+  assert.deepEqual(run.builderMotionPolicies, [null, { motionIntensity: 4, motionIds: ["m.updated"] }]);
+});
+
+test("T20 orchestrator build and visual request share fresh host contract policy", async () => {
+  const projection = (dial: number) => JSON.stringify({ schemaVersion: 1, designRead: { pageKind: "consumer_landing" }, dials: { motionIntensity: dial }, motion: [{ id: "m.fade" }, { id: "m.focus" }] });
+  const h = await t19VideoRun({ contract: projection(3), expandedDial: 3 });
+  try {
+    const paths = runPathsFor(h.paths, h.runId);
+    assert.ok(h.builderCalls.length >= 2);
+    for (const call of h.builderCalls) assert.deepEqual(call.motionPolicy, { motionIntensity: 3, motionIds: ["m.fade", "m.focus"] });
+    assert.deepEqual(visualGateInputFor(h.runId, h.paths, paths, null).motionPolicy, { motionIntensity: 3, motionIds: ["m.fade", "m.focus"] });
+    writeFileSync(join(paths.results, CREATIVE_CONTRACT_FILE), projection(8));
+    assert.deepEqual(visualGateInputFor(h.runId, h.paths, paths, null).motionPolicy, { motionIntensity: 8, motionIds: ["m.fade", "m.focus"] });
+    writeFileSync(join(paths.results, CREATIVE_CONTRACT_FILE), "{invalid");
+    assert.equal(visualGateInputFor(h.runId, h.paths, paths, null).motionPolicy, null);
+    rmSync(join(paths.results, CREATIVE_CONTRACT_FILE));
+    assert.equal(visualGateInputFor(h.runId, h.paths, paths, null).motionPolicy, null);
+  } finally { await h.cleanup(); }
 });

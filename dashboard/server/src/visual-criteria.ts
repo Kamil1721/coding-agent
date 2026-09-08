@@ -77,6 +77,7 @@
  */
 
 import type { DesignLock } from "./design-manifest.js";
+import type { ContractMotionPolicy } from "./creative-pilot.js";
 import type { OwnerReference } from "./owner-reference.js";
 
 /**
@@ -321,9 +322,28 @@ function at(seed: CriterionSeed, reference: string | null, referent: VisualRefer
 export function visualCriteriaFor(
   manifest: DesignLock,
   ownerReference: OwnerReference | null = null,
+  motionPolicy: ContractMotionPolicy | null = null,
 ): readonly VisualCriterion[] {
   const locked = manifest.lockedMockup;
-  const criteria: VisualCriterion[] = FLOOR.map((seed) => at(seed, null, "none"));
+  let contractMotionStatement: string | null = null;
+  if (motionPolicy !== null && Number.isInteger(motionPolicy.motionIntensity) &&
+      motionPolicy.motionIntensity >= 1 && motionPolicy.motionIntensity <= 4 && motionPolicy.motionIds.length > 0) {
+    contractMotionStatement =
+      `Accept the contract's declared motions, implemented: ${motionPolicy.motionIds.join(", ")} ` +
+      `(motion intensity ${String(motionPolicy.motionIntensity)}). Every declared motion must perform its ` +
+      "specified behavior; markers alone do not show that it works, and unrelated generic fades do not " +
+      "substitute for a missing motion. The existing authored-motion alternatives also satisfy: a " +
+      "scroll-scrubbed video or world-journey whose currentTime is driven by scroll progress; a real " +
+      "GSAP or ScrollTrigger timeline that is pinned, scrubbed or staggered with custom easing; or " +
+      "rAF-driven element scrubbing.";
+  }
+  const criteria: VisualCriterion[] = FLOOR.map((seed) => at(
+    seed.id === "VIS-MOTION-AUTHORED" && contractMotionStatement !== null
+      ? { ...seed, statement: contractMotionStatement }
+      : seed,
+    null,
+    "none",
+  ));
   if (locked !== null) criteria.push(...AGAINST_LOCK.map((seed) => at(seed, locked, "locked-mockup")));
   if (ownerReference !== null) {
     criteria.push(...againstOwner(locked !== null).map((seed) => at(seed, ownerReference.path, "owner-image")));

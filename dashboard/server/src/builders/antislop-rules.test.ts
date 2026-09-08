@@ -476,3 +476,46 @@ test("a library IMPORTED but never driven fails, and the reason says so", () => 
   assert.equal(verdict.kind, "unsatisfied");
   assert.ok(verdict.kind === "unsatisfied" && /imported .* never driven/i.test(verdict.reason));
 });
+
+test("T20 low motion requires every exact contract marker", () => {
+  const policy = { motionIntensity: 3, motionIds: ["m.fade", "m:focus"] };
+  const files = (text: string) => [{ path: "index.html", text }];
+  assert.deepEqual(decideMotion(files(`<main data-motion-id="m.fade"><a data-motion-id='m:focus'>A</a></main>`), policy), {
+    kind: "satisfied", satisfier: "all low-motion creative contract markers: m.fade, m:focus",
+  });
+  for (const text of ["<main></main>", `<main data-motion-id="m.fade-more" data-motion-id="m:focus">`, `<main data-motion-id="mXfade" data-motion-id="m:focus">`, `<main other-data-motion-id="m.fade" data-motion-id="m:focus">`]) {
+    const verdict = decideMotion(files(text), policy);
+    assert.equal(verdict.kind, "unsatisfied");
+    assert.ok(verdict.kind === "unsatisfied");
+    assert.match(verdict.reason, /creative contract/);
+    assert.match(verdict.reason, /m\.fade/);
+  }
+});
+
+test("T20 markers cannot bypass the mid or high motion bar or empty contract", () => {
+  const files = [{ path: "index.html", text: '<main data-motion-id="m.fade"></main>' }];
+  const legacy = decideMotion(files);
+  assert.equal(legacy.kind, "unsatisfied");
+  for (const motionIntensity of [0, 1.5, 5, 6, 7, 8, 9, 10, 11]) {
+    assert.deepEqual(decideMotion(files, { motionIntensity, motionIds: ["m.fade"] }), legacy);
+  }
+  assert.deepEqual(decideMotion(files, { motionIntensity: 3, motionIds: [] }), legacy);
+  assert.deepEqual(decideMotion(files, null), legacy);
+  for (const motionIntensity of [1, 2, 3, 4]) {
+    assert.equal(decideMotion(files, { motionIntensity, motionIds: ["m.fade"] }).kind, "satisfied");
+  }
+});
+
+test("T20 original four satisfiers still precede low contract markers", () => {
+  for (const text of [
+    "video.currentTime = scrollY / 100",
+    "gsap.timeline({ scrollTrigger: { scrub: true } })",
+    "requestAnimationFrame(() => el.style.transform = scrollY)",
+    "useScroll()",
+  ]) {
+    const files = [{ path: "index.html", text }];
+    const legacy = decideMotion(files);
+    assert.equal(legacy.kind, "satisfied");
+    assert.deepEqual(decideMotion(files, { motionIntensity: 3, motionIds: ["missing"] }), legacy);
+  }
+});
