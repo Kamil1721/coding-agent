@@ -45,3 +45,16 @@ The [independent review](REVIEW-wave2-batch2a-2026-09-08.md) and [corrective rep
 - **L10, role hue comment:** with the next T15 touch, include debug hue 300 and remove the near-grey unmapped 258 from the hue-wheel list. This is a comment correction, not a color change.
 
 - **PREVIEW-EXPOSURE-001 implementation update:** corrective API preview code completed in `57b74d691904c768d982a56b9789fa605a0801af`; see the [corrective report](REPORT-wave2-batch2a-fixes-2026-09-08.md). Activation remains pending owner review and a controlled API restart. The unchanged process on 4176 still serves the previously exposed clinic paths; this implementation status does not close the live exposure.
+
+## Batch 2B prerequisites, 2026-09-08
+
+See [the prerequisite report](REPORT-wave2-batch2b-prerequisites-2026-09-08.md). Batch 2B remains incomplete; the new T21 fixture decision is pending owner reply.
+
+- **Required carried item 1:** missing internal preview-name refusals are implemented in `aa724165d435c9a1174f59f2150520e0c2a8f4b4`. Live activation remains separate.
+- **T21:** choose between preserving the historical fixture plus an explicitly sentence-rebound derived fixture (recommended), or retaining only the original fixture and accepting rejection of `p.reset` too. Identical evidence references prevent the original resolver from meeting the exact-six expectation. No option is approved.
+- **T22 through T26:** not started. Include `app/wizard.mjs` in T23's future clinic fixture because `app/main.mjs` imports it. Retain the earlier T26 dial-format item.
+- **Carried item 2:** remove stale `results/judge.json` on the orchestrator's no-attempt path when `#judgeReports` has no entry.
+- **Carried item 3:** wrap `controller.recover(...)` in `assert.doesNotReject` in the gate-recovery cleanup-failure test.
+- **Carried item 4:** move the design-lock borrow assertion before the absence assertion.
+- **Carried item 5:** make `chosenDirectionReason` required in server and client API type mirrors.
+- **G3:** owner-only run, not started. Prompt producer mutations passed and baselines are committed in `b88359b1a510e3b9ce3c1282fcc6d87897f06433`; the final protected-file comparison found 440 files unchanged and this backlog's original 11,166-byte prefix preserved.
