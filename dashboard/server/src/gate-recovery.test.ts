@@ -136,6 +136,100 @@ function harness(): RecoveryHarness {
   };
 }
 
+function plantStaleJudge(results: string): void {
+  writeFileSync(join(results, "judge.json"), JSON.stringify({
+    ran: true, verdict: "concerns", summary: "previous execution judge",
+    findings: [
+      { kind: "unasked_scope", severity: "medium", detail: "previous execution scope" },
+      { kind: "swallowed_failure", severity: "low", detail: "previous execution failure" },
+    ],
+  }), "utf8");
+}
+
+function assertNoStaleJudge(results: string, boundary: string): void {
+  assert.equal(existsSync(join(results, "judge.json")), false,
+    `T17b gate-only owned-target judge cleanup must remove stale judge.json at ${boundary}`);
+}
+
+test("T17b gate-only replay clears stale judge evidence at entry and both finalizers", async (t) => {
+  for (const outcome of ["passed", "failed", "infra_failed"] as const) {
+    await t.test(outcome, async (t) => {
+      const h = harness();
+      t.after(() => h.cleanup());
+      const transition = h.store.transitionGateRecovery.bind(h.store);
+      let interrupt = true;
+      h.store.transitionGateRecovery = (...args: Parameters<RunStore["transitionGateRecovery"]>) => {
+        if (interrupt && args[1] === "staging" && args[2] === "ready_to_score") return null;
+        return transition(...args);
+      };
+      let calls = 0;
+      let staleJudgeAtScorerEntry: boolean | undefined;
+      const controller = new GateRecoveryController({
+        store: h.store, paths: h.paths, readiness: READY,
+        makeGate: async () => ({
+          scorerImageDigest: IMAGE_DIGEST,
+          score: async (run, suite) => {
+            calls += 1;
+            const results = runPathsFor(h.paths, run.runId).results;
+            staleJudgeAtScorerEntry = existsSync(join(results, "judge.json"));
+            // Replant to independently bind the finalizer, not just entry.
+            plantStaleJudge(results);
+            if (outcome === "infra_failed") throw new Error("fixture scorer unavailable");
+            const score = scoreFor(run, suite, outcome === "passed");
+            scoreFile(h.paths, score);
+            return score;
+          },
+        }),
+      });
+      const request = validateGateRecoveryRequest({ clientRequestId: `T17b-${outcome}` });
+      const staged = await controller.recover(h.sourceRunId, request);
+      assert.equal(staged.recoveryState, "staging");
+      const results = runPathsFor(h.paths, staged.targetRunId).results;
+      plantStaleJudge(results);
+      interrupt = false;
+      const recovered = await controller.recover(h.sourceRunId, request);
+      assert.equal(calls, 1);
+      assert.equal(staleJudgeAtScorerEntry, false,
+        `T17b gate-only scorer-entry cleanup must remove stale judge.json before scoring ${outcome}`);
+      assertNoStaleJudge(results, `${outcome} finalization`);
+      const verdict = readFileSync(join(results, "verdict.md"), "utf8");
+      assert.match(verdict, outcome === "infra_failed"
+        ? /^# NO VERDICT WAS REACHED/
+        : /code-reading judge did not run: no report was recorded/);
+      assert.doesNotMatch(verdict, /previous execution|nothing was noted against it/);
+      assert.equal(recovered.recoveryState, outcome === "infra_failed" ? "infra_failed" : "completed");
+      assert.equal(recovered.heldOutPass, outcome === "infra_failed" ? null : outcome === "passed");
+      assert.equal(recovered.falseFinish, outcome === "infra_failed" ? null : outcome === "failed");
+      assert.equal(h.store.getRun(recovered.targetRunId)?.gateAttempts, 1);
+      assert.equal(h.store.getRun(recovered.targetRunId)?.gateStopReason,
+        outcome === "infra_failed" ? "infra" : outcome === "passed" ? "green" : "not-converging");
+    });
+  }
+});
+
+test("T17b gate-only judge cleanup failure cannot fail a green sealed gate", async (t) => {
+  const h = harness();
+  t.after(() => h.cleanup());
+  const controller = new GateRecoveryController({
+    store: h.store, paths: h.paths, readiness: READY,
+    makeGate: async () => ({
+      scorerImageDigest: IMAGE_DIGEST,
+      score: async (run, suite) => {
+        mkdirSync(join(runPathsFor(h.paths, run.runId).results, "judge.json"));
+        const score = scoreFor(run, suite);
+        scoreFile(h.paths, score);
+        return score;
+      },
+    }),
+  });
+  const recovered = await controller.recover(h.sourceRunId,
+    validateGateRecoveryRequest({ clientRequestId: "T17b-cleanup-io-failure" }));
+  assert.equal(recovered.recoveryState, "completed", "judge cleanup failure is non-gating");
+  assert.equal(recovered.status, "passed");
+  assert.equal(recovered.heldOutPass, true);
+  assert.equal(recovered.falseFinish, false);
+});
+
 function scoreFor(run: RunRecord, suite: AcceptanceSuite, pass = true): ScoreRecord {
   return {
     schemaVersion: BAKEOFF_SCHEMA_VERSION,
@@ -494,6 +588,7 @@ test("boot finalizes a valid scoring-state score without invoking the scorer aga
     writeFileSync(join(targetPaths.results, "run.json"), `${JSON.stringify(runRecord)}\n`, "utf8");
     writeFileSync(join(targetPaths.results, "recovery.json"), `${JSON.stringify({ readiness: { scorerImageDigest: IMAGE_DIGEST } })}\n`, "utf8");
     scoreFile(h.paths, scoreFor(runRecord, h.suite));
+    plantStaleJudge(targetPaths.results);
     let scoreCalls = 0;
     const controller = new GateRecoveryController({
       store: h.store, paths: h.paths, readiness: READY,
@@ -503,6 +598,9 @@ test("boot finalizes a valid scoring-state score without invoking the scorer aga
     assert.equal(scoreCalls, 0);
     assert.equal(h.store.gateRecoveryForTarget(targetRunId)?.state, "completed");
     assert.equal(h.store.getRun(targetRunId)?.heldOutPass, true);
+    assertNoStaleJudge(targetPaths.results, "boot scoring-state finalization");
+    assert.match(readFileSync(join(targetPaths.results, "verdict.md"), "utf8"),
+      /code-reading judge did not run: no report was recorded/);
   } finally { h.cleanup(); }
 });
 

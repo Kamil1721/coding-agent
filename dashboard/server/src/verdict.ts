@@ -656,7 +656,7 @@ function summaryLine(input: VerdictInput, outcome: VerdictOutcome): string {
     return `Everything the ticket asked for is there. ${plural(quality, "note", "notes")} on quality, which do not fail the run.`;
   }
   const judge = input.judgeReport;
-  return judge?.ran === true && judge.verdict !== "unavailable" && judge.findings.length === 0
+  return judge?.ran === true && judge.verdict === "clean"
     ? "Everything the ticket asked for is there, and nothing was noted against it."
     : "Everything the ticket asked for is there.";
 }

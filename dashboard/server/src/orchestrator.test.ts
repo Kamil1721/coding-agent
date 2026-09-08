@@ -8492,10 +8492,11 @@ test("the retry bounds this fix depends on are what the fix assumes", () => {
 
 class FixtureJudgeAuth extends AuthProbe {
   available = true;
+  missingDetail = "fixture authentication missing";
   override async status(): Promise<AuthStatus> {
     return {
       claude: this.available ? "ok" : "missing", codex: "missing",
-      claudeDetail: this.available ? "fixture authenticated" : "fixture authentication missing",
+      claudeDetail: this.available ? "fixture authenticated" : this.missingDetail,
       codexDetail: "fixture unused", checkedAt: "2026-09-08T00:00:00.000Z",
     };
   }
@@ -8530,8 +8531,7 @@ function fixtureJudgeQuery(text: string, onCall: () => void): SeatSessionFactory
   };
 }
 
-async function judgeHarness(text: string, failWrite = false) {
-  const auth = new FixtureJudgeAuth();
+async function judgeHarness(text: string, failWrite = false, auth = new FixtureJudgeAuth()) {
   let calls = 0;
   const h = await designRun({
     ticket: "Build a command line tool that prints a report to stdout.",
@@ -8593,6 +8593,69 @@ test("T17 persisted report and verdict redact nested judge text", async () => {
     const stored = JSON.parse(raw) as JudgeReport;
     assert.deepEqual(stored.findings, redactForPersistence(response.findings));
     assert.equal(stored.summary, redactForPersistence(response.summary));
+  } finally { await h.cleanup(); }
+});
+
+test("T17b auth-skip report uses orchestrator redaction without the judge parser", async () => {
+  const secret = "ghp_" + "q".repeat(25);
+  const auth = new FixtureJudgeAuth();
+  auth.available = false;
+  auth.missingDetail = `fixture authentication unavailable: ${secret}`;
+  const h = await judgeHarness("the judge must not be called", false, auth);
+  try {
+    for (const name of ["judge.json", "verdict.md"]) {
+      const text = readFileSync(join(h.results, name), "utf8");
+      assert.ok(!text.includes(secret), `${name}: auth-skip report must redact before persistence without the judge parser`);
+      assert.match(text, /\[REDACTED:/, `${name}: auth-skip report must carry the redaction marker`);
+    }
+    assert.equal(h.calls(), 0, "authentication skip must bypass the judge parser");
+    const stored = JSON.parse(readFileSync(join(h.results, "judge.json"), "utf8")) as JudgeReport;
+    assert.equal(stored.ran, false);
+    assert.equal(stored.verdict, "unavailable");
+    assert.equal(h.status(), "passed");
+    assert.equal(h.store.getRun(h.runId)?.heldOutPass, true);
+  } finally { await h.cleanup(); }
+});
+
+test("T17b finish requeue cannot retain clean judge authority in a failed next build", async () => {
+  const priorSummary = "unique prior tree passed the code-reading judge T17b";
+  let judgeCalls = 0;
+  let buildCalls = 0;
+  const h = await designRun({
+    autoStart: false,
+    ticket: "Build a command line tool that prints a report to stdout.",
+    noKey: true, pngCount: 0, writeManifest: false,
+    auth: new FixtureJudgeAuth(), makeGate: judgeGreenGate,
+    seatQuery: fixtureJudgeQuery(JSON.stringify({ verdict: "clean", findings: [], summary: priorSummary }), () => {
+      judgeCalls += 1;
+      const results = runPathsFor(h.paths, h.runId).results;
+      // Arrive after the builder and gate: the real atomic terminal transition
+      // must refuse to finish while this owner message remains undelivered.
+      writeCreativePilotStatus(results, initialCreativePilotStatus(true, true));
+      h.store.appendMessage(h.runId, { role: "owner", text: "Revise the report heading.", images: [] });
+    }),
+    onRequest: (request) => {
+      buildCalls += 1;
+      if (buildCalls > 1) {
+        writeCreativePilotStatus(runPathsFor(h.paths, h.runId).results, initialCreativePilotStatus(false, false));
+        throw new Error("T17b second build failed before the judge");
+      }
+      writeFileSync(join(request.workspace, "fixture-report.txt"), "A computed report.\n", "utf8");
+    },
+  });
+  try {
+    h.orchestrator.pump();
+    await h.settle();
+    const page = readFileSync(join(runPathsFor(h.paths, h.runId).results, "verdict.md"), "utf8");
+    // These assertions deliberately precede neighbouring status checks: the
+    // reset-map mutation must fail on stale judge authority, not run status.
+    assert.match(page, /code-reading judge did not run: no report was recorded/, "the requeued attempt must not borrow the previous clean judge report");
+    assert.ok(!page.includes(priorSummary), "the failed next build must not retain the prior tree's unique judge summary");
+    assert.equal(judgeCalls, 1);
+    assert.equal(buildCalls, 2);
+    assert.ok(h.store.eventsSince(h.runId, 0).some(({ event }) => event.type === "log" && event.text.includes("terminal transition was atomically refused")), "the real finishUnlessOwnerMessagePending requeue branch must run");
+    assert.equal(h.status(), "failed");
+    assert.match(h.store.getRun(h.runId)?.failureReason ?? "", /T17b second build failed before the judge/);
   } finally { await h.cleanup(); }
 });
 

@@ -1122,6 +1122,10 @@ export class GateRecoveryController {
       (existsSync(paths.results) && lstatSync(paths.results).isSymbolicLink()) ||
       (existsSync(paths.workspace) && lstatSync(paths.workspace).isSymbolicLink())) return null;
     mkdirSync(paths.results, { recursive: true });
+    // Every gate-only entry/finalization writes without a judge report. Clear
+    // stale evidence only after proving this recovery owns the target.
+    try { rmSync(join(paths.results, "judge.json"), { force: true }); }
+    catch { /* Informational evidence cleanup must not change the sealed gate outcome. */ }
     return paths;
   }
 

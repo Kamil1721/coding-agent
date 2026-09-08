@@ -772,3 +772,16 @@ test("T17 judge findings and unavailable readings never produce a clean claim or
   assert.match(renderVerdict({ ...base, judgeReport: clean }), /nothing was noted against it/);
   assert.doesNotMatch(renderVerdict({ ...runWith({ blocking: 1 }), judgeReport: clean }), /nothing was noted against it/);
 });
+
+test("T17b concerns with dropped finding rows cannot claim a clean judge", () => {
+  const base = runWith({ passing: 3 });
+  const input = {
+    ...base,
+    judgeReport: { ...CLINIC_JUDGE_REPORT, verdict: "concerns" as const, findings: [], summary: "the handler is a stub" },
+  };
+  const page = renderVerdict(input);
+  assert.doesNotMatch(page, /nothing was noted against it/, "a concerns verdict cannot claim clean even when every finding row was dropped");
+  assert.match(page, /Code-reading judge \(non-gating\)[\s\S]*the handler is a stub/, "the judge summary must survive dropped finding rows");
+  assert.equal(computeOutcome(input), "pass", "the code-reading judge must remain non-gating");
+  assert.deepEqual(input.criteriaResults, base.criteriaResults);
+});
