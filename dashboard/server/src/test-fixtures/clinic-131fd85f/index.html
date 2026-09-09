@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book a clinic appointment in three steps</title>
+<meta name="description" content="A three step booking wizard for a fictional clinic. Choose a type, choose a date and time slot, review and confirm. All data stays on your machine.">
+<link rel="stylesheet" href="app/styles.css">
+</head>
+<body>
+
+<div class="world" aria-hidden="true" data-world>
+  <video class="world__layer" data-world-leg="1" poster="assets/world/leg-1-poster.webp" muted playsinline preload="auto"></video>
+  <video class="world__layer" data-world-leg="2" poster="assets/world/leg-2-poster.webp" muted playsinline preload="auto"></video>
+  <div class="world__veil"></div>
+</div>
+
+<a class="skip-link" href="#booking">Skip to the booking form</a>
+
+<div class="page" data-creative-route="r.book">
+
+  <!-- ============ the wizard card ============ -->
+  <main class="card" id="booking">
+
+    <p class="wordmark">Marlow Park Clinic</p>
+
+    <!-- s.nav : the only "Step N of 3" on the page, and it moves -->
+    <nav class="progress" data-creative-section="s.nav" aria-label="Booking progress">
+      <p class="progress__count" id="progress-count" aria-live="polite" data-progress-count>Step 1 of 3: appointment type</p>
+      <ol class="progress__steps" data-progress-list>
+        <li class="progress__step" data-step="1" data-reached="true" aria-current="step">
+          <span class="progress__bar"></span>
+          <span class="progress__name">Appointment type</span>
+        </li>
+        <li class="progress__step" data-step="2" data-reached="false">
+          <span class="progress__bar"></span>
+          <span class="progress__name">Date and time</span>
+        </li>
+        <li class="progress__step" data-step="3" data-reached="false">
+          <span class="progress__bar"></span>
+          <span class="progress__name">Review</span>
+        </li>
+      </ol>
+    </nav>
+
+    <!-- s.hero : the page title, plus the entry copy that only step one shows -->
+    <section data-creative-section="s.hero">
+      <h1 class="h1">Book a clinic appointment in three steps</h1>
+      <div data-hero-entry>
+        <p class="lede">Pick a type, pick a time, review it. Back keeps your choices. Progress stays visible throughout.</p>
+        <p class="actions" style="margin-top:24px">
+          <a class="textlink textlink--solid" href="#step-1-heading" data-hero-start>Start booking</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- s.step1 -->
+    <section class="panel is-active" id="step-1" data-creative-section="s.step1" data-panel="1">
+      <p class="eyebrow">Step one</p>
+      <h2 class="h2" id="step-1-heading" tabindex="-1">Choose your appointment type</h2>
+      <p class="lede">Three options: general consultation, follow up visit, and vaccination. Select one to continue.</p>
+
+      <fieldset style="margin-top:32px">
+        <legend>Appointment type</legend>
+        <div class="group" id="type-group" data-group="type">
+          <div class="option">
+            <input type="radio" id="type-general-consultation" name="appointment-type" value="general-consultation" aria-describedby="type-error">
+            <label for="type-general-consultation">General consultation</label>
+          </div>
+          <div class="option">
+            <input type="radio" id="type-follow-up-visit" name="appointment-type" value="follow-up-visit" aria-describedby="type-error">
+            <label for="type-follow-up-visit">Follow up visit</label>
+          </div>
+          <div class="option">
+            <input type="radio" id="type-vaccination" name="appointment-type" value="vaccination" aria-describedby="type-error">
+            <label for="type-vaccination">Vaccination</label>
+          </div>
+        </div>
+        <p class="msg" id="type-error" data-motion-id="m.error" role="status">
+          <span class="warn" aria-hidden="true"><span>!</span></span>
+          <span data-msg-text>Choose an appointment type before continuing.</span>
+        </p>
+        <p class="empty-note">No appointment type chosen yet.</p>
+      </fieldset>
+
+      <p class="actions" style="margin-top:40px">
+        <button type="button" class="btn btn--primary" data-action="next">Continue to date</button>
+      </p>
+    </section>
+
+    <!-- s.step2 -->
+    <section class="panel" id="step-2" data-creative-section="s.step2" data-panel="2" data-motion-id="m.step">
+      <h2 class="h2" id="step-2-heading" tabindex="-1">Pick a date and one of four time slots</h2>
+      <p class="lede">Choose a date, then select morning, midday, afternoon, or evening. Back returns to step one with your type intact.</p>
+
+      <div class="stack" style="margin-top:32px">
+        <div class="field" data-field="date">
+          <label class="field__label" for="appointment-date">Appointment date</label>
+          <input class="field__input" type="date" id="appointment-date" name="appointment-date" aria-describedby="date-error">
+          <p class="msg" id="date-error" role="status">
+            <span class="warn" aria-hidden="true"><span>!</span></span>
+            <span data-msg-text>Choose a date before continuing.</span>
+          </p>
+        </div>
+
+        <fieldset data-group="slot">
+          <legend>Time slot</legend>
+          <div class="slots" id="slot-group">
+            <div class="slot">
+              <input type="radio" id="slot-morning" name="time-slot" value="morning" aria-describedby="slot-error">
+              <label for="slot-morning"><span class="slot__name">Morning</span><span class="slot__range">08:00 to 11:00</span></label>
+            </div>
+            <div class="slot">
+              <input type="radio" id="slot-midday" name="time-slot" value="midday" aria-describedby="slot-error">
+              <label for="slot-midday"><span class="slot__name">Midday</span><span class="slot__range">11:00 to 13:00</span></label>
+            </div>
+            <div class="slot">
+              <input type="radio" id="slot-afternoon" name="time-slot" value="afternoon" aria-describedby="slot-error">
+              <label for="slot-afternoon"><span class="slot__name">Afternoon</span><span class="slot__range">13:00 to 16:00</span></label>
+            </div>
+            <div class="slot">
+              <input type="radio" id="slot-evening" name="time-slot" value="evening" aria-describedby="slot-error">
+              <label for="slot-evening"><span class="slot__name">Evening</span><span class="slot__range">16:00 to 19:00</span></label>
+            </div>
+          </div>
+          <p class="msg" id="slot-error" role="status">
+            <span class="warn" aria-hidden="true"><span>!</span></span>
+            <span data-msg-text>Choose a time slot before continuing.</span>
+          </p>
+          <p class="empty-note">No time slot chosen yet.</p>
+        </fieldset>
+      </div>
+
+      <p class="actions actions--split" style="margin-top:40px">
+        <button type="button" class="btn btn--primary" data-action="next">Continue to review</button>
+        <button type="button" class="btn btn--secondary" data-action="back">Back</button>
+      </p>
+    </section>
+
+    <!-- s.step3 -->
+    <section class="panel" id="step-3" data-creative-section="s.step3" data-panel="3">
+      <h2 class="h2" id="step-3-heading" tabindex="-1">Review your appointment before confirming</h2>
+      <p class="lede">Type, date, and time slot listed together. Edit any line by stepping back; nothing is lost.</p>
+
+      <div class="summary" data-summary="review"></div>
+      <p class="busy-note">Confirming your booking</p>
+
+      <p class="actions actions--split" style="margin-top:40px">
+        <button type="button" class="btn btn--primary" data-action="confirm">Confirm booking</button>
+        <button type="button" class="btn btn--secondary" data-action="back">Back</button>
+      </p>
+    </section>
+
+    <!-- s.confirm -->
+    <section class="panel" id="confirmation" data-creative-section="s.confirm" data-panel="4">
+      <p class="done-mark" aria-hidden="true">&#10003;</p>
+      <h2 class="h2" id="confirm-heading" tabindex="-1" style="margin-top:24px">Your appointment is booked</h2>
+
+      <div class="summary" data-summary="confirmation" data-motion-id="m.confirm"></div>
+
+      <p class="lede">Book another appointment returns to step one and clears every selection, validation message, and this confirmation.</p>
+
+      <p class="actions" style="margin-top:40px">
+        <button type="button" class="btn btn--primary" data-action="reset">Book another appointment</button>
+      </p>
+    </section>
+
+  </main>
+
+  <!-- ============ s.a11y ============ -->
+  <section class="card" data-creative-section="s.a11y">
+    <div>
+      <h2 class="h2">Keyboard first, labelled, and never color alone</h2>
+      <p class="section__body">Semantic controls with associated labels, visible focus rings, sufficient contrast, and a logical heading order. After a validation failure focus moves to the first invalid field. After a step change it moves to the new step heading.</p>
+    </div>
+
+    <div class="panels">
+      <div class="spec">
+        <h3>Visible focus ring</h3>
+        <p class="spec__demo"><span class="chip">Continue</span></p>
+      </div>
+      <div class="spec">
+        <h3>Never color alone</h3>
+        <div class="spec__demo">
+          <span class="box box--bad"></span>
+          <p class="spec__msg"><span class="warn" aria-hidden="true"><span>!</span></span><span>Choose a date</span></p>
+        </div>
+      </div>
+      <div class="spec">
+        <h3>Label above the field</h3>
+        <div class="spec__demo">
+          <span class="spec__label">Appointment day</span>
+          <span class="box"></span>
+        </div>
+      </div>
+      <div class="spec">
+        <h3>Progress is text too</h3>
+        <div class="spec__demo">
+          <p class="muted" style="font-size:15px">The counter is written out beside the bars, so position is readable without seeing colour.</p>
+          <p class="bars" aria-hidden="true"><i></i><i></i><i></i></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ s.responsive ============ -->
+  <section class="card" data-creative-section="s.responsive">
+    <div>
+      <h2 class="h2">Works at 375px without horizontal scroll</h2>
+      <p class="section__body">Resize mid flow and the current step plus every valid selection stay exactly where you left them.</p>
+    </div>
+    <figure class="figure">
+      <img src="assets/responsive-comparison.jpg" width="1376" height="768"
+           alt="The time slot step drawn twice. At 375px the four slots sit in a two by two grid with Continue above Back, both full width. On desktop the same four slots sit in one row with Back and Continue side by side. Afternoon is selected in both.">
+      <figcaption>The same step at both widths. The four slots fold to a two by two grid and Continue rises above Back, so the primary action stays reachable on a phone.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ s.local ============ -->
+  <section class="card" data-creative-section="s.local">
+    <div>
+      <p class="eyebrow">How it runs</p>
+      <h2 class="h2" style="margin-top:8px">Everything stays on your machine</h2>
+      <p class="section__body">No authentication, payments, databases, maps, email, calendars, analytics, or external APIs. Data is local and deterministic.</p>
+    </div>
+  </section>
+
+  <!-- ============ s.run ============ -->
+  <section class="card" data-creative-section="s.run">
+    <div>
+      <h2 class="h2">Run it locally from a fresh start</h2>
+      <p class="section__body">Serve the folder or open the static build. Every route and interaction works on first load. The page exposes deterministic route, section, and motion data markers for rendered capture.</p>
+    </div>
+    <ol class="steps-list">
+      <li><span class="n">1</span><span class="cmd">npx serve .</span></li>
+      <li><span class="n">2</span><span class="cmd">open http://localhost:3000</span></li>
+    </ol>
+    <p class="actions" style="margin-top:32px;justify-content:flex-start">
+      <a class="textlink" href="README.md">Read run instructions</a>
+    </p>
+  </section>
+
+  <!-- ============ s.footer ============ -->
+  <footer class="card" data-creative-section="s.footer">
+    <hr class="rule">
+    <div class="footer__inner">
+      <p class="footer__mark">Clinic booking demo</p>
+      <p class="footer__actions actions" style="justify-content:flex-start">
+        <a class="textlink" href="#step-1-heading">Start booking</a>
+      </p>
+    </div>
+  </footer>
+
+</div>
+
+<script type="module" src="app/main.mjs"></script>
+</body>
+</html>

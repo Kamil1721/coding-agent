@@ -894,11 +894,41 @@ test("warning facts preserve every profile observation sharing an indexed motion
   }
   assert.equal(result.output.evidenceIndex.contractPointers.filter((pointer) => pointer === "/motion/0").length, 1);
   assert.doesNotThrow(() => buildTasteCriticPrompt(buildCreativeTastePromptInput(result.output, binding.contract)));
-  const manyWarnings = { ...result.output.manifest, issues: Array.from({ length: 60 }, () => result.output.manifest.issues[0]!) };
-  const bounded = buildTastePromptFacts(binding.contract, manyWarnings, result.output.renderManifestHash);
-  assert.equal(bounded.length, 48, "warning projection preserves the existing 48 fact cap");
-  assert.equal(manyWarnings.issues.length, 60, "bounded projection does not discard manifest warnings");
+
 });
+
+for (const control of ["page facts survive", "evidence kinds survive"] as const) {
+  test(`sixty motion warnings: ${control}`, async () => {
+    const binding = bindingFixture();
+    const env = tempPreview();
+    const result = await captureCreativeRender({
+      preview: env.preview, binding, iteration: 0, outputDir: env.outputDir,
+      launch: fakeLaunch(fixture()),
+      readArtifactHash: () => binding.artifactHash,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const withoutWarnings = buildTastePromptFacts(binding.contract, result.output.manifest, result.output.renderManifestHash);
+    const manyWarnings: RenderManifestV1 = {
+      ...result.output.manifest,
+      issues: Array.from({ length: 60 }, () => ({
+        code: "MOTION_NOT_OBSERVED", severity: "warning", profileId: "desktop",
+        routeId: "home", sectionId: "home-hero", motionId: "home-action", captureId: null, evidenceSha256: SOURCE_HASH,
+      })),
+    };
+    const bounded = buildTastePromptFacts(binding.contract, manyWarnings, result.output.renderManifestHash);
+    assert.equal(bounded.length, 48, "warning projection preserves the existing 48 fact cap");
+    assert.equal(manyWarnings.issues.length, 60, "bounded projection does not discard manifest warnings");
+    if (control === "page facts survive") {
+      assert.ok(bounded.some((fact) => !fact.id.startsWith("motion-warning-") && fact.evidence.kind !== "contract"),
+        "60 motion warnings must retain non-warning page evidence");
+    } else {
+      const kinds = (facts: typeof bounded): string[] => [...new Set(facts.map((fact) => fact.evidence.kind))].sort();
+      assert.deepEqual(kinds(withoutWarnings), ["asset", "contract", "dom_text", "motion_trace", "region"]);
+      assert.deepEqual(kinds(bounded), kinds(withoutWarnings),
+        "60 motion warnings must retain every evidence kind present without warnings");
+    }
+  });
+}
 
 test("motion warning off preserves golden manifest bytes and critic input", async () => {
   const binding = bindingFixture();
