@@ -245,7 +245,8 @@ function traceShape(value: unknown, path: string, ctx: Context): void {
   string(item["captureId"], `${path}/captureId`, ctx, 128, false, ID); enumString(item["profileId"], `${path}/profileId`, ctx, PROFILE_SET);
   string(item["routeId"], `${path}/routeId`, ctx, 128, false, ID); string(item["sectionId"], `${path}/sectionId`, ctx, 128, false, ID);
   const indexes = new Set<number>();
-  array(item["sampleIndexes"], `${path}/sampleIndexes`, ctx, 1, 16, (entry, entryPath) => {
+  const unobserved = Array.isArray(item["observedProperties"]) && item["observedProperties"].length === 0;
+  array(item["sampleIndexes"], `${path}/sampleIndexes`, ctx, unobserved ? 0 : 1, 16, (entry, entryPath) => {
     const parsed = integer(entry, entryPath, ctx, 0, 1_000_000); if (parsed === null) return;
     if (indexes.has(parsed)) add(ctx, "DUPLICATE_VALUE", entryPath, "sample index must be unique"); indexes.add(parsed);
   });
@@ -352,16 +353,25 @@ function semantic(manifest: RenderManifestV1, binding: RenderManifestBinding, ct
   for (const [index, trace] of manifest.motionTraces.entries()) {
     const motion = motions.get(trace.motionId);
     const capture = captures.get(trace.captureId);
+    const hasMotionIssue = (code: RenderIssueCode): boolean => capture !== undefined && motion !== undefined &&
+      capture.state === (motion.trigger === "interaction" ? "interaction" : "default") && manifest.issues.some((issue) =>
+      issue.code === code && issue.profileId === trace.profileId && issue.routeId === trace.routeId &&
+      issue.sectionId === trace.sectionId && issue.motionId === trace.motionId && issue.evidenceSha256 === capture.screenshotSha256);
+    const activeUnobserved = (trace.profileId === "desktop" || trace.profileId === "mobile") && trace.observedProperties.length === 0;
+    const declaredUnobserved = activeUnobserved && hasMotionIssue("MOTION_NOT_OBSERVED");
+    const reducedActive = trace.profileId === "reduced_motion" && trace.observedProperties.length > 0;
     if (motion === undefined) add(ctx, "DANGLING_MOTION", `/motionTraces/${String(index)}/motionId`, "trace motion does not exist in the contract");
     else {
       if (motion.routeId !== trace.routeId || motion.sectionId !== trace.sectionId) add(ctx, "MOTION_CAPTURE_MISMATCH", `/motionTraces/${String(index)}`, "trace route or section differs from its motion contract");
-      if (trace.fallbackState !== expectedFallback(motion, trace.profileId)) add(ctx, "FALLBACK_MISMATCH", `/motionTraces/${String(index)}/fallbackState`, "observed fallback does not match the motion contract and profile");
+      const fallback = reducedActive ? "active" : expectedFallback(motion, trace.profileId);
+      if (trace.fallbackState !== fallback || (reducedActive && !hasMotionIssue("REDUCED_MOTION_ACTIVE"))) add(ctx, "FALLBACK_MISMATCH", `/motionTraces/${String(index)}/fallbackState`, "observed fallback does not match the motion contract and profile or lacks its reduced-motion issue");
     }
     if (capture === undefined || capture.profileId !== trace.profileId || capture.routeId !== trace.routeId || capture.sectionId !== trace.sectionId) add(ctx, "MOTION_CAPTURE_MISMATCH", `/motionTraces/${String(index)}/captureId`, "trace capture does not match its profile, route and section");
     const key = `${trace.profileId}:${trace.motionId}`;
     if (traceKeys.has(key)) add(ctx, "MOTION_TRACE_DUPLICATE", `/motionTraces/${String(index)}`, "motion may have one trace per required profile");
     traceKeys.add(key);
-    if ((trace.profileId === "desktop" || trace.profileId === "mobile") && trace.observedProperties.length === 0) add(ctx, "MOTION_COVERAGE_MISSING", `/motionTraces/${String(index)}/observedProperties`, "active profiles require an observed safe motion property");
+    if (activeUnobserved && !declaredUnobserved) add(ctx, "MOTION_COVERAGE_MISSING", `/motionTraces/${String(index)}/observedProperties`, "unobserved active motion requires its capture-bound diagnostic");
+    if (trace.sampleIndexes.length === 0 && !declaredUnobserved) add(ctx, "INVALID_VALUE", `/motionTraces/${String(index)}/sampleIndexes`, "empty samples require a declared unobserved active motion");
   }
   for (const profileId of RENDER_PROFILE_IDS) for (const motion of binding.contract.motion) if (!traceKeys.has(`${profileId}:${motion.id}`)) add(ctx, "MOTION_COVERAGE_MISSING", "/motionTraces", `missing ${profileId}:${motion.id}`);
 

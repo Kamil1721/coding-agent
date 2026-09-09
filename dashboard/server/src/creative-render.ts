@@ -1045,36 +1045,6 @@ async function buildMotionTraces(
   const traces: RenderMotionTraceV1[] = [];
   const issues: RenderIssueDetail[] = [];
   for (const motion of motions) {
-    const observation = await readMotionObservation(page, motion.id);
-    const activeProfile = profile.reducedMotion === "no_preference" && profile.media === "enabled";
-    if (profile.reducedMotion === "reduce" && observation.observedProperties.length > 0) {
-      issues.push(
-        issue(
-          "REDUCED_MOTION_ACTIVE",
-          "blocking",
-          profile.id,
-          route.id,
-          motion.sectionId,
-          motion.id,
-          `motion ${motion.id} remained active under reduced motion`,
-        ),
-      );
-      continue;
-    }
-    if (activeProfile && observation.observedProperties.length === 0) {
-      issues.push(
-        issue(
-          "MOTION_NOT_OBSERVED",
-          "blocking",
-          profile.id,
-          route.id,
-          motion.sectionId,
-          motion.id,
-          `motion ${motion.id} was not observed on an active render profile`,
-        ),
-      );
-      continue;
-    }
     const capture = captures.find(
       (item) =>
         item.profileId === profile.id &&
@@ -1096,6 +1066,36 @@ async function buildMotionTraces(
       );
       continue;
     }
+    const observation = await readMotionObservation(page, motion.id);
+    const activeProfile = profile.reducedMotion === "no_preference" && profile.media === "enabled";
+    const reducedMotionActive = profile.reducedMotion === "reduce" && observation.observedProperties.length > 0;
+    const motionNotObserved = activeProfile && observation.observedProperties.length === 0;
+    if (reducedMotionActive) {
+      issues.push(
+        issue(
+          "REDUCED_MOTION_ACTIVE",
+          "blocking",
+          profile.id,
+          route.id,
+          motion.sectionId,
+          motion.id,
+          `motion ${motion.id} remained active under reduced motion`,
+        ),
+      );
+    }
+    if (motionNotObserved) {
+      issues.push(
+        issue(
+          "MOTION_NOT_OBSERVED",
+          "blocking",
+          profile.id,
+          route.id,
+          motion.sectionId,
+          motion.id,
+          `motion ${motion.id} was not observed on an active render profile`,
+        ),
+      );
+    }
     traces.push({
       id: `${profile.id}:${motion.id}`,
       motionId: motion.id,
@@ -1103,9 +1103,10 @@ async function buildMotionTraces(
       profileId: profile.id,
       routeId: route.id,
       sectionId: motion.sectionId,
-      sampleIndexes: observation.sampleIndexes.length > 0 ? [...observation.sampleIndexes] : [0],
+      sampleIndexes: reducedMotionActive || motionNotObserved || observation.sampleIndexes.length > 0
+        ? [...observation.sampleIndexes] : [0],
       observedProperties: [...observation.observedProperties],
-      fallbackState: fallbackStateFor(profile, motion),
+      fallbackState: reducedMotionActive ? "active" : fallbackStateFor(profile, motion),
     });
   }
   return { traces, issues };

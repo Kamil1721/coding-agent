@@ -198,6 +198,68 @@ test("enforces motion trace coverage, capture identity and declared fallbacks", 
   assert.ok(codes(fallbackState, binding).includes("FALLBACK_MISMATCH"));
 });
 
+test("accepts explicit unobserved traces only with their capture-bound diagnosis", () => {
+  const binding = bindingFixture();
+  const manifest = mutableManifest(binding);
+  const trace = manifest.motionTraces.find((entry) => entry.profileId === "desktop" && entry.motionId === "home-action")!;
+  const capture = manifest.captures.find((entry) => entry.id === trace.captureId)!;
+  trace.observedProperties = [];
+  trace.sampleIndexes = [];
+  manifest.issues.push({ code: "MOTION_NOT_OBSERVED", severity: "blocking", profileId: trace.profileId,
+    routeId: trace.routeId, sectionId: trace.sectionId, motionId: trace.motionId, evidenceSha256: capture.screenshotSha256 });
+  assert.equal(validate(manifest, binding).ok, true, "explicit diagnosed unobserved motion satisfies total trace coverage");
+  const missingTrace = structuredClone(manifest);
+  missingTrace.motionTraces = missingTrace.motionTraces.filter((entry) => entry.id !== trace.id);
+  const missing = validate(missingTrace, binding);
+  assert.equal(missing.ok, false, "declared unobserved motion still requires an explicit trace");
+  assert.ok(missing.errors.some((entry) => entry.code === "MOTION_COVERAGE_MISSING"));
+  const differentState = manifest.captures.find((entry) => entry.profileId === trace.profileId &&
+    entry.sectionId === trace.sectionId && entry.state === "default")!;
+  manifest.issues[0]!.evidenceSha256 = differentState.screenshotSha256;
+  assert.ok(codes(manifest, binding).includes("MOTION_COVERAGE_MISSING"), "unobserved diagnosis must bind the trace capture, not another state");
+  manifest.issues = [];
+  assert.ok(codes(manifest, binding).includes("MOTION_COVERAGE_MISSING"));
+});
+
+test("reduced active traces require truthful fallback and a capture-bound diagnosis", () => {
+  const binding = bindingFixture();
+  const manifest = mutableManifest(binding);
+  const trace = manifest.motionTraces.find((entry) => entry.profileId === "reduced_motion" && entry.motionId === "home-action")!;
+  const capture = manifest.captures.find((entry) => entry.id === trace.captureId)!;
+  trace.observedProperties = ["transform"];
+  trace.sampleIndexes = [5];
+  trace.fallbackState = "active";
+  manifest.issues.push({ code: "REDUCED_MOTION_ACTIVE", severity: "blocking", profileId: trace.profileId,
+    routeId: trace.routeId, sectionId: trace.sectionId, motionId: trace.motionId, evidenceSha256: capture.screenshotSha256 });
+  assert.equal(validate(manifest, binding).ok, true, "diagnosed reduced motion truthfully remains active");
+  trace.fallbackState = "instant";
+  assert.ok(codes(manifest, binding).includes("FALLBACK_MISMATCH"));
+  trace.fallbackState = "active";
+  trace.sampleIndexes = [];
+  assert.equal(validate(manifest, binding).ok, false, "observed motion requires actual samples");
+  trace.sampleIndexes = [5];
+  manifest.issues[0]!.profileId = "desktop";
+  assert.ok(codes(manifest, binding).includes("FALLBACK_MISMATCH"), "reduced-active diagnosis must name the trace profile");
+  manifest.issues = [];
+  assert.ok(codes(manifest, binding).includes("FALLBACK_MISMATCH"));
+});
+
+for (const profileId of ["desktop", "reduced_motion"] as const) {
+  test(`motion coverage diagnoses cannot substitute another state on ${profileId}`, () => {
+    const binding = bindingFixture();
+    const manifest = mutableManifest(binding);
+    const trace = manifest.motionTraces.find((entry) => entry.profileId === profileId && entry.motionId === "home-action")!;
+    const defaultCapture = manifest.captures.find((entry) => entry.profileId === profileId && entry.sectionId === trace.sectionId && entry.state === "default")!;
+    trace.captureId = defaultCapture.id;
+    trace.observedProperties = profileId === "desktop" ? [] : ["transform"];
+    trace.sampleIndexes = profileId === "desktop" ? [] : [5];
+    trace.fallbackState = profileId === "desktop" ? "not_applicable" : "active";
+    manifest.issues.push({ code: profileId === "desktop" ? "MOTION_NOT_OBSERVED" : "REDUCED_MOTION_ACTIVE", severity: "blocking",
+      profileId, routeId: trace.routeId, sectionId: trace.sectionId, motionId: trace.motionId, evidenceSha256: defaultCapture.screenshotSha256 });
+    assert.equal(validate(manifest, binding).ok, false, `${profileId} diagnosis must bind the motion trigger state even when trace and issue agree`);
+  });
+}
+
 test("requires issue coordinates and a digest from captured evidence", () => {
   const binding = bindingFixture();
   const valid = mutableManifest(binding);

@@ -845,6 +845,34 @@ test("motion refusal digests reference their captured profile route section and 
   }
 });
 
+test("retains truthful motion traces for both refused motion observations", async () => {
+  const binding = bindingFixture();
+  for (const profileId of ["desktop", "reduced_motion"] as const) {
+    const env = tempPreview();
+    const observation = profileId === "desktop"
+      ? { observedProperties: [], sampleIndexes: [] }
+      : { observedProperties: ["transform"], sampleIndexes: [5] };
+    const result = await captureCreativeRender({
+      preview: env.preview, binding, iteration: 0, outputDir: env.outputDir,
+      launch: fakeLaunch(fixture({ motion: { [profileId]: { home: { "home-action": observation } } } })),
+      readArtifactHash: () => binding.artifactHash,
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.manifest !== undefined);
+    const trace = result.manifest.motionTraces.find((entry) => entry.profileId === profileId && entry.motionId === "home-action");
+    assert.ok(trace !== undefined, "declared motion remains represented when its observation refuses render");
+    assert.deepEqual(trace.observedProperties, observation.observedProperties);
+    assert.deepEqual(trace.sampleIndexes, observation.sampleIndexes, "unobserved motion must not invent sample zero");
+    assert.equal(trace.fallbackState, profileId === "desktop" ? "not_applicable" : "active");
+    assert.ok(result.manifest.captures.some((entry) => entry.id === trace.captureId && entry.state === "interaction"));
+    if (profileId === "desktop") {
+      const evidence = buildTasteEvidenceIndex(binding.contract, result.manifest, "d".repeat(64));
+      assert.ok(!evidence.evidence.some((entry) => entry.kind === "motion_trace" && entry.motionId === "home-action" && entry.frameId === "desktop:home"),
+        "empty observation remains ineligible as taste motion evidence");
+    }
+  }
+});
+
 test("motion warning off preserves golden manifest bytes and critic input", async () => {
   const binding = bindingFixture();
   const env = tempPreview();
