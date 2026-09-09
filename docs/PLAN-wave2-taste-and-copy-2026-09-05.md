@@ -685,6 +685,19 @@ section finding above is the honest replacement for it).
 motion, is a warning and a critic fact instead of a render refusal, so the rendered taste
 critic reaches its first verdict and the `no_evidence` state from 5a7cf77 becomes reachable.
 
+**CORRECTION, 2026-09-09, after T24 landed.** This section described a two-severity change and
+was wrong. Demoting the two motion codes alone unblocks nothing: measured across every persisted
+run that reached the renderer, two further mechanisms stop the manifest before the critic can be
+called. (1) `render-manifest.ts` rejects an unobserved motion at **two** gates, not one, at what
+were `:364` (a trace present with zero `observedProperties` on an active profile) and `:366` (no
+trace at all for a declared motion and profile). (2) `creative-render.ts:1626` hashed each issue's
+own explanatory text into `evidenceSha256`, while `render-manifest.ts:377-382` requires that digest
+to resolve to a capture at the named profile, route and section, so every motion issue also failed
+`ISSUE_REFERENCE_INVALID`. All three had to land together. They did, in `0f73cde`, `8ce8314`,
+`536410c` and `fb6c277`, and the critic returned its first verdict in the project's history.
+`SECTION_NOT_FOUND` and `CAPTURE_FAILED` stay blocking: a missing route identity and an empty
+capture are not uncertainty about whether an animation ran.
+
 **Why here.** Cause C5. The renderer captured 72 PNGs and then refused twice on
 `MOTION_NOT_OBSERVED` and `REDUCED_MOTION_ACTIVE` (FINDINGS §2 C5 item 1, relayed; the
 `"blocking"` severity of both is measured at `creative-render.ts:1051-1075` and :1085-1095).
