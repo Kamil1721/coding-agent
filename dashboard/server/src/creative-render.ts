@@ -48,7 +48,6 @@ export const CREATIVE_SCREENSHOT_TIMEOUT_MS = 10_000;
 export const CREATIVE_STATE_SETTLE_MS = 120;
 export const CREATIVE_INTERACTION_SETTLE_MS = 220;
 export const CREATIVE_HOVER_TIMEOUT_MS = 1_000;
-export const MAX_CREATIVE_ISSUES = 64;
 export const MAX_CREATIVE_EVENTS_PER_KIND = 8;
 export const MAX_CREATIVE_TEXT_PER_CAPTURE = 8;
 export const MAX_CREATIVE_ASSETS_PER_CAPTURE = 8;
@@ -688,7 +687,9 @@ export function buildTastePromptFacts(
 
   // Keep separate profile observations even when they cite the same motion.
   // The complete issue list remains in the manifest beyond this prompt cap.
-  const facts: TastePromptFact[] = motionWarningFacts(contract, manifest).slice(0, MAX_CREATIVE_FACTS);
+  ensureBucket("motion:warnings");
+  buckets.set("motion:warnings", [...motionWarningFacts(contract, manifest)]);
+  const facts: TastePromptFact[] = [];
   const positions = new Map(bucketOrder.map((name) => [name, 0]));
   while (facts.length < MAX_CREATIVE_FACTS) {
     let added = false;

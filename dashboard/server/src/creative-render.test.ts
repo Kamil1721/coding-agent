@@ -871,7 +871,7 @@ test("retains truthful motion traces for both warning motion observations", asyn
   }
 });
 
-test("warning facts preserve every profile observation sharing an indexed motion pointer", async () => {
+test("warning facts preserve profile observations sharing a pointer when the cap has room", async () => {
   const binding = bindingFixture();
   const env = tempPreview();
   const missing = { ...fixture().motion.desktop, home: { "home-action": { observedProperties: [], sampleIndexes: [] } } };
@@ -883,7 +883,13 @@ test("warning facts preserve every profile observation sharing an indexed motion
     readArtifactHash: () => binding.artifactHash,
   });
   assert.equal(result.ok, true, "motion warnings must reach a validated render");
-  const facts = result.output.facts.filter((fact) => fact.id.startsWith("motion-warning-"));
+  const sparseManifest: RenderManifestV1 = {
+    ...result.output.manifest,
+    captures: result.output.manifest.captures.map((capture) => ({ ...capture, domText: [], assets: [] })),
+  };
+  const projected = buildTastePromptFacts(binding.contract, sparseManifest, result.output.renderManifestHash);
+  assert.ok(projected.length < 48, "profile deduplication control has room below the fact cap");
+  const facts = projected.filter((fact) => fact.id.startsWith("motion-warning-"));
   assert.equal(facts.length, 3, "each profile warning survives evidence-only deduplication");
   assert.equal(new Set(facts.map((fact) => fact.id)).size, 3);
   for (const profile of ["desktop", "mobile", "reduced_motion"]) {
