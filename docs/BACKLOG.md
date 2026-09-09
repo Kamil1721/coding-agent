@@ -88,3 +88,39 @@ Scope: [T27 brief](CODEX-BRIEF-wave2-dom-conformance.md) and [study findings](FI
 - **Legacy recovery admission:** the public `critic_unavailable` arm cannot reach `hasLegacyDeterministicMarkerConflict`: `readCreativePilotStatus` rejects that stop reason with a null critic disposition, while `eligibleSource` rejects a non-null disposition. Pin the unchanged compiled helper through a test-only export for T27's golden. Any admission repair needs separate scope.
 - **Artifact integration, owner decision pending:** no current post-build seat directly consumes `results/contract-conformance.json`. Context7 review receives supplied workspace scope/source; the judge receives bounded diff and evidence. On `run-cont-e22fa17f9b7972c79641`, immutable SQLite events record render invocation followed by route-marker refusal (seq 558), `scope_unavailable` review (561), and a non-gating clean judge result that expressly could not read the actual HTML/CSS/JS beyond the 120k diff truncation (564). A null render-manifest hash does not prove the renderer never ran. T27 computes and persists the standalone comparison; future consumption and refusal remain owner decisions.
 - **Conflicting creative instructions:** blocking every study finding would be unsafe. The inherited direction prescribes the shipped hero, Standard section and `s.*` ids, while the new contract differs; the owner follow-up asks for a narrow skip-link repair and preservation of the existing work reveal. The one-eyebrow count and literal `Engagements` agree with the direction and are mechanically fixable. Resolve the conflicting instructions before turning all conformance findings into repair obligations.
+
+## T24 audit findings, 2026-09-09 — G3 MUST NOT RUN UNTIL THESE CLOSE
+
+Five adversarial lenses attacked the T24 demotion; two findings survived independent
+refutation and were re-measured by the session author. Both are the signature defect:
+a check that was moved into a seat which cannot act on it.
+
+- **T24-A / high: `MOTION_NOT_OBSERVED` has no observer.** T24 demoted it from `blocking`
+  to `warning` and hands it to the rendered critic. The critic's vocabulary is closed:
+  `TASTE_FINDING_CODES` (`taste-policy.ts`) holds 21 codes and none expresses "a declared
+  motion was not delivered". `MOTION_UNDECLARED` is the inverse case. `REDUCED_MOTION_ACTIVE`
+  *is* in the list, so this is scoped to `MOTION_NOT_OBSERVED` alone. Consequence: a build
+  that ships none of its declared motion produces a valid manifest, `ok: true`, no blocking
+  issue so no repair round, and a critic that can only return `evidenceSufficient: true,
+  findings: []`. The page is accepted. Before T24 the render refused. **The check did not
+  move, it evaporated.** Fix: either add a critic code for an undelivered declared motion, or
+  keep `MOTION_NOT_OBSERVED` blocking when every declared motion on an active profile is
+  unobserved, since a total miss is not uncertainty about whether an animation ran.
+
+- **T24-B / high: warning facts evict the critic's page evidence one for one.**
+  `creative-render.ts:691` builds the prompt as
+  `motionWarningFacts(contract, manifest).slice(0, MAX_CREATIVE_FACTS)` and only then fills the
+  remainder from the capture buckets. Warnings therefore displace `dom_text`, `region`, `asset`
+  and `motion_trace` facts 1:1 out of the 48-fact cap. Measured: 2 motions unimplemented on
+  desktop and mobile evict 4 page facts including the only DOM text for `home-footer` at mobile,
+  reduced_motion and no_media. At 24 declared motions the prompt is 46 warning facts plus 2
+  contract facts and carries no page evidence at all, while the render still returns `ok: true`.
+  Five of the seven failure families the prompt asks about become structurally unjudgeable.
+  `MAX_CREATIVE_ISSUES = 64` is declared at `creative-render.ts:51` and referenced nowhere, so
+  nothing caps the flood below the manifest's 400. **The commit's own test cannot see this:**
+  `creative-render.test.ts:899` builds 60 duplicate warnings and asserts only
+  `bounded.length === 48`. The missing control is an assertion that any non-warning fact
+  survives. Fix: bound warning facts to a small share of the cap and assert page facts remain.
+
+Both were found by mutation and probe, not by reading. The T24 commits are otherwise sound and
+the first real critic verdict stands.
