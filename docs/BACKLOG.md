@@ -68,3 +68,12 @@ This update supersedes the prerequisite status above; see the [checkpoint report
 - **T24 through T26:** unstarted. Retain T26's deferred dial-format work and the other earlier deferred findings. `CRITIC-001` remains open.
 - **Carried items 4 and 5:** with T25, move the design-lock borrow assertion before the absence assertion and require `chosenDirectionReason` in both API type mirrors.
 - **G3:** owner-only, not run. Batch 2B completion is not established by this checkpoint.
+
+
+## T27 carry-forward findings, 2026-09-09
+
+Scope: [T27 brief](CODEX-BRIEF-wave2-dom-conformance.md) and [study findings](FINDINGS-2026-09-09-higgsfield-scaffold-comparison.md). These observations do not establish T27 completion or authorize refusal wiring, T23, T28 or changes to `bakeoff/`.
+
+- **Legacy recovery admission:** the public `critic_unavailable` arm cannot reach `hasLegacyDeterministicMarkerConflict`: `readCreativePilotStatus` rejects that stop reason with a null critic disposition, while `eligibleSource` rejects a non-null disposition. Pin the unchanged compiled helper through a test-only export for T27's golden. Any admission repair needs separate scope.
+- **Artifact integration, owner decision pending:** no current post-build seat directly consumes `results/contract-conformance.json`. Context7 review receives supplied workspace scope/source; the judge receives bounded diff and evidence. On `run-cont-e22fa17f9b7972c79641`, immutable SQLite events record render invocation followed by route-marker refusal (seq 558), `scope_unavailable` review (561), and a non-gating clean judge result that expressly could not read the actual HTML/CSS/JS beyond the 120k diff truncation (564). A null render-manifest hash does not prove the renderer never ran. T27 computes and persists the standalone comparison; future consumption and refusal remain owner decisions.
+- **Conflicting creative instructions:** blocking every study finding would be unsafe. The inherited direction prescribes the shipped hero, Standard section and `s.*` ids, while the new contract differs; the owner follow-up asks for a narrow skip-link repair and preservation of the existing work reveal. The one-eyebrow count and literal `Engagements` agree with the direction and are mechanically fixable. Resolve the conflicting instructions before turning all conformance findings into repair obligations.

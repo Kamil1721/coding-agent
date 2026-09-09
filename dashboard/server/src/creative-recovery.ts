@@ -16,6 +16,7 @@ import {
 import { join } from "node:path";
 import { ENVIRONMENT_FILE } from "./build-environment.js";
 import { canonicalJson, sha256Hex } from "./creative-contract.js";
+import { contractMarkerBindings, hasRawLegacyMarkerConflict } from "./contract-conformance.js";
 import {
   CREATIVE_AUTHOR_FILE,
   CREATIVE_COMPILE_FILE,
@@ -391,15 +392,6 @@ function hasLegacyDeterministicMarkerConflict(workspace: string, results: string
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
     contract = parsed as Record<string, unknown>;
   } catch { return false; }
-  const ids = (key: "routes" | "sections" | "motion"): readonly string[] => {
-    const values = contract[key];
-    if (!Array.isArray(values)) return [];
-    return values.flatMap((value) => {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
-      const id = (value as Record<string, unknown>)["id"];
-      return typeof id === "string" ? [id] : [];
-    });
-  };
   const inventory = inventorySource(workspace);
   const text = inventory.entries
     .filter((entry) => entry.type === "file" && (entry.bytes ?? 0) <= 2_000_000)
@@ -407,14 +399,7 @@ function hasLegacyDeterministicMarkerConflict(workspace: string, results: string
       try { return [readFileSync(join(workspace, entry.path), "utf8")]; } catch { return []; }
     })
     .join("\n");
-  const bindings = [
-    ...ids("routes").map((id) => ["data-creative-route", id] as const),
-    ...ids("sections").map((id) => ["data-creative-section", id] as const),
-    ...ids("motion").map((id) => ["data-motion-id", id] as const),
-  ];
-  const hasAnyMarker = /data-(?:creative-(?:route|section)|motion-id)=["'][^"']+["']/u.test(text);
-  return hasAnyMarker && bindings.some(([attribute, id]) =>
-    !text.includes(`${attribute}="${id}"`) && !text.includes(`${attribute}='${id}'`));
+  return hasRawLegacyMarkerConflict(text, contractMarkerBindings(contract));
 }
 
 export function isTerminalCreativeRecoveryTarget(paths: DashboardPaths, runId: string): boolean {
