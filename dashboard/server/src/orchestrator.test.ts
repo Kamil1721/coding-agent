@@ -151,6 +151,7 @@ import {
   CREATIVE_CRITIC_DIRECTORY,
   fingerprintTasteFindings,
   readRenderedTasteCriticRecord,
+  runRenderedTasteCritic,
   writeRenderedTasteCriticRecord,
 } from "./rendered-taste-critic.js";
 
@@ -6509,6 +6510,7 @@ async function quiescenceRun(
     readonly creativeRevisionFailure?: string;
     readonly creativeRevisionCompilerRed?: boolean;
     readonly creativeMotionFixture?: MotionRenderFixture;
+    readonly productionMotionCritic?: boolean;
     readonly creativeRenderRefusals?: readonly ("artifact_contract" | "critic_unavailable" | null)[];
     readonly creativeCriticDisposition?: "accept" | "no_evidence" | "revise";
     readonly creativeCriticDispositions?: readonly ("accept" | "no_evidence" | "revise")[];
@@ -6768,6 +6770,7 @@ async function quiescenceRun(
           runRenderedTasteCritic: async (request) => {
             criticCalls += 1;
             criticFacts.push(...request.prompt.facts);
+            if (options.productionMotionCritic === true) return runRenderedTasteCritic(request);
             const route = request.prompt.evidenceIndex.routes[0];
             const sectionId = route?.sectionIds[0];
             const motionFinding = options.creativeMotionFixture === "reduced_active";
@@ -7344,16 +7347,20 @@ test("CREATIVE-ARTIFACT: one deterministic refusal repairs in the same session, 
   assert.equal(new Set(run.captureContractHashes).size, 1, "the frozen contract authority cannot change across repair");
 });
 
-test("T24 actual unobserved capture reaches the critic and no_evidence status", async () => {
-  const run = await quiescenceRun(true, undefined, { creativeMotionFixture: "unobserved", creativeCriticDisposition: "no_evidence" });
-  assert.equal(run.creativeDisposition, "no_evidence", "T24 actual motion-warning render reaches a non-null critic disposition");
-  assert.equal(run.criticCalls, 1);
-  assert.equal(run.captureCalls, 1);
-  assert.ok(run.criticFacts.some((fact) => fact.evidence.kind === "contract" && fact.evidence.pointer === "/motion/0" &&
-    fact.observation.includes("desktop motion m.step on home/s.step2")), "T24 critic receives the unobserved m.step desktop fact");
-  assert.equal(run.creativeStopReason, "critic_no_evidence");
+test("T24b actual total motion miss enters repair and cannot be accepted", async () => {
+  const run = await quiescenceRun(true, undefined, {
+    creativeMotionFixture: "unobserved",
+    productionMotionCritic: true,
+  });
+  assert.ok(run.capturedIssues.some((issue) => issue.code === "MOTION_NOT_OBSERVED"),
+    `browser prerequisite: actual total-motion-miss capture must complete; ${run.creativeStopReason}; ${run.log.split("\n").filter((line) => /EPERM|preview|refus/iu.test(line)).join(" | ").slice(-1600)}`);
+  assert.match(run.builderPrompts.join("\n"), /CREATIVE ARTIFACT REPAIR BOUNDARY/u,
+    "total-motion-miss HTML must enter production artifact repair before critic admission");
+  assert.ok(run.capturedIssues.some((issue) => issue.code === "MOTION_NOT_OBSERVED" && issue.severity === "blocking"));
+  assert.equal(run.criticCalls, 0, "a build shipping no declared motion never invokes the critic");
+  assert.equal(run.creativeDisposition, null);
+  assert.notEqual(run.creativeStopReason, "accepted", "a build shipping no declared motion must not reach an accepted disposition");
   assert.equal(run.projectPublished, false);
-  assert.equal(run.criticRecordReadable, true);
 });
 
 test("T24 actual missing section remains blocking and skips the critic", async () => {

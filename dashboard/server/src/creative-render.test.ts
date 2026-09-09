@@ -26,7 +26,7 @@ import type {
   LaunchCreativeRenderBrowser,
 } from "./creative-render.js";
 import { REQUIRED_RENDER_PROFILES } from "./render-manifest.js";
-import type { RenderCaptureV1, RenderManifestBinding, RenderManifestV1, RenderProfileId } from "./render-manifest.js";
+import type { RenderCaptureV1, RenderManifestBinding, RenderManifestV1, RenderIssueV1, RenderProfileId } from "./render-manifest.js";
 import { buildTasteCriticPrompt } from "./taste-policy.js";
 
 const SOURCE_HASH = "a".repeat(64);
@@ -819,6 +819,59 @@ test("warns when reduced-motion captures still observe active motion", async () 
   assert.ok(result.output.manifest.issues.some((item) => item.code === "REDUCED_MOTION_ACTIVE"));
 });
 
+for (const profiles of [["desktop"], ["mobile"], ["desktop", "mobile"]] as const) {
+  test(`total declared motion miss refuses ${profiles.join(" and ")}`, async () => {
+    const binding = bindingFixture();
+    const env = tempPreview();
+    const motion: FakeMotionOverrides = Object.fromEntries(profiles.map((profile) => [profile, {
+      home: { "home-action": { observedProperties: [], sampleIndexes: [] } },
+      work: { "work-reveal": { observedProperties: [], sampleIndexes: [] } },
+    }]));
+    const result = await captureCreativeRender({
+      preview: env.preview, binding, iteration: 0, outputDir: env.outputDir,
+      launch: fakeLaunch(fixture({ motion })), readArtifactHash: () => binding.artifactHash,
+    });
+    assert.equal(result.ok, false, "a total declared-motion miss must refuse before critic admission");
+    assert.equal(creativeRenderRefusalClass(result), "artifact_contract");
+    for (const profile of profiles) {
+      const misses: readonly RenderIssueV1[] = result.issues.filter((issue) => issue.profileId === profile && issue.code === "MOTION_NOT_OBSERVED");
+      assert.equal(misses.length, binding.contract.motion.length);
+      assert.ok(misses.every((issue) => issue.severity === "blocking"), "every missing declaration on the empty active profile requires repair");
+    }
+  });
+}
+
+test("no declarations do not trigger a vacuous total-motion refusal", async () => {
+  const contract: CreativeContractV1 = { ...contractFixture(), dials: { ...contractFixture().dials, motionIntensity: 3 }, motion: [] };
+  const compiled = compileCreativeContract(JSON.stringify(contract), {
+    resolve: () => ({ sha256: SOURCE_HASH, excerptSha256: EXCERPT_HASH, factKind: "goal" }),
+  });
+  assert.equal(compiled.ok, true, JSON.stringify(compiled));
+  const binding: RenderManifestBinding = { contract, contractHash: compiled.contractHash, artifactHash: "c".repeat(64) };
+  const env = tempPreview();
+  const result = await captureCreativeRender({
+    preview: env.preview, binding, iteration: 0, outputDir: env.outputDir,
+    launch: fakeLaunch(fixture()), readArtifactHash: () => binding.artifactHash,
+  });
+  assert.equal(result.ok, true, "zero declarations cannot establish a total motion miss");
+  assert.deepEqual(result.output.manifest.issues, []);
+});
+
+test("partial motion miss on one route stays judgeable when another route delivers motion", async () => {
+  const binding = bindingFixture();
+  const env = tempPreview();
+  const result = await captureCreativeRender({
+    preview: env.preview, binding, iteration: 0, outputDir: env.outputDir,
+    launch: fakeLaunch(fixture({ motion: { desktop: {
+      ...fixture().motion.desktop,
+      home: { "home-action": { observedProperties: [], sampleIndexes: [] } },
+    } } })), readArtifactHash: () => binding.artifactHash,
+  });
+  assert.equal(result.ok, true, "an observed declaration on another route prevents the total-miss floor");
+  assert.equal(result.output.manifest.issues.find((issue) => issue.code === "MOTION_NOT_OBSERVED")?.severity, "warning");
+  assert.ok(result.output.facts.some((fact) => fact.id.startsWith("motion-warning-")));
+});
+
 test("motion warning digests reference their captured profile route section and state", async () => {
   const binding = bindingFixture();
   for (const profileId of ["desktop", "reduced_motion"] as const) {
@@ -829,6 +882,7 @@ test("motion warning digests reference their captured profile route section and 
       iteration: 0,
       outputDir: env.outputDir,
       launch: fakeLaunch(fixture({ motion: { [profileId]: {
+        ...fixture().motion[profileId],
         home: { "home-action": { observedProperties: profileId === "desktop" ? [] : ["transform"], sampleIndexes: [5] } },
       } } })),
       readArtifactHash: () => binding.artifactHash,
@@ -853,7 +907,7 @@ test("retains truthful motion traces for both warning motion observations", asyn
       : { observedProperties: ["transform"], sampleIndexes: [5] };
     const result = await captureCreativeRender({
       preview: env.preview, binding, iteration: 0, outputDir: env.outputDir,
-      launch: fakeLaunch(fixture({ motion: { [profileId]: { home: { "home-action": observation } } } })),
+      launch: fakeLaunch(fixture({ motion: { [profileId]: { ...fixture().motion[profileId], home: { "home-action": observation } } } })),
       readArtifactHash: () => binding.artifactHash,
     });
     assert.equal(result.ok, true, JSON.stringify(result));

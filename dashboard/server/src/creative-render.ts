@@ -416,6 +416,21 @@ export async function captureCreativeRender(options: CreativeRenderOptions): Pro
     }
   }
 
+  // A partial miss remains critic evidence. A whole active profile with none
+  // of its declared motion delivered is an artefact failure requiring repair.
+  for (const profileId of RENDER_PROFILE_IDS) {
+    const profile = REQUIRED_RENDER_PROFILES[profileId];
+    if (profile.reducedMotion !== "no_preference" || profile.media !== "enabled") continue;
+    const declared = options.binding.contract.motion;
+    if (declared.length === 0 || !declared.every((motion) => issues.some((entry) =>
+      entry.profileId === profileId && entry.motionId === motion.id && entry.code === "MOTION_NOT_OBSERVED"))) continue;
+    for (const [index, entry] of issues.entries()) {
+      if (entry.profileId === profileId && entry.code === "MOTION_NOT_OBSERVED") {
+        issues[index] = { ...entry, severity: "blocking" };
+      }
+    }
+  }
+
   const manifest: RenderManifestV1 = {
     schemaVersion: 1,
     contractHash: options.binding.contractHash,
