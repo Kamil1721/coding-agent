@@ -124,3 +124,101 @@ a check that was moved into a seat which cannot act on it.
 
 Both were found by mutation and probe, not by reading. The T24 commits are otherwise sound and
 the first real critic verdict stands.
+
+**T24b landed 2026-09-09; both audit findings closed; G3 unblocked.**
+The working tree implements B first: motion warnings occupy one bucket in the existing
+48-fact round-robin, and the unread `MAX_CREATIVE_ISSUES` constant is removed. A adds
+`MOTION_NOT_OBSERVED` to the critic's `motion` vocabulary and guidance, plus a builder floor:
+for each active profile, every declared motion across all routes must be unobserved before
+its misses become blocking. Partial misses remain judgeable warnings. Empty declarations,
+reduced-motion and no-media profiles cannot trigger the floor. This separates a partial
+delivery judgement from a build that delivered none, without treating a single empty route
+as a total miss.
+
+Fact counts below compare the same frozen manifests before and after B, using production
+capture with the existing in-process browser fixture, **not a live browser**. Contract counts
+exclude warning facts; every row totals 48. The 24-motion input leaves one motion observed.
+
+| Declared / missing | Projection | Warnings | Contract | DOM text | Region | Asset | Motion trace |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 2 / 2 | Before B | 4 | 11 | 9 | 16 | 8 | 0 |
+| 2 / 2 | After B | 2 | 11 | 11 | 16 | 8 | 0 |
+| 24 / 23 | Before B | 46 | 2 | 0 | 0 | 0 | 0 |
+| 24 / 23 | After B | 2 | 12 | 8 | 15 | 8 | 3 |
+
+Evidence: `.tmp/t24b/runtime/{before,after}/summary.json`. Final capture with A's floor
+refuses the 2/2 input as `artifact_contract` with four blocking issues and no critic prompt;
+the 24/23 input returns `ok: true`, 46 warnings and no blocking issue
+(`.tmp/t24b/runtime/final-capture/summary.json`). These are fixture measurements, not the
+required end-to-end acceptance control.
+
+Completed negative controls, each restored byte-identically as recorded in
+`.tmp/t24b/evidence/{b,a-vocab,a-floor}-restoration-sha256.txt`:
+
+- The 60-warning input under restored prepend-and-slice turns both assertions red:
+  `60 motion warnings must retain non-warning page evidence` and
+  `60 motion warnings must retain every evidence kind present without warnings`.
+- Removing the new code from the compiled vocabulary turns the grounded declared-motion
+  plus page-evidence input red at
+  `critic must validate MOTION_NOT_OBSERVED with declared-motion and page evidence`.
+  Independently, the literal `ae05a66` policy rejects the identical serialized partial-miss
+  output with `INVALID_VALUE` at `/findings/0/code`; the current policy accepts it
+  (`.tmp/t24b/evidence/old-vocabulary-independent.json`).
+- Disabling the floor turns desktop-only, mobile-only and both-profile total-miss unit
+  inputs red at `a total declared-motion miss must refuse before critic admission`.
+  This does not substitute for the pending real-browser acceptance mutation.
+
+Build succeeds. The six targeted test files ran 91 tests: 90 passed; the existing Chromium
+test failed on `listen EPERM: operation not permitted 127.0.0.1`
+(`.tmp/t24b/evidence/final-targeted-tests.txt`). The new production-orchestrator test
+`T24b actual total motion miss enters repair and cannot be accepted` also stops at its browser
+prerequisite, because preview ports 4321–4340 cannot bind
+(`.tmp/t24b/evidence/final-e2e-attempt.txt`). No live red/green acceptance control was achieved.
+
+The fresh clinic replay attempted after all fixes likewise could not bind a preview port:
+`renderOk: null`, `criticCalled: false`, `criticDisposition: null`, error
+`no free preview port in 4321-4340: listen EPERM: operation not permitted 127.0.0.1:4340`.
+There is **no new verdict** (`.tmp/t24b/replay/final/results/replay-failure.json`). Historical
+and copied workspace hashes remain unchanged (`preservation.json` beside it). Offline
+revalidation of the saved T24 capture sees all three motions observed on desktop and mobile,
+retains the reduced-motion warning, and still validates the prior actual verdict
+(`.tmp/t24b/runtime/clinic-offline.json`). That historical verdict remains `revise`, with
+`REDUCED_MOTION_ACTIVE` and this diagnosis:
+
+> Under the reduced_motion frame the m.step wizard transition on r.book/s.step2 still animates: a transform is observed at sample 192, so the step slide is not neutralized when reduced motion is requested.
+
+The four requested commits could not be created: `git add` fails creating `.git/index.lock`
+with `EPERM`. HEAD remains `ae05a66`; zero commits and zero pushes were made. The requested
+boundaries are retained under `.tmp/t24b/patches/` as `01-test.patch`, `02-bound.patch`,
+`03-vocabulary.patch` and `04-total-miss.patch`, corresponding in order to the four requested
+bare subjects. Existing T24 commits and verdict stand. No T23, T25, T26, T27 refusal wiring,
+G3, `bakeoff/`, held-out suite/hash or sealed scorer work is included.
+
+Pending before committing or closing this audit: rerun the targeted tests with local socket
+binding available; run `node --test --test-name-pattern='T24b actual total motion miss'
+dashboard/server/dist/orchestrator.test.js`, then disable only the floor and demonstrate its
+actual acceptance control turns red, restoring byte-identically. Run a fresh copy of
+`.tmp/t24b/replay/clinic-replay.mjs final` targeting a new output directory (preserve the
+existing failed attempt), and require a non-null actual subscription verdict with the
+reduced-motion finding. Only then create the four commits in the requested order. The current
+environment's preview and Git restrictions leave those gates outstanding.
+
+**Verification, session author, 2026-09-09.** Codex implemented T24b but its sandbox could not
+create `.git/index.lock` or bind localhost, so it committed nothing and its clinic replay
+recorded `criticDisposition: null, criticCalled: false`. Both were environment limits, not
+defects. Re-run here from its four ordered patches, whose sha256 values match
+`.tmp/t24b/patches/series.json`, with the five source files byte-identical to the tree that
+passed the replay:
+
+- Clinic replay reaches `criticDisposition: "revise"`, `ran: true`, `evidenceSufficient: true`,
+  one `REDUCED_MOTION_ACTIVE` finding on `r.book/s.step2`. Live call, `criticBy
+  anthropic/claude-opus-5[1m] (subscription)`, 2,375 output tokens, `callCount: 1`. **T24b did
+  not silence the verdict T24 earned**, which was the risk that gated it.
+- Finding B control re-run by the session author: restoring the prepend-and-slice at the fact
+  assembly turns `60 motion warnings must retain non-warning page evidence` and `60 motion
+  warnings must retain every evidence kind present without warnings` red. Restored
+  byte-identically.
+- 78 targeted tests pass across render, manifest, taste-policy, critic and conformance.
+
+Remaining, and not a G3 blocker: the live end-to-end acceptance control Codex could not run
+under its sandbox is still unexecuted here as a *production* path rather than a replay.
