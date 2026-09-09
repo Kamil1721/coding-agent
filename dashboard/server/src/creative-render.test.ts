@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
-import { compileCreativeContract, sha256Hex } from "./creative-contract.js";
+import { canonicalJson, compileCreativeContract, sha256Hex } from "./creative-contract.js";
 import type { CreativeContractV1, CreativeEvidenceRef, CreativeSectionV1 } from "./creative-contract.js";
 import {
   buildCreativeTastePromptInput,
@@ -794,7 +794,7 @@ test("real Chromium captures below-fold, oversized sections and host-driven stat
   }
 });
 
-test("fails closed when reduced-motion captures still observe active motion", async () => {
+test("warns when reduced-motion captures still observe active motion", async () => {
   const binding = bindingFixture();
   const env = tempPreview();
   const bad = fixture({
@@ -815,11 +815,11 @@ test("fails closed when reduced-motion captures still observe active motion", as
     readArtifactHash: () => binding.artifactHash,
   });
 
-  assert.equal(result.ok, false);
-  assert.ok(result.issues.some((item) => item.code === "REDUCED_MOTION_ACTIVE"));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok(result.output.manifest.issues.some((item) => item.code === "REDUCED_MOTION_ACTIVE"));
 });
 
-test("motion refusal digests reference their captured profile route section and state", async () => {
+test("motion warning digests reference their captured profile route section and state", async () => {
   const binding = bindingFixture();
   for (const profileId of ["desktop", "reduced_motion"] as const) {
     const env = tempPreview();
@@ -833,19 +833,18 @@ test("motion refusal digests reference their captured profile route section and 
       } } })),
       readArtifactHash: () => binding.artifactHash,
     });
-    assert.equal(result.ok, false);
-    assert.ok(result.manifest !== undefined);
-    const issue = result.issues.find((entry) => entry.motionId === "home-action" && entry.profileId === profileId);
-    const capture = result.manifest.captures.find((entry) => entry.profileId === profileId &&
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const issue = result.output.manifest.issues.find((entry) => entry.motionId === "home-action" && entry.profileId === profileId);
+    const capture = result.output.manifest.captures.find((entry) => entry.profileId === profileId &&
       entry.routeId === "home" && entry.sectionId === "home-hero" && entry.state === "interaction");
     assert.ok(issue !== undefined && capture !== undefined);
-    assert.equal(issue.severity, "blocking");
+    assert.equal(issue.severity, "warning");
     assert.equal(issue.evidenceSha256, capture.screenshotSha256, "motion issue references actual matching capture bytes");
     assert.notEqual(issue.evidenceSha256, sha256Hex(`motion home-action was not observed on an active render profile`));
   }
 });
 
-test("retains truthful motion traces for both refused motion observations", async () => {
+test("retains truthful motion traces for both warning motion observations", async () => {
   const binding = bindingFixture();
   for (const profileId of ["desktop", "reduced_motion"] as const) {
     const env = tempPreview();
@@ -857,20 +856,48 @@ test("retains truthful motion traces for both refused motion observations", asyn
       launch: fakeLaunch(fixture({ motion: { [profileId]: { home: { "home-action": observation } } } })),
       readArtifactHash: () => binding.artifactHash,
     });
-    assert.equal(result.ok, false);
-    assert.ok(result.manifest !== undefined);
-    const trace = result.manifest.motionTraces.find((entry) => entry.profileId === profileId && entry.motionId === "home-action");
-    assert.ok(trace !== undefined, "declared motion remains represented when its observation refuses render");
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const trace = result.output.manifest.motionTraces.find((entry) => entry.profileId === profileId && entry.motionId === "home-action");
+    assert.ok(trace !== undefined, "declared motion remains represented when its observation produces a warning");
     assert.deepEqual(trace.observedProperties, observation.observedProperties);
     assert.deepEqual(trace.sampleIndexes, observation.sampleIndexes, "unobserved motion must not invent sample zero");
     assert.equal(trace.fallbackState, profileId === "desktop" ? "not_applicable" : "active");
-    assert.ok(result.manifest.captures.some((entry) => entry.id === trace.captureId && entry.state === "interaction"));
+    assert.ok(result.output.manifest.captures.some((entry) => entry.id === trace.captureId && entry.state === "interaction"));
     if (profileId === "desktop") {
-      const evidence = buildTasteEvidenceIndex(binding.contract, result.manifest, "d".repeat(64));
+      const evidence = buildTasteEvidenceIndex(binding.contract, result.output.manifest, "d".repeat(64));
       assert.ok(!evidence.evidence.some((entry) => entry.kind === "motion_trace" && entry.motionId === "home-action" && entry.frameId === "desktop:home"),
         "empty observation remains ineligible as taste motion evidence");
     }
   }
+});
+
+test("warning facts preserve every profile observation sharing an indexed motion pointer", async () => {
+  const binding = bindingFixture();
+  const env = tempPreview();
+  const missing = { ...fixture().motion.desktop, home: { "home-action": { observedProperties: [], sampleIndexes: [] } } };
+  const result = await captureCreativeRender({
+    preview: env.preview, binding, iteration: 0, outputDir: env.outputDir,
+    launch: fakeLaunch(fixture({ motion: { desktop: missing, mobile: missing,
+      reduced_motion: { home: { "home-action": { observedProperties: ["transform"], sampleIndexes: [5] } } },
+    } })),
+    readArtifactHash: () => binding.artifactHash,
+  });
+  assert.equal(result.ok, true, "motion warnings must reach a validated render");
+  const facts = result.output.facts.filter((fact) => fact.id.startsWith("motion-warning-"));
+  assert.equal(facts.length, 3, "each profile warning survives evidence-only deduplication");
+  assert.equal(new Set(facts.map((fact) => fact.id)).size, 3);
+  for (const profile of ["desktop", "mobile", "reduced_motion"]) {
+    const fact = facts.find((entry) => entry.observation.startsWith(`${profile} `));
+    assert.ok(fact !== undefined, `critic receives warning fact for ${profile}`);
+    assert.match(fact.observation, /home-action on home\/home-hero/u);
+    assert.deepEqual(fact.evidence, { kind: "contract", pointer: "/motion/0", valueSha256: sha256Hex(canonicalJson(binding.contract.motion[0])) });
+  }
+  assert.equal(result.output.evidenceIndex.contractPointers.filter((pointer) => pointer === "/motion/0").length, 1);
+  assert.doesNotThrow(() => buildTasteCriticPrompt(buildCreativeTastePromptInput(result.output, binding.contract)));
+  const manyWarnings = { ...result.output.manifest, issues: Array.from({ length: 60 }, () => result.output.manifest.issues[0]!) };
+  const bounded = buildTastePromptFacts(binding.contract, manyWarnings, result.output.renderManifestHash);
+  assert.equal(bounded.length, 48, "warning projection preserves the existing 48 fact cap");
+  assert.equal(manyWarnings.issues.length, 60, "bounded projection does not discard manifest warnings");
 });
 
 test("motion warning off preserves golden manifest bytes and critic input", async () => {

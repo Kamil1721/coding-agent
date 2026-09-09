@@ -508,6 +508,8 @@ export function buildTasteEvidenceIndex(
   for (const pointer of contractPointersOf(contract)) {
     addEvidence({ kind: "contract", pointer: pointer.pointer, valueSha256: pointer.valueSha256 });
   }
+  const warningFacts = motionWarningFacts(contract, manifest);
+  for (const fact of warningFacts) addEvidence(fact.evidence);
   for (const capture of manifest.captures) {
     const currentFrameId = frameId(capture.profileId, capture.routeId);
     if (capture.state === "default") {
@@ -558,7 +560,10 @@ export function buildTasteEvidenceIndex(
     renderManifestHash,
     routes,
     frames,
-    contractPointers: contractPointersOf(contract).map((item) => item.pointer),
+    contractPointers: [...new Set([
+      ...contractPointersOf(contract).map((item) => item.pointer),
+      ...warningFacts.flatMap((fact) => fact.evidence.kind === "contract" ? [fact.evidence.pointer] : []),
+    ])],
     evidence,
   };
 }
@@ -681,7 +686,9 @@ export function buildTastePromptFacts(
     });
   }
 
-  const facts: TastePromptFact[] = [];
+  // Keep separate profile observations even when they cite the same motion.
+  // The complete issue list remains in the manifest beyond this prompt cap.
+  const facts: TastePromptFact[] = motionWarningFacts(contract, manifest).slice(0, MAX_CREATIVE_FACTS);
   const positions = new Map(bucketOrder.map((name) => [name, 0]));
   while (facts.length < MAX_CREATIVE_FACTS) {
     let added = false;
@@ -699,6 +706,24 @@ export function buildTastePromptFacts(
   }
   void renderManifestHash;
   return facts;
+}
+
+function motionWarningFacts(contract: CreativeContractV1, manifest: RenderManifestV1): readonly TastePromptFact[] {
+  return manifest.issues.flatMap((issue, index): TastePromptFact[] => {
+    if (issue.severity !== "warning" || (issue.code !== "MOTION_NOT_OBSERVED" && issue.code !== "REDUCED_MOTION_ACTIVE")) return [];
+    const motionIndex = contract.motion.findIndex((motion) => motion.id === issue.motionId);
+    const motion = contract.motion[motionIndex];
+    if (motion === undefined) return [];
+    const observed = manifest.motionTraces.find((trace) => trace.profileId === issue.profileId && trace.motionId === issue.motionId)?.observedProperties ?? [];
+    return [{
+      id: `motion-warning-${String(index)}`,
+      evidence: { kind: "contract", pointer: `/motion/${String(motionIndex)}`, valueSha256: sha256Hex(canonicalJson(motion)) },
+      observation: boundedObservation(`${issue.profileId} motion ${motion.id} on ${issue.routeId}/${issue.sectionId}: ${
+        issue.code === "MOTION_NOT_OBSERVED" ? "no declared safe motion property was observed on this active profile"
+          : `motion remained active under reduced motion; observed ${observed.join(", ")}`
+      }.`),
+    }];
+  });
 }
 
 async function captureProfile(options: {
@@ -1056,7 +1081,7 @@ async function buildMotionTraces(
       issues.push(
         issue(
           "MOTION_NOT_OBSERVED",
-          "blocking",
+          "warning",
           profile.id,
           route.id,
           motion.sectionId,
@@ -1074,7 +1099,7 @@ async function buildMotionTraces(
       issues.push(
         issue(
           "REDUCED_MOTION_ACTIVE",
-          "blocking",
+          "warning",
           profile.id,
           route.id,
           motion.sectionId,
@@ -1087,7 +1112,7 @@ async function buildMotionTraces(
       issues.push(
         issue(
           "MOTION_NOT_OBSERVED",
-          "blocking",
+          "warning",
           profile.id,
           route.id,
           motion.sectionId,

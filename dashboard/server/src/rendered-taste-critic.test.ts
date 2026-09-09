@@ -252,7 +252,7 @@ test("an empty live result is no_evidence or accept according to the explicit ev
     findings: [],
   }));
   const noEvidenceRecord = await runRenderedTasteCritic(request(noEvidence.factory));
-  assert.equal(noEvidenceRecord.criticDisposition, "no_evidence");
+  assert.equal(noEvidenceRecord.criticDisposition, "no_evidence", "T24 insufficient evidence must produce no_evidence rather than acceptance");
   assert.match(noEvidenceRecord.detail, /evidence was insufficient/u);
   const directory = mkdtempSync(join(tmpdir(), "dash-critic-no-evidence-record-"));
   try {

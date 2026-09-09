@@ -143,10 +143,10 @@ import {
   CREATIVE_RECOVERY_OWNER_FILE,
   CREATIVE_RECOVERY_WORKER_STARTED_FILE,
 } from "./creative-recovery.js";
-import { buildTasteEvidenceIndex, buildTastePromptFacts } from "./creative-render.js";
+import { captureCreativeRender, buildTasteEvidenceIndex, buildTastePromptFacts } from "./creative-render.js";
 import type { CreativeRenderOutput, CreativeRenderResult } from "./creative-render.js";
 import { REQUIRED_RENDER_PROFILES } from "./render-manifest.js";
-import type { RenderManifestV1 } from "./render-manifest.js";
+import type { RenderManifestV1, RenderIssueV1 } from "./render-manifest.js";
 import {
   CREATIVE_CRITIC_DIRECTORY,
   fingerprintTasteFindings,
@@ -571,6 +571,7 @@ interface SegmentCall {
  * `lockedBy === "fallback"` two different facts rather than one fixture switch.
  */
 interface FakeBuilderOptions {
+  readonly artifactHtml?: string;
   readonly workspace: () => string;
   /** How many PNGs the design segment writes. `0` is THE TRAP's arm. */
   readonly pngCount: number;
@@ -789,7 +790,7 @@ class FakeBuilder implements SubscriptionBuilder {
           : this.#options.artifactShape ?? "static-ready";
       if (shape !== undefined) rmSync(join(workspace, "index.html"), { force: true });
       if (shape === "static-ready") {
-        writeFileSync(join(workspace, "index.html"), "<!doctype html><title>fixture</title>", "utf8");
+        writeFileSync(join(workspace, "index.html"), this.#options.artifactHtml ?? "<!doctype html><title>fixture</title>", "utf8");
       } else if (shape === "static-empty") {
         writeFileSync(join(workspace, "index.html"), " \n\t", "utf8");
       } else if (shape === "static-symlink") {
@@ -1337,12 +1338,12 @@ function freezeFor(
   );
 }
 
-function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest, pageKind: CreativeContractV1["designRead"]["pageKind"] = "agency_landing"): CreativeContractAuthorResult {
+function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest, pageKind: CreativeContractV1["designRead"]["pageKind"] = "agency_landing", motionFixture?: MotionRenderFixture): CreativeContractAuthorResult {
   const evidence = request.input.ticket.facts[0]?.evidence;
   assert.ok(evidence !== undefined, "the host author packet must admit at least one owner fact");
   const sections: CreativeContractV1["sections"] = [
     {
-      id: "hero", routeId: "home", order: 0, kind: "hero", job: "Introduce the consultancy and its evidence.",
+      id: motionFixture === undefined ? "hero" : "s.step2", routeId: "home", order: 0, kind: "hero", job: "Introduce the consultancy and its evidence.",
       contentRefs: [{ proofId: "owner-brief", use: "headline" }], eyebrow: null,
       headline: "Accountable work for consequential decisions", body: "Inspect the evidence, approach and next action.",
       actions: [{ id: "contact", label: "Start a conversation", intent: "contact", priority: "primary", href: "#contact", proofId: null }],
@@ -1379,7 +1380,12 @@ function compiledCreativeAuthorResult(request: CreativeContractAuthorRequest, pa
     }],
     routes: [{ id: "home", path: "/", sectionIds: sections.map((section) => section.id) }],
     sections,
-    motion: [],
+    motion: motionFixture === undefined ? [] : [{
+      id: "m.step", routeId: "home", sectionId: "s.step2", target: "step heading",
+      purpose: "hierarchy", trigger: "enter_view", implementation: "css", properties: ["opacity"],
+      rationale: "Reveal the current step heading.", fallback: { reducedMotion: "static", noMedia: "not_applicable" },
+      sourceStillKind: "none", simulationAuthorized: false,
+    }],
     intentionalExceptions: [],
   };
   const compiled = compileCreativeContract(JSON.stringify(contract), request.evidenceResolver);
@@ -6414,7 +6420,26 @@ test("visualGateInputFor: the fence root, the capture directory, and blank captu
  * The gate is counted, not inferred.
  * ---------------------------------------------------------------------- */
 
+type MotionRenderFixture = "unobserved" | "reduced_active" | "missing_section";
+
+function motionRenderHtml(mode: MotionRenderFixture): string {
+  return `<!doctype html><html><head><style>
+    * { box-sizing: border-box; } body { margin: 0; }
+    section, footer { min-height: 220px; padding: 24px; }
+    a { display: inline-block; padding: 20px; background: #eee; }
+    a:hover { background: #036; color: white; }
+    ${mode === "reduced_active" ? '[data-motion-id] { animation: reveal 0.6s infinite alternate; } @keyframes reveal { from { opacity: 0.2; } to { opacity: 1; } }' : ''}
+  </style></head><body><main data-creative-route="home">
+    <section data-creative-section="s.step2" data-creative-state="default"><h1 data-motion-id="m.step">Choose your appointment</h1><a href="#contact">Start a conversation</a></section>
+    <section ${mode === "missing_section" ? '' : 'data-creative-section="proof"'}>Evidence before assertion</section>
+    <footer data-creative-section="footer" id="contact">Start with the decision that matters</footer>
+  </main></body></html>`;
+}
+
 interface QuiescenceRun {
+  readonly capturedIssues: readonly RenderIssueV1[];
+  readonly criticFacts: ReturnType<typeof buildTastePromptFacts>;
+  readonly creativeDisposition: string | null;
   readonly gateCalls: number;
   readonly captureCalls: number;
   readonly criticCalls: number;
@@ -6483,6 +6508,7 @@ async function quiescenceRun(
     readonly creativeRevisionArtifactShape?: FakeBuilderOptions["artifactShape"];
     readonly creativeRevisionFailure?: string;
     readonly creativeRevisionCompilerRed?: boolean;
+    readonly creativeMotionFixture?: MotionRenderFixture;
     readonly creativeRenderRefusals?: readonly ("artifact_contract" | "critic_unavailable" | null)[];
     readonly creativeCriticDisposition?: "accept" | "no_evidence" | "revise";
     readonly creativeCriticDispositions?: readonly ("accept" | "no_evidence" | "revise")[];
@@ -6519,6 +6545,7 @@ async function quiescenceRun(
     writeManifest: false,
     animateRefs: false,
     declaresDone,
+    ...(options.creativeMotionFixture === undefined ? {} : { artifactHtml: motionRenderHtml(options.creativeMotionFixture) }),
     ...(options.artifactShape === undefined ? {} : { artifactShape: options.artifactShape }),
     ...(options.creativeRevisionArtifactShape === undefined
       ? {}
@@ -6568,6 +6595,8 @@ async function quiescenceRun(
   let gateCalls = 0;
   let captureCalls = 0;
   let criticCalls = 0;
+  const capturedIssues: RenderIssueV1[] = [];
+  const criticFacts: Array<ReturnType<typeof buildTastePromptFacts>[number]> = [];
   const captureContractHashes: string[] = [];
   const captureIterations: number[] = [];
   let adversaryCalls = 0;
@@ -6581,6 +6610,7 @@ async function quiescenceRun(
     );
   }
   const creativePilot =
+    options.creativeMotionFixture !== undefined ||
     options.creativeRevisionArtifactShape !== undefined ||
     options.creativeRevisionFailure !== undefined ||
     options.creativeRevisionCompilerRed === true ||
@@ -6667,11 +6697,16 @@ async function quiescenceRun(
           creativePilotProjectId: "coding-agent",
           creativePilotActualProjectId: "coding-agent",
           runCreativeContractAuthor: async (request: CreativeContractAuthorRequest) =>
-            compiledCreativeAuthorResult(request),
+            compiledCreativeAuthorResult(request, "agency_landing", options.creativeMotionFixture),
           captureCreativeRender: async (request): Promise<CreativeRenderResult> => {
             captureCalls += 1;
             captureContractHashes.push(request.binding.contractHash);
             captureIterations.push(request.iteration);
+            if (options.creativeMotionFixture !== undefined) {
+              const result = await captureCreativeRender(request);
+              capturedIssues.push(...(result.ok ? result.output.manifest.issues : result.issues));
+              return result;
+            }
             const refusal = options.creativeRenderRefusals?.[captureCalls - 1];
             if (refusal != null) {
               return refusal === "artifact_contract"
@@ -6732,20 +6767,25 @@ async function quiescenceRun(
           },
           runRenderedTasteCritic: async (request) => {
             criticCalls += 1;
+            criticFacts.push(...request.prompt.facts);
             const route = request.prompt.evidenceIndex.routes[0];
             const sectionId = route?.sectionIds[0];
-            const evidence = request.prompt.facts.slice(0, 2).map((fact) => fact.evidence);
+            const motionFinding = options.creativeMotionFixture === "reduced_active";
+            const evidence = motionFinding
+              ? request.prompt.facts.filter((fact) => fact.evidence.kind === "contract" && fact.evidence.pointer === "/motion/0").slice(0, 1).map((fact) => fact.evidence)
+                .concat(request.prompt.facts.filter((fact) => fact.evidence.kind === "region" && fact.evidence.sectionId === "s.step2").slice(0, 1).map((fact) => fact.evidence))
+              : request.prompt.facts.slice(0, 2).map((fact) => fact.evidence);
             assert.ok(route !== undefined && sectionId !== undefined && evidence.length === 2);
             const disposition = options.creativeCriticDispositions?.[criticCalls - 1] ?? options.creativeCriticDisposition ?? "revise";
             const revise = disposition === "revise";
             const findings = revise ? [{
               id: "fixture-revision",
-              category: "copy" as const,
-              code: "GENERIC_COPY" as const,
+              category: motionFinding ? "reduced_motion" as const : "copy" as const,
+              code: motionFinding ? "REDUCED_MOTION_ACTIVE" as const : "GENERIC_COPY" as const,
               routeId: route.id,
               sectionIds: [sectionId],
-              diagnosis: "The rendered headline needs a bounded evidence-led revision.",
-              revision: "Tie the headline directly to the admitted owner proof.",
+              diagnosis: motionFinding ? "The step heading remains animated under reduced motion." : "The rendered headline needs a bounded evidence-led revision.",
+              revision: motionFinding ? "Make m.step static under reduced motion." : "Tie the headline directly to the admitted owner proof.",
               evidence,
             }] : [];
             return {
@@ -6984,7 +7024,7 @@ async function quiescenceRun(
 
   try {
     orchestrator.pump();
-    for (const deadline = Date.now() + 30_000; ; ) {
+    for (const deadline = Date.now() + (options.creativeMotionFixture === undefined ? 30_000 : 90_000); ; ) {
       const row = store.getRun(runId);
       if (row !== null && (isTerminal(row.status) || row.status === "awaiting_input")) break;
       if (Date.now() > deadline) throw new Error(`the run never settled (${store.getRun(runId)?.status ?? "gone"})`);
@@ -7002,6 +7042,9 @@ async function quiescenceRun(
     // keeps that from becoming a trap if one ever does.
     const resumeAccepted = row !== null && isTerminal(row.status) ? orchestrator.resume(runId) : null;
     return {
+      capturedIssues,
+      criticFacts,
+      creativeDisposition: readCreativePilotStatus(runPathsFor(paths, runId).results)?.criticDisposition ?? null,
       gateCalls,
       captureCalls,
       criticCalls,
@@ -7299,6 +7342,36 @@ test("CREATIVE-ARTIFACT: one deterministic refusal repairs in the same session, 
   assert.match(run.artifactRepairPrompt ?? "", /Do not invent critic findings/u);
   assert.match(run.artifactRepairClaim ?? "", /"iteration": 0/u);
   assert.equal(new Set(run.captureContractHashes).size, 1, "the frozen contract authority cannot change across repair");
+});
+
+test("T24 actual unobserved capture reaches the critic and no_evidence status", async () => {
+  const run = await quiescenceRun(true, undefined, { creativeMotionFixture: "unobserved", creativeCriticDisposition: "no_evidence" });
+  assert.equal(run.creativeDisposition, "no_evidence", "T24 actual motion-warning render reaches a non-null critic disposition");
+  assert.equal(run.criticCalls, 1);
+  assert.equal(run.captureCalls, 1);
+  assert.ok(run.criticFacts.some((fact) => fact.evidence.kind === "contract" && fact.evidence.pointer === "/motion/0" &&
+    fact.observation.includes("desktop motion m.step on home/s.step2")), "T24 critic receives the unobserved m.step desktop fact");
+  assert.equal(run.creativeStopReason, "critic_no_evidence");
+  assert.equal(run.projectPublished, false);
+  assert.equal(run.criticRecordReadable, true);
+});
+
+test("T24 actual missing section remains blocking and skips the critic", async () => {
+  const run = await quiescenceRun(true, undefined, { creativeMotionFixture: "missing_section", creativeCriticDisposition: "no_evidence" });
+  const issue = run.capturedIssues.find((entry) => entry.code === "SECTION_NOT_FOUND");
+  assert.equal(issue?.severity, "blocking", "T24 missing section severity remains blocking");
+  assert.equal(run.criticCalls, 0, "T24 missing section never invokes the critic");
+  assert.equal(run.creativeDisposition, null);
+  assert.equal(run.projectPublished, false);
+});
+
+test("T24 actual reduced motion finding reaches the bounded revision prompt", async () => {
+  const run = await quiescenceRun(true, undefined, { creativeMotionFixture: "reduced_active", creativeCriticDispositions: ["revise", "no_evidence"] });
+  assert.ok(run.capturedIssues.some((issue) => issue.code === "REDUCED_MOTION_ACTIVE" && issue.severity === "warning"));
+  assert.equal(run.criticCalls, 2);
+  assert.match(run.builderPrompts.join("\n"), /Make m\.step static under reduced motion/u, "T24 reduced-motion finding reaches the builder revision prompt");
+  assert.equal(run.creativeStopReason, "critic_no_evidence");
+  assert.equal(run.projectPublished, false);
 });
 
 test("CREATIVE-CRITIC: insufficient evidence terminalizes without revision or publication", async () => {
