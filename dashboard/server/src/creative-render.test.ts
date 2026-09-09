@@ -964,8 +964,9 @@ test("motion warning off preserves golden manifest bytes and critic input", asyn
   assert.equal(sha256Hex(JSON.stringify(promptInput)),
     "63e58101a5276760f22b337a75a203a3426417419d8ed3f2001aafa06f121d05",
     "motion-warning-off serialized critic input");
+  // T24b extends the critic vocabulary; capture and serialized input above remain unchanged.
   assert.equal(sha256Hex(buildTasteCriticPrompt(promptInput)),
-    "be22807e3ddab78d8c82975aea30a7df6dfc1c38cb3ed2b9a2cfcd3bfd1fd96d",
+    "b710cda15abea1f26ebf14a557537078b5521ceb6d75e6a9a2fb2392346021f8",
     "motion-warning-off critic prompt bytes");
 });
 

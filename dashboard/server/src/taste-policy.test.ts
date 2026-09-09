@@ -108,6 +108,25 @@ function errorCodes(value: unknown): readonly string[] {
   return result.errors.map((error) => error.code);
 }
 
+test("accepts a grounded undelivered declared motion finding", () => {
+  const declaredMotion: TasteEvidence = { kind: "contract", pointer: "/motion/0", valueSha256: VALUE_HASH };
+  const index: TasteEvidenceIndex = {
+    ...INDEX,
+    contractPointers: [...INDEX.contractPointers, "/motion/0"],
+    evidence: [...INDEX.evidence, declaredMotion],
+  };
+  const output = validOutput([validFinding({
+    category: "motion",
+    code: "MOTION_NOT_OBSERVED",
+    diagnosis: "The declared hero reveal is missing on desktop, leaving the section's staged explanation undelivered.",
+    revision: "Implement the declared hero reveal on the active profile while preserving its reduced-motion fallback.",
+    evidence: [declaredMotion, REGION_EVIDENCE],
+  })]);
+  const result = parseTasteCriticOutput(JSON.stringify(output), index);
+  assert.equal(result.ok, true, "critic must validate MOTION_NOT_OBSERVED with declared-motion and page evidence");
+  assert.equal(result.output.findings[0]?.code, "MOTION_NOT_OBSERVED");
+});
+
 test("accepts closed grounded results and distinguishes acceptance from insufficient evidence", () => {
   const result = parse(validOutput());
   assert.equal(result.ok, true);

@@ -35,6 +35,7 @@ export const TASTE_FINDING_CODES = [
   "SECTION_JOB_UNCLEAR",
   "CONTRACT_LAYOUT_DRIFT",
   "MOTION_UNDECLARED",
+  "MOTION_NOT_OBSERVED",
   "MOTION_PURPOSE_MISMATCH",
   "MOTION_PLACEMENT_WRONG",
   "IMAGE_PROVENANCE_UNKNOWN",
@@ -61,6 +62,7 @@ export const TASTE_CODE_CATEGORY: Readonly<Record<TasteFindingCode, TasteCategor
   SECTION_JOB_UNCLEAR: "layout",
   CONTRACT_LAYOUT_DRIFT: "layout",
   MOTION_UNDECLARED: "motion",
+  MOTION_NOT_OBSERVED: "motion",
   MOTION_PURPOSE_MISMATCH: "motion",
   MOTION_PLACEMENT_WRONG: "motion",
   IMAGE_PROVENANCE_UNKNOWN: "imagery",
@@ -826,7 +828,8 @@ Judge observable coherence against the project's declared intent. Do not impose 
 Look only for these failure families:
 - copy: generic copy, job mismatch, missing proof, register drift, or repetition;
 - layout: repeated section grammar, unclear section job, or drift from the contract;
-- motion: undeclared motion, purpose mismatch, or placement that does not support the content;
+- motion: undeclared motion, an undelivered declared motion, purpose mismatch, or placement that does not support the content;
+  Use MOTION_NOT_OBSERVED for a declared motion whose warning fact reports no observed safe property on an active profile. Judge partial misses against declared purpose using the contract and page evidence; do not invent a motion trace for an absent observation.
 - imagery: unknown provenance, intent mismatch, or placeholder media;
 - hierarchy: flattened hierarchy or competing primary actions;
 - mobile: broken reflow, wrong content order, or overflow;
