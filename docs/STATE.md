@@ -1,7 +1,7 @@
 ---
 document_status: authoritative
 last_verified: 2026-08-26
-verified_at_commit: 56aa163
+verified_at_commit: c4c9f37
 ---
 
 # Current repository state
@@ -12,101 +12,87 @@ reports are evidence, not substitutes for this file.
 ## Repository checkpoint
 
 - Repository: `/Users/kamilborzecki/Projects/coding-agent`
-- Clean pushed baseline: `56aa163` (`feat(gate): add isolated no-verdict recovery`).
-- `HEAD`, `main`, and `origin/main` were equal when this state was verified.
-- Immediate predecessor: `55d426e`.
+- Clean pushed code baseline: `c4c9f37` (`fix(dashboard): allow long run intake through proxy`).
+- Immediate predecessor: `9bacc0f` (`feat(orchestrator): enforce frozen artifact execution`).
+- `HEAD`, `main`, and `origin/main` were equal before this documentation update.
 
-Recheck the branch, upstream divergence, and worktree directly after every commit
-or push; do not carry this checkpoint forward as an assumption.
+Recheck the branch, upstream divergence, worktree, and live processes directly;
+do not carry this checkpoint forward as an assumption.
 
-## Latest source and recovery runs
+## Latest linked run pair
 
-Source: `run-2026-08-25T10-30-39-122Z-d728ab79`
+Source: `run-2026-08-26T16-56-51-065Z-3c0e92be`
 
-- The original remains immutable at **failed / done**, `heldOutPass: null`,
-  `falseFinish: null`, and `gateStopReason: infra`: its terminal outcome is still
-  **NO VERDICT**.
-- Before and after recovery, its whole run tree had 213 entries and logical
-  content-plus-metadata hash
-  `e9e86c5276d296670d6c08b97f66b106ec328a2e09f0a13c862b6837e4d67edf`.
-- Its database-owned records were unchanged: runs 1, criteria 16, events 1004,
-  messages 21, message requests 4, screenshots 13, run attempts 6, seat spend 4,
-  metered spend 2, continuations 0. Their logical hash remained
-  `9b085d2adf581f9f957f70ed1d1b6145440bde543d096729c5690e5378f14935`.
-
-Recovery child: `run-gate-recovery-5ffc96e73d39737f4b2bb197`
-
-- The child completed a real sealed score at **failed / done** with
-  `heldOutPass: false`, `falseFinish: true`, and
+- Terminal **failed / done**, `heldOutPass: false`, `falseFinish: true`, and
   `gateStopReason: not-converging`.
-- It used the exact frozen suite
-  `b2f55a56882ec439b988ece9c4a368f7c0ac1aebe11aae8b1e3e50b4fe9c60b2`
-  and scorer image
-  `sha256:5c7a112cbea76741ea375bd32486d4d7fea25275e8cf8bc325b26067df62a18b`.
-  The recovery-time scorer-visible source and child snapshot digests both equal
-  `ec59faea05d546f71e82785b328bf2cc72b22ae2cc818d96743f40fa2f96829b`.
-- The child persisted 16 frozen criterion failures, 12 machine gate records, and
-  0 screenshots. It had 0 messages, run attempts, seat-spend rows, or
-  metered-spend rows. Its events are limited to phase/log/status, the 16 criterion
-  results, the verdict, and terminal status.
-- Builder, fixer, model, critic, Context7, judge, adversary, and publisher did not
-  run. Taste Critic is explicitly `not-run` because gate-only recovery makes no
-  model calls. Copied source design files are snapshot evidence, not recovery
-  design work.
+- Two sealed attempts each passed 29/31 tests. REQ-009 remained red because the
+  skip link's unfocused box was outside the viewport.
+- Creative-contract attempt 1 was rejected for `CONTENT_PROOF_UNUSED`; attempt 2
+  compiled. Stage A produced six stills, `ui-designer` chose **Dark Reel**, and
+  Stage B expanded it to eight stills after `taste-frontend-expert` authored the
+  directions.
+- The plan correctly skipped questions for the automatic policy but falsely
+  described that as “not submitted from the dashboard.”
+
+Linked continuation: `run-cont-e22fa17f9b7972c79641`
+
+- Terminal **passed / done**, `heldOutPass: true`, `falseFinish: false`, and
+  `gateStopReason: green`.
+- It used `claude-opus-5[1m]`, preserved the work-reveal change, changed only
+  skip-link CSS, and passed one sealed attempt: 32/32 tests and all 19 persisted
+  requirements.
+- The sealed 375/768/1280 captures and manual Safari inspection were visually
+  coherent.
+- This is not complete creative closure. Render capture refused on inherited
+  namespace drift; the rendered critic never ran, creative review remains
+  required with `critic_unavailable`, and publication was suppressed.
+- Context7 was discovered as a plugin but not supplied as an MCP server; its
+  review record is `unsatisfied / scope_unavailable / not_applicable`.
+- The adversary was source-only. Whole-workspace preview exposure is now
+  resolver-confirmed for selected internal paths, not live-HTTP-confirmed.
 
 Primary evidence:
 
-- [Gate-recovery report](RUN-d728ab79-gate-recovery-2026-08-26.md)
-- [Original run report](RUN-d728ab79-creative-park-2026-08-25.md)
-- [Recovery metadata](../dashboard/runs/run-gate-recovery-5ffc96e73d39737f4b2bb197/results/recovery.json)
-- [Sealed score](../dashboard/results/scores/run-gate-recovery-5ffc96e73d39737f4b2bb197.json)
+- [Two-run report](RUN-3c0e92be-and-continuation-2026-08-26.md)
+- [Continuation score](../dashboard/results/scores/run-cont-e22fa17f9b7972c79641.json)
+- [Continuation creative status](../dashboard/runs/run-cont-e22fa17f9b7972c79641/results/creative-status.json)
 
-## Decisive result
+## Shipped at this checkpoint
 
-The real red is `GATE:boot`. The suite manifest intentionally chose STATIC mode
-from ticket behavior (`execution.start: null`) before the build; the authoring
-contract forbids choosing mode from whatever the builder later ships. The builder
-nevertheless delivered a Node server-only artifact (`start: node server.mjs`) and
-no root `index.html`. The scorer correctly served the artifact root statically;
-`/` returned 404 for about 30 seconds across 118 attempts. Routes, screenshots,
-and the suite therefore did not run, and all 16 requirements were unasserted.
+Commit `9bacc0f` projects the frozen STATIC/SERVER execution contract into fresh
+and resumed build prompts, enforces STATIC root readiness before constructing a
+sealed scorer, and invalidates stale scores after mutations. The linked green
+continuation provides live evidence that the declared STATIC artifact reached
+and passed the sealed gate. SERVER preflight intentionally does not duplicate
+the scorer's real boot.
 
-This is a static delivery-contract and handoff-enforcement failure. It is not an
-infrastructure failure, not a manifest-discovery bug, and not evidence of 16
-independently observed product defects.
+Commit `c4c9f37` raises Next's external-rewrite proxy timeout from its 30-second
+default to six minutes. A real integration test holds `POST /api/runs` beyond
+30 seconds and requires a persisted 201 response. This is a narrow recovery:
+the timeout applies to every external rewrite, an accepted-but-silent request
+can take six minutes to fail, and serialized readiness queue time can exceed the
+configured ceiling.
 
-## Shipped and verified at this checkpoint
+## Decisive remaining boundary
 
-Commit `56aa163` ships an isolated no-verdict recovery child with source
-immutability, exact suite/snapshot attribution, no build or model path, negative
-controls, and terminal result persistence. Targeted server and client typechecks
-were green; recovery, contract, security, and store coverage passed `56/56`.
-Final code, security, and debug reviews approved the feature.
+The sealed continuation is green, but the requested full pipeline is not. The
+rendered critic and Context7 review did not execute, the adversary could not
+drive the live preview, and the preview resolver exposes internal workspace
+paths. At `c4c9f37` no safe post-terminal critic-only retry existed; an ordinary
+continuation would author a new contract and suite and is not equivalent.
 
-The last full server run before the final focused fix was 2485 total / 2479 pass /
-3 fail / 3 skip. The feature parity failure was then fixed and targeted
-verification passed, leaving two known pre-existing live-fixture failures: a
-hard-coded source continuation count and a malformed live design manifest. The
-full suite was not rerun after that focused fix.
-
-The accepted residual is a same-OS-user pathname-swap TOCTOU. This is not the
-precreated-path vulnerability covered by the security controls.
-
-Gate-only recovery is verified for this terminal-red path. A green recovery and
-crash/boot reconciliation remain unproven; this does not establish full-pipeline
-or Taste-chain reliability. See [CAPABILITIES.md](CAPABILITIES.md).
+Source recovery implementation is **in progress**. It is not shipped and must
+not be represented as a capability until code, controls, and a persisted recovery
+result exist.
 
 ## Active next step
 
-Implement `ARTIFACT-BOOT-001`: propagate and enforce the frozen execution contract
-before and during build, require a root document for static tickets, and add a
-pre-gate contract check with a negative control. Then run a normal end-to-end
-replacement or continuation that reaches the held-out suite, screenshots, and
-Taste chain. See [BACKLOG.md](BACKLOG.md).
+Close the safety and evidence gaps in [BACKLOG.md](BACKLOG.md), beginning with
+`PREVIEW-EXPOSURE-001` and `CRITIC-ROUTE-001`. Then prove the recovered rendered
+critic path and Context7 lifecycle without weakening the frozen suite boundary.
 
 ## Maintenance rule
 
-Update this file after every repository-state handoff and terminal run. Verify
-HEAD, upstream divergence, the dirty tree, run artifacts, and blockers directly.
-Promote [CAPABILITIES.md](CAPABILITIES.md) only with code plus test or run evidence,
-and carry unfinished work in [BACKLOG.md](BACKLOG.md).
+Update this file after every repository-state handoff and terminal run. Promote
+[CAPABILITIES.md](CAPABILITIES.md) only with code plus tests or persisted run
+evidence, and carry every unfinished item in [BACKLOG.md](BACKLOG.md).

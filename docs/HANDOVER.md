@@ -6,15 +6,15 @@
 > operational lessons; it is not the authority for the current commit, dirty tree,
 > latest run outcome, or implementation status.
 
-> **VERIFIED CODE BASELINE `56aa163`:** gate-only recovery is shipped and verified
-> for a terminal-red path. Source `d728ab79` remains immutable **NO VERDICT** with
-> `heldOutPass: null`; child `run-gate-recovery-5ffc96e73d39737f4b2bb197`
-> completed a sealed result with `heldOutPass: false`, `falseFinish: true`, and
-> Taste Critic explicitly `not-run`. The decisive failure is the builder's STATIC
-> delivery-contract mismatch, not infrastructure. The next step is
-> `ARTIFACT-BOOT-001`, followed by a normal full-pipeline run. Green recovery,
-> crash/boot reconciliation, the Taste chain, and Enhancement Scout remain
-> unproven. See the [recovery report](RUN-d728ab79-gate-recovery-2026-08-26.md).
+> **VERIFIED CODE BASELINE `c4c9f37`:** frozen artifact execution is shipped at
+> `9bacc0f`, and the intake proxy carries a measured 31-second persisted-201 path
+> at `c4c9f37`. Source run `3c0e92be` failed twice at 29/31; linked continuation
+> `e22fa17f` passed 32/32 with `heldOutPass: true` and `falseFinish: false`.
+> That green is not full creative closure: the rendered critic was unavailable,
+> Context7 did not run, the adversary was source-only, and publication was
+> suppressed. Whole-workspace preview exposure is resolver-confirmed. Source
+> critic-recovery implementation is in progress, not shipped. Start with the
+> [two-run report](RUN-3c0e92be-and-continuation-2026-08-26.md).
 
 > **HISTORICAL ROUTE, 2026-08-16; SUPERSEDED FOR CURRENT WORK.** This file is the map of the
 > 2026-07-30 session and is kept for its measurements, not for its state — its

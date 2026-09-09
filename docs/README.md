@@ -1,7 +1,7 @@
 ---
 document_status: authoritative-navigation
 last_verified: 2026-08-26
-verified_at_commit: 56aa163
+verified_at_commit: c4c9f37
 ---
 
 # Documentation map
@@ -30,14 +30,16 @@ every handoff. Their stable filenames are deliberate.
 
 Run, session, finding, and dated state reports describe what was measured at a
 particular time. They are not current-state authorities. The latest evidence is the
-[gate-recovery report](RUN-d728ab79-gate-recovery-2026-08-26.md); the source
-[creative-park report](RUN-d728ab79-creative-park-2026-08-25.md) retains the
-original run's history and now links forward to that recovery.
+[Progression Labs source-and-continuation report](RUN-3c0e92be-and-continuation-2026-08-26.md).
+The earlier [gate-recovery report](RUN-d728ab79-gate-recovery-2026-08-26.md) and
+[creative-park report](RUN-d728ab79-creative-park-2026-08-25.md) retain their
+original run history.
 
 ### Historical evidence index
 
 | Run | Outcome at the time | Why it is retained |
 |---|---|---|
+| [`3c0e92be` + `e22fa17f`](RUN-3c0e92be-and-continuation-2026-08-26.md) | source failed 29/31 twice; linked continuation passed 32/32, but critic unavailable | First live green linked continuation over the failed workspace. It also proves that sealed green did not imply rendered-critic, Context7, adversary, or publication completion. |
 | [`d728ab79` recovery child](RUN-d728ab79-gate-recovery-2026-08-26.md) | failed; `heldOutPass: false`, false finish | First live immutable gate-only recovery. It proves the terminal-red recovery path and identifies the STATIC delivery-contract failure. |
 | [`d728ab79` source](RUN-d728ab79-creative-park-2026-08-25.md) | **NO VERDICT**; scorer not reached | Original creative-park/repair evidence. The child does not mutate or retroactively score it. |
 | [`b1219c2d`](RUN-b1219c2d-breakdown-2026-08-18.md) | failed; `held_out_pass=0`, false finish | Pre-fix forensic ledger used by the capability/continuation design and included in this documentation checkpoint. |

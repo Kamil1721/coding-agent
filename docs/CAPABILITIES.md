@@ -1,37 +1,48 @@
 ---
 document_status: authoritative
 last_verified: 2026-08-26
-verified_at_commit: 56aa163
+verified_at_commit: c4c9f37
 ---
 
 # Capability status
 
 This matrix separates verified behavior from design intent and unproven chains.
-A design document or agent declaration is not evidence that a capability works.
+A green sealed suite is not evidence that optional review seats ran.
 
 | Capability | Status | Evidence and limit |
 |---|---|---|
-| Owner clarification and frozen planning record | verified | Run `d728ab79` persisted its answered and declined questions in [`results/plan.json`](../dashboard/runs/run-2026-08-25T10-30-39-122Z-d728ab79/results/plan.json). |
-| Bounded creative-contract author retries and partial safe repairs | shipped; verified in tests | Commit `259130f` and the [source run report](RUN-d728ab79-creative-park-2026-08-25.md). This is not held-out acceptance evidence. |
-| Park-aware notice/chat and machine-check result surfaces | shipped; verified | Commits `7abd149` and `e53f9f1`; result-surface browser verification passed `8/8`. |
-| Plan, design, and build execution | verified for source-stage execution; quality unknown | Source run `d728ab79` persisted these artifacts, but its original scorer did not run. Copied design files in the recovery child do not mean recovery design work ran. |
-| Pre-spend executable-scorer readiness | shipped; verified in tests and live smoke | Commit `ba8ae81`; scorer-runtime `9/9`, dashboard readiness/pre-spend `14/14`, and live Chromium launch/close under the exact scorer digest. |
-| Intake and disconnect admission safety | shipped; verified | JSON and exact present-Origin checks are enforced; originless loopback automation remains supported. Aborted capture creates no row/files/pump, although the bounded Playwright operation is not actively terminated. |
-| Sealed scorer invocation and terminalization | verified on the recovery child's real boot-red path | The [sealed score](../dashboard/results/scores/run-gate-recovery-5ffc96e73d39737f4b2bb197.json) records `heldOutPass: false`, `falseFinish: true`, exact suite/image attribution, and no infrastructure errors. This verifies scorer invocation and terminalization, not held-out test execution. The source remains **NO VERDICT**. |
-| Held-out suite execution | not reached on the recovery child | `GATE:boot` failed before routes, screenshots, or the frozen tests could run; all 16 REQs were unasserted. The child's boolean red result does not imply that the held-out tests executed. The source remains **NO VERDICT**. |
-| Gate-only recovery of an already-built no-verdict run | shipped; verified for terminal red | Commit `56aa163`, targeted recovery/contract/security/store coverage `56/56`, negative controls, and the [live immutable child](RUN-d728ab79-gate-recovery-2026-08-26.md). Green recovery and crash/boot reconciliation remain unproven. |
-| Frozen execution-contract propagation into build | unimplemented | The manifest correctly selected STATIC, but the builder shipped a server-only artifact without a root document. See `ARTIFACT-BOOT-001` in [BACKLOG.md](BACKLOG.md). |
-| Taste Critic chain | unproven | Recovery metadata explicitly records Taste `not-run` because gate-only recovery makes no model calls. No persisted end-to-end capture→critic→revision→verdict chain establishes reliability. |
-| Routed capability supply for agents, skills, and MCP | design only | Proposed in [DESIGN-capability-and-continuation-2026-08-19.md](DESIGN-capability-and-continuation-2026-08-19.md). |
-| Durable project continuation across runs | design only | Proposed in the same design document; current evidence does not establish it. |
+| Owner clarification and frozen planning record | verified, with provenance-copy defect | Continuation `e22fa17f` persisted one owner answer. Source `3c0e92be` correctly skipped questions for automatic mode but falsely said it was not submitted from the dashboard. |
+| Bounded creative-contract author retries | verified live | Source attempt 1 failed `CONTENT_PROOF_UNUSED`; attempt 2 compiled. The continuation also produced a compiled contract. This is compiler evidence, not rendered-quality closure. |
+| Park-aware notice/chat and machine-check result surfaces | shipped and verified | Commits `7abd149` and `e53f9f1`; result-surface browser verification passed 8/8. |
+| Frozen execution-contract propagation into build | shipped and verified | Commit `9bacc0f`; fresh/resumed prompts receive the narrow frozen STATIC/SERVER projection. The continuation's STATIC artifact reached a green sealed gate. |
+| STATIC artifact pre-gate readiness | shipped and verified | Commit `9bacc0f` rejects missing, empty, symlink, and non-regular root documents before sealed scorer construction, including post-mutation invalidation. |
+| SERVER artifact pre-gate readiness | intentionally deferred to scorer | The precheck is a deliberate no-op for SERVER and does not perform a speculative duplicate boot. The sealed scorer remains the only real boot authority. |
+| Long synchronous run intake through Next | shipped and test-verified | Commit `c4c9f37`; a real rewrite test waits more than 30 seconds and requires persisted `201`. The six-minute value is global and does not include serialized readiness queue delay. |
+| Pre-spend executable-scorer readiness | shipped and verified | Commit `ba8ae81`; fresh runtime checks guard direct intake and queue entry. Supervisor/cron's direct first barrier remains backlog work. |
+| Intake and disconnect admission safety | shipped, bounded limitation | Aborted capture creates no row/files/pump. The underlying Playwright operation is not actively terminated. A silent external rewrite can now take six minutes to fail. |
+| Plan, design, and build execution | verified on latest pair | Source produced six Stage A stills and eight Dark Reel Stage B stills; `taste-frontend-expert` authored and `ui-designer` independently chose. Continuation preserved the workspace and applied a narrow CSS repair. |
+| Linked continuation over an existing workspace | verified for one narrow green path | `continuation.json` links `e22fa17f` to source `3c0e92be`; it preserved the work-reveal fix, changed only skip-link CSS, and passed 32/32. This is not general durable-project reliability. |
+| Sealed scorer and held-out suite execution | verified green on latest continuation | One attempt, all 19 requirements and 32/32 tests, `heldOutPass: true`, `falseFinish: false`, `gateStopReason: green`. Source correctly stopped red after two 29/31 attempts. |
+| Frozen score after mutation | verified on continuation | The child received its own frozen suite and produced a new attributable score. An ordinary continuation is not a critic-only recovery of the source contract. |
+| Rendered Taste Critic chain | **not completed** | Capture refused on inherited namespace drift. Final state is `creative_review_required / critic_unavailable`, with no render manifest, profiles, attempt, or disposition. Manual Safari review does not substitute. |
+| Context7 review | **not executed** | The continuation record is `unsatisfied / scope_unavailable / not_applicable`; packages and evidence are empty. Context7 was in plugin inventory but `mcpServers` was `[]`. |
+| Human-factors adversary | source-only; live behavior unmeasured | The adversary wrote findings but could not reach loopback or launch a usable browser. Dynamic attacks did not run. |
+| Safe preview serving | failed boundary | Exact exported resolver checks confirm selected internal workspace paths resolve. This is resolver-confirmed, not live-HTTP-confirmed. |
+| Publication after creative closure | correctly suppressed | The continuation was sealed-green but the critic was unavailable, so publication did not occur. |
+| Gate-only recovery of an already-built no-verdict run | shipped; verified terminal red | Commit `56aa163` and recovery child `5ffc96e7`. Green recovery and crash/boot reconciliation remain unproven. |
+| Post-terminal critic-only recovery | implementation in progress; not shipped | At `c4c9f37` no safe path existed. Do not promote until source recovery has controls and persisted evidence. |
+| Routed capability supply for agents, skills, and MCP | design only | Proposed in [the capability design](DESIGN-capability-and-continuation-2026-08-19.md). Plugin discovery is not MCP supply or use. |
 | Enhancement Scout | design only | No shadow dataset or production Scout capability is established. |
+
+Primary latest evidence is the
+[source-and-continuation report](RUN-3c0e92be-and-continuation-2026-08-26.md).
 
 ## Promotion rule
 
 Move a row to verified only when identified implementation plus a persisted test,
-negative control, or run artifact demonstrates the stated boundary. A terminal-red
-recovery verifies that path; it does not prove green recovery, the full pipeline,
-or the Taste chain.
+negative control, or run artifact demonstrates the stated boundary. One green
+continuation verifies that path; it does not prove general full-pipeline,
+rendered-critic, Context7, or adversarial reliability.
 
 ### T21 requirement evidence boundary (2026-09-08)
 
