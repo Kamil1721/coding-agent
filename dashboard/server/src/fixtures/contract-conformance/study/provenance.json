@@ -1,0 +1,288 @@
+{
+  "sourceRunId": "run-cont-e22fa17f9b7972c79641",
+  "inventorySha256": "adf1fe9748b44fe6a51126fa11764d804b7f192e9315fae0bf93ae7b95c75089",
+  "included": [
+    {
+      "path": ".gitignore",
+      "type": "file",
+      "mode": 420,
+      "bytes": 237,
+      "sha256": "61afeea0131e73552851fa1d1050f2f83076cc198c51c3f0679818aef90d5e9b"
+    },
+    {
+      "path": "assets/hero.jpg",
+      "type": "file",
+      "mode": 420,
+      "bytes": 499515,
+      "sha256": "975dac10a2979bb5595ac2d058dd1457c7088c1e97059350aba6db1c4ba4906f"
+    },
+    {
+      "path": "assets/work-01.jpg",
+      "type": "file",
+      "mode": 420,
+      "bytes": 705969,
+      "sha256": "4cf1ec96a271c1f5887acd6e41d39e0567ddb43455a08927e56b60c7422df0a5"
+    },
+    {
+      "path": "assets/work-02.jpg",
+      "type": "file",
+      "mode": 420,
+      "bytes": 514037,
+      "sha256": "cc09c8efe4719e27e908dd52a620e977d7684d4b566f571d5804cece4e5150f9"
+    },
+    {
+      "path": "assets/world/leg-1-poster.webp",
+      "type": "file",
+      "mode": 420,
+      "bytes": 20092,
+      "sha256": "eaf30b6be2a45bea8c64252ced77055d8d9b5ea76f74a088d461211cab566574"
+    },
+    {
+      "path": "assets/world/leg-1.mp4",
+      "type": "file",
+      "mode": 420,
+      "bytes": 717185,
+      "sha256": "29e1be9f1d0a495b034ca02bec5f915e5a106500ac9fd7cb802e031d3da14b41"
+    },
+    {
+      "path": "design-refs/dark-reel-01-hero.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 441900,
+      "sha256": "8ade32a177d0c88b13e33551efa779895238250f07a64a247c859869cec566ce"
+    },
+    {
+      "path": "design-refs/dark-reel-02-work.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 364295,
+      "sha256": "a93409e8df3269bc5dd5475b875f6acf6f4b43c1e71afedfd85f3feda5e8f317"
+    },
+    {
+      "path": "design-refs/dark-reel-03-work-reel.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 389260,
+      "sha256": "191a0ef76d2eee3859b9cfedbeab162f32ccadd95abb6344dd368716ab8b5347"
+    },
+    {
+      "path": "design-refs/dark-reel-04-services.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 402027,
+      "sha256": "7284c33ea3053c8fb83865a041376eef02f64e54ddd696f7ef33e07e6c0ee36f"
+    },
+    {
+      "path": "design-refs/dark-reel-05-process.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 405790,
+      "sha256": "d40986df6f2ffb586dec53217a69edf8100ca15356ef474b2d937c6ef5f4a2f0"
+    },
+    {
+      "path": "design-refs/dark-reel-06-standard.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 221102,
+      "sha256": "7eecd954253a7e4a899d722f14a0d902caba62efd1aa4d5c236e9dc8c6ba0863"
+    },
+    {
+      "path": "design-refs/dark-reel-07-contact.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 418032,
+      "sha256": "a0b8ca1801c3a9ca406c06bc8dcd0a083f91861fe0f817b7dbaa1f776f9107d6"
+    },
+    {
+      "path": "design-refs/dark-reel-08-footer.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 295390,
+      "sha256": "b98fcd309c248456c6735bed03ca392c7709214f720e4c3377f34aab9e4995a5"
+    },
+    {
+      "path": "design-refs/direction-choice.json",
+      "type": "file",
+      "mode": 420,
+      "bytes": 678,
+      "sha256": "647d4f23af9ba5bf7f2658df0eb4a328130c6b31f1192cf2d0c4a536f52ef2a1"
+    },
+    {
+      "path": "design-refs/direction-dark-reel.md",
+      "type": "file",
+      "mode": 420,
+      "bytes": 7781,
+      "sha256": "d8dfbe8124fee5590e023464872c18b9c9bcdc76c9b9e32cb0a4457ecf97ead5"
+    },
+    {
+      "path": "design-refs/direction-index-grid.md",
+      "type": "file",
+      "mode": 420,
+      "bytes": 6521,
+      "sha256": "40ffa2aa844c1698558cf331aeccf8365016793f49f6eda41fa3d5d20b874767"
+    },
+    {
+      "path": "design-refs/direction-paper-ledger.md",
+      "type": "file",
+      "mode": 420,
+      "bytes": 6070,
+      "sha256": "0dac3fdf8b8dca32058da6dd67db8965929d420695329738c3256d75a7fda1be"
+    },
+    {
+      "path": "design-refs/direction.md",
+      "type": "file",
+      "mode": 420,
+      "bytes": 18793,
+      "sha256": "02b365da5f06ab41630a6628b0e5e92c02fada75190cb5411a60b2412d9690d8"
+    },
+    {
+      "path": "design-refs/index-grid-01-hero.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 454717,
+      "sha256": "4c1595a4af72d593328d2cfbfca0a0644c6ab6cb46047d05fbdc5744934a9c4a"
+    },
+    {
+      "path": "design-refs/index-grid-02-work.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 461456,
+      "sha256": "2d8fce91b4e9d91a617d3c9710632feef42a4c8ebb4f7ba236243ae6f5a92786"
+    },
+    {
+      "path": "design-refs/manifest.json",
+      "type": "file",
+      "mode": 420,
+      "bytes": 8644,
+      "sha256": "d1db6c63a7ad32c71e2a91202e9008cfde225dcb432fe8b5949ee168abfb3853"
+    },
+    {
+      "path": "design-refs/paper-ledger-01-hero.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 427938,
+      "sha256": "d8c47f219b4c4fc26a7281b554f8d0805e3371d97d1d5ff5730ca35efbc057e5"
+    },
+    {
+      "path": "design-refs/paper-ledger-02-work.png",
+      "type": "file",
+      "mode": 420,
+      "bytes": 445428,
+      "sha256": "64dbad40015f4ebf4c2c927005a64c72f5252dfa238a2598cd8e5739e708f460"
+    },
+    {
+      "path": "index.html",
+      "type": "file",
+      "mode": 420,
+      "bytes": 7074,
+      "sha256": "6faec275fe8881d6c37e4a7c02850d6fec43e91999b6a89f985e4c305bec8786"
+    },
+    {
+      "path": "main.js",
+      "type": "file",
+      "mode": 420,
+      "bytes": 5088,
+      "sha256": "a0cb02e75cb29b40fb3de2fadf1c65e7594cd48e7959728e3cef3342a7320516"
+    },
+    {
+      "path": "package.json",
+      "type": "file",
+      "mode": 420,
+      "bytes": 253,
+      "sha256": "9d952323056cad30570138fcf06726fd2653b61931c97c286d3c2e81dd3eabb0"
+    },
+    {
+      "path": "README.md",
+      "type": "file",
+      "mode": 420,
+      "bytes": 2783,
+      "sha256": "20f9a005d2da0bab50c5a615f0b518305b578be6a9ab84b4dd54667f4bd8717b"
+    },
+    {
+      "path": "src/motion.js",
+      "type": "file",
+      "mode": 420,
+      "bytes": 1693,
+      "sha256": "ee23ee2729e2ac8cd9fa6f54694b4ab53329cfd3c22d6a229fa17c2c09b488f1"
+    },
+    {
+      "path": "styles.css",
+      "type": "file",
+      "mode": 420,
+      "bytes": 11535,
+      "sha256": "a416f3c55d2e11309fe6b59c426d059fe9eb3a6b2eff723478d704edf29f1c9f"
+    },
+    {
+      "path": "test/document.test.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 6100,
+      "sha256": "3ee31dc6493e45df29b77b8a96fccf25f4250bbb26d9f7e5513bc7baf6248b2c"
+    },
+    {
+      "path": "test/motion.test.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 2551,
+      "sha256": "cc6bc9bd2f091ed0a4f899a84e5fcb369811b1a5b41e862067e513aa39dd0301"
+    },
+    {
+      "path": "test/reveal.test.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 2462,
+      "sha256": "2fea23b05910e4a29bd98a57bfc9d85155e07e0994c9359510eac92219747bf5"
+    },
+    {
+      "path": "TICKET.md",
+      "type": "file",
+      "mode": 420,
+      "bytes": 8766,
+      "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df"
+    },
+    {
+      "path": "visible-acceptance/document-contract.test.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 1524,
+      "sha256": "0221c6b1ebf049356b4757bac35f070b63801f79e5c367e5a3b14f8eaaeac80d"
+    },
+    {
+      "path": "visible-acceptance/home-content.spec.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 6895,
+      "sha256": "66598a4b42cfc65446bb6bde196f8b606846b000c34061bff6c927de00537f83"
+    },
+    {
+      "path": "visible-acceptance/nav-and-motion.spec.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 12881,
+      "sha256": "aaf0793463e2c45d561264906344cf69298f22fc26652badc2ac99c44ca98352"
+    },
+    {
+      "path": "visible-acceptance/quality-checks.spec.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 2868,
+      "sha256": "de1924f8286cdd88068be4935da7ee117fbed430333419d996f0e7cad71fdf10"
+    },
+    {
+      "path": "visible-acceptance/serving.test.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 1870,
+      "sha256": "0b3557c44525ac8a42963f93999f32618695fe9fcd7e03d4c498a793f50759cb"
+    },
+    {
+      "path": "visible-acceptance/site-content.spec.mjs",
+      "type": "file",
+      "mode": 420,
+      "bytes": 8031,
+      "sha256": "c3dc7b7f18e0c3115ad52adc445bd355df00d2bb069ca7f5fa222a011a704f31"
+    }
+  ],
+  "excluded": [],
+  "goldenLegacyMarkerConflict": true
+}

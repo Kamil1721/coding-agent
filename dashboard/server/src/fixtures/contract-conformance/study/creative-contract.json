@@ -1,0 +1,638 @@
+{
+  "dials": {
+    "designVariance": 7,
+    "motionIntensity": 5,
+    "visualDensity": 5
+  },
+  "motion": [
+    {
+      "id": "m-hero-entrance",
+      "routeId": "home",
+      "sectionId": "hero",
+      "target": "hero headline lines, subline and CTA row",
+      "purpose": "hierarchy",
+      "trigger": "load",
+      "implementation": "motion",
+      "properties": [
+        "opacity",
+        "transform"
+      ],
+      "rationale": "Reference uses a single 900ms ease-out load entrance on hero sub and CTAs; one pass only, never looping.",
+      "fallback": {
+        "reducedMotion": "static",
+        "noMedia": "not_applicable"
+      },
+      "sourceStillKind": "none",
+      "simulationAuthorized": false
+    },
+    {
+      "id": "m-services-reveal",
+      "routeId": "home",
+      "sectionId": "services",
+      "target": "service rows as they enter the viewport",
+      "purpose": "hierarchy",
+      "trigger": "enter_view",
+      "implementation": "motion",
+      "properties": [
+        "opacity",
+        "transform"
+      ],
+      "rationale": "Mirrors the reference 700ms ease-out scroll reveal on section columns so reading order is explained, not decorated.",
+      "fallback": {
+        "reducedMotion": "static",
+        "noMedia": "not_applicable"
+      },
+      "sourceStillKind": "none",
+      "simulationAuthorized": false
+    },
+    {
+      "id": "m-work-reveal",
+      "routeId": "home",
+      "sectionId": "work",
+      "target": "project cards and their screenshots",
+      "purpose": "storytelling",
+      "trigger": "enter_view",
+      "implementation": "motion",
+      "properties": [
+        "opacity",
+        "transform"
+      ],
+      "rationale": "Owner asked for the already-implemented work reveal to ship in this run, preserved as built.",
+      "fallback": {
+        "reducedMotion": "static",
+        "noMedia": "static_asset"
+      },
+      "sourceStillKind": "ui",
+      "simulationAuthorized": true
+    },
+    {
+      "id": "m-process-step",
+      "routeId": "home",
+      "sectionId": "process",
+      "target": "active process step marker on hover and focus",
+      "purpose": "feedback",
+      "trigger": "interaction",
+      "implementation": "css",
+      "properties": [
+        "opacity",
+        "transform"
+      ],
+      "rationale": "Gives keyboard and pointer users a visible state change on each step rather than a decorative flourish.",
+      "fallback": {
+        "reducedMotion": "instant",
+        "noMedia": "not_applicable"
+      },
+      "sourceStillKind": "none",
+      "simulationAuthorized": false
+    },
+    {
+      "id": "m-contact-state",
+      "routeId": "home",
+      "sectionId": "contact",
+      "target": "mailto button pressed and focused states",
+      "purpose": "state_transition",
+      "trigger": "interaction",
+      "implementation": "css",
+      "properties": [
+        "opacity",
+        "transform"
+      ],
+      "rationale": "The contact action is the page goal; its state must read instantly at every width.",
+      "fallback": {
+        "reducedMotion": "instant",
+        "noMedia": "not_applicable"
+      },
+      "sourceStillKind": "none",
+      "simulationAuthorized": false
+    }
+  ],
+  "routes": [
+    {
+      "id": "home",
+      "path": "/",
+      "sectionIds": [
+        "hero",
+        "nav",
+        "positioning",
+        "services",
+        "work",
+        "process",
+        "contact",
+        "footer"
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "id": "hero",
+      "routeId": "home",
+      "order": 0,
+      "kind": "hero",
+      "job": "State who Kamil is, what he builds, and send the qualified visitor straight to email.",
+      "contentRefs": [
+        {
+          "proofId": "p-studio",
+          "use": "headline"
+        },
+        {
+          "proofId": "p-scope",
+          "use": "body"
+        },
+        {
+          "proofId": "p-email",
+          "use": "action"
+        },
+        {
+          "proofId": "p-work-verified",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Websites and apps designed and built by one person who ships them",
+      "body": "Kamil Borzecki runs a digital product studio for premium website and app work.",
+      "actions": [
+        {
+          "id": "hero-contact",
+          "label": "Email Kamil",
+          "intent": "contact",
+          "priority": "primary",
+          "href": "mailto:borzeckikamil7@gmail.com",
+          "proofId": "p-email"
+        },
+        {
+          "id": "hero-work",
+          "label": "See the work",
+          "intent": "navigate",
+          "priority": "secondary",
+          "href": "#work",
+          "proofId": "p-work-verified"
+        }
+      ],
+      "layoutFamily": "asymmetric_split",
+      "visualKind": "type_only",
+      "mobile": {
+        "strategy": "stack",
+        "contentOrder": [
+          "headline",
+          "body",
+          "actions",
+          "visual"
+        ]
+      },
+      "requiredStates": [
+        "default",
+        "interaction"
+      ]
+    },
+    {
+      "id": "nav",
+      "routeId": "home",
+      "order": 1,
+      "kind": "navigation",
+      "job": "Anchor navigation to the four page sections plus the contact address.",
+      "contentRefs": [
+        {
+          "proofId": "p-sections",
+          "use": "headline"
+        },
+        {
+          "proofId": "p-email",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Kamil Borzecki",
+      "body": null,
+      "actions": [
+        {
+          "id": "nav-contact",
+          "label": "Email Kamil",
+          "intent": "contact",
+          "priority": "primary",
+          "href": "mailto:borzeckikamil7@gmail.com",
+          "proofId": "p-email"
+        }
+      ],
+      "layoutFamily": "navigation_bar",
+      "visualKind": "none",
+      "mobile": {
+        "strategy": "stack",
+        "contentOrder": [
+          "headline",
+          "actions"
+        ]
+      },
+      "requiredStates": [
+        "default",
+        "interaction"
+      ]
+    },
+    {
+      "id": "positioning",
+      "routeId": "home",
+      "order": 2,
+      "kind": "editorial",
+      "job": "Explain the studio's operating stance in the owner's own terms without inventing clients or numbers.",
+      "contentRefs": [
+        {
+          "proofId": "p-no-invention",
+          "use": "headline"
+        },
+        {
+          "proofId": "p-one-page",
+          "use": "body"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "One person on the whole build, from first sketch to the deploy that ends the project",
+      "body": "No borrowed logos, no invented case-study numbers. Every claim here comes from work that shipped.",
+      "actions": [],
+      "layoutFamily": "editorial_manifesto",
+      "visualKind": "type_only",
+      "mobile": {
+        "strategy": "stack",
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual"
+        ]
+      },
+      "requiredStates": [
+        "default"
+      ]
+    },
+    {
+      "id": "services",
+      "routeId": "home",
+      "order": 3,
+      "kind": "feature",
+      "job": "Name the three engagements a visitor can actually buy, with distinct scopes.",
+      "contentRefs": [
+        {
+          "proofId": "p-scope",
+          "use": "eyebrow"
+        },
+        {
+          "proofId": "p-services",
+          "use": "headline"
+        },
+        {
+          "proofId": "p-services",
+          "use": "body"
+        }
+      ],
+      "eyebrow": "Engagements",
+      "headline": "Design and build, in three shapes",
+      "body": "Marketing sites, product interfaces, and short design engagements that hand a working front end to your team.",
+      "actions": [],
+      "layoutFamily": "vertical_stack",
+      "visualKind": "type_only",
+      "mobile": {
+        "strategy": "stack",
+        "contentOrder": [
+          "eyebrow",
+          "headline",
+          "body",
+          "visual"
+        ]
+      },
+      "requiredStates": [
+        "default"
+      ]
+    },
+    {
+      "id": "work",
+      "routeId": "home",
+      "order": 4,
+      "kind": "gallery",
+      "job": "Show only projects verifiable on kamilborzecki.dev, each with a real screenshot and a live link.",
+      "contentRefs": [
+        {
+          "proofId": "p-work-verified",
+          "use": "headline"
+        },
+        {
+          "proofId": "p-work-verified",
+          "use": "alt"
+        },
+        {
+          "proofId": "p-site-source",
+          "use": "body"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Selected work",
+      "body": "Each project below is drawn from kamilborzecki.dev and links to the running site.",
+      "actions": [],
+      "layoutFamily": "bento",
+      "visualKind": "real_component",
+      "mobile": {
+        "strategy": "stack",
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual"
+        ]
+      },
+      "requiredStates": [
+        "default",
+        "loading",
+        "error"
+      ]
+    },
+    {
+      "id": "process",
+      "routeId": "home",
+      "order": 5,
+      "kind": "proof",
+      "job": "Compress the working method into a few concrete steps so scope feels predictable.",
+      "contentRefs": [
+        {
+          "proofId": "p-process",
+          "use": "headline"
+        },
+        {
+          "proofId": "p-process",
+          "use": "body"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "How a project runs",
+      "body": "A scoping call, a design pass you review in the browser, a build, then a handover you can maintain.",
+      "actions": [],
+      "layoutFamily": "sticky_stack",
+      "visualKind": "type_only",
+      "mobile": {
+        "strategy": "stack",
+        "contentOrder": [
+          "headline",
+          "body",
+          "visual"
+        ]
+      },
+      "requiredStates": [
+        "default",
+        "interaction"
+      ]
+    },
+    {
+      "id": "contact",
+      "routeId": "home",
+      "order": 6,
+      "kind": "cta",
+      "job": "Close with a single labelled mailto and nothing competing for the click.",
+      "contentRefs": [
+        {
+          "proofId": "p-email",
+          "use": "headline"
+        },
+        {
+          "proofId": "p-email",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Tell me what you are building",
+      "body": "Write with the product, the deadline, and the budget range. You get a reply from Kamil, not a form robot.",
+      "actions": [
+        {
+          "id": "contact-primary",
+          "label": "Email Kamil",
+          "intent": "contact",
+          "priority": "primary",
+          "href": "mailto:borzeckikamil7@gmail.com",
+          "proofId": "p-email"
+        }
+      ],
+      "layoutFamily": "full_width_quote",
+      "visualKind": "type_only",
+      "mobile": {
+        "strategy": "stack",
+        "contentOrder": [
+          "headline",
+          "body",
+          "actions",
+          "visual"
+        ]
+      },
+      "requiredStates": [
+        "default",
+        "interaction"
+      ]
+    },
+    {
+      "id": "footer",
+      "routeId": "home",
+      "order": 7,
+      "kind": "footer",
+      "job": "Repeat the address and the section anchors for anyone who scrolled past everything.",
+      "contentRefs": [
+        {
+          "proofId": "p-sections",
+          "use": "headline"
+        },
+        {
+          "proofId": "p-email",
+          "use": "action"
+        }
+      ],
+      "eyebrow": null,
+      "headline": "Kamil Borzecki, digital product studio",
+      "body": null,
+      "actions": [
+        {
+          "id": "footer-contact",
+          "label": "Email Kamil",
+          "intent": "contact",
+          "priority": "primary",
+          "href": "mailto:borzeckikamil7@gmail.com",
+          "proofId": "p-email"
+        }
+      ],
+      "layoutFamily": "footer_columns",
+      "visualKind": "none",
+      "mobile": {
+        "strategy": "stack",
+        "contentOrder": [
+          "headline",
+          "actions"
+        ]
+      },
+      "requiredStates": [
+        "default"
+      ]
+    }
+  ],
+  "contractId": "creative-t-cbf387df97b9b6dd",
+  "designRead": {
+    "pageKind": "agency_landing",
+    "audience": "Founders and product leads shopping for a senior designer-builder to ship a premium website or app",
+    "vibe": "Confident, quiet, high-contrast; a working studio page rather than an agency brochure",
+    "aestheticFamily": "editorial",
+    "designSystem": "native",
+    "displayStyle": "sans",
+    "paletteFamily": "neutral_pop",
+    "theme": "dark",
+    "thesis": "Near-black ground, one saturated accent, and oversized typographic statements carry the page; every visual is a real screenshot of shipped work, and motion only marks entrance and state."
+  },
+  "schemaVersion": 1,
+  "contentProof": [
+    {
+      "id": "p-studio",
+      "claim": "The site is a one-page studio website for Kamil Borzecki's digital product studio, selling premium website and app design and build services.",
+      "status": "supported_paraphrase",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:1",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "3867f0ce77b70696d4354ce3a4497fb7350e98d4adca400c0f9fbdb55b232160"
+      },
+      "allowedUses": [
+        "headline",
+        "eyebrow",
+        "body"
+      ]
+    },
+    {
+      "id": "p-email",
+      "claim": "The contact email is borzeckikamil7@gmail.com and contact may use a clearly labelled mailto link.",
+      "status": "verbatim",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:2",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "4e48d29d1e649afa768a4a2b945dd573c6d585dd32b5d7e649ffa20472bc5d54"
+      },
+      "allowedUses": [
+        "action",
+        "headline",
+        "body"
+      ]
+    },
+    {
+      "id": "p-no-invention",
+      "claim": "Only facts verifiable from kamilborzecki.dev may be used; no invented clients, testimonials, awards, metrics, or case-study outcomes.",
+      "status": "verbatim",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:2",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "4e48d29d1e649afa768a4a2b945dd573c6d585dd32b5d7e649ffa20472bc5d54"
+      },
+      "allowedUses": [
+        "headline",
+        "body"
+      ]
+    },
+    {
+      "id": "p-sections",
+      "claim": "The page must carry a decisive hero, services, a curated selection of verified work, a concise process, and a strong final contact section.",
+      "status": "verbatim",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:2",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "4e48d29d1e649afa768a4a2b945dd573c6d585dd32b5d7e649ffa20472bc5d54"
+      },
+      "allowedUses": [
+        "headline",
+        "body",
+        "eyebrow"
+      ]
+    },
+    {
+      "id": "p-services",
+      "claim": "Services are a required section of the one-page studio site, positioned as premium website and app design and build work.",
+      "status": "supported_paraphrase",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:2",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "4e48d29d1e649afa768a4a2b945dd573c6d585dd32b5d7e649ffa20472bc5d54"
+      },
+      "allowedUses": [
+        "headline",
+        "body"
+      ]
+    },
+    {
+      "id": "p-work-verified",
+      "claim": "The work section shows a curated selection of verified projects, drawn only from what can be verified at kamilborzecki.dev.",
+      "status": "supported_paraphrase",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:2",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "4e48d29d1e649afa768a4a2b945dd573c6d585dd32b5d7e649ffa20472bc5d54"
+      },
+      "allowedUses": [
+        "headline",
+        "alt",
+        "action",
+        "body"
+      ]
+    },
+    {
+      "id": "p-site-source",
+      "claim": "Project details must come from https://kamilborzecki.dev, and every CTA and navigation link must work.",
+      "status": "verbatim",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:2",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "4e48d29d1e649afa768a4a2b945dd573c6d585dd32b5d7e649ffa20472bc5d54"
+      },
+      "allowedUses": [
+        "body",
+        "alt"
+      ]
+    },
+    {
+      "id": "p-process",
+      "claim": "A concise process section is required content on the page.",
+      "status": "supported_paraphrase",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:2",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "4e48d29d1e649afa768a4a2b945dd573c6d585dd32b5d7e649ffa20472bc5d54"
+      },
+      "allowedUses": [
+        "headline",
+        "body"
+      ]
+    },
+    {
+      "id": "p-one-page",
+      "claim": "The reference should be treated as inspiration and not cloned: preserve its confidence, pacing and deliberate motion vocabulary while creating a distinct visual identity.",
+      "status": "verbatim",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:1",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "3867f0ce77b70696d4354ce3a4497fb7350e98d4adca400c0f9fbdb55b232160"
+      },
+      "allowedUses": [
+        "body",
+        "headline"
+      ]
+    },
+    {
+      "id": "p-scope",
+      "claim": "The business goal is to credibly sell premium website and app design and build services and drive qualified visitors to contact Kamil.",
+      "status": "verbatim",
+      "evidence": {
+        "kind": "owner_message",
+        "locator": "ticket:t-cbf387df97b9b6dd:brief:1",
+        "sha256": "196a2cc5e32d86dce04aeda179c5730dc685e00f4df42ec0121420767deb08df",
+        "excerptSha256": "3867f0ce77b70696d4354ce3a4497fb7350e98d4adca400c0f9fbdb55b232160"
+      },
+      "allowedUses": [
+        "body",
+        "eyebrow",
+        "headline"
+      ]
+    }
+  ],
+  "intentionalExceptions": []
+}
