@@ -235,6 +235,7 @@ import {
   writeCreativePilotStatus,
 } from "./creative-pilot.js";
 import type { CreativePilotStatus } from "./creative-pilot.js";
+import { stageCreativeInheritance } from "./creative-continuation.js";
 import { hasRenderedTasteCriticArtifact } from "./rendered-taste-critic.js";
 import { isOfferedProvider } from "./models.js";
 import type { ModelCatalog } from "./models.js";
@@ -3986,6 +3987,8 @@ function createTerminalContinuation(
     if (!stageContinuationWorkspace(sourcePaths, targetPaths)) return null;
 
     const sourceManifest = readReferenceManifest(referenceDirFor(deps.paths.runs, source.runId));
+    stageCreativeInheritance(source.runId, sourcePaths.results, targetPaths.results,
+      ticketFromStoredReferences(source.ticketText, sourceManifest), sourceManifest, message.text);
     const manifest = copyContinuationReferences(
       sourceManifest,
       message.images,

@@ -986,6 +986,25 @@ test("repair findings reach the prompt and move promptHash but not inputHash —
   assert.ok(repairedPrompt.length > plainPrompt.length, "the block adds bytes; it is not a no-op");
 });
 
+test("T28 amendment reserves prompt space before bounded repair feedback", async () => {
+  const baseline = recordingQuery(JSON.stringify(contract()));
+  const amendment = { contract: contract(), followup: "Preserve the existing copy." };
+  await authorCreativeContract({ ...request(baseline.factory), amendment });
+  const spare = MAX_CREATIVE_AUTHOR_PROMPT_CHARS - promptOf(baseline).length - 900;
+  assert.ok(spare > 0);
+  const recorder = recordingQuery(JSON.stringify(contract()));
+  const result = await authorCreativeContract({
+    ...request(recorder.factory),
+    amendment: { ...amendment, followup: `${amendment.followup}${" ".repeat(spare)}` },
+    repairFindings: Array.from({ length: 24 }, (_, index) => ({ code: "INVALID_VALUE", path: `/sections/${String(index)}/headline`, message: "bounded finding ".repeat(20) })),
+  });
+  assert.equal(recorder.dispatches.length, 1, "T28_REPAIR_AMENDMENT_REACHES_TRANSPORT");
+  assert.equal(result.status, "compiled", result.detail);
+  assert.ok(promptOf(recorder).length <= MAX_CREATIVE_AUTHOR_PROMPT_CHARS);
+  assert.ok(repairBlockOf(promptOf(recorder)).length > 0);
+  assert.ok(repairBlockOf(promptOf(recorder)).length < 24);
+});
+
 test("the findings block is bounded, deduplicated and sorted, so it cannot push the prompt past its cap", async () => {
   // 200 findings of 500 characters each: unbounded, that is ~110K characters
   // against a 45K cap, and the overflow throw would come back as `unavailable`

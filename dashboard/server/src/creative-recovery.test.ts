@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { canonicalJson, sha256Hex } from "./creative-contract.js";
 import { ENVIRONMENT_FILE } from "./build-environment.js";
+import { CREATIVE_INHERITANCE_FILE } from "./creative-continuation.js";
 import {
   CREATIVE_RECOVERY_FILE,
   CREATIVE_RECOVERY_OWNER_FILE,
@@ -358,6 +359,22 @@ test("terminal creative recovery creates one isolated child and replays without 
       (error: unknown) => error instanceof TerminalCreativeRecoveryRefusal && error.code === "creative_recovery_idempotency_conflict",
     );
     assert.equal(h.store.listRuns().length, 2);
+  } finally { h.cleanup(); }
+});
+
+test("T28 recovery preserves optional inherited evidence bytes before its worker", async () => {
+  const h = recoveryHarness();
+  try {
+    const inherited = '{"snapshot":"opaque recovery transport fixture"}\n';
+    writeFileSync(join(runPathsFor(h.paths, h.sourceRunId).results, CREATIVE_INHERITANCE_FILE), inherited, "utf8");
+    let copied = false;
+    const controller = new TerminalCreativeRecoveryController({ store: h.store, paths: h.paths, run: async ({ targetRunId }) => {
+      assert.equal(readFileSync(join(runPathsFor(h.paths, targetRunId).results, CREATIVE_INHERITANCE_FILE), "utf8"), inherited, "T28_RECOVERY_INHERITANCE_COPIED_BEFORE_WORKER");
+      copied = true;
+      return terminalAccepted(h, targetRunId, { renderManifestHash: "c".repeat(64) });
+    } });
+    await controller.recover(h.sourceRunId, validateTerminalCreativeRecoveryRequest({ clientRequestId: "t28-inherited", contractHash: h.contractHash }));
+    assert.equal(copied, true);
   } finally { h.cleanup(); }
 });
 

@@ -210,13 +210,13 @@ import type { RateLimitState } from "./claude-common.js";
 import { dashboardBuilderPrompt, resumeBuilderPrompt } from "./build-prompt.js";
 import { CREATIVE_CONTRACT_AUTHOR_MAX_ATTEMPTS, authorCreativeContract, boundedRepairFindings, creativeAuthorStep } from "./creative-contract-author.js";
 import type { CreativeAuthorRepairFinding, CreativeContractAuthorRequest, CreativeContractAuthorResult } from "./creative-contract-author.js";
+import { completedCreativeAmendment, continuationAuthorInputFor, requireCompletedCreativeAmendment } from "./creative-continuation.js";
 import { advanceCreativeReview, initialCreativeReviewState } from "./creative-review-loop.js";
 import type { CreativeReviewState } from "./creative-review-loop.js";
 import {
   CREATIVE_CONTRACT_FILE,
   CREATIVE_STATUS_FILE,
   CREATIVE_RENDER_DIRECTORY,
-  authorInputFor,
   claimCreativeArtifactRepair,
   creativeArtifactRevisionPrompt,
   creativeContractPrompt,
@@ -4104,10 +4104,10 @@ export class Orchestrator {
     if (!applicable) return true;
 
     const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
-    const authored = authorInputFor(ticket, manifest);
+    const authored = continuationAuthorInputFor(ticket, manifest, runPaths.results);
     for (const warning of authored.warnings) this.#emitLog(runId, "warn", warning);
     const existing = freshCreativeContract(runPaths.results, authored.resolver);
-    if (existing.fresh !== null) {
+    if (existing.fresh !== null && authored.reuseAllowed && (authored.inheritance === null || completedCreativeAmendment(runPaths.results, authored.inheritance))) {
       status = statusAfterCompile(status, existing.compile);
       writeCreativePilotStatus(runPaths.results, status);
       this.#deps.store.updateRun(runId, { failureReason: null });
@@ -4160,6 +4160,7 @@ export class Orchestrator {
         signal,
         ...(this.#deps.seatQuery === undefined ? {} : { startQuery: this.#deps.seatQuery }),
         ...(findings.length === 0 ? {} : { repairFindings: findings }),
+        ...(authored.inheritance === null ? {} : { amendment: { contract: authored.inheritance.contract, followup: authored.inheritance.followup } }),
       });
       // ABORT FIRST, BEFORE ANY WRITE. The author converts an abort into a
       // closed `unavailable` result with `rateLimit.limited: false`; persisting
@@ -4168,7 +4169,7 @@ export class Orchestrator {
       // written; the call site checks the signal before it records a park.
       if (signal.aborted) return false;
       persistCreativeAuthorAttempt(runPaths.results, attempt, result);
-      const compile = persistCreativeAuthorResult(runPaths.results, result);
+      const compile = persistCreativeAuthorResult(runPaths.results, result, authored.inheritance?.provenance, authored.reauthoring ?? undefined);
       status = statusAfterCompile(status, compile);
       writeCreativePilotStatus(runPaths.results, status);
       if (result.tokens !== null && result.tokens.callCount > 0) {
@@ -4233,7 +4234,8 @@ export class Orchestrator {
     manifest: ReferenceManifest | null,
   ): { prompt: string; pageKind: FreshCreativeContract["contract"]["designRead"]["pageKind"] | undefined } {
     if (!this.#creativePilotApplies(ticket)) return { prompt: "", pageKind: undefined };
-    const authored = authorInputFor(ticket, manifest);
+    const authored = continuationAuthorInputFor(ticket, manifest, runPaths.results);
+    requireCompletedCreativeAmendment(runPaths.results, authored.inheritance);
     for (const warning of authored.warnings) this.#emitLog(runId, "warn", warning);
     const checked = freshCreativeContract(runPaths.results, authored.resolver);
     const previous = readCreativePilotStatus(runPaths.results) ?? initialCreativePilotStatus(true, true);
@@ -4262,7 +4264,8 @@ export class Orchestrator {
     recoveryEntry?: CatalogEntry,
   ): Promise<CreativePhaseResult> {
     const manifest = readReferenceManifest(referenceDirFor(this.#deps.paths.runs, runId));
-    const authored = authorInputFor(ticket, manifest);
+    const authored = continuationAuthorInputFor(ticket, manifest, runPaths.results);
+    requireCompletedCreativeAmendment(runPaths.results, authored.inheritance);
     for (const warning of authored.warnings) this.#emitLog(runId, "warn", warning);
     let checked = freshCreativeContract(runPaths.results, authored.resolver);
     let status = readCreativePilotStatus(runPaths.results) ?? initialCreativePilotStatus(true, true);
@@ -9283,7 +9286,8 @@ export class Orchestrator {
       const suite = assertSuiteIntact(ticket.id, { acceptanceRoot: this.#deps.paths.acceptance }).suite;
       if (suite.sha256 !== row.suiteSha256) throw new Error("creative recovery child suite lineage changed");
       const executionContract = loadArtifactExecutionContract(ticket.id, this.#deps.paths.acceptance);
-      const authored = authorInputFor(ticket, manifest);
+      const authored = continuationAuthorInputFor(ticket, manifest, runPaths.results);
+      requireCompletedCreativeAmendment(runPaths.results, authored.inheritance);
       const checkedBefore = freshCreativeContract(runPaths.results, authored.resolver);
       if (checkedBefore.fresh === null || checkedBefore.fresh.contractHash !== work.contractHash) {
         throw new Error("creative recovery child is not bound to the requested compiled contract");

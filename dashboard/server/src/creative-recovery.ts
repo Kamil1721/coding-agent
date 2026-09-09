@@ -19,8 +19,8 @@ import { canonicalJson, sha256Hex } from "./creative-contract.js";
 import { contractMarkerBindings, hasRawLegacyMarkerConflict } from "./contract-conformance.js";
 import {
   CREATIVE_AUTHOR_FILE,
-  CREATIVE_COMPILE_FILE,
   CREATIVE_CONTRACT_FILE,
+  CREATIVE_INHERITED_RESULT_FILES,
   CREATIVE_STATUS_FILE,
   creativeCriticAuthorityMatches,
   hashCreativeArtifact,
@@ -38,6 +38,7 @@ import { runPathsFor } from "./paths.js";
 import type { DashboardPaths } from "./paths.js";
 import { copyContinuationReferences } from "./run-continuation.js";
 import { readReferenceManifest, writeReferenceManifest } from "./ticket-refs.js";
+import { CREATIVE_INHERITANCE_FILE } from "./creative-continuation.js";
 
 export const CREATIVE_RECOVERY_PROTOCOL_VERSION = 2 as const;
 export const CREATIVE_RECOVERY_FILE = "creative-recovery.json";
@@ -47,7 +48,7 @@ export const MAX_CREATIVE_RECOVERY_CLIENT_REQUEST_ID = 128;
 
 const HASH = /^[a-f0-9]{64}$/u;
 const REQUEST_ID = /^[A-Za-z0-9._:-]+$/u;
-const COPY_RESULTS = [CREATIVE_CONTRACT_FILE, CREATIVE_AUTHOR_FILE, CREATIVE_COMPILE_FILE, ENVIRONMENT_FILE] as const;
+const COPY_RESULTS = CREATIVE_INHERITED_RESULT_FILES;
 const GATE_STOP_REASONS = new Set<StopReason>(["green", "retry-cap", "not-converging", "infra", "cancelled", "artifact-contract"]);
 const REVIEW_STOP_REASONS = new Set<Exclude<CreativeReviewStopReason, null>>([
   "accepted", "functional_red", "compiler_red", "prerequisite_unknown", "artifact_contract",
@@ -584,6 +585,11 @@ export class TerminalCreativeRecoveryController {
         for (const file of COPY_RESULTS) {
           cpSync(join(sourcePaths.results, file), join(staging, "results", file), { errorOnExist: true, force: false });
           assertRegularFile(join(staging, "results", file), `staged results/${file}`);
+        }
+        const inherited = join(sourcePaths.results, CREATIVE_INHERITANCE_FILE);
+        if (existsSync(inherited)) {
+          assertRegularFile(inherited, "source creative inheritance");
+          cpSync(inherited, join(staging, "results", CREATIVE_INHERITANCE_FILE), { errorOnExist: true, force: false });
         }
         writeCreativePilotStatus(
           join(staging, "results"),

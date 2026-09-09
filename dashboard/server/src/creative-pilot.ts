@@ -36,6 +36,7 @@ import { manifestDocuments, ticketProse } from "./ticket-refs.js";
 import { PLAN_BLOCK_BEGIN, PLAN_BLOCK_END, stripPlanBlock } from "./plan-brief.js";
 import { briefFactKind, briefFactSentences } from "./creative-brief-facts.js";
 import { TASTE_CATEGORIES, TASTE_CODE_CATEGORY, TASTE_FINDING_CODES } from "./taste-policy.js";
+import { ENVIRONMENT_FILE } from "./build-environment.js";
 
 export const CREATIVE_CONTRACT_FILE = "creative-contract.json";
 
@@ -105,6 +106,15 @@ export function readCreativeMotionPolicy(resultsDir: string): CreativeMotionPoli
 export const CREATIVE_PILOT_PROJECT_ID = "coding-agent";
 export const CREATIVE_COMPILE_FILE = "creative-compile.json";
 export const CREATIVE_AUTHOR_FILE = "creative-contract-author.json";
+/** Creative results shared by terminal continuations and recovery children. */
+export const CREATIVE_INHERITED_RESULT_FILES = [CREATIVE_CONTRACT_FILE, CREATIVE_AUTHOR_FILE, CREATIVE_COMPILE_FILE, ENVIRONMENT_FILE] as const;
+
+export interface CreativeAmendmentProvenance {
+  readonly sourceContractHash: string;
+  readonly snapshotHash: string;
+  readonly inputHash: string;
+  readonly followupHash: string;
+}
 /**
  * One file per author attempt within a phase entry, beside the canonical
  * CREATIVE_AUTHOR_FILE (which keeps the LAST result and is the only file
@@ -835,8 +845,14 @@ function projectedAuthorInput(
 export function persistCreativeAuthorResult(
   resultsDir: string,
   result: CreativeContractAuthorResult,
+  amendment?: CreativeAmendmentProvenance,
+  reauthoring?: CreativeAmendmentProvenance,
 ): CreativeCompileRecord {
-  atomicJson(join(resultsDir, CREATIVE_AUTHOR_FILE), { ...authorRecordWithoutRawText(result), projectionVersion: CREATIVE_FACT_PROJECTION_VERSION });
+  atomicJson(join(resultsDir, CREATIVE_AUTHOR_FILE), {
+    ...authorRecordWithoutRawText(result), projectionVersion: CREATIVE_FACT_PROJECTION_VERSION,
+    ...(result.status === "compiled" && amendment !== undefined ? { amendment } : {}),
+    ...(result.status === "compiled" && reauthoring !== undefined ? { continuationReauthor: reauthoring } : {}),
+  });
   const compile: CreativeCompileRecord = {
     outcome: result.status === "compiled" ? "passed" : result.status === "invalid" ? "failed" : "unavailable",
     contractHash: result.contractHash,
@@ -883,10 +899,29 @@ export function freshCreativeContract(
   resultsDir: string,
   resolver: CreativeEvidenceResolver,
 ): { readonly fresh: FreshCreativeContract | null; readonly compile: CreativeCompileRecord } {
+  let result: ReturnType<typeof checkCreativeContract>;
+  try {
+    result = checkCreativeContract(
+      readFileSync(join(resultsDir, CREATIVE_CONTRACT_FILE), "utf8"),
+      JSON.parse(readFileSync(join(resultsDir, CREATIVE_AUTHOR_FILE), "utf8")) as unknown,
+      resolver,
+    );
+  } catch {
+    result = { fresh: null, compile: unavailableCompileRecord() };
+  }
+  atomicJson(join(resultsDir, CREATIVE_COMPILE_FILE), result.compile);
+  return result;
+}
+
+/** Read-only frozen-artifact verification, also used for isolated inherited snapshots. */
+export function checkCreativeContract(
+  contractText: string,
+  authored: unknown,
+  resolver: CreativeEvidenceResolver,
+): { readonly fresh: FreshCreativeContract | null; readonly compile: CreativeCompileRecord } {
   let frozenContractHash: string;
   let legacyResolver: CreativeEvidenceResolver | undefined;
   try {
-    const authored: unknown = JSON.parse(readFileSync(join(resultsDir, CREATIVE_AUTHOR_FILE), "utf8"));
     if (!isRecord(authored)) throw new Error("missing frozen author contract hash");
     const record = authored as { readonly status?: unknown; readonly contractHash?: unknown; readonly inputHash?: unknown; readonly projectionVersion?: unknown };
     if (record.status !== "compiled" || typeof record.contractHash !== "string" ||
@@ -895,20 +930,18 @@ export function freshCreativeContract(
     if (record.projectionVersion !== undefined && record.projectionVersion !== CREATIVE_FACT_PROJECTION_VERSION) throw new Error("unknown creative fact projection version");
     const legacy = legacyPackets.get(resolver);
     if (record.projectionVersion === undefined && legacy !== undefined && record.inputHash === legacy.inputHash) {
-      const raw: unknown = JSON.parse(readFileSync(join(resultsDir, CREATIVE_CONTRACT_FILE), "utf8"));
+      const raw: unknown = JSON.parse(contractText);
       if (sha256Hex(canonicalJson(raw)) === frozenContractHash) legacyResolver = legacy.resolver;
     }
   } catch {
     const compile = unavailableCompileRecord();
-    atomicJson(join(resultsDir, CREATIVE_COMPILE_FILE), compile);
     return { fresh: null, compile };
   }
   let compiled: ReturnType<typeof compileCreativeContract>;
   try {
-    compiled = compileCreativeContract(readFileSync(join(resultsDir, CREATIVE_CONTRACT_FILE), "utf8"), legacyResolver ?? resolver, { legacyRequirements: legacyResolver !== undefined });
+    compiled = compileCreativeContract(contractText, legacyResolver ?? resolver, { legacyRequirements: legacyResolver !== undefined });
   } catch {
     const compile = unavailableCompileRecord();
-    atomicJson(join(resultsDir, CREATIVE_COMPILE_FILE), compile);
     return { fresh: null, compile };
   }
   let fresh: FreshCreativeContract | null = null;
@@ -926,7 +959,6 @@ export function freshCreativeContract(
     fresh = { contract: compiled.contract, contractHash: compiled.contractHash };
     compile = { outcome: "passed", contractHash: compiled.contractHash, findings: [], checkedAt: new Date().toISOString() };
   }
-  atomicJson(join(resultsDir, CREATIVE_COMPILE_FILE), compile);
   return { fresh, compile };
 }
 

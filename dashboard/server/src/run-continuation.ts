@@ -14,6 +14,7 @@ import {
 import { extname, join } from "node:path";
 import type { RunPaths } from "./paths.js";
 import type { ReferenceDocument, ReferenceImage, ReferenceManifest } from "./ticket-refs.js";
+import { CREATIVE_CONTRACT_FILE, CREATIVE_INHERITED_RESULT_FILES } from "./creative-pilot.js";
 
 const MAX_COPY_DEPTH = 64;
 const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", ".next", "coverage"]);
@@ -68,6 +69,13 @@ export function stageContinuationWorkspace(source: RunPaths, target: RunPaths): 
   try {
     mkdirSync(target.workspace);
     copyTree(source.workspace, target.workspace, 0);
+    if (existsSync(join(source.results, CREATIVE_CONTRACT_FILE))) {
+      mkdirSync(target.results, { recursive: true });
+      for (const file of CREATIVE_INHERITED_RESULT_FILES) {
+        const path = join(source.results, file);
+        if (existsSync(path)) copyFileSync(path, join(target.results, file));
+      }
+    }
     return true;
   } catch (error) {
     rmSync(target.root, { recursive: true, force: true });
@@ -113,6 +121,9 @@ export function copyContinuationReferences(
     addedImages.length === 0 &&
     addedDocuments.length === 0
   ) return null;
+
+  // Document-only continuations still write their manifest in this directory.
+  mkdirSync(targetReferenceDir, { recursive: true });
 
   const images = [
     ...(source?.images.map((image) => image.path) ?? []),
