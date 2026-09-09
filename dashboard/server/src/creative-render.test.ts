@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
-import { compileCreativeContract } from "./creative-contract.js";
+import { compileCreativeContract, sha256Hex } from "./creative-contract.js";
 import type { CreativeContractV1, CreativeEvidenceRef, CreativeSectionV1 } from "./creative-contract.js";
 import {
   buildCreativeTastePromptInput,
@@ -817,6 +817,39 @@ test("fails closed when reduced-motion captures still observe active motion", as
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((item) => item.code === "REDUCED_MOTION_ACTIVE"));
+});
+
+test("motion warning off preserves golden manifest bytes and critic input", async () => {
+  const binding = bindingFixture();
+  const env = tempPreview();
+  const result = await captureCreativeRender({
+    preview: env.preview,
+    binding,
+    iteration: 1,
+    outputDir: env.outputDir,
+    launch: fakeLaunch(fixture()),
+    readArtifactHash: () => binding.artifactHash,
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.output.manifest.issues, []);
+  assert.equal(result.output.manifest.motionTraces.length, 8);
+  const promptInput = buildCreativeTastePromptInput(result.output, binding.contract);
+  // Captured before T24: hash the actual serialized bytes, without normalizing
+  // paths, ordering, observations or prompt text that the critic receives.
+  assert.equal(sha256Hex(result.output.canonicalJson),
+    "bd71c6e7ddddceae9b5467c92def272fda5dc7f53596fe6ff0cf04d89957b4a5",
+    "motion-warning-off canonical manifest bytes");
+  assert.equal(result.output.renderManifestHash, sha256Hex(result.output.canonicalJson));
+  assert.equal(sha256Hex(JSON.stringify(result.output.facts)),
+    "456d7144d1664ac4371d3c98e9e7b16ae262d377ae2a2ee68cba8a7a6b2b1005",
+    "motion-warning-off serialized critic facts");
+  assert.equal(sha256Hex(JSON.stringify(promptInput)),
+    "63e58101a5276760f22b337a75a203a3426417419d8ed3f2001aafa06f121d05",
+    "motion-warning-off serialized critic input");
+  assert.equal(sha256Hex(buildTasteCriticPrompt(promptInput)),
+    "be22807e3ddab78d8c82975aea30a7df6dfc1c38cb3ed2b9a2cfcd3bfd1fd96d",
+    "motion-warning-off critic prompt bytes");
 });
 
 test("captures a valid manifest and projects bounded taste evidence and facts", async () => {
