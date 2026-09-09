@@ -819,6 +819,32 @@ test("fails closed when reduced-motion captures still observe active motion", as
   assert.ok(result.issues.some((item) => item.code === "REDUCED_MOTION_ACTIVE"));
 });
 
+test("motion refusal digests reference their captured profile route section and state", async () => {
+  const binding = bindingFixture();
+  for (const profileId of ["desktop", "reduced_motion"] as const) {
+    const env = tempPreview();
+    const result = await captureCreativeRender({
+      preview: env.preview,
+      binding,
+      iteration: 0,
+      outputDir: env.outputDir,
+      launch: fakeLaunch(fixture({ motion: { [profileId]: {
+        home: { "home-action": { observedProperties: profileId === "desktop" ? [] : ["transform"], sampleIndexes: [5] } },
+      } } })),
+      readArtifactHash: () => binding.artifactHash,
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.manifest !== undefined);
+    const issue = result.issues.find((entry) => entry.motionId === "home-action" && entry.profileId === profileId);
+    const capture = result.manifest.captures.find((entry) => entry.profileId === profileId &&
+      entry.routeId === "home" && entry.sectionId === "home-hero" && entry.state === "interaction");
+    assert.ok(issue !== undefined && capture !== undefined);
+    assert.equal(issue.severity, "blocking");
+    assert.equal(issue.evidenceSha256, capture.screenshotSha256, "motion issue references actual matching capture bytes");
+    assert.notEqual(issue.evidenceSha256, sha256Hex(`motion home-action was not observed on an active render profile`));
+  }
+});
+
 test("motion warning off preserves golden manifest bytes and critic input", async () => {
   const binding = bindingFixture();
   const env = tempPreview();

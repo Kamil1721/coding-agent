@@ -216,6 +216,25 @@ test("requires issue coordinates and a digest from captured evidence", () => {
   assert.ok(codes(wrongCoordinate, binding).includes("ISSUE_REFERENCE_INVALID"));
 });
 
+test("motion issue digests reject fabricated and foreign capture references", () => {
+  const binding = bindingFixture();
+  const manifest = mutableManifest(binding);
+  const capture = manifest.captures.find((entry) => entry.profileId === "desktop" &&
+    entry.sectionId === "home-hero" && entry.state === "interaction")!;
+  const issue = { code: "MOTION_NOT_OBSERVED", severity: "blocking", profileId: "desktop",
+    routeId: "home", sectionId: "home-hero", motionId: "home-action", evidenceSha256: capture.screenshotSha256 } as const;
+  manifest.issues.push(issue);
+  assert.equal(validate(manifest, binding).ok, true);
+  const foreignProfile = manifest.captures.find((entry) => entry.profileId === "mobile" && entry.sectionId === "home-hero")!;
+  const foreignSection = manifest.captures.find((entry) => entry.profileId === "desktop" && entry.sectionId === "home-footer")!;
+  for (const evidenceSha256 of [sha256Hex("diagnostic text is not captured evidence"), foreignProfile.screenshotSha256, foreignSection.screenshotSha256]) {
+    manifest.issues[0] = { ...issue, evidenceSha256 };
+    const result = validate(manifest, binding);
+    assert.equal(result.ok, false, "motion issue digest must resolve at its named coordinates");
+    assert.ok(result.errors.some((entry) => entry.code === "ISSUE_REFERENCE_INVALID"));
+  }
+});
+
 test("canonical projection is JSON-key stable as well as collection-order stable", () => {
   const binding = bindingFixture();
   const manifest = manifestFixture(binding);

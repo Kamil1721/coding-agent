@@ -425,7 +425,7 @@ export async function captureCreativeRender(options: CreativeRenderOptions): Pro
     profiles: RENDER_PROFILE_IDS.map((id) => REQUIRED_RENDER_PROFILES[id]),
     captures,
     motionTraces: traces,
-    issues: issues.map(stripIssueDetail),
+    issues: issues.map((entry) => stripIssueDetail(entry, captures, options.binding.contract)),
   };
 
   const afterHash = await Promise.resolve(readArtifactHash(options.preview.rootDir, ignoredDir));
@@ -1602,7 +1602,22 @@ function walk(root: string, current: string, ignored: string | null, lines: stri
   }
 }
 
-function stripIssueDetail(issue: RenderIssueDetail): RenderIssueV1 {
+function stripIssueDetail(
+  issue: RenderIssueDetail,
+  captures: readonly RenderCaptureV1[],
+  contract: CreativeContractV1,
+): RenderIssueV1 {
+  const matching = captures.filter((capture) => capture.profileId === issue.profileId &&
+    capture.routeId === issue.routeId && (issue.sectionId === null || capture.sectionId === issue.sectionId));
+  const alreadyCaptured = matching.some((capture) => capture.screenshotSha256 === issue.evidenceSha256 ||
+    capture.domText.some((text) => text.textSha256 === issue.evidenceSha256) ||
+    capture.assets.some((asset) => asset.contentSha256 === issue.evidenceSha256));
+  const motion = contract.motion.find((entry) => entry.id === issue.motionId);
+  const capture = motion === undefined ? matching[0] : matching.find((entry) =>
+    entry.state === (motion.trigger === "interaction" ? "interaction" : "default"));
+  // A failed capture has no evidence to bind. Keep its refusal diagnostic;
+  // never manufacture a capture or weaken manifest reference validation.
+  const evidenceSha256 = alreadyCaptured ? issue.evidenceSha256 : capture?.screenshotSha256 ?? issue.evidenceSha256;
   return {
     code: issue.code,
     severity: issue.severity,
@@ -1610,7 +1625,7 @@ function stripIssueDetail(issue: RenderIssueDetail): RenderIssueV1 {
     routeId: issue.routeId,
     sectionId: issue.sectionId,
     motionId: issue.motionId,
-    evidenceSha256: issue.evidenceSha256,
+    evidenceSha256,
   };
 }
 
