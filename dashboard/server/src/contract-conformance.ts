@@ -72,6 +72,12 @@ interface ObservedSection {
   readonly headings: readonly string[];
   readonly eyebrows: readonly string[];
 }
+/**
+ * Section kinds whose contract `headline` is a brand string in ordinary text rather than a
+ * heading element. Their headline is compared against the section's full text.
+ */
+const HEADLINE_MATCHES_SECTION_TEXT: ReadonlySet<string> = new Set(["navigation", "footer"]);
+
 const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
 const HEADING = /^h[1-6]$/u;
 const ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ndash: "–", mdash: "—", hellip: "…", AMP: "&", LT: "<", GT: ">", QUOT: '"' };
@@ -180,8 +186,17 @@ export function compareContractConformance(html: string, contract: CreativeContr
     if (section.eyebrow !== null && !matches.some((item) => item.text.includes(normalizedContractText(section.eyebrow ?? "")))) {
       report("contract_eyebrow_text", section.id, section.eyebrow, matches.map((item) => item.text).join(" | "));
     }
-    if (!matches.some((item) => item.headings.some((heading) => heading.includes(normalizedContractText(section.headline))))) {
-      report("contract_headline_text", section.id, section.headline, matches.flatMap((item) => item.headings).join(" | "));
+    // A navigation bar and a footer carry a contract `headline` that is a brand string, rendered
+    // as a link or a logo rather than an `h*`. Matching those against headings alone reported a
+    // false positive on every page with a nav and a footer, measured on the T28 continuation
+    // fixture: `s.nav` expected "Sections" and `s.footer` expected "Kamil Borzecki", both against
+    // an empty heading list. Compare their full section text instead, exactly as the eyebrow
+    // check above already does, so a genuinely wrong brand string still reports.
+    const headlineHaystack = HEADLINE_MATCHES_SECTION_TEXT.has(section.kind)
+      ? matches.map((item) => item.text)
+      : matches.flatMap((item) => item.headings);
+    if (!headlineHaystack.some((candidate) => candidate.includes(normalizedContractText(section.headline)))) {
+      report("contract_headline_text", section.id, section.headline, headlineHaystack.join(" | "));
     }
   }
   return issues;

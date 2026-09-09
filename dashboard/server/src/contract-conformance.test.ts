@@ -133,3 +133,56 @@ test("hidden markers remain structural and aria-hidden text remains observable",
   assert.deepEqual(compareContractConformance('<section data-creative-section="hero"><h1 aria-hidden="true">Hero</h1></section>', heroContract()), [],
     "ARIA_HIDDEN_TEXT: aria-hidden does not imply visual absence");
 });
+
+/**
+ * A navigation bar and a footer carry a contract `headline` that is a brand string rendered as a
+ * link or a logo, not an `h*`. Before the exemption every page with a nav and a footer reported
+ * two spurious `contract_headline_text` issues, measured on the T28 continuation fixture.
+ */
+test("navigation and footer headlines match section text, and a wrong brand still reports", () => {
+  const contract = {
+    sections: [
+      { id: "nav", kind: "navigation", headline: "Kamil Borzecki", eyebrow: null },
+      { id: "footer", kind: "footer", headline: "Kamil Borzecki", eyebrow: null },
+      { id: "hero", kind: "hero", headline: "Websites and apps", eyebrow: null },
+    ],
+  } as unknown as Parameters<typeof compareContractConformance>[1];
+
+  const clean = compareContractConformance(
+    `<nav data-creative-section="s.nav"><a>Kamil Borzecki</a></nav>` +
+    `<section data-creative-section="s.hero"><h1>Websites and apps</h1></section>` +
+    `<footer data-creative-section="s.footer"><p>Kamil Borzecki</p></footer>`,
+    contract,
+  );
+  assert.deepEqual(
+    clean.filter((issue) => issue.code === "contract_headline_text").map((issue) => issue.sectionId),
+    [],
+    "AC_NAV_FOOTER_NOT_SPURIOUS: a brand string outside a heading must not report",
+  );
+
+  // NEGATIVE CONTROL: the exemption must not become a blanket skip of nav and footer.
+  const wrong = compareContractConformance(
+    `<nav data-creative-section="s.nav"><a>Some Other Studio</a></nav>` +
+    `<section data-creative-section="s.hero"><h1>Websites and apps</h1></section>` +
+    `<footer data-creative-section="s.footer"><p>Kamil Borzecki</p></footer>`,
+    contract,
+  );
+  assert.deepEqual(
+    wrong.filter((issue) => issue.code === "contract_headline_text").map((issue) => issue.sectionId),
+    ["nav"],
+    "AC_NAV_FOOTER_STILL_CHECKED: a wrong brand string in a nav must still report",
+  );
+
+  // NEGATIVE CONTROL: an ordinary section still requires a real heading.
+  const noHeading = compareContractConformance(
+    `<nav data-creative-section="s.nav"><a>Kamil Borzecki</a></nav>` +
+    `<section data-creative-section="s.hero"><p>Websites and apps</p></section>` +
+    `<footer data-creative-section="s.footer"><p>Kamil Borzecki</p></footer>`,
+    contract,
+  );
+  assert.deepEqual(
+    noHeading.filter((issue) => issue.code === "contract_headline_text").map((issue) => issue.sectionId),
+    ["hero"],
+    "AC_ORDINARY_SECTION_NEEDS_HEADING: text alone must not satisfy a non-exempt section",
+  );
+});
