@@ -116,6 +116,8 @@ import { captureContext7ReviewSource } from "./context7-pipeline.js";
 import { canonicalJson, compileCreativeContract } from "./creative-contract.js";
 import type { CreativeCompileError, CreativeContractSafeRepair, CreativeContractV1 } from "./creative-contract.js";
 import type { CreativeAuthorRepairFinding, CreativeContractAuthorRequest, CreativeContractAuthorResult } from "./creative-contract-author.js";
+import { authorCreativeContract } from "./creative-contract-author.js";
+import { T28_NO_INHERITED_GOLDEN } from "./test-fixtures/t28-no-inherited-golden.js";
 import {
   CREATIVE_AUTHOR_FILE,
   CREATIVE_ARTIFACT_REPAIR_FILE,
@@ -1726,6 +1728,70 @@ async function waitForBuilderAfterContract(h: DesignHarness, message: string): P
   const results = runPathsFor(h.paths, h.runId).results;
   await h.waitFor(() => existsSync(join(results, CREATIVE_CONTRACT_FILE)) && h.builderCalls.length > 0, 10_000, message);
 }
+
+test("T28 no inherited contract production author prompt and phase golden", async () => {
+  const observed: { input: string; user: string; system: string }[] = [];
+  let persistedAtBuild: unknown;
+  let phaseAtBuild: readonly string[] | undefined;
+  const h = await designRun({
+    autoStart: false,
+    noKey: true,
+    designLock: "ask",
+    directions: true,
+    onRequest: (request, store) => {
+      if (persistedAtBuild !== undefined) return;
+      const results = join(dirname(request.workspace), "results");
+      persistedAtBuild = JSON.parse(readFileSync(join(results, CREATIVE_CONTRACT_FILE), "utf8")) as unknown;
+      phaseAtBuild = store.eventsSince("run-design", 0).flatMap(({ event }) => event.type === "status" ? [event.status] : []);
+    },
+    runCreativeContractAuthor: async (request) => {
+      const fixture = compiledCreativeAuthorResult(request);
+      const startQuery: SeatSessionFactory = ({ prompt, options }) => {
+        assert.equal(typeof prompt, "string");
+        assert.equal(typeof options.systemPrompt, "string");
+        observed.push({ input: JSON.stringify(request.input), user: prompt as string, system: options.systemPrompt as string });
+        return (async function* () {
+          yield {
+            type: "result", subtype: "success", stop_reason: "end_turn", is_error: false,
+            result: JSON.stringify(fixture.contract),
+            usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage;
+        })();
+      };
+      return authorCreativeContract({ ...request, startQuery });
+    },
+  });
+  try {
+    h.orchestrator.pump();
+    await waitForBuilderAfterContract(h, "T28 unchanged contract phase never reached build");
+    assert.equal(observed.length, 1, "T28_NO_INHERITED_AUTHOR_COUNT");
+    const packet = observed[0];
+    assert.ok(packet !== undefined);
+    const actual = {
+      input: sha256Hex(packet.input),
+      user: sha256Hex(packet.user),
+      system: sha256Hex(packet.system),
+      contract: sha256Hex(JSON.stringify(persistedAtBuild)),
+    };
+    assert.deepEqual(actual, T28_NO_INHERITED_GOLDEN, "T28_NO_INHERITED_PRODUCTION_GOLDEN");
+    const results = runPathsFor(h.paths, h.runId).results;
+    const author = JSON.parse(readFileSync(join(results, CREATIVE_AUTHOR_FILE), "utf8")) as CreativeContractAuthorResult;
+    assert.equal(author.status, "compiled", "T28_NO_INHERITED_COMPILED");
+    assert.equal(author.ran, true);
+    assert.deepEqual(author.compileErrors, []);
+    assert.deepEqual(author.repairs, []);
+    assert.deepEqual(phaseAtBuild, ["running"], "T28_NO_INHERITED_PHASE_AT_BUILD");
+    assert.equal(existsSync(join(results, creativeAuthorAttemptFile(1))), true);
+    assert.equal(existsSync(join(results, creativeAuthorAttemptFile(2))), false);
+    assert.deepEqual((persistedAtBuild as CreativeContractV1).sections.map(({ id, headline }) => ({ id, headline })), [
+      { id: "hero", headline: "Accountable work for consequential decisions" },
+      { id: "proof", headline: "Evidence before assertion" },
+      { id: "footer", headline: "Start with the decision that matters" },
+    ]);
+  } finally {
+    await h.cleanup();
+  }
+});
 
 for (const noKey of [false, true]) {
   test(`T22 canvass dispatch reads app from the fresh contract after the earlier motion read: degraded=${String(noKey)}`, async () => {
