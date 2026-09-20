@@ -8610,8 +8610,34 @@ export class Orchestrator {
       return;
     }
     if (decision.kind === "continue") {
-      // The wait was served in wall-clock time while the dashboard was down.
-      if (options.count) this.#chargeContinuation(runId, row, decision.klass);
+      /*
+       * THE CONTINUE ARM CHARGES UNCONDITIONALLY, AND `options.count` IS NOT
+       * CONSULTED HERE ON PURPOSE.
+       *
+       * `count: false` is correct for the arm below: a boot that RE-ARMS a timer
+       * is re-creating something that already existed and was already charged
+       * when it was first announced, so charging again would let three restarts
+       * of a development server exhaust every parked run's automatic budget.
+       *
+       * THAT PREMISE IS FALSE HERE, AND THAT IS THE WHOLE BUG. This arm is
+       * reached when the previous process REFUSED — `wait_too_long`,
+       * `wait_unrepresentable`, `disabled` — and the `stop` branch a dozen lines
+       * up returns before `#chargeContinuation` is ever called. So nothing was
+       * charged, "already charged when it was first armed" describes a charge
+       * that never happened, and a run could be resumed by boot an unbounded
+       * number of times while `auto_continue_count` sat still. The crash-loop
+       * brake did not cover the one path that most needed it: the wall-clock
+       * wait was served while nobody was watching, so nobody would notice the
+       * loop either.
+       *
+       * Measured on `run-cont-708c1bcef9d301b7722a`: it crossed the 2026-09-15
+       * boot resume with `auto_continue_count` still 0, and reached 1 only by
+       * the separate `interrupted` path.
+       *
+       * This is a decision to spend NOW, not the re-creation of an old one, so
+       * it pays the budget like every other continuation.
+       */
+      this.#chargeContinuation(runId, row, decision.klass);
       this.#emitLog(
         runId,
         "info",

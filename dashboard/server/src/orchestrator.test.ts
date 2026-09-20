@@ -476,6 +476,54 @@ test("cancelling a queued run finishes it without starting anything", async () =
   }
 });
 
+test("a boot that RESUMES a parked run charges the crash-loop brake", async () => {
+  /*
+   * THE BRAKE DID NOT COVER THE ONE PATH THAT MOST NEEDED IT.
+   *
+   * `reconcileOnBoot` passes `{ count: false }` to `#armRecovery`, justified in
+   * its own comment as "this continuation was already charged to
+   * `auto_continue_count` when it was first armed". True for the arm that
+   * RE-ARMS a timer. False for the arm that RESUMES NOW: that arm is reached
+   * when the previous process refused, and the `stop` branch returns before
+   * `#chargeContinuation` is ever called, so nothing was charged and boot could
+   * resume a run without limit while the counter sat still.
+   *
+   * Measured on `run-cont-708c1bcef9d301b7722a`: it crossed the 2026-09-15 boot
+   * resume with `auto_continue_count` still 0.
+   *
+   * NEGATIVE CONTROL: restore `if (options.count)` on the continue arm of
+   * `#armRecovery` and this goes red at BRAKE_CHARGED.
+   */
+  const h = harness({ DASHBOARD_AUTO_RECOVER: "1" });
+  try {
+    seed(h.store, "run-brake", 1);
+    // A window SHORT enough for the unattended ceiling to license, refused long
+    // enough ago that it has already elapsed — the boot-resume condition.
+    h.store.updateRun("run-brake", {
+      status: "rate_limited",
+      phase: "build",
+      rateLimited: true,
+      rateLimitRetryAfterSec: 60,
+      rateLimitKind: "five_hour",
+      rateLimitedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      builderSessionId: "session-brake",
+      queuePosition: null,
+    });
+    const before = h.store.getRun("run-brake")?.autoContinueCount ?? -1;
+    assert.equal(before, 0, "fixture must start unbudgeted, or this proves nothing");
+
+    h.orchestrator.reconcileOnBoot();
+
+    const row = h.store.getRun("run-brake");
+    assert.ok(row !== null);
+    assert.notEqual(row.status, "rate_limited", "fixture must actually take the resume arm");
+    assert.equal(row.autoContinueCount, before + 1, "BRAKE_CHARGED: a boot resume pays the budget");
+  } finally {
+    await h.orchestrator.shutdown();
+    h.cleanup();
+  }
+});
+
 test("a rate-limited run is resumable and keeps its session", async () => {
   const h = harness();
   try {
