@@ -8365,7 +8365,8 @@ export class Orchestrator {
         "warn",
         `rate limited${state.kind === null ? "" : ` (${state.kind} window)`}` +
           `${state.retryAfterSec === null ? "" : `, resets in ${String(state.retryAfterSec)}s`}. ` +
-          "This is an expected state on a subscription, not a fault. The run is kept and can be resumed.",
+          "This is an expected state on a subscription, not a fault. The run is kept, and nothing will " +
+          "resume it for you: press Resume when you want it to carry on.",
       );
     }
   }

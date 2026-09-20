@@ -88,11 +88,23 @@ export function statusMeta(status: RunStatus): StatusMeta {
         live: false,
       };
     case "rate_limited":
+      /*
+       * THE SENTENCE NAMES WHO RESTARTS IT, AND THAT IS THE POINT OF THE REWRITE.
+       * It used to end "the run is preserved and can be resumed", which is true
+       * and leaves the owner to guess whether something will do it for him. On
+       * 2026-09-15 something did: `run-cont-708c1bcef9d301b7722a` resumed itself
+       * on an unconfigured boot and spent about three and a half hours of
+       * subscription quota overnight. Since 2026-09-20 nothing resumes a parked
+       * run without an explicit opt-in, so the status has to say so — a park
+       * that silently means "waiting for a timer" and a park that means "waiting
+       * for you" look identical on screen, and the owner has no way to tell them
+       * apart from the label alone.
+       */
       return {
-        label: "rate limited",
+        label: "rate limited · waiting for you",
         tone: "warn",
         meaning:
-          "The provider's rolling window is exhausted. This is an expected state on a subscription plan, not a failure — the run is preserved and can be resumed.",
+          "The provider's rolling window is exhausted. This is an expected state on a subscription plan, not a failure. The workspace, the session and the frozen suite are all kept. Nothing will resume this run for you: it waits here until you press Resume, so it cannot spend your quota while you are away.",
         live: false,
       };
     case "passed":
