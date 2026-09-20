@@ -1133,8 +1133,67 @@ export const RECOVERY_ENABLED_ENV = "DASHBOARD_AUTO_RECOVER";
  */
 export const RECOVERY_ENABLED_OFF: readonly string[] = ["0", "false", "no", "off"];
 
+/**
+ * The values that turn unattended SPENDING on. Absence is OFF.
+ *
+ * INVERTED 2026-09-20, AFTER AN OVERNIGHT BURN. This list used to be
+ * {@link RECOVERY_ENABLED_OFF} read as a deny-list — `!OFF.includes(env ?? "")`
+ * — so an unset variable meant ON and every fresh machine, every new shell and
+ * every LaunchAgent that forgot to pass it was opted in to spending the owner's
+ * subscription quota while he slept. A default that spends money when nobody
+ * configured anything is the wrong way round; the safe state has to be the one
+ * you get by doing nothing.
+ *
+ * DENY STILL WINS OVER ALLOW. An explicit `0/false/no/off` refuses even if some
+ * other layer writes `1`, so the off switch cannot be defeated by a stale
+ * variable further up the environment.
+ */
+export const RECOVERY_ENABLED_ON: readonly string[] = ["1", "true", "yes", "on"];
+
+/**
+ * MAY THIS PROCESS MAKE A PAID MODEL CALL WITH NO HUMAN PRESENT?
+ *
+ * ONE PREDICATE, CONSULTED BY EVERY AUTOMATIC TRANSITION, AND THAT IS THE POINT.
+ * The defect this replaces was not a missing bound, it was TWO gates where only
+ * one carried the bound: `planThrottledWait` refused to arm a timer past the
+ * ceiling, and the "wait already elapsed" arm beside it resumed with no ceiling
+ * at all. A third caller — `supervisor.ts#wake` — reached
+ * `orchestrator.resume()` with no policy whatsoever. Per-site bounds reproduce
+ * that defect once per site. A single question, asked everywhere, cannot.
+ *
+ * HUMAN-INITIATED RESUMES DO NOT ASK THIS. `POST /api/runs/:id/resume` is a
+ * person deciding to spend; this governs only what happens with nobody there.
+ */
+export function unattendedSpendAllowed(env: NodeJS.ProcessEnv): boolean {
+  const raw = (env[RECOVERY_ENABLED_ENV] ?? "").trim().toLowerCase();
+  if (RECOVERY_ENABLED_OFF.includes(raw)) return false;
+  return RECOVERY_ENABLED_ON.includes(raw);
+}
+
+/**
+ * DETERMINISTIC RECOVERY THAT SPENDS NOTHING, and it stays on by default.
+ *
+ * Closing an attempt the dead process left open, re-arming a design-lock park
+ * for its REMAINING window, reconciling a marker, repairing a row: none of these
+ * call a model, and switching them off would leave the database describing a
+ * world that does not exist. Separated from {@link unattendedSpendAllowed} on
+ * 2026-09-20 because the old single flag conflated "repair my bookkeeping" with
+ * "spend my subscription", so an owner who wanted the first had to accept the
+ * second.
+ */
+export const RECOVERY_INFRA_ENV = "DASHBOARD_AUTO_RECOVER_INFRA";
+
+export function infraRecoveryEnabled(env: NodeJS.ProcessEnv): boolean {
+  return !RECOVERY_ENABLED_OFF.includes((env[RECOVERY_INFRA_ENV] ?? "").trim().toLowerCase());
+}
+
+/**
+ * @deprecated Use {@link unattendedSpendAllowed}. Kept as a named alias so every
+ * existing reader changes polarity in one place rather than seven, and so a
+ * reader added later cannot silently pick up the old fail-open meaning.
+ */
 export function autoRecoverEnabled(env: NodeJS.ProcessEnv): boolean {
-  return !RECOVERY_ENABLED_OFF.includes((env[RECOVERY_ENABLED_ENV] ?? "").trim().toLowerCase());
+  return unattendedSpendAllowed(env);
 }
 
 /**
@@ -1343,7 +1402,70 @@ function planThrottledWait(klass: FailureClass, input: RecoveryInput): RecoveryD
   // `planRateLimitResume` floor theirs: a clock that moved backwards must not
   // lengthen the wait beyond what was reported.
   const elapsed = Math.max(0, at - refusedAt);
-  const delayMs = reportedSec * 1000 - elapsed;
+  const reportedMs = reportedSec * 1000;
+  const delayMs = reportedMs - elapsed;
+
+  /*
+   * THE CEILING IS TESTED AGAINST THE WINDOW THE PROVIDER REPORTED, NOT AGAINST
+   * WHAT IS LEFT OF IT, AND IT IS TESTED BEFORE THE ELAPSED ARM. THIS ORDER IS
+   * THE WHOLE BOUND.
+   *
+   * Measured, run `run-cont-708c1bcef9d301b7722a`. On 2026-09-12T12:58:44.311Z
+   * the ceiling below REFUSED this run: "the seven_day window reopens in 23.0 h
+   * … longer than the 12.0 h this server will wait unattended", and no timer was
+   * armed. Correct. The dashboard then stopped. On 2026-09-15T20:34:38.898Z it
+   * started again, `reconcileOnBoot` swept `rate_limited`, and control reached
+   * here with `elapsed` now larger than the whole window — so `delayMs <= 0`,
+   * the arm below returned `continue`, and the run resumed with no human and no
+   * bound, spending subscription quota until the provider refused it again.
+   *
+   * The residual is the wrong quantity to bound. `input.maxWaitMs` answers "how
+   * long may this server wait unattended before a human decides", and a window
+   * it already refused to wait out cannot become free to serve merely because
+   * the process was absent for longer than the window. Bounding the residual
+   * makes the refusal decay to nothing with time: the longer the server is off,
+   * the more certain the unbounded arm is to fire. That is backwards for a
+   * spending decision, and it is why a park that was correct on the 12th became
+   * an unattended resume on the 15th.
+   *
+   * A window INSIDE the ceiling still takes the elapsed arm below and still
+   * continues without a human, which is the behaviour the ceiling exists to
+   * license.
+   */
+  /*
+   * THE 32-BIT CEILING STILL REFUSES FIRST, because firing IMMEDIATELY is the
+   * worse fault and deserves the more specific name. Tested on the reported
+   * window rather than the residual for the same reason the unattended ceiling
+   * below is: the quantity being judged is the window the provider set, not
+   * whatever is left of it after the server was away.
+   */
+  if (reportedMs > RECOVERY_TIMER_MAX_DELAY_MS) {
+    return {
+      kind: "stop",
+      klass,
+      code: "wait_unrepresentable",
+      reason:
+        `the reported wait is ${String(Math.round(reportedMs / 86_400_000))} day(s), longer than a timer on ` +
+        `this platform can hold — setTimeout keeps its delay in 32 bits and a longer one fires ` +
+        `IMMEDIATELY. Refused rather than clamped, because firing immediately is the opposite of waiting.`,
+    };
+  }
+
+  if (reportedMs > input.maxWaitMs) {
+    const wouldResumeAt = plusMs(input.now, Math.max(0, delayMs));
+    return {
+      kind: "stop",
+      klass,
+      code: "wait_too_long",
+      reason:
+        `the ${refusal.kind ?? "rate limit"} window the provider reported is ${humanWait(reportedMs)} ` +
+        `(${source}), longer than the ${humanWait(input.maxWaitMs)} this server will wait unattended` +
+        `${delayMs <= 0 ? ", and it elapsed while this server was not running" : ` — it reopens at ${String(wouldResumeAt)}`}. ` +
+        `A window this server refused to wait out does not become automatic merely because time passed ` +
+        `with nobody watching. The run is kept and resumes the moment you press Resume; raise ` +
+        `${RECOVERY_MAX_WAIT_ENV} (minutes) to let it wait by itself.`,
+    };
+  }
 
   if (delayMs <= 0) {
     return {

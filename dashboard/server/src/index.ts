@@ -40,6 +40,7 @@ import { DASHBOARD_ENV, dashboardProjectId, ensureDirs, resolvePaths } from "./p
 import { PreviewHost } from "./preview.js";
 import { ProjectRunner } from "./project-runner.js";
 import { createAuthoringRepairDriver, createSeatPatchAuthorCall, DEFAULT_AUTHOR_JOURNAL_DIRNAME } from "./repair-author.js";
+import { unattendedSpendAllowed } from "./recovery.js";
 import { SupervisorLoop } from "./supervisor.js";
 import {
   armRepairDriver,
@@ -161,10 +162,31 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const supervisorLoop = new SupervisorLoop({
     store,
     submit: createSupervisorSubmit({ store, bus, catalog, orchestrator }),
-    // THE CHEAP PATH (§7.5). A rate-limited run is resumed rather than
-    // re-submitted, which is the difference between waiting out a limit and
-    // paying for a second spec phase.
-    resume: (runId) => orchestrator.resume(runId),
+    /*
+     * THE CHEAP PATH (§7.5). A rate-limited run is resumed rather than
+     * re-submitted, which is the difference between waiting out a limit and
+     * paying for a second spec phase.
+     *
+     * AND IT IS GATED ON UNATTENDED SPEND, 2026-09-20. `SupervisorLoop#wake`
+     * calls this for any run whose status is not terminal, and `rate_limited`
+     * is not terminal. It consults no recovery policy of its own: greps of
+     * `supervisor.ts` for `autoRecoverEnabled`, `DASHBOARD_AUTO_RECOVER`,
+     * `planRecovery`, `recoveryMaxWaitMs`, `autoContinueCount` and
+     * `AUTO_CONTINUE_MAX` all return zero. So the ceiling, the continuation cap
+     * and the owner's off switch were all invisible to it, and a supervisor
+     * ticket could resume a parked run that `planRecovery` had just refused.
+     * It was inert only because `supervisor_tickets` was empty; the loop
+     * installs on every boot while `supervisor_state.desired` is `running`.
+     *
+     * The gate lives HERE rather than inside the loop on purpose: this is the
+     * seam where the supervisor is handed the ability to spend, so refusing at
+     * the seam leaves the loop's own bookkeeping — parking tickets, watching a
+     * run it did not start — working exactly as before.
+     */
+    resume: (runId) => {
+      if (!unattendedSpendAllowed(process.env)) return false;
+      return orchestrator.resume(runId);
+    },
     /*
      * SPREAD, NOT `repair: armed ? driver : undefined`. `SupervisorDeps.repair` is
      * optional under `exactOptionalPropertyTypes`, and an explicit `undefined`

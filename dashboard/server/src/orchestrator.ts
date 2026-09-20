@@ -2169,6 +2169,24 @@ export class Orchestrator {
     // forever — the very defect this feature was added to remove, reintroduced
     // by the restart.
     //
+    // AND THIS SWEEP IS WHERE THE 2026-09-16 OVERNIGHT BURN CAME FROM, SO READ
+    // THE NEXT PARAGRAPH BEFORE TRUSTING THE ONE ABOVE. A comment further down
+    // this file used to say the sweep "is safe from that only because it arms a
+    // timer rather than starting a run". That was FALSE on one arm:
+    // `planThrottledWait` returns `continue` — resume NOW, no timer — whenever
+    // the reported window has already elapsed, which is guaranteed for any
+    // server that was off for longer than the window. Run
+    // `run-cont-708c1bcef9d301b7722a` was refused a timer on 2026-09-12 for
+    // being past the 12 h unattended ceiling, and then resumed by this sweep on
+    // 2026-09-15 because by then the window had passed.
+    //
+    // Two things now stand between this sweep and a model call, and both are in
+    // `recovery.ts`: the ceiling is tested against the window the PROVIDER
+    // reported rather than what is left of it, and `unattendedSpendAllowed` is
+    // opt-in so an unconfigured machine refuses. Neither is enforced here, on
+    // purpose — one predicate, consulted by every automatic transition, is what
+    // stops this defect reappearing the next time a caller is added.
+    //
     // GATED ON THE FLAG BEFORE THE SWEEP, not inside it, so a default install
     // does nothing and says nothing here. The "no timer is armed, a human has to
     // resume this" sentence was already emitted onto each of these runs' logs
