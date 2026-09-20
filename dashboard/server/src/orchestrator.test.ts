@@ -155,7 +155,7 @@ import {
   writeRenderedTasteCriticRecord,
 } from "./rendered-taste-critic.js";
 
-function harness(): {
+function harness(env: NodeJS.ProcessEnv = {}): {
   store: RunStore;
   bus: RunEventBus;
   orchestrator: Orchestrator;
@@ -170,7 +170,7 @@ function harness(): {
   const auth = new AuthProbe({ claudeBin: join(dir, "absent"), codexBin: join(dir, "absent") });
   const catalog = new ModelCatalog(auth, {}, async () => []);
   const preview = new PreviewHost();
-  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env: {}, gateReadiness: READY_GATE_READINESS });
+  const orchestrator = new Orchestrator({ store, bus, paths, catalog, auth, preview, env, gateReadiness: READY_GATE_READINESS });
   return {
     store,
     bus,
@@ -199,7 +199,14 @@ function seed(store: RunStore, runId: string, queuePosition: number): void {
 }
 
 test("a run left running by a dead server is picked back up, not failed", async () => {
-  const h = harness();
+  /*
+   * OPTED IN EXPLICITLY, 2026-09-20. This test asserts that a boot can pick a
+   * run back up, and it still can — but `DASHBOARD_AUTO_RECOVER` is now
+   * opt-in, because an unconfigured machine picking runs back up unattended is
+   * what burned subscription quota overnight on 2026-09-15. The capability is
+   * unchanged; the consent is new. `unattended-spend.test.ts` pins the default.
+   */
+  const h = harness({ DASHBOARD_AUTO_RECOVER: "1" });
   try {
     seed(h.store, "run-a", 1);
     h.store.updateRun("run-a", { status: "running", phase: "build", builderSessionId: "session-xyz" });
@@ -314,7 +321,14 @@ async function waitForRowStatus(store: RunStore, runId: string, status: string, 
  * test — what is under test is that an abort OUTRANKS whatever was thrown.
  */
 test("a shutdown during the spec phase leaves the run resumable, not failed", async () => {
-  const h = harness();
+  /*
+   * OPTED IN EXPLICITLY, 2026-09-20. This test asserts that a boot can pick a
+   * run back up, and it still can — but `DASHBOARD_AUTO_RECOVER` is now
+   * opt-in, because an unconfigured machine picking runs back up unattended is
+   * what burned subscription quota overnight on 2026-09-15. The capability is
+   * unchanged; the consent is new. `unattended-spend.test.ts` pins the default.
+   */
+  const h = harness({ DASHBOARD_AUTO_RECOVER: "1" });
   try {
     seed(h.store, "run-spec-abort", 1);
 
@@ -4439,7 +4453,14 @@ test("an abort signal with no reason is read as a cancel, never as a shutdown", 
  * exactly why the check is on the SIGNAL and not on the shape.
  */
 test("a shutdown during the GATE leaves the run resumable, not failed on a suite it never ran", async () => {
-  const h = harness();
+  /*
+   * OPTED IN EXPLICITLY, 2026-09-20. This test asserts that a boot can pick a
+   * run back up, and it still can — but `DASHBOARD_AUTO_RECOVER` is now
+   * opt-in, because an unconfigured machine picking runs back up unattended is
+   * what burned subscription quota overnight on 2026-09-15. The capability is
+   * unchanged; the consent is new. `unattended-spend.test.ts` pins the default.
+   */
+  const h = harness({ DASHBOARD_AUTO_RECOVER: "1" });
   try {
     seed(h.store, "run-gate-abort", 1);
     // Straight to the state the real run was in: past the build, at the gate.
@@ -9140,7 +9161,14 @@ test("T17b finish requeue cannot retain clean judge authority in a failed next b
 });
 
 test("T17b no-attempt finalization removes a stale judge file after boot requeue", async () => {
-  const h = harness();
+  /*
+   * OPTED IN EXPLICITLY, 2026-09-20. This test asserts that a boot can pick a
+   * run back up, and it still can — but `DASHBOARD_AUTO_RECOVER` is now
+   * opt-in, because an unconfigured machine picking runs back up unattended is
+   * what burned subscription quota overnight on 2026-09-15. The capability is
+   * unchanged; the consent is new. `unattended-spend.test.ts` pins the default.
+   */
+  const h = harness({ DASHBOARD_AUTO_RECOVER: "1" });
   try {
     const runId = "run-stale-judge-no-attempt";
     seed(h.store, runId, 1);

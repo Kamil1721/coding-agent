@@ -601,22 +601,45 @@ test("when it IS switched off, the refusal names the switch and the human", () =
   assert.match(reasonOf(d), /human has to resume/i);
 });
 
-test("ON IS THE DEFAULT: an EMPTY environment recovers, because nothing on this machine sets the flag", () => {
-  // THE WHOLE FEATURE, IN ONE ASSERTION. Nothing in this repository sets
-  // DASHBOARD_AUTO_RECOVER — not a plist, not a .env, not a script — so while
-  // the flag was opt-in, zero failure classes recovered on the only machine this
-  // runs on and the module was elaborate dead code. `{}` is exactly what
-  // `this.#deps.env` looks like at orchestrator.ts:5634 today.
-  assert.equal(autoRecoverEnabled({}), true, "an absent variable must RECOVER, not refuse");
-  assert.equal(autoRecoverEnabled({ PATH: "/usr/bin", HOME: "/Users/x" }), true);
+test("OFF IS THE DEFAULT: an EMPTY environment refuses, because nobody consented to spend", () => {
+  /*
+   * REVERSED 2026-09-20, AND THE OLD ASSERTION IS QUOTED HERE BECAUSE IT WAS
+   * DELIBERATE. This test used to read "an absent variable must RECOVER, not
+   * refuse", on the reasoning that nothing on this machine set the flag so an
+   * opt-in feature was elaborate dead code. The reasoning was sound and the
+   * conclusion was the wrong way round: the machine that sets nothing is
+   * exactly the machine nobody is watching. Run
+   * `run-cont-708c1bcef9d301b7722a` resumed itself on an unconfigured boot on
+   * 2026-09-15 and spent about three and a half hours of subscription quota
+   * before the provider refused it again.
+   *
+   * The dead-code worry is answered by the positive control in
+   * `unattended-spend.test.ts` test 6 rather than by the default: opting in
+   * still continues, so the feature is reachable, it just is not free.
+   */
+  assert.equal(autoRecoverEnabled({}), false, "an absent variable must REFUSE, not spend");
+  assert.equal(autoRecoverEnabled({ PATH: "/usr/bin", HOME: "/Users/x" }), false);
 
-  // And the default reaches the decision, not just the reader: an interrupted
-  // run under an empty env continues.
+  // And the default reaches the decision, not just the reader.
   assert.equal(
     planRecovery({
       signals: interruptedSignals(),
       autoContinueCount: 0,
       enabled: autoRecoverEnabled({}),
+      now: NOW,
+      maxWaitMs: RECOVERY_MAX_AUTO_WAIT_MS,
+    }).kind,
+    "stop",
+  );
+
+  // THE OPT-IN STILL WORKS, asserted here so this file cannot drift into
+  // proving only that nothing ever happens.
+  assert.equal(autoRecoverEnabled({ [RECOVERY_ENABLED_ENV]: "1" }), true);
+  assert.equal(
+    planRecovery({
+      signals: interruptedSignals(),
+      autoContinueCount: 0,
+      enabled: autoRecoverEnabled({ [RECOVERY_ENABLED_ENV]: "1" }),
       now: NOW,
       maxWaitMs: RECOVERY_MAX_AUTO_WAIT_MS,
     }).kind,
@@ -644,13 +667,22 @@ test("THE OFF SWITCH IS REAL: 0/false/no/off disable it, and each spelling is ch
   );
 });
 
-test("a typo in the OFF switch leaves recovery RUNNING, which is the deliberate half of the reversal", () => {
-  // Stated as a test rather than left to the docblock, because it is the cost of
-  // default-on and somebody will one day read it as a bug. It is not: a typo
-  // here spends at most AUTO_CONTINUE_MAX bounded continuations, whereas a typo
-  // that silently disabled the feature would reproduce the exact failure this
-  // change exists to end and would look identical to it from outside.
-  for (const value of ["", " ", "1", "true", "yes", "on", "ture", "2", "enabled", "disabled"]) {
+test("a typo in the switch leaves recovery OFF, which is the safe half of the 2026-09-20 reversal", () => {
+  /*
+   * THIS TEST WAS REVERSED WITH THE DEFAULT, AND ITS OLD REASONING IS WORTH
+   * KEEPING. It used to assert that a typo left recovery RUNNING, on the
+   * grounds that "a typo here spends at most AUTO_CONTINUE_MAX bounded
+   * continuations, whereas a typo that silently disabled the feature would
+   * reproduce the exact failure this change exists to end". Under an allow-list
+   * both halves get safer: a misspelling cannot spend, and a misspelling that
+   * disables is visible the moment the owner expects a resume and does not get
+   * one. Only the four ON spellings enable it; everything else, including
+   * nonsense and near-misses, does not.
+   */
+  for (const value of ["", " ", "ture", "2", "enabled", "disabled", "yess", "ON!", "y"]) {
+    assert.equal(autoRecoverEnabled({ [RECOVERY_ENABLED_ENV]: value }), false, value);
+  }
+  for (const value of ["1", "true", "yes", "on", "TRUE", " on ", "On"]) {
     assert.equal(autoRecoverEnabled({ [RECOVERY_ENABLED_ENV]: value }), true, value);
   }
 });
